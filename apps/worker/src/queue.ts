@@ -22,6 +22,8 @@ export const JOBS = {
   remindersDeliver: 'reminders.deliver',
   /** Nightly: materialise status_cache. */
   statusRefresh: 'status.refresh',
+  /** Sunday evening: the week's summary by email. */
+  remindersWeekly: 'reminders.weekly',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

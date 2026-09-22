@@ -5,6 +5,7 @@ import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { HomeScreen } from './screens/Home.js';
+import { NotificationsScreen } from './screens/Notifications.js';
 import {
   PeopleScreen,
   PersonScreen,
@@ -149,6 +150,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <SettingsScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/notifications"
+            element={
+              <Gate need="signed-in">
+                <NotificationsScreen />
               </Gate>
             }
           />

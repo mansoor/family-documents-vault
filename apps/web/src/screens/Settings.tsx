@@ -31,6 +31,12 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
+        <li>
+          <Link to="/settings/notifications" className="rowbtn">
+            <span className="doc-title">How you hear about things</span>
+            <span className="muted">Notifications on your devices, and email</span>
+          </Link>
+        </li>
         {session.info?.role === 'owner' && (
           <li>
             <Link to="/settings/storage" className="rowbtn">

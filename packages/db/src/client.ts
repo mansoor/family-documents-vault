@@ -283,10 +283,50 @@ export interface Schema {
   notification_digest: {
     household_id: string;
     local_date: ColumnType<string, string, string>;
-    kind: Generated<'daily' | 'catch_up'>;
+    kind: Generated<'daily' | 'catch_up' | 'weekly'>;
     item_count: number;
     channels: Generated<string[]>;
     sent_at: GeneratedTimestamp;
+  };
+
+  device: {
+    id: Generated<string>;
+    household_id: string;
+    account_id: string;
+    kind: Generated<'web_push' | 'apns' | 'fcm'>;
+    endpoint: string;
+    p256dh: string | null;
+    auth: string | null;
+    label: string | null;
+    user_agent: string | null;
+    created_at: GeneratedTimestamp;
+    last_used_at: Timestamp | null;
+    failed_at: Timestamp | null;
+    fail_reason: string | null;
+  };
+
+  smtp_settings: {
+    household_id: string;
+    provider: string | null;
+    host: string;
+    port: Generated<number>;
+    secure: Generated<boolean>;
+    username: string | null;
+    password_encrypted: Buffer | null;
+    from_name: Generated<string>;
+    from_email: string;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_verified_at: Timestamp | null;
+    last_error: string | null;
+    updated_at: GeneratedTimestamp;
+  };
+
+  notification_preference: {
+    account_id: string;
+    household_id: string;
+    daily_push: Generated<boolean>;
+    daily_email: Generated<boolean>;
+    weekly_email: Generated<boolean>;
   };
 
   audit_event: {

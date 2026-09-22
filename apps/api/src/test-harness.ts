@@ -13,6 +13,7 @@ import { loadConfig } from './config.js';
 import { DocumentService } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
+import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
@@ -80,6 +81,11 @@ export async function createHarness(): Promise<Harness> {
     vaults,
     documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, enqueue, reminders),
     reminders,
+    notifications: new NotificationService(
+      db,
+      deriveKey(TEST_MASTER, 'smtp-credentials'),
+      'test-vapid-public-key',
+    ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     logger: false,

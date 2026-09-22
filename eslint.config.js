@@ -43,6 +43,12 @@ export default tseslint.config(
     },
   },
   {
+    // The service worker runs in its own global scope, not the browser's.
+    files: ['apps/web/public/sw.js'],
+    languageOptions: { globals: globals.serviceworker },
+    rules: { 'no-useless-assignment': 'off' },
+  },
+  {
     files: ['**/*.tsx'],
     plugins: { 'react-hooks': reactHooks },
     rules: reactHooks.configs.recommended.rules,
