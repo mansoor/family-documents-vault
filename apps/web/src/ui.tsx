@@ -27,7 +27,8 @@ export function Field(props: {
   type?: string;
   value: string;
   autoComplete?: string;
-  hint?: string;
+  hint?: string | undefined;
+  required?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
@@ -39,7 +40,7 @@ export function Field(props: {
         value={props.value}
         autoComplete={props.autoComplete}
         onChange={(e) => props.onChange(e.target.value)}
-        required
+        required={props.required ?? true}
       />
       {props.hint && <span className="muted">{props.hint}</span>}
     </div>

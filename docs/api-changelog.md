@@ -73,6 +73,15 @@ against self-hosted servers that are months or years behind.
   (revoked, expired or replayed), `422 validation_failed`, `429` with
   `Retry-After` on the auth endpoints (10 requests per minute per address).
 
+- Vaults (where files are kept). All bearer; changes are owner-only.
+  - `GET /api/v1/vaults` — `{ items: [{ id, kind, provider, label, endpoint, bucket, region, prefix, path_style, role, status, active, last_verified_at, last_error }] }`. Never includes keys.
+  - `GET /api/v1/vaults/providers` — presets: `[{ key, name, endpoint, pathStyle, region?, hint }]`.
+  - `POST /api/v1/vaults` — `{ provider, label?, endpoint?, region?, bucket, prefix?, path_style?, access_key_id, secret_access_key }` → `201` with the vault, `status: "untested"`.
+  - `POST /api/v1/vaults/{id}/test` — writes, reads back and deletes a test object: `{ ok, message, code?, detail? }`. `message` is for the person.
+  - `POST /api/v1/vaults/{id}/activate` — `204`; `409 vault_untested` unless the last test passed.
+  - `DELETE /api/v1/vaults/{id}` — `204`; `409 vault_in_use` for the active vault.
+  - Storage error codes: `not_found`, `unreachable`, `credentials_rejected`, `bucket_missing`, `permission_denied`, `verification_failed`.
+
 ## Deprecations in effect
 
 None.

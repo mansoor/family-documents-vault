@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.mjs",
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.mjs && node ../../scripts/check-bundle-deps.mjs .",
     "start": "node dist/main.mjs",
     "typecheck": "tsc --noEmit"
   },

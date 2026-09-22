@@ -210,3 +210,83 @@ h3 {
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
+
+/* ---- screens with a top bar ---- */
+.page-top {
+  justify-content: flex-start;
+  padding-top: 16px;
+  padding-bottom: 32px;
+  gap: 18px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.back {
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.notice {
+  color: var(--accent);
+  font-weight: 600;
+  margin: 0;
+}
+
+.list li.place {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.place-title {
+  font-weight: 600;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.badge-danger {
+  background: #f8e3e1;
+  color: var(--danger);
+}
+
+.badge-warn {
+  background: #f6ecd9;
+  color: var(--warn);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.field select {
+  font: inherit;
+  font-size: 16px;
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+}

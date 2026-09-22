@@ -43,6 +43,50 @@ export interface SessionRow {
   last_used_at: string;
 }
 
+export interface VaultRow {
+  id: string;
+  kind: 'local' | 's3';
+  provider: string | null;
+  label: string;
+  endpoint: string | null;
+  bucket: string | null;
+  region: string | null;
+  prefix: string | null;
+  path_style: boolean;
+  role: string;
+  status: 'untested' | 'ok' | 'failed';
+  active: boolean;
+  last_verified_at: string | null;
+  last_error: string | null;
+}
+
+export interface Provider {
+  key: string;
+  name: string;
+  endpoint: string | null;
+  pathStyle: boolean;
+  region?: string;
+  hint: string;
+}
+
+export interface NewVault {
+  provider: string;
+  label?: string;
+  endpoint?: string | null;
+  region?: string | null;
+  bucket: string;
+  prefix?: string | null;
+  path_style?: boolean;
+  access_key_id: string;
+  secret_access_key: string;
+}
+
+export interface TestOutcome {
+  ok: boolean;
+  message: string;
+  code?: string;
+}
+
 type Method = 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT';
 
 export interface RequestOptions {
@@ -103,4 +147,15 @@ export const api = {
 
   revokeSession: (token: string, id: string) =>
     request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE', token }),
+
+  vaults: (token: string) => request<{ items: VaultRow[] }>('/api/v1/vaults', { token }),
+  providers: (token: string) => request<Provider[]>('/api/v1/vaults/providers', { token }),
+  addVault: (token: string, body: NewVault) =>
+    request<VaultRow>('/api/v1/vaults', { method: 'POST', body, token }),
+  testVault: (token: string, id: string) =>
+    request<TestOutcome>(`/api/v1/vaults/${id}/test`, { method: 'POST', token }),
+  activateVault: (token: string, id: string) =>
+    request<void>(`/api/v1/vaults/${id}/activate`, { method: 'POST', token }),
+  removeVault: (token: string, id: string) =>
+    request<void>(`/api/v1/vaults/${id}`, { method: 'DELETE', token }),
 };

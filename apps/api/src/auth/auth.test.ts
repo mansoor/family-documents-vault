@@ -1,17 +1,12 @@
-import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
-import { createDb, createPool, verifyAuditChain, withHousehold, type Db } from '@fdv/db';
-import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
+import { verifyAuditChain, withHousehold, type Db } from '@fdv/db';
+import { testAdminUrl } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildApp } from '../app.js';
-import { loadConfig } from '../config.js';
-import { AuthService, type Tokens } from './service.js';
-import { deriveSigningKey } from './tokens.js';
-
-const MASTER = 'test-master-key-that-is-long-enough-0123456789';
+import { createHarness, type Harness } from '../test-harness.js';
+import type { Tokens } from './service.js';
 
 describe.skipIf(!testAdminUrl())('setup and password auth', () => {
-  let tdb: TestDatabase;
+  let h: Harness;
   let db: Db;
   let app: FastifyInstance;
   let tokens: Tokens;
@@ -24,27 +19,11 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
   };
 
   beforeAll(async () => {
-    tdb = await createTestDatabase();
-    db = createDb(createPool(tdb.appUrl, 4));
-    app = await buildApp(
-      loadConfig({ DATABASE_URL: tdb.appUrl, FDV_MASTER_KEY: MASTER, LOG_LEVEL: 'error' }),
-      {
-        serverVersion: '0.0.3',
-        pingDatabase: async () => undefined,
-        auth: new AuthService(
-          db,
-          deriveSigningKey(MASTER),
-          new ScopeKeys(new EnvKeyProvider(MASTER)),
-        ),
-        logger: false,
-      },
-    );
+    h = await createHarness();
+    db = h.db;
+    app = h.app;
   });
-  afterAll(async () => {
-    await app.close();
-    await db.destroy();
-    await tdb.drop();
-  });
+  afterAll(() => h.close());
 
   const json = <T>(res: { json: () => unknown }) => res.json() as T;
   const error = (res: { json: () => unknown }) => json<{ error: { code: string } }>(res).error;

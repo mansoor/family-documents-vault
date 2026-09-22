@@ -52,6 +52,11 @@ COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY apps/api/package.json ./apps/api/package.json
 COPY packages/db/migrations ./migrations
+# The local vault lives on a volume mounted here. A named volume takes its
+# ownership from the image's directory on first use, so it must belong to
+# the unprivileged user before we drop privileges.
+RUN mkdir -p /data/vault && chown -R node:node /data
+VOLUME /data
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \
@@ -66,6 +71,7 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY apps/worker/package.json ./apps/worker/package.json
+RUN mkdir -p /data/vault && chown -R node:node /data
 USER node
 CMD ["node", "apps/worker/dist/main.mjs"]
 

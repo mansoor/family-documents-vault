@@ -32,6 +32,12 @@ const schema = z.object({
     .optional()
     .describe('Path to a file holding the master key instead of FDV_MASTER_KEY.'),
 
+  FDV_LOCAL_VAULT_DIR: z
+    .string()
+    .min(1)
+    .default('/data/vault')
+    .describe('Folder for the built-in local vault. A Docker volume by default.'),
+
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
   FDV_MAX_UPLOAD_BYTES: z.coerce

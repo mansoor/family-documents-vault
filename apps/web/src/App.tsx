@@ -2,6 +2,7 @@ import type { Capabilities } from '@fdv/shared';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api, ApiRequestError, type Me, type SessionRow } from './api.js';
 import { Session } from './session.js';
+import { StorageScreen } from './StorageScreen.js';
 import { Button, ErrorNote, Field, Logo } from './ui.js';
 
 type Stage =
@@ -9,7 +10,8 @@ type Stage =
   | { kind: 'failed'; message: string }
   | { kind: 'setup'; caps: Capabilities }
   | { kind: 'sign-in'; caps: Capabilities }
-  | { kind: 'home'; caps: Capabilities };
+  | { kind: 'home'; caps: Capabilities }
+  | { kind: 'storage'; caps: Capabilities };
 
 const UNREACHABLE = "We can't reach the vault right now. Check that it is running, then reload.";
 
@@ -78,6 +80,15 @@ export function App() {
           caps={stage.caps}
           session={session}
           onSignedOut={() => setStage({ kind: 'sign-in', caps: stage.caps })}
+          onStorage={() => setStage({ kind: 'storage', caps: stage.caps })}
+        />
+      );
+    case 'storage':
+      return (
+        <StorageScreen
+          session={session}
+          onSignedOut={() => setStage({ kind: 'sign-in', caps: stage.caps })}
+          onBack={() => setStage({ kind: 'home', caps: stage.caps })}
         />
       );
   }
@@ -226,7 +237,12 @@ function SignInScreen(props: { caps: Capabilities; session: Session; onDone: () 
   );
 }
 
-function HomeScreen(props: { caps: Capabilities; session: Session; onSignedOut: () => void }) {
+function HomeScreen(props: {
+  caps: Capabilities;
+  session: Session;
+  onSignedOut: () => void;
+  onStorage: () => void;
+}) {
   const [me, setMe] = useState<Me | null>(null);
   const [devices, setDevices] = useState<SessionRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -279,6 +295,11 @@ function HomeScreen(props: { caps: Capabilities; session: Session; onSignedOut: 
         ))}
       </ul>
       <p className="muted">Documents arrive in the next releases.</p>
+      {me?.role === 'owner' && (
+        <Button kind="quiet" onClick={props.onStorage}>
+          Where your files are kept
+        </Button>
+      )}
       <Button
         kind="quiet"
         onClick={() => {
