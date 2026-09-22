@@ -1,0 +1,16 @@
+# private — never enters an image
+docs-private
+prototype
+# noise
+.git
+.github
+.githooks
+node_modules
+**/node_modules
+**/dist
+**/coverage
+.env
+.env.*
+data
+*.md
+!apps/**/package.json
