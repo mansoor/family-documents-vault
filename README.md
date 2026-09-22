@@ -54,21 +54,70 @@ From then on: **Add** a document from a photo or a file, confirm what it is and 
 
 To stop: `docker compose down`. Your data stays in the `fdv_db-data` and `fdv_vault-data` volumes.
 
+## Reaching it from the rest of the house
+
+`http://localhost:8080` is all you need on the machine the vault runs on: browsers treat
+localhost as a secure origin, so everything works there. They do **not** extend that to
+`http://192.168.1.20:8080`, and three things a family wants depend on it:
+
+- **Passkeys** — the browser refuses to create one on an insecure origin.
+- **The day's reminders arriving on a phone** — web push needs a service worker, which
+  needs HTTPS.
+- **Installing the vault to a home screen** as an app.
+
+So before you hand the address to anyone else in the house, give it a certificate. The
+compose overlay does it with [Caddy](https://caddyserver.com):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+```
+
+**A name for the house, with a certificate Caddy issues itself** (the default). Set
+`FDV_HOSTNAME` in `.env` to a name every device can resolve — a Tailscale name, an mDNS
+name like `vault.local`, or one your router serves — and set `FDV_BASE_URL` to the
+matching `https://` address, since that is what reminder emails link back to. Caddy makes
+its own certificate authority the first time it starts. Each device trusts that CA once:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./vault-ca.crt
+```
+
+Install `vault-ca.crt` on each phone and laptop (iOS: Settings → General → VPN & Device
+Management, then Certificate Trust Settings; Android: Settings → Security → Encryption &
+credentials; macOS: Keychain Access, set to Always Trust; Windows: Trusted Root
+Certification Authorities). Nothing leaves your network and no certificate authority is
+contacted.
+
+**A real name from Let's Encrypt.** If the vault is reachable from the internet at a name
+you own, point `FDV_CADDYFILE=./docker/caddy/Caddyfile.public` at it, set `FDV_HOSTNAME`
+and `FDV_TLS_EMAIL`, and open ports 80 and 443. Caddy gets and renews the certificate
+itself. Think about this one first: a vault on the open internet is a vault anyone can
+knock on.
+
+**The middle road, and the one worth taking.** Run [Tailscale](https://tailscale.com) on
+the server and on the family's devices, use the internal Caddyfile with the Tailscale name
+as `FDV_HOSTNAME`, and nothing is exposed to the internet at all — every device reaches
+the vault over the private network, with a name and a certificate that just work.
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
 
-| Variable               | Default            | What it is                                                                                                                                         |
-| ---------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FDV_MASTER_KEY`       | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
-| `FDV_DB_PASSWORD`      | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
-| `FDV_DB_APP_PASSWORD`  | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
-| `FDV_MAX_UPLOAD_BYTES` | `104857600`        | Largest single file the vault accepts (100 MB).                                                                                                    |
-| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
-| `FDV_DISPLAY_NAME`     | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
-| `FDV_PORT`             | `8080`             | The port the web app listens on.                                                                                                                   |
-| `LOG_LEVEL`            | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
-| `FDV_VERSION`          | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| Variable               | Default                 | What it is                                                                                                                                         |
+| ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FDV_MASTER_KEY`       | generated               | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
+| `FDV_DB_PASSWORD`      | generated               | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
+| `FDV_DB_APP_PASSWORD`  | generated               | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_MAX_UPLOAD_BYTES` | `104857600`             | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`           | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
+| `FDV_DISPLAY_NAME`     | `Our family vault`      | What your family calls the vault. Shown on every screen.                                                                                           |
+| `FDV_PORT`             | `8080`                  | The port the web app listens on.                                                                                                                   |
+| `LOG_LEVEL`            | `info`                  | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
+| `FDV_VERSION`          | `latest`                | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| `FDV_HOSTNAME`         | `vault.local`           | The name devices use, when the TLS overlay is running.                                                                                             |
+| `FDV_BASE_URL`         | `http://localhost:8080` | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                           |
+| `FDV_CADDYFILE`        | internal                | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                  |
+| `FDV_TRUST_PROXY`      | `private`               | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.       |
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 

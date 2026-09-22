@@ -1,0 +1,31 @@
+# HTTPS with a real certificate, for a vault reachable from outside the
+# house at a name you own.
+#
+# Caddy gets and renews the certificate from Let's Encrypt by itself. It
+# needs two things from you: FDV_HOSTNAME pointing at this machine in
+# public DNS, and ports 80 and 443 reachable from the internet.
+#
+# Think before you use this one. A vault on the open internet is a vault
+# anyone can knock on; the sign-in is strong, but the safer arrangement
+# for most families is Caddyfile.internal plus a VPN such as Tailscale,
+# which gives you a real certificate without opening anything.
+
+{
+	email {$FDV_TLS_EMAIL}
+	admin off
+}
+
+{$FDV_HOSTNAME} {
+	encode zstd gzip
+
+	reverse_proxy web:80 {
+		flush_interval -1
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+}

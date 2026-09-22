@@ -52,6 +52,16 @@ const schema = z.object({
     .positive()
     .default(100 * 1024 * 1024)
     .describe('Largest single file the vault accepts.'),
+
+  FDV_TRUST_PROXY: z
+    .enum(['private', 'all', 'none'])
+    .default('private')
+    .describe(
+      'Whose X-Forwarded-For to believe. "private" trusts the container ' +
+        'network and any reverse proxy on a private address, which is the ' +
+        'compose setup; "all" is for a proxy elsewhere; "none" records the ' +
+        'connecting address as it is.',
+    ),
 });
 
 export type ApiConfig = z.infer<typeof schema>;

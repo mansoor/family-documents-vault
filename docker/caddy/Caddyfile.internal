@@ -1,0 +1,39 @@
+# HTTPS on your own network, with a certificate Caddy issues itself.
+#
+# Use this when the vault never leaves the house: no domain name, no ports
+# open to the internet, no certificate authority involved. Caddy makes its
+# own little CA the first time it starts; each phone or laptop trusts that
+# CA once, and from then on the vault is a real https:// origin — which is
+# what passkeys, notifications and the installable app all require.
+#
+# Set FDV_HOSTNAME to a name every device can resolve. A Tailscale or
+# mDNS name works (vault.tail1234.ts.net, vault.local); so does a name you
+# add to each device's hosts file, or one your router resolves. It has to
+# be a name and not an address: a certificate is issued for a name, so
+# https://192.168.1.20 will not work however the vault is configured.
+
+{
+	# No public CA is contacted in this mode. Plain http:// is answered
+	# with a redirect to https://, so nobody has to remember the scheme.
+	admin off
+}
+
+{$FDV_HOSTNAME:vault.local} {
+	tls internal
+
+	encode zstd gzip
+
+	# The web container serves the app and proxies /api to the API.
+	reverse_proxy web:80 {
+		# Uploads stream through; the API enforces its own size limit.
+		flush_interval -1
+	}
+
+	header {
+		# The app is only ever served over TLS once this file is in use.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+		-Server
+	}
+}
