@@ -1,0 +1,14 @@
+{
+  "name": "@fdv/api",
+  "version": "0.0.1",
+  "private": true,
+  "description": "The Family Document Vault API service.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fdv/shared": "workspace:*"
+  }
+}

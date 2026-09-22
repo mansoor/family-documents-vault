@@ -1,0 +1,29 @@
+# ---- PRIVATE: design docs and prototype never leave this machine ----
+docs/
+prototype/
+
+# ---- dependencies / build ----
+node_modules/
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
+
+# ---- environment / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+data/
+
+# ---- editor / OS ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
