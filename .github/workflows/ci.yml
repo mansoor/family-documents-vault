@@ -47,8 +47,18 @@ jobs:
           --health-retries 12
     env:
       DATABASE_ADMIN_URL: postgres://fdv:fdv@localhost:5432/fdv
+      S3_TEST_ENDPOINT: http://localhost:9000
+      S3_TEST_KEY: fdv
+      S3_TEST_SECRET: fdv-minio-test
     steps:
       - uses: actions/checkout@v4
+      - name: Start MinIO (S3-compatible storage for the adapter tests)
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=fdv -e MINIO_ROOT_PASSWORD=fdv-minio-test             quay.io/minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break
+            sleep 1
+          done
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:

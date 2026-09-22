@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 import type { AuthService } from './auth/service.js';
+import type { VaultService } from './vaults/service.js';
 import { loadConfig } from './config.js';
 
 const config = loadConfig({
@@ -16,6 +17,7 @@ const authStub = {
   setupComplete: async () => true,
   displayName: async () => null,
 } as unknown as AuthService;
+const vaultsStub = {} as unknown as VaultService;
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -28,6 +30,7 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     serverVersion: '0.0.1',
     pingDatabase,
     auth: authStub,
+    vaults: vaultsStub,
     logger: false,
   });
   return app;

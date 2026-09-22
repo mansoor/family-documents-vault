@@ -79,6 +79,11 @@ export class AuthService {
     private readonly db: Db,
     private readonly signingKey: Uint8Array,
     private readonly keys: ScopeKeys,
+    /** Runs inside setup's transaction after the household exists (creates the default vault). */
+    private readonly onHouseholdCreated: (
+      trx: Db,
+      householdId: string,
+    ) => Promise<void> = async () => undefined,
   ) {}
 
   async setupComplete(): Promise<boolean> {
@@ -135,6 +140,7 @@ export class AuthService {
       // nothing can be stored until these rows exist.
       await this.keys.mintHouseholdKeys(trx, householdId);
       await this.keys.mintMemberKey(trx, householdId, member.id, input.password);
+      await this.onHouseholdCreated(trx, householdId);
       await appendAudit(trx, {
         householdId,
         actorAccountId: account.id,

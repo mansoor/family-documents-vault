@@ -20,3 +20,4 @@ All notable changes to Family Document Vault. The format follows
 - Append-only, hash-chained audit log; the worker verifies every household's chain nightly.
 - Web app: first-run wizard, sign-in, signed-in devices.
 - Key hierarchy: household, adults and per-member scope keys minted at setup, wrapped by the master key; member keys additionally wrapped by the member's password. Chunked AES-256-GCM file encryption with range decryption. `FDV_MASTER_KEY_FILE` and a `rotate-master-key` command.
+- Storage: a local-disk vault (created and tested at setup) and any S3-compatible bucket, added from the Storage screen with provider presets and a Test that must pass before use. Every write is verified by SHA-256; bucket credentials are stored encrypted.

@@ -3,6 +3,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
+import { registerVaults } from './vaults/routes.js';
+import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ApiError, notFound, notReady } from './errors.js';
 
@@ -15,6 +17,7 @@ export interface AppDeps {
   /** Resolves when the database answers; rejects otherwise. */
   pingDatabase: () => Promise<void>;
   auth: AuthService;
+  vaults: VaultService;
   logger?: boolean | object;
 }
 
@@ -90,6 +93,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   });
 
   registerAuth(app, deps.auth);
+  registerVaults(app, deps.vaults);
 
   return app;
 }

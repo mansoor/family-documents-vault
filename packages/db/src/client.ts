@@ -109,6 +109,25 @@ export interface Schema {
     rotated_at: Timestamp | null;
   };
 
+  vault: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'local' | 's3';
+    provider: string | null;
+    label: string;
+    endpoint: string | null;
+    bucket: string | null;
+    region: string | null;
+    prefix: string | null;
+    path_style: Generated<boolean>;
+    credentials_encrypted: Buffer | null;
+    role: Generated<'primary' | 'mirror' | 'migration_target'>;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_verified_at: Timestamp | null;
+    last_error: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
   audit_event: {
     id: Generated<number>;
     household_id: string;

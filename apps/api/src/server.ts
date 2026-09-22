@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
+import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
   const url = new URL('../package.json', import.meta.url);
@@ -36,6 +37,11 @@ async function main(): Promise<void> {
 
   const pool = createPool(config.DATABASE_URL);
   const db = createDb(pool);
+  const vaults = new VaultService(
+    db,
+    deriveKey(masterSecret, 'vault-credentials'),
+    config.FDV_LOCAL_VAULT_DIR,
+  );
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
@@ -45,7 +51,9 @@ async function main(): Promise<void> {
       db,
       deriveSigningKey(masterSecret),
       new ScopeKeys(new EnvKeyProvider(masterSecret)),
+      (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
     ),
+    vaults,
   });
 
   const shutdown = async (signal: string) => {

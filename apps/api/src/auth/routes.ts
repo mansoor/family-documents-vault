@@ -21,7 +21,7 @@ const setupBody = z.object({
 const passwordBody = z.object({ email, password: z.string().min(1).max(1024) });
 const refreshBody = z.object({ refresh_token: z.string().min(1).max(512) });
 
-function parse<T>(schema: z.ZodType<T>, body: unknown): T {
+export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const r = schema.safeParse(body);
   if (!r.success) {
     const first = r.error.issues[0];

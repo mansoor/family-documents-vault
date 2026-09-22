@@ -60,6 +60,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MASTER_KEY`      | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
 | `FDV_DB_PASSWORD`     | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
 | `FDV_DB_APP_PASSWORD` | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_LOCAL_VAULT_DIR` | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
 | `FDV_DISPLAY_NAME`    | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
 | `FDV_PORT`            | `8080`             | The port the web app listens on.                                                                                                                   |
 | `LOG_LEVEL`           | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
@@ -94,6 +95,12 @@ _Documented with the first release that ships the export and backup jobs._ The s
 2. **The database** — a nightly encrypted dump, retained 30 days.
 3. **The files** — your local directory or your bucket. Optionally a second location as a mirror.
 4. **The recovery sheet** — one printed page with where the files are, a recovery code, and how to open them with the offline recovery tool, with no server and no app.
+
+### Where files are kept
+
+Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
+
+Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
 
 ### Rotating the master key
 
