@@ -7,6 +7,10 @@ import { registerDocuments } from './documents/routes.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
 import type { DocumentService } from './documents/service.js';
+import type { VisibilityService } from './documents/visibility.js';
+import type { TotpService } from './auth/totp.js';
+import { registerExports } from './exports/routes.js';
+import type { ExportService } from './exports/service.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
@@ -23,6 +27,9 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  visibility: VisibilityService;
+  totp: TotpService;
+  exports: ExportService;
   household: HouseholdService;
   logger?: boolean | object;
 }
@@ -98,10 +105,11 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth);
+  registerAuth(app, deps.auth, deps.totp);
   registerVaults(app, deps.vaults);
   registerHousehold(app, deps.household);
-  await registerDocuments(app, deps.documents, config.FDV_MAX_UPLOAD_BYTES);
+  registerExports(app, deps.exports);
+  await registerDocuments(app, deps.documents, deps.visibility, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;
 }

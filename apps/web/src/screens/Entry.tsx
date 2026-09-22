@@ -52,12 +52,20 @@ export function SignInScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      session.accept(await api.signIn(email, password));
+      const r = mfaToken ? await api.signInMfa(mfaToken, code) : await api.signIn(email, password);
+      if ('mfa_required' in r) {
+        setMfaToken(r.mfa_token);
+        return;
+      }
+      session.accept(r);
       markAuthChanged();
       void navigate('/', { replace: true });
     } catch (err) {
@@ -66,6 +74,32 @@ export function SignInScreen() {
       setBusy(false);
     }
   };
+
+  if (mfaToken) {
+    return (
+      <main className="page">
+        <Logo />
+        <div>
+          <h1 style={{ fontSize: 32 }}>One more step</h1>
+          <p className="lede">Enter the six-digit code from your authenticator app.</p>
+        </div>
+        <form onSubmit={(e) => void submit(e)} className="card stack">
+          <Field
+            id="code"
+            label="Code"
+            value={code}
+            onChange={setCode}
+            autoComplete="one-time-code"
+            placeholder="123 456"
+          />
+          <ErrorNote message={error} />
+          <Button type="submit" disabled={busy}>
+            {busy ? 'Checking…' : 'Continue'}
+          </Button>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <main className="page">

@@ -56,6 +56,7 @@ export interface Schema {
     email: string;
     password_hash: string | null;
     totp_secret: Buffer | null;
+    totp_confirmed_at: Timestamp | null;
     created_at: GeneratedTimestamp;
     disabled_at: Timestamp | null;
   };
@@ -233,6 +234,23 @@ export interface Schema {
     a: string;
     b: string;
     created_at: GeneratedTimestamp;
+  };
+
+  export: {
+    id: Generated<string>;
+    household_id: string;
+    requested_by: string;
+    state: Generated<'queued' | 'running' | 'done' | 'failed'>;
+    document_count: number | null;
+    byte_size: ColumnType<string | number, number | null, number | null> | null;
+    storage_key: string | null;
+    vault_id: string | null;
+    file_key_wrapped: Buffer | null;
+    wrapped_by_scope: string | null;
+    error: string | null;
+    created_at: GeneratedTimestamp;
+    finished_at: Timestamp | null;
+    expires_at: Timestamp | null;
   };
 
   audit_event: {

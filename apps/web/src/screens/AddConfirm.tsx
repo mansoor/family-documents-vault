@@ -145,10 +145,11 @@ export function ConfirmForm(props: {
       owner_member_id: owner || null,
       identifier: identifier || null,
       physical_location: location || null,
-      visibility,
       issued: iss,
       expires: exp,
     };
+    // Only send visibility when it changed: the server rewraps keys for it.
+    if (visibility !== doc.visibility) body.visibility = visibility;
     if (type) body.category = type.category;
     try {
       const saved = await props.withToken((t) => api.updateDocument(t, doc.id, body, doc.etag));

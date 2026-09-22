@@ -130,8 +130,16 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/auth/password') return json(TOKENS);
     if (path === '/api/v1/auth/refresh') return json(TOKENS);
     if (path === '/api/v1/me')
-      return json({ account_id: 'a', household_id: 'hh', member_id: 'me', role: 'owner' });
+      return json({
+        account_id: 'a',
+        household_id: 'hh',
+        member_id: 'me',
+        role: 'owner',
+        totp_enabled: true,
+        totp_required: false,
+      });
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
+    if (path === '/api/v1/exports') return json({ items: [] });
     if (path === '/api/v1/profile' && method === 'PUT')
       return json({ household_name: state.displayName, ...(body as object) });
     if (path === '/api/v1/members' && method === 'GET') return json({ items: state.members });

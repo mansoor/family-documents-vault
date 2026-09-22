@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import QRCode from 'qrcode';
 import { Link, useNavigate } from 'react-router';
-import { api, type NewVault, type Provider } from '../api.js';
+import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
 
@@ -59,11 +60,177 @@ export function SettingsScreen() {
           ))}
         </ul>
       </section>
+      <TwoStep />
+      <ExportSection />
       <Button kind="quiet" onClick={() => void signOut()}>
         Sign out
       </Button>
       <BottomNav />
     </main>
+  );
+}
+
+/** SEC-03: two-step sign-in, mandatory for owners. */
+function TwoStep() {
+  const { withToken, authVersion } = useApp();
+  const { data: me, reload } = useLoad(async (t) => api.me(t), [authVersion]);
+  const [enrol, setEnrol] = useState<{ secret: string; otpauth_url: string; qr: string } | null>(
+    null,
+  );
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const start = async () => {
+    setError(null);
+    try {
+      const r = await withToken((t) => api.totpEnrol(t));
+      if (!r) return;
+      const qr = await QRCode.toDataURL(r.otpauth_url, { margin: 1, width: 220 });
+      setEnrol({ ...r, qr });
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  const confirm = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await withToken((t) => api.totpConfirm(t, code));
+      setEnrol(null);
+      setCode('');
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-labelledby="twostep-h" className="card stack">
+      <h2 id="twostep-h" style={{ fontSize: 18 }}>
+        Two-step sign-in
+      </h2>
+      {me?.totp_enabled ? (
+        <p className="status status-ok">
+          On. Signing in asks for a code from your authenticator app.
+        </p>
+      ) : enrol ? (
+        <form onSubmit={(e) => void confirm(e)} className="stack">
+          <p className="muted">
+            Scan this with an authenticator app (Google Authenticator, Authy, 1Password…), then
+            enter the code it shows.
+          </p>
+          <img src={enrol.qr} alt="QR code for your authenticator app" width={220} height={220} />
+          <p className="muted">
+            Or type the key by hand: <code>{enrol.secret}</code>
+          </p>
+          <Field
+            id="totp-code"
+            label="Code from the app"
+            value={code}
+            onChange={setCode}
+            autoComplete="one-time-code"
+          />
+          <ErrorNote message={error} />
+          <Button type="submit" disabled={busy}>
+            Turn on
+          </Button>
+        </form>
+      ) : (
+        <>
+          {me?.totp_required && (
+            <p className="status status-warn">Owners must switch this on. It takes a minute.</p>
+          )}
+          <p className="muted">
+            A code from your phone as well as your password, so a stolen password alone cannot open
+            the vault.
+          </p>
+          <ErrorNote message={error} />
+          <Button kind="quiet" onClick={() => void start()}>
+            Set up two-step sign-in
+          </Button>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** STO-07: one button, one ZIP, no lock-in. */
+function ExportSection() {
+  const { withToken, authVersion } = useApp();
+  const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
+  const [error, setError] = useState<string | null>(null);
+  const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
+
+  useEffect(() => {
+    if (!pending) return;
+    const h = setInterval(() => void reload(), 2000);
+    return () => clearInterval(h);
+  }, [pending, reload]);
+
+  const start = async () => {
+    setError(null);
+    try {
+      await withToken((t) => api.requestExport(t));
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  const download = async (e: ExportRow) => {
+    setError(null);
+    try {
+      const blob = await withToken((t) => api.exportContent(t, e.id));
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'family-document-vault-export.zip';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+
+  return (
+    <section aria-labelledby="export-h" className="card stack">
+      <h2 id="export-h" style={{ fontSize: 18 }}>
+        Export everything
+      </h2>
+      <p className="muted">
+        A ZIP with every original file you can see, plus a readable index. It works with no app at
+        all, and it doubles as your disaster plan.
+      </p>
+      <ErrorNote message={error} />
+      <Button kind="quiet" onClick={() => void start()} disabled={pending}>
+        {pending ? 'Preparing…' : 'Make an export'}
+      </Button>
+      <ul className="list">
+        {(data ?? []).slice(0, 3).map((e) => (
+          <li key={e.id}>
+            <span>
+              <strong>{new Date(e.created_at).toLocaleString()}</strong>
+              <span className="muted">
+                {e.state === 'done'
+                  ? `${e.document_count} document${e.document_count === 1 ? '' : 's'} · ${((e.byte_size ?? 0) / 1024 / 1024).toFixed(1)} MB`
+                  : e.state === 'failed'
+                    ? `Failed: ${e.error ?? 'unknown'}`
+                    : 'Preparing…'}
+              </span>
+            </span>
+            {e.state === 'done' && (
+              <Button kind="quiet" onClick={() => void download(e)}>
+                Download
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

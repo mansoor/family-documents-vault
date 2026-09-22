@@ -39,6 +39,19 @@ export interface Me {
   household_id: string;
   member_id: string;
   role: Tokens['role'];
+  totp_enabled: boolean;
+  totp_required: boolean;
+}
+
+export interface ExportRow {
+  id: string;
+  state: 'queued' | 'running' | 'done' | 'failed';
+  document_count: number | null;
+  byte_size: number | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+  expires_at: string | null;
 }
 
 export interface SessionRow {
@@ -232,7 +245,24 @@ export const api = {
     password: string;
   }) => request<Tokens>('/api/v1/setup', { method: 'POST', body }),
   signIn: (email: string, password: string) =>
-    request<Tokens>('/api/v1/auth/password', { method: 'POST', body: { email, password } }),
+    request<Tokens | { mfa_required: true; mfa_token: string }>('/api/v1/auth/password', {
+      method: 'POST',
+      body: { email, password },
+    }),
+  signInMfa: (mfa_token: string, code: string) =>
+    request<Tokens>('/api/v1/auth/mfa', { method: 'POST', body: { mfa_token, code } }),
+  totpEnrol: (token: string) =>
+    request<{ secret: string; otpauth_url: string }>('/api/v1/auth/totp/enrol', {
+      method: 'POST',
+      token,
+    }),
+  totpConfirm: (token: string, code: string) =>
+    request<void>('/api/v1/auth/totp/confirm', { method: 'POST', body: { code }, token }),
+  requestExport: (token: string) =>
+    request<ExportRow>('/api/v1/exports', { method: 'POST', token }),
+  exports: (token: string) => request<{ items: ExportRow[] }>('/api/v1/exports', { token }),
+  exportContent: (token: string, id: string) =>
+    requestBlob(`/api/v1/exports/${id}/content`, { token }),
   refresh: (refresh_token: string) =>
     request<Tokens>('/api/v1/auth/refresh', { method: 'POST', body: { refresh_token } }),
   logout: (token: string) => request<void>('/api/v1/auth/logout', { method: 'POST', token }),

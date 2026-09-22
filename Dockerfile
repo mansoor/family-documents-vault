@@ -70,13 +70,14 @@ ENV NODE_ENV=production
 # page counts), ImageMagick (thumbnails). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
-RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick     fontconfig font-dejavu font-liberation     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick     fontconfig font-dejavu font-liberation postgresql16-client     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null     && pg_dump --version >/dev/null
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY apps/worker/package.json ./apps/worker/package.json
-RUN mkdir -p /data/vault && chown -R node:node /data
+COPY scripts/restore-drill.sh ./scripts/restore-drill.sh
+RUN mkdir -p /data/vault /data/backups && chown -R node:node /data
 USER node
 CMD ["node", "apps/worker/dist/main.mjs"]
 

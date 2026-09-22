@@ -2,11 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
+import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
 import { PgBoss } from 'pg-boss';
 import { DocumentService } from './documents/service.js';
+import { VisibilityService } from './documents/visibility.js';
+import { ExportService } from './exports/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -60,6 +63,11 @@ async function main(): Promise<void> {
     config.FDV_LOCAL_VAULT_DIR,
   );
   const keys = new ScopeKeys(new EnvKeyProvider(masterSecret));
+  const totp = new TotpService(
+    db,
+    deriveKey(masterSecret, 'totp-secrets'),
+    deriveSigningKey(masterSecret),
+  );
   // The API only enqueues; the worker installs the schema and supervises.
   const boss = new PgBoss({
     connectionString: config.DATABASE_URL,
@@ -78,9 +86,16 @@ async function main(): Promise<void> {
     pingDatabase: async () => {
       await pool.query('select 1');
     },
-    auth: new AuthService(db, deriveSigningKey(masterSecret), keys, (trx, householdId) =>
-      vaults.createDefaultLocal(trx, householdId),
+    auth: new AuthService(
+      db,
+      deriveSigningKey(masterSecret),
+      keys,
+      (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
+      totp,
     ),
+    totp,
+    visibility: new VisibilityService(db, keys),
+    exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
     documents: new DocumentService(db, keys, vaults, config.FDV_MAX_UPLOAD_BYTES, enqueue),
     household: new HouseholdService(db, keys),

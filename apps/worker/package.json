@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",
-    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.mjs && node ../../scripts/check-bundle-deps.mjs .",
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.mjs && node ../../scripts/bundle.mjs src/cli.ts dist/cli.mjs && node ../../scripts/check-bundle-deps.mjs .",
     "start": "node dist/main.mjs",
     "typecheck": "tsc --noEmit"
   },
@@ -21,10 +21,12 @@
     "kysely": "^0.29.6",
     "pg": "^8.23.0",
     "pg-boss": "^12.33.4",
-    "zod": "^4.6.5"
+    "zod": "^4.6.5",
+    "archiver": "^8.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1",
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "@types/archiver": "^8.0.0"
   }
 }
