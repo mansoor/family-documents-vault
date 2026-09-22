@@ -1,0 +1,81 @@
+# Family Document Vault — production shape.
+#
+#   node scripts/gen-env.mjs     # once: writes .env
+#   docker compose up -d
+#   open http://localhost:8080
+#
+# Four containers. Data lives in two named volumes: `db-data` (metadata) and
+# `vault-data` (encrypted files, when the local vault is used). Back up both,
+# plus your .env — the master key in it is what makes the files readable.
+
+name: fdv
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fdv
+      POSTGRES_PASSWORD: ${FDV_DB_PASSWORD:?run scripts/gen-env.mjs first}
+      POSTGRES_DB: fdv
+      FDV_DB_APP_PASSWORD: ${FDV_DB_APP_PASSWORD:?run scripts/gen-env.mjs first}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U fdv -d fdv']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    image: ghcr.io/mansoor/family-documents-vault/api:${FDV_VERSION:-latest}
+    build:
+      context: .
+      target: api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
+      DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
+      FDV_MASTER_KEY: ${FDV_MASTER_KEY:?run scripts/gen-env.mjs first}
+      FDV_DISPLAY_NAME: ${FDV_DISPLAY_NAME:-Our family vault}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - vault-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/mansoor/family-documents-vault/worker:${FDV_VERSION:-latest}
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
+      DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
+      FDV_MASTER_KEY: ${FDV_MASTER_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - vault-data:/data
+    depends_on:
+      # The API runs migrations; the worker's queue schema depends on them.
+      api:
+        condition: service_healthy
+
+  web:
+    image: ghcr.io/mansoor/family-documents-vault/web:${FDV_VERSION:-latest}
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    ports:
+      - '${FDV_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  vault-data:

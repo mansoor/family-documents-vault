@@ -2,6 +2,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
+import globals from 'globals';
 
 export default tseslint.config(
   {
@@ -18,18 +19,27 @@ export default tseslint.config(
   {
     languageOptions: {
       parserOptions: {
-        projectService: { allowDefaultProject: ['*.ts', 'apps/*/*.ts', 'packages/*/*.ts'] },
+        projectService: {
+          allowDefaultProject: ['*.ts', 'apps/*/vitest.config.ts', 'packages/*/vitest.config.ts'],
+        },
         tsconfigRootDir: import.meta.dirname,
       },
     },
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // Route handlers and small adapters are often `async` for their return
+      // type alone; requiring an `await` inside them adds noise, not safety.
+      '@typescript-eslint/require-await': 'off',
     },
   },
   {
     files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      ...tseslint.configs.disableTypeChecked.languageOptions,
+      globals: globals.node,
+    },
   },
   prettier,
 );

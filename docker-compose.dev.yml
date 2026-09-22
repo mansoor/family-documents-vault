@@ -1,0 +1,40 @@
+# Development extras. Use together with the main file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Adds MinIO (an S3-compatible bucket for exercising the S3 vault adapter)
+# and Mailpit (catches every email the vault sends), and exposes Postgres on
+# the host so `pnpm test` and `pnpm --filter @fdv/api dev` can reach it.
+
+services:
+  postgres:
+    ports:
+      - '${FDV_DB_PORT:-5432}:5432'
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-fdv}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-fdv-minio-dev}
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - '8025:8025' # web UI
+      - '1025:1025' # SMTP
+
+volumes:
+  minio-data:

@@ -1,0 +1,120 @@
+/* Design tokens, taken from the UI prototype. Every colour, radius and type
+   size the app uses is defined here and nowhere else. */
+:root {
+  --bg: #faf8f4;
+  --surface: #ffffff;
+  --border: #e6e0d6;
+  --border-strong: #ddd6c9;
+  --ink: #1c1a17;
+  --ink-soft: #3c362f;
+  --ink-muted: #5e574e;
+  --accent: #1f5d4c;
+  --accent-soft: #e9f0ec;
+  --ok: #1f5d4c;
+  --warn: #b7791f;
+  --danger: #b3261e;
+
+  --font-body: Figtree, system-ui, sans-serif;
+  --font-display: Fraunces, Georgia, serif;
+
+  --radius-s: 10px;
+  --radius-m: 12px;
+  --radius-l: 14px;
+  --radius-xl: 17px;
+
+  --tap: 44px; /* minimum touch target (NFR-09) */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px; /* never smaller for body text (NFR-09) */
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.12;
+  margin: 0;
+}
+
+.page {
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 30px;
+}
+
+.logo {
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-xl);
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+}
+
+.lede {
+  color: var(--ink-soft);
+  margin-top: 14px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.status::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-ok {
+  color: var(--ok);
+}
+
+.status-warn {
+  color: var(--warn);
+}
+
+.status-danger {
+  color: var(--danger);
+}
