@@ -12,6 +12,9 @@ export interface FakeState {
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
+  /** Hits the second pass (FND-08) returns; matched on the snippet text. */
+  sealed: Array<Record<string, unknown>>;
+  lastQuery?: string;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
 
@@ -86,6 +89,19 @@ export const TYPES = [
   },
 ];
 
+/** A hit that only the owner's own session can see. */
+export const SEALED_HIT = {
+  document_id: 'doc-sealed',
+  title: 'Notes to myself',
+  type_key: null,
+  category: null,
+  owner_member_id: 'me',
+  status: { value: 'active', label: 'Filed' },
+  snippet: 'Ask about the <em>estate</em> agent in March',
+  matched_in: 'content',
+  rank: 0,
+};
+
 /** A child in the household: the person a per-member suggestion is about. */
 export const AISHA = {
   ...ME,
@@ -121,6 +137,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     documents: [PASSPORT],
     types: TYPES,
     suggestions: [],
+    sealed: [],
     calls: [],
     ...over,
   };
@@ -275,6 +292,7 @@ export function installFakeApi(state: FakeState) {
       return json({ error: { code: 'no_thumbnail', message: 'No preview yet.' } }, 404);
     if (path === '/api/v1/search') {
       const q = query.get('q') ?? '';
+      state.lastQuery = q;
       return json({
         items: q.includes('4471')
           ? [
@@ -290,8 +308,18 @@ export function installFakeApi(state: FakeState) {
               },
             ]
           : [],
-        sealed_pending: { count: 0 },
+        sealed_pending: state.sealed.length
+          ? { count: state.sealed.length, token: 'sealed-handle' }
+          : { count: 0 },
       });
+    }
+    if (path === '/api/v1/search/sealed') {
+      const q = query.get('token') === 'sealed-handle' ? (state.lastQuery ?? '') : '';
+      const items = state.sealed.filter((s) => {
+        const snippet = typeof s.snippet === 'string' ? s.snippet : '';
+        return snippet.toLowerCase().includes(q.toLowerCase());
+      });
+      return json({ items, searched: state.sealed.length });
     }
     return Promise.reject(new Error(`unmocked ${method} ${url}`));
   });

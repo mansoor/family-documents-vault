@@ -28,6 +28,14 @@ export function SearchScreen() {
   const category = params.get('category') ?? '';
   const memberId = params.get('member') ?? '';
   const [hits, setHits] = useState<SearchHit[] | null>(null);
+  // The second pass over the caller's own sealed documents (FND-08). It
+  // starts after the indexed results are already on screen, because it is
+  // the slow half and waiting for it would make every search feel slow.
+  const [sealed, setSealed] = useState<{
+    state: 'idle' | 'searching' | 'done';
+    items: SearchHit[];
+    searched: number;
+  }>({ state: 'idle', items: [], searched: 0 });
   const [browse, setBrowse] = useState<DocumentView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
@@ -47,6 +55,19 @@ export function SearchScreen() {
           if (!cancelled && r) {
             setHits(r.items);
             setBrowse(null);
+            const handle = r.sealed_pending.token;
+            if (!handle) {
+              setSealed({ state: 'idle', items: [], searched: 0 });
+            } else {
+              setSealed({ state: 'searching', items: [], searched: 0 });
+              const more = await withToken((t) => api.searchSealed(t, handle));
+              if (!cancelled)
+                setSealed({
+                  state: 'done',
+                  items: more?.items ?? [],
+                  searched: more?.searched ?? 0,
+                });
+            }
           }
         } else {
           const r = await withToken((t) =>
@@ -59,6 +80,7 @@ export function SearchScreen() {
           if (!cancelled && r) {
             setBrowse(r.items);
             setHits(null);
+            setSealed({ state: 'idle', items: [], searched: 0 });
           }
         }
       } catch (err) {
@@ -130,27 +152,46 @@ export function SearchScreen() {
       {hits && (
         <>
           <p className="muted" role="status">
-            {hits.length} document{hits.length === 1 ? '' : 's'}, searched inside the pages too
+            {/* Counts both passes, so the line never says "0 documents"
+                above a result the second pass found. */}
+            {hits.length + sealed.items.length} document
+            {hits.length + sealed.items.length === 1 ? '' : 's'}, searched inside the pages too
           </p>
           <ul className="list">
             {hits.map((h) => (
-              <li key={h.document_id}>
-                <button
-                  type="button"
-                  className="rowbtn"
-                  onClick={() => void navigate(`/documents/${h.document_id}`)}
-                >
-                  <span className="doc-title">{h.title ?? 'Untitled'}</span>
-                  <span className="muted">{categoryLabel(h.category)}</span>
-                  <span
-                    className="snippet"
-                    dangerouslySetInnerHTML={{ __html: sanitiseSnippet(h.snippet) }}
-                  />
-                  <StatusBadge status={h.status} />
-                </button>
-              </li>
+              <HitRow
+                key={h.document_id}
+                hit={h}
+                onOpen={() => void navigate(`/documents/${h.document_id}`)}
+              />
             ))}
           </ul>
+          {sealed.state === 'searching' && (
+            <p className="muted" role="status">
+              Looking inside your private documents…
+            </p>
+          )}
+          {sealed.items.length > 0 && (
+            <>
+              <h2 className="section-h">Also in your private documents</h2>
+              <p className="muted">Only you can see these, so only your sign-in can search them.</p>
+              <ul className="list">
+                {sealed.items.map((h) => (
+                  <HitRow
+                    key={h.document_id}
+                    hit={h}
+                    onOpen={() => void navigate(`/documents/${h.document_id}`)}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+          {sealed.state === 'done' && sealed.items.length === 0 && sealed.searched > 0 && (
+            <p className="muted" role="status">
+              Nothing in your {sealed.searched} private document
+              {sealed.searched === 1 ? '' : 's'} matched.
+            </p>
+          )}
         </>
       )}
       {browse && (
@@ -163,6 +204,22 @@ export function SearchScreen() {
       )}
       <BottomNav />
     </main>
+  );
+}
+
+function HitRow({ hit, onOpen }: { hit: SearchHit; onOpen: () => void }) {
+  return (
+    <li>
+      <button type="button" className="rowbtn" onClick={onOpen}>
+        <span className="doc-title">{hit.title ?? 'Untitled'}</span>
+        <span className="muted">{categoryLabel(hit.category)}</span>
+        <span
+          className="snippet"
+          dangerouslySetInnerHTML={{ __html: sanitiseSnippet(hit.snippet) }}
+        />
+        <StatusBadge status={hit.status} />
+      </button>
+    </li>
   );
 }
 

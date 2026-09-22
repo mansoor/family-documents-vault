@@ -12,6 +12,8 @@ import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
+import { SealedSearchService } from './documents/sealed-search.js';
+import { deriveSealedKey } from './documents/sealed-token.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
@@ -108,6 +110,7 @@ async function main(): Promise<void> {
       config.FDV_MAX_UPLOAD_BYTES,
       enqueue,
       reminders,
+      deriveSealedKey(masterSecret),
     ),
     reminders,
     notifications: new NotificationService(
@@ -117,6 +120,7 @@ async function main(): Promise<void> {
     ),
     household: new HouseholdService(db, keys),
     suggestions: new SuggestionService(db),
+    sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 
   const shutdown = async (signal: string) => {
