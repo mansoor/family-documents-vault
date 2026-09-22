@@ -7,12 +7,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.mjs",
+    "build": "node ../../scripts/bundle.mjs src/server.ts dist/server.mjs && node ../../scripts/bundle.mjs src/cli.ts dist/cli.mjs",
     "start": "node dist/server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",
+    "@fdv/crypto": "workspace:^",
     "@fdv/db": "workspace:^",
     "@fdv/shared": "workspace:*",
     "argon2": "^0.45.1",

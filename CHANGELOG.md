@@ -19,3 +19,4 @@ All notable changes to Family Document Vault. The format follows
 - First-run setup (`POST /api/v1/setup`), password sign-in (Argon2id), short-lived access tokens with rotating refresh tokens and reuse detection, device list and per-device sign-out.
 - Append-only, hash-chained audit log; the worker verifies every household's chain nightly.
 - Web app: first-run wizard, sign-in, signed-in devices.
+- Key hierarchy: household, adults and per-member scope keys minted at setup, wrapped by the master key; member keys additionally wrapped by the member's password. Chunked AES-256-GCM file encryption with range decryption. `FDV_MASTER_KEY_FILE` and a `rotate-master-key` command.

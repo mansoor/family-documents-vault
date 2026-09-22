@@ -97,6 +97,18 @@ export interface Schema {
     extra: GeneratedJson;
   };
 
+  scope_key: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'household' | 'adults' | 'member';
+    member_id: string | null;
+    key_wrapped: Buffer;
+    key_wrapped_cred: Buffer | null;
+    kdf_params: ColumnType<unknown, string | null, string | null> | null;
+    created_at: GeneratedTimestamp;
+    rotated_at: Timestamp | null;
+  };
+
   audit_event: {
     id: Generated<number>;
     household_id: string;

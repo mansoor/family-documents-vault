@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type ApiConfig } from './config.js';
 
 async function readVersion(): Promise<string> {
   const url = new URL('../package.json', import.meta.url);
@@ -11,9 +12,17 @@ async function readVersion(): Promise<string> {
   return pkg.version;
 }
 
+/** The one secret behind the installation: from the variable, or a file. */
+async function resolveMasterSecret(config: ApiConfig): Promise<string> {
+  if (config.FDV_MASTER_KEY_FILE)
+    return (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim();
+  return config.FDV_MASTER_KEY as string;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const version = await readVersion();
+  const masterSecret = await resolveMasterSecret(config);
 
   if (config.FDV_RUN_MIGRATIONS === 'true') {
     const admin = createPool(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, 1);
@@ -32,7 +41,11 @@ async function main(): Promise<void> {
     pingDatabase: async () => {
       await pool.query('select 1');
     },
-    auth: new AuthService(db, deriveSigningKey(config.FDV_MASTER_KEY)),
+    auth: new AuthService(
+      db,
+      deriveSigningKey(masterSecret),
+      new ScopeKeys(new EnvKeyProvider(masterSecret)),
+    ),
   });
 
   const shutdown = async (signal: string) => {

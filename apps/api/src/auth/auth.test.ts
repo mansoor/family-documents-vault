@@ -1,3 +1,4 @@
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, verifyAuditChain, withHousehold, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
@@ -30,7 +31,11 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
       {
         serverVersion: '0.0.3',
         pingDatabase: async () => undefined,
-        auth: new AuthService(db, deriveSigningKey(MASTER)),
+        auth: new AuthService(
+          db,
+          deriveSigningKey(MASTER),
+          new ScopeKeys(new EnvKeyProvider(MASTER)),
+        ),
         logger: false,
       },
     );
@@ -68,6 +73,12 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     expect(tokens.scopes_unlocked).toEqual(['household', 'adults', 'member']);
     expect(tokens.expires_in).toBe(900);
     expect(tokens.refresh_token.startsWith(`${tokens.household_id}.`)).toBe(true);
+
+    const scopes = await withHousehold(db, tokens.household_id, (trx) =>
+      trx.selectFrom('scope_key').select(['kind', 'key_wrapped_cred']).orderBy('kind').execute(),
+    );
+    expect(scopes.map((s) => s.kind).sort()).toEqual(['adults', 'household', 'member']);
+    expect(scopes.find((s) => s.kind === 'member')?.key_wrapped_cred).not.toBeNull();
 
     const caps = json<{ setup_required: boolean; branding: { display_name: string } }>(
       await app.inject('/api/v1/capabilities'),
