@@ -7,6 +7,7 @@ import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
 import { PgBoss } from 'pg-boss';
 import { DocumentService } from './documents/service.js';
+import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -28,13 +29,27 @@ async function main(): Promise<void> {
   const masterSecret = await resolveMasterSecret(config);
 
   if (config.FDV_RUN_MIGRATIONS === 'true') {
-    const admin = createPool(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, 1);
+    const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
+    const admin = createPool(adminUrl, 1);
     try {
       const applied = await migrateUp(admin, undefined, (m) => console.log(`[migrate] ${m}`));
       console.log(`[migrate] ${applied.length ? `${applied.length} applied` : 'up to date'}`);
     } finally {
       await admin.end();
     }
+    // The job queue's own schema is installed here too, with the owning
+    // role, so a fresh install does not wait on the worker (which waits on
+    // the API) to create it. The worker upgrades it later if needed.
+    const installer = new PgBoss({
+      connectionString: adminUrl,
+      schema: 'pgboss',
+      migrate: true,
+      supervise: false,
+      schedule: false,
+    });
+    await installer.start();
+    await installer.stop({ graceful: false });
+    console.log('[migrate] job queue schema ready');
   }
 
   const pool = createPool(config.DATABASE_URL);
@@ -68,6 +83,7 @@ async function main(): Promise<void> {
     ),
     vaults,
     documents: new DocumentService(db, keys, vaults, config.FDV_MAX_UPLOAD_BYTES, enqueue),
+    household: new HouseholdService(db, keys),
   });
 
   const shutdown = async (signal: string) => {

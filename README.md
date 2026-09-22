@@ -45,7 +45,9 @@ node scripts/gen-env.mjs   # writes .env with a random master key and database p
 docker compose up -d
 ```
 
-The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`: the first visit asks for your family's name, your name, your email and a password, and makes you the owner. Nobody else can run that step again.
+The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`. The first visit walks you through setup: your family's name, your name, your email and a password (you become the owner — nobody can run that step again), a few quick questions about your household, the people whose documents you keep, and a starting list of what families like yours usually file.
+
+From then on: **Add** a document from a photo or a file, confirm what it is and whose it is, and it is filed. Browse by person or category from Home, or search — including the words inside scanned pages.
 
 `gen-env` refuses to overwrite an existing `.env`, because a new master key would make every stored document unreadable. **Back the file up somewhere off the server.**
 
@@ -127,6 +129,7 @@ Requirements: Node 22, pnpm 9, Docker.
 pnpm install
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres   # a database for tests
 DATABASE_ADMIN_URL=postgres://fdv:<FDV_DB_PASSWORD>@localhost:5432/fdv pnpm check   # lint + typecheck + tests
+docker compose up -d && pnpm e2e                                                  # end to end, in a real browser, against the containers
 ```
 
 Integration tests run against a real PostgreSQL: each test file creates its own throwaway database, migrates it, and drops it. Without `DATABASE_ADMIN_URL` those tests are skipped and only unit tests run.
