@@ -13,6 +13,7 @@ import { loadConfig } from './config.js';
 import { DocumentService } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
+import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -58,6 +59,7 @@ export async function createHarness(): Promise<Harness> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     jobs.push({ name, data });
   };
+  const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
     deriveKey(TEST_MASTER, 'totp-secrets'),
@@ -76,7 +78,8 @@ export async function createHarness(): Promise<Harness> {
     totp,
     visibility: new VisibilityService(db, keys),
     vaults,
-    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, enqueue),
+    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, enqueue, reminders),
+    reminders,
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     logger: false,

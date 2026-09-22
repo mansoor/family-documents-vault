@@ -14,22 +14,32 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const { data, error } = useLoad(
     async (t) => {
-      const [members, counts, recent, attention, me] = await Promise.all([
+      const [members, counts, recent, docs, me, due] = await Promise.all([
         api.members(t),
         api.counts(t),
         api.documents(t, { limit: 5, sort: 'recent' }),
         api.documents(t, { limit: 50, sort: 'expiring' }),
         api.me(t),
+        api.reminders(t, 'due'),
       ]);
-      return {
-        me,
-        members: members.items,
-        counts,
-        recent: recent.items,
-        attention: attention.items.filter((d) =>
-          ['expired', 'expiring_soon', 'needs_info'].includes(d.status.value),
-        ),
-      };
+      const reminded = new Set(due.items.map((r) => r.document_id));
+      const attention = [
+        ...due.items.map((r) => ({
+          id: r.id,
+          title: r.document_title ?? 'Untitled',
+          label: r.label,
+          tone: 'danger' as const,
+        })),
+        ...docs.items
+          .filter((d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id))
+          .map((d) => ({
+            id: d.id,
+            title: d.title ?? 'Scan · needs a name',
+            label: d.status.label,
+            tone: 'warn' as const,
+          })),
+      ];
+      return { me, members: members.items, counts, recent: recent.items, attention };
     },
     [authVersion],
   );
@@ -118,7 +128,11 @@ export function HomeScreen() {
   );
 }
 
-function AttentionStrip({ items }: { items: DocumentView[] }) {
+function AttentionStrip({
+  items,
+}: {
+  items: Array<{ id: string; title: string; label: string; tone: 'danger' | 'warn' }>;
+}) {
   if (items.length === 0) {
     return (
       <div className="attention attention-calm" role="status">
@@ -135,8 +149,8 @@ function AttentionStrip({ items }: { items: DocumentView[] }) {
       <ul>
         {items.slice(0, 3).map((d) => (
           <li key={d.id}>
-            <span>{d.title ?? 'Untitled'}</span>
-            <StatusBadge status={d.status} />
+            <span>{d.title}</span>
+            <span className={`status status-${d.tone}`}>{d.label}</span>
           </li>
         ))}
       </ul>

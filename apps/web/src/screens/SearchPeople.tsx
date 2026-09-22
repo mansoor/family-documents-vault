@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Avatar, BottomNav, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
+import { Avatar, BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
 import { DocRow } from './Home.js';
 
 /**
@@ -228,30 +228,123 @@ export function PersonScreen() {
 }
 
 export function RemindersScreen() {
-  const { authVersion } = useApp();
+  const { authVersion, withToken } = useApp();
   const navigate = useNavigate();
-  const { data, error } = useLoad(
-    async (t) =>
-      (await api.documents(t, { sort: 'expiring', limit: 100 })).items.filter((d) =>
-        ['expired', 'expiring_soon', 'needs_info'].includes(d.status.value),
-      ),
+  const [error, setError] = useState<string | null>(null);
+  const { data, reload } = useLoad(
+    async (t) => {
+      const [due, upcoming, docs] = await Promise.all([
+        api.reminders(t, 'due'),
+        api.reminders(t, 'upcoming'),
+        api.documents(t, { sort: 'expiring', limit: 100 }),
+      ]);
+      const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
+      return {
+        due: due.items,
+        upcoming: upcoming.items,
+        // Documents in a bad state that have no reminder of their own.
+        attention: docs.items.filter(
+          (d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id),
+        ),
+      };
+    },
     [authVersion],
   );
+
+  const act = async (fn: (t: string) => Promise<unknown>) => {
+    setError(null);
+    try {
+      await withToken(fn);
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  const plusDays = (n: number) => {
+    const d = new Date(`${today}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0);
   return (
     <main className="page page-top has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error} />
-      {data && data.length === 0 && (
+      {data && count === 0 && (
         <p className="attention attention-calm" role="status">
           Everything is fine. Nothing needs your attention.
         </p>
       )}
+      {data && count > 0 && (
+        <p className="muted" role="status">
+          {count} now, {data.upcoming.length} coming up
+        </p>
+      )}
       <ul className="list">
-        {(data ?? []).map((d) => (
+        {(data?.due ?? []).map((r) => (
+          <li key={r.id} className="reminder">
+            <button
+              type="button"
+              className="rowbtn"
+              onClick={() => void navigate(`/documents/${r.document_id}`)}
+            >
+              <span className="status status-danger">{r.label}</span>
+              <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
+              {r.note && <span className="muted">{r.note}</span>}
+            </button>
+            <div className="row">
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(7)))}
+              >
+                A week
+              </Button>
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(30)))}
+              >
+                A month
+              </Button>
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.acknowledgeReminder(t, r.id))}
+              >
+                Done
+              </Button>
+            </div>
+          </li>
+        ))}
+        {(data?.attention ?? []).map((d) => (
           <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
         ))}
       </ul>
-      <p className="muted">Reminders with snooze and notifications arrive in the next phase.</p>
+      {data && data.upcoming.length > 0 && (
+        <section aria-labelledby="upcoming-h">
+          <h2 id="upcoming-h" className="section-h">
+            Coming up
+          </h2>
+          <ul className="list">
+            {data.upcoming.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  className="rowbtn"
+                  onClick={() => void navigate(`/documents/${r.document_id}`)}
+                >
+                  <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
+                  <span className="muted">
+                    {r.label}
+                    {r.recurrence ? ' · repeats' : ''}
+                    {r.note ? ` · ${r.note}` : ''}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <BottomNav />
     </main>
   );
