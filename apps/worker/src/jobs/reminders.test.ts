@@ -106,15 +106,22 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
     expect(ledger[0]?.channel).toBe('test');
   });
 
-  it('outside the digest hour nothing is sent', async () => {
+  it('later the same day it is not sent again: the ledger, not the clock', async () => {
     at('2026-09-22T14:00:00Z');
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 0 });
   });
 
   it('a server off for nine days produces exactly one summary on restart', async () => {
-    // Nothing ran between 23 Sep and 1 Oct. Back on at 09:20 on 1 Oct.
-    at('2026-10-01T09:20:00Z');
+    // Nothing ran between 23 Sep and 1 Oct. Back on at six in the morning:
+    // there is plenty to say, but nothing fires before nine.
+    at('2026-10-01T06:00:00Z');
     expect(await tick(deps())).toEqual({ became_due: 2 });
+    expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 0 });
+    expect(sent).toHaveLength(1);
+
+    // It actually came back in the evening — which is when a server that
+    // was off for nine days usually does. The summary is still owed today.
+    at('2026-10-01T21:40:00Z');
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 1 });
     expect(sent).toHaveLength(2);
     const summary = sent[1] as Digest;

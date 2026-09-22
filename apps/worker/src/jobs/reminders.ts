@@ -105,7 +105,12 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
   const hour = deps.digestHour ?? 9;
   let digests = 0;
   for (const hh of await households(deps.admin)) {
-    if (localHour(hh.timezone, now) !== hour) continue;
+    // At or after the digest hour, never before it: "nothing fires before
+    // 9 in the morning" is a promise the screen makes. A server that was
+    // off all day and comes back at nine in the evening still owes the
+    // household its summary today — the ledger below is what keeps it to
+    // one, not the clock.
+    if (localHour(hh.timezone, now) < hour) continue;
     const today = localToday(hh.timezone, now);
     const sent = await withHousehold(deps.app, hh.id, async (trx) => {
       const already = await trx
@@ -197,7 +202,10 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
   const hour = deps.weeklyHour ?? 18;
   let digests = 0;
   for (const hh of await households(deps.admin)) {
-    if (localHour(hh.timezone, now) !== hour) continue;
+    // Sunday evening or later that Sunday, for the same reason as the
+    // daily digest: a restart at eight should not cost the household its
+    // weekly summary.
+    if (localHour(hh.timezone, now) < hour) continue;
     const today = localToday(hh.timezone, now);
     // Sunday on the household's own calendar.
     const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();
