@@ -86,6 +86,8 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - **Row-level security in PostgreSQL** keeps each household's rows invisible to every other household, enforced by the database rather than by application code. The application connects as a role that owns no tables, which is what makes the policies apply.
 - **Backups of the database are encrypted** with the same master key.
 
+- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable; no page ever leaves the machine. Private documents' text is stored encrypted under the owner's key and is not indexed.
+
 The honest limit: someone who controls the whole server can read everything. For a self-hosted vault on the household's own machine, that is the right trade — it is what makes server-side search, thumbnails and automatic filing possible.
 
 ## Backups and recovery

@@ -22,6 +22,8 @@ export interface Harness {
   app: FastifyInstance;
   db: Db;
   vaultDir: string;
+  /** Jobs the API asked the worker to run. */
+  jobs: Array<{ name: string; data: Record<string, unknown> }>;
   close(): Promise<void>;
   /** Runs first-run setup and returns the owner's tokens. */
   setup(overrides?: Partial<SetupBody>): Promise<Tokens>;
@@ -48,6 +50,7 @@ export async function createHarness(): Promise<Harness> {
   });
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+  const jobs: Harness['jobs'] = [];
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
@@ -55,7 +58,9 @@ export async function createHarness(): Promise<Harness> {
       vaults.createDefaultLocal(trx, hh),
     ),
     vaults,
-    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024),
+    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, async (name, data) => {
+      jobs.push({ name, data });
+    }),
     logger: false,
   });
 
@@ -63,6 +68,7 @@ export async function createHarness(): Promise<Harness> {
     app,
     db,
     vaultDir,
+    jobs,
     async close() {
       await app.close();
       await db.destroy();

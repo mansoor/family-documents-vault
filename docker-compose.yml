@@ -56,6 +56,7 @@ services:
       DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
       DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
       FDV_MASTER_KEY: ${FDV_MASTER_KEY}
+      FDV_OCR_MAX_PAGES: ${FDV_OCR_MAX_PAGES:-20}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

@@ -3,7 +3,8 @@ import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
-import { openCredentials, sealCredentials, type VaultView } from './service.js';
+import { openCredentials, sealCredentials } from '@fdv/storage';
+import type { VaultView } from './service.js';
 
 const S3 = process.env.S3_TEST_ENDPOINT ?? '';
 

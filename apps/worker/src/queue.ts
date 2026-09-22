@@ -10,6 +10,8 @@ export const JOBS = {
   heartbeat: 'heartbeat',
   /** Recomputes every household's audit hash chain; nightly. */
   verifyAudit: 'audit.verify',
+  /** Page count, thumbnail and OCR for one uploaded version. */
+  processVersion: 'version.process',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];
