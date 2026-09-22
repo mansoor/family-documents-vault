@@ -13,6 +13,9 @@ type GeneratedTimestamp = ColumnType<Date, Date | string | undefined, Date | str
 type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
+export type Visibility = 'household' | 'adults' | 'private';
+export type DatePrecision = 'day' | 'month' | 'year';
+type DateOnly = ColumnType<Date, string | null, string | null>;
 
 export interface Schema {
   schema_migration: { version: number; name: string; applied_at: Timestamp };
@@ -125,6 +128,82 @@ export interface Schema {
     status: Generated<'untested' | 'ok' | 'failed'>;
     last_verified_at: Timestamp | null;
     last_error: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_type: {
+    key: string;
+    label: string;
+    category: string;
+    locale: string | null;
+    fields: ColumnType<unknown, string, string>;
+    expiry_driver: string | null;
+    reminder_leads: number[];
+    usually_essential: boolean;
+    default_visibility: Visibility;
+    sort_order: number;
+    pack_version: number;
+  };
+
+  document: {
+    id: Generated<string>;
+    household_id: string;
+    type_key: string | null;
+    title: string | null;
+    owner_member_id: string | null;
+    category: string | null;
+    visibility: Generated<Visibility>;
+    issued_on: DateOnly | null;
+    issued_precision: DatePrecision | null;
+    expires_on: DateOnly | null;
+    expires_precision: DatePrecision | null;
+    identifier: string | null;
+    physical_location: string | null;
+    is_essential: Generated<boolean>;
+    tags: Generated<string[]>;
+    notes: string | null;
+    extra: GeneratedJson;
+    status_cache: string | null;
+    created_at: GeneratedTimestamp;
+    created_by: string | null;
+    updated_at: GeneratedTimestamp;
+    updated_by: string | null;
+    deleted_at: Timestamp | null;
+  };
+
+  document_version: {
+    id: Generated<string>;
+    household_id: string;
+    document_id: string;
+    version_no: number;
+    filename: string;
+    mime: string;
+    byte_size: ColumnType<string | number, number, number>;
+    sha256: Buffer;
+    cipher_bytes: ColumnType<string | number, number, number>;
+    cipher_sha256: Buffer;
+    storage_key: string;
+    vault_id: string;
+    file_key_wrapped: Buffer;
+    wrapped_by_scope: string;
+    page_count: number | null;
+    ocr_status: Generated<'pending' | 'done' | 'failed' | 'skipped'>;
+    uploaded_by: string | null;
+    uploaded_at: GeneratedTimestamp;
+  };
+
+  upload_idempotency: {
+    idempotency_key: string;
+    household_id: string;
+    document_id: string;
+    version_id: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_link: {
+    household_id: string;
+    a: string;
+    b: string;
     created_at: GeneratedTimestamp;
   };
 

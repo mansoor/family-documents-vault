@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 import type { AuthService } from './auth/service.js';
+import type { DocumentService } from './documents/service.js';
 import type { VaultService } from './vaults/service.js';
 import { loadConfig } from './config.js';
 
@@ -18,6 +19,7 @@ const authStub = {
   displayName: async () => null,
 } as unknown as AuthService;
 const vaultsStub = {} as unknown as VaultService;
+const documentsStub = {} as unknown as DocumentService;
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -31,6 +33,7 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     pingDatabase,
     auth: authStub,
     vaults: vaultsStub,
+    documents: documentsStub,
     logger: false,
   });
   return app;

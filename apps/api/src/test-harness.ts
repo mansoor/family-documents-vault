@@ -9,6 +9,7 @@ import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
+import { DocumentService } from './documents/service.js';
 import { VaultService } from './vaults/service.js';
 
 /**
@@ -46,16 +47,15 @@ export async function createHarness(): Promise<Harness> {
     LOG_LEVEL: 'error',
   });
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
+  const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
-    auth: new AuthService(
-      db,
-      deriveSigningKey(TEST_MASTER),
-      new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
-      (trx, hh) => vaults.createDefaultLocal(trx, hh),
+    auth: new AuthService(db, deriveSigningKey(TEST_MASTER), keys, (trx, hh) =>
+      vaults.createDefaultLocal(trx, hh),
     ),
     vaults,
+    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024),
     logger: false,
   });
 

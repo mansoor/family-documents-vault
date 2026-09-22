@@ -55,16 +55,17 @@ To stop: `docker compose down`. Your data stays in the `fdv_db-data` and `fdv_va
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
 
-| Variable              | Default            | What it is                                                                                                                                         |
-| --------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FDV_MASTER_KEY`      | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
-| `FDV_DB_PASSWORD`     | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
-| `FDV_DB_APP_PASSWORD` | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
-| `FDV_LOCAL_VAULT_DIR` | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
-| `FDV_DISPLAY_NAME`    | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
-| `FDV_PORT`            | `8080`             | The port the web app listens on.                                                                                                                   |
-| `LOG_LEVEL`           | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
-| `FDV_VERSION`         | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| Variable               | Default            | What it is                                                                                                                                         |
+| ---------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FDV_MASTER_KEY`       | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
+| `FDV_DB_PASSWORD`      | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
+| `FDV_DB_APP_PASSWORD`  | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_MAX_UPLOAD_BYTES` | `104857600`        | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
+| `FDV_DISPLAY_NAME`     | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
+| `FDV_PORT`             | `8080`             | The port the web app listens on.                                                                                                                   |
+| `LOG_LEVEL`            | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
+| `FDV_VERSION`          | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
