@@ -62,7 +62,8 @@ async function ensureTemplate(root: pg.Client, adminUrl: string): Promise<void> 
 }
 
 export async function createTestDatabase(adminUrl = testAdminUrl()): Promise<TestDatabase> {
-  if (!adminUrl) throw new Error('DATABASE_ADMIN_URL is not set; integration tests need PostgreSQL');
+  if (!adminUrl)
+    throw new Error('DATABASE_ADMIN_URL is not set; integration tests need PostgreSQL');
   const name = `fdv_test_${randomBytes(4).toString('hex')}`;
 
   const root = new pg.Client({ connectionString: adminUrl });
