@@ -42,6 +42,8 @@ export interface Capabilities {
   min_client_version: string;
   edition: Edition;
   protection_mode: ProtectionMode;
+  /** True until the first-run wizard has created the household. */
+  setup_required: boolean;
   features: CapabilityFeatures;
   limits: CapabilityLimits;
   deprecations: Deprecation[];

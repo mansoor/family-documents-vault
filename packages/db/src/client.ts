@@ -1,15 +1,115 @@
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect, sql, type ColumnType, type Generated } from 'kysely';
 import pg from 'pg';
 
 /**
  * The database schema as seen by Kysely. Tables are added by the iteration
  * that creates them, so this interface always matches the latest migration.
  */
+
+// Kysely does not unwrap a ColumnType nested inside Generated<>, so the
+// generated variants are spelled out.
+type Timestamp = ColumnType<Date, Date | string, Date | string>;
+type GeneratedTimestamp = ColumnType<Date, Date | string | undefined, Date | string>;
+type GeneratedJson = ColumnType<unknown, string | undefined, string>;
+
+export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
+
 export interface Schema {
-  schema_migration: {
-    version: number;
+  schema_migration: { version: number; name: string; applied_at: Timestamp };
+
+  household: {
+    id: Generated<string>;
     name: string;
-    applied_at: Date;
+    active_vault_id: string | null;
+    protection_mode: Generated<'standard' | 'private'>;
+    plan: Generated<string>;
+    plan_state: Generated<'active' | 'read_only' | 'export_only'>;
+    plan_state_since: Timestamp | null;
+    settings: GeneratedJson;
+    created_at: GeneratedTimestamp;
+    deleted_at: Timestamp | null;
+  };
+
+  member: {
+    id: Generated<string>;
+    household_id: string;
+    display_name: string;
+    date_of_birth: ColumnType<Date, string | null, string | null> | null;
+    relationship: string | null;
+    is_deceased: Generated<boolean>;
+    colour: Generated<number>;
+    created_at: GeneratedTimestamp;
+  };
+
+  account: {
+    id: Generated<string>;
+    email: string;
+    password_hash: string | null;
+    totp_secret: Buffer | null;
+    created_at: GeneratedTimestamp;
+    disabled_at: Timestamp | null;
+  };
+
+  account_household: {
+    account_id: string;
+    household_id: string;
+    member_id: string;
+    role: Role;
+    joined_at: GeneratedTimestamp;
+  };
+
+  credential: {
+    id: Generated<string>;
+    account_id: string;
+    kind: 'passkey' | 'totp' | 'recovery_share';
+    public_key: Buffer | null;
+    credential_id: Buffer | null;
+    sign_count: number | null;
+    label: string | null;
+    created_at: GeneratedTimestamp;
+    last_used_at: Timestamp | null;
+  };
+
+  session: {
+    id: Generated<string>;
+    account_id: string;
+    household_id: string;
+    refresh_hash: Buffer;
+    prev_refresh_hash: Buffer | null;
+    user_agent: string | null;
+    ip: string | null;
+    created_at: GeneratedTimestamp;
+    last_used_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    revoked_at: Timestamp | null;
+    revoked_reason: string | null;
+  };
+
+  household_profile: {
+    household_id: string;
+    owns_home: boolean | null;
+    rents_home: boolean | null;
+    vehicle_count: number | null;
+    has_pets: boolean | null;
+    has_business: boolean | null;
+    country: string | null;
+    answered_at: Timestamp | null;
+    extra: GeneratedJson;
+  };
+
+  audit_event: {
+    id: Generated<number>;
+    household_id: string;
+    actor_account_id: string | null;
+    actor_label: string | null;
+    action: string;
+    object_type: string | null;
+    object_id: string | null;
+    detail: GeneratedJson;
+    ip: string | null;
+    at: GeneratedTimestamp;
+    prev_hash: Buffer | null;
+    hash: Buffer;
   };
 }
 
@@ -24,19 +124,37 @@ export function createDb(pool: pg.Pool): Db {
 }
 
 /**
- * Runs `fn` inside a transaction with `app.household_id` set for its duration.
- *
- * Every row-level-security policy reads `current_setting('app.household_id')`.
- * `set_config(..., true)` is transaction-local, so the value cannot leak to
- * the next borrower of the pooled connection.
+ * The tenant context for a transaction. Row-level-security policies read
+ * `app.household_id`; `app.account_id` additionally lets an account see its
+ * own memberships before a household is chosen (sign-in).
  */
-export async function withHousehold<T>(
+export interface Scope {
+  householdId?: string;
+  accountId?: string;
+}
+
+/**
+ * Runs `fn` inside a transaction with the scope settings applied for its
+ * duration. `set_config(..., true)` is transaction-local, so nothing leaks
+ * to the next borrower of the pooled connection.
+ */
+export async function withScope<T>(db: Db, scope: Scope, fn: (trx: Db) => Promise<T>): Promise<T> {
+  return db.transaction().execute(async (trx) => {
+    if (scope.householdId) {
+      await sql`select set_config('app.household_id', ${scope.householdId}, true)`.execute(trx);
+    }
+    if (scope.accountId) {
+      await sql`select set_config('app.account_id', ${scope.accountId}, true)`.execute(trx);
+    }
+    return fn(trx);
+  });
+}
+
+/** Shorthand for the common case: one household, no account context. */
+export function withHousehold<T>(
   db: Db,
   householdId: string,
   fn: (trx: Db) => Promise<T>,
 ): Promise<T> {
-  return db.transaction().execute(async (trx) => {
-    await sql`select set_config('app.household_id', ${householdId}, true)`.execute(trx);
-    return fn(trx);
-  });
+  return withScope(db, { householdId }, fn);
 }
