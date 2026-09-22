@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
+import { deliver, logNotifier, refreshStatus, tick } from './jobs/reminders.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
 
@@ -79,6 +80,33 @@ async function main(): Promise<void> {
     await backupDatabase(backupDeps);
   });
   await boss.schedule(JOBS.backupDatabase, config.FDV_BACKUP_CRON);
+
+  const reminderDeps = {
+    admin: dbs.admin,
+    app: dbs.app,
+    notifier: logNotifier(log),
+    log,
+    digestHour: config.FDV_DIGEST_HOUR,
+  };
+  await boss.createQueue(JOBS.remindersTick);
+  await boss.work(JOBS.remindersTick, async () => {
+    const r = await tick(reminderDeps);
+    if (r.became_due) log('info', 'reminders due', r);
+  });
+  await boss.schedule(JOBS.remindersTick, '*/15 * * * *');
+  await boss.createQueue(JOBS.remindersDeliver);
+  await boss.work(JOBS.remindersDeliver, async () => {
+    const r = await deliver(reminderDeps);
+    if (r.digests) log('info', 'reminder digests sent', r);
+  });
+  await boss.schedule(JOBS.remindersDeliver, '5 * * * *');
+  await boss.createQueue(JOBS.statusRefresh);
+  await boss.work(JOBS.statusRefresh, async () => {
+    log('info', 'status cache refreshed', await refreshStatus(reminderDeps));
+  });
+  await boss.schedule(JOBS.statusRefresh, '45 3 * * *');
+  // On start: catch up immediately rather than waiting for the next slot.
+  await boss.send(JOBS.remindersTick, {});
   log('info', 'worker ready', { jobs: Object.values(JOBS) });
 
   const shutdown = async (signal: string) => {

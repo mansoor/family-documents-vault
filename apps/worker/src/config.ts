@@ -9,6 +9,13 @@ const schema = z.object({
   FDV_BACKUP_DIR: z.string().min(1).default('/data/backups'),
   FDV_BACKUP_RETAIN_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   FDV_BACKUP_CRON: z.string().min(1).default('30 2 * * *'),
+  FDV_DIGEST_HOUR: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(23)
+    .default(9)
+    .describe("The household's local hour for the daily reminder message."),
   FDV_OCR_MAX_PAGES: z.coerce
     .number()
     .int()

@@ -10,6 +10,7 @@ import { PgBoss } from 'pg-boss';
 import { DocumentService } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
+import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
     config.FDV_LOCAL_VAULT_DIR,
   );
   const keys = new ScopeKeys(new EnvKeyProvider(masterSecret));
+  const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
     deriveKey(masterSecret, 'totp-secrets'),
@@ -97,7 +99,15 @@ async function main(): Promise<void> {
     visibility: new VisibilityService(db, keys),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
-    documents: new DocumentService(db, keys, vaults, config.FDV_MAX_UPLOAD_BYTES, enqueue),
+    documents: new DocumentService(
+      db,
+      keys,
+      vaults,
+      config.FDV_MAX_UPLOAD_BYTES,
+      enqueue,
+      reminders,
+    ),
+    reminders,
     household: new HouseholdService(db, keys),
   });
 

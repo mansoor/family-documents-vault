@@ -23,6 +23,7 @@ import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
+import type { ReminderService } from '../reminders/service.js';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -83,9 +84,9 @@ type DocRow = {
   owner_member_id: string | null;
   category: string | null;
   visibility: Visibility;
-  issued_on: Date | null;
+  issued_on: string | null;
   issued_precision: 'day' | 'month' | 'year' | null;
-  expires_on: Date | null;
+  expires_on: string | null;
   expires_precision: 'day' | 'month' | 'year' | null;
   identifier: string | null;
   physical_location: string | null;
@@ -98,8 +99,7 @@ type DocRow = {
   deleted_at: Date | null;
 };
 
-const isoDate = (d: Date | string | null): string | null =>
-  d === null ? null : typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
+const isoDate = (d: string | null): string | null => (d === null ? null : d.slice(0, 10));
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -138,6 +138,7 @@ export class DocumentService {
     private readonly vaults: VaultService,
     private readonly maxUploadBytes: number,
     private readonly enqueue: Enqueue = async () => undefined,
+    private readonly reminders: ReminderService | null = null,
   ) {}
 
   // ---------------------------------------------------------------- types
@@ -318,6 +319,7 @@ export class DocumentService {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -367,6 +369,9 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (input.expires !== undefined || input.type_key !== undefined) {
+        await this.reminders?.regenerateDerived(trx, p.householdId, id);
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -390,6 +395,7 @@ export class DocumentService {
         .set({ deleted_at: new Date(), updated_at: new Date(), updated_by: p.accountId })
         .where('id', '=', id)
         .execute();
+      await this.reminders?.regenerateDerived(trx, p.householdId, id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -412,6 +418,7 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      await this.reminders?.regenerateDerived(trx, p.householdId, id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -681,6 +688,10 @@ export class DocumentService {
         .set({ updated_at: new Date(), updated_by: p.accountId })
         .where('id', '=', documentId)
         .execute();
+      // REM-08: the user renewed and scanned it; do not also ask them to
+      // dismiss a notification.
+      if (versionNo > 1)
+        await this.reminders?.resolveOpen(trx, p.householdId, documentId, p.accountId);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -720,7 +731,7 @@ export class DocumentService {
         type_key: string | null;
         category: string | null;
         owner_member_id: string | null;
-        expires_on: Date | null;
+        expires_on: string | null;
         expires_precision: DateValue['precision'] | null;
         rank: number;
         snippet: string;

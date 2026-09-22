@@ -3,6 +3,7 @@ import type {
   DateValue,
   DocumentTypeView,
   DocumentView,
+  ReminderView,
   VersionView,
   Visibility,
 } from '@fdv/shared';
@@ -329,6 +330,16 @@ export const api = {
     requestBlob(`/api/v1/versions/${versionId}/content`, { token }),
   thumbnail: (token: string, versionId: string) =>
     requestBlob(`/api/v1/versions/${versionId}/thumbnail`, { token }),
+  reminders: (token: string, state: 'due' | 'upcoming' | 'all' = 'all') =>
+    request<{ items: ReminderView[] }>(`/api/v1/reminders?state=${state}`, { token }),
+  snoozeReminder: (token: string, id: string, until: string) =>
+    request<ReminderView>(`/api/v1/reminders/${id}/snooze`, {
+      method: 'POST',
+      body: { until },
+      token,
+    }),
+  acknowledgeReminder: (token: string, id: string) =>
+    request<ReminderView>(`/api/v1/reminders/${id}/acknowledge`, { method: 'POST', token }),
   search: (token: string, q: string, params: Params = {}) =>
     request<{ items: SearchHit[] }>(`/api/v1/search${qs({ q, ...params })}`, { token }),
 };

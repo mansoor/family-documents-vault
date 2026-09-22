@@ -19,6 +19,7 @@ export const profileBody = z
     has_pets: z.boolean().nullable(),
     has_business: z.boolean().nullable(),
     country: z.string().trim().length(2).toUpperCase().nullable(),
+    timezone: z.string().min(1).max(64),
     extra: z.record(z.string(), z.unknown()),
   })
   .partial()
@@ -63,11 +64,12 @@ export class HouseholdService {
         .executeTakeFirst();
       const hh = await trx
         .selectFrom('household')
-        .select(['name', 'created_at'])
+        .select(['name', 'created_at', 'timezone'])
         .where('id', '=', p.householdId)
         .executeTakeFirstOrThrow();
       return {
         household_name: hh.name,
+        timezone: hh.timezone,
         owns_home: row?.owns_home ?? null,
         rents_home: row?.rents_home ?? null,
         vehicle_count: row?.vehicle_count ?? null,
@@ -97,6 +99,18 @@ export class HouseholdService {
         if (input[k] !== undefined) values[k] = input[k];
       }
       if (input.extra !== undefined) values.extra = JSON.stringify(input.extra);
+      if (input.timezone !== undefined) {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: input.timezone });
+        } catch {
+          throw new ApiError(422, 'validation_failed', 'That time zone is not recognised.');
+        }
+        await trx
+          .updateTable('household')
+          .set({ timezone: input.timezone })
+          .where('id', '=', p.householdId)
+          .execute();
+      }
       await trx
         .insertInto('household_profile')
         .values({ household_id: p.householdId, ...values })
@@ -150,9 +164,7 @@ export class HouseholdService {
       return rows.map((r) => ({
         id: r.id,
         display_name: r.display_name,
-        date_of_birth: r.date_of_birth
-          ? new Date(r.date_of_birth).toISOString().slice(0, 10)
-          : null,
+        date_of_birth: r.date_of_birth,
         relationship: r.relationship,
         is_deceased: r.is_deceased,
         colour: r.colour,

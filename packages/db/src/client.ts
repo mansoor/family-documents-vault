@@ -22,7 +22,7 @@ type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
 export type Visibility = 'household' | 'adults' | 'private';
 export type DatePrecision = 'day' | 'month' | 'year';
-type DateOnly = ColumnType<Date, string | null, string | null>;
+type DateOnly = ColumnType<string, string | null, string | null>;
 
 export interface Schema {
   schema_migration: { version: number; name: string; applied_at: Timestamp };
@@ -36,6 +36,7 @@ export interface Schema {
     plan_state: Generated<'active' | 'read_only' | 'export_only'>;
     plan_state_since: Timestamp | null;
     settings: GeneratedJson;
+    timezone: Generated<string>;
     created_at: GeneratedTimestamp;
     deleted_at: Timestamp | null;
   };
@@ -44,7 +45,7 @@ export interface Schema {
     id: Generated<string>;
     household_id: string;
     display_name: string;
-    date_of_birth: ColumnType<Date, string | null, string | null> | null;
+    date_of_birth: DateOnly | null;
     relationship: string | null;
     is_deceased: Generated<boolean>;
     colour: Generated<number>;
@@ -253,6 +254,41 @@ export interface Schema {
     expires_at: Timestamp | null;
   };
 
+  reminder: {
+    id: Generated<string>;
+    household_id: string;
+    document_id: string;
+    kind: 'derived' | 'manual';
+    fire_at: ColumnType<string, string, string>;
+    lead_days: number | null;
+    note: string | null;
+    recurrence: string | null;
+    channel: Generated<string[]>;
+    status: Generated<'scheduled' | 'due' | 'snoozed' | 'acknowledged' | 'resolved'>;
+    snoozed_until: ColumnType<string, string | null, string | null> | null;
+    acknowledged_by: string | null;
+    acknowledged_at: Timestamp | null;
+    created_by: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  reminder_delivery: {
+    reminder_id: string;
+    household_id: string;
+    fire_date: ColumnType<string, string, string>;
+    channel: string;
+    delivered_at: GeneratedTimestamp;
+  };
+
+  notification_digest: {
+    household_id: string;
+    local_date: ColumnType<string, string, string>;
+    kind: Generated<'daily' | 'catch_up'>;
+    item_count: number;
+    channels: Generated<string[]>;
+    sent_at: GeneratedTimestamp;
+  };
+
   audit_event: {
     id: Generated<number>;
     household_id: string;
@@ -270,6 +306,11 @@ export interface Schema {
 }
 
 export type Db = Kysely<Schema>;
+
+// A `date` column is a calendar day, not an instant: keep it as the
+// 'YYYY-MM-DD' string Postgres sends rather than a local-midnight Date
+// that shifts by the machine's time-zone offset. (OID 1082 = date.)
+pg.types.setTypeParser(1082, (v: string) => v);
 
 export function createPool(connectionString: string, max = 10): pg.Pool {
   return new pg.Pool({ connectionString, max });

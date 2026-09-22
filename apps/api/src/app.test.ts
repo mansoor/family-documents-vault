@@ -41,6 +41,7 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     visibility: anyStub,
     totp: anyStub,
     exports: anyStub,
+    reminders: anyStub,
     logger: false,
   });
   return app;

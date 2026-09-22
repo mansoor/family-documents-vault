@@ -621,3 +621,9 @@ h3 {
   display: flex;
   flex-direction: column;
 }
+
+.list li.reminder {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
