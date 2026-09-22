@@ -66,6 +66,11 @@ CMD ["node", "apps/api/dist/server.mjs"]
 # ---------------------------------------------------------------- worker
 FROM ${NODE_IMAGE} AS worker
 ENV NODE_ENV=production
+# OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages and
+# page counts), ImageMagick (thumbnails). All offline.
+# Fonts matter: without them poppler renders text-only PDFs blank, and OCR
+# reads nothing.
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick     fontconfig font-dejavu font-liberation     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules

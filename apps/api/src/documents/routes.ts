@@ -86,6 +86,30 @@ export async function registerDocuments(
 
   app.get('/api/v1/documents/counts', auth, async (req) => docs.counts(principal(req)));
 
+  const searchQuery = z.object({
+    q: z.string().trim().min(1).max(200),
+    member_id: z.string().uuid().optional(),
+    category: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  });
+  app.get('/api/v1/search', auth, async (req) =>
+    docs.search(principal(req), parse(searchQuery, req.query)),
+  );
+
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/versions/:id/thumbnail',
+    auth,
+    async (req, reply) => {
+      const bytes = await docs.thumbnail(principal(req), req.params.id);
+      if (!bytes) {
+        throw new ApiError(404, 'no_thumbnail', 'No preview yet.', { retriable: true });
+      }
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, max-age=3600');
+      return reply.send(bytes);
+    },
+  );
+
   app.get('/api/v1/documents', auth, async (req) =>
     docs.list(principal(req), parse(listQuery, req.query)),
   );

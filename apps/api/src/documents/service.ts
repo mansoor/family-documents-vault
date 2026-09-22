@@ -109,12 +109,35 @@ export function etagOf(id: string, updatedAt: Date): string {
   return `"${createHash('sha256').update(`${id}:${updatedAt.toISOString()}`).digest('hex').slice(0, 16)}"`;
 }
 
+/** How the API hands work to the worker. The server wires pg-boss; tests collect. */
+export type Enqueue = (name: string, data: Record<string, unknown>) => Promise<void>;
+
+export interface SearchQuery {
+  q: string;
+  member_id?: string | undefined;
+  category?: string | undefined;
+  limit?: number | undefined;
+}
+
+export interface SearchHit {
+  document_id: string;
+  title: string | null;
+  type_key: string | null;
+  category: string | null;
+  owner_member_id: string | null;
+  status: DocumentView['status'];
+  snippet: string;
+  matched_in: 'title' | 'content';
+  rank: number;
+}
+
 export class DocumentService {
   constructor(
     private readonly db: Db,
     private readonly keys: ScopeKeys,
     private readonly vaults: VaultService,
     private readonly maxUploadBytes: number,
+    private readonly enqueue: Enqueue = async () => undefined,
   ) {}
 
   // ---------------------------------------------------------------- types
@@ -668,7 +691,150 @@ export class DocumentService {
         ip: meta.ip,
       });
       return versionView(version);
+    }).then(async (v) => {
+      // Enrichment runs after the version is committed and visible. A queue
+      // hiccup must not fail an upload that is already safely stored.
+      await this.enqueue('version.process', {
+        household_id: p.householdId,
+        version_id: v.id,
+      }).catch(() => undefined);
+      return v;
     });
+  }
+
+  /**
+   * FND-01: one query over titles, identifiers, tags, notes and the OCR text
+   * of every version, ranked, with a highlighted snippet. Private documents'
+   * text is sealed and not searched here (2.5 adds the in-session pass).
+   */
+  async search(
+    p: Principal,
+    q: SearchQuery,
+  ): Promise<{ items: SearchHit[]; sealed_pending: { count: number } }> {
+    const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
+    const adultsOk = p.role === 'owner' || p.role === 'adult';
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const rows = await sql<{
+        document_id: string;
+        title: string | null;
+        type_key: string | null;
+        category: string | null;
+        owner_member_id: string | null;
+        expires_on: Date | null;
+        expires_precision: DateValue['precision'] | null;
+        rank: number;
+        snippet: string;
+        matched_in: 'title' | 'content';
+      }>`
+        with query as (select websearch_to_tsquery('simple', ${q.q}) as tsq),
+        doc_hits as (
+          select d.id, ts_rank(d.search_tsv, query.tsq) * 2 as rank,
+                 ts_headline('simple',
+                   coalesce(d.title, '') || ' ' || coalesce(d.identifier, '') || ' ' || coalesce(d.notes, ''),
+                   query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
+                 'title'::text as matched_in
+          from document d, query
+          where d.deleted_at is null and d.search_tsv @@ query.tsq
+        ),
+        text_hits as (
+          select t.document_id as id, max(ts_rank(t.tsv, query.tsq)) as rank,
+                 (array_agg(ts_headline('simple', t.content, query.tsq,
+                   'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>')
+                   order by t.created_at desc))[1] as snippet,
+                 'content'::text as matched_in
+          from document_text t, query
+          where t.tsv @@ query.tsq
+          group by t.document_id
+        ),
+        hits as (
+          select id, max(rank) as rank,
+                 (array_agg(snippet order by rank desc))[1] as snippet,
+                 (array_agg(matched_in order by rank desc))[1] as matched_in
+          from (select * from doc_hits union all select * from text_hits) u
+          group by id
+        )
+        select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
+               d.expires_on, d.expires_precision, h.rank, h.snippet, h.matched_in
+        from hits h join document d on d.id = h.id
+        where d.deleted_at is null
+          and (d.visibility = 'household'
+               or (d.visibility = 'adults' and ${adultsOk})
+               or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
+          ${q.member_id ? sql`and d.owner_member_id = ${q.member_id}::uuid` : sql``}
+          ${q.category ? sql`and d.category = ${q.category}` : sql``}
+        order by h.rank desc, d.updated_at desc
+        limit ${limit}`.execute(trx);
+
+      const items: SearchHit[] = [];
+      for (const r of rows.rows) {
+        const type = r.type_key ? await this.typeCached(trx, r.type_key) : null;
+        const expires = r.expires_on
+          ? {
+              date: isoDate(r.expires_on) as string,
+              precision: r.expires_precision as DateValue['precision'],
+            }
+          : null;
+        items.push({
+          document_id: r.document_id,
+          title: r.title,
+          type_key: r.type_key,
+          category: r.category,
+          owner_member_id: r.owner_member_id,
+          status: deriveStatus(
+            {
+              type: type
+                ? {
+                    key: type.key,
+                    expiry_driver: type.expiry_driver,
+                    reminder_leads: type.reminder_leads,
+                  }
+                : null,
+              owner_member_id: r.owner_member_id,
+              expires,
+            },
+            today(),
+          ),
+          snippet: r.snippet,
+          matched_in: r.matched_in,
+          rank: Number(r.rank),
+        });
+      }
+      const sealed = await trx
+        .selectFrom('document_text_sealed')
+        .innerJoin('document', 'document.id', 'document_text_sealed.document_id')
+        .select(sql<number>`count(*)::int`.as('n'))
+        .where('document.owner_member_id', '=', p.memberId)
+        .where('document.deleted_at', 'is', null)
+        .executeTakeFirst();
+      return { items, sealed_pending: { count: sealed?.n ?? 0 } };
+    });
+  }
+
+  /** The cached, encrypted thumbnail, decrypted on the way out. Null until the worker has run. */
+  async thumbnail(p: Principal, versionId: string): Promise<Buffer | null> {
+    const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const v = await trx
+        .selectFrom('document_version')
+        .selectAll()
+        .where('id', '=', versionId)
+        .executeTakeFirst();
+      if (!v) throw notFound();
+      await this.fetch(trx, p, v.document_id, true);
+      if (!v.thumbnail_key) return null;
+      const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+      return {
+        key: v.thumbnail_key,
+        fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
+        adapter: await this.vaults.adapterById(trx, v.vault_id),
+      };
+    });
+    if (!ctx) return null;
+    const dec = new DecryptStream(ctx.fileKey);
+    const [, plain] = await Promise.all([
+      pipeline(await ctx.adapter.get(ctx.key), dec),
+      readAll(dec),
+    ]);
+    return plain;
   }
 
   /** Version metadata for a principal allowed to see its document; no audit, no bytes. */

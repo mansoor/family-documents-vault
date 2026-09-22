@@ -52,6 +52,8 @@ jobs:
       S3_TEST_SECRET: fdv-minio-test
     steps:
       - uses: actions/checkout@v4
+      - name: Install OCR and rendering tools (for the worker's processing tests)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick
       - name: Start MinIO (S3-compatible storage for the adapter tests)
         run: |
           docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=fdv -e MINIO_ROOT_PASSWORD=fdv-minio-test             quay.io/minio/minio:latest server /data

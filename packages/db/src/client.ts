@@ -1,4 +1,11 @@
-import { Kysely, PostgresDialect, sql, type ColumnType, type Generated } from 'kysely';
+import {
+  Kysely,
+  PostgresDialect,
+  sql,
+  type ColumnType,
+  type Generated,
+  type GeneratedAlways,
+} from 'kysely';
 import pg from 'pg';
 
 /**
@@ -164,6 +171,7 @@ export interface Schema {
     notes: string | null;
     extra: GeneratedJson;
     status_cache: string | null;
+    search_tsv: GeneratedAlways<string>;
     created_at: GeneratedTimestamp;
     created_by: string | null;
     updated_at: GeneratedTimestamp;
@@ -188,8 +196,28 @@ export interface Schema {
     wrapped_by_scope: string;
     page_count: number | null;
     ocr_status: Generated<'pending' | 'done' | 'failed' | 'skipped'>;
+    thumbnail_key: string | null;
+    processed_at: Timestamp | null;
+    process_error: string | null;
     uploaded_by: string | null;
     uploaded_at: GeneratedTimestamp;
+  };
+
+  document_text: {
+    version_id: string;
+    household_id: string;
+    document_id: string;
+    content: string;
+    tsv: GeneratedAlways<string>;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_text_sealed: {
+    version_id: string;
+    household_id: string;
+    document_id: string;
+    content_cipher: Buffer;
+    created_at: GeneratedTimestamp;
   };
 
   upload_idempotency: {

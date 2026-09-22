@@ -1,4 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { loadConfig } from './config.js';
+import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
 
@@ -36,6 +39,26 @@ async function main(): Promise<void> {
     }
   });
   await boss.schedule(JOBS.verifyAudit, '15 3 * * *');
+
+  const masterSecret = config.FDV_MASTER_KEY_FILE
+    ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
+    : (config.FDV_MASTER_KEY as string);
+  const processDeps = {
+    db: dbs.app,
+    keys: new ScopeKeys(new EnvKeyProvider(masterSecret)),
+    credentialsKey: deriveKey(masterSecret, 'vault-credentials'),
+    localRoot: config.FDV_LOCAL_VAULT_DIR,
+    maxOcrPages: config.FDV_OCR_MAX_PAGES,
+    log,
+  };
+  await boss.createQueue(JOBS.processVersion, {
+    retryLimit: 3,
+    retryDelay: 30,
+    retryBackoff: true,
+  });
+  await boss.work<ProcessVersionJob>(JOBS.processVersion, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) await processVersion(processDeps, job.data);
+  });
   log('info', 'worker ready', { jobs: Object.values(JOBS) });
 
   const shutdown = async (signal: string) => {
