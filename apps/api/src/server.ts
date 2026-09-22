@@ -5,6 +5,7 @@ import { AuthService } from './auth/service.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
+import { DocumentService } from './documents/service.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -42,18 +43,17 @@ async function main(): Promise<void> {
     deriveKey(masterSecret, 'vault-credentials'),
     config.FDV_LOCAL_VAULT_DIR,
   );
+  const keys = new ScopeKeys(new EnvKeyProvider(masterSecret));
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
       await pool.query('select 1');
     },
-    auth: new AuthService(
-      db,
-      deriveSigningKey(masterSecret),
-      new ScopeKeys(new EnvKeyProvider(masterSecret)),
-      (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
+    auth: new AuthService(db, deriveSigningKey(masterSecret), keys, (trx, householdId) =>
+      vaults.createDefaultLocal(trx, householdId),
     ),
     vaults,
+    documents: new DocumentService(db, keys, vaults, config.FDV_MAX_UPLOAD_BYTES),
   });
 
   const shutdown = async (signal: string) => {
