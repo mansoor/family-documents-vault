@@ -62,6 +62,8 @@ against self-hosted servers that are months or years behind.
   Wrong email and wrong password both answer `401 invalid_credentials`,
   in the same time.
 
+- Two-step sign-in. When an account has an authenticator, `POST /auth/password` answers `{ "mfa_required": true, "mfa_token": "…" }` instead of tokens; `POST /api/v1/auth/mfa` with `{ mfa_token, code }` completes it (`401 totp_invalid`, `401 mfa_expired` after five minutes). `POST /api/v1/auth/totp/enrol` (bearer) → `{ secret, otpauth_url }`; `POST /api/v1/auth/totp/confirm` `{ code }` → `204`; `POST /api/v1/auth/totp/disable` `{ code }` → `204` (owners: `403`). `GET /me` now carries `totp_enabled` and `totp_required`.
+
 - `POST /api/v1/auth/refresh` — body `refresh_token`. Rotates it. Presenting
   a token that was already rotated revokes the whole session (`401 session_ended`).
 - `POST /api/v1/auth/logout` — bearer; `204`.
@@ -94,6 +96,7 @@ against self-hosted servers that are months or years behind.
   - `GET /api/v1/tags?q=` — `{ items: [{ tag, count }] }`.
   - `POST /api/v1/documents` — any subset of `type_key, title, owner_member_id, category, visibility, issued, expires, identifier, physical_location, is_essential, tags, notes, extra`. Dates are `{ date, precision }`. A body with `status` is refused (`422`). Answers `201` with the document and an `ETag`.
   - `GET /api/v1/documents/{id}` — with `ETag`. `PATCH` honours `If-Match` and answers `409 conflict` (the current copy is in `detail`) on a stale tag.
+  - `POST /api/v1/documents/{id}/visibility` — `{ visibility }` → `204`. Rewraps every version's file key under the new scope and moves the OCR text into or out of the search index. Moving into or out of `private` is allowed only for the owning member. A `PATCH` carrying `visibility` does the same.
   - `DELETE /api/v1/documents/{id}` — soft delete; `POST /api/v1/documents/{id}/restore` brings it back.
   - `GET /api/v1/documents/{id}/versions` — `{ items: [{ id, version_no, filename, mime, byte_size, sha256, page_count, ocr_status, uploaded_at }] }`.
   - `POST /api/v1/documents/{id}/versions` — multipart, one `file`, **`Idempotency-Key` header (UUID) required**. The type is detected from the bytes; accepted: PDF, JPEG, PNG, HEIC, TIFF, WebP, DOCX, XLSX (`415 unsupported_type` otherwise; `413 too_large` over the limit). A retry with the same key returns the same version.
@@ -105,6 +108,8 @@ against self-hosted servers that are months or years behind.
   - After an upload the worker counts pages, makes a thumbnail and runs OCR; `ocr_status` on the version moves from `pending` to `done`, `failed` or `skipped`.
 
   A document's `status` is `{ value, label }` with `value` one of `active`, `expiring_soon`, `expired`, `valid`, `needs_info`, `superseded`, `missing`. Treat unknown values as opaque.
+
+- Exports (bearer; adults). `POST /api/v1/exports` → `202 { id, state: "queued", … }`; `GET /api/v1/exports` and `GET /api/v1/exports/{id}` report `state` (`queued`, `running`, `done`, `failed`), `document_count`, `byte_size`, `expires_at`; `GET /api/v1/exports/{id}/content` streams the ZIP (`410 export_expired` after seven days). The ZIP holds every original the requester can see, in folders by category, plus `index.json`, `index.csv`, `index.html` and `README.txt`.
 
 ## Deprecations in effect
 

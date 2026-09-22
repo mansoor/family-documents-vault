@@ -945,7 +945,14 @@ export class DocumentService {
       out.owner_member_id = input.owner_member_id;
     }
     if (input.visibility !== undefined) {
-      const owner = (out.owner_member_id ?? current?.owner_member_id ?? null) as string | null;
+      if (current !== null) {
+        throw new ApiError(
+          500,
+          'internal_error',
+          'Visibility changes must go through the visibility service.',
+        );
+      }
+      const owner = (out.owner_member_id ?? null) as string | null;
       if (input.visibility === 'private' && owner !== p.memberId) {
         throw new ApiError(
           422,

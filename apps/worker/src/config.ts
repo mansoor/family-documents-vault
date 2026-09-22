@@ -6,6 +6,9 @@ const schema = z.object({
   FDV_MASTER_KEY: z.string().min(32).optional(),
   FDV_MASTER_KEY_FILE: z.string().min(1).optional(),
   FDV_LOCAL_VAULT_DIR: z.string().min(1).default('/data/vault'),
+  FDV_BACKUP_DIR: z.string().min(1).default('/data/backups'),
+  FDV_BACKUP_RETAIN_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  FDV_BACKUP_CRON: z.string().min(1).default('30 2 * * *'),
   FDV_OCR_MAX_PAGES: z.coerce
     .number()
     .int()

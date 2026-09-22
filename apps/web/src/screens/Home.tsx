@@ -14,13 +14,15 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const { data, error } = useLoad(
     async (t) => {
-      const [members, counts, recent, attention] = await Promise.all([
+      const [members, counts, recent, attention, me] = await Promise.all([
         api.members(t),
         api.counts(t),
         api.documents(t, { limit: 5, sort: 'recent' }),
         api.documents(t, { limit: 50, sort: 'expiring' }),
+        api.me(t),
       ]);
       return {
+        me,
         members: members.items,
         counts,
         recent: recent.items,
@@ -51,6 +53,12 @@ export function HomeScreen() {
       </header>
       <ErrorNote message={error} />
 
+      {data?.me.totp_required && (
+        <Link to="/settings" className="attention" role="status">
+          <strong>Switch on two-step sign-in</strong>
+          <span className="muted">Owners must. It takes a minute, in Settings.</span>
+        </Link>
+      )}
       <AttentionStrip items={data?.attention ?? []} />
 
       <section aria-labelledby="people-h">

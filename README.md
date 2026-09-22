@@ -73,6 +73,7 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 
 ### Sign-in and sessions
 
+- **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
 - Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a 30-day refresh token that rotates on every use; a refresh token presented twice is treated as stolen and that device is signed out.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
@@ -94,12 +95,25 @@ The honest limit: someone who controls the whole server can read everything. For
 
 ## Backups and recovery
 
-_Documented with the first release that ships the export and backup jobs._ The shape of it:
+Three things make up a complete backup:
 
-1. **Your `.env`** (the master key) — keep a copy off the server.
-2. **The database** — a nightly encrypted dump, retained 30 days.
-3. **The files** — your local directory or your bucket. Optionally a second location as a mirror.
-4. **The recovery sheet** — one printed page with where the files are, a recovery code, and how to open them with the offline recovery tool, with no server and no app.
+1. **Your `.env`** — it holds the master key. Keep a copy off the server. Without it, nothing else below is readable.
+2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own.
+3. **The files** — the `fdv_vault-data` volume (`/data/vault`) for the local vault, or your bucket. They are ciphertext; the master key and the database together open them.
+
+Useful commands (run inside the worker container):
+
+```bash
+docker compose exec worker node apps/worker/dist/cli.mjs backup-now
+```
+
+```bash
+docker compose exec worker sh scripts/restore-drill.sh
+```
+
+The restore drill decrypts the newest backup, loads it into a scratch database, counts what came back and drops the scratch database again. Run it after you change anything about your backups, and let it reassure you occasionally. To restore for real: decrypt with `decrypt-backup <file> out.sql`, load `out.sql` into a fresh database, and point a fresh stack at it with the same `.env`.
+
+**Export everything** in Settings makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all.
 
 ### Where files are kept
 

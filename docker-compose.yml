@@ -57,6 +57,8 @@ services:
       DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
       FDV_MASTER_KEY: ${FDV_MASTER_KEY}
       FDV_OCR_MAX_PAGES: ${FDV_OCR_MAX_PAGES:-20}
+      FDV_BACKUP_CRON: ${FDV_BACKUP_CRON:-30 2 * * *}
+      FDV_BACKUP_RETAIN_DAYS: ${FDV_BACKUP_RETAIN_DAYS:-30}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

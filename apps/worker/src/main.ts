@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { loadConfig } from './config.js';
+import { backupDatabase } from './jobs/backup.js';
+import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
@@ -59,6 +61,24 @@ async function main(): Promise<void> {
   await boss.work<ProcessVersionJob>(JOBS.processVersion, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) await processVersion(processDeps, job.data);
   });
+
+  await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
+  await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) await buildExport(processDeps, job.data);
+  });
+
+  const backupDeps = {
+    adminUrl: config.DATABASE_ADMIN_URL ?? config.DATABASE_URL,
+    backupKey: deriveKey(masterSecret, 'database-backup'),
+    dir: config.FDV_BACKUP_DIR,
+    retainDays: config.FDV_BACKUP_RETAIN_DAYS,
+    log,
+  };
+  await boss.createQueue(JOBS.backupDatabase, { retryLimit: 3, retryDelay: 300 });
+  await boss.work(JOBS.backupDatabase, async () => {
+    await backupDatabase(backupDeps);
+  });
+  await boss.schedule(JOBS.backupDatabase, config.FDV_BACKUP_CRON);
   log('info', 'worker ready', { jobs: Object.values(JOBS) });
 
   const shutdown = async (signal: string) => {

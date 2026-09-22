@@ -12,6 +12,10 @@ export const JOBS = {
   verifyAudit: 'audit.verify',
   /** Page count, thumbnail and OCR for one uploaded version. */
   processVersion: 'version.process',
+  /** Builds a full export ZIP with indexes. */
+  exportBuild: 'export.build',
+  /** Nightly encrypted pg_dump with 30-day retention. */
+  backupDatabase: 'backup.database',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

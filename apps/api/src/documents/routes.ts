@@ -5,6 +5,7 @@ import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { DocumentService } from './service.js';
+import type { VisibilityService } from './visibility.js';
 
 const dateValue = z
   .object({
@@ -72,6 +73,7 @@ function parseRange(
 export async function registerDocuments(
   app: FastifyInstance,
   docs: DocumentService,
+  visibility: VisibilityService,
   maxUploadBytes: number,
 ) {
   await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1 } });
@@ -131,11 +133,18 @@ export async function registerDocuments(
   });
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
+    const body = parse(documentBody, req.body ?? {});
+    // A visibility change rewraps keys and moves text; it is never a plain
+    // column update. It runs first so the ETag check below sees its effect.
+    const { visibility: nextVisibility, ...rest } = body;
+    if (nextVisibility !== undefined) {
+      await visibility.change(principal(req), req.params.id, nextVisibility, metaOf(req));
+    }
     const d = await docs.update(
       principal(req),
       req.params.id,
-      parse(documentBody, req.body ?? {}),
-      req.headers['if-match'],
+      rest,
+      nextVisibility !== undefined ? undefined : req.headers['if-match'],
       metaOf(req),
     );
     reply.header('etag', d.etag);
@@ -146,6 +155,19 @@ export async function registerDocuments(
     await docs.softDelete(principal(req), req.params.id, metaOf(req));
     return reply.status(204).send();
   });
+
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/visibility',
+    auth,
+    async (req, reply) => {
+      const body = parse(
+        z.object({ visibility: z.enum(['household', 'adults', 'private']) }),
+        req.body,
+      );
+      await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req));
+      return reply.status(204).send();
+    },
+  );
 
   app.post<{ Params: { id: string } }>('/api/v1/documents/:id/restore', auth, async (req) =>
     docs.restore(principal(req), req.params.id, metaOf(req)),

@@ -22,6 +22,7 @@ const authStub = {
 const vaultsStub = {} as unknown as VaultService;
 const documentsStub = {} as unknown as DocumentService;
 const householdStub = {} as unknown as HouseholdService;
+const anyStub = {} as never;
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -37,6 +38,9 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     vaults: vaultsStub,
     documents: documentsStub,
     household: householdStub,
+    visibility: anyStub,
+    totp: anyStub,
+    exports: anyStub,
     logger: false,
   });
   return app;

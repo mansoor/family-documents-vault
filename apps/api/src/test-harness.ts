@@ -7,9 +7,12 @@ import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
+import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import { DocumentService } from './documents/service.js';
+import { VisibilityService } from './documents/visibility.js';
+import { ExportService } from './exports/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -52,16 +55,29 @@ export async function createHarness(): Promise<Harness> {
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
   const jobs: Harness['jobs'] = [];
+  const enqueue = async (name: string, data: Record<string, unknown>) => {
+    jobs.push({ name, data });
+  };
+  const totp = new TotpService(
+    db,
+    deriveKey(TEST_MASTER, 'totp-secrets'),
+    deriveSigningKey(TEST_MASTER),
+  );
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
-    auth: new AuthService(db, deriveSigningKey(TEST_MASTER), keys, (trx, hh) =>
-      vaults.createDefaultLocal(trx, hh),
+    auth: new AuthService(
+      db,
+      deriveSigningKey(TEST_MASTER),
+      keys,
+      (trx, hh) => vaults.createDefaultLocal(trx, hh),
+      totp,
     ),
+    totp,
+    visibility: new VisibilityService(db, keys),
     vaults,
-    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, async (name, data) => {
-      jobs.push({ name, data });
-    }),
+    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, enqueue),
+    exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     logger: false,
   });
