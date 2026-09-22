@@ -138,6 +138,19 @@ jobs:
           done
           curl -sf http://localhost:8080/api/v1/capabilities
       - run: pnpm e2e
+      - name: The same stack, behind TLS, the way another device reaches it
+        run: |
+          echo "FDV_HOSTNAME=vault.test" >> .env
+          docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+          for i in $(seq 1 30); do
+            docker compose -f docker-compose.yml -f docker-compose.tls.yml               cp caddy:/data/caddy/pki/authorities/local/root.crt ./vault-ca.crt 2>/dev/null && break
+            sleep 2
+          done
+          # The README tells a self-hoster to export that CA and trust it;
+          # this proves the path exists and the certificate it signs works.
+          curl -sf --cacert ./vault-ca.crt --resolve vault.test:443:127.0.0.1             https://vault.test/api/v1/capabilities > /dev/null
+          code=$(curl -s -o /dev/null -w '%{http_code}' --resolve vault.test:80:127.0.0.1             http://vault.test/)
+          test "$code" = "308" || { echo "expected a redirect to https, got $code"; exit 1; }
       - name: Logs on failure
         if: failure()
         run: docker compose logs --no-color | tail -200

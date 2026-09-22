@@ -45,12 +45,25 @@ export interface AppDeps {
   logger?: boolean | object;
 }
 
+/**
+ * The audit log records who did what from where, and the rate limiter
+ * counts per address; both read `X-Forwarded-For`, so who may set it
+ * matters. Trusting every caller would let anyone write their own address
+ * into the log. The default trusts only private ranges — the container
+ * network and a reverse proxy on the same LAN.
+ */
+function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
+  if (mode === 'all') return true;
+  if (mode === 'none') return false;
+  return ['127.0.0.1/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'];
+}
+
 export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: deps.logger ?? { level: config.LOG_LEVEL },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
-    trustProxy: true,
+    trustProxy: trustProxy(config.FDV_TRUST_PROXY),
   });
 
   app.addHook('onSend', async (req, reply) => {
