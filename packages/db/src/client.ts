@@ -329,6 +329,26 @@ export interface Schema {
     weekly_email: Generated<boolean>;
   };
 
+  suggestion_rule: {
+    key: string;
+    condition: ColumnType<unknown, string, string>;
+    suggests_type: string;
+    scope: 'household' | 'per_member';
+    quantity: ColumnType<unknown, string, string>;
+    noun: string;
+    why: string;
+    sort_order: Generated<number>;
+    enabled: Generated<boolean>;
+  };
+
+  suggestion_dismissal: {
+    household_id: string;
+    rule_key: string;
+    member_id: string | null;
+    dismissed_at: Generated<Date>;
+    dismissed_by: string | null;
+  };
+
   audit_event: {
     id: Generated<number>;
     household_id: string;

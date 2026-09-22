@@ -12,6 +12,7 @@ import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
+import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -115,6 +116,7 @@ async function main(): Promise<void> {
       config.FDV_VAPID_PUBLIC_KEY ?? null,
     ),
     household: new HouseholdService(db, keys),
+    suggestions: new SuggestionService(db),
   });
 
   const shutdown = async (signal: string) => {

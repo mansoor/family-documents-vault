@@ -16,6 +16,7 @@ import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
+import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 
 /**
@@ -88,6 +89,7 @@ export async function createHarness(): Promise<Harness> {
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
+    suggestions: new SuggestionService(db),
     logger: false,
   });
 

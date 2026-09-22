@@ -4,6 +4,7 @@ import type {
   DocumentTypeView,
   DocumentView,
   ReminderView,
+  SuggestionView,
   VersionView,
   Visibility,
 } from '@fdv/shared';
@@ -411,6 +412,21 @@ export const api = {
   testSmtp: (token: string) =>
     request<{ ok: boolean; message: string }>('/api/v1/notifications/smtp/test', {
       method: 'POST',
+      token,
+    }),
+  suggestions: (token: string, dismissed = false) =>
+    request<{ items: SuggestionView[]; profile_answered: boolean; dismissed_count: number }>(
+      `/api/v1/suggestions${dismissed ? '?dismissed=true' : ''}`,
+      { token },
+    ),
+  dismissSuggestion: (token: string, key: string) =>
+    request<void>(`/api/v1/suggestions/${encodeURIComponent(key)}/dismiss`, {
+      method: 'POST',
+      token,
+    }),
+  restoreSuggestion: (token: string, key: string) =>
+    request<void>(`/api/v1/suggestions/${encodeURIComponent(key)}/dismiss`, {
+      method: 'DELETE',
       token,
     }),
   search: (token: string, q: string, params: Params = {}) =>

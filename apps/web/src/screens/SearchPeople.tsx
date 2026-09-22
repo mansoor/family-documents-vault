@@ -1,10 +1,19 @@
-import type { DocumentView } from '@fdv/shared';
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router';
+import type { DocumentView, SuggestionView } from '@fdv/shared';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Avatar, BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
-import { DocRow } from './Home.js';
+import {
+  Avatar,
+  BottomNav,
+  Button,
+  categoryLabel,
+  ErrorNote,
+  Field,
+  StatusBadge,
+  TopBar,
+} from '../ui.js';
+import { addLink, DocRow } from './Home.js';
 
 /**
  * Search: one field, live results, filter chips for person and category.
@@ -164,9 +173,32 @@ export function sanitiseSnippet(s: string): string {
 }
 
 export function PeopleScreen() {
-  const { authVersion } = useApp();
-  const { data, error } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  const { authVersion, withToken } = useApp();
+  const { data, error, reload } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   const navigate = useNavigate();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [dob, setDob] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    setAddError(null);
+    try {
+      await withToken((t) => api.addMember(t, { display_name: name, date_of_birth: dob || null }));
+      setName('');
+      setDob('');
+      setAdding(false);
+      await reload();
+    } catch (err) {
+      setAddError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <main className="page page-top has-nav">
       <TopBar title="People" />
@@ -192,6 +224,36 @@ export function PeopleScreen() {
           </li>
         ))}
       </ul>
+      {adding ? (
+        <form onSubmit={(e) => void add(e)} className="card stack">
+          <ErrorNote message={addError} />
+          <Field
+            id="member-name"
+            label="Name of another family member"
+            value={name}
+            onChange={setName}
+          />
+          <Field
+            id="member-dob"
+            label="Date of birth"
+            type="date"
+            value={dob}
+            onChange={setDob}
+            required={false}
+            hint="Optional. It is how we know whose birth certificate to ask about."
+          />
+          <div className="row">
+            <Button type="submit" disabled={busy}>
+              {busy ? 'Adding…' : 'Add'}
+            </Button>
+            <Button kind="quiet" onClick={() => setAdding(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button onClick={() => setAdding(true)}>Add someone</Button>
+      )}
       <p className="muted">Inviting someone to sign in arrives in a later release.</p>
       <BottomNav />
     </main>
@@ -233,10 +295,12 @@ export function RemindersScreen() {
   const [error, setError] = useState<string | null>(null);
   const { data, reload } = useLoad(
     async (t) => {
-      const [due, upcoming, docs] = await Promise.all([
+      const [due, upcoming, docs, suggestions, hidden] = await Promise.all([
         api.reminders(t, 'due'),
         api.reminders(t, 'upcoming'),
         api.documents(t, { sort: 'expiring', limit: 100 }),
+        api.suggestions(t),
+        api.suggestions(t, true),
       ]);
       const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
       return {
@@ -246,6 +310,9 @@ export function RemindersScreen() {
         attention: docs.items.filter(
           (d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id),
         ),
+        suggestions: suggestions.items,
+        profileAnswered: suggestions.profile_answered,
+        hidden: hidden.items,
       };
     },
     [authVersion],
@@ -345,7 +412,86 @@ export function RemindersScreen() {
           </ul>
         </section>
       )}
+      <Missing
+        items={data?.suggestions ?? []}
+        hidden={data?.hidden ?? []}
+        profileAnswered={data?.profileAnswered ?? true}
+        act={act}
+      />
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * The missing-document suggestions (REM-10). Each one says why it is here,
+ * so "Not for us" is an informed answer — and it is reversible, which is
+ * why the hidden ones are still offered back at the bottom.
+ */
+function Missing(props: {
+  items: SuggestionView[];
+  hidden: SuggestionView[];
+  profileAnswered: boolean;
+  act: (fn: (t: string) => Promise<unknown>) => Promise<void>;
+}) {
+  const [showHidden, setShowHidden] = useState(false);
+  if (props.items.length === 0 && props.hidden.length === 0) {
+    return props.profileAnswered ? null : (
+      <section aria-labelledby="missing-h">
+        <h2 id="missing-h" className="section-h">
+          We noticed something missing
+        </h2>
+        <p className="muted">
+          Answer a few questions about your household and this is where we will tell you what is not
+          here yet. <Link to="/settings">Settings</Link>
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section aria-labelledby="missing-h">
+      <h2 id="missing-h" className="section-h">
+        We noticed something missing
+      </h2>
+      <ul className="list">
+        {props.items.map((s) => (
+          <li key={s.key} className="missing-row">
+            <span className="doc-title">{s.title}</span>
+            <span className="muted">{s.why}</span>
+            <div className="row">
+              <Link to={addLink(s)} className="btn btn-quiet">
+                Add it
+              </Link>
+              <Button
+                kind="quiet"
+                onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
+              >
+                Not for us
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {props.hidden.length > 0 &&
+        (showHidden ? (
+          <ul className="list">
+            {props.hidden.map((s) => (
+              <li key={s.key} className="missing-row">
+                <span className="muted">{s.title}</span>
+                <Button
+                  kind="quiet"
+                  onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
+                >
+                  Show it again
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Button kind="quiet" onClick={() => setShowHidden(true)}>
+            {props.hidden.length} hidden
+          </Button>
+        ))}
+    </section>
   );
 }
