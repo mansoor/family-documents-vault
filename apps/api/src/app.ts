@@ -4,6 +4,8 @@ import { registerAuth } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
+import { registerHousehold } from './household/routes.js';
+import type { HouseholdService } from './household/service.js';
 import type { DocumentService } from './documents/service.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
@@ -21,6 +23,7 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  household: HouseholdService;
   logger?: boolean | object;
 }
 
@@ -97,6 +100,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
 
   registerAuth(app, deps.auth);
   registerVaults(app, deps.vaults);
+  registerHousehold(app, deps.household);
   await registerDocuments(app, deps.documents, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

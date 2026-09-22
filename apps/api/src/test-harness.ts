@@ -10,6 +10,7 @@ import { AuthService, type Tokens } from './auth/service.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import { DocumentService } from './documents/service.js';
+import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
 
 /**
@@ -61,6 +62,7 @@ export async function createHarness(): Promise<Harness> {
     documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, async (name, data) => {
       jobs.push({ name, data });
     }),
+    household: new HouseholdService(db, keys),
     logger: false,
   });
 

@@ -1,76 +1,109 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, ApiRequestError, type NewVault, type Provider, type VaultRow } from './api.js';
-import type { Session } from './session.js';
-import { Button, ErrorNote, Field } from './ui.js';
+import { useState, type FormEvent } from 'react';
+import { Link, useNavigate } from 'react-router';
+import { api, type NewVault, type Provider } from '../api.js';
+import { describeError, useApp, useLoad } from '../app-context.js';
+import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
+
+export function SettingsScreen() {
+  const { caps, session, markAuthChanged, authVersion } = useApp();
+  const navigate = useNavigate();
+  const { data: sessions, reload } = useLoad(
+    async (t) => (await api.sessions(t)).items,
+    [authVersion],
+  );
+  const { withToken } = useApp();
+
+  const revoke = async (id: string) => {
+    await withToken((t) => api.revokeSession(t, id));
+    await reload();
+  };
+  const signOut = async () => {
+    await session.signOut();
+    markAuthChanged();
+    void navigate('/sign-in', { replace: true });
+  };
+
+  return (
+    <main className="page page-top has-nav">
+      <TopBar title="Settings" back="/" />
+      <p className="muted">
+        {caps?.branding.display_name} · Server {caps?.server_version}
+      </p>
+      <ul className="list">
+        {session.info?.role === 'owner' && (
+          <li>
+            <Link to="/settings/storage" className="rowbtn">
+              <span className="doc-title">Where your files are kept</span>
+              <span className="muted">Local disk, or your own S3-compatible bucket</span>
+            </Link>
+          </li>
+        )}
+      </ul>
+      <section aria-labelledby="devices-h">
+        <h2 id="devices-h" className="section-h">
+          Signed-in devices
+        </h2>
+        <ul className="list">
+          {(sessions ?? []).map((d) => (
+            <li key={d.id}>
+              <span>
+                {shortAgent(d.user_agent)}
+                {d.current && <span className="muted"> · this one</span>}
+              </span>
+              {!d.current && (
+                <Button kind="quiet" onClick={() => void revoke(d.id)}>
+                  Sign out
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+      <Button kind="quiet" onClick={() => void signOut()}>
+        Sign out
+      </Button>
+      <BottomNav />
+    </main>
+  );
+}
+
+function shortAgent(ua: string | null): string {
+  if (!ua) return 'Unknown device';
+  if (/iPhone|iPad/.test(ua)) return 'iPhone or iPad';
+  if (/Android/.test(ua)) return 'Android phone';
+  if (/Windows/.test(ua)) return 'Windows computer';
+  if (/Macintosh/.test(ua)) return 'Mac';
+  if (/Linux/.test(ua)) return 'Linux computer';
+  return ua.slice(0, 40);
+}
 
 /**
  * "Where your files are kept" — the Storage board from the prototype.
- * Lists the places, marks the one in use, and adds an S3-compatible bucket
- * through a provider preset, a bucket name and two keys, with a Test that
- * must pass before Save.
  */
-export function StorageScreen(props: {
-  session: Session;
-  onSignedOut: () => void;
-  onBack: () => void;
-}) {
-  const { session, onSignedOut } = props;
-  const [vaults, setVaults] = useState<VaultRow[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [error, setError] = useState<string | null>(null);
+export function StorageScreen() {
+  const { withToken, authVersion } = useApp();
   const [notice, setNotice] = useState<string | null>(null);
-
-  const withToken = useCallback(
-    async <T,>(fn: (token: string) => Promise<T>): Promise<T | undefined> => {
-      const token = await session.token();
-      if (!token) {
-        onSignedOut();
-        return undefined;
-      }
-      try {
-        setError(null);
-        return await fn(token);
-      } catch (err) {
-        setError(
-          err instanceof ApiRequestError ? err.message : "We can't reach the vault right now.",
-        );
-        return undefined;
-      }
-    },
-    [session, onSignedOut],
-  );
-
-  const load = useCallback(async () => {
-    await withToken(async (t) => {
+  const { data, error, reload } = useLoad(
+    async (t) => {
       const [v, p] = await Promise.all([api.vaults(t), api.providers(t)]);
-      setVaults(v.items);
-      setProviders(p);
-    });
-  }, [withToken]);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-  }, [load]);
+      return { vaults: v.items, providers: p };
+    },
+    [authVersion],
+  );
 
   const activate = async (id: string) => {
     await withToken((t) => api.activateVault(t, id));
     setNotice('Done. New files will be kept there from now on.');
-    await load();
+    await reload();
   };
   const remove = async (id: string) => {
     await withToken((t) => api.removeVault(t, id));
-    await load();
+    await reload();
   };
 
   return (
     <main className="page page-top">
-      <header className="topbar">
-        <button type="button" className="back" aria-label="Back" onClick={props.onBack}>
-          ‹
-        </button>
-        <h1 style={{ fontSize: 24 }}>Where your files are kept</h1>
-      </header>
+      <TopBar title="Where your files are kept" back="/settings" />
       <p className="lede">
         Your documents are scrambled before they leave this app, so whoever stores them cannot read
         them.
@@ -79,7 +112,7 @@ export function StorageScreen(props: {
       {notice && <p className="notice">{notice}</p>}
 
       <ul className="list" aria-label="Places">
-        {vaults.map((v) => (
+        {(data?.vaults ?? []).map((v) => (
           <li key={v.id} className="place">
             <div>
               <div className="place-title">
@@ -116,13 +149,17 @@ export function StorageScreen(props: {
       </ul>
 
       <AddPlace
-        providers={providers}
+        providers={data?.providers ?? []}
         onAdd={async (body) => {
-          const created = await withToken((t) => api.addVault(t, body));
-          if (!created) return null;
-          const result = await withToken((t) => api.testVault(t, created.id));
-          await load();
-          return result ?? null;
+          try {
+            const created = await withToken((t) => api.addVault(t, body));
+            if (!created) return null;
+            const result = await withToken((t) => api.testVault(t, created.id));
+            await reload();
+            return result ?? null;
+          } catch (err) {
+            return { ok: false, message: describeError(err) };
+          }
         }}
       />
     </main>
