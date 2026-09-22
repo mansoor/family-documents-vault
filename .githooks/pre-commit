@@ -1,10 +1,10 @@
 #!/bin/sh
 # Refuse to commit anything under the private documentation folders.
 # These folders are git-ignored, but an explicit `git add -f` would bypass that.
-blocked=$(git diff --cached --name-only | grep -E '^(docs|prototype)/' || true)
+blocked=$(git diff --cached --name-only | grep -E '^(docs-private|prototype)/' || true)
 if [ -n "$blocked" ]; then
   echo "pre-commit: refusing to commit private files:" >&2
   echo "$blocked" | sed 's/^/  /' >&2
-  echo "docs/ and prototype/ are private and must never be committed." >&2
+  echo "docs-private/ and prototype/ are private and must never be committed." >&2
   exit 1
 fi

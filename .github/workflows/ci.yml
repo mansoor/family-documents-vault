@@ -19,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fail if docs/ or prototype/ were ever committed
+      - name: Fail if docs-private/ or prototype/ were ever committed
         run: |
-          if git ls-files | grep -E '^(docs|prototype)/' ; then
+          if git ls-files | grep -E '^(docs-private|prototype)/' ; then
             echo "::error::Private documentation was committed. Remove it and rewrite history."
             exit 1
           fi

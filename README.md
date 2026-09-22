@@ -76,7 +76,7 @@ _Documented with the first release that ships the export and backup jobs._ The s
 
 ## Upgrading
 
-Images are version-tagged. Database migrations run automatically on start and are reversible one version back. Breaking API changes are announced in [`docs-public/api-changelog.md`](docs-public/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
+Images are version-tagged. Database migrations run automatically on start and are reversible one version back. Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
 
 ## Developing
 
@@ -92,7 +92,7 @@ Layout:
 ```
 apps/api           the API service
 packages/shared    types and helpers shared by API, worker and clients (the API contract)
-docs-public/       public operational docs (API changelog)
+docs/              public operational docs (API changelog)
 ```
 
 Further packages (`apps/worker`, `apps/web`) are added by the iterations that give them code.

@@ -9,7 +9,7 @@ export interface CapabilityConfig {
 
 /**
  * Oldest client this server will talk to. Bumped only with a published
- * deprecation window; see docs-public/api-changelog.md.
+ * deprecation window; see docs/api-changelog.md.
  */
 export const MIN_CLIENT_VERSION = '0.0.1';
 

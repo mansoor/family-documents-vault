@@ -1,5 +1,5 @@
 # ---- PRIVATE: design docs and prototype never leave this machine ----
-docs/
+docs-private/
 prototype/
 
 # ---- dependencies / build ----
