@@ -8,6 +8,8 @@ import { PgBoss } from 'pg-boss';
 export const JOBS = {
   /** Proves the worker is alive; runs every minute and logs one line. */
   heartbeat: 'heartbeat',
+  /** Recomputes every household's audit hash chain; nightly. */
+  verifyAudit: 'audit.verify',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

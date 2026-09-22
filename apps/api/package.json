@@ -12,9 +12,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^11.2.0",
     "@fdv/db": "workspace:^",
     "@fdv/shared": "workspace:*",
+    "argon2": "^0.45.1",
     "fastify": "^5.12.5",
+    "jose": "^6.2.12",
     "kysely": "^0.29.6",
     "pg": "^8.23.0",
     "zod": "^4.6.5"

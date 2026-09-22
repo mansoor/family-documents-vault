@@ -1,4 +1,7 @@
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerAuth } from './auth/routes.js';
+import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import type { ApiConfig } from './config.js';
 import { ApiError, notFound, notReady } from './errors.js';
@@ -11,10 +14,11 @@ export interface AppDeps {
   serverVersion: string;
   /** Resolves when the database answers; rejects otherwise. */
   pingDatabase: () => Promise<void>;
+  auth: AuthService;
   logger?: boolean | object;
 }
 
-export function buildApp(config: ApiConfig, deps: AppDeps): FastifyInstance {
+export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: deps.logger ?? { level: config.LOG_LEVEL },
     requestIdHeader: 'x-request-id',
@@ -65,18 +69,27 @@ export function buildApp(config: ApiConfig, deps: AppDeps): FastifyInstance {
     return { ok: true };
   });
 
-  const capabilities = buildCapabilities({
-    serverVersion: deps.serverVersion,
-    edition: config.FDV_EDITION,
-    displayName: config.FDV_DISPLAY_NAME,
-    maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
-  });
+  // Auth endpoints get a tight per-route limit (see routes); this is the
+  // ceiling for everything else.
+  await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute' });
 
   // API-01: the first call any client makes. Unauthenticated, cacheable.
   app.get('/api/v1/capabilities', async (_req, reply) => {
-    reply.header('cache-control', 'public, max-age=300');
-    return capabilities;
+    const setupRequired = !(await deps.auth.setupComplete());
+    const householdName = setupRequired ? null : await deps.auth.displayName();
+    // The document is cacheable — except while setup is pending, because a
+    // cached "setup_required: true" would show the wizard again after setup.
+    reply.header('cache-control', setupRequired ? 'no-store' : 'public, max-age=300');
+    return buildCapabilities({
+      serverVersion: deps.serverVersion,
+      edition: config.FDV_EDITION,
+      displayName: householdName ?? config.FDV_DISPLAY_NAME,
+      maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+      setupRequired,
+    });
   });
+
+  registerAuth(app, deps.auth);
 
   return app;
 }

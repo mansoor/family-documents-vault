@@ -1,4 +1,5 @@
 import { loadConfig } from './config.js';
+import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
 
 const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
@@ -23,11 +24,24 @@ async function main(): Promise<void> {
     for (const job of jobs) log('info', 'heartbeat', { job_id: job.id });
   });
   await boss.schedule(JOBS.heartbeat, '* * * * *');
+
+  const dbs = connections(config.DATABASE_URL, config.DATABASE_ADMIN_URL ?? config.DATABASE_URL);
+  await boss.createQueue(JOBS.verifyAudit);
+  await boss.work(JOBS.verifyAudit, async () => {
+    const report = await verifyAllAuditChains(dbs.admin, dbs.app);
+    if (report.broken.length) {
+      log('error', 'audit chain broken', { ...report });
+    } else {
+      log('info', 'audit chains verified', { households: report.households });
+    }
+  });
+  await boss.schedule(JOBS.verifyAudit, '15 3 * * *');
   log('info', 'worker ready', { jobs: Object.values(JOBS) });
 
   const shutdown = async (signal: string) => {
     log('info', 'shutting down', { signal });
     await boss.stop({ graceful: true, timeout: 10_000 });
+    await dbs.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
