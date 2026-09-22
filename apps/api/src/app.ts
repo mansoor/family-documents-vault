@@ -4,6 +4,7 @@ import { registerAuth } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
+import type { SealedSearchService } from './documents/sealed-search.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
 import type { DocumentService } from './documents/service.js';
@@ -33,6 +34,7 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
   exports: ExportService;
@@ -121,7 +123,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
   registerNotifications(app, deps.notifications);
-  await registerDocuments(app, deps.documents, deps.visibility, config.FDV_MAX_UPLOAD_BYTES);
+  await registerDocuments(
+    app,
+    deps.documents,
+    deps.visibility,
+    config.FDV_MAX_UPLOAD_BYTES,
+    deps.sealedSearch,
+  );
 
   return app;
 }

@@ -8,6 +8,7 @@ import {
   installFakeApi,
   ME,
   MISSING_BIRTH_CERTIFICATE,
+  SEALED_HIT,
   signedIn,
 } from './test-api.js';
 
@@ -235,5 +236,38 @@ describe('App', () => {
     fireEvent.click(await screen.findByRole('button', { name: '1 hidden' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Show it again' }));
     await screen.findByText('No birth certificate for Aisha');
+  });
+  it('searches the caller’s own private documents in a second pass', async () => {
+    const state = fresh({ sealed: [{ ...SEALED_HIT }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    const box = await screen.findByLabelText('Search everything');
+    fireEvent.change(box, { target: { value: 'estate' } });
+
+    // The indexed pass has nothing; the sealed pass does.
+    await screen.findByText('Also in your private documents');
+    expect(screen.getByText(/Only you can see these/)).toBeInTheDocument();
+    expect(screen.getByText('Notes to myself')).toBeInTheDocument();
+    expect(document.querySelector('.snippet em')?.textContent).toBe('estate');
+    // The count covers both passes: no "0 documents" above a result.
+    expect(screen.getByText(/1 document, searched inside the pages too/)).toBeInTheDocument();
+    expect(state.calls.some((c) => c.url === '/api/v1/search/sealed?token=sealed-handle')).toBe(
+      true,
+    );
+    await expectAccessible();
+  });
+
+  it('says so plainly when nothing in the private documents matched', async () => {
+    const state = fresh({ sealed: [{ ...SEALED_HIT }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Search everything'), {
+      target: { value: 'zqxjkv' },
+    });
+    await screen.findByText('Nothing in your 1 private document matched.');
   });
 });

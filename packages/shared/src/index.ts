@@ -3,3 +3,4 @@ export * from './capabilities.js';
 export * from './documents.js';
 export * from './reminders.js';
 export * from './suggestions.js';
+export * from './text-search.js';

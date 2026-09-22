@@ -430,5 +430,14 @@ export const api = {
       token,
     }),
   search: (token: string, q: string, params: Params = {}) =>
-    request<{ items: SearchHit[] }>(`/api/v1/search${qs({ q, ...params })}`, { token }),
+    request<{ items: SearchHit[]; sealed_pending: { count: number; token?: string } }>(
+      `/api/v1/search${qs({ q, ...params })}`,
+      { token },
+    ),
+  /** The second pass: the caller's own sealed documents (FND-08). */
+  searchSealed: (token: string, handle: string) =>
+    request<{ items: SearchHit[]; searched: number }>(
+      `/api/v1/search/sealed?token=${encodeURIComponent(handle)}`,
+      { token },
+    ),
 };

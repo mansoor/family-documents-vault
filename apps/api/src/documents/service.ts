@@ -24,6 +24,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
+import { signSealedToken } from './sealed-token.js';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -139,6 +140,8 @@ export class DocumentService {
     private readonly maxUploadBytes: number,
     private readonly enqueue: Enqueue = async () => undefined,
     private readonly reminders: ReminderService | null = null,
+    /** Signs the handle on the second pass of search; null disables it. */
+    private readonly sealedKey: Uint8Array | null = null,
   ) {}
 
   // ---------------------------------------------------------------- types
@@ -715,13 +718,20 @@ export class DocumentService {
 
   /**
    * FND-01: one query over titles, identifiers, tags, notes and the OCR text
-   * of every version, ranked, with a highlighted snippet. Private documents'
-   * text is sealed and not searched here (2.5 adds the in-session pass).
+   * of every version, ranked, with a highlighted snippet.
+   *
+   * Private documents' text is sealed and has no index, so it is not
+   * searched here. `sealed_pending` says how many of the caller's own
+   * documents were left unopened and hands out a token for the second
+   * pass (FND-08); a client that ignores it still works.
    */
   async search(
     p: Principal,
     q: SearchQuery,
-  ): Promise<{ items: SearchHit[]; sealed_pending: { count: number } }> {
+  ): Promise<{
+    items: SearchHit[];
+    sealed_pending: { count: number; token?: string };
+  }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
     const adultsOk = p.role === 'owner' || p.role === 'adult';
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
@@ -810,14 +820,34 @@ export class DocumentService {
           rank: Number(r.rank),
         });
       }
+      // How much of the caller's own text this pass could not look inside.
+      // Counted by document, not by version: it is documents the person
+      // thinks in, and it is what the second pass will search.
       const sealed = await trx
         .selectFrom('document_text_sealed')
         .innerJoin('document', 'document.id', 'document_text_sealed.document_id')
-        .select(sql<number>`count(*)::int`.as('n'))
+        .select(sql<number>`count(distinct document.id)::int`.as('n'))
         .where('document.owner_member_id', '=', p.memberId)
+        .where('document.visibility', '=', 'private')
         .where('document.deleted_at', 'is', null)
         .executeTakeFirst();
-      return { items, sealed_pending: { count: sealed?.n ?? 0 } };
+      const count = sealed?.n ?? 0;
+      if (count === 0 || !this.sealedKey) return { items, sealed_pending: { count } };
+      return {
+        items,
+        sealed_pending: {
+          count,
+          token: await signSealedToken(this.sealedKey, {
+            sid: p.sessionId,
+            hid: p.householdId,
+            mid: p.memberId,
+            q: q.q,
+            member_id: q.member_id,
+            category: q.category,
+            limit,
+          }),
+        },
+      };
     });
   }
 

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import type { SealedSearchService } from './sealed-search.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
 
@@ -75,6 +76,7 @@ export async function registerDocuments(
   docs: DocumentService,
   visibility: VisibilityService,
   maxUploadBytes: number,
+  sealed: SealedSearchService,
 ) {
   await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1 } });
   const auth = { preHandler: app.requireAuth };
@@ -97,6 +99,13 @@ export async function registerDocuments(
   app.get('/api/v1/search', auth, async (req) =>
     docs.search(principal(req), parse(searchQuery, req.query)),
   );
+
+  // The second pass: the caller's own sealed documents, opened in their
+  // session. The token from the first pass says what to search.
+  app.get<{ Querystring: { token?: string } }>('/api/v1/search/sealed', auth, async (req) => {
+    const token = parse(z.string().min(1).max(4096), req.query.token);
+    return sealed.search(principal(req), token);
+  });
 
   app.get<{ Params: { id: string } }>(
     '/api/v1/versions/:id/thumbnail',
