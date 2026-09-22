@@ -3,6 +3,16 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
+import { registerDocuments } from './documents/routes.js';
+import { registerHousehold } from './household/routes.js';
+import type { HouseholdService } from './household/service.js';
+import type { DocumentService } from './documents/service.js';
+import type { VisibilityService } from './documents/visibility.js';
+import type { TotpService } from './auth/totp.js';
+import { registerExports } from './exports/routes.js';
+import type { ExportService } from './exports/service.js';
+import { registerVaults } from './vaults/routes.js';
+import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ApiError, notFound, notReady } from './errors.js';
 
@@ -15,6 +25,12 @@ export interface AppDeps {
   /** Resolves when the database answers; rejects otherwise. */
   pingDatabase: () => Promise<void>;
   auth: AuthService;
+  vaults: VaultService;
+  documents: DocumentService;
+  visibility: VisibilityService;
+  totp: TotpService;
+  exports: ExportService;
+  household: HouseholdService;
   logger?: boolean | object;
 }
 
@@ -89,7 +105,11 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth);
+  registerAuth(app, deps.auth, deps.totp);
+  registerVaults(app, deps.vaults);
+  registerHousehold(app, deps.household);
+  registerExports(app, deps.exports);
+  await registerDocuments(app, deps.documents, deps.visibility, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;
 }

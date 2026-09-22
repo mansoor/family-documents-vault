@@ -1,4 +1,11 @@
-import { Kysely, PostgresDialect, sql, type ColumnType, type Generated } from 'kysely';
+import {
+  Kysely,
+  PostgresDialect,
+  sql,
+  type ColumnType,
+  type Generated,
+  type GeneratedAlways,
+} from 'kysely';
 import pg from 'pg';
 
 /**
@@ -13,6 +20,9 @@ type GeneratedTimestamp = ColumnType<Date, Date | string | undefined, Date | str
 type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
+export type Visibility = 'household' | 'adults' | 'private';
+export type DatePrecision = 'day' | 'month' | 'year';
+type DateOnly = ColumnType<Date, string | null, string | null>;
 
 export interface Schema {
   schema_migration: { version: number; name: string; applied_at: Timestamp };
@@ -46,6 +56,7 @@ export interface Schema {
     email: string;
     password_hash: string | null;
     totp_secret: Buffer | null;
+    totp_confirmed_at: Timestamp | null;
     created_at: GeneratedTimestamp;
     disabled_at: Timestamp | null;
   };
@@ -95,6 +106,151 @@ export interface Schema {
     country: string | null;
     answered_at: Timestamp | null;
     extra: GeneratedJson;
+  };
+
+  scope_key: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'household' | 'adults' | 'member';
+    member_id: string | null;
+    key_wrapped: Buffer;
+    key_wrapped_cred: Buffer | null;
+    kdf_params: ColumnType<unknown, string | null, string | null> | null;
+    created_at: GeneratedTimestamp;
+    rotated_at: Timestamp | null;
+  };
+
+  vault: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'local' | 's3';
+    provider: string | null;
+    label: string;
+    endpoint: string | null;
+    bucket: string | null;
+    region: string | null;
+    prefix: string | null;
+    path_style: Generated<boolean>;
+    credentials_encrypted: Buffer | null;
+    role: Generated<'primary' | 'mirror' | 'migration_target'>;
+    status: Generated<'untested' | 'ok' | 'failed'>;
+    last_verified_at: Timestamp | null;
+    last_error: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_type: {
+    key: string;
+    label: string;
+    category: string;
+    locale: string | null;
+    fields: ColumnType<unknown, string, string>;
+    expiry_driver: string | null;
+    reminder_leads: number[];
+    usually_essential: boolean;
+    default_visibility: Visibility;
+    sort_order: number;
+    pack_version: number;
+  };
+
+  document: {
+    id: Generated<string>;
+    household_id: string;
+    type_key: string | null;
+    title: string | null;
+    owner_member_id: string | null;
+    category: string | null;
+    visibility: Generated<Visibility>;
+    issued_on: DateOnly | null;
+    issued_precision: DatePrecision | null;
+    expires_on: DateOnly | null;
+    expires_precision: DatePrecision | null;
+    identifier: string | null;
+    physical_location: string | null;
+    is_essential: Generated<boolean>;
+    tags: Generated<string[]>;
+    notes: string | null;
+    extra: GeneratedJson;
+    status_cache: string | null;
+    search_tsv: GeneratedAlways<string>;
+    created_at: GeneratedTimestamp;
+    created_by: string | null;
+    updated_at: GeneratedTimestamp;
+    updated_by: string | null;
+    deleted_at: Timestamp | null;
+  };
+
+  document_version: {
+    id: Generated<string>;
+    household_id: string;
+    document_id: string;
+    version_no: number;
+    filename: string;
+    mime: string;
+    byte_size: ColumnType<string | number, number, number>;
+    sha256: Buffer;
+    cipher_bytes: ColumnType<string | number, number, number>;
+    cipher_sha256: Buffer;
+    storage_key: string;
+    vault_id: string;
+    file_key_wrapped: Buffer;
+    wrapped_by_scope: string;
+    page_count: number | null;
+    ocr_status: Generated<'pending' | 'done' | 'failed' | 'skipped'>;
+    thumbnail_key: string | null;
+    processed_at: Timestamp | null;
+    process_error: string | null;
+    uploaded_by: string | null;
+    uploaded_at: GeneratedTimestamp;
+  };
+
+  document_text: {
+    version_id: string;
+    household_id: string;
+    document_id: string;
+    content: string;
+    tsv: GeneratedAlways<string>;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_text_sealed: {
+    version_id: string;
+    household_id: string;
+    document_id: string;
+    content_cipher: Buffer;
+    created_at: GeneratedTimestamp;
+  };
+
+  upload_idempotency: {
+    idempotency_key: string;
+    household_id: string;
+    document_id: string;
+    version_id: string | null;
+    created_at: GeneratedTimestamp;
+  };
+
+  document_link: {
+    household_id: string;
+    a: string;
+    b: string;
+    created_at: GeneratedTimestamp;
+  };
+
+  export: {
+    id: Generated<string>;
+    household_id: string;
+    requested_by: string;
+    state: Generated<'queued' | 'running' | 'done' | 'failed'>;
+    document_count: number | null;
+    byte_size: ColumnType<string | number, number | null, number | null> | null;
+    storage_key: string | null;
+    vault_id: string | null;
+    file_key_wrapped: Buffer | null;
+    wrapped_by_scope: string | null;
+    error: string | null;
+    created_at: GeneratedTimestamp;
+    finished_at: Timestamp | null;
+    expires_at: Timestamp | null;
   };
 
   audit_event: {

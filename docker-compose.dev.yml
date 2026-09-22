@@ -12,7 +12,7 @@ services:
       - '${FDV_DB_PORT:-5432}:5432'
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ':9001'
     environment:

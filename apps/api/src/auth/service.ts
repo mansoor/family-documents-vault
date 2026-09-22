@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ScopeKeys } from '@fdv/crypto';
 import { appendAudit, withScope, type Db, type Role } from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
@@ -77,6 +78,19 @@ export class AuthService {
   constructor(
     private readonly db: Db,
     private readonly signingKey: Uint8Array,
+    private readonly keys: ScopeKeys,
+    /** Runs inside setup's transaction after the household exists (creates the default vault). */
+    private readonly onHouseholdCreated: (
+      trx: Db,
+      householdId: string,
+    ) => Promise<void> = async () => undefined,
+    /** Answers whether an account must present a second factor, and mints the interim token. */
+    private readonly mfa: {
+      isEnabled: (accountId: string) => Promise<boolean>;
+      mfaToken: (accountId: string) => Promise<string>;
+      accountFromMfaToken: (token: string) => Promise<string>;
+      verify: (accountId: string, code: string) => Promise<boolean>;
+    } | null = null,
   ) {}
 
   async setupComplete(): Promise<boolean> {
@@ -129,6 +143,11 @@ export class AuthService {
           role: 'owner',
         })
         .execute();
+      // The key hierarchy is born with the household (data model, section 8):
+      // nothing can be stored until these rows exist.
+      await this.keys.mintHouseholdKeys(trx, householdId);
+      await this.keys.mintMemberKey(trx, householdId, member.id, input.password);
+      await this.onHouseholdCreated(trx, householdId);
       await appendAudit(trx, {
         householdId,
         actorAccountId: account.id,
@@ -146,7 +165,11 @@ export class AuthService {
     });
   }
 
-  async signInWithPassword(email: string, password: string, meta: RequestMeta): Promise<Tokens> {
+  async signInWithPassword(
+    email: string,
+    password: string,
+    meta: RequestMeta,
+  ): Promise<Tokens | { mfa_required: true; mfa_token: string }> {
     const account = await this.db
       .selectFrom('account')
       .select(['id', 'password_hash', 'disabled_at'])
@@ -156,6 +179,29 @@ export class AuthService {
     const hash = account?.password_hash ?? (await DUMMY_HASH_PROMISE);
     const ok = await argon2.verify(hash, password);
     if (!account || !ok || account.disabled_at) throw invalidCredentials();
+
+    if (this.mfa && (await this.mfa.isEnabled(account.id))) {
+      return { mfa_required: true, mfa_token: await this.mfa.mfaToken(account.id) };
+    }
+    return this.openSessionForAccount(account.id, meta, 'password');
+  }
+
+  /** Second step: the interim token plus a code from the authenticator. */
+  async signInWithMfa(mfaToken: string, code: string, meta: RequestMeta): Promise<Tokens> {
+    if (!this.mfa) throw invalidCredentials();
+    const accountId = await this.mfa.accountFromMfaToken(mfaToken);
+    if (!(await this.mfa.verify(accountId, code))) {
+      throw new ApiError(401, 'totp_invalid', "That code didn't match. Try the current one.");
+    }
+    return this.openSessionForAccount(accountId, meta, 'password+totp');
+  }
+
+  private async openSessionForAccount(
+    accountId: string,
+    meta: RequestMeta,
+    method: string,
+  ): Promise<Tokens> {
+    const account = { id: accountId };
 
     const memberships = await withScope(this.db, { accountId: account.id }, (trx) =>
       trx
@@ -178,7 +224,7 @@ export class AuthService {
           actorAccountId: account.id,
           action: 'auth.signed_in',
           ip: meta.ip,
-          detail: { method: 'password' },
+          detail: { method },
         });
         return this.openSession(
           trx,
@@ -347,6 +393,15 @@ export class AuthService {
       memberId: claims.mid,
       role: claims.role,
     };
+  }
+
+  async emailOf(accountId: string): Promise<string> {
+    const row = await this.db
+      .selectFrom('account')
+      .select('email')
+      .where('id', '=', accountId)
+      .executeTakeFirstOrThrow();
+    return row.email;
   }
 
   async listSessions(p: Principal) {

@@ -1,70 +1,42 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { fresh, installFakeApi, signedIn } from './test-api.js';
 
-const caps = (setup_required: boolean) => ({
-  product: 'family-document-vault',
-  server_version: '0.0.3',
-  api_version: 1,
-  min_client_version: '0.0.1',
-  edition: 'self_hosted',
-  protection_mode: 'standard',
-  setup_required,
-  features: {},
-  limits: {},
-  deprecations: [],
-  branding: { display_name: 'The Seikh family' },
+beforeEach(() => {
+  localStorage.clear();
+  window.history.replaceState({}, '', '/');
 });
-
-const tokens = {
-  access_token: 'a.b.c',
-  expires_in: 900,
-  refresh_token: 'hh.secret',
-  refresh_expires_in: 1,
-  household_id: 'hh',
-  member_id: 'mm',
-  role: 'owner',
-  scopes_unlocked: ['household'],
-};
-
-type Route = (init?: RequestInit) => Response | Error;
-
-function mockApi(routes: Record<string, Route>) {
-  const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const key = `${init?.method ?? 'GET'} ${url}`;
-    const route = routes[key];
-    if (!route) return Promise.reject(new Error(`unmocked ${key}`));
-    const r = route(init);
-    return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
-  });
-  vi.stubGlobal('fetch', fn);
-  return fn;
-}
-
-beforeEach(() => localStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
+
+async function expectAccessible() {
+  const results = await axe.run(document.body, {
+    rules: { 'color-contrast': { enabled: false } }, // jsdom has no layout
+  });
+  expect(
+    results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.html).join(' | ')}`),
+  ).toEqual([]);
+}
 
 describe('App', () => {
   it('shows the failure copy when the vault is unreachable', async () => {
-    mockApi({ 'GET /api/v1/capabilities': () => new TypeError('Failed to fetch') });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
+    );
     render(<App />);
-    expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    await screen.findByText('Not connected');
     expect(screen.getByText(/can't reach the vault/)).toBeInTheDocument();
   });
 
-  it('runs the first-run setup and lands on home', async () => {
-    const fetchMock = mockApi({
-      'GET /api/v1/capabilities': () => Response.json(caps(true)),
-      'POST /api/v1/setup': () => Response.json(tokens, { status: 201 }),
-      'GET /api/v1/me': () =>
-        Response.json({ account_id: 'a', household_id: 'hh', member_id: 'mm', role: 'owner' }),
-      'GET /api/v1/auth/sessions': () =>
-        Response.json({ items: [{ id: 's1', current: true, user_agent: 'Windows' }] }),
-    });
+  it('runs the whole first-run wizard: account → questions → people → starting list', async () => {
+    const state = fresh({ setupRequired: true, members: [] });
+    installFakeApi(state);
     render(<App />);
-    expect(await screen.findByRole('heading', { name: /Set up your family/ })).toBeInTheDocument();
 
+    await screen.findByRole('heading', { name: /Set up your family/ });
+    await expectAccessible();
     fireEvent.change(screen.getByLabelText(/call your family/), {
       target: { value: 'The Seikh family' },
     });
@@ -75,61 +47,131 @@ describe('App', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create my vault' }));
 
-    expect(await screen.findByText('You are signed in.')).toBeInTheDocument();
-    expect(await screen.findByText(/Role: owner/)).toBeInTheDocument();
-    expect(await screen.findByText(/Windows computer/)).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'A few quick questions' });
+    fireEvent.click(screen.getByRole('button', { name: 'We own it' }));
+    fireEvent.click(screen.getByRole('button', { name: '2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Children' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
-    const setupCall = fetchMock.mock.calls.find((c) => c[0] === '/api/v1/setup');
-    expect(JSON.parse(setupCall?.[1]?.body as string)).toMatchObject({
-      household_name: 'The Seikh family',
-      email: 'm@example.test',
+    await screen.findByRole('heading', { name: 'Who is in the family?' });
+    const profileCall = state.calls.find((c) => c.method === 'PUT' && c.url === '/api/v1/profile');
+    expect(profileCall?.body).toMatchObject({
+      owns_home: true,
+      rents_home: false,
+      vehicle_count: 2,
     });
-    expect(JSON.parse(localStorage.getItem('fdv.session') ?? '{}')).toMatchObject({
-      household_id: 'hh',
+
+    fireEvent.change(screen.getByLabelText('Name of another family member'), {
+      target: { value: 'Aisha' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await screen.findByText('Aisha');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+    await screen.findByRole('heading', { name: 'Your starting list' });
+    expect(screen.getByText('Home insurance and deed')).toBeInTheDocument();
+    expect(screen.getByText(/For your 2 vehicles/)).toBeInTheDocument();
+    await expectAccessible();
   });
 
-  it('shows sign-in when set up, and surfaces the server message on a wrong password', async () => {
-    mockApi({
-      'GET /api/v1/capabilities': () => Response.json(caps(false)),
-      'POST /api/v1/auth/password': () =>
-        Response.json(
-          {
-            error: { code: 'invalid_credentials', message: "That email and password don't match." },
-          },
-          { status: 401 },
-        ),
-    });
+  it('signs in and shows home with the household name, people, tiles and recent documents', async () => {
+    const state = fresh();
+    installFakeApi(state);
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'The Seikh family' })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'm@example.test' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'nope nope nope' } });
+    await screen.findByRole('heading', { name: 'Every important paper, in one place.' });
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-    await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent("That email and password don't match."),
-    );
+    fireEvent.change(await screen.findByLabelText('Email'), {
+      target: { value: 'm@example.test' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    await screen.findByText('Everything is fine. Nothing needs your attention.');
+    await screen.findByText('1 item');
+    expect(screen.getAllByText('Identity').length).toBeGreaterThan(0);
+    expect(screen.getByText("Mansoor's passport")).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Add a document' })).toBeInTheDocument();
+    await expectAccessible();
   });
 
-  it('resumes a stored session by refreshing, and falls back to sign-in when refused', async () => {
-    localStorage.setItem(
-      'fdv.session',
-      JSON.stringify({
-        refresh_token: 'hh.old',
-        household_id: 'hh',
-        member_id: 'mm',
-        role: 'adult',
-      }),
-    );
-    mockApi({
-      'GET /api/v1/capabilities': () => Response.json(caps(false)),
-      'POST /api/v1/auth/refresh': () =>
-        Response.json(
-          { error: { code: 'session_ended', message: 'Please sign in again.' } },
-          { status: 401 },
-        ),
-    });
+  it('opens a document, edits it on the confirm card, and saves with the ETag', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
-    expect(await screen.findByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    expect(screen.getByText('14 Mar 2021')).toBeInTheDocument();
+    expect(screen.getByText('March 2031')).toBeInTheDocument();
+    expect(screen.getByText('Bedroom safe, top shelf')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('link', { name: 'Edit' }));
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: '2032-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+
+    await waitFor(() => {
+      const patch = state.calls.find((c) => c.method === 'PATCH');
+      expect(patch?.headers?.['if-match']).toBe('"abc"');
+      expect(patch?.body).toMatchObject({ expires: { date: '2032-01-31', precision: 'month' } });
+    });
+  });
+
+  it('searches and renders snippets with highlights but without scripts', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    const box = await screen.findByLabelText('Search everything');
+    fireEvent.change(box, { target: { value: 'policy 4471' } });
+    await screen.findByText('Home insurance policy');
+    const em = document.querySelector('.snippet em');
+    expect(em?.textContent).toBe('4471');
+    expect(document.querySelector('.snippet script')).toBeNull();
+    expect(screen.getByText(/searched inside the pages too/)).toBeInTheDocument();
+  });
+
+  it('falls back to sign-in when the stored session is refused', async () => {
+    const state = fresh();
+    const fetchMock = installFakeApi(state);
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json({
+          product: 'family-document-vault',
+          server_version: '0.1.5',
+          api_version: 1,
+          min_client_version: '0.0.1',
+          edition: 'self_hosted',
+          protection_mode: 'standard',
+          setup_required: false,
+          features: {},
+          limits: {},
+          deprecations: [],
+          branding: { display_name: 'The Seikh family' },
+        }),
+      ),
+    );
+    // Any subsequent call answers 401 for the refresh.
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes('/auth/refresh')) {
+        return Promise.resolve(
+          Response.json(
+            { error: { code: 'session_ended', message: 'Please sign in again.' } },
+            { status: 401 },
+          ),
+        );
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    signedIn();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Every important paper, in one place.' });
     expect(localStorage.getItem('fdv.session')).toBeNull();
   });
 });

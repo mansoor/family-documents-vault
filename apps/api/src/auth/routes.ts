@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import type { AuthService, Principal, RequestMeta } from './service.js';
+import type { TotpService } from './totp.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -21,7 +22,7 @@ const setupBody = z.object({
 const passwordBody = z.object({ email, password: z.string().min(1).max(1024) });
 const refreshBody = z.object({ refresh_token: z.string().min(1).max(512) });
 
-function parse<T>(schema: z.ZodType<T>, body: unknown): T {
+export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   const r = schema.safeParse(body);
   if (!r.success) {
     const first = r.error.issues[0];
@@ -41,7 +42,7 @@ export function metaOf(req: FastifyRequest): RequestMeta {
  * any route can use; it populates `request.principal` or fails with the
  * envelope.
  */
-export function registerAuth(app: FastifyInstance, auth: AuthService): void {
+export function registerAuth(app: FastifyInstance, auth: AuthService, totp?: TotpService): void {
   app.decorateRequest('principal', null);
 
   app.decorate('requireAuth', async (req: FastifyRequest) => {
@@ -74,6 +75,14 @@ export function registerAuth(app: FastifyInstance, auth: AuthService): void {
     return auth.signInWithPassword(body.email, body.password, metaOf(req));
   });
 
+  app.post('/api/v1/auth/mfa', tight, async (req) => {
+    const body = parse(
+      z.object({ mfa_token: z.string().min(1), code: z.string().min(6).max(10) }),
+      req.body,
+    );
+    return auth.signInWithMfa(body.mfa_token, body.code, metaOf(req));
+  });
+
   app.post('/api/v1/auth/refresh', tight, async (req) => {
     const body = parse(refreshBody, req.body);
     return auth.refresh(body.refresh_token, metaOf(req));
@@ -100,13 +109,35 @@ export function registerAuth(app: FastifyInstance, auth: AuthService): void {
 
   app.get('/api/v1/me', { preHandler: app.requireAuth }, async (req) => {
     const p = req.principal as Principal;
+    const enabled = totp ? await totp.isEnabled(p.accountId) : false;
     return {
       account_id: p.accountId,
       household_id: p.householdId,
       member_id: p.memberId,
       role: p.role,
+      totp_enabled: enabled,
+      // SEC-03: owners must have two-step sign-in; the app nags until they do.
+      totp_required: p.role === 'owner' && !enabled,
     };
   });
+
+  if (totp) {
+    app.post('/api/v1/auth/totp/enrol', { preHandler: app.requireAuth }, async (req) => {
+      const p = req.principal as Principal;
+      const email = await auth.emailOf(p.accountId);
+      return totp.enrol(p, email, metaOf(req));
+    });
+    app.post('/api/v1/auth/totp/confirm', { preHandler: app.requireAuth }, async (req, reply) => {
+      const body = parse(z.object({ code: z.string().min(6).max(10) }), req.body);
+      await totp.confirm(req.principal as Principal, body.code, metaOf(req));
+      return reply.status(204).send();
+    });
+    app.post('/api/v1/auth/totp/disable', { preHandler: app.requireAuth }, async (req, reply) => {
+      const body = parse(z.object({ code: z.string().min(6).max(10) }), req.body);
+      await totp.disable(req.principal as Principal, body.code, metaOf(req));
+      return reply.status(204).send();
+    });
+  }
 }
 
 declare module 'fastify' {

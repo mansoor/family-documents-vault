@@ -47,8 +47,20 @@ jobs:
           --health-retries 12
     env:
       DATABASE_ADMIN_URL: postgres://fdv:fdv@localhost:5432/fdv
+      S3_TEST_ENDPOINT: http://localhost:9000
+      S3_TEST_KEY: fdv
+      S3_TEST_SECRET: fdv-minio-test
     steps:
       - uses: actions/checkout@v4
+      - name: Install OCR and rendering tools (for the worker's processing tests)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick
+      - name: Start MinIO (S3-compatible storage for the adapter tests)
+        run: |
+          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=fdv -e MINIO_ROOT_PASSWORD=fdv-minio-test             quay.io/minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break
+            sleep 1
+          done
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -95,3 +107,35 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
+
+  e2e:
+    name: End to end (docker compose)
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Start the stack exactly as a self-hoster would
+        run: |
+          node scripts/gen-env.mjs
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/readyz && break
+            sleep 5
+          done
+          curl -sf http://localhost:8080/api/v1/capabilities
+      - run: pnpm e2e
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color | tail -200
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/

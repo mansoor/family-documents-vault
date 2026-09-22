@@ -45,7 +45,9 @@ node scripts/gen-env.mjs   # writes .env with a random master key and database p
 docker compose up -d
 ```
 
-The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`: the first visit asks for your family's name, your name, your email and a password, and makes you the owner. Nobody else can run that step again.
+The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`. The first visit walks you through setup: your family's name, your name, your email and a password (you become the owner — nobody can run that step again), a few quick questions about your household, the people whose documents you keep, and a starting list of what families like yours usually file.
+
+From then on: **Add** a document from a photo or a file, confirm what it is and whose it is, and it is filed. Browse by person or category from Home, or search — including the words inside scanned pages.
 
 `gen-env` refuses to overwrite an existing `.env`, because a new master key would make every stored document unreadable. **Back the file up somewhere off the server.**
 
@@ -55,20 +57,23 @@ To stop: `docker compose down`. Your data stays in the `fdv_db-data` and `fdv_va
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
 
-| Variable              | Default            | What it is                                                                                                                                         |
-| --------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FDV_MASTER_KEY`      | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
-| `FDV_DB_PASSWORD`     | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
-| `FDV_DB_APP_PASSWORD` | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
-| `FDV_DISPLAY_NAME`    | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
-| `FDV_PORT`            | `8080`             | The port the web app listens on.                                                                                                                   |
-| `LOG_LEVEL`           | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
-| `FDV_VERSION`         | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| Variable               | Default            | What it is                                                                                                                                         |
+| ---------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FDV_MASTER_KEY`       | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
+| `FDV_DB_PASSWORD`      | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
+| `FDV_DB_APP_PASSWORD`  | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_MAX_UPLOAD_BYTES` | `104857600`        | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
+| `FDV_DISPLAY_NAME`     | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
+| `FDV_PORT`             | `8080`             | The port the web app listens on.                                                                                                                   |
+| `LOG_LEVEL`            | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
+| `FDV_VERSION`          | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
 ### Sign-in and sessions
 
+- **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
 - Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a 30-day refresh token that rotates on every use; a refresh token presented twice is treated as stolen and that device is signed out.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
@@ -76,23 +81,55 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 
 ## How your files are protected
 
-- The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file, or your OS keychain) — never in the database.
+- The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file) — never in the database.
+- Files are encrypted in 1 MB chunks, each with its own authentication tag, so a page in the middle of a large PDF can be served without decrypting the whole file, and a reordered, altered or truncated file is refused rather than decrypted into garbage.
 - The **storage provider sees only ciphertext** and object sizes. No filenames, no document types, no names.
 - **"Only me" documents** use a per-member key that other accounts, including the owner, do not hold.
 - Every sign-in, sign-out, download, view of a private document and access change is written to an **append-only, hash-chained audit log**. The database refuses updates and deletes on it, and the worker recomputes every chain nightly — a row that was altered or removed breaks the chain from that point on.
 - **Row-level security in PostgreSQL** keeps each household's rows invisible to every other household, enforced by the database rather than by application code. The application connects as a role that owns no tables, which is what makes the policies apply.
 - **Backups of the database are encrypted** with the same master key.
 
+- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable; no page ever leaves the machine. Private documents' text is stored encrypted under the owner's key and is not indexed.
+
 The honest limit: someone who controls the whole server can read everything. For a self-hosted vault on the household's own machine, that is the right trade — it is what makes server-side search, thumbnails and automatic filing possible.
 
 ## Backups and recovery
 
-_Documented with the first release that ships the export and backup jobs._ The shape of it:
+Three things make up a complete backup:
 
-1. **Your `.env`** (the master key) — keep a copy off the server.
-2. **The database** — a nightly encrypted dump, retained 30 days.
-3. **The files** — your local directory or your bucket. Optionally a second location as a mirror.
-4. **The recovery sheet** — one printed page with where the files are, a recovery code, and how to open them with the offline recovery tool, with no server and no app.
+1. **Your `.env`** — it holds the master key. Keep a copy off the server. Without it, nothing else below is readable.
+2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own.
+3. **The files** — the `fdv_vault-data` volume (`/data/vault`) for the local vault, or your bucket. They are ciphertext; the master key and the database together open them.
+
+Useful commands (run inside the worker container):
+
+```bash
+docker compose exec worker node apps/worker/dist/cli.mjs backup-now
+```
+
+```bash
+docker compose exec worker sh scripts/restore-drill.sh
+```
+
+The restore drill decrypts the newest backup, loads it into a scratch database, counts what came back and drops the scratch database again. Run it after you change anything about your backups, and let it reassure you occasionally. To restore for real: decrypt with `decrypt-backup <file> out.sql`, load `out.sql` into a fresh database, and point a fresh stack at it with the same `.env`.
+
+**Export everything** in Settings makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all.
+
+### Where files are kept
+
+Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
+
+Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
+
+### Rotating the master key
+
+Rotation rewraps the small per-household keys; the encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
+
+```bash
+docker compose run --rm -e FDV_MASTER_KEY_NEW="$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')" api node apps/api/dist/cli.mjs rotate-master-key
+```
+
+Then put the new value in `.env` as `FDV_MASTER_KEY`, run `docker compose up -d`, and back the file up again. Everyone is signed out by the rotation, because sign-in tokens are derived from the same key.
 
 ## Upgrading
 
@@ -106,6 +143,7 @@ Requirements: Node 22, pnpm 9, Docker.
 pnpm install
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres   # a database for tests
 DATABASE_ADMIN_URL=postgres://fdv:<FDV_DB_PASSWORD>@localhost:5432/fdv pnpm check   # lint + typecheck + tests
+docker compose up -d && pnpm e2e                                                  # end to end, in a real browser, against the containers
 ```
 
 Integration tests run against a real PostgreSQL: each test file creates its own throwaway database, migrates it, and drops it. Without `DATABASE_ADMIN_URL` those tests are skipped and only unit tests run.

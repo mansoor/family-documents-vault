@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 import type { AuthService } from './auth/service.js';
+import type { DocumentService } from './documents/service.js';
+import type { HouseholdService } from './household/service.js';
+import type { VaultService } from './vaults/service.js';
 import { loadConfig } from './config.js';
 
 const config = loadConfig({
@@ -16,6 +19,10 @@ const authStub = {
   setupComplete: async () => true,
   displayName: async () => null,
 } as unknown as AuthService;
+const vaultsStub = {} as unknown as VaultService;
+const documentsStub = {} as unknown as DocumentService;
+const householdStub = {} as unknown as HouseholdService;
+const anyStub = {} as never;
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -28,6 +35,12 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     serverVersion: '0.0.1',
     pingDatabase,
     auth: authStub,
+    vaults: vaultsStub,
+    documents: documentsStub,
+    household: householdStub,
+    visibility: anyStub,
+    totp: anyStub,
+    exports: anyStub,
     logger: false,
   });
   return app;
@@ -97,6 +110,9 @@ describe('loadConfig', () => {
   it('fails loudly on a missing database url or master key', () => {
     expect(() => loadConfig({ FDV_MASTER_KEY: config.FDV_MASTER_KEY })).toThrow(/DATABASE_URL/);
     expect(() => loadConfig({ DATABASE_URL: 'x' })).toThrow(/FDV_MASTER_KEY/);
+    expect(loadConfig({ DATABASE_URL: 'x', FDV_MASTER_KEY_FILE: '/k' }).FDV_MASTER_KEY_FILE).toBe(
+      '/k',
+    );
     expect(() => loadConfig({ DATABASE_URL: 'x', FDV_MASTER_KEY: 'short' })).toThrow(/32/);
   });
 
