@@ -76,7 +76,8 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 
 ## How your files are protected
 
-- The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file, or your OS keychain) — never in the database.
+- The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file) — never in the database.
+- Files are encrypted in 1 MB chunks, each with its own authentication tag, so a page in the middle of a large PDF can be served without decrypting the whole file, and a reordered, altered or truncated file is refused rather than decrypted into garbage.
 - The **storage provider sees only ciphertext** and object sizes. No filenames, no document types, no names.
 - **"Only me" documents** use a per-member key that other accounts, including the owner, do not hold.
 - Every sign-in, sign-out, download, view of a private document and access change is written to an **append-only, hash-chained audit log**. The database refuses updates and deletes on it, and the worker recomputes every chain nightly — a row that was altered or removed breaks the chain from that point on.
@@ -93,6 +94,16 @@ _Documented with the first release that ships the export and backup jobs._ The s
 2. **The database** — a nightly encrypted dump, retained 30 days.
 3. **The files** — your local directory or your bucket. Optionally a second location as a mirror.
 4. **The recovery sheet** — one printed page with where the files are, a recovery code, and how to open them with the offline recovery tool, with no server and no app.
+
+### Rotating the master key
+
+Rotation rewraps the small per-household keys; the encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
+
+```bash
+docker compose run --rm -e FDV_MASTER_KEY_NEW="$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')" api node apps/api/dist/cli.mjs rotate-master-key
+```
+
+Then put the new value in `.env` as `FDV_MASTER_KEY`, run `docker compose up -d`, and back the file up again. Everyone is signed out by the rotation, because sign-in tokens are derived from the same key.
 
 ## Upgrading
 

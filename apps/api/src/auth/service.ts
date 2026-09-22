@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ScopeKeys } from '@fdv/crypto';
 import { appendAudit, withScope, type Db, type Role } from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
@@ -77,6 +78,7 @@ export class AuthService {
   constructor(
     private readonly db: Db,
     private readonly signingKey: Uint8Array,
+    private readonly keys: ScopeKeys,
   ) {}
 
   async setupComplete(): Promise<boolean> {
@@ -129,6 +131,10 @@ export class AuthService {
           role: 'owner',
         })
         .execute();
+      // The key hierarchy is born with the household (data model, section 8):
+      // nothing can be stored until these rows exist.
+      await this.keys.mintHouseholdKeys(trx, householdId);
+      await this.keys.mintMemberKey(trx, householdId, member.id, input.password);
       await appendAudit(trx, {
         householdId,
         actorAccountId: account.id,

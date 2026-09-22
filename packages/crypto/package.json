@@ -1,0 +1,25 @@
+{
+  "name": "@fdv/crypto",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Envelope encryption: master key providers, scope-key wrapping, chunked AES-256-GCM file encryption.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fdv/db": "workspace:*",
+    "argon2": "^0.45.1",
+    "kysely": "^0.29.6",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.16.0"
+  }
+}

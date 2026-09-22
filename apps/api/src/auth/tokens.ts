@@ -1,4 +1,5 @@
-import { createHash, hkdfSync, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { deriveKey } from '@fdv/crypto';
 import type { Role } from '@fdv/db';
 import { jwtVerify, SignJWT } from 'jose';
 
@@ -21,8 +22,8 @@ export interface AccessClaims {
   role: Role;
 }
 
-export function deriveSigningKey(masterKey: string): Uint8Array {
-  return new Uint8Array(hkdfSync('sha256', masterKey, 'fdv', 'access-token-signing', 32));
+export function deriveSigningKey(masterSecret: string): Uint8Array {
+  return new Uint8Array(deriveKey(masterSecret, 'access-token-signing'));
 }
 
 export async function signAccessToken(key: Uint8Array, claims: AccessClaims): Promise<string> {

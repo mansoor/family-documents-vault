@@ -24,7 +24,13 @@ const schema = z.object({
   FDV_MASTER_KEY: z
     .string()
     .min(32, 'must be at least 32 characters; generate it with scripts/gen-env.mjs')
+    .optional()
     .describe('Wraps every other key. Back it up off the server.'),
+  FDV_MASTER_KEY_FILE: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Path to a file holding the master key instead of FDV_MASTER_KEY.'),
 
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
@@ -38,8 +44,13 @@ const schema = z.object({
 
 export type ApiConfig = z.infer<typeof schema>;
 
+const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_FILE, {
+  message: 'set FDV_MASTER_KEY (or FDV_MASTER_KEY_FILE); generate it with scripts/gen-env.mjs',
+  path: ['FDV_MASTER_KEY'],
+});
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  const parsed = schema.safeParse(env);
+  const parsed = withMasterKey.safeParse(env);
   if (!parsed.success) {
     const problems = parsed.error.issues
       .map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`)
