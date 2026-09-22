@@ -39,6 +39,7 @@ services:
       DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
       FDV_MASTER_KEY: ${FDV_MASTER_KEY:?run scripts/gen-env.mjs first}
       FDV_DISPLAY_NAME: ${FDV_DISPLAY_NAME:-Our family vault}
+      FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
@@ -56,6 +57,11 @@ services:
       DATABASE_URL: postgres://fdv_app:${FDV_DB_APP_PASSWORD}@postgres:5432/fdv
       DATABASE_ADMIN_URL: postgres://fdv:${FDV_DB_PASSWORD}@postgres:5432/fdv
       FDV_MASTER_KEY: ${FDV_MASTER_KEY}
+      FDV_BASE_URL: ${FDV_BASE_URL:-http://localhost:8080}
+      FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
+      FDV_VAPID_PRIVATE_KEY: ${FDV_VAPID_PRIVATE_KEY:-}
+      FDV_VAPID_SUBJECT: ${FDV_VAPID_SUBJECT:-mailto:vault@example.invalid}
+      FDV_WEEKLY_HOUR: ${FDV_WEEKLY_HOUR:-18}
       FDV_OCR_MAX_PAGES: ${FDV_OCR_MAX_PAGES:-20}
       FDV_BACKUP_CRON: ${FDV_BACKUP_CRON:-30 2 * * *}
       FDV_DIGEST_HOUR: ${FDV_DIGEST_HOUR:-9}

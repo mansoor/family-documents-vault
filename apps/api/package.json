@@ -24,9 +24,11 @@
     "file-type": "^22.1.1",
     "jose": "^6.2.12",
     "kysely": "^0.29.6",
+    "nodemailer": "^10.0.10",
     "otpauth": "^9.5.2",
     "pg": "^8.23.0",
     "pg-boss": "^12.33.4",
+    "web-push": "^3.6.7",
     "zod": "^4.6.5"
   },
   "devDependencies": {

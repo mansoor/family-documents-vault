@@ -118,6 +118,14 @@ against self-hosted servers that are months or years behind.
   - Uploading a second or later version of a document resolves its open reminders.
   - `PUT /api/v1/profile` accepts `timezone` (IANA name); reminders fire on the household's local calendar date and the daily digest goes out at 9 am local.
 
+- Notifications.
+  - `GET /api/v1/notifications/push-key` — **unauthenticated**; `{ public_key, enabled }`. The browser needs it before it can subscribe.
+  - `GET/POST /api/v1/devices`, `DELETE /api/v1/devices` (body `{ endpoint }`) — Web Push subscriptions for the signed-in account. `POST` is idempotent on the endpoint and revives a subscription that had failed. `503 push_unavailable` when the server has no VAPID keys.
+  - `GET/PUT /api/v1/notifications/preferences` — `{ daily_push, daily_email, weekly_email }` per account. Defaults: push on, daily email off, weekly email on.
+  - `GET /api/v1/notifications/smtp/providers` — presets `[{ key, name, host, port, secure, hint }]`.
+  - `GET/PUT /api/v1/notifications/smtp` — the household's own mail server (owner only). Saving always sets `status: "untested"`; the password is never returned.
+  - `POST /api/v1/notifications/smtp/test` — sends a real message to the caller's address and answers `{ ok, message }` in plain words. Only a passing test sets `status: "ok"`, and nothing is sent through untested settings.
+
 - Exports (bearer; adults). `POST /api/v1/exports` → `202 { id, state: "queued", … }`; `GET /api/v1/exports` and `GET /api/v1/exports/{id}` report `state` (`queued`, `running`, `done`, `failed`), `document_count`, `byte_size`, `expires_at`; `GET /api/v1/exports/{id}/content` streams the ZIP (`410 export_expired` after seven days). The ZIP holds every original the requester can see, in folders by category, plus `index.json`, `index.csv`, `index.html` and `README.txt`.
 
 ## Deprecations in effect

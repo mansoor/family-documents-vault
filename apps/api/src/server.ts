@@ -10,6 +10,7 @@ import { PgBoss } from 'pg-boss';
 import { DocumentService } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
+import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
@@ -108,6 +109,11 @@ async function main(): Promise<void> {
       reminders,
     ),
     reminders,
+    notifications: new NotificationService(
+      db,
+      deriveKey(masterSecret, 'smtp-credentials'),
+      config.FDV_VAPID_PUBLIC_KEY ?? null,
+    ),
     household: new HouseholdService(db, keys),
   });
 

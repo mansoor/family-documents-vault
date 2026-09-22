@@ -10,6 +10,8 @@ import type { DocumentService } from './documents/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
 import { registerExports } from './exports/routes.js';
+import { registerNotifications } from './notifications/routes.js';
+import type { NotificationService } from './notifications/service.js';
 import { registerReminders } from './reminders/routes.js';
 import type { ReminderService } from './reminders/service.js';
 import type { ExportService } from './exports/service.js';
@@ -33,6 +35,7 @@ export interface AppDeps {
   totp: TotpService;
   exports: ExportService;
   reminders: ReminderService;
+  notifications: NotificationService;
   household: HouseholdService;
   logger?: boolean | object;
 }
@@ -113,6 +116,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerHousehold(app, deps.household);
   registerExports(app, deps.exports);
   registerReminders(app, deps.reminders);
+  registerNotifications(app, deps.notifications);
   await registerDocuments(app, deps.documents, deps.visibility, config.FDV_MAX_UPLOAD_BYTES);
 
   return app;

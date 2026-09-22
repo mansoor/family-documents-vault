@@ -1,5 +1,5 @@
 import { withHousehold, type Db } from '@fdv/db';
-import { deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
+import { addDays, deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
 import { sql } from 'kysely';
 import type pg from 'pg';
 
@@ -25,7 +25,7 @@ export interface Digest {
   household_name: string;
   timezone: string;
   local_date: string;
-  kind: 'daily' | 'catch_up';
+  kind: 'daily' | 'catch_up' | 'weekly';
   items: Array<{
     reminder_id: string;
     document_id: string;
@@ -65,6 +65,8 @@ export interface ReminderDeps {
   now?: () => Date;
   /** Local hour at which the digest goes out. */
   digestHour?: number;
+  /** Local hour for the Sunday summary. */
+  weeklyHour?: number;
 }
 
 async function households(admin: pg.Pool) {
@@ -174,6 +176,83 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
           local_date: today,
           kind: 'daily',
           item_count: due.length,
+          channels,
+        })
+        .execute();
+      return true;
+    });
+    if (sent) digests++;
+  }
+  return { digests };
+}
+
+/**
+ * REM-06: the Sunday-evening summary. Everything due or coming up in the
+ * next month, in one message, for the people who asked for email. It is
+ * not tied to the delivery ledger — it is a summary, not a first warning,
+ * so it repeats each week while something is still outstanding.
+ */
+export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
+  const now = deps.now?.() ?? new Date();
+  const hour = deps.weeklyHour ?? 18;
+  let digests = 0;
+  for (const hh of await households(deps.admin)) {
+    if (localHour(hh.timezone, now) !== hour) continue;
+    const today = localToday(hh.timezone, now);
+    // Sunday on the household's own calendar.
+    const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();
+    if (weekday !== 0) continue;
+    const sent = await withHousehold(deps.app, hh.id, async (trx) => {
+      const already = await trx
+        .selectFrom('notification_digest')
+        .select('local_date')
+        .where('local_date', '=', today)
+        .where('kind', '=', 'weekly')
+        .executeTakeFirst();
+      if (already) return false;
+      const horizon = addDays(today, 30);
+      const rows = await trx
+        .selectFrom('reminder')
+        .innerJoin('document', 'document.id', 'reminder.document_id')
+        .select([
+          'reminder.id',
+          'reminder.document_id',
+          'reminder.fire_at',
+          'reminder.note',
+          'document.title',
+        ])
+        .where('document.deleted_at', 'is', null)
+        .where('reminder.status', 'in', ['due', 'scheduled'])
+        .where('reminder.fire_at', '<=', horizon)
+        .orderBy('reminder.fire_at')
+        .execute();
+      if (rows.length === 0) return false;
+      const digest: Digest = {
+        household_id: hh.id,
+        household_name: hh.name,
+        timezone: hh.timezone,
+        local_date: today,
+        kind: 'weekly',
+        items: rows.map((r) => {
+          const fireAt = String(r.fire_at).slice(0, 10);
+          return {
+            reminder_id: r.id,
+            document_id: r.document_id,
+            title: r.title ?? 'Untitled',
+            label: reminderLabel(fireAt, today, 'due', null),
+            note: r.note,
+            overdue: fireAt < today,
+          };
+        }),
+      };
+      const channels = await deps.notifier.digest(digest);
+      await trx
+        .insertInto('notification_digest')
+        .values({
+          household_id: hh.id,
+          local_date: today,
+          kind: 'weekly',
+          item_count: rows.length,
           channels,
         })
         .execute();

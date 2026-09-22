@@ -169,6 +169,56 @@ export interface Page<T> {
   has_more: boolean;
 }
 
+export interface DeviceRow {
+  id: string;
+  endpoint: string;
+  label: string | null;
+  user_agent: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  working: boolean;
+}
+
+export interface Preferences {
+  daily_push: boolean;
+  daily_email: boolean;
+  weekly_email: boolean;
+}
+
+export interface SmtpProvider {
+  key: string;
+  name: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  hint: string;
+}
+
+export interface SmtpView {
+  configured: boolean;
+  provider: string | null;
+  host: string | null;
+  port: number | null;
+  secure: boolean;
+  username: string | null;
+  from_name: string | null;
+  from_email: string | null;
+  status: string;
+  last_verified_at: string | null;
+  last_error: string | null;
+}
+
+export interface SmtpInput {
+  provider?: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username?: string | null;
+  password?: string | null;
+  from_name: string;
+  from_email: string;
+}
+
 type Method = 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT';
 type Params = Record<string, string | number | boolean | undefined | null>;
 
@@ -340,6 +390,29 @@ export const api = {
     }),
   acknowledgeReminder: (token: string, id: string) =>
     request<ReminderView>(`/api/v1/reminders/${id}/acknowledge`, { method: 'POST', token }),
+  pushKey: () =>
+    request<{ public_key: string | null; enabled: boolean }>('/api/v1/notifications/push-key'),
+  devices: (token: string) => request<{ items: DeviceRow[] }>('/api/v1/devices', { token }),
+  registerDevice: (
+    token: string,
+    body: { endpoint: string; keys: { p256dh: string; auth: string }; label?: string },
+  ) => request<{ id: string }>('/api/v1/devices', { method: 'POST', body, token }),
+  removeDevice: (token: string, endpoint: string) =>
+    request<void>('/api/v1/devices', { method: 'DELETE', body: { endpoint }, token }),
+  preferences: (token: string) =>
+    request<Preferences>('/api/v1/notifications/preferences', { token }),
+  updatePreferences: (token: string, body: Partial<Preferences>) =>
+    request<Preferences>('/api/v1/notifications/preferences', { method: 'PUT', body, token }),
+  smtp: (token: string) => request<SmtpView>('/api/v1/notifications/smtp', { token }),
+  smtpProviders: (token: string) =>
+    request<SmtpProvider[]>('/api/v1/notifications/smtp/providers', { token }),
+  saveSmtp: (token: string, body: SmtpInput) =>
+    request<SmtpView>('/api/v1/notifications/smtp', { method: 'PUT', body, token }),
+  testSmtp: (token: string) =>
+    request<{ ok: boolean; message: string }>('/api/v1/notifications/smtp/test', {
+      method: 'POST',
+      token,
+    }),
   search: (token: string, q: string, params: Params = {}) =>
     request<{ items: SearchHit[] }>(`/api/v1/search${qs({ q, ...params })}`, { token }),
 };

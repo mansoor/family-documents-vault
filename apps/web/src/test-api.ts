@@ -141,6 +141,14 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
     if (path === '/api/v1/exports') return json({ items: [] });
     if (path === '/api/v1/reminders') return json({ items: [] });
+    if (path === '/api/v1/notifications/push-key')
+      return json({ public_key: null, enabled: false });
+    if (path === '/api/v1/notifications/preferences')
+      return json({ daily_push: true, daily_email: false, weekly_email: true });
+    if (path === '/api/v1/devices') return json({ items: [] });
+    if (path === '/api/v1/notifications/smtp')
+      return json({ configured: false, status: 'untested', secure: false });
+    if (path === '/api/v1/notifications/smtp/providers') return json([]);
     if (path === '/api/v1/profile' && method === 'PUT')
       return json({ household_name: state.displayName, ...(body as object) });
     if (path === '/api/v1/members' && method === 'GET') return json({ items: state.members });
