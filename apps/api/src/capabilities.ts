@@ -5,6 +5,7 @@ export interface CapabilityConfig {
   edition: Edition;
   displayName: string;
   maxUploadBytes: number;
+  setupRequired: boolean;
 }
 
 /**
@@ -27,6 +28,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
     min_client_version: MIN_CLIENT_VERSION,
     edition: config.edition,
     protection_mode: 'standard',
+    setup_required: config.setupRequired,
     features: {
       passkeys: false,
       private_mode: false,

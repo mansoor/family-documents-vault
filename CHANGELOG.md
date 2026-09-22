@@ -15,3 +15,7 @@ All notable changes to Family Document Vault. The format follows
 - Web app shell (React) showing the connection state and server version.
 - `Dockerfile` with `api`, `worker` and `web` targets, `docker-compose.yml`, `docker-compose.dev.yml` (MinIO, Mailpit), and `scripts/gen-env.mjs`.
 - CI runs integration tests against PostgreSQL and builds the three images; tagged releases push to GHCR.
+- Households, members and accounts, with row-level security on every tenant table enforced in PostgreSQL.
+- First-run setup (`POST /api/v1/setup`), password sign-in (Argon2id), short-lived access tokens with rotating refresh tokens and reuse detection, device list and per-device sign-out.
+- Append-only, hash-chained audit log; the worker verifies every household's chain nightly.
+- Web app: first-run wizard, sign-in, signed-in devices.

@@ -21,6 +21,11 @@ const schema = z.object({
     .default('true')
     .describe('Apply pending database migrations on start.'),
 
+  FDV_MASTER_KEY: z
+    .string()
+    .min(32, 'must be at least 32 characters; generate it with scripts/gen-env.mjs')
+    .describe('Wraps every other key. Back it up off the server.'),
+
   FDV_DISPLAY_NAME: z.string().min(1).default('Our family vault'),
   FDV_EDITION: z.enum(['self_hosted', 'hosted']).default('self_hosted'),
   FDV_MAX_UPLOAD_BYTES: z.coerce

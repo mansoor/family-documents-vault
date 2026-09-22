@@ -45,7 +45,7 @@ node scripts/gen-env.mjs   # writes .env with a random master key and database p
 docker compose up -d
 ```
 
-The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`.
+The first start builds the images (a few minutes), applies database migrations, and starts the four containers. Then open `http://localhost:8080`: the first visit asks for your family's name, your name, your email and a password, and makes you the owner. Nobody else can run that step again.
 
 `gen-env` refuses to overwrite an existing `.env`, because a new master key would make every stored document unreadable. **Back the file up somewhere off the server.**
 
@@ -67,12 +67,20 @@ All configuration is through environment variables in `.env` (see [`.env.example
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
+### Sign-in and sessions
+
+- Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a 30-day refresh token that rotates on every use; a refresh token presented twice is treated as stolen and that device is signed out.
+- Every signed-in device is listed under the household name; any of them can be signed out from another.
+- The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
+- Sign-in attempts are limited to 10 per minute per address.
+
 ## How your files are protected
 
 - The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file, or your OS keychain) — never in the database.
 - The **storage provider sees only ciphertext** and object sizes. No filenames, no document types, no names.
 - **"Only me" documents** use a per-member key that other accounts, including the owner, do not hold.
-- Every download, every view of a private document and every access change is written to an **append-only, hash-chained audit log** you can verify yourself.
+- Every sign-in, sign-out, download, view of a private document and access change is written to an **append-only, hash-chained audit log**. The database refuses updates and deletes on it, and the worker recomputes every chain nightly — a row that was altered or removed breaks the chain from that point on.
+- **Row-level security in PostgreSQL** keeps each household's rows invisible to every other household, enforced by the database rather than by application code. The application connects as a role that owns no tables, which is what makes the policies apply.
 - **Backups of the database are encrypted** with the same master key.
 
 The honest limit: someone who controls the whole server can read everything. For a self-hosted vault on the household's own machine, that is the right trade — it is what makes server-side search, thumbnails and automatic filing possible.

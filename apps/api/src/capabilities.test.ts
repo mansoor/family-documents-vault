@@ -7,6 +7,7 @@ const config = {
   edition: 'self_hosted' as const,
   displayName: 'Our family vault',
   maxUploadBytes: 100 * 1024 * 1024,
+  setupRequired: true,
 };
 
 describe('buildCapabilities', () => {

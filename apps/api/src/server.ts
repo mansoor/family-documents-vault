@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
-import { createPool, migrateUp } from '@fdv/db';
+import { createDb, createPool, migrateUp } from '@fdv/db';
+import { AuthService } from './auth/service.js';
+import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 
@@ -24,17 +26,19 @@ async function main(): Promise<void> {
   }
 
   const pool = createPool(config.DATABASE_URL);
-  const app = buildApp(config, {
+  const db = createDb(pool);
+  const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
       await pool.query('select 1');
     },
+    auth: new AuthService(db, deriveSigningKey(config.FDV_MASTER_KEY)),
   });
 
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
     await app.close();
-    await pool.end();
+    await db.destroy();
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
