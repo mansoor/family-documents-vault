@@ -5,7 +5,7 @@ import {
   type Visibility,
 } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, ErrorNote, Field, Select, TopBar } from '../ui.js';
@@ -21,6 +21,26 @@ export function AddScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  // Arrived from a missing-document suggestion: it already knows what this
+  // is and whose it is, so the confirm card should not ask again.
+  const [params] = useSearchParams();
+  const wanted = params.get('type');
+  const forMember = params.get('member');
+  const { data: hint } = useLoad(
+    async (t) => {
+      if (!wanted) return null;
+      const [types, members] = await Promise.all([api.documentTypes(t), api.members(t)]);
+      return {
+        type: types.items.find((x) => x.key === wanted)?.label ?? null,
+        member: members.items.find((m) => m.id === forMember)?.display_name ?? null,
+      };
+    },
+    [wanted, forMember],
+  );
+  const carry = new URLSearchParams();
+  if (wanted) carry.set('type', wanted);
+  if (forMember) carry.set('member', forMember);
+  const suffix = carry.toString() ? `?${carry.toString()}` : '';
 
   const chosen = async (file: File | undefined) => {
     if (!file) return;
@@ -28,7 +48,7 @@ export function AddScreen() {
     setError(null);
     try {
       const r = await withToken((t) => api.capture(t, file, crypto.randomUUID()));
-      if (r) void navigate(`/documents/${r.document_id}/confirm`, { replace: true });
+      if (r) void navigate(`/documents/${r.document_id}/confirm${suffix}`, { replace: true });
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -39,10 +59,18 @@ export function AddScreen() {
   return (
     <main className="page page-top">
       <TopBar title="Add a document" back="/" />
-      <p className="lede">
-        Take a photo or choose a file. It is saved straight away; you can add the details next, or
-        later.
-      </p>
+      {hint?.type ? (
+        <p className="lede">
+          Adding {aOrAn(hint.type.toLowerCase())}
+          {hint.member ? ` for ${hint.member}` : ''}. Take a photo or choose a file; the details are
+          filled in for you on the next screen.
+        </p>
+      ) : (
+        <p className="lede">
+          Take a photo or choose a file. It is saved straight away; you can add the details next, or
+          later.
+        </p>
+      )}
       <input
         ref={input}
         type="file"
@@ -61,11 +89,16 @@ export function AddScreen() {
   );
 }
 
+function aOrAn(noun: string): string {
+  return `${'aeiou'.includes(noun[0] ?? '') ? 'an' : 'a'} ${noun}`;
+}
+
 /** The confirm card: type, person, dates, number, visibility. Pre-filled by OCR in a later release. */
 export function ConfirmScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken } = useApp();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const { data, error: loadError } = useLoad(
     async (t) => {
       const [doc, types, members] = await Promise.all([
@@ -95,6 +128,7 @@ export function ConfirmScreen() {
       doc={data.doc}
       types={data.types}
       members={data.members}
+      suggested={{ typeKey: params.get('type'), memberId: params.get('member') }}
       onSaved={(d) => void navigate(`/documents/${d.id}`, { replace: true })}
       withToken={withToken}
     />
@@ -105,13 +139,17 @@ export function ConfirmForm(props: {
   doc: DocumentView;
   types: DocumentTypeView[];
   members: Member[];
+  /** Chosen for the user when they came from a missing-document suggestion. */
+  suggested?: { typeKey: string | null; memberId: string | null };
   withToken: <T>(fn: (t: string) => Promise<T>) => Promise<T | null>;
   onSaved: (d: DocumentView) => void;
 }) {
   const { doc, types, members } = props;
-  const [typeKey, setTypeKey] = useState(doc.type_key ?? '');
+  const [typeKey, setTypeKey] = useState(doc.type_key ?? props.suggested?.typeKey ?? '');
   const [title, setTitle] = useState(doc.title ?? '');
-  const [owner, setOwner] = useState(doc.owner_member_id ?? members.find((m) => m.is_me)?.id ?? '');
+  const [owner, setOwner] = useState(
+    doc.owner_member_id ?? props.suggested?.memberId ?? members.find((m) => m.is_me)?.id ?? '',
+  );
   const [issued, setIssued] = useState(doc.issued?.date ?? '');
   const [expires, setExpires] = useState(doc.expires?.date ?? '');
   const [identifier, setIdentifier] = useState(doc.identifier ?? '');

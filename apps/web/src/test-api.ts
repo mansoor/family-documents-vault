@@ -11,6 +11,7 @@ export interface FakeState {
   members: Array<Record<string, unknown>>;
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
+  suggestions: Array<Record<string, unknown>>;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
 
@@ -85,6 +86,33 @@ export const TYPES = [
   },
 ];
 
+/** A child in the household: the person a per-member suggestion is about. */
+export const AISHA = {
+  ...ME,
+  id: 'm-0',
+  display_name: 'Aisha',
+  date_of_birth: '2016-04-02',
+  is_me: false,
+  has_account: false,
+  role: null,
+  colour: 1,
+  document_count: 0,
+};
+
+/** A missing-document suggestion, as GET /suggestions returns it. */
+export const MISSING_BIRTH_CERTIFICATE = {
+  key: 'minor_needs_birth_certificate:m-0',
+  rule_key: 'minor_needs_birth_certificate',
+  member_id: 'm-0',
+  member_name: 'Aisha',
+  type_key: 'birth_certificate',
+  type_label: 'Birth certificate',
+  title: 'No birth certificate for Aisha',
+  why: 'Schools, passports and benefits all ask for it.',
+  missing: 1,
+  dismissed: false,
+};
+
 export function fresh(over: Partial<FakeState> = {}): FakeState {
   return {
     setupRequired: false,
@@ -92,6 +120,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     members: [ME],
     documents: [PASSPORT],
     types: TYPES,
+    suggestions: [],
     calls: [],
     ...over,
   };
@@ -141,6 +170,21 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
     if (path === '/api/v1/exports') return json({ items: [] });
     if (path === '/api/v1/reminders') return json({ items: [] });
+    if (path === '/api/v1/suggestions') {
+      const dismissed = query.get('dismissed') === 'true';
+      const items = state.suggestions.filter((x) => Boolean(x.dismissed) === dismissed);
+      return json({
+        items,
+        profile_answered: true,
+        dismissed_count: state.suggestions.filter((x) => x.dismissed).length,
+      });
+    }
+    if (path.startsWith('/api/v1/suggestions/') && path.endsWith('/dismiss')) {
+      const key = decodeURIComponent(path.slice('/api/v1/suggestions/'.length, -'/dismiss'.length));
+      const row = state.suggestions.find((x) => x.key === key);
+      if (row) row.dismissed = method === 'POST';
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/notifications/push-key')
       return json({ public_key: null, enabled: false });
     if (path === '/api/v1/notifications/preferences')
