@@ -214,10 +214,9 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
   }
 }
 
-function dateOf(d: Date | string | null, precision: DateValue['precision'] | null): string | null {
+function dateOf(d: string | null, precision: DateValue['precision'] | null): string | null {
   if (!d || !precision) return null;
-  const iso = typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
-  return formatDate({ date: iso, precision });
+  return formatDate({ date: d.slice(0, 10), precision });
 }
 
 function csv(entries: Entry[]): string {

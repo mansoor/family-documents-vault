@@ -23,6 +23,8 @@ import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
+import type { ReminderService } from '../reminders/service.js';
+import { signSealedToken } from './sealed-token.js';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -83,9 +85,9 @@ type DocRow = {
   owner_member_id: string | null;
   category: string | null;
   visibility: Visibility;
-  issued_on: Date | null;
+  issued_on: string | null;
   issued_precision: 'day' | 'month' | 'year' | null;
-  expires_on: Date | null;
+  expires_on: string | null;
   expires_precision: 'day' | 'month' | 'year' | null;
   identifier: string | null;
   physical_location: string | null;
@@ -98,8 +100,7 @@ type DocRow = {
   deleted_at: Date | null;
 };
 
-const isoDate = (d: Date | string | null): string | null =>
-  d === null ? null : typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
+const isoDate = (d: string | null): string | null => (d === null ? null : d.slice(0, 10));
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -138,6 +139,9 @@ export class DocumentService {
     private readonly vaults: VaultService,
     private readonly maxUploadBytes: number,
     private readonly enqueue: Enqueue = async () => undefined,
+    private readonly reminders: ReminderService | null = null,
+    /** Signs the handle on the second pass of search; null disables it. */
+    private readonly sealedKey: Uint8Array | null = null,
   ) {}
 
   // ---------------------------------------------------------------- types
@@ -318,6 +322,7 @@ export class DocumentService {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -367,6 +372,9 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (input.expires !== undefined || input.type_key !== undefined) {
+        await this.reminders?.regenerateDerived(trx, p.householdId, id);
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -390,6 +398,7 @@ export class DocumentService {
         .set({ deleted_at: new Date(), updated_at: new Date(), updated_by: p.accountId })
         .where('id', '=', id)
         .execute();
+      await this.reminders?.regenerateDerived(trx, p.householdId, id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -412,6 +421,7 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      await this.reminders?.regenerateDerived(trx, p.householdId, id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -681,6 +691,10 @@ export class DocumentService {
         .set({ updated_at: new Date(), updated_by: p.accountId })
         .where('id', '=', documentId)
         .execute();
+      // REM-08: the user renewed and scanned it; do not also ask them to
+      // dismiss a notification.
+      if (versionNo > 1)
+        await this.reminders?.resolveOpen(trx, p.householdId, documentId, p.accountId);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -704,13 +718,20 @@ export class DocumentService {
 
   /**
    * FND-01: one query over titles, identifiers, tags, notes and the OCR text
-   * of every version, ranked, with a highlighted snippet. Private documents'
-   * text is sealed and not searched here (2.5 adds the in-session pass).
+   * of every version, ranked, with a highlighted snippet.
+   *
+   * Private documents' text is sealed and has no index, so it is not
+   * searched here. `sealed_pending` says how many of the caller's own
+   * documents were left unopened and hands out a token for the second
+   * pass (FND-08); a client that ignores it still works.
    */
   async search(
     p: Principal,
     q: SearchQuery,
-  ): Promise<{ items: SearchHit[]; sealed_pending: { count: number } }> {
+  ): Promise<{
+    items: SearchHit[];
+    sealed_pending: { count: number; token?: string };
+  }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
     const adultsOk = p.role === 'owner' || p.role === 'adult';
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
@@ -720,7 +741,7 @@ export class DocumentService {
         type_key: string | null;
         category: string | null;
         owner_member_id: string | null;
-        expires_on: Date | null;
+        expires_on: string | null;
         expires_precision: DateValue['precision'] | null;
         rank: number;
         snippet: string;
@@ -799,14 +820,34 @@ export class DocumentService {
           rank: Number(r.rank),
         });
       }
+      // How much of the caller's own text this pass could not look inside.
+      // Counted by document, not by version: it is documents the person
+      // thinks in, and it is what the second pass will search.
       const sealed = await trx
         .selectFrom('document_text_sealed')
         .innerJoin('document', 'document.id', 'document_text_sealed.document_id')
-        .select(sql<number>`count(*)::int`.as('n'))
+        .select(sql<number>`count(distinct document.id)::int`.as('n'))
         .where('document.owner_member_id', '=', p.memberId)
+        .where('document.visibility', '=', 'private')
         .where('document.deleted_at', 'is', null)
         .executeTakeFirst();
-      return { items, sealed_pending: { count: sealed?.n ?? 0 } };
+      const count = sealed?.n ?? 0;
+      if (count === 0 || !this.sealedKey) return { items, sealed_pending: { count } };
+      return {
+        items,
+        sealed_pending: {
+          count,
+          token: await signSealedToken(this.sealedKey, {
+            sid: p.sessionId,
+            hid: p.householdId,
+            mid: p.memberId,
+            q: q.q,
+            member_id: q.member_id,
+            category: q.category,
+            limit,
+          }),
+        },
+      };
     });
   }
 

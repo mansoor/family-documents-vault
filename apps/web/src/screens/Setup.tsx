@@ -90,6 +90,7 @@ export function SetupScreen() {
   // --- household
   const [members, setMembers] = useState<Member[] | null>(null);
   const [newName, setNewName] = useState('');
+  const [newDob, setNewDob] = useState('');
   const loadMembers = async () => {
     const r = await withToken((t) => api.members(t));
     if (r) setMembers(r.items);
@@ -100,8 +101,11 @@ export function SetupScreen() {
     if (!newName.trim()) return;
     setBusy(true);
     try {
-      await withToken((t) => api.addMember(t, { display_name: newName.trim() }));
+      await withToken((t) =>
+        api.addMember(t, { display_name: newName.trim(), date_of_birth: newDob || null }),
+      );
       setNewName('');
+      setNewDob('');
       await loadMembers();
     } catch (err) {
       setError(describeError(err));
@@ -277,19 +281,34 @@ export function SetupScreen() {
             </li>
           ))}
         </ul>
-        <form onSubmit={(e) => void addMember(e)} className="row">
-          <div className="field" style={{ flexGrow: 1 }}>
-            <label htmlFor="new-name">Name of another family member</label>
-            <input
-              id="new-name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Add another name"
-            />
+        <form onSubmit={(e) => void addMember(e)} className="stack">
+          <div className="row">
+            <div className="field" style={{ flexGrow: 1 }}>
+              <label htmlFor="new-name">Name of another family member</label>
+              <input
+                id="new-name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Add another name"
+              />
+            </div>
+            <Button type="submit" kind="quiet" disabled={busy}>
+              Add
+            </Button>
           </div>
-          <Button type="submit" kind="quiet" disabled={busy}>
-            Add
-          </Button>
+          <div className="field">
+            <label htmlFor="new-dob">Date of birth</label>
+            <input
+              id="new-dob"
+              type="date"
+              value={newDob}
+              onChange={(e) => setNewDob(e.target.value)}
+            />
+            <span className="muted">
+              Optional, and only for the children: it is how we know whose birth certificate to ask
+              about.
+            </span>
+          </div>
         </form>
         <p className="muted">
           Each adult keeps their own private documents. Nobody else can open those, including you.

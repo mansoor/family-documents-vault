@@ -13,7 +13,12 @@ import { loadConfig } from './config.js';
 import { DocumentService } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
+import { NotificationService } from './notifications/service.js';
+import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
+import { SealedSearchService } from './documents/sealed-search.js';
+import { deriveSealedKey } from './documents/sealed-token.js';
+import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 
 /**
@@ -58,6 +63,7 @@ export async function createHarness(): Promise<Harness> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     jobs.push({ name, data });
   };
+  const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
     deriveKey(TEST_MASTER, 'totp-secrets'),
@@ -76,9 +82,25 @@ export async function createHarness(): Promise<Harness> {
     totp,
     visibility: new VisibilityService(db, keys),
     vaults,
-    documents: new DocumentService(db, keys, vaults, 5 * 1024 * 1024, enqueue),
+    documents: new DocumentService(
+      db,
+      keys,
+      vaults,
+      5 * 1024 * 1024,
+      enqueue,
+      reminders,
+      deriveSealedKey(TEST_MASTER),
+    ),
+    sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
+    reminders,
+    notifications: new NotificationService(
+      db,
+      deriveKey(TEST_MASTER, 'smtp-credentials'),
+      'test-vapid-public-key',
+    ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
+    suggestions: new SuggestionService(db),
     logger: false,
   });
 

@@ -1,4 +1,4 @@
-import type { DocumentView } from '@fdv/shared';
+import type { DocumentView, SuggestionView } from '@fdv/shared';
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
@@ -14,21 +14,39 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const { data, error } = useLoad(
     async (t) => {
-      const [members, counts, recent, attention, me] = await Promise.all([
+      const [members, counts, recent, docs, me, due, suggestions] = await Promise.all([
         api.members(t),
         api.counts(t),
         api.documents(t, { limit: 5, sort: 'recent' }),
         api.documents(t, { limit: 50, sort: 'expiring' }),
         api.me(t),
+        api.reminders(t, 'due'),
+        api.suggestions(t),
       ]);
+      const reminded = new Set(due.items.map((r) => r.document_id));
+      const attention = [
+        ...due.items.map((r) => ({
+          id: r.id,
+          title: r.document_title ?? 'Untitled',
+          label: r.label,
+          tone: 'danger' as const,
+        })),
+        ...docs.items
+          .filter((d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id))
+          .map((d) => ({
+            id: d.id,
+            title: d.title ?? 'Scan · needs a name',
+            label: d.status.label,
+            tone: 'warn' as const,
+          })),
+      ];
       return {
         me,
         members: members.items,
         counts,
         recent: recent.items,
-        attention: attention.items.filter((d) =>
-          ['expired', 'expiring_soon', 'needs_info'].includes(d.status.value),
-        ),
+        attention,
+        suggestions: suggestions.items,
       };
     },
     [authVersion],
@@ -60,6 +78,7 @@ export function HomeScreen() {
         </Link>
       )}
       <AttentionStrip items={data?.attention ?? []} />
+      <MissingStrip items={data?.suggestions ?? []} />
 
       <section aria-labelledby="people-h">
         <h2 id="people-h" className="section-h">
@@ -118,7 +137,49 @@ export function HomeScreen() {
   );
 }
 
-function AttentionStrip({ items }: { items: DocumentView[] }) {
+/**
+ * "Missing is the quiet superpower": because the family told the wizard it
+ * owns a home and has a child, the app can draw an empty tile for the deed
+ * that is not here. Deliberately not part of the red strip above — nothing
+ * is wrong, there is just something worth adding.
+ */
+function MissingStrip({ items }: { items: SuggestionView[] }) {
+  if (items.length === 0) return null;
+  return (
+    <section aria-labelledby="missing-h">
+      <h2 id="missing-h" className="section-h">
+        We noticed something missing
+      </h2>
+      <div className="tiles">
+        {items.slice(0, 2).map((s) => (
+          <Link key={s.key} to={addLink(s)} className="tile tile-missing">
+            <span className="tile-title">{s.title}</span>
+            <span className="muted">{s.why}</span>
+            <span className="tile-cue">Add it</span>
+          </Link>
+        ))}
+      </div>
+      {items.length > 2 && (
+        <Link to="/reminders" className="muted seeall">
+          {items.length - 2} more like this
+        </Link>
+      )}
+    </section>
+  );
+}
+
+/** Straight into Add, with the type and person already chosen. */
+export function addLink(s: SuggestionView): string {
+  const q = new URLSearchParams({ type: s.type_key });
+  if (s.member_id) q.set('member', s.member_id);
+  return `/add?${q.toString()}`;
+}
+
+function AttentionStrip({
+  items,
+}: {
+  items: Array<{ id: string; title: string; label: string; tone: 'danger' | 'warn' }>;
+}) {
   if (items.length === 0) {
     return (
       <div className="attention attention-calm" role="status">
@@ -135,8 +196,8 @@ function AttentionStrip({ items }: { items: DocumentView[] }) {
       <ul>
         {items.slice(0, 3).map((d) => (
           <li key={d.id}>
-            <span>{d.title ?? 'Untitled'}</span>
-            <StatusBadge status={d.status} />
+            <span>{d.title}</span>
+            <span className={`status status-${d.tone}`}>{d.label}</span>
           </li>
         ))}
       </ul>

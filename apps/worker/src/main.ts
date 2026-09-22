@@ -4,6 +4,8 @@ import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
+import { createNotifier } from './jobs/notify.js';
+import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
 
@@ -79,6 +81,57 @@ async function main(): Promise<void> {
     await backupDatabase(backupDeps);
   });
   await boss.schedule(JOBS.backupDatabase, config.FDV_BACKUP_CRON);
+
+  const vapid =
+    config.FDV_VAPID_PUBLIC_KEY && config.FDV_VAPID_PRIVATE_KEY
+      ? {
+          publicKey: config.FDV_VAPID_PUBLIC_KEY,
+          privateKey: config.FDV_VAPID_PRIVATE_KEY,
+          subject: config.FDV_VAPID_SUBJECT,
+        }
+      : null;
+  if (!vapid) log('warn', 'no VAPID keys: push notifications are off (run scripts/gen-env.mjs)');
+  const notifier = createNotifier({
+    app: dbs.app,
+    vapid,
+    smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+    baseUrl: config.FDV_BASE_URL,
+    log,
+  });
+  void logNotifier;
+  const reminderDeps = {
+    admin: dbs.admin,
+    app: dbs.app,
+    notifier,
+    log,
+    digestHour: config.FDV_DIGEST_HOUR,
+    weeklyHour: config.FDV_WEEKLY_HOUR,
+  };
+  await boss.createQueue(JOBS.remindersTick);
+  await boss.work(JOBS.remindersTick, async () => {
+    const r = await tick(reminderDeps);
+    if (r.became_due) log('info', 'reminders due', r);
+  });
+  await boss.schedule(JOBS.remindersTick, '*/15 * * * *');
+  await boss.createQueue(JOBS.remindersDeliver);
+  await boss.work(JOBS.remindersDeliver, async () => {
+    const r = await deliver(reminderDeps);
+    if (r.digests) log('info', 'reminder digests sent', r);
+  });
+  await boss.schedule(JOBS.remindersDeliver, '5 * * * *');
+  await boss.createQueue(JOBS.statusRefresh);
+  await boss.work(JOBS.statusRefresh, async () => {
+    log('info', 'status cache refreshed', await refreshStatus(reminderDeps));
+  });
+  await boss.schedule(JOBS.statusRefresh, '45 3 * * *');
+  await boss.createQueue(JOBS.remindersWeekly);
+  await boss.work(JOBS.remindersWeekly, async () => {
+    const r = await weekly(reminderDeps);
+    if (r.digests) log('info', 'weekly summaries sent', r);
+  });
+  await boss.schedule(JOBS.remindersWeekly, '10 * * * *');
+  // On start: catch up immediately rather than waiting for the next slot.
+  await boss.send(JOBS.remindersTick, {});
   log('info', 'worker ready', { jobs: Object.values(JOBS) });
 
   const shutdown = async (signal: string) => {

@@ -4,12 +4,19 @@ import { registerAuth } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
+import type { SealedSearchService } from './documents/sealed-search.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
 import type { DocumentService } from './documents/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
 import { registerExports } from './exports/routes.js';
+import { registerNotifications } from './notifications/routes.js';
+import type { NotificationService } from './notifications/service.js';
+import { registerReminders } from './reminders/routes.js';
+import { registerSuggestions } from './suggestions/routes.js';
+import type { SuggestionService } from './suggestions/service.js';
+import type { ReminderService } from './reminders/service.js';
 import type { ExportService } from './exports/service.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
@@ -27,9 +34,13 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
   exports: ExportService;
+  reminders: ReminderService;
+  suggestions: SuggestionService;
+  notifications: NotificationService;
   household: HouseholdService;
   logger?: boolean | object;
 }
@@ -109,7 +120,16 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerVaults(app, deps.vaults);
   registerHousehold(app, deps.household);
   registerExports(app, deps.exports);
-  await registerDocuments(app, deps.documents, deps.visibility, config.FDV_MAX_UPLOAD_BYTES);
+  registerReminders(app, deps.reminders);
+  registerSuggestions(app, deps.suggestions);
+  registerNotifications(app, deps.notifications);
+  await registerDocuments(
+    app,
+    deps.documents,
+    deps.visibility,
+    config.FDV_MAX_UPLOAD_BYTES,
+    deps.sealedSearch,
+  );
 
   return app;
 }

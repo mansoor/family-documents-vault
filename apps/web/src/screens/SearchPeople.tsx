@@ -1,10 +1,19 @@
-import type { DocumentView } from '@fdv/shared';
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router';
+import type { DocumentView, SuggestionView } from '@fdv/shared';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Avatar, BottomNav, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
-import { DocRow } from './Home.js';
+import {
+  Avatar,
+  BottomNav,
+  Button,
+  categoryLabel,
+  ErrorNote,
+  Field,
+  StatusBadge,
+  TopBar,
+} from '../ui.js';
+import { addLink, DocRow } from './Home.js';
 
 /**
  * Search: one field, live results, filter chips for person and category.
@@ -19,6 +28,14 @@ export function SearchScreen() {
   const category = params.get('category') ?? '';
   const memberId = params.get('member') ?? '';
   const [hits, setHits] = useState<SearchHit[] | null>(null);
+  // The second pass over the caller's own sealed documents (FND-08). It
+  // starts after the indexed results are already on screen, because it is
+  // the slow half and waiting for it would make every search feel slow.
+  const [sealed, setSealed] = useState<{
+    state: 'idle' | 'searching' | 'done';
+    items: SearchHit[];
+    searched: number;
+  }>({ state: 'idle', items: [], searched: 0 });
   const [browse, setBrowse] = useState<DocumentView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
@@ -38,6 +55,19 @@ export function SearchScreen() {
           if (!cancelled && r) {
             setHits(r.items);
             setBrowse(null);
+            const handle = r.sealed_pending.token;
+            if (!handle) {
+              setSealed({ state: 'idle', items: [], searched: 0 });
+            } else {
+              setSealed({ state: 'searching', items: [], searched: 0 });
+              const more = await withToken((t) => api.searchSealed(t, handle));
+              if (!cancelled)
+                setSealed({
+                  state: 'done',
+                  items: more?.items ?? [],
+                  searched: more?.searched ?? 0,
+                });
+            }
           }
         } else {
           const r = await withToken((t) =>
@@ -50,6 +80,7 @@ export function SearchScreen() {
           if (!cancelled && r) {
             setBrowse(r.items);
             setHits(null);
+            setSealed({ state: 'idle', items: [], searched: 0 });
           }
         }
       } catch (err) {
@@ -121,27 +152,46 @@ export function SearchScreen() {
       {hits && (
         <>
           <p className="muted" role="status">
-            {hits.length} document{hits.length === 1 ? '' : 's'}, searched inside the pages too
+            {/* Counts both passes, so the line never says "0 documents"
+                above a result the second pass found. */}
+            {hits.length + sealed.items.length} document
+            {hits.length + sealed.items.length === 1 ? '' : 's'}, searched inside the pages too
           </p>
           <ul className="list">
             {hits.map((h) => (
-              <li key={h.document_id}>
-                <button
-                  type="button"
-                  className="rowbtn"
-                  onClick={() => void navigate(`/documents/${h.document_id}`)}
-                >
-                  <span className="doc-title">{h.title ?? 'Untitled'}</span>
-                  <span className="muted">{categoryLabel(h.category)}</span>
-                  <span
-                    className="snippet"
-                    dangerouslySetInnerHTML={{ __html: sanitiseSnippet(h.snippet) }}
-                  />
-                  <StatusBadge status={h.status} />
-                </button>
-              </li>
+              <HitRow
+                key={h.document_id}
+                hit={h}
+                onOpen={() => void navigate(`/documents/${h.document_id}`)}
+              />
             ))}
           </ul>
+          {sealed.state === 'searching' && (
+            <p className="muted" role="status">
+              Looking inside your private documents…
+            </p>
+          )}
+          {sealed.items.length > 0 && (
+            <>
+              <h2 className="section-h">Also in your private documents</h2>
+              <p className="muted">Only you can see these, so only your sign-in can search them.</p>
+              <ul className="list">
+                {sealed.items.map((h) => (
+                  <HitRow
+                    key={h.document_id}
+                    hit={h}
+                    onOpen={() => void navigate(`/documents/${h.document_id}`)}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+          {sealed.state === 'done' && sealed.items.length === 0 && sealed.searched > 0 && (
+            <p className="muted" role="status">
+              Nothing in your {sealed.searched} private document
+              {sealed.searched === 1 ? '' : 's'} matched.
+            </p>
+          )}
         </>
       )}
       {browse && (
@@ -157,6 +207,22 @@ export function SearchScreen() {
   );
 }
 
+function HitRow({ hit, onOpen }: { hit: SearchHit; onOpen: () => void }) {
+  return (
+    <li>
+      <button type="button" className="rowbtn" onClick={onOpen}>
+        <span className="doc-title">{hit.title ?? 'Untitled'}</span>
+        <span className="muted">{categoryLabel(hit.category)}</span>
+        <span
+          className="snippet"
+          dangerouslySetInnerHTML={{ __html: sanitiseSnippet(hit.snippet) }}
+        />
+        <StatusBadge status={hit.status} />
+      </button>
+    </li>
+  );
+}
+
 /** The server marks matches with <em>; everything else is escaped. */
 export function sanitiseSnippet(s: string): string {
   const esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -164,9 +230,32 @@ export function sanitiseSnippet(s: string): string {
 }
 
 export function PeopleScreen() {
-  const { authVersion } = useApp();
-  const { data, error } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  const { authVersion, withToken } = useApp();
+  const { data, error, reload } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   const navigate = useNavigate();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [dob, setDob] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setBusy(true);
+    setAddError(null);
+    try {
+      await withToken((t) => api.addMember(t, { display_name: name, date_of_birth: dob || null }));
+      setName('');
+      setDob('');
+      setAdding(false);
+      await reload();
+    } catch (err) {
+      setAddError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <main className="page page-top has-nav">
       <TopBar title="People" />
@@ -192,6 +281,36 @@ export function PeopleScreen() {
           </li>
         ))}
       </ul>
+      {adding ? (
+        <form onSubmit={(e) => void add(e)} className="card stack">
+          <ErrorNote message={addError} />
+          <Field
+            id="member-name"
+            label="Name of another family member"
+            value={name}
+            onChange={setName}
+          />
+          <Field
+            id="member-dob"
+            label="Date of birth"
+            type="date"
+            value={dob}
+            onChange={setDob}
+            required={false}
+            hint="Optional. It is how we know whose birth certificate to ask about."
+          />
+          <div className="row">
+            <Button type="submit" disabled={busy}>
+              {busy ? 'Adding…' : 'Add'}
+            </Button>
+            <Button kind="quiet" onClick={() => setAdding(false)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button onClick={() => setAdding(true)}>Add someone</Button>
+      )}
       <p className="muted">Inviting someone to sign in arrives in a later release.</p>
       <BottomNav />
     </main>
@@ -228,31 +347,208 @@ export function PersonScreen() {
 }
 
 export function RemindersScreen() {
-  const { authVersion } = useApp();
+  const { authVersion, withToken } = useApp();
   const navigate = useNavigate();
-  const { data, error } = useLoad(
-    async (t) =>
-      (await api.documents(t, { sort: 'expiring', limit: 100 })).items.filter((d) =>
-        ['expired', 'expiring_soon', 'needs_info'].includes(d.status.value),
-      ),
+  const [error, setError] = useState<string | null>(null);
+  const { data, reload } = useLoad(
+    async (t) => {
+      const [due, upcoming, docs, suggestions, hidden] = await Promise.all([
+        api.reminders(t, 'due'),
+        api.reminders(t, 'upcoming'),
+        api.documents(t, { sort: 'expiring', limit: 100 }),
+        api.suggestions(t),
+        api.suggestions(t, true),
+      ]);
+      const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
+      return {
+        due: due.items,
+        upcoming: upcoming.items,
+        // Documents in a bad state that have no reminder of their own.
+        attention: docs.items.filter(
+          (d) => ['expired', 'needs_info'].includes(d.status.value) && !reminded.has(d.id),
+        ),
+        suggestions: suggestions.items,
+        profileAnswered: suggestions.profile_answered,
+        hidden: hidden.items,
+      };
+    },
     [authVersion],
   );
+
+  const act = async (fn: (t: string) => Promise<unknown>) => {
+    setError(null);
+    try {
+      await withToken(fn);
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  const plusDays = (n: number) => {
+    const d = new Date(`${today}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0);
   return (
     <main className="page page-top has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error} />
-      {data && data.length === 0 && (
+      {data && count === 0 && (
         <p className="attention attention-calm" role="status">
           Everything is fine. Nothing needs your attention.
         </p>
       )}
+      {data && count > 0 && (
+        <p className="muted" role="status">
+          {count} now, {data.upcoming.length} coming up
+        </p>
+      )}
       <ul className="list">
-        {(data ?? []).map((d) => (
+        {(data?.due ?? []).map((r) => (
+          <li key={r.id} className="reminder">
+            <button
+              type="button"
+              className="rowbtn"
+              onClick={() => void navigate(`/documents/${r.document_id}`)}
+            >
+              <span className="status status-danger">{r.label}</span>
+              <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
+              {r.note && <span className="muted">{r.note}</span>}
+            </button>
+            <div className="row">
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(7)))}
+              >
+                A week
+              </Button>
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(30)))}
+              >
+                A month
+              </Button>
+              <Button
+                kind="quiet"
+                onClick={() => void act((t) => api.acknowledgeReminder(t, r.id))}
+              >
+                Done
+              </Button>
+            </div>
+          </li>
+        ))}
+        {(data?.attention ?? []).map((d) => (
           <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
         ))}
       </ul>
-      <p className="muted">Reminders with snooze and notifications arrive in the next phase.</p>
+      {data && data.upcoming.length > 0 && (
+        <section aria-labelledby="upcoming-h">
+          <h2 id="upcoming-h" className="section-h">
+            Coming up
+          </h2>
+          <ul className="list">
+            {data.upcoming.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  className="rowbtn"
+                  onClick={() => void navigate(`/documents/${r.document_id}`)}
+                >
+                  <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
+                  <span className="muted">
+                    {r.label}
+                    {r.recurrence ? ' · repeats' : ''}
+                    {r.note ? ` · ${r.note}` : ''}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <Missing
+        items={data?.suggestions ?? []}
+        hidden={data?.hidden ?? []}
+        profileAnswered={data?.profileAnswered ?? true}
+        act={act}
+      />
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * The missing-document suggestions (REM-10). Each one says why it is here,
+ * so "Not for us" is an informed answer — and it is reversible, which is
+ * why the hidden ones are still offered back at the bottom.
+ */
+function Missing(props: {
+  items: SuggestionView[];
+  hidden: SuggestionView[];
+  profileAnswered: boolean;
+  act: (fn: (t: string) => Promise<unknown>) => Promise<void>;
+}) {
+  const [showHidden, setShowHidden] = useState(false);
+  if (props.items.length === 0 && props.hidden.length === 0) {
+    return props.profileAnswered ? null : (
+      <section aria-labelledby="missing-h">
+        <h2 id="missing-h" className="section-h">
+          We noticed something missing
+        </h2>
+        <p className="muted">
+          Answer a few questions about your household and this is where we will tell you what is not
+          here yet. <Link to="/settings">Settings</Link>
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section aria-labelledby="missing-h">
+      <h2 id="missing-h" className="section-h">
+        We noticed something missing
+      </h2>
+      <ul className="list">
+        {props.items.map((s) => (
+          <li key={s.key} className="missing-row">
+            <span className="doc-title">{s.title}</span>
+            <span className="muted">{s.why}</span>
+            <div className="row">
+              <Link to={addLink(s)} className="btn btn-quiet">
+                Add it
+              </Link>
+              <Button
+                kind="quiet"
+                onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
+              >
+                Not for us
+              </Button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {props.hidden.length > 0 &&
+        (showHidden ? (
+          <ul className="list">
+            {props.hidden.map((s) => (
+              <li key={s.key} className="missing-row">
+                <span className="muted">{s.title}</span>
+                <Button
+                  kind="quiet"
+                  onClick={() => void props.act((t) => api.restoreSuggestion(t, s.key))}
+                >
+                  Show it again
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Button kind="quiet" onClick={() => setShowHidden(true)}>
+            {props.hidden.length} hidden
+          </Button>
+        ))}
+    </section>
   );
 }

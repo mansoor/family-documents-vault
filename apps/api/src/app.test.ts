@@ -37,10 +37,14 @@ async function make(pingDatabase: () => Promise<void> = async () => undefined) {
     auth: authStub,
     vaults: vaultsStub,
     documents: documentsStub,
+    sealedSearch: anyStub,
     household: householdStub,
     visibility: anyStub,
     totp: anyStub,
     exports: anyStub,
+    reminders: anyStub,
+    suggestions: anyStub,
+    notifications: anyStub,
     logger: false,
   });
   return app;

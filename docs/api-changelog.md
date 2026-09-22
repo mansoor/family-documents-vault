@@ -109,6 +109,23 @@ against self-hosted servers that are months or years behind.
 
   A document's `status` is `{ value, label }` with `value` one of `active`, `expiring_soon`, `expired`, `valid`, `needs_info`, `superseded`, `missing`. Treat unknown values as opaque.
 
+- Reminders (bearer). Derived reminders are created from the document type's lead times whenever a document's expiry or type changes; manual ones are yours.
+  - `GET /api/v1/reminders?state=due|upcoming|all` — `{ items: [{ id, document_id, document_title, kind, fire_at, lead_days, note, recurrence, status, snoozed_until, label }] }`. `label` is pre-rendered ("In 12 days · 2 Oct", "Due today", "Overdue by 3 days", "Later · 17 Oct").
+  - `POST /api/v1/reminders` — `{ document_id, fire_at, note?, recurrence? }` (`monthly`, `quarterly`, `annual`, `every:Nm`) → `201`.
+  - `POST /api/v1/reminders/{id}/snooze` — `{ until: "YYYY-MM-DD" | "expiry" }`.
+  - `POST /api/v1/reminders/{id}/acknowledge` — Done. A recurring reminder answers with its next instance.
+  - `DELETE /api/v1/reminders/{id}` — manual reminders only.
+  - Uploading a second or later version of a document resolves its open reminders.
+  - `PUT /api/v1/profile` accepts `timezone` (IANA name); reminders fire on the household's local calendar date and the daily digest goes out at 9 am local.
+
+- Notifications.
+  - `GET /api/v1/notifications/push-key` — **unauthenticated**; `{ public_key, enabled }`. The browser needs it before it can subscribe.
+  - `GET/POST /api/v1/devices`, `DELETE /api/v1/devices` (body `{ endpoint }`) — Web Push subscriptions for the signed-in account. `POST` is idempotent on the endpoint and revives a subscription that had failed. `503 push_unavailable` when the server has no VAPID keys.
+  - `GET/PUT /api/v1/notifications/preferences` — `{ daily_push, daily_email, weekly_email }` per account. Defaults: push on, daily email off, weekly email on.
+  - `GET /api/v1/notifications/smtp/providers` — presets `[{ key, name, host, port, secure, hint }]`.
+  - `GET/PUT /api/v1/notifications/smtp` — the household's own mail server (owner only). Saving always sets `status: "untested"`; the password is never returned.
+  - `POST /api/v1/notifications/smtp/test` — sends a real message to the caller's address and answers `{ ok, message }` in plain words. Only a passing test sets `status: "ok"`, and nothing is sent through untested settings.
+
 - Exports (bearer; adults). `POST /api/v1/exports` → `202 { id, state: "queued", … }`; `GET /api/v1/exports` and `GET /api/v1/exports/{id}` report `state` (`queued`, `running`, `done`, `failed`), `document_count`, `byte_size`, `expires_at`; `GET /api/v1/exports/{id}/content` streams the ZIP (`410 export_expired` after seven days). The ZIP holds every original the requester can see, in folders by category, plus `index.json`, `index.csv`, `index.html` and `README.txt`.
 
 ## Deprecations in effect

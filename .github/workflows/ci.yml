@@ -54,6 +54,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install OCR and rendering tools (for the worker's processing tests)
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick
+      - name: Start Mailpit (SMTP for the notification tests)
+        run: |
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit:latest
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8025/api/v1/messages?limit=1 >/dev/null && break
+            sleep 1
+          done
       - name: Start MinIO (S3-compatible storage for the adapter tests)
         run: |
           docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=fdv -e MINIO_ROOT_PASSWORD=fdv-minio-test             quay.io/minio/minio:latest server /data

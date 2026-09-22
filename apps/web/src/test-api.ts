@@ -11,6 +11,10 @@ export interface FakeState {
   members: Array<Record<string, unknown>>;
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
+  suggestions: Array<Record<string, unknown>>;
+  /** Hits the second pass (FND-08) returns; matched on the snippet text. */
+  sealed: Array<Record<string, unknown>>;
+  lastQuery?: string;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
 
@@ -85,6 +89,46 @@ export const TYPES = [
   },
 ];
 
+/** A hit that only the owner's own session can see. */
+export const SEALED_HIT = {
+  document_id: 'doc-sealed',
+  title: 'Notes to myself',
+  type_key: null,
+  category: null,
+  owner_member_id: 'me',
+  status: { value: 'active', label: 'Filed' },
+  snippet: 'Ask about the <em>estate</em> agent in March',
+  matched_in: 'content',
+  rank: 0,
+};
+
+/** A child in the household: the person a per-member suggestion is about. */
+export const AISHA = {
+  ...ME,
+  id: 'm-0',
+  display_name: 'Aisha',
+  date_of_birth: '2016-04-02',
+  is_me: false,
+  has_account: false,
+  role: null,
+  colour: 1,
+  document_count: 0,
+};
+
+/** A missing-document suggestion, as GET /suggestions returns it. */
+export const MISSING_BIRTH_CERTIFICATE = {
+  key: 'minor_needs_birth_certificate:m-0',
+  rule_key: 'minor_needs_birth_certificate',
+  member_id: 'm-0',
+  member_name: 'Aisha',
+  type_key: 'birth_certificate',
+  type_label: 'Birth certificate',
+  title: 'No birth certificate for Aisha',
+  why: 'Schools, passports and benefits all ask for it.',
+  missing: 1,
+  dismissed: false,
+};
+
 export function fresh(over: Partial<FakeState> = {}): FakeState {
   return {
     setupRequired: false,
@@ -92,6 +136,8 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     members: [ME],
     documents: [PASSPORT],
     types: TYPES,
+    suggestions: [],
+    sealed: [],
     calls: [],
     ...over,
   };
@@ -140,6 +186,30 @@ export function installFakeApi(state: FakeState) {
       });
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
     if (path === '/api/v1/exports') return json({ items: [] });
+    if (path === '/api/v1/reminders') return json({ items: [] });
+    if (path === '/api/v1/suggestions') {
+      const dismissed = query.get('dismissed') === 'true';
+      const items = state.suggestions.filter((x) => Boolean(x.dismissed) === dismissed);
+      return json({
+        items,
+        profile_answered: true,
+        dismissed_count: state.suggestions.filter((x) => x.dismissed).length,
+      });
+    }
+    if (path.startsWith('/api/v1/suggestions/') && path.endsWith('/dismiss')) {
+      const key = decodeURIComponent(path.slice('/api/v1/suggestions/'.length, -'/dismiss'.length));
+      const row = state.suggestions.find((x) => x.key === key);
+      if (row) row.dismissed = method === 'POST';
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path === '/api/v1/notifications/push-key')
+      return json({ public_key: null, enabled: false });
+    if (path === '/api/v1/notifications/preferences')
+      return json({ daily_push: true, daily_email: false, weekly_email: true });
+    if (path === '/api/v1/devices') return json({ items: [] });
+    if (path === '/api/v1/notifications/smtp')
+      return json({ configured: false, status: 'untested', secure: false });
+    if (path === '/api/v1/notifications/smtp/providers') return json([]);
     if (path === '/api/v1/profile' && method === 'PUT')
       return json({ household_name: state.displayName, ...(body as object) });
     if (path === '/api/v1/members' && method === 'GET') return json({ items: state.members });
@@ -222,6 +292,7 @@ export function installFakeApi(state: FakeState) {
       return json({ error: { code: 'no_thumbnail', message: 'No preview yet.' } }, 404);
     if (path === '/api/v1/search') {
       const q = query.get('q') ?? '';
+      state.lastQuery = q;
       return json({
         items: q.includes('4471')
           ? [
@@ -237,8 +308,18 @@ export function installFakeApi(state: FakeState) {
               },
             ]
           : [],
-        sealed_pending: { count: 0 },
+        sealed_pending: state.sealed.length
+          ? { count: state.sealed.length, token: 'sealed-handle' }
+          : { count: 0 },
       });
+    }
+    if (path === '/api/v1/search/sealed') {
+      const q = query.get('token') === 'sealed-handle' ? (state.lastQuery ?? '') : '';
+      const items = state.sealed.filter((s) => {
+        const snippet = typeof s.snippet === 'string' ? s.snippet : '';
+        return snippet.toLowerCase().includes(q.toLowerCase());
+      });
+      return json({ items, searched: state.sealed.length });
     }
     return Promise.reject(new Error(`unmocked ${method} ${url}`));
   });

@@ -16,6 +16,14 @@ export const JOBS = {
   exportBuild: 'export.build',
   /** Nightly encrypted pg_dump with 30-day retention. */
   backupDatabase: 'backup.database',
+  /** Every 15 minutes: scheduled/snoozed reminders become due on the local date. */
+  remindersTick: 'reminders.tick',
+  /** Hourly: one digest per household at its local 9am, with catch-up. */
+  remindersDeliver: 'reminders.deliver',
+  /** Nightly: materialise status_cache. */
+  statusRefresh: 'status.refresh',
+  /** Sunday evening: the week's summary by email. */
+  remindersWeekly: 'reminders.weekly',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

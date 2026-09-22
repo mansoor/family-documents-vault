@@ -2,7 +2,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { fresh, installFakeApi, signedIn } from './test-api.js';
+import {
+  AISHA,
+  fresh,
+  installFakeApi,
+  ME,
+  MISSING_BIRTH_CERTIFICATE,
+  SEALED_HIT,
+  signedIn,
+} from './test-api.js';
 
 beforeEach(() => {
   localStorage.clear();
@@ -64,8 +72,14 @@ describe('App', () => {
     fireEvent.change(screen.getByLabelText('Name of another family member'), {
       target: { value: 'Aisha' },
     });
+    // A child's date of birth is what makes the birth-certificate
+    // suggestion possible later; it is optional and asked for once.
+    fireEvent.change(screen.getByLabelText('Date of birth'), { target: { value: '2016-04-02' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     await screen.findByText('Aisha');
+    expect(
+      state.calls.find((c) => c.method === 'POST' && c.url === '/api/v1/members')?.body,
+    ).toMatchObject({ display_name: 'Aisha', date_of_birth: '2016-04-02' });
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
 
     await screen.findByRole('heading', { name: 'Your starting list' });
@@ -173,5 +187,87 @@ describe('App', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Every important paper, in one place.' });
     expect(localStorage.getItem('fdv.session')).toBeNull();
+  });
+  it('draws an outline for a document the family does not have, and offers to add it', async () => {
+    const state = fresh({
+      members: [ME, AISHA],
+      suggestions: [{ ...MISSING_BIRTH_CERTIFICATE }],
+    });
+    installFakeApi(state);
+    signedIn();
+    render(<App />);
+
+    await screen.findByText('We noticed something missing');
+    expect(screen.getByText('No birth certificate for Aisha')).toBeInTheDocument();
+    expect(screen.getByText(/Schools, passports and benefits/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // Missing is not an alarm: the red strip stays calm.
+    expect(screen.getByText(/Everything is fine/)).toBeInTheDocument();
+
+    // And it leads to Add with the type and the person already chosen.
+    fireEvent.click(screen.getByRole('link', { name: /Add it/ }));
+    await screen.findByRole('heading', { name: 'Add a document' });
+    expect(window.location.search).toBe('?type=birth_certificate&member=m-0');
+    expect(await screen.findByText(/Adding a birth certificate for Aisha/)).toBeInTheDocument();
+  });
+
+  it('"Not for us" hides a suggestion, and it can be brought back', async () => {
+    const state = fresh({ suggestions: [{ ...MISSING_BIRTH_CERTIFICATE }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/reminders');
+    render(<App />);
+
+    await screen.findByText('No birth certificate for Aisha');
+    fireEvent.click(screen.getByRole('button', { name: 'Not for us' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('No birth certificate for Aisha')).not.toBeInTheDocument(),
+    );
+    expect(
+      state.calls.some(
+        (c) =>
+          c.method === 'POST' &&
+          c.url === '/api/v1/suggestions/minor_needs_birth_certificate%3Am-0/dismiss',
+      ),
+    ).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: '1 hidden' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show it again' }));
+    await screen.findByText('No birth certificate for Aisha');
+  });
+  it('searches the caller’s own private documents in a second pass', async () => {
+    const state = fresh({ sealed: [{ ...SEALED_HIT }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    const box = await screen.findByLabelText('Search everything');
+    fireEvent.change(box, { target: { value: 'estate' } });
+
+    // The indexed pass has nothing; the sealed pass does.
+    await screen.findByText('Also in your private documents');
+    expect(screen.getByText(/Only you can see these/)).toBeInTheDocument();
+    expect(screen.getByText('Notes to myself')).toBeInTheDocument();
+    expect(document.querySelector('.snippet em')?.textContent).toBe('estate');
+    // The count covers both passes: no "0 documents" above a result.
+    expect(screen.getByText(/1 document, searched inside the pages too/)).toBeInTheDocument();
+    expect(state.calls.some((c) => c.url === '/api/v1/search/sealed?token=sealed-handle')).toBe(
+      true,
+    );
+    await expectAccessible();
+  });
+
+  it('says so plainly when nothing in the private documents matched', async () => {
+    const state = fresh({ sealed: [{ ...SEALED_HIT }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Search everything'), {
+      target: { value: 'zqxjkv' },
+    });
+    await screen.findByText('Nothing in your 1 private document matched.');
   });
 });
