@@ -1,8 +1,9 @@
-import type { DocumentView, SuggestionView } from '@fdv/shared';
+import { can, roleLabel, type DocumentView, type Role, type SuggestionView } from '@fdv/shared';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, type Member, type SearchHit } from '../api.js';
+import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { storedRole } from '../session.js';
 import {
   Avatar,
   BottomNav,
@@ -14,6 +15,7 @@ import {
   TopBar,
 } from '../ui.js';
 import { addLink, DocRow } from './Home.js';
+import { InvitePanel } from './Invite.js';
 
 /**
  * Search: one field, live results, filter chips for person and category.
@@ -230,8 +232,20 @@ export function sanitiseSnippet(s: string): string {
 }
 
 export function PeopleScreen() {
-  const { authVersion, guarded } = useApp();
-  const { data, error, reload } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  const { authVersion, guarded, session } = useApp();
+  const myRole: Role = session.info?.role ?? 'viewer';
+  const { data, error, reload } = useLoad(
+    async (t) => {
+      const members = (await api.members(t)).items;
+      // Only an adult may see who has been invited, so a teen's People
+      // screen asks for the members and stops there.
+      const invitations = can(myRole, 'member.invite')
+        ? (await api.invitations(t)).items
+        : ([] as Invitation[]);
+      return { members, invitations };
+    },
+    [authVersion],
+  );
   const navigate = useNavigate();
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
@@ -260,9 +274,9 @@ export function PeopleScreen() {
     <main className="page page-top has-nav">
       <TopBar title="People" />
       <ErrorNote message={error} />
-      <p className="muted">{data ? `${data.length} in the household` : ''}</p>
+      <p className="muted">{data ? `${data.members.length} in the household` : ''}</p>
       <ul className="list">
-        {(data ?? []).map((m) => (
+        {(data?.members ?? []).map((m) => (
           <li key={m.id}>
             <button
               type="button"
@@ -273,8 +287,8 @@ export function PeopleScreen() {
               <span>
                 <strong>{m.display_name}</strong>
                 <span className="muted">
-                  {m.role ? m.role.charAt(0).toUpperCase() + m.role.slice(1) : 'No sign-in'} ·{' '}
-                  {m.document_count} document{m.document_count === 1 ? '' : 's'}
+                  {m.role ? roleLabel(m.role) : 'No sign-in'} · {m.document_count} document
+                  {m.document_count === 1 ? '' : 's'}
                 </span>
               </span>
             </button>
@@ -309,9 +323,13 @@ export function PeopleScreen() {
           </div>
         </form>
       ) : (
-        <Button onClick={() => setAdding(true)}>Add someone</Button>
+        can(myRole, 'member.add') && <Button onClick={() => setAdding(true)}>Add someone</Button>
       )}
-      <p className="muted">Inviting someone to sign in arrives in a later release.</p>
+      <InvitePanel
+        members={data?.members ?? []}
+        invitations={data?.invitations ?? []}
+        onChanged={reload}
+      />
       <BottomNav />
     </main>
   );
@@ -515,17 +533,19 @@ function Missing(props: {
           <li key={s.key} className="missing-row">
             <span className="doc-title">{s.title}</span>
             <span className="muted">{s.why}</span>
-            <div className="row">
-              <Link to={addLink(s)} className="btn btn-quiet">
-                Add it
-              </Link>
-              <Button
-                kind="quiet"
-                onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
-              >
-                Not for us
-              </Button>
-            </div>
+            {can(storedRole(), 'document.add') && (
+              <div className="row">
+                <Link to={addLink(s)} className="btn btn-quiet">
+                  Add it
+                </Link>
+                <Button
+                  kind="quiet"
+                  onClick={() => void props.act((t) => api.dismissSuggestion(t, s.key))}
+                >
+                  Not for us
+                </Button>
+              </div>
+            )}
           </li>
         ))}
       </ul>

@@ -129,6 +129,39 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
 
+### Inviting the rest of the family
+
+Everybody in the household is a **member** — including a child or an elderly
+parent who never signs in and simply has documents. Giving someone a sign-in
+is a separate step, on the People screen:
+
+1. An adult chooses **Invite someone to sign in**, gives their name, an email
+   address (which becomes their sign-in) and a role.
+2. The vault produces a **link** and an eight-character **code**, and shows
+   them once. Send them separately — the link in a message, the code by phone
+   or in person. Anyone holding both can sign in as that person.
+3. They open the link, which tells them whose vault it is, who invited them
+   and what they will be able to do, then type the code and choose their own
+   password. That password also unlocks their own _Only me_ documents, so the
+   vault cannot reset it for them.
+
+The invitation lasts seven days and can be cancelled at any time. Five wrong
+codes and it stops working. Nothing is emailed — the vault does not need a
+mail server to bring somebody in, and you pass the invitation on yourself.
+
+The four roles:
+
+| Role       | Can                                                                                                                      | Cannot                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| **Owner**  | Everything, including storage, people and emergency contacts                                                             | —                                                                      |
+| **Adult**  | Everything day to day: add, edit and download every _Everyone_ and _Adults only_ document, manage their own private ones | Change storage, remove people, see another adult's _Only me_ documents |
+| **Teen**   | Their own documents, plus anything shared with the whole family                                                          | See _Adults only_ documents, or change anyone else's                   |
+| **Viewer** | Open and download what the family shares                                                                                 | Change anything. For an accountant, a lawyer, a carer                  |
+
+An owner can hand out any role. An adult can give a teen or a viewer a
+sign-in, but only an owner can make another adult or owner, because that
+opens the adults-only documents.
+
 ## How your files are protected
 
 - The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file) — never in the database.

@@ -9,6 +9,7 @@ export interface FakeState {
   setupRequired: boolean;
   displayName: string;
   members: Array<Record<string, unknown>>;
+  invitations: Array<Record<string, unknown> & { id: string }>;
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
@@ -25,6 +26,8 @@ export interface FakeState {
   lastQuery?: string;
   /** True until a credential has been presented again (SEC-17). */
   stepUpNeeded: boolean;
+  /** False when the link has expired, been used or been revoked. */
+  invitationValid: boolean;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
 
@@ -154,12 +157,14 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     setupRequired: false,
     displayName: 'The Seikh family',
     members: [ME],
+    invitations: [],
     documents: [PASSPORT],
     types: TYPES,
     suggestions: [],
     sealed: [],
     passkeys: [],
     stepUpNeeded: false,
+    invitationValid: true,
     calls: [],
     ...over,
   };
@@ -196,13 +201,15 @@ export function installFakeApi(state: FakeState) {
       return json(TOKENS, 201);
     }
     if (path === '/api/v1/auth/password') return json(TOKENS);
-    if (path === '/api/v1/auth/refresh') return json(TOKENS);
+    // The real server decides the role from the session, not the client,
+    // so refreshing must not hand back a role the test did not sign in as.
+    if (path === '/api/v1/auth/refresh') return json({ ...TOKENS, role: storedRole() });
     if (path === '/api/v1/me')
       return json({
         account_id: 'a',
         household_id: 'hh',
         member_id: 'me',
-        role: 'owner',
+        role: storedRole(),
         totp_enabled: true,
         totp_required: false,
       });
@@ -293,6 +300,74 @@ export function installFakeApi(state: FakeState) {
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    if (path === '/api/v1/invitations' && method === 'GET')
+      return json({ items: state.invitations });
+    if (path === '/api/v1/invitations' && method === 'POST') {
+      const b = body as { display_name?: string; member_id?: string; email: string; role: string };
+      const invitation = {
+        id: `inv-${state.invitations.length}`,
+        member_id: b.member_id ?? `m-${state.members.length}`,
+        display_name: b.display_name ?? 'Someone',
+        email: b.email,
+        role: b.role,
+        invited_by: 'Mansoor Seikh',
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        state: 'pending',
+        attempts_left: 5,
+      };
+      state.invitations.push(invitation);
+      return json(
+        { invitation, link_token: 'link-secret-0123456789abcdef', code: 'ABCD-EFGH' },
+        201,
+      );
+    }
+    if (path.startsWith('/api/v1/invitations/') && !state.invitationValid) {
+      return json(
+        {
+          error: {
+            code: 'invitation_not_valid',
+            message:
+              'That invitation link is not valid any more. Ask whoever invited you to send a new one.',
+            retriable: false,
+            request_id: 'r',
+          },
+        },
+        404,
+      );
+    }
+    if (path.startsWith('/api/v1/invitations/') && path.endsWith('/accept')) {
+      if ((body as { code: string }).code.toUpperCase().replace(/[^A-Z0-9]/g, '') !== 'ABCDEFGH') {
+        return json(
+          {
+            error: {
+              code: 'invitation_code_wrong',
+              message: 'That code is not right. 4 tries left.',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          401,
+        );
+      }
+      return json(TOKENS, 201);
+    }
+    if (path.startsWith('/api/v1/invitations/') && method === 'GET') {
+      return json({
+        household_name: 'The Seikh family',
+        display_name: 'Sam',
+        email: 'sam@example.test',
+        role: 'adult',
+        role_label: 'Adult',
+        invited_by: 'Mansoor Seikh',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      });
+    }
+    if (path.startsWith('/api/v1/invitations/') && method === 'DELETE') {
+      const id = path.slice('/api/v1/invitations/'.length);
+      state.invitations = state.invitations.filter((i) => i.id !== id);
+      return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path === '/api/v1/document-types') return json({ items: state.types });
     if (path === '/api/v1/documents/counts') {
@@ -394,14 +469,24 @@ export function installFakeApi(state: FakeState) {
   return fn;
 }
 
-export function signedIn() {
+/** Whatever role `signedIn()` last stored, defaulting to owner. */
+function storedRole(): string {
+  try {
+    const raw = localStorage.getItem('fdv.session');
+    return raw ? ((JSON.parse(raw) as { role?: string }).role ?? 'owner') : 'owner';
+  } catch {
+    return 'owner';
+  }
+}
+
+export function signedIn(role: 'owner' | 'adult' | 'teen' | 'viewer' = 'owner') {
   localStorage.setItem(
     'fdv.session',
     JSON.stringify({
       refresh_token: 'hh.secret',
       household_id: 'hh',
       member_id: 'me',
-      role: 'owner',
+      role,
     }),
   );
 }

@@ -18,6 +18,7 @@ import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
+import { InvitationService } from './household/invitations.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
       config.FDV_VAPID_PUBLIC_KEY ?? null,
     ),
     household: new HouseholdService(db, keys),
+    invitations: new InvitationService(db, keys, auth),
     suggestions: new SuggestionService(db),
     stepUp: new StepUpService(db, passkeys, totp),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),

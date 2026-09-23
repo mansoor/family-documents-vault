@@ -340,4 +340,104 @@ describe('App', () => {
       state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/exports'),
     ).toHaveLength(1);
   });
+  it('invites another adult and shows the two halves exactly once', async () => {
+    const state = fresh({ members: [ME, AISHA] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Invite someone to sign in' }));
+    fireEvent.change(screen.getByLabelText('Their name'), { target: { value: 'Sam' } });
+    fireEvent.change(screen.getByLabelText('Their email address'), {
+      target: { value: 'sam@example.test' },
+    });
+    // An owner may hand out any role; the description changes with the choice.
+    fireEvent.click(screen.getByRole('button', { name: 'Teen' }));
+    expect(screen.getByText(/anything shared with the whole family/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Adult' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make the invitation' }));
+    await screen.findByRole('heading', { name: 'Send these to Sam' });
+    expect(screen.getByText(/\/join\/link-secret-0123456789abcdef/)).toBeInTheDocument();
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
+    expect(screen.getByText(/only time they are shown/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // Closing the card puts them in the waiting list, without the secrets.
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await screen.findByRole('heading', { name: 'Waiting to be accepted' });
+    expect(screen.queryByText('ABCD-EFGH')).not.toBeInTheDocument();
+  });
+
+  it('a teen is not offered the invite button at all', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn('teen');
+    window.history.replaceState({}, '', '/people');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'People' });
+    expect(
+      screen.queryByRole('button', { name: 'Invite someone to sign in' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add someone' })).not.toBeInTheDocument();
+    // And the screen never asks the server for something it may not have.
+    expect(state.calls.some((c) => c.url === '/api/v1/invitations')).toBe(false);
+  });
+
+  it('a viewer is shown nothing they would be refused', async () => {
+    const state = fresh({ suggestions: [MISSING_BIRTH_CERTIFICATE], members: [ME, AISHA] });
+    installFakeApi(state);
+    signedIn('viewer');
+    render(<App />);
+
+    // What they came for is there…
+    await screen.findByText("Mansoor's passport");
+    // …and the things a viewer cannot do are simply not on the screen: no
+    // add button, no add-a-person chip, and no list of jobs for somebody
+    // else to do.
+    expect(screen.queryByLabelText('Add a document')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Add a person')).not.toBeInTheDocument();
+    expect(screen.queryByText('We noticed something missing')).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('joining says whose vault it is before asking for anything', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/join/link-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    expect(screen.getByText('Mansoor Seikh')).toBeInTheDocument();
+    expect(screen.getByText(/Cannot change storage or remove people/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // A wrong code is an ordinary mistake, and says how many tries are left.
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'ZZZZ-ZZZZ' },
+    });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'a long enough password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    await screen.findByText('That code is not right. 4 tries left.');
+
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'abcd efgh' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    // Straight into the signed-in app: no second sign-in step.
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+  });
+
+  it('an invitation that is no longer valid says so, and offers the way back', async () => {
+    installFakeApi(fresh({ invitationValid: false }));
+    window.history.replaceState({}, '', '/join/nope');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'This invitation cannot be used' });
+    expect(screen.getByText(/Ask whoever invited you/)).toBeInTheDocument();
+    await expectAccessible();
+  });
 });

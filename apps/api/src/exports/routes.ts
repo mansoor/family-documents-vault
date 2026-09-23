@@ -3,6 +3,8 @@ import { metaOf } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import type { ExportService } from './service.js';
 import type { StepUpService } from '../auth/step-up.js';
+import type { Capability } from '@fdv/shared';
+import { needs } from '../authz.js';
 
 export function registerExports(
   app: FastifyInstance,
@@ -10,9 +12,10 @@ export function registerExports(
   stepUp?: StepUpService,
 ): void {
   const auth = { preHandler: app.requireAuth };
+  const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
-  app.post('/api/v1/exports', auth, async (req, reply) => {
+  app.post('/api/v1/exports', guard('export.request'), async (req, reply) => {
     // Everything you can see, in one file: worth asking who is asking.
     await stepUp?.require(principal(req), 'export_everything');
     return reply.status(202).send(await exports.request(principal(req), metaOf(req)));

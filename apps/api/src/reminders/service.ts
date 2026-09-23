@@ -12,6 +12,7 @@ import {
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { allows, requireCapability } from '../authz.js';
 
 /**
  * The reminder engine (design, Status and reminders).
@@ -161,7 +162,7 @@ export class ReminderService {
     input: ManualReminderInput,
     meta: RequestMeta,
   ): Promise<ReminderView> {
-    if (p.role === 'viewer') throw new ApiError(403, 'forbidden', 'Viewers cannot add reminders.');
+    requireCapability(p, 'reminder.manage');
     if (input.recurrence && !parseRecurrence(input.recurrence)) {
       throw new ApiError(
         422,
@@ -255,8 +256,7 @@ export class ReminderService {
   }
 
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
-    if (p.role === 'viewer')
-      throw new ApiError(403, 'forbidden', 'Viewers cannot change reminders.');
+    requireCapability(p, 'reminder.manage');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const r = await trx
         .deleteFrom('reminder')
@@ -286,8 +286,7 @@ export class ReminderService {
       today: string,
     ) => Promise<Record<string, unknown> & { action: string }>,
   ): Promise<ReminderView> {
-    if (p.role === 'viewer')
-      throw new ApiError(403, 'forbidden', 'Viewers cannot change reminders.');
+    requireCapability(p, 'reminder.manage');
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const r = await trx
         .selectFrom('reminder')
@@ -321,7 +320,7 @@ export class ReminderService {
 
 function visibleTo(p: Principal) {
   return sql<boolean>`(document.visibility = 'household'
-    or (document.visibility = 'adults' and ${p.role === 'owner' || p.role === 'adult'})
+    or (document.visibility = 'adults' and ${allows(p, 'document.see_adults')})
     or (document.visibility = 'private' and document.owner_member_id = ${p.memberId}::uuid))`;
 }
 
