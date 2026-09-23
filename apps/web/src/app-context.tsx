@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { api, ApiRequestError } from './api.js';
 import { Session } from './session.js';
+import { StepUpPrompt } from './StepUpPrompt.js';
 
 /**
  * What every screen needs: the capability document, the session, and a
@@ -31,6 +32,11 @@ interface AppState {
   reloadCaps: () => Promise<void>;
   /** Calls `fn` with a valid token, or returns null and clears the session. */
   withToken: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>;
+  /**
+   * Like `withToken`, but for the handful of actions that may ask for a
+   * credential again (SEC-17): it opens the prompt, waits, and retries.
+   */
+  guarded: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>;
   /** Bumped when the session signs in or out, so screens can re-render. */
   authVersion: number;
   markAuthChanged: () => void;
@@ -56,7 +62,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Capabilities are fetched from the network; state is set in the callback.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reloadCaps();
   }, [reloadCaps]);
 
@@ -83,11 +88,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [session, markAuthChanged],
   );
 
-  const value = useMemo<AppState>(
-    () => ({ caps, session, reloadCaps, withToken, authVersion, markAuthChanged, connectionError }),
-    [caps, session, reloadCaps, withToken, authVersion, markAuthChanged, connectionError],
+  // The step-up prompt is here rather than in a screen because any screen
+  // can trigger it, and because the retry has to happen where the call was
+  // made — otherwise the person confirms and then has to press the button
+  // again themselves.
+  const [asking, setAsking] = useState<{
+    action: string;
+    message: string;
+    settle: (ok: boolean) => void;
+  } | null>(null);
+
+  const guarded = useCallback(
+    async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
+      try {
+        return await withToken(fn);
+      } catch (err) {
+        if (!(err instanceof ApiRequestError) || err.code !== 'step_up_required') throw err;
+        const confirmed = await new Promise<boolean>((settle) =>
+          setAsking({ action: err.action ?? '', message: err.message, settle }),
+        );
+        setAsking(null);
+        if (!confirmed) return null;
+        return await withToken(fn);
+      }
+    },
+    [withToken],
   );
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+
+  const value = useMemo<AppState>(
+    () => ({
+      caps,
+      session,
+      reloadCaps,
+      withToken,
+      guarded,
+      authVersion,
+      markAuthChanged,
+      connectionError,
+    }),
+    [caps, session, reloadCaps, withToken, guarded, authVersion, markAuthChanged, connectionError],
+  );
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      {asking && <StepUpPrompt message={asking.message} onSettled={asking.settle} />}
+    </Ctx.Provider>
+  );
 }
 
 export function useApp(): AppState {

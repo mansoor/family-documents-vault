@@ -5,6 +5,7 @@ import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { SealedSearchService } from './sealed-search.js';
+import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
 
@@ -77,6 +78,7 @@ export async function registerDocuments(
   visibility: VisibilityService,
   maxUploadBytes: number,
   sealed: SealedSearchService,
+  stepUp?: StepUpService,
 ) {
   await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1 } });
   const auth = { preHandler: app.requireAuth };
@@ -247,6 +249,11 @@ export async function registerDocuments(
 
   app.get<{ Params: { id: string } }>('/api/v1/versions/:id/content', auth, async (req, reply) => {
     const p = principal(req);
+    // An Essential or an "only me" document asks who is asking, once
+    // every five minutes (SEC-17). Everything else opens straight away.
+    if (stepUp && (await docs.isSensitive(p, req.params.id))) {
+      await stepUp.require(p, 'open_private_document');
+    }
     const meta = await docs.versionMeta(p, req.params.id);
     const total = meta.byte_size;
     const range = parseRange(req.headers.range, total);

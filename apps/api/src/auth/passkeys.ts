@@ -253,6 +253,49 @@ export class PasskeyService {
     return this.auth.openSessionForAccount(credential.account_id, meta, 'passkey');
   }
 
+  /**
+   * The same check as signing in, but for someone already here: it proves
+   * the device is present without opening a new session (SEC-17).
+   */
+  async verifyForAccount(accountId: string, response: AuthenticationResponseJSON): Promise<void> {
+    const credential = await this.db
+      .selectFrom('credential')
+      .selectAll()
+      .where('kind', '=', 'passkey')
+      .where('credential_id', '=', Buffer.from(response.id, 'base64url'))
+      .where('account_id', '=', accountId)
+      .executeTakeFirst();
+    if (!credential?.public_key) throw rejected();
+    const challenge = await this.takeChallenge('authenticate', accountId);
+    let verification;
+    try {
+      verification = await verifyAuthenticationResponse({
+        response,
+        expectedChallenge: challenge,
+        expectedOrigin: this.config.origin,
+        expectedRPID: this.config.rpId,
+        requireUserVerification: false,
+        credential: {
+          id: response.id,
+          publicKey: new Uint8Array(credential.public_key),
+          counter: Number(credential.sign_count ?? 0),
+          transports: credential.transports,
+        },
+      });
+    } catch {
+      throw rejected();
+    }
+    if (!verification.verified) throw rejected();
+    await this.db
+      .updateTable('credential')
+      .set({
+        sign_count: verification.authenticationInfo.newCounter,
+        last_used_at: new Date(),
+      })
+      .where('id', '=', credential.id)
+      .execute();
+  }
+
   // ---------------------------------------------------------------- listing
 
   async list(p: Principal): Promise<PasskeyView[]> {

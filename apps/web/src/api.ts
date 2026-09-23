@@ -23,6 +23,8 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Which consequential action asked for a fresh credential (SEC-17). */
+    public readonly action?: string,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -250,14 +252,18 @@ export interface RequestOptions {
 async function toError(res: Response): Promise<ApiRequestError> {
   let code = 'http_error';
   let message = `The server answered ${res.status}.`;
+  let action: string | undefined;
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    const body = (await res.json()) as {
+      error?: { code?: string; message?: string; action?: string };
+    };
     code = body.error?.code ?? code;
     message = body.error?.message ?? message;
+    action = body.error?.action;
   } catch {
     // not JSON; keep the generic message
   }
-  return new ApiRequestError(res.status, code, message);
+  return new ApiRequestError(res.status, code, message, action);
 }
 
 async function send(path: string, opts: RequestOptions): Promise<Response> {
@@ -449,6 +455,15 @@ export const api = {
     }),
   passkeyVerify: (response: unknown) =>
     request<Tokens>('/api/v1/auth/passkey/verify', { method: 'POST', body: { response } }),
+
+  stepUpState: (token: string) =>
+    request<{ verified_at: string | null; expires_in: number }>('/api/v1/auth/step-up', { token }),
+  stepUp: (token: string, body: { password?: string; code?: string; passkey?: unknown }) =>
+    request<{ verified_at: string; expires_in: number }>('/api/v1/auth/step-up', {
+      method: 'POST',
+      body,
+      token,
+    }),
 
   suggestions: (token: string, dismissed = false) =>
     request<{ items: SuggestionView[]; profile_answered: boolean; dismissed_count: number }>(

@@ -2,6 +2,7 @@ import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/routes.js';
 import type { PasskeyService } from './auth/passkeys.js';
+import type { StepUpService } from './auth/step-up.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
@@ -39,6 +40,7 @@ export interface AppDeps {
   visibility: VisibilityService;
   totp: TotpService;
   passkeys: PasskeyService;
+  stepUp: StepUpService;
   exports: ExportService;
   reminders: ReminderService;
   suggestions: SuggestionService;
@@ -131,10 +133,10 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth, deps.totp, deps.passkeys);
-  registerVaults(app, deps.vaults);
-  registerHousehold(app, deps.household);
-  registerExports(app, deps.exports);
+  registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp);
+  registerVaults(app, deps.vaults, deps.stepUp);
+  registerHousehold(app, deps.household, deps.stepUp);
+  registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
   registerNotifications(app, deps.notifications);
@@ -144,6 +146,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.visibility,
     config.FDV_MAX_UPLOAD_BYTES,
     deps.sealedSearch,
+    deps.stepUp,
   );
 
   return app;

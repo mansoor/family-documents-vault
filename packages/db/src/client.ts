@@ -108,6 +108,7 @@ export interface Schema {
     expires_at: Timestamp;
     revoked_at: Timestamp | null;
     revoked_reason: string | null;
+    verified_at: Timestamp | null;
   };
 
   household_profile: {

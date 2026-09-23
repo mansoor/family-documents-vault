@@ -260,6 +260,9 @@ export class AuthService {
         user_agent: meta.userAgent ?? null,
         ip: meta.ip ?? null,
         expires_at: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+        // A credential was just presented, so the session starts fresh for
+        // the purposes of step-up (SEC-17).
+        verified_at: new Date(),
       })
       .returning('id')
       .executeTakeFirstOrThrow();

@@ -4,6 +4,7 @@ import { ApiError } from '../errors.js';
 import type { AuthService, Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
+import type { StepUpService } from './step-up.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -48,6 +49,7 @@ export function registerAuth(
   auth: AuthService,
   totp?: TotpService,
   passkeys?: PasskeyService,
+  stepUp?: StepUpService,
 ): void {
   app.decorateRequest('principal', null);
 
@@ -130,6 +132,34 @@ export function registerAuth(
       totp_required: p.role === 'owner' && !enabled && !passkey,
     };
   });
+
+  if (stepUp) {
+    // SEC-17: proving it is you again, for the handful of actions where a
+    // live session is not enough.
+    app.get('/api/v1/auth/step-up', { preHandler: app.requireAuth }, async (req) =>
+      stepUp.freshness(req.principal as Principal),
+    );
+
+    app.post('/api/v1/auth/step-up', { preHandler: app.requireAuth }, async (req) => {
+      const body = parse(
+        z.object({
+          password: z.string().min(1).optional(),
+          code: z.string().min(6).max(10).optional(),
+          passkey: z.record(z.string(), z.unknown()).optional(),
+        }),
+        req.body,
+      );
+      return stepUp.verify(
+        req.principal as Principal,
+        {
+          ...(body.password ? { password: body.password } : {}),
+          ...(body.code ? { code: body.code } : {}),
+          ...(body.passkey ? { passkey: body.passkey as never } : {}),
+        },
+        metaOf(req),
+      );
+    });
+  }
 
   if (passkeys) {
     // Signing in. Both are public: the whole point is that they work

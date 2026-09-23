@@ -19,6 +19,7 @@ import { HouseholdService } from './household/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
+import { StepUpService } from './auth/step-up.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -77,12 +78,18 @@ export async function createHarness(): Promise<Harness> {
     (trx, hh) => vaults.createDefaultLocal(trx, hh),
     totp,
   );
+  const passkeys = new PasskeyService(
+    db,
+    auth,
+    passkeyConfig('http://localhost:8080', 'Test vault'),
+  );
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
     auth,
     totp,
-    passkeys: new PasskeyService(db, auth, passkeyConfig('http://localhost:8080', 'Test vault')),
+    passkeys,
+    stepUp: new StepUpService(db, passkeys, totp),
     visibility: new VisibilityService(db, keys),
     vaults,
     documents: new DocumentService(

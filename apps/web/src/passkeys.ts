@@ -41,6 +41,14 @@ export async function signIn(email?: string) {
   return api.passkeyVerify(response);
 }
 
+/**
+ * An assertion for something other than signing in — confirming it is you
+ * before a consequential action (SEC-17).
+ */
+export async function assert(options: Parameters<typeof startAuthentication>[0]['optionsJSON']) {
+  return startAuthentication({ optionsJSON: options });
+}
+
 /** What went wrong, said the way a person would say it. */
 export function describe(err: unknown): string {
   const name = (err as { name?: string })?.name;
