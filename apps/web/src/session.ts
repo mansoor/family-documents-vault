@@ -36,6 +36,18 @@ function write(s: StoredSession | null) {
   }
 }
 
+/**
+ * The signed-in role, for deciding what to put on the screen.
+ *
+ * It is a plain function rather than something off the context because
+ * `ui.tsx` needs it, and `ui.tsx` cannot import the context without a
+ * cycle. Nothing is trusted to it: the server refuses regardless, and
+ * this only decides whether a button that would be refused is drawn.
+ */
+export function storedRole(): Tokens['role'] {
+  return read()?.role ?? 'viewer';
+}
+
 export class Session {
   private access: string | null = null;
   private accessExpiresAt = 0;

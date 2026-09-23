@@ -4,6 +4,7 @@ import type {
 } from '@simplewebauthn/browser';
 import type {
   Capabilities,
+  Role,
   DateValue,
   DocumentTypeView,
   DocumentView,
@@ -38,7 +39,7 @@ export interface Tokens {
   refresh_expires_in: number;
   household_id: string;
   member_id: string;
-  role: 'owner' | 'adult' | 'teen' | 'viewer';
+  role: Role;
   scopes_unlocked: string[];
 }
 
@@ -46,7 +47,7 @@ export interface Me {
   account_id: string;
   household_id: string;
   member_id: string;
-  role: Tokens['role'];
+  role: Role;
   totp_enabled: boolean;
   totp_required: boolean;
 }
@@ -132,9 +133,42 @@ export interface Member {
   is_deceased: boolean;
   colour: number;
   has_account: boolean;
-  role: string | null;
+  role: Role | null;
   is_me: boolean;
   document_count: number;
+}
+
+export interface Invitation {
+  id: string;
+  member_id: string;
+  display_name: string;
+  email: string;
+  role: Role;
+  invited_by: string | null;
+  created_at: string;
+  expires_at: string;
+  state: 'pending' | 'accepted' | 'revoked' | 'expired' | 'locked';
+  attempts_left: number;
+}
+
+/**
+ * The link and the code are in this response and nowhere else — the server
+ * keeps only their hashes, so this is the one moment they exist.
+ */
+export interface CreatedInvitation {
+  invitation: Invitation;
+  link_token: string;
+  code: string;
+}
+
+export interface InvitationPreview {
+  household_name: string;
+  display_name: string;
+  email: string;
+  role: Role;
+  role_label: string;
+  invited_by: string | null;
+  expires_at: string;
 }
 
 export interface Profile {
@@ -361,6 +395,23 @@ export const api = {
     token: string,
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
+
+  invitations: (token: string) =>
+    request<{ items: Invitation[] }>('/api/v1/invitations', { token }),
+  invite: (
+    token: string,
+    body: { member_id?: string; display_name?: string; email: string; role: Role },
+  ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
+  revokeInvitation: (token: string, id: string) =>
+    request<void>(`/api/v1/invitations/${id}`, { method: 'DELETE', token }),
+  // The two the invitee calls, before they have any token at all.
+  invitationPreview: (linkToken: string) =>
+    request<InvitationPreview>(`/api/v1/invitations/${encodeURIComponent(linkToken)}`),
+  acceptInvitation: (linkToken: string, body: { code: string; password: string }) =>
+    request<Tokens>(`/api/v1/invitations/${encodeURIComponent(linkToken)}/accept`, {
+      method: 'POST',
+      body,
+    }),
 
   documentTypes: (token: string) =>
     request<{ items: DocumentTypeView[] }>('/api/v1/document-types', { token }),

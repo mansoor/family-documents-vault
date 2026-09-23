@@ -5,6 +5,7 @@ import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { HomeScreen } from './screens/Home.js';
+import { JoinScreen } from './screens/Join.js';
 import { NotificationsScreen } from './screens/Notifications.js';
 import {
   PeopleScreen,
@@ -73,6 +74,10 @@ export function App() {
               </Gate>
             }
           />
+          {/* An invitation is followed while signed out, but signing in
+              first should not throw the link away either, so this is
+              outside both gates. */}
+          <Route path="/join/:token" element={<JoinScreen />} />
           <Route
             path="/sign-in"
             element={

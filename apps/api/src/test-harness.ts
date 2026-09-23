@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, type Db } from '@fdv/db';
+import type { Role } from '@fdv/shared';
 import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from './app.js';
@@ -16,6 +17,7 @@ import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
+import { InvitationService } from './household/invitations.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
@@ -40,6 +42,19 @@ export interface Harness {
   setup(overrides?: Partial<SetupBody>): Promise<Tokens>;
   /** Bearer header for a token set. */
   as(t: Tokens): { authorization: string };
+  /**
+   * A second person, through the real invitation path: invited by `owner`,
+   * accepted with the link and the code. This is how the role tests get a
+   * teen and a viewer to try things with.
+   */
+  join(owner: Tokens, who: JoinRequest): Promise<Tokens>;
+}
+
+export interface JoinRequest {
+  name: string;
+  email: string;
+  role: Role;
+  password?: string;
 }
 
 export interface SetupBody {
@@ -83,6 +98,8 @@ export async function createHarness(): Promise<Harness> {
     auth,
     passkeyConfig('http://localhost:8080', 'Test vault'),
   );
+  const invitations = new InvitationService(db, keys, auth);
+  let joined = 1;
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
@@ -110,6 +127,7 @@ export async function createHarness(): Promise<Harness> {
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
+    invitations,
     suggestions: new SuggestionService(db),
     logger: false,
   });
@@ -141,5 +159,25 @@ export async function createHarness(): Promise<Harness> {
       return res.json<Tokens>();
     },
     as: (t) => ({ authorization: `Bearer ${t.access_token}` }),
+    async join(owner, who) {
+      const invited = await app.inject({
+        method: 'POST',
+        url: '/api/v1/invitations',
+        headers: { authorization: `Bearer ${owner.access_token}` },
+        payload: { display_name: who.name, email: who.email, role: who.role },
+      });
+      if (invited.statusCode !== 201) throw new Error(`invite failed: ${invited.body}`);
+      const { link_token, code } = invited.json<{ link_token: string; code: string }>();
+      const accepted = await app.inject({
+        method: 'POST',
+        url: `/api/v1/invitations/${link_token}/accept`,
+        payload: { code, password: who.password ?? 'another correct horse' },
+        // Accepting is rate-limited per address like signing in. Tests that
+        // add several people would otherwise throttle themselves.
+        remoteAddress: `10.8.${joined >> 8}.${joined++ & 0xff}`,
+      });
+      if (accepted.statusCode !== 201) throw new Error(`accept failed: ${accepted.body}`);
+      return accepted.json<Tokens>();
+    },
   };
 }

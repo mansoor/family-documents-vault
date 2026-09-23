@@ -3,6 +3,7 @@ import { openChunk, sealChunk, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/c
 import { appendAudit, withScope, type Db, type Visibility } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { requireCapability } from '../authz.js';
 
 /**
  * Changing a document's visibility (SEC-13, FND-07, decision 2).
@@ -20,9 +21,7 @@ export class VisibilityService {
   ) {}
 
   async change(p: Principal, documentId: string, to: Visibility, meta: RequestMeta): Promise<void> {
-    if (p.role === 'viewer' || p.role === 'teen') {
-      throw new ApiError(403, 'forbidden', 'Only adults can change who sees a document.');
-    }
+    requireCapability(p, 'document.visibility');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const doc = await trx
         .selectFrom('document')

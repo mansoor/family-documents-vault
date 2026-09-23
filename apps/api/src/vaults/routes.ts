@@ -5,6 +5,8 @@ import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import type { VaultService } from './service.js';
 import type { StepUpService } from '../auth/step-up.js';
+import type { Capability } from '@fdv/shared';
+import { needs } from '../authz.js';
 
 const newVault = z.object({
   provider: z.string().min(1).max(32),
@@ -24,6 +26,7 @@ export function registerVaults(
   stepUp?: StepUpService,
 ): void {
   const auth = { preHandler: app.requireAuth };
+  const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
 
   /** The provider list the Storage screen offers, with presets. Public shape, no secrets. */
   app.get('/api/v1/vaults/providers', auth, async () =>
@@ -34,7 +37,7 @@ export function registerVaults(
     items: await vaults.list(req.principal as Principal),
   }));
 
-  app.post('/api/v1/vaults', auth, async (req, reply) => {
+  app.post('/api/v1/vaults', guard('storage.manage'), async (req, reply) => {
     // Where the family's files live is as consequential as the files
     // themselves (SEC-17).
     await stepUp?.require(req.principal as Principal, 'change_storage');

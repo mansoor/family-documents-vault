@@ -6,6 +6,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
+import { requireCapability } from '../authz.js';
 
 export interface ExportView {
   id: string;
@@ -28,9 +29,7 @@ export class ExportService {
   ) {}
 
   async request(p: Principal, meta: RequestMeta): Promise<ExportView> {
-    if (p.role === 'viewer' || p.role === 'teen') {
-      throw new ApiError(403, 'forbidden', 'Only adults can export the vault.');
-    }
+    requireCapability(p, 'export.request');
     const row = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const r = await trx
         .insertInto('export')

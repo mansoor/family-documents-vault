@@ -123,6 +123,24 @@ export interface Schema {
     extra: GeneratedJson;
   };
 
+  invitation: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    email: string;
+    role: Role;
+    token_hash: Buffer;
+    code_hash: string;
+    invited_by: string;
+    attempts: Generated<number>;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    accepted_at: Timestamp | null;
+    accepted_by: string | null;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+  };
+
   scope_key: {
     id: Generated<string>;
     household_id: string;

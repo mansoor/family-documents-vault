@@ -1,7 +1,8 @@
-import type { DocumentView, SuggestionView } from '@fdv/shared';
+import { can, type DocumentView, type SuggestionView } from '@fdv/shared';
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
+import { storedRole } from '../session.js';
 import { Avatar, BottomNav, categoryLabel, ErrorNote, StatusBadge } from '../ui.js';
 
 /**
@@ -91,12 +92,14 @@ export function HomeScreen() {
               <span>{m.display_name.split(' ')[0]}</span>
             </Link>
           ))}
-          <Link to="/people" className="person-chip person-add" aria-label="Add a person">
-            <span className="avatar avatar-add" aria-hidden="true">
-              +
-            </span>
-            <span>Add</span>
-          </Link>
+          {can(storedRole(), 'member.add') && (
+            <Link to="/people" className="person-chip person-add" aria-label="Add a person">
+              <span className="avatar avatar-add" aria-hidden="true">
+                +
+              </span>
+              <span>Add</span>
+            </Link>
+          )}
         </div>
       </section>
 
@@ -144,7 +147,9 @@ export function HomeScreen() {
  * is wrong, there is just something worth adding.
  */
 function MissingStrip({ items }: { items: SuggestionView[] }) {
-  if (items.length === 0) return null;
+  // Every tile here is an invitation to add something. Somebody who
+  // cannot add anything is being shown a list of jobs for other people.
+  if (items.length === 0 || !can(storedRole(), 'document.add')) return null;
   return (
     <section aria-labelledby="missing-h">
       <h2 id="missing-h" className="section-h">

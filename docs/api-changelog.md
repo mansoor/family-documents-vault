@@ -128,6 +128,47 @@ against self-hosted servers that are months or years behind.
 
 - Exports (bearer; adults). `POST /api/v1/exports` → `202 { id, state: "queued", … }`; `GET /api/v1/exports` and `GET /api/v1/exports/{id}` report `state` (`queued`, `running`, `done`, `failed`), `document_count`, `byte_size`, `expires_at`; `GET /api/v1/exports/{id}/content` streams the ZIP (`410 export_expired` after seven days). The ZIP holds every original the requester can see, in folders by category, plus `index.json`, `index.csv`, `index.html` and `README.txt`.
 
+- Invitations (SHR-02). An invitation carries two secrets: a **link token**
+  (32 random bytes, base64url) and an eight-character **code**. The server
+  stores only their hashes, so both appear once, in the `201` that creates
+  the invitation, and cannot be retrieved afterwards.
+
+  - `POST /api/v1/invitations` — `{ member_id | display_name, email, role }`
+    → `201 { invitation, link_token, code }`. `member_id` invites someone
+    already in the household who has no sign-in; `display_name` adds them.
+    Exactly one of the two. Requires an adult, and `role` of `adult` or
+    `owner` requires an owner (`403 forbidden`). `409 email_in_use` when the
+    address already signs in here; `409 already_signed_in` when the person
+    does. Asks for step-up (`change_people`).
+  - `POST /api/v1/members/{id}/invite` — the same thing for an existing
+    person: `{ email, role }`.
+  - `GET /api/v1/invitations` — `{ items: [{ id, member_id, display_name,
+email, role, invited_by, created_at, expires_at, state, attempts_left }] }`,
+    `state` one of `pending`, `accepted`, `revoked`, `expired`, `locked`.
+    Adults only.
+  - `DELETE /api/v1/invitations/{id}` — revokes a pending one, `204`.
+  - `GET /api/v1/invitations/{link_token}` — **unauthenticated**. What the
+    invitee is shown before deciding: `{ household_name, display_name,
+email, role, role_label, invited_by, expires_at }`. Rate-limited.
+  - `POST /api/v1/invitations/{link_token}/accept` — **unauthenticated**.
+    `{ code, password }` → `201` with the same token set as a sign-in. The
+    code is compared case- and punctuation-insensitively. A wrong code is
+    `401 invitation_code_wrong` and says how many tries are left; after five
+    the invitation is dead. Anything else wrong with the link — unknown,
+    expired, revoked, already used, locked — is `404 invitation_not_valid`
+    with one message, so a link cannot be probed for its state.
+
+  Creating a second invitation for the same person revokes the first: nobody
+  holds two live links.
+
+- Roles. Every endpoint that refuses on the grounds of a role now answers
+  `403 { "error": { "code": "forbidden", "message": … } }`, where `message`
+  says who _can_ do it and is safe to show verbatim. The check runs before
+  the body is validated, so a caller who is not allowed is told that rather
+  than being told about their form. An adults-only document remains absent
+  rather than refused (`404`) for teens and viewers, in listings, in search
+  and by id — telling them it exists would be the leak.
+
 ## Deprecations in effect
 
 None.

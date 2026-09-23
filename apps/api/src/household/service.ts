@@ -3,6 +3,7 @@ import { appendAudit, withScope, type Db } from '@fdv/db';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { allows, requireCapability } from '../authz.js';
 
 /**
  * The household's people and its profile — what the first-run wizard
@@ -83,9 +84,7 @@ export class HouseholdService {
   }
 
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
-    if (p.role !== 'owner' && p.role !== 'adult') {
-      throw new ApiError(403, 'forbidden', 'Only adults can change the household profile.');
-    }
+    requireCapability(p, 'profile.edit');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const values: Record<string, unknown> = { answered_at: new Date() };
       for (const k of [
@@ -154,7 +153,7 @@ export class HouseholdService {
         .where((eb) =>
           eb.or([
             eb('visibility', '=', 'household'),
-            ...(p.role === 'owner' || p.role === 'adult' ? [eb('visibility', '=', 'adults')] : []),
+            ...(allows(p, 'document.see_adults') ? [eb('visibility', '=', 'adults')] : []),
             eb.and([eb('visibility', '=', 'private'), eb('owner_member_id', '=', p.memberId)]),
           ]),
         )
@@ -182,9 +181,7 @@ export class HouseholdService {
     input: z.infer<typeof memberBody>,
     meta: RequestMeta,
   ): Promise<MemberView> {
-    if (p.role !== 'owner' && p.role !== 'adult') {
-      throw new ApiError(403, 'forbidden', 'Only adults can add people.');
-    }
+    requireCapability(p, 'member.add');
     const id = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const n = await trx
         .selectFrom('member')
