@@ -273,7 +273,7 @@ function TwoStep() {
 
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
-  const { withToken, guarded, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
