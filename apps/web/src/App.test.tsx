@@ -534,6 +534,66 @@ describe('App', () => {
     expect(screen.queryByText(/tenancy/i)).not.toBeInTheDocument();
   });
 
+  it('the activity log reads like sentences with times', async () => {
+    const state = fresh({
+      activity: [
+        {
+          id: 3,
+          at: new Date(Date.now() - 864e5).toISOString(),
+          text: 'Sarah downloaded “Home insurance policy”',
+          notable: false,
+          document_id: 'doc-1',
+        },
+        {
+          id: 2,
+          at: new Date(Date.now() - 3 * 864e5).toISOString(),
+          text: 'Sarah changed where the files are kept',
+          notable: true,
+          document_id: null,
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings/activity');
+    render(<App />);
+
+    await screen.findByText('Sarah downloaded “Home insurance policy”');
+    expect(screen.getByText(/^yesterday, /)).toBeInTheDocument();
+    expect(screen.getByText(/private documents are only ever in your copy/)).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('marking a document private says the thing that has to be said, once', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Change who can see this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    expect(screen.getByText(/Nobody else, including the owner of this vault/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The sentence, at the moment it becomes true.
+    await screen.findByRole('heading', { name: 'Only you can open this' });
+    expect(screen.getByText(/unless you leave a key/)).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'I understand' }));
+
+    // And never again for this document: the server decides, and says null.
+    await screen.findByRole('button', { name: 'Change who can see this' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change who can see this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('heading', { name: 'Only you can open this' }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it('joining says whose vault it is before asking for anything', async () => {
     const state = fresh();
     installFakeApi(state);

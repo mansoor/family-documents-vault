@@ -219,6 +219,11 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
+      capability: 'audit.read',
+      what: 'see what the family has been doing',
+      call: (t) => h.app.inject({ url: '/api/v1/audit', headers: h.as(t) }),
+    },
+    {
       capability: 'storage.manage',
       what: 'change where files are kept',
       call: (t) =>
@@ -406,7 +411,6 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
   const NOT_YET_ENFORCED: Partial<Record<Capability, string>> = {
     'document.see_adults': 'a filter, not a refusal — the test above',
     'document.share': '3.3, share links',
-    'audit.read': '3.3, the activity log',
   };
 
   it('every capability in the matrix is either exercised here or named as owed', () => {

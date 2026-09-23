@@ -20,9 +20,24 @@ export class VisibilityService {
     private readonly keys: ScopeKeys,
   ) {}
 
-  async change(p: Principal, documentId: string, to: Visibility, meta: RequestMeta): Promise<void> {
+  /**
+   * The sentence that has to be said at the moment it becomes true
+   * (SEC-19). It is a message about death, so it is brief, plain and
+   * unsentimental, and it is said once per document and never again.
+   */
+  static readonly PRIVATE_NOTICE = {
+    title: 'Only you can open this',
+    body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+  };
+
+  async change(
+    p: Principal,
+    documentId: string,
+    to: Visibility,
+    meta: RequestMeta,
+  ): Promise<{ notice: { title: string; body: string } | null }> {
     requireCapability(p, 'document.visibility');
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const doc = await trx
         .selectFrom('document')
         .select(['id', 'visibility', 'owner_member_id'])
@@ -42,7 +57,7 @@ export class VisibilityService {
           'Only the person a document belongs to can make it private, or un-private it.',
         );
       }
-      if (doc.visibility === to) return;
+      if (doc.visibility === to) return { notice: null };
 
       const from = await this.keys.unwrap(
         trx,
@@ -141,6 +156,26 @@ export class VisibilityService {
         detail: { from: doc.visibility, to, versions: versions.length },
         ip: meta.ip,
       });
+
+      if (to !== 'private') return { notice: null };
+      // Told once per document, per person. A second visit to the same
+      // decision is not a second chance to warn somebody; it is a nag.
+      const already = await trx
+        .selectFrom('private_notice')
+        .select(['document_id'])
+        .where('document_id', '=', documentId)
+        .where('member_id', '=', p.memberId)
+        .executeTakeFirst();
+      if (already) return { notice: null };
+      await trx
+        .insertInto('private_notice')
+        .values({
+          household_id: p.householdId,
+          document_id: documentId,
+          member_id: p.memberId,
+        })
+        .execute();
+      return { notice: VisibilityService.PRIVATE_NOTICE };
     });
   }
 }

@@ -1,4 +1,5 @@
 export * from './version.js';
+export * from './activity.js';
 export * from './capabilities.js';
 export * from './documents.js';
 export * from './reminders.js';

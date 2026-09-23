@@ -133,7 +133,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
       headers: h.as(owner),
       payload: { visibility: 'private' },
     });
-    expect(ok.statusCode).toBe(204);
+    expect(ok.statusCode).toBe(200);
   });
 
   it('afterwards the file key is under the member scope and the text is sealed', async () => {
@@ -203,7 +203,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
       headers: h.as(owner),
       payload: { visibility: 'household' },
     });
-    expect(ok.statusCode).toBe(204);
+    expect(ok.statusCode).toBe(200);
     expect(
       (await get(other, `/api/v1/search?q=executor`)).json<{ items: unknown[] }>().items,
     ).toHaveLength(1);

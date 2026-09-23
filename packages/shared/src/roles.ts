@@ -57,7 +57,8 @@ export type Capability =
   | 'notifications.manage'
   /** Ask for a copy of everything. */
   | 'export.request'
-  /** Read the household activity log (SHR-07). */
+  /** Read the household activity log (SHR-07), filtered to what the
+   *  reader could already see. */
   | 'audit.read';
 
 interface Rule {
@@ -133,8 +134,12 @@ const MATRIX: Record<Capability, Rule> = {
     refusal: 'Only an adult can export the whole vault.',
   },
   'audit.read': {
-    roles: ['owner', 'adult'],
-    refusal: 'Only an adult can see the household activity log.',
+    // A teen can already see the household's documents, so the log of
+    // what happened to them tells them nothing new — and being able to
+    // see what happened is the thing that makes a shared vault feel
+    // fair. A viewer is an outsider and sees none of it.
+    roles: ['owner', 'adult', 'teen'],
+    refusal: 'Viewers can open and download documents, but not see what the family has been doing.',
   },
 };
 

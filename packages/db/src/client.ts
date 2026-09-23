@@ -141,6 +141,13 @@ export interface Schema {
     revoked_by: string | null;
   };
 
+  private_notice: {
+    household_id: string;
+    document_id: string;
+    member_id: string;
+    shown_at: GeneratedTimestamp;
+  };
+
   share_link: {
     id: Generated<string>;
     household_id: string;

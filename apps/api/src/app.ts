@@ -1,5 +1,7 @@
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerAudit } from './audit/routes.js';
+import type { AuditService } from './audit/service.js';
 import { registerAuth } from './auth/routes.js';
 import type { PasskeyService } from './auth/passkeys.js';
 import type { StepUpService } from './auth/step-up.js';
@@ -52,6 +54,7 @@ export interface AppDeps {
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
+  audit: AuditService;
   logger?: boolean | object;
 }
 
@@ -146,6 +149,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
   registerNotifications(app, deps.notifications);
+  registerAudit(app, deps.audit);
   await registerDocuments(
     app,
     deps.documents,

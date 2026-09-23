@@ -5,6 +5,8 @@ import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { can } from '@fdv/shared';
+import { storedRole } from '../session.js';
 
 export function SettingsScreen() {
   const { caps, session, markAuthChanged, authVersion } = useApp();
@@ -32,6 +34,14 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
+        {can(storedRole(), 'audit.read') && (
+          <li>
+            <Link to="/settings/activity" className="rowbtn">
+              <span className="doc-title">What has been happening</span>
+              <span className="muted">Everything anybody has done in this vault</span>
+            </Link>
+          </li>
+        )}
         <li>
           <Link to="/settings/notifications" className="rowbtn">
             <span className="doc-title">How you hear about things</span>

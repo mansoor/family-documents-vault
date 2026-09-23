@@ -12,6 +12,15 @@ export interface FakeState {
   invitations: Array<Record<string, unknown> & { id: string }>;
   ownerChanges: Array<Record<string, unknown> & { id: string }>;
   shares: Array<Record<string, unknown> & { id: string }>;
+  activity: Array<{
+    id: number;
+    at: string;
+    text: string;
+    notable: boolean;
+    document_id: string | null;
+  }>;
+  /** True once the "only you can open this" moment has been shown. */
+  privateNoticeShown: boolean;
   /** Set to require a PIN on the shared-document page. */
   sharePin: string | null;
   shareValid: boolean;
@@ -165,6 +174,8 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     invitations: [],
     ownerChanges: [],
     shares: [],
+    activity: [],
+    privateNoticeShown: false,
     sharePin: null,
     shareValid: true,
     documents: [PASSPORT],
@@ -309,6 +320,22 @@ export function installFakeApi(state: FakeState) {
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    if (path.startsWith('/api/v1/audit')) return json({ items: state.activity, next: null });
+    if (path.endsWith('/visibility') && method === 'POST') {
+      const to = (body as { visibility: string }).visibility;
+      const doc = state.documents.find((d) => path.includes(String(d.id)));
+      if (doc) doc.visibility = to;
+      const firstTime = to === 'private' && !state.privateNoticeShown;
+      if (firstTime) state.privateNoticeShown = true;
+      return json({
+        notice: firstTime
+          ? {
+              title: 'Only you can open this',
+              body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+            }
+          : null,
+      });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     if (path.endsWith('/share') && method === 'POST') {
