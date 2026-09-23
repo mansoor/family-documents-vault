@@ -1,4 +1,8 @@
 import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from '@simplewebauthn/browser';
+import type {
   Capabilities,
   DateValue,
   DocumentTypeView,
@@ -107,6 +111,15 @@ export interface TestOutcome {
   ok: boolean;
   message: string;
   code?: string;
+}
+
+export interface PasskeyView {
+  id: string;
+  label: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  backed_up: boolean | null;
+  transports: string[];
 }
 
 export interface Member {
@@ -414,6 +427,29 @@ export const api = {
       method: 'POST',
       token,
     }),
+  passkeys: (token: string) =>
+    request<{ items: PasskeyView[] }>('/api/v1/auth/passkeys', { token }),
+  passkeyRegisterChallenge: (token: string) =>
+    request<PublicKeyCredentialCreationOptionsJSON>('/api/v1/auth/passkeys/challenge', {
+      method: 'POST',
+      token,
+    }),
+  passkeyRegister: (token: string, response: unknown, label: string) =>
+    request<PasskeyView>('/api/v1/auth/passkeys', {
+      method: 'POST',
+      body: { response, label },
+      token,
+    }),
+  removePasskey: (token: string, id: string) =>
+    request<void>(`/api/v1/auth/passkeys/${id}`, { method: 'DELETE', token }),
+  passkeyChallenge: (email?: string) =>
+    request<PublicKeyCredentialRequestOptionsJSON>('/api/v1/auth/passkey/challenge', {
+      method: 'POST',
+      body: email ? { email } : {},
+    }),
+  passkeyVerify: (response: unknown) =>
+    request<Tokens>('/api/v1/auth/passkey/verify', { method: 'POST', body: { response } }),
+
   suggestions: (token: string, dismissed = false) =>
     request<{ items: SuggestionView[]; profile_answered: boolean; dismissed_count: number }>(
       `/api/v1/suggestions${dismissed ? '?dismissed=true' : ''}`,

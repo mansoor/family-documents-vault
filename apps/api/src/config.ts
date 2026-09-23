@@ -53,6 +53,25 @@ const schema = z.object({
     .default(100 * 1024 * 1024)
     .describe('Largest single file the vault accepts.'),
 
+  FDV_BASE_URL: z
+    .string()
+    .url()
+    .default('http://localhost:8080')
+    .describe(
+      'Where the vault is published. Reminder emails link to it, and ' +
+        'passkeys are bound to its hostname.',
+    ),
+
+  FDV_RP_ID: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'The domain passkeys belong to. Defaults to the hostname of ' +
+        'FDV_BASE_URL, which is right unless the vault is served from a ' +
+        'subdomain of a name you want the passkeys to work across.',
+    ),
+
   FDV_TRUST_PROXY: z
     .enum(['private', 'all', 'none'])
     .default('private')

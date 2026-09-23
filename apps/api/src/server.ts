@@ -14,6 +14,7 @@ import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
+import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
@@ -87,19 +88,29 @@ async function main(): Promise<void> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     await boss.send(name, data);
   };
+  // Passkeys are bound to the address the vault is published at, so this
+  // is where FDV_BASE_URL stops being cosmetic.
+  const auth = new AuthService(
+    db,
+    deriveSigningKey(masterSecret),
+    keys,
+    (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
+    totp,
+  );
+  const passkeys = new PasskeyService(
+    db,
+    auth,
+    passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
+  );
+
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
       await pool.query('select 1');
     },
-    auth: new AuthService(
-      db,
-      deriveSigningKey(masterSecret),
-      keys,
-      (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
-      totp,
-    ),
+    auth,
     totp,
+    passkeys,
     visibility: new VisibilityService(db, keys),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,

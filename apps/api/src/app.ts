@@ -1,6 +1,7 @@
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/routes.js';
+import type { PasskeyService } from './auth/passkeys.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
@@ -37,6 +38,7 @@ export interface AppDeps {
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
+  passkeys: PasskeyService;
   exports: ExportService;
   reminders: ReminderService;
   suggestions: SuggestionService;
@@ -129,7 +131,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth, deps.totp);
+  registerAuth(app, deps.auth, deps.totp, deps.passkeys);
   registerVaults(app, deps.vaults);
   registerHousehold(app, deps.household);
   registerExports(app, deps.exports);

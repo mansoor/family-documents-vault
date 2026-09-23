@@ -80,6 +80,19 @@ export interface Schema {
     label: string | null;
     created_at: GeneratedTimestamp;
     last_used_at: Timestamp | null;
+    transports: Generated<string[]>;
+    backed_up: boolean | null;
+    aaguid: string | null;
+  };
+
+  webauthn_challenge: {
+    id: Generated<string>;
+    challenge: Buffer;
+    purpose: 'register' | 'authenticate';
+    account_id: string | null;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    used_at: Timestamp | null;
   };
 
   session: {

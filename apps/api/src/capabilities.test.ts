@@ -21,9 +21,20 @@ describe('buildCapabilities', () => {
     expect(caps.limits.max_upload_bytes).toBe(104857600);
   });
 
-  it('advertises nothing that has not shipped yet', () => {
+  it('advertises only what has shipped', () => {
+    // A feature flips to true in the iteration that ships it, and never
+    // before: a client must not be told about something the server cannot
+    // do. Passkeys shipped in 3.1; the rest have not.
     const caps = buildCapabilities(config);
-    expect(Object.values(caps.features).every((v) => v === false)).toBe(true);
+    expect(caps.features).toEqual({
+      passkeys: true,
+      private_mode: false,
+      email_ingest: false,
+      push: false,
+      share_links: false,
+      bulk_import: false,
+      multi_household: false,
+    });
     expect(caps.deprecations).toEqual([]);
   });
 
