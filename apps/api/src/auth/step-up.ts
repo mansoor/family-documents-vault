@@ -28,7 +28,8 @@ export type StepUpAction =
   | 'change_storage'
   | 'change_people'
   | 'export_everything'
-  | 'change_password';
+  | 'change_password'
+  | 'change_sign_in';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -38,6 +39,9 @@ const WHY: Record<StepUpAction, string> = {
   // Setting a password without knowing the old one is only safe if
   // somebody has just proved who they are some other way.
   change_password: 'to set a new password',
+  // A passkey added from a session somebody else picked up would outlast
+  // the session, and every password change after it.
+  change_sign_in: 'to change how you sign in',
 };
 
 export class StepUpService {

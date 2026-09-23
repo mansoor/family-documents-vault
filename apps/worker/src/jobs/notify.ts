@@ -47,8 +47,22 @@ export function subject(d: Digest): string {
   return n === 1 ? '1 thing needs attention' : `${n} things need attention`;
 }
 
+/**
+ * What an email may say about an item. Email goes through the household's
+ * mail server, which an owner can point anywhere, so a private document is
+ * named only as that — its title and note stay for push and the app.
+ */
+export function forEmail(i: Digest['items'][number]): { title: string; note: string | null } {
+  return i.private
+    ? { title: 'One of your private documents', note: null }
+    : { title: i.title, note: i.note };
+}
+
 export function textBody(d: Digest, baseUrl: string): string {
-  const lines = d.items.map((i) => `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`);
+  const lines = d.items.map((item) => {
+    const i = { ...item, ...forEmail(item) };
+    return `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`;
+  });
   const intro =
     d.kind === 'catch_up'
       ? 'While nobody was looking, these came up:'
@@ -65,6 +79,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
     );
   const rows = d.items
+    .map((item) => ({ ...item, ...forEmail(item) }))
     .map(
       (i) =>
         `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(i.label)}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,

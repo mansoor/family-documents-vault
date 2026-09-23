@@ -96,7 +96,7 @@ export function SettingsScreen() {
  * phished or stolen from the server.
  */
 function Passkeys() {
-  const { withToken, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.passkeys(t)).items, [authVersion]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -107,7 +107,7 @@ function Passkeys() {
     setBusy(true);
     setError(null);
     try {
-      await withToken((t) => passkeys.enrol(t, label.trim() || 'This device'));
+      await guarded((t) => passkeys.enrol(t, label.trim() || 'This device'));
       setLabel('');
       await reload();
     } catch (err) {
@@ -120,7 +120,7 @@ function Passkeys() {
   const remove = async (id: string) => {
     setError(null);
     try {
-      await withToken((t) => api.removePasskey(t, id));
+      await guarded((t) => api.removePasskey(t, id));
       await reload();
     } catch (err) {
       setError(describeError(err));

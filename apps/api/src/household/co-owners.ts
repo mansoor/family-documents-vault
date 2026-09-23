@@ -1,5 +1,5 @@
 import { appendAudit, withScope, type Db } from '@fdv/db';
-import { roleLabel, ROLES, type Role } from '@fdv/shared';
+import { can, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
@@ -105,6 +105,7 @@ export class CoOwnerService {
         .where('account_id', '=', target.account_id)
         .where('household_id', '=', p.householdId)
         .execute();
+      if (!can(to, 'document.see_adults')) await expireExportsOf(trx, target.account_id);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -149,6 +150,7 @@ export class CoOwnerService {
         .where('account_id', '=', p.accountId)
         .where('household_id', '=', p.householdId)
         .execute();
+      if (!can(to, 'document.see_adults')) await expireExportsOf(trx, p.accountId);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -188,6 +190,7 @@ export class CoOwnerService {
         .where('account_id', '=', target.account_id)
         .where('household_id', '=', p.householdId)
         .execute();
+      await expireExportsOf(trx, target.account_id);
       // Remembered so that the sign-in can be given back to this account,
       // and only to it: their private documents are locked to its password.
       await trx
@@ -658,4 +661,19 @@ const article = (role: Role) =>
 /** "30 September", in the reader's own words rather than an ISO string. */
 function formatDay(iso: string): string {
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+}
+
+/**
+ * An export was built from what its requester could see then. When they
+ * can no longer see the adults-only documents — demoted to teen or viewer,
+ * or their sign-in taken away — it stops being downloadable, or it would
+ * go on handing them what the demotion took away.
+ */
+async function expireExportsOf(trx: Db, accountId: string): Promise<void> {
+  await trx
+    .updateTable('export')
+    .set({ expires_at: new Date() })
+    .where('requested_by', '=', accountId)
+    .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
+    .execute();
 }

@@ -240,6 +240,16 @@ export class ShareService {
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // A link to a document the caller cannot see is not there for them.
+      const target = await trx
+        .selectFrom('share_link')
+        .innerJoin('document', 'document.id', 'share_link.document_id')
+        .select(['document.visibility', 'document.owner_member_id'])
+        .where('share_link.id', '=', id)
+        .executeTakeFirst();
+      if (!target || !canSee({ role: p.role, memberId: p.memberId }, target)) {
+        throw notFound('That link');
+      }
       const row = await trx
         .updateTable('share_link')
         .set({ revoked_at: new Date(), revoked_by: p.accountId })
@@ -418,11 +428,21 @@ export class ShareService {
     // having to remember the link exists.
     const doc = await trx
       .selectFrom('document')
-      .select(['id'])
+      .select(['id', 'visibility', 'owner_member_id'])
       .where('id', '=', row.document_id)
       .where('deleted_at', 'is', null)
       .executeTakeFirst();
     if (!doc) throw gone();
+    // A link lends its maker's sight of the document, so it lasts only as
+    // long as they still have it. Made "Only me" by its owner, the maker
+    // demoted to teen or viewer, their sign-in taken away: each of these
+    // ends the link, asked on every open rather than remembered.
+    const maker = await trx
+      .selectFrom('account_household')
+      .select(['role', 'member_id'])
+      .where('account_id', '=', row.created_by)
+      .executeTakeFirst();
+    if (!maker || !canSee({ role: maker.role, memberId: maker.member_id }, doc)) throw gone();
     return row;
   }
 

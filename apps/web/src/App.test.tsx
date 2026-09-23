@@ -674,7 +674,7 @@ describe('App', () => {
     await screen.findByText(/If that address has a sign-in here/);
     // And it says the two things a self-hoster needs to know when nothing
     // arrives, including why another adult cannot do it for them.
-    expect(screen.getByText(/may not have a mail server/)).toBeInTheDocument();
+    expect(screen.getByText(/ask whoever runs the\s+vault/)).toBeInTheDocument();
     expect(screen.getByText(/way into your private documents/)).toBeInTheDocument();
     await expectAccessible();
   });

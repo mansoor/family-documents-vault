@@ -19,6 +19,11 @@ export interface AlertRequest {
   urlLabel?: string;
   /** Never to a lock screen: links that open an account, news about passwords. */
   emailOnly?: boolean;
+  /**
+   * Only by the operator's mail server (FDV_SMTP_URL), never the household's:
+   * an owner can point the household's anywhere and read what goes through.
+   */
+  operatorMail?: boolean;
 }
 
 export function alertJob(a: AlertRequest): Record<string, unknown> {
@@ -29,5 +34,6 @@ export function alertJob(a: AlertRequest): Record<string, unknown> {
     body: a.body,
     ...(a.url ? { url: a.url, url_label: a.urlLabel } : {}),
     ...(a.emailOnly ? { email_only: true } : {}),
+    ...(a.operatorMail ? { via: 'operator' } : {}),
   };
 }

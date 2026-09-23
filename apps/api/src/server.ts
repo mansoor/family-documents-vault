@@ -144,6 +144,7 @@ async function main(): Promise<void> {
       db,
       deriveKey(masterSecret, 'smtp-credentials'),
       config.FDV_VAPID_PUBLIC_KEY ?? null,
+      alert,
     ),
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
@@ -152,7 +153,14 @@ async function main(): Promise<void> {
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,
-    passwords: new PasswordService(db, keys, stepUpService, config.FDV_BASE_URL, alert),
+    passwords: new PasswordService(
+      db,
+      keys,
+      stepUpService,
+      config.FDV_BASE_URL,
+      alert,
+      Boolean(config.FDV_SMTP_URL),
+    ),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 

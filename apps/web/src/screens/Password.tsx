@@ -130,10 +130,11 @@ export function ForgotPasswordScreen() {
         <section className="card stack">
           <p>{sent}</p>
           <p className="muted">
-            It works once and stops working in an hour. If nothing arrives, this vault may not have
-            a mail server set up — in that case, whoever runs it can make you a link from the
-            command line. Nobody else in the family can do it for you, deliberately: it would be a
-            way into your private documents.
+            It works once and stops working in an hour. If nothing arrives, ask whoever runs the
+            vault: they can make you a link. A link only comes by email when nobody else in the
+            family could read that email on its way to you, and nobody else in the family can reset
+            your password for you — both deliberately, because a link is a way into your private
+            documents.
           </p>
           <Button onClick={() => void navigate('/sign-in')}>Back to signing in</Button>
         </section>

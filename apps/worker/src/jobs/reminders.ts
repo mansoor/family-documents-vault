@@ -33,6 +33,12 @@ export interface DigestItem {
   label: string;
   note: string | null;
   overdue: boolean;
+  /**
+   * An "Only me" document. Its title may go by push, which is encrypted to
+   * the person's own device, but never by email: the household's mail
+   * server is one an owner can point at themselves.
+   */
+  private: boolean;
 }
 
 export interface Digest {
@@ -92,7 +98,7 @@ async function households(admin: pg.Pool) {
 }
 
 /** A reminder about to be sent, with what decides who may hear of it. */
-interface Due extends DigestItem {
+interface Due extends Omit<DigestItem, 'private'> {
   fire_at: string;
   visibility: string;
   owner_member_id: string | null;
@@ -144,6 +150,7 @@ async function sendToEach(
         label: r.label,
         note: r.note,
         overdue: r.overdue,
+        private: r.visibility === 'private',
       })),
     });
     for (const r of mine) {

@@ -5,6 +5,7 @@ import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sendAlert } from './alerts.js';
 import { createNotifier, recipientRefused } from './notify.js';
 import { deliver } from './reminders.js';
 
@@ -185,5 +186,92 @@ describe.skipIf(!testAdminUrl())('a refused address does not stop the family’s
     // Whoever reads the log can tell which person to fix.
     const refused = logs.find(([, msg]) => msg === 'email address refused');
     expect(refused?.[2]?.account_id).toBeTruthy();
+  });
+});
+
+describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mail server', () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  let household: Awaited<ReturnType<typeof fakeSmtp>>;
+  let operator: Awaited<ReturnType<typeof fakeSmtp>>;
+  const hh = randomUUID();
+  let account = '';
+
+  beforeAll(async () => {
+    household = await fakeSmtp(() => false);
+    operator = await fakeSmtp(() => false);
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    await admin.query("insert into household (id, name, timezone) values ($1, 'Mail', 'UTC')", [
+      hh,
+    ]);
+    const m = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name) values ($1, 'Sam') returning id",
+      [hh],
+    );
+    const a = await admin.query<{ id: string }>(
+      "insert into account (email) values ('sam-reset@example.test') returning id",
+    );
+    account = a.rows[0]?.id as string;
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+      [account, hh, m.rows[0]?.id],
+    );
+    await withHousehold(db, hh, (trx) =>
+      trx
+        .insertInto('smtp_settings')
+        .values({
+          household_id: hh,
+          host: '127.0.0.1',
+          port: household.port,
+          secure: false,
+          from_email: 'vault@example.test',
+          status: 'ok',
+        })
+        .execute(),
+    );
+  }, 60_000);
+  afterAll(async () => {
+    await db.destroy();
+    await admin.end();
+    await tdb.drop();
+    await household.close();
+    await operator.close();
+  });
+
+  const reset = {
+    household_id: hh,
+    account_ids: [] as string[],
+    subject: 'Setting a new password for your vault',
+    body: 'b',
+    url: 'https://vault.example.test/reset/abc',
+    url_label: 'Set a new password',
+    email_only: true,
+    via: 'operator' as const,
+  };
+  const deps = (withOperator: boolean) => ({
+    app: db,
+    vapid: null,
+    smtpKey: deriveKey('email-refused-test-master-secret-32-bytes', 'smtp-credentials'),
+    baseUrl: 'x',
+    log: () => undefined,
+    operatorMail: withOperator
+      ? { url: `smtp://127.0.0.1:${operator.port}`, from: 'Vault <vault@operator.test>' }
+      : null,
+  });
+
+  it('through the operator’s server, and never through the household’s', async () => {
+    const channels = await sendAlert(deps(true), { ...reset, account_ids: [account] });
+    expect(channels).toEqual(['email']);
+    expect(operator.delivered).toEqual(['sam-reset@example.test']);
+    expect(household.delivered).toEqual([]);
+  });
+
+  it('with no operator server it is not sent at all, rather than the household’s', async () => {
+    const channels = await sendAlert(deps(false), { ...reset, account_ids: [account] });
+    expect(channels).toEqual([]);
+    expect(household.delivered).toEqual([]);
   });
 });

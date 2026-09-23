@@ -109,7 +109,9 @@ export async function createHarness(): Promise<Harness> {
   const invitations = new InvitationService(db, keys, auth);
   let joined = 1;
   const stepUp = new StepUpService(db, passkeys, totp);
-  const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert);
+  // As if the operator had set FDV_SMTP_URL; passwords.test.ts builds one
+  // without it to test the other route.
+  const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert, true);
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
@@ -137,6 +139,7 @@ export async function createHarness(): Promise<Harness> {
       db,
       deriveKey(TEST_MASTER, 'smtp-credentials'),
       'test-vapid-public-key',
+      alert,
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),

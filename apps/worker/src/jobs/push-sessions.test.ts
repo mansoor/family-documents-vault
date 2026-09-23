@@ -57,6 +57,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
         label: 'Due today',
         note: null,
         overdue: false,
+        private: false,
       },
     ],
   });

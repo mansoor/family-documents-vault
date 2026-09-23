@@ -258,10 +258,21 @@ export class ReminderService {
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'reminder.manage');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // Only on a document the caller can see: a reminder on somebody
+      // else's private document is not there, not "not yours".
       const r = await trx
         .deleteFrom('reminder')
         .where('id', '=', id)
         .where('kind', '=', 'manual')
+        .where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('document')
+              .select('document.id')
+              .whereRef('document.id', '=', 'reminder.document_id')
+              .where(visibleTo(p)),
+          ),
+        )
         .executeTakeFirst();
       if (Number(r.numDeletedRows) === 0)
         throw new ApiError(404, 'not_found', 'Only reminders you set yourself can be removed.');

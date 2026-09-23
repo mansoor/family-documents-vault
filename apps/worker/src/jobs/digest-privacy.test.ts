@@ -285,7 +285,15 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
         ).toEqual([email(who)]);
         for (const title of forbidden(who))
           expect(m.text, `${who} saw ${title}`).not.toContain(title);
-        for (const title of allowed[who]) expect(m.text, who).toContain(title);
+        // A private title is not in the email even of the person it
+        // belongs to: the mail server is one an owner can point anywhere.
+        // It is named only as what it is, and push carries the title.
+        for (const title of allowed[who]) {
+          if (title === TITLES.ownerPrivate || title === TITLES.adultPrivate) {
+            expect(m.text, who).not.toContain(title);
+            expect(m.text, who).toContain('One of your private documents');
+          } else expect(m.text, who).toContain(title);
+        }
       }
     },
     30_000,

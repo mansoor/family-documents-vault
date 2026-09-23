@@ -32,6 +32,12 @@ export interface Alert {
    * account, and for the news that somebody changed your password.
    */
   email_only?: boolean;
+  /**
+   * 'operator': by the operator's own mail server and nothing else — never
+   * push, never the household's. For password-reset links: a household
+   * mail server is one an owner can point at themselves.
+   */
+  via?: 'operator';
 }
 
 export interface AlertDeps {
@@ -39,6 +45,8 @@ export interface AlertDeps {
   vapid: VapidKeys | null;
   smtpKey: Buffer;
   baseUrl: string;
+  /** The operator's mail server (FDV_SMTP_URL), if there is one. */
+  operatorMail?: { url: string; from: string } | null;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
 }
 
@@ -54,6 +62,9 @@ export function isAlert(data: unknown): data is Alert {
 
 export async function sendAlert(deps: AlertDeps, alert: Alert): Promise<string[]> {
   if (alert.account_ids.length === 0) return [];
+  if (alert.via === 'operator') {
+    return (await operatorEmail(deps, alert)) > 0 ? ['email'] : [];
+  }
   const channels: string[] = [];
   if (!alert.email_only && (await pushAlert(deps, alert)) > 0) channels.push('push');
   if ((await emailAlert(deps, alert)) > 0) channels.push('email');
@@ -159,6 +170,48 @@ async function emailAlert(deps: AlertDeps, alert: Alert): Promise<number> {
     });
     return 0;
   }
+}
+
+async function operatorEmail(deps: AlertDeps, alert: Alert): Promise<number> {
+  if (!deps.operatorMail) {
+    deps.log('warn', 'an operator-mail alert, but FDV_SMTP_URL is not set', {
+      household: alert.household_id,
+      subject: alert.subject,
+    });
+    return 0;
+  }
+  const recipients = await withHousehold(deps.app, alert.household_id, (trx) =>
+    trx
+      .selectFrom('account')
+      .select(['email'])
+      .where('id', 'in', alert.account_ids)
+      .where('disabled_at', 'is', null)
+      .execute(),
+  );
+  const transport = nodemailer.createTransport(deps.operatorMail.url);
+  let sent = 0;
+  try {
+    for (const r of recipients) {
+      try {
+        await transport.sendMail({
+          from: deps.operatorMail.from,
+          to: r.email,
+          subject: alert.subject,
+          text: `${alert.body}\n\n${alert.url_label ?? 'Open your vault'}: ${alert.url ?? deps.baseUrl}\n`,
+          html: htmlAlert(alert, deps.baseUrl),
+        });
+        sent++;
+      } catch (err) {
+        deps.log('warn', 'operator email failed', {
+          household: alert.household_id,
+          error: (err as Error).message,
+        });
+      }
+    }
+  } finally {
+    transport.close();
+  }
+  return sent;
 }
 
 export function htmlAlert(alert: Alert, baseUrl: string): string {

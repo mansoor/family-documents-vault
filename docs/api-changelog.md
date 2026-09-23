@@ -311,6 +311,30 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     `409 no_sign_in_to_restore` when there is no removed sign-in to give back.
   - `GET /api/v1/members` items gain `sign_in_removed: boolean` — true when the
     person's sign-in was taken away and can be given back.
+  - Share links (`/api/v1/shared/{token}`…) answer `404` once the person who
+    made the link could no longer open the document themselves — made private
+    by its owner, maker demoted, or maker's sign-in removed. Checked on every
+    open.
+  - Exports expire when their requester is demoted to teen or viewer or has
+    their sign-in removed.
+  - `PATCH /api/v1/documents/{id}` refuses to change `owner_member_id` of a
+    private document (`422`) or of one that belongs to another member with a
+    sign-in (`403`).
+  - Step-up: a new action, `change_sign_in`, for
+    `POST /api/v1/auth/passkeys/challenge`, `POST /api/v1/auth/passkeys` and
+    `DELETE /api/v1/auth/passkeys/{id}`. `POST /api/v1/documents/{id}/share`
+    asks `open_private_document` for a private or Essential document. Clients
+    should treat `action` as opaque and show the server's message.
+  - `POST /api/v1/auth/totp/enrol` answers `409 totp_already_on` while two-step
+    sign-in is on.
+  - A teen uploading a version to somebody else's document gets `403`.
+  - `404`, not `403`, for another member's private document from
+    `POST /documents/{id}/visibility`, `DELETE /reminders/{id}`,
+    `DELETE /shares/{id}` and `GET /versions/{id}/content`.
+  - `POST /api/v1/password-resets` completion also removes the account's
+    passkeys. `POST /api/v1/auth/password/forgot` sends a link only through the
+    operator's mail server (`FDV_SMTP_URL`), or through the household's to its
+    only owner; its answer is unchanged either way.
   - `POST /api/v1/devices` ties the device to the session that registered it,
     and nothing is pushed to it once that session ends — signed out, revoked,
     or expired. A password change removes the account's devices on every

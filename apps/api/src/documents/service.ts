@@ -26,6 +26,7 @@ import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
 import { allows, requireCapability } from '../authz.js';
+import { canSee } from '@fdv/shared';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -197,6 +198,47 @@ export class DocumentService {
       );
       return eb.or(clauses);
     };
+  }
+
+  /**
+   * Who may move a document from one person to another.
+   *
+   * A private document never changes hands here: its file keys are
+   * wrapped for its owner alone, and handing it over would either strand
+   * them or need a rewrap nobody asked for. Make it visible first.
+   *
+   * And a document that belongs to somebody with their own sign-in is
+   * theirs to hand over. Otherwise another adult could make themselves its
+   * owner and then mark it "Only me" — taking it from the person it
+   * belonged to, in a way their own activity log would not even show.
+   */
+  private async mayHandOver(
+    trx: Db,
+    p: Principal,
+    current: { visibility: string; owner_member_id: string | null },
+  ): Promise<void> {
+    if (current.visibility === 'private') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A private document stays with the person it belongs to. Make it visible to the family before handing it to somebody else.',
+      );
+    }
+    const from = current.owner_member_id;
+    if (!from || from === p.memberId) return;
+    const holder = await trx
+      .selectFrom('account_household')
+      .innerJoin('member', 'member.id', 'account_household.member_id')
+      .select(['member.display_name'])
+      .where('account_household.member_id', '=', from)
+      .executeTakeFirst();
+    if (holder) {
+      throw new ApiError(
+        403,
+        'forbidden',
+        `This belongs to ${holder.display_name}, who signs in themselves, so only they can hand it to somebody else.`,
+      );
+    }
   }
 
   private canWrite(p: Principal): void {
@@ -610,6 +652,9 @@ export class DocumentService {
     const doc = await withScope(this.db, { householdId: p.householdId }, (trx) =>
       this.fetch(trx, p, documentId),
     );
+    // A new copy replaces the document and settles its reminders, which is
+    // changing it: a teen may do that to their own documents only.
+    this.mustOwnIfTeen(p, doc);
     const scopeRef = scopeFor(doc, p.householdId);
     const { vaultId, adapter, scopeKeyId, fileKeyWrapped, fileKey } = await withScope(
       this.db,
@@ -889,10 +934,26 @@ export class DocumentService {
       const row = await trx
         .selectFrom('document_version')
         .innerJoin('document', 'document.id', 'document_version.document_id')
-        .select(['document.visibility', 'document.is_essential'])
+        .select(['document.visibility', 'document.is_essential', 'document.owner_member_id'])
         .where('document_version.id', '=', versionId)
         .executeTakeFirst();
-      if (!row) return false; // a missing version is a 404 further down
+      // A missing version, and one the caller may not see, are both a 404
+      // further down. Asking for a credential first would answer "it is
+      // there, and it is private" to somebody who must not know.
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
+      return row.visibility === 'private' || row.is_essential;
+    });
+  }
+
+  /** The same question for a whole document: before a link to it is made. */
+  async isSensitiveDocument(p: Principal, documentId: string): Promise<boolean> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('document')
+        .select(['visibility', 'is_essential', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
       return row.visibility === 'private' || row.is_essential;
     });
   }
@@ -1021,6 +1082,9 @@ export class DocumentService {
     if (input.title !== undefined) out.title = input.title?.trim() || null;
     if (input.category !== undefined) out.category = input.category;
     if (input.owner_member_id !== undefined) {
+      if (current && input.owner_member_id !== current.owner_member_id) {
+        await this.mayHandOver(trx, p, current);
+      }
       if (input.owner_member_id !== null) {
         const m = await trx
           .selectFrom('member')

@@ -192,11 +192,13 @@ export function registerAuth(
       items: await passkeys.list(req.principal as Principal),
     }));
 
-    app.post('/api/v1/auth/passkeys/challenge', auth_, async (req) =>
-      passkeys.startRegistration(req.principal as Principal),
-    );
+    app.post('/api/v1/auth/passkeys/challenge', auth_, async (req) => {
+      await stepUp?.require(req.principal as Principal, 'change_sign_in');
+      return passkeys.startRegistration(req.principal as Principal);
+    });
 
     app.post('/api/v1/auth/passkeys', auth_, async (req, reply) => {
+      await stepUp?.require(req.principal as Principal, 'change_sign_in');
       const body = parse(
         z.object({
           response: z.record(z.string(), z.unknown()),
@@ -217,6 +219,7 @@ export function registerAuth(
       '/api/v1/auth/passkeys/:id',
       auth_,
       async (req, reply) => {
+        await stepUp?.require(req.principal as Principal, 'change_sign_in');
         await passkeys.remove(
           req.principal as Principal,
           parse(z.string().uuid(), req.params.id),

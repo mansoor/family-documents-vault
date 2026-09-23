@@ -21,6 +21,16 @@ const schema = z.object({
     .url()
     .default('http://localhost:8080')
     .describe('Where your vault is reachable; used for links in notifications.'),
+  FDV_SMTP_URL: z
+    .string()
+    .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')
+    .optional()
+    .describe('The operator\u2019s mail server, for password-reset links only.'),
+  FDV_SMTP_FROM: z
+    .string()
+    .min(3)
+    .default('Family Document Vault <vault@localhost>')
+    .describe('Who password-reset emails come from.'),
   FDV_VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   FDV_VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   FDV_VAPID_SUBJECT: z.string().min(1).default('mailto:vault@localhost'),

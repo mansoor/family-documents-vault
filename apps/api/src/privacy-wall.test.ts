@@ -624,3 +624,257 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the owner’s side', ()
     ).toBe(404);
   });
 });
+
+/**
+ * Links, keys and hand-overs — the rest of what the 0.4.2 sweep found.
+ * A link lends its maker's sight of a document, so it must end when that
+ * sight does; a document that belongs to somebody is theirs to give away;
+ * and anything hidden is absent, never "refused".
+ */
+describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let teen: Tokens;
+  const docOf: Record<string, string> = {};
+  const versionOf: Record<string, string> = {};
+  let samReminder = '';
+  let samShareId = '';
+  let samExport = '';
+  const link: Record<string, string> = {};
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const as = (t: Tokens) => h.as(t);
+  let peers = 0;
+  const peer = () => ({ remoteAddress: `10.77.${peers >> 8}.${peers++ & 0xff}` });
+
+  /** Every session of this person, made cold (older than the step-up window) or warm. */
+  const setFresh = (t: Tokens, fresh: boolean) =>
+    withHousehold(h.db, t.household_id, async (trx) => {
+      const a = await trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', t.member_id)
+        .executeTakeFirstOrThrow();
+      await trx
+        .updateTable('session')
+        .set({ verified_at: new Date(Date.now() - (fresh ? 0 : 10 * 60 * 1000)) })
+        .where('account_id', '=', a.account_id)
+        .execute();
+    });
+
+  const make = async (who: Tokens, key: string, visibility: 'household' | 'adults' | 'private') => {
+    const created = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: as(who),
+      payload: { title: key, type_key: 'utility_bill', owner_member_id: who.member_id, visibility },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    docOf[key] = json<DocumentView>(created).id;
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'f.pdf', contentType: 'application/pdf' });
+    const up = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docOf[key]}/versions`,
+      headers: { ...as(who), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(up.statusCode, up.body).toBe(201);
+    versionOf[key] = json<{ id: string }>(up).id;
+  };
+
+  const share = async (who: Tokens, key: string) => {
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docOf[key]}/share`,
+      headers: as(who),
+      payload: { recipient_label: 'the solicitor' },
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return json<{ link_token: string }>(res).link_token;
+  };
+
+  const opens = async (token: string) =>
+    (
+      await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/shared/${token}/open`,
+        payload: {},
+        ...peer(),
+      })
+    ).statusCode;
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-links@example.test', role: 'adult' });
+    teen = await h.join(owner, { name: 'Aisha', email: 'aisha-links@example.test', role: 'teen' });
+    await make(sam, 'Sam car insurance', 'household');
+    await make(sam, 'Sam gym contract', 'household');
+    await make(owner, 'Solicitor letter', 'adults');
+    await make(owner, 'Council tax', 'household');
+    await make(sam, 'Sam private', 'private');
+    // Everything the tests below aim at, made while every session is warm.
+    link.samDoc = await share(owner, 'Sam car insurance');
+    link.adults = await share(sam, 'Solicitor letter');
+    link.samPrivate = await share(sam, 'Sam private');
+    samShareId = json<{ items: Array<{ id: string; document_id: string }> }>(
+      await h.app.inject({ url: '/api/v1/shares', headers: as(sam) }),
+    ).items.find((s) => s.document_id === docOf['Sam private'])?.id as string;
+    const reminder = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/reminders',
+      headers: as(sam),
+      payload: { document_id: docOf['Sam private'], fire_at: '2030-01-01' },
+    });
+    samReminder = json<{ id: string }>(reminder).id;
+    const exported = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers: as(sam),
+    });
+    samExport = json<{ id: string }>(exported).id;
+  }, 120_000);
+  afterAll(() => h.close());
+
+  it('a link stops working the moment its document becomes somebody else’s "Only me"', async () => {
+    expect(await opens(link.samDoc as string)).toBe(200);
+    const marked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docOf['Sam car insurance']}/visibility`,
+      headers: as(sam),
+      payload: { visibility: 'private' },
+    });
+    expect(marked.statusCode, marked.body).toBe(200);
+    // The owner made the link while they could see the document. They
+    // cannot any more, so neither can whoever holds the link.
+    expect(await opens(link.samDoc as string)).toBe(404);
+    // Sam's own link to Sam's own private document still works.
+    expect(await opens(link.samPrivate as string)).toBe(200);
+  });
+
+  it('what is hidden is absent, not refused', async () => {
+    await setFresh(owner, false);
+    const attempts: Array<[string, Promise<{ statusCode: number }>]> = [
+      [
+        'change who can see it',
+        h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${docOf['Sam private']}/visibility`,
+          headers: as(owner),
+          payload: { visibility: 'household' },
+        }),
+      ],
+      [
+        'open its file with a cold session',
+        h.app.inject({
+          url: `/api/v1/versions/${versionOf['Sam private']}/content`,
+          headers: as(owner),
+        }),
+      ],
+      [
+        'delete its reminder',
+        h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/reminders/${samReminder}`,
+          headers: as(owner),
+        }),
+      ],
+      [
+        'revoke its link',
+        h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/shares/${samShareId}`,
+          headers: as(owner),
+        }),
+      ],
+    ];
+    for (const [what, res] of attempts) expect((await res).statusCode, what).toBe(404);
+    await setFresh(owner, true);
+    // Nothing above touched Sam's link.
+    expect(await opens(link.samPrivate as string)).toBe(200);
+  });
+
+  it('nobody takes a document from the person it belongs to by making it theirs', async () => {
+    const taken = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docOf['Sam gym contract']}`,
+      headers: as(owner),
+      payload: { owner_member_id: owner.member_id },
+    });
+    expect(taken.statusCode).toBe(403);
+    expect(json<{ error: { message: string } }>(taken).error.message).toMatch(/only they can/);
+    // Sam can hand it over, to anyone.
+    const given = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docOf['Sam gym contract']}`,
+      headers: as(sam),
+      payload: { owner_member_id: teen.member_id },
+    });
+    expect(given.statusCode, given.body).toBe(200);
+    // And a private document does not change hands at all.
+    const moved = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${docOf['Sam private']}`,
+      headers: as(sam),
+      payload: { owner_member_id: owner.member_id },
+    });
+    expect(moved.statusCode).toBe(422);
+  });
+
+  it('a link to a private document, and a new passkey, each ask who is asking', async () => {
+    await setFresh(sam, false);
+    const linked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docOf['Sam private']}/share`,
+      headers: as(sam),
+      payload: {},
+    });
+    expect(linked.statusCode).toBe(403);
+    expect(json<{ error: { code: string; action: string } }>(linked).error).toMatchObject({
+      code: 'step_up_required',
+      action: 'open_private_document',
+    });
+    const passkey = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkeys/challenge',
+      headers: as(sam),
+    });
+    expect(passkey.statusCode).toBe(403);
+    expect(json<{ error: { action: string } }>(passkey).error.action).toBe('change_sign_in');
+    await setFresh(sam, true);
+  });
+
+  it('a teen cannot put a new copy into somebody else’s document', async () => {
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'mine.pdf', contentType: 'application/pdf' });
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docOf['Council tax']}/versions`,
+      headers: { ...as(teen), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('demoted, Sam loses the links and the export that held adults-only documents', async () => {
+    expect(await opens(link.adults as string)).toBe(200);
+    const demoted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${sam.member_id}/role`,
+      headers: as(owner),
+      payload: { role: 'viewer' },
+    });
+    expect(demoted.statusCode, demoted.body).toBe(200);
+    expect(await opens(link.adults as string)).toBe(404);
+    const exp = await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('export')
+        .select('expires_at')
+        .where('id', '=', samExport)
+        .executeTakeFirstOrThrow(),
+    );
+    expect(exp.expires_at?.getTime() ?? Infinity).toBeLessThanOrEqual(Date.now());
+  });
+});

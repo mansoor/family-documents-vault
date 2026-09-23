@@ -287,9 +287,15 @@ export async function registerDocuments(
   const tokenParam = z.object({ token: z.string().min(16).max(256) });
 
   app.post<{ Params: { id: string } }>('/api/v1/documents/:id/share', auth, async (req, reply) => {
+    // A link is a way to open the document without signing in, so making
+    // one asks what opening it asks (SEC-17).
+    const id = parse(idParam, req.params).id;
+    if (stepUp && (await docs.isSensitiveDocument(principal(req), id))) {
+      await stepUp.require(principal(req), 'open_private_document');
+    }
     const created = await shares.create(
       principal(req),
-      parse(idParam, req.params).id,
+      id,
       parse(shareBody, req.body ?? {}),
       metaOf(req),
     );

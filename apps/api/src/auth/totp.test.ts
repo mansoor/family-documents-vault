@@ -66,6 +66,20 @@ describe.skipIf(!testAdminUrl())('two-step sign-in', () => {
     });
   });
 
+  it('starting enrolment again does not quietly switch two-step sign-in off', async () => {
+    // Until 0.4.2 this overwrote the working secret and cleared the
+    // confirmation: two-step off, no code asked for — an owner included.
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/totp/enrol',
+      headers: h.as(owner),
+    });
+    expect(again.statusCode).toBe(409);
+    expect(again.json<{ error: { code: string } }>().error.code).toBe('totp_already_on');
+    const me = await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) });
+    expect(me.json<{ totp_enabled: boolean }>().totp_enabled).toBe(true);
+  });
+
   it('password sign-in now asks for the code, and the code opens the session', async () => {
     const step1 = await h.app.inject({
       method: 'POST',

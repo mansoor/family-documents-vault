@@ -214,3 +214,41 @@ describe.skipIf(!testAdminUrl())('notifications', () => {
     expect(status.status).toBe('ok');
   });
 });
+
+describe.skipIf(!testAdminUrl())('changing the mail server', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-smtp@example.test', role: 'adult' });
+  }, 90_000);
+  afterAll(() => h.close());
+
+  it('tells every other adult, because every email the vault sends goes through it', async () => {
+    const samAccount = (await h.app.inject({ url: '/api/v1/me', headers: h.as(sam) })).json<{
+      account_id: string;
+    }>().account_id;
+    const saved = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/notifications/smtp',
+      headers: h.as(owner),
+      payload: { host: 'catcher.example.test', port: 25, from_email: 'v@example.test' },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const alert = h.jobs
+      .filter((j) => j.name === 'alert.send')
+      .map(
+        (j) =>
+          j.data as { account_ids: string[]; subject: string; body: string; email_only?: boolean },
+      )
+      .find((a) => /mail server was changed/.test(a.subject));
+    expect(alert?.account_ids).toEqual([samAccount]);
+    expect(alert?.body).toContain('catcher.example.test');
+    // By push as well: the new server is the one that cannot be trusted
+    // to deliver news about itself.
+    expect(alert?.email_only).toBeUndefined();
+  });
+});
