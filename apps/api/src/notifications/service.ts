@@ -154,11 +154,14 @@ export class NotificationService {
           auth: input.keys.auth,
           label: input.label ?? null,
           user_agent: meta.userAgent ?? null,
+          // Pushes to this browser end when this sign-in does.
+          session_id: p.sessionId,
         })
         .onConflict((oc) =>
           oc.column('endpoint').doUpdateSet({
             account_id: p.accountId,
             household_id: p.householdId,
+            session_id: p.sessionId,
             p256dh: input.keys.p256dh,
             auth: input.keys.auth,
             failed_at: null,

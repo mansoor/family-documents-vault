@@ -48,6 +48,11 @@ export interface MemberView {
   /** True for the member the signed-in account belongs to. */
   is_me: boolean;
   document_count: number;
+  /**
+   * Their sign-in was taken away and can be given back to them. Such a
+   * person is never invited again: see `mustNeverHaveSignedIn`.
+   */
+  sign_in_removed: boolean;
 }
 
 export class HouseholdService {
@@ -142,6 +147,7 @@ export class HouseholdService {
           'member.relationship',
           'member.is_deceased',
           'member.colour',
+          'member.former_account_id',
           'account_household.role',
         ])
         .orderBy('member.created_at')
@@ -171,6 +177,7 @@ export class HouseholdService {
         role: r.role,
         is_me: r.id === p.memberId,
         document_count: countOf.get(r.id) ?? 0,
+        sign_in_removed: r.role === null && r.former_account_id !== null,
       }));
     });
   }

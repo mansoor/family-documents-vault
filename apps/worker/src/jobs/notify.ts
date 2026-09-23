@@ -1,5 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import { withHousehold, type Db } from '@fdv/db';
+import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import webpush from 'web-push';
 import type { Digest, Notifier } from './reminders.js';
@@ -78,6 +79,34 @@ export function htmlBody(d: Digest, baseUrl: string): string {
 </body></html>`;
 }
 
+/**
+ * Whether the mail server turned down this recipient, as opposed to
+ * failing. Since each person's digest is its own message, one mistyped
+ * address in an invitation would otherwise mark the household's mail
+ * server broken for everybody — and switch off the security alerts, which
+ * only go out through a server marked working.
+ */
+export function recipientRefused(err: unknown): boolean {
+  const e = err as { code?: unknown; command?: unknown; rejected?: unknown } | null;
+  return e?.code === 'EENVELOPE' && (e.command === 'RCPT TO' || Array.isArray(e.rejected));
+}
+
+/**
+ * A device is only pushed to while the sign-in that turned it on is live.
+ * Signing out, a revoked session, a password change and a removed sign-in
+ * all end it, and with it every notification to that browser (0020).
+ * Devices from before 0.4.2 name no session, and are sent to only while
+ * the account has some live session in the household.
+ */
+export const liveDevice = sql<boolean>`(
+  (device.session_id is not null and exists (
+     select 1 from session s
+      where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))
+  or (device.session_id is null and exists (
+     select 1 from session s
+      where s.account_id = device.account_id and s.household_id = device.household_id
+        and s.revoked_at is null and s.expires_at > now())))`;
+
 /** Shared with the alert job, which uses the same household mail server. */
 export function openPassword(key: Buffer, sealed: Buffer, householdId: string): string {
   const d = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12));
@@ -135,6 +164,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       .where('device.account_id', '=', d.recipient.account_id)
       .where('device.failed_at', 'is', null)
       .where('device.kind', '=', 'web_push')
+      .where(liveDevice)
       .execute(),
   );
   const wanted = devices.filter((x) => x.daily_push !== false && x.p256dh && x.auth);
@@ -239,8 +269,19 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
     });
     return 1;
   } catch (err) {
+    if (recipientRefused(err)) {
+      // This one address, not the mail server: the rest of the family still
+      // gets their digests, and their security alerts, from it.
+      deps.log('warn', 'email address refused', {
+        household: d.household_name,
+        account_id: d.recipient.account_id,
+        error: (err as Error).message,
+      });
+      return 0;
+    }
     deps.log('warn', 'email failed', {
       household: d.household_name,
+      account_id: d.recipient.account_id,
       error: (err as Error).message,
     });
     await withHousehold(deps.app, d.household_id, (trx) =>

@@ -10,6 +10,7 @@ import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { DecryptStream } from '@fdv/crypto';
+import { canSee } from '@fdv/shared';
 
 /**
  * Share links (SHR-05).
@@ -129,13 +130,9 @@ export class ShareService {
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      if (!doc) throw notFound('That document');
-      if (doc.visibility === 'adults' && p.role !== 'owner' && p.role !== 'adult') {
-        throw notFound('That document');
-      }
-      // A private document is nobody else's to send out, however senior
-      // they are. Its own owner may: it is theirs.
-      if (doc.visibility === 'private' && doc.owner_member_id !== p.memberId) {
+      // Nobody sends out what they cannot see. For a private document that
+      // means nobody but its owner, however senior they are: it is theirs.
+      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
         throw notFound('That document');
       }
       const versions = await trx
@@ -214,10 +211,12 @@ export class ShareService {
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
-      // A link to somebody's private document is their business, even from
-      // another adult: it would otherwise name a document they cannot see.
+      // A link names its document, so the list shows only links to what the
+      // reader may see — the same rule as every other list. Until 0.4.2
+      // this checked only "private", and a teen could read the titles of
+      // adults-only documents that had been shared out of the house.
       return rows
-        .filter((r) => r.visibility !== 'private' || r.owner_member_id === p.memberId)
+        .filter((r) => canSee({ role: p.role, memberId: p.memberId }, r))
         .map((r) => {
           const state = stateOf(r);
           return {

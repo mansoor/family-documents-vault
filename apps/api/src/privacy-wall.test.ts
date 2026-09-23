@@ -453,3 +453,174 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     expect(res.rawPayload.includes(Buffer.from(SECRET_TEXT))).toBe(true);
   });
 });
+
+/**
+ * The same wall from the other directions, added in 0.4.2 after a review
+ * of the digest leak found routes this suite had not tried: the owner
+ * reaching for another adult's private documents, rather than the other
+ * way round. Being an owner opens nothing private that belongs to
+ * somebody else.
+ */
+describe.skipIf(!testAdminUrl())('the privacy wall, from the owner’s side', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let samSecret: string;
+  const SAM_PASSWORD = 'sams own long passphrase';
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const as = (t: Tokens) => h.as(t);
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, {
+      name: 'Sam',
+      email: 'sam-other-side@example.test',
+      role: 'adult',
+      password: SAM_PASSWORD,
+    });
+    const created = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: as(sam),
+      payload: {
+        title: 'Divorce papers',
+        type_key: 'utility_bill',
+        owner_member_id: sam.member_id,
+        visibility: 'private',
+      },
+    });
+    samSecret = json<DocumentView>(created).id;
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'papers.pdf', contentType: 'application/pdf' });
+    const up = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${samSecret}/versions`,
+      headers: { ...as(sam), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(up.statusCode, up.body).toBe(201);
+  }, 120_000);
+  afterAll(() => h.close());
+
+  it('an owner cannot list, look up or download another adult’s export', async () => {
+    const asked = await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: as(sam) });
+    expect(asked.statusCode).toBe(202);
+    const id = json<{ id: string }>(asked).id;
+
+    const listed = json<{ items: Array<{ id: string }> }>(
+      await h.app.inject({ url: '/api/v1/exports', headers: as(owner) }),
+    ).items;
+    expect(listed.map((e) => e.id)).not.toContain(id);
+    for (const url of [`/api/v1/exports/${id}`, `/api/v1/exports/${id}/content`]) {
+      const res = await h.app.inject({ url, headers: as(owner) });
+      expect(res.statusCode, url).toBe(404);
+    }
+    // Sam's own is Sam's.
+    expect(
+      (await h.app.inject({ url: `/api/v1/exports/${id}`, headers: as(sam) })).statusCode,
+    ).toBe(200);
+  });
+
+  it('taking a sign-in away and inviting the person again is not a way in', async () => {
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${sam.member_id}/sign-in`,
+      headers: as(owner),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+
+    for (const [url, payload] of [
+      [
+        `/api/v1/members/${sam.member_id}/invite`,
+        { email: 'impostor@example.test', role: 'viewer' },
+      ],
+      [
+        '/api/v1/invitations',
+        { member_id: sam.member_id, email: 'impostor2@example.test', role: 'adult' },
+      ],
+    ] as const) {
+      const res = await h.app.inject({ method: 'POST', url, headers: as(owner), payload });
+      expect(res.statusCode, url).toBe(409);
+      expect(json<{ error: { code: string } }>(res).error.code).toBe('had_sign_in');
+    }
+    // The people list offers to give it back, not to invite.
+    const members = json<{ items: MemberView[] }>(
+      await h.app.inject({ url: '/api/v1/members', headers: as(owner) }),
+    ).items;
+    expect(members.find((m) => m.id === sam.member_id)?.sign_in_removed).toBe(true);
+  });
+
+  it('an invitation made before the fix cannot be accepted for somebody who had a sign-in', async () => {
+    // A person with no sign-in, invited — the ordinary, allowed case…
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: as(owner),
+      payload: { display_name: 'Priya' },
+    });
+    const priya = json<MemberView>(added).id;
+    const invited = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${priya}/invite`,
+      headers: as(owner),
+      payload: { email: 'priya@example.test', role: 'adult' },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const { link_token, code } = json<{ link_token: string; code: string }>(invited);
+    // …who, before the invitation is used, turns out to have had one: the
+    // state an invitation made under 0.4.1 can be left waiting in.
+    await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('scope_key')
+        .set({ key_wrapped_cred: Buffer.alloc(60, 7) })
+        .where('kind', '=', 'member')
+        .where('member_id', '=', priya)
+        .execute(),
+    );
+    const accepted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/invitations/${link_token}/accept`,
+      payload: { code, password: 'whoever holds the link' },
+      remoteAddress: '10.9.9.9',
+    });
+    expect(accepted.statusCode).toBe(409);
+    expect(json<{ error: { code: string } }>(accepted).error.code).toBe('had_sign_in');
+  });
+
+  it('the sign-in comes back to Sam alone, with Sam’s own password', async () => {
+    const given = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${sam.member_id}/sign-in`,
+      headers: as(owner),
+      payload: { role: 'adult' },
+    });
+    expect(given.statusCode, given.body).toBe(200);
+    // Nothing secret came back to the owner: no token, no code.
+    expect(given.body).not.toMatch(/token|code/i);
+
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'sam-other-side@example.test', password: SAM_PASSWORD },
+      remoteAddress: '10.9.9.10',
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    const again = json<Tokens>(signedIn);
+    const versions = json<{ items: Array<{ id: string }> }>(
+      await h.app.inject({ url: `/api/v1/documents/${samSecret}/versions`, headers: as(again) }),
+    ).items;
+    const content = await h.app.inject({
+      url: `/api/v1/versions/${versions[0]?.id}/content`,
+      headers: as(again),
+    });
+    expect(content.statusCode).toBe(200);
+    expect(content.rawPayload.includes(Buffer.from('%PDF'))).toBe(true);
+    // And the owner, who gave it back, still cannot see it.
+    expect(
+      (await h.app.inject({ url: `/api/v1/documents/${samSecret}`, headers: as(owner) }))
+        .statusCode,
+    ).toBe(404);
+  });
+});

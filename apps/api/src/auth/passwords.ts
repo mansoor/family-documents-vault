@@ -164,6 +164,13 @@ export class PasswordService {
         .where('id', '!=', p.sessionId)
         .where('revoked_at', 'is', null)
         .execute();
+      // And they stop being told things there. Devices registered before
+      // 0.4.2 name no session, so they go too.
+      await trx
+        .deleteFrom('device')
+        .where('account_id', '=', p.accountId)
+        .where((eb) => eb.or([eb('session_id', 'is', null), eb('session_id', '!=', p.sessionId)]))
+        .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -340,6 +347,7 @@ export class PasswordService {
         .where('account_id', '=', account.id)
         .where('revoked_at', 'is', null)
         .execute();
+      await trx.deleteFrom('device').where('account_id', '=', account.id).execute();
       await appendAudit(trx, {
         householdId: membership.household_id,
         actorAccountId: account.id,

@@ -286,6 +286,36 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
   rather than refused (`404`) for teens and viewers, in listings, in search
   and by id — telling them it exists would be the leak.
 
+- Privacy fixes (0.4.2). Each of these closed a route across the privacy wall;
+  clients that relied on the old behaviour were relying on the leak.
+
+  - `GET /api/v1/exports`, `GET /api/v1/exports/{id}` and
+    `GET /api/v1/exports/{id}/content` answer only for the person who asked for
+    the export. Anybody else, an owner included, gets `404` — an export holds
+    its requester's _Only me_ documents. The list no longer shows other
+    people's exports.
+  - `GET /api/v1/shares` and `GET /api/v1/tags` apply the same visibility rule
+    as every other list: teens and viewers no longer see links to, or tags on,
+    adults-only documents, and nobody sees another member's private ones.
+  - A member who has ever had a sign-in cannot be invited again:
+    `POST /api/v1/invitations` (with `member_id`),
+    `POST /api/v1/members/{id}/invite` and
+    `POST /api/v1/invitations/{token}/accept` answer
+    `409 { "error": { "code": "had_sign_in" } }`. Their private documents are
+    locked to their own password, and an invitation would hand them to whoever
+    holds its link and code.
+  - **New:** `POST /api/v1/members/{id}/sign-in` (owner; step-up
+    `change_people`) — `{ "role": "adult" | "teen" | "viewer" }` → `200
+{ "message" }`. Gives a removed sign-in back to the same account, which
+    signs in with its own password as before. `409 already_signed_in`, or
+    `409 no_sign_in_to_restore` when there is no removed sign-in to give back.
+  - `GET /api/v1/members` items gain `sign_in_removed: boolean` — true when the
+    person's sign-in was taken away and can be given back.
+  - `POST /api/v1/devices` ties the device to the session that registered it,
+    and nothing is pushed to it once that session ends — signed out, revoked,
+    or expired. A password change removes the account's devices on every
+    other session; a reset removes them all.
+
 ## Deprecations in effect
 
 None.

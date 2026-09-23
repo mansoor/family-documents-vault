@@ -131,6 +131,22 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
     expect((await h.app.inject({ url: '/api/v1/me', headers: h.as(elsewhere) })).statusCode).toBe(
       200,
     );
+    // Both sign-ins have turned notifications on.
+    for (const [t, name] of [
+      [owner, 'old-laptop'],
+      [elsewhere, 'this-phone'],
+    ] as const) {
+      const registered = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/devices',
+        headers: h.as(t),
+        payload: {
+          endpoint: `https://push.example.test/${name}`,
+          keys: { p256dh: 'k', auth: 'a' },
+        },
+      });
+      expect(registered.statusCode, registered.body).toBe(201);
+    }
 
     const res = await change(
       { current_password: 'a whole new password', new_password: 'a third password entirely' },
@@ -143,6 +159,11 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
       200,
     );
     expect((await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) })).statusCode).toBe(401);
+    // And the signed-out one stops being told things: its device is gone.
+    const devices = json<{ items: Array<{ endpoint: string }> }>(
+      await h.app.inject({ url: '/api/v1/devices', headers: h.as(elsewhere) }),
+    ).items.map((d) => d.endpoint);
+    expect(devices).toEqual(['https://push.example.test/this-phone']);
     owner = elsewhere;
   });
 

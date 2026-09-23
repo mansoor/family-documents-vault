@@ -137,6 +137,8 @@ export interface Member {
   role: Role | null;
   is_me: boolean;
   document_count: number;
+  /** Their sign-in was taken away and can be given back — never re-invited. */
+  sign_in_removed?: boolean;
 }
 
 export interface Invitation {
@@ -527,6 +529,12 @@ export const api = {
     request<RoleChangeResult>('/api/v1/me/step-down', { method: 'POST', body: { role }, token }),
   removeSignIn: (token: string, memberId: string) =>
     request<void>(`/api/v1/members/${memberId}/sign-in`, { method: 'DELETE', token }),
+  restoreSignIn: (token: string, memberId: string, role: 'adult' | 'teen' | 'viewer') =>
+    request<{ message: string }>(`/api/v1/members/${memberId}/sign-in`, {
+      method: 'POST',
+      token,
+      body: { role },
+    }),
   ownerChanges: (token: string) =>
     request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
   refuseOwnerChange: (token: string, id: string) =>

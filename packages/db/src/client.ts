@@ -50,6 +50,8 @@ export interface Schema {
     is_deceased: Generated<boolean>;
     colour: Generated<number>;
     created_at: GeneratedTimestamp;
+    /** The account whose sign-in was taken away, so it can be given back (0019). */
+    former_account_id: Generated<string | null>;
   };
 
   account: {
@@ -394,6 +396,8 @@ export interface Schema {
     last_used_at: Timestamp | null;
     failed_at: Timestamp | null;
     fail_reason: string | null;
+    /** The sign-in that turned it on; pushes stop when it ends (0020). */
+    session_id: Generated<string | null>;
   };
 
   smtp_settings: {

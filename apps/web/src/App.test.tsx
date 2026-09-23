@@ -443,6 +443,16 @@ describe('App', () => {
     expect(screen.getByText(/their documents are untouched/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, take their sign-in away' }));
     await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBeNull());
+
+    // The way back is their own sign-in, given back — not an invitation,
+    // which would hand their private documents to whoever accepted it.
+    expect(
+      await screen.findByRole('heading', { name: 'Give Aisha their sign-in back' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Nobody else can be given this sign-in/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Teen' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
+    await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBe('teen'));
   });
 
   it('shares one document by link, and says exactly what the link can do', async () => {

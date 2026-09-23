@@ -519,6 +519,11 @@ export class DocumentService {
         select t as tag, count(*)::int as count
         from document d, unnest(d.tags) as t
         where d.deleted_at is null
+          -- Tags are words people write about their documents, as telling
+          -- as a title. Until 0.4.2 this was the one query with no rule.
+          and (d.visibility = 'household'
+            or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+            or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
           ${q ? sql`and t ilike ${`${q}%`}` : sql``}
         group by t order by count desc, t limit 50`.execute(trx);
       return r.rows;

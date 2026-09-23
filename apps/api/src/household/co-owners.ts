@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
+import type { AlertRequest } from '../alert-job.js';
 
 /**
  * Co-owners (SHR-09, SHR-10).
@@ -56,12 +57,7 @@ export class CoOwnerService {
   constructor(
     private readonly db: Db,
     /** Tells a set of accounts something. Returns without waiting. */
-    private readonly alert: (input: {
-      householdId: string;
-      accountIds: string[];
-      subject: string;
-      body: string;
-    }) => Promise<void> = async () => undefined,
+    private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
   ) {}
 
   // ------------------------------------------------------------- changing
@@ -192,6 +188,13 @@ export class CoOwnerService {
         .where('account_id', '=', target.account_id)
         .where('household_id', '=', p.householdId)
         .execute();
+      // Remembered so that the sign-in can be given back to this account,
+      // and only to it: their private documents are locked to its password.
+      await trx
+        .updateTable('member')
+        .set({ former_account_id: target.account_id })
+        .where('id', '=', memberId)
+        .execute();
       // Their sessions end with their membership; the person, their member
       // row and their documents are untouched.
       await trx
@@ -210,6 +213,96 @@ export class CoOwnerService {
         detail: { role: target.role },
         ip: meta.ip,
       });
+    });
+  }
+
+  /**
+   * Gives a removed sign-in back — to the account that had it, never to a
+   * new one. The person signs in with their own password, as before, and
+   * that password is still what their private documents are locked to.
+   * Nothing secret changes hands, which is the point: an invitation would
+   * hand a link and a code to whoever made it.
+   */
+  async restoreSignIn(
+    p: Principal,
+    memberId: string,
+    role: 'adult' | 'teen' | 'viewer',
+    meta: RequestMeta,
+  ): Promise<{ message: string }> {
+    requireCapability(p, 'member.remove');
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const member = await trx
+        .selectFrom('member')
+        .leftJoin('account', 'account.id', 'member.former_account_id')
+        .select([
+          'member.id',
+          'member.display_name',
+          'member.former_account_id',
+          'account.disabled_at',
+        ])
+        .where('member.id', '=', memberId)
+        .executeTakeFirst();
+      if (!member) throw notFound('That person');
+      const held = await trx
+        .selectFrom('account_household')
+        .select(['account_id'])
+        .where('member_id', '=', memberId)
+        .executeTakeFirst();
+      if (held) {
+        throw new ApiError(
+          409,
+          'already_signed_in',
+          `${member.display_name} already has a sign-in.`,
+        );
+      }
+      const account = member.former_account_id;
+      if (!account || member.disabled_at) {
+        throw new ApiError(
+          409,
+          'no_sign_in_to_restore',
+          `${member.display_name} has no sign-in to give back. Invite them instead.`,
+        );
+      }
+      const elsewhere = await trx
+        .selectFrom('account_household')
+        .select(['member_id'])
+        .where('account_id', '=', account)
+        .executeTakeFirst();
+      if (elsewhere) {
+        throw new ApiError(
+          409,
+          'no_sign_in_to_restore',
+          `That sign-in belongs to somebody else in the household now.`,
+        );
+      }
+      await trx
+        .insertInto('account_household')
+        .values({ account_id: account, household_id: p.householdId, member_id: memberId, role })
+        .execute();
+      await trx
+        .updateTable('member')
+        .set({ former_account_id: null })
+        .where('id', '=', memberId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.sign_in_restored',
+        objectType: 'member',
+        objectId: memberId,
+        detail: { role },
+        ip: meta.ip,
+      });
+      await this.alert({
+        householdId: p.householdId,
+        accountIds: [account],
+        subject: 'You can sign in to your family vault again',
+        body: 'Your sign-in has been given back. Use the same email and password as before; your own documents are as you left them.',
+        emailOnly: true,
+      });
+      return {
+        message: `${member.display_name} can sign in again with their own password, as ${article(role)}.`,
+      };
     });
   }
 

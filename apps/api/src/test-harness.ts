@@ -28,6 +28,7 @@ import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
+import { alertJob, type AlertRequest } from './alert-job.js';
 
 /**
  * A fully wired API on a throwaway database with a temp local vault.
@@ -84,23 +85,8 @@ export async function createHarness(): Promise<Harness> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     jobs.push({ name, data });
   };
-  const alert = (a: {
-    householdId: string;
-    accountIds: string[];
-    subject: string;
-    body: string;
-    url?: string;
-    urlLabel?: string;
-    emailOnly?: boolean;
-  }) =>
-    enqueue('alert.send', {
-      household_id: a.householdId,
-      account_ids: a.accountIds,
-      subject: a.subject,
-      body: a.body,
-      ...(a.url ? { url: a.url, url_label: a.urlLabel } : {}),
-      ...(a.emailOnly ? { email_only: true } : {}),
-    });
+  // The same mapping as production, not a copy of it: see alert-job.ts.
+  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
   const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,

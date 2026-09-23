@@ -93,6 +93,9 @@ export function RoleControls(props: { member: Member; onChanged: () => Promise<v
   const [confirmRemoval, setConfirmRemoval] = useState(false);
 
   const isMe = props.member.id === session.info?.member_id;
+  if (!props.member.has_account && props.member.sign_in_removed && can(myRole, 'member.remove')) {
+    return <GiveSignInBack member={props.member} onChanged={props.onChanged} />;
+  }
   if (!can(myRole, 'role.change') || !props.member.has_account || isMe) return null;
 
   const run = async (fn: (t: string) => Promise<{ message: string } | void>) => {
@@ -140,8 +143,9 @@ export function RoleControls(props: { member: Member; onChanged: () => Promise<v
       {confirmRemoval ? (
         <div className="stack">
           <p>
-            {props.member.display_name} will not be able to sign in again. They stay in the family
-            and their documents are untouched; an invitation can bring them back.
+            {props.member.display_name} will not be able to sign in. They stay in the family and
+            their documents are untouched. You can give the sign-in back later, and they will use
+            their own password, as before.
           </p>
           <div className="row">
             <Button
@@ -160,6 +164,59 @@ export function RoleControls(props: { member: Member; onChanged: () => Promise<v
           Take away their sign-in
         </Button>
       )}
+    </section>
+  );
+}
+
+/**
+ * The way back for somebody whose sign-in was taken away: the same
+ * account, with the password only they know. Not an invitation — whoever
+ * made one would hold its link and code, and so a way into this person's
+ * private documents.
+ */
+function GiveSignInBack(props: { member: Member; onChanged: () => Promise<void> }) {
+  const { guarded } = useApp();
+  const [role, setRole] = useState<'adult' | 'teen' | 'viewer'>('adult');
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const give = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await guarded((t) => api.restoreSignIn(t, props.member.id, role));
+      if (result) setNote(result.message);
+      await props.onChanged();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card stack">
+      <h2 style={{ fontSize: 18 }}>Give {props.member.display_name} their sign-in back</h2>
+      <p className="muted">
+        They sign in with the same email and password as before, and their own documents are as they
+        left them. Nobody else can be given this sign-in.
+      </p>
+      <Pills
+        label="Role"
+        value={role}
+        options={(['adult', 'teen', 'viewer'] as const).map((r) => ({
+          value: r,
+          label: roleLabel(r),
+        }))}
+        onChange={setRole}
+      />
+      <p className="muted">{roleDescription(role)}</p>
+      <ErrorNote message={error} />
+      {note && <p className="status status-ok">{note}</p>}
+      <div className="row">
+        <Button disabled={busy} onClick={() => void give()}>
+          {busy ? 'Giving it back…' : 'Give it back'}
+        </Button>
+      </div>
     </section>
   );
 }

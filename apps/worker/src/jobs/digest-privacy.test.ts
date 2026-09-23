@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
 import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
@@ -151,8 +151,18 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
           .executeTakeFirstOrThrow();
         reminderOf[title] = r.id;
       }
-      // One phone each, and everybody asks for email every day.
+      // One phone each, signed in, and everybody asks for email every day.
       for (const [who, p] of Object.entries(people)) {
+        const session = await trx
+          .insertInto('session')
+          .values({
+            account_id: p.account,
+            household_id: hh,
+            refresh_hash: randomBytes(32),
+            expires_at: new Date(Date.now() + 30 * 864e5),
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
         await trx
           .insertInto('device')
           .values({
@@ -161,6 +171,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
             endpoint: `https://push.example.test/${TAG}/${who}`,
             p256dh: 'test-key',
             auth: 'test-auth',
+            session_id: session.id,
           })
           .execute();
         await trx
@@ -365,5 +376,87 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
     });
     expect(r).toEqual({ digests: 1 });
     expect(pushed).toEqual([`https://push.example.test/${TAG}/owner`]);
+  });
+
+  /** A due reminder on a new document, for the tests below that need fresh ones. */
+  const dueOn = async (
+    title: string,
+    visibility: 'household' | 'adults' | 'private',
+    owner: string,
+    fireAt: string,
+  ) =>
+    withHousehold(db, hh, async (trx) => {
+      const d = await trx
+        .insertInto('document')
+        .values({ household_id: hh, title, visibility, owner_member_id: owner })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      const r = await trx
+        .insertInto('reminder')
+        .values({
+          household_id: hh,
+          document_id: d.id,
+          kind: 'manual',
+          fire_at: fireAt,
+          status: 'due',
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      return r.id;
+    });
+
+  it('the ledger credits a reminder only with the channels of people who could read it', async () => {
+    const shared = await dueOn('Water bill', 'household', people.owner.member, '2026-09-25');
+    const secret = await dueOn('Adult second secret', 'private', people.adult.member, '2026-09-25');
+    // Each person's "channel" is their own name, so the ledger shows whose
+    // copy carried which reminder.
+    const byAccount = Object.fromEntries(
+      Object.entries(people).map(([who, p]) => [p.account, `to:${who}`]),
+    );
+    await deliver({
+      admin,
+      app: db,
+      notifier: { digest: async (d) => [byAccount[d.recipient.account_id] as string] },
+      log: () => undefined,
+      now: () => new Date('2026-09-25T09:10:00Z'),
+      digestHour: 9,
+    });
+    const ledger = await withHousehold(db, hh, (trx) =>
+      trx
+        .selectFrom('reminder_delivery')
+        .select(['reminder_id', 'channel'])
+        .where('reminder_id', 'in', [shared, secret])
+        .execute(),
+    );
+    const of = (id: string) =>
+      ledger
+        .filter((l) => l.reminder_id === id)
+        .map((l) => l.channel)
+        .sort();
+    expect(of(secret)).toEqual(['to:adult']);
+    expect(of(shared)).toEqual(['to:adult', 'to:owner', 'to:teen', 'to:viewer']);
+  });
+
+  it('whether a copy is a catch-up depends on what is in that copy', async () => {
+    // Something of the owner's own has been waiting two days; everybody
+    // else's list is only today's. "While nobody was looking" in the
+    // teen's email would say something older is being kept from them.
+    await dueOn('Owner overdue secret', 'private', people.owner.member, '2026-09-24');
+    await dueOn('Bin collection', 'household', people.owner.member, '2026-09-26');
+    const digests: Digest[] = [];
+    await deliver({
+      admin,
+      app: db,
+      notifier: { digest: async (d) => (digests.push(d), ['test']) },
+      log: () => undefined,
+      now: () => new Date('2026-09-26T09:10:00Z'),
+      digestHour: 9,
+    });
+    const kindOf = (who: Who) =>
+      digests.find((d) => d.recipient.account_id === people[who].account)?.kind;
+    expect(kindOf('owner')).toBe('catch_up');
+    expect(kindOf('adult')).toBe('daily');
+    expect(kindOf('teen')).toBe('daily');
+    expect(kindOf('viewer')).toBe('daily');
   });
 });

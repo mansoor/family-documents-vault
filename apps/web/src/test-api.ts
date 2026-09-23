@@ -535,8 +535,22 @@ export function installFakeApi(state: FakeState) {
       if (target) {
         target.has_account = false;
         target.role = null;
+        target.sign_in_removed = true;
       }
       return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path.endsWith('/sign-in') && method === 'POST') {
+      const memberId = path.split('/')[4] as string;
+      const target = state.members.find((m) => m.id === memberId);
+      const { role } = body as { role: string };
+      if (target) {
+        target.has_account = true;
+        target.role = role;
+        target.sign_in_removed = false;
+      }
+      return json({
+        message: `${String(target?.display_name)} can sign in again with their own password.`,
+      });
     }
     if (path === '/api/v1/invitations' && method === 'GET')
       return json({ items: state.invitations });

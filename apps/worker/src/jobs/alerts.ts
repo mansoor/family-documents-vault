@@ -1,7 +1,7 @@
 import { withHousehold, type Db } from '@fdv/db';
 import nodemailer from 'nodemailer';
 import webpush from 'web-push';
-import { openPassword, type VapidKeys } from './notify.js';
+import { liveDevice, openPassword, type VapidKeys } from './notify.js';
 
 /**
  * Alerts: one thing, to named people, now.
@@ -78,6 +78,7 @@ async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
       .where('failed_at', 'is', null)
       .where('kind', '=', 'web_push')
       .where('account_id', 'in', alert.account_ids)
+      .where(liveDevice)
       .execute(),
   );
   const payload = JSON.stringify({
@@ -146,7 +147,8 @@ async function emailAlert(deps: AlertDeps, alert: Alert): Promise<number> {
       // the other recipients are not always entitled to know.
       bcc: recipients.join(', '),
       subject: alert.subject,
-      text: `${alert.body}\n\nOpen your vault: ${deps.baseUrl}\n`,
+      // The link in the text part too: a plain-text mail client shows no button.
+      text: `${alert.body}\n\n${alert.url_label ?? 'Open your vault'}: ${alert.url ?? deps.baseUrl}\n`,
       html: htmlAlert(alert, deps.baseUrl),
     });
     return recipients.length;

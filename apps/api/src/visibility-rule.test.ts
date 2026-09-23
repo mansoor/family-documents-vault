@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { testAdminUrl } from '@fdv/db/testing';
 import { canSee, type DocumentView, type Role } from '@fdv/shared';
+import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
 import { createHarness, type Harness } from './test-harness.js';
@@ -9,22 +11,27 @@ import { createHarness, type Harness } from './test-harness.js';
  *
  * Who may see a document is written once in words — everyone, the adults,
  * or only its owner — and several times in code: the SQL in the document
- * list, in search and in the reminder list, and `canSee` in `@fdv/shared`,
+ * list, in search, in the reminder list, the share-link list and the tag
+ * list, and `canSee` in `@fdv/shared`,
  * which the worker uses to cut each person's digest. The digest leak fixed
  * in 0.4.2 was a copy that forgot the rule entirely, so this holds every
  * copy the API serves to the same answers as the shared one, for every
  * role, over documents of every visibility and more than one owner.
  */
+const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
+
 describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere', () => {
   let h: Harness;
   const people = {} as Record<Role, Tokens>;
-  const docs: Array<{ id: string; visibility: string; owner_member_id: string }> = [];
+  const docs: Array<{ id: string; visibility: string; owner_member_id: string; tag: string }> = [];
 
+  let n = 0;
   const make = async (
     as: Tokens,
     title: string,
     visibility: 'household' | 'adults' | 'private',
   ) => {
+    const tag = `parity${++n}`;
     const created = await h.app.inject({
       method: 'POST',
       url: '/api/v1/documents',
@@ -34,11 +41,29 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
         type_key: 'utility_bill',
         owner_member_id: as.member_id,
         visibility,
+        tags: [tag],
       },
     });
     expect(created.statusCode, created.body).toBe(201);
     const doc = created.json<DocumentView>();
-    docs.push({ id: doc.id, visibility, owner_member_id: as.member_id });
+    docs.push({ id: doc.id, visibility, owner_member_id: as.member_id, tag });
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+    const uploaded = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${doc.id}/versions`,
+      headers: { ...h.as(as), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    // A link out of the house to every one of them, which names it.
+    const shared = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${doc.id}/share`,
+      headers: h.as(as),
+      payload: { recipient_label: 'the accountant' },
+    });
+    expect(shared.statusCode, shared.body).toBe(201);
     // A reminder on every one of them, set by whoever made it.
     const reminder = await h.app.inject({
       method: 'POST',
@@ -122,6 +147,31 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       .json<{ items: Array<{ document_id: string }> }>()
       .items.map((r) => r.document_id)
       .filter((id) => docs.some((d) => d.id === id))
+      .sort();
+    expect(ids).toEqual(expected(role));
+  });
+
+  it.each(roles)('the share-link list agrees with canSee for a %s', async (role) => {
+    const res = await h.app.inject({ url: '/api/v1/shares', headers: h.as(people[role]) });
+    expect(res.statusCode, res.body).toBe(200);
+    const ids = [
+      ...new Set(
+        res
+          .json<{ items: Array<{ document_id: string }> }>()
+          .items.map((s) => s.document_id)
+          .filter((id) => docs.some((d) => d.id === id)),
+      ),
+    ].sort();
+    expect(ids).toEqual(expected(role));
+  });
+
+  it.each(roles)('the tag list agrees with canSee for a %s', async (role) => {
+    const res = await h.app.inject({ url: '/api/v1/tags?q=parity', headers: h.as(people[role]) });
+    expect(res.statusCode, res.body).toBe(200);
+    const tags = res.json<{ items: Array<{ tag: string }> }>().items.map((t) => t.tag);
+    const ids = docs
+      .filter((d) => tags.includes(d.tag))
+      .map((d) => d.id)
       .sort();
     expect(ids).toEqual(expected(role));
   });

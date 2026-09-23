@@ -208,7 +208,7 @@ export class InvitationService {
   private async existingMember(trx: Db, memberId: string): Promise<string> {
     const member = await trx
       .selectFrom('member')
-      .select(['id'])
+      .select(['id', 'display_name'])
       .where('id', '=', memberId)
       .executeTakeFirst();
     if (!member) throw notFound('That person');
@@ -220,7 +220,34 @@ export class InvitationService {
     if (held) {
       throw new ApiError(409, 'already_signed_in', 'That person already has a sign-in.');
     }
+    await this.mustNeverHaveSignedIn(trx, memberId, member.display_name);
     return member.id;
+  }
+
+  /**
+   * Somebody who has had a sign-in has private documents locked to their
+   * own password. An invitation for them would be a way into those for
+   * whoever holds its link and code — and whoever makes an invitation
+   * holds both. So they are never invited again; an owner gives the old
+   * sign-in back instead (`POST /members/{id}/sign-in`).
+   *
+   * Checked when an invitation is made and again when one is accepted,
+   * because an invitation made before 0.4.2 may still be waiting.
+   */
+  private async mustNeverHaveSignedIn(trx: Db, memberId: string, name: string): Promise<void> {
+    const key = await trx
+      .selectFrom('scope_key')
+      .select(['key_wrapped_cred'])
+      .where('kind', '=', 'member')
+      .where('member_id', '=', memberId)
+      .executeTakeFirst();
+    if (key?.key_wrapped_cred) {
+      throw new ApiError(
+        409,
+        'had_sign_in',
+        `${name} has had their own sign-in, and their private documents are locked to it, so they cannot be invited as somebody new. An owner can give them their sign-in back from their page.`,
+      );
+    }
   }
 
   private async newMember(
@@ -425,6 +452,12 @@ export class InvitationService {
       // Read it again inside the writing transaction: between the check and
       // here, somebody may have revoked it.
       const row = await this.live(trx, token);
+      const member = await trx
+        .selectFrom('member')
+        .select(['display_name'])
+        .where('id', '=', row.member_id)
+        .executeTakeFirstOrThrow();
+      await this.mustNeverHaveSignedIn(trx, row.member_id, member.display_name);
       const passwordHash = await argon2.hash(input.password, ARGON2);
       const account = await trx
         .insertInto('account')
