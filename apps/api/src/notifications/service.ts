@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
+import type { AlertRequest } from '../alert-job.js';
 
 /**
  * Devices that want push, who wants email, and the household's own SMTP
@@ -127,6 +128,7 @@ export class NotificationService {
     private readonly db: Db,
     private readonly smtpKey: Buffer,
     private readonly vapidPublicKey: string | null,
+    private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
   ) {}
 
   /** What the browser needs before it can subscribe. */
@@ -154,11 +156,14 @@ export class NotificationService {
           auth: input.keys.auth,
           label: input.label ?? null,
           user_agent: meta.userAgent ?? null,
+          // Pushes to this browser end when this sign-in does.
+          session_id: p.sessionId,
         })
         .onConflict((oc) =>
           oc.column('endpoint').doUpdateSet({
             account_id: p.accountId,
             household_id: p.householdId,
+            session_id: p.sessionId,
             p256dh: input.keys.p256dh,
             auth: input.keys.auth,
             failed_at: null,
@@ -325,6 +330,28 @@ export class NotificationService {
         detail: { host: input.host, from: input.from_email },
         ip: meta.ip,
       });
+      // Every email the vault sends goes through this server, so whoever
+      // controls it can read them. Everybody else who can see the adults'
+      // documents is told when it changes, by push as well as by email.
+      const me = await trx
+        .selectFrom('member')
+        .select('display_name')
+        .where('id', '=', p.memberId)
+        .executeTakeFirst();
+      const others = await trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('role', 'in', ['owner', 'adult'])
+        .where('account_id', '!=', p.accountId)
+        .execute();
+      if (others.length > 0) {
+        await this.alert({
+          householdId: p.householdId,
+          accountIds: others.map((o) => o.account_id),
+          subject: 'The vault\u2019s mail server was changed',
+          body: `${me?.display_name ?? 'An owner'} changed where the vault\u2019s email comes from, to ${input.host}. Your reminders travel through it. If that is a surprise, ask them about it.`,
+        });
+      }
     });
     return this.smtp(p);
   }

@@ -10,6 +10,7 @@ import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { DecryptStream } from '@fdv/crypto';
+import { canSee } from '@fdv/shared';
 
 /**
  * Share links (SHR-05).
@@ -129,13 +130,9 @@ export class ShareService {
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      if (!doc) throw notFound('That document');
-      if (doc.visibility === 'adults' && p.role !== 'owner' && p.role !== 'adult') {
-        throw notFound('That document');
-      }
-      // A private document is nobody else's to send out, however senior
-      // they are. Its own owner may: it is theirs.
-      if (doc.visibility === 'private' && doc.owner_member_id !== p.memberId) {
+      // Nobody sends out what they cannot see. For a private document that
+      // means nobody but its owner, however senior they are: it is theirs.
+      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
         throw notFound('That document');
       }
       const versions = await trx
@@ -214,10 +211,12 @@ export class ShareService {
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
-      // A link to somebody's private document is their business, even from
-      // another adult: it would otherwise name a document they cannot see.
+      // A link names its document, so the list shows only links to what the
+      // reader may see — the same rule as every other list. Until 0.4.2
+      // this checked only "private", and a teen could read the titles of
+      // adults-only documents that had been shared out of the house.
       return rows
-        .filter((r) => r.visibility !== 'private' || r.owner_member_id === p.memberId)
+        .filter((r) => canSee({ role: p.role, memberId: p.memberId }, r))
         .map((r) => {
           const state = stateOf(r);
           return {
@@ -241,6 +240,16 @@ export class ShareService {
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // A link to a document the caller cannot see is not there for them.
+      const target = await trx
+        .selectFrom('share_link')
+        .innerJoin('document', 'document.id', 'share_link.document_id')
+        .select(['document.visibility', 'document.owner_member_id'])
+        .where('share_link.id', '=', id)
+        .executeTakeFirst();
+      if (!target || !canSee({ role: p.role, memberId: p.memberId }, target)) {
+        throw notFound('That link');
+      }
       const row = await trx
         .updateTable('share_link')
         .set({ revoked_at: new Date(), revoked_by: p.accountId })
@@ -419,11 +428,21 @@ export class ShareService {
     // having to remember the link exists.
     const doc = await trx
       .selectFrom('document')
-      .select(['id'])
+      .select(['id', 'visibility', 'owner_member_id'])
       .where('id', '=', row.document_id)
       .where('deleted_at', 'is', null)
       .executeTakeFirst();
     if (!doc) throw gone();
+    // A link lends its maker's sight of the document, so it lasts only as
+    // long as they still have it. Made "Only me" by its owner, the maker
+    // demoted to teen or viewer, their sign-in taken away: each of these
+    // ends the link, asked on every open rather than remembered.
+    const maker = await trx
+      .selectFrom('account_household')
+      .select(['role', 'member_id'])
+      .where('account_id', '=', row.created_by)
+      .executeTakeFirst();
+    if (!maker || !canSee({ role: maker.role, memberId: maker.member_id }, doc)) throw gone();
     return row;
   }
 

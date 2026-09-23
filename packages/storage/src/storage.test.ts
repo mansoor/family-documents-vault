@@ -34,7 +34,7 @@ function adapterSuite(
         householdId: 'hh',
         documentId: 'doc',
         versionNo: 1,
-        sha256: 'abcdef0123456789abcdef',
+        name: 'abcdef0123456789',
         ext: 'PDF',
       });
       expect(key).toBe('hh/doc/1/abcdef0123456789.pdf.enc');

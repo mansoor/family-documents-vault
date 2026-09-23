@@ -186,3 +186,32 @@ export function roleDescription(role: Role): string {
 export function capabilityToInvite(role: Role): Capability {
   return role === 'owner' || role === 'adult' ? 'member.invite_adult' : 'member.invite';
 }
+
+/**
+ * Whether someone may see a document.
+ *
+ * The API asks this in SQL, inside the queries that list and fetch
+ * documents. This is the same three clauses for code that already holds
+ * the rows — the worker, which reads everything in a household to build
+ * each person their own copy of the digest. A second copy of the rule is
+ * how the digest came to leak private titles, so `apps/api` has a test
+ * that holds the two to the same answers.
+ *
+ * An unknown visibility is closed, not open: a value added later must be
+ * taught here before anybody is shown it.
+ */
+export function canSee(
+  viewer: { role: Role; memberId: string | null },
+  doc: { visibility: string; owner_member_id: string | null },
+): boolean {
+  switch (doc.visibility) {
+    case 'household':
+      return true;
+    case 'adults':
+      return can(viewer.role, 'document.see_adults');
+    case 'private':
+      return viewer.memberId !== null && doc.owner_member_id === viewer.memberId;
+    default:
+      return false;
+  }
+}

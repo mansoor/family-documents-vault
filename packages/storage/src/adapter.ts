@@ -97,23 +97,24 @@ export const MESSAGES: Record<StorageErrorCode, string> = {
  * The object key layout. Deliberately boring, so a household can recover
  * files with nothing but their storage provider's own console:
  *
- *   <prefix>/<household-id>/<document-id>/<version-no>/<sha256-prefix>.<ext>.enc
+ *   <prefix>/<household-id>/<document-id>/<version-no>/<random>.<ext>.enc
+ *
+ * The last part is random, not derived from the file. Until 0.4.2 it was
+ * the first 64 bits of the plaintext's SHA-256, which let whoever controls
+ * the bucket — an owner can point storage anywhere — confirm that a file
+ * they already had was in somebody else's private documents.
  */
 export function objectKey(p: {
   prefix?: string | null;
   householdId: string;
   documentId: string;
   versionNo: number;
-  sha256: string;
+  /** Random; says nothing about the contents. */
+  name: string;
   ext: string;
 }): string {
   const ext = p.ext.replace(/^\./, '').toLowerCase() || 'bin';
-  const parts = [
-    p.householdId,
-    p.documentId,
-    String(p.versionNo),
-    `${p.sha256.slice(0, 16)}.${ext}.enc`,
-  ];
+  const parts = [p.householdId, p.documentId, String(p.versionNo), `${p.name}.${ext}.enc`];
   const prefix = (p.prefix ?? '').replace(/^\/+|\/+$/g, '');
   return prefix ? `${prefix}/${parts.join('/')}` : parts.join('/');
 }

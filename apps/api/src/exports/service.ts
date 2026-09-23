@@ -19,7 +19,15 @@ export interface ExportView {
   expires_at: string | null;
 }
 
-/** Full export: request → worker builds the ZIP → download while it lasts. */
+/**
+ * Full export: request → worker builds the ZIP → download while it lasts.
+ *
+ * An export is built from what its requester can see, which includes their
+ * own *Only me* documents. So it is theirs alone: nobody else can list it,
+ * look it up or download it — not even an owner, who until 0.4.2 could
+ * download any export in the household and so read another adult's
+ * private documents. Somebody else's export is answered as not existing.
+ */
 export class ExportService {
   constructor(
     private readonly db: Db,
@@ -52,14 +60,25 @@ export class ExportService {
 
   async list(p: Principal): Promise<ExportView[]> {
     const rows = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      trx.selectFrom('export').selectAll().orderBy('created_at', 'desc').limit(20).execute(),
+      trx
+        .selectFrom('export')
+        .selectAll()
+        .where('requested_by', '=', p.accountId)
+        .orderBy('created_at', 'desc')
+        .limit(20)
+        .execute(),
     );
     return rows.map(view);
   }
 
   async get(p: Principal, id: string): Promise<ExportView> {
     const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      trx.selectFrom('export').selectAll().where('id', '=', id).executeTakeFirst(),
+      trx
+        .selectFrom('export')
+        .selectAll()
+        .where('id', '=', id)
+        .where('requested_by', '=', p.accountId)
+        .executeTakeFirst(),
     );
     if (!row) throw new ApiError(404, 'not_found', 'That export does not exist.');
     return view(row);
@@ -75,6 +94,7 @@ export class ExportService {
         .selectFrom('export')
         .selectAll()
         .where('id', '=', id)
+        .where('requested_by', '=', p.accountId)
         .executeTakeFirst();
       if (
         !row ||
@@ -88,13 +108,6 @@ export class ExportService {
       }
       if (row.expires_at && row.expires_at.getTime() < Date.now()) {
         throw new ApiError(410, 'export_expired', 'That export has expired. Make a new one.');
-      }
-      if (row.requested_by !== p.accountId && p.role !== 'owner') {
-        throw new ApiError(
-          403,
-          'forbidden',
-          'Only the person who made this export can download it.',
-        );
       }
       const scopeKey = await this.keys.unwrapById(trx, row.wrapped_by_scope);
       const fileKey = unwrapKey(row.file_key_wrapped, scopeKey, `export:${row.id}`);

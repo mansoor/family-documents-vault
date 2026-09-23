@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import type { Principal, RequestMeta } from './service.js';
 import type { StepUpService } from './step-up.js';
+import type { AlertRequest } from '../alert-job.js';
 
 /**
  * Changing a password, and forgetting one.
@@ -93,15 +94,9 @@ export class PasswordService {
     /** Where the vault is published, for the link in the email. */
     private readonly baseUrl: string,
     /** Sends the link. Returns without waiting; failures are the worker's. */
-    private readonly alert: (input: {
-      householdId: string;
-      accountIds: string[];
-      subject: string;
-      body: string;
-      url?: string;
-      urlLabel?: string;
-      emailOnly?: boolean;
-    }) => Promise<void> = async () => undefined,
+    private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
+    /** Whether whoever runs the server has given it a mail server (FDV_SMTP_URL). */
+    private readonly operatorMail = false,
   ) {}
 
   // -------------------------------------------------------- changing one
@@ -164,6 +159,13 @@ export class PasswordService {
         .where('id', '!=', p.sessionId)
         .where('revoked_at', 'is', null)
         .execute();
+      // And they stop being told things there. Devices registered before
+      // 0.4.2 name no session, so they go too.
+      await trx
+        .deleteFrom('device')
+        .where('account_id', '=', p.accountId)
+        .where((eb) => eb.or([eb('session_id', 'is', null), eb('session_id', '!=', p.sessionId)]))
+        .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -206,6 +208,19 @@ export class PasswordService {
     );
     if (!membership) return;
 
+    // The link is a way into this person's private documents, so it only
+    // travels by a mail server nobody else in the family can redirect:
+    // the operator's own, or the household's when this person is the one
+    // owner who controls it. Otherwise nothing is sent — the answer on the
+    // page is the same either way — and the operator's command line is
+    // the way back.
+    const route = this.operatorMail
+      ? 'operator'
+      : (await this.onlyOwner(account.id, membership.household_id))
+        ? 'household'
+        : null;
+    if (!route) return;
+
     const reset = await this.issue(account.id, 'self', meta);
     await this.alert({
       householdId: membership.household_id,
@@ -217,7 +232,20 @@ export class PasswordService {
       // Never a push: a lock screen is a poor place for a link that opens
       // an account.
       emailOnly: true,
+      ...(route === 'operator' ? { operatorMail: true } : {}),
     });
+  }
+
+  /** Is this the household's only owner — the one person who controls its mail? */
+  private async onlyOwner(accountId: string, householdId: string): Promise<boolean> {
+    const owners = await withScope(this.db, { householdId }, (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select(['account_id'])
+        .where('role', '=', 'owner')
+        .execute(),
+    );
+    return owners.length === 1 && owners[0]?.account_id === accountId;
   }
 
   /**
@@ -339,6 +367,15 @@ export class PasswordService {
         .set({ revoked_at: new Date(), revoked_reason: 'password reset' })
         .where('account_id', '=', account.id)
         .where('revoked_at', 'is', null)
+        .execute();
+      await trx.deleteFrom('device').where('account_id', '=', account.id).execute();
+      // And every passkey. A reset is what somebody does when they cannot
+      // get in, or fear somebody else can; a passkey added from a borrowed
+      // session would otherwise outlast it. They are added again in a tap.
+      await trx
+        .deleteFrom('credential')
+        .where('account_id', '=', account.id)
+        .where('kind', '=', 'passkey')
         .execute();
       await appendAudit(trx, {
         householdId: membership.household_id,

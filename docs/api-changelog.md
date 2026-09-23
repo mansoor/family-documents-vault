@@ -286,6 +286,75 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
   rather than refused (`404`) for teens and viewers, in listings, in search
   and by id — telling them it exists would be the leak.
 
+- Privacy fixes (0.4.2). Each of these closed a route across the privacy wall;
+  clients that relied on the old behaviour were relying on the leak.
+
+  - `GET /api/v1/exports`, `GET /api/v1/exports/{id}` and
+    `GET /api/v1/exports/{id}/content` answer only for the person who asked for
+    the export. Anybody else, an owner included, gets `404` — an export holds
+    its requester's _Only me_ documents. The list no longer shows other
+    people's exports.
+  - `GET /api/v1/shares` and `GET /api/v1/tags` apply the same visibility rule
+    as every other list: teens and viewers no longer see links to, or tags on,
+    adults-only documents, and nobody sees another member's private ones.
+  - A member who has ever had a sign-in cannot be invited again:
+    `POST /api/v1/invitations` (with `member_id`),
+    `POST /api/v1/members/{id}/invite` and
+    `POST /api/v1/invitations/{token}/accept` answer
+    `409 { "error": { "code": "had_sign_in" } }`. Their private documents are
+    locked to their own password, and an invitation would hand them to whoever
+    holds its link and code.
+  - **New:** `POST /api/v1/members/{id}/sign-in` (owner; step-up
+    `change_people`) — `{ "role": "adult" | "teen" | "viewer" }` → `200
+{ "message" }`. Gives a removed sign-in back to the same account, which
+    signs in with its own password as before. `409 already_signed_in`, or
+    `409 no_sign_in_to_restore` when there is no removed sign-in to give back.
+  - `GET /api/v1/members` items gain `sign_in_removed: boolean` — true when the
+    person's sign-in was taken away and can be given back.
+  - Share links (`/api/v1/shared/{token}`…) answer `404` once the person who
+    made the link could no longer open the document themselves — made private
+    by its owner, maker demoted, or maker's sign-in removed. Checked on every
+    open.
+  - Exports expire when their requester is demoted to teen or viewer or has
+    their sign-in removed.
+  - `PATCH /api/v1/documents/{id}` refuses to change `owner_member_id` of a
+    private document (`422`) or of one that belongs to another member with a
+    sign-in (`403`).
+  - Step-up: a new action, `change_sign_in`, for
+    `POST /api/v1/auth/passkeys/challenge`, `POST /api/v1/auth/passkeys` and
+    `DELETE /api/v1/auth/passkeys/{id}`. `POST /api/v1/documents/{id}/share`
+    asks `open_private_document` for a private or Essential document. Clients
+    should treat `action` as opaque and show the server's message.
+  - `POST /api/v1/auth/totp/enrol` answers `409 totp_already_on` while two-step
+    sign-in is on.
+  - A teen uploading a version to somebody else's document gets `403`.
+  - `404`, not `403`, for another member's private document from
+    `POST /documents/{id}/visibility`, `DELETE /reminders/{id}`,
+    `DELETE /shares/{id}` and `GET /versions/{id}/content`.
+  - `POST /api/v1/password-resets` completion also removes the account's
+    passkeys. `POST /api/v1/auth/password/forgot` sends a link only through the
+    operator's mail server (`FDV_SMTP_URL`), or through the household's to its
+    only owner; its answer is unchanged either way.
+  - `POST /api/v1/invitations/{token}/accept` takes an optional `email`: the
+    address the new account signs in with, chosen by the person joining.
+    `409 email_taken` if it is somebody's already. Creating an invitation for a
+    person who already has a pending one answers `409 already_invited` unless
+    the caller made it or is an owner. `409 had_sign_in` also covers a person
+    with no sign-in who owns private documents.
+  - `POST /api/v1/auth/totp/enrol` and `/confirm` ask for step-up
+    `change_sign_in`. `GET /api/v1/exports/{id}/content` asks for
+    `export_everything`.
+  - Uploads: an `Idempotency-Key` already used on another document answers
+    `422 idempotency_key_reused`; a replay on the same document still returns
+    the original version. `POST /api/v1/capture` with a key it has seen returns
+    the original `{ document_id, version_id }` and creates nothing. An upload
+    that completes after the document's visibility or owner changed answers
+    `409 document_changed` (`retriable: true`).
+  - `POST /api/v1/devices` ties the device to the session that registered it,
+    and nothing is pushed to it once that session ends — signed out, revoked,
+    or expired. A password change removes the account's devices on every
+    other session; a reset removes them all.
+
 ## Deprecations in effect
 
 None.

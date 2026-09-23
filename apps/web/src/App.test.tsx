@@ -443,6 +443,16 @@ describe('App', () => {
     expect(screen.getByText(/their documents are untouched/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Yes, take their sign-in away' }));
     await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBeNull());
+
+    // The way back is their own sign-in, given back — not an invitation,
+    // which would hand their private documents to whoever accepted it.
+    expect(
+      await screen.findByRole('heading', { name: 'Give Aisha their sign-in back' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Nobody else can be given this sign-in/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Teen' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
+    await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBe('teen'));
   });
 
   it('shares one document by link, and says exactly what the link can do', async () => {
@@ -664,7 +674,7 @@ describe('App', () => {
     await screen.findByText(/If that address has a sign-in here/);
     // And it says the two things a self-hoster needs to know when nothing
     // arrives, including why another adult cannot do it for them.
-    expect(screen.getByText(/may not have a mail server/)).toBeInTheDocument();
+    expect(screen.getByText(/ask whoever runs the\s+vault/)).toBeInTheDocument();
     expect(screen.getByText(/way into your private documents/)).toBeInTheDocument();
     await expectAccessible();
   });
@@ -708,6 +718,13 @@ describe('App', () => {
     expect(screen.getByText('Mansoor Seikh')).toBeInTheDocument();
     expect(screen.getByText(/Cannot change storage or remove people/)).toBeInTheDocument();
     await expectAccessible();
+
+    // The address they sign in with is theirs to choose: resets go there.
+    const address = screen.getByLabelText('The email you will sign in with');
+    expect((address as HTMLInputElement).value).toMatch(/@/);
+    expect(screen.getByText(/an address only you can read/)).toBeInTheDocument();
+    fireEvent.change(address, { target: { value: 'me@my-own.example.test' } });
+    expect((address as HTMLInputElement).value).toBe('me@my-own.example.test');
 
     // A wrong code is an ordinary mistake, and says how many tries are left.
     fireEvent.change(screen.getByLabelText('The code they gave you'), {

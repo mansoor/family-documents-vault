@@ -62,6 +62,17 @@ const schema = z.object({
         'passkeys are bound to its hostname.',
     ),
 
+  FDV_SMTP_URL: z
+    .string()
+    .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')
+    .optional()
+    .describe(
+      'A mail server for messages that prove who somebody is — password-reset ' +
+        'links. Set by whoever runs the server, because a mail server set in ' +
+        'the app is one an owner can point anywhere, and a reset link read ' +
+        'by somebody else is a way into that person\u2019s private documents.',
+    ),
+
   FDV_RP_ID: z
     .string()
     .min(1)

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -26,6 +26,7 @@ import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
 import { allows, requireCapability } from '../authz.js';
+import { canSee } from '@fdv/shared';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -197,6 +198,64 @@ export class DocumentService {
       );
       return eb.or(clauses);
     };
+  }
+
+  /**
+   * Who may move a document from one person to another.
+   *
+   * A private document never changes hands here: its file keys are
+   * wrapped for its owner alone, and handing it over would either strand
+   * them or need a rewrap nobody asked for. Make it visible first.
+   *
+   * And a document that belongs to somebody with their own sign-in is
+   * theirs to hand over. Otherwise another adult could make themselves its
+   * owner and then mark it "Only me" — taking it from the person it
+   * belonged to, in a way their own activity log would not even show.
+   */
+  private async mayHandOver(
+    trx: Db,
+    p: Principal,
+    current: { visibility: string; owner_member_id: string | null },
+  ): Promise<void> {
+    if (current.visibility === 'private') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A private document stays with the person it belongs to. Make it visible to the family before handing it to somebody else.',
+      );
+    }
+    const from = current.owner_member_id;
+    if (!from || from === p.memberId) return;
+    const holder = await trx
+      .selectFrom('account_household')
+      .innerJoin('member', 'member.id', 'account_household.member_id')
+      .select(['member.display_name'])
+      .where('account_household.member_id', '=', from)
+      .executeTakeFirst();
+    if (holder) {
+      throw new ApiError(
+        403,
+        'forbidden',
+        `This belongs to ${holder.display_name}, who signs in themselves, so only they can hand it to somebody else.`,
+      );
+    }
+  }
+
+  /** The upload an Idempotency-Key already made, if any. */
+  async priorUpload(
+    p: Principal,
+    key: string,
+  ): Promise<{ document_id: string; version_id: string } | null> {
+    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+      trx
+        .selectFrom('upload_idempotency')
+        .select(['document_id', 'version_id'])
+        .where('idempotency_key', '=', key)
+        .executeTakeFirst(),
+    );
+    return row?.version_id && row.document_id
+      ? { document_id: row.document_id, version_id: row.version_id }
+      : null;
   }
 
   private canWrite(p: Principal): void {
@@ -519,6 +578,11 @@ export class DocumentService {
         select t as tag, count(*)::int as count
         from document d, unnest(d.tags) as t
         where d.deleted_at is null
+          -- Tags are words people write about their documents, as telling
+          -- as a title. Until 0.4.2 this was the one query with no rule.
+          and (d.visibility = 'household'
+            or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+            or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
           ${q ? sql`and t ilike ${`${q}%`}` : sql``}
         group by t order by count desc, t limit 50`.execute(trx);
       return r.rows;
@@ -578,22 +642,21 @@ export class DocumentService {
       throw new ApiError(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
     }
 
-    // Fast path: already done.
-    const existing = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      trx
-        .selectFrom('upload_idempotency')
-        .select('version_id')
-        .where('idempotency_key', '=', input.idempotencyKey)
-        .executeTakeFirst(),
-    );
-    if (existing?.version_id) {
-      const v = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-        trx
+    // Fast path: already done — for this document, and for somebody who
+    // can see it. A key replayed against another document is refused rather
+    // than answered with that document's version, which could be somebody
+    // else's private upload, filename and hash included.
+    const existing = await this.priorUpload(p, input.idempotencyKey);
+    if (existing) {
+      if (existing.document_id !== documentId) throw keyReused();
+      const v = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+        await this.fetch(trx, p, documentId);
+        return trx
           .selectFrom('document_version')
           .selectAll()
-          .where('id', '=', existing.version_id as string)
-          .executeTakeFirstOrThrow(),
-      );
+          .where('id', '=', existing.version_id)
+          .executeTakeFirstOrThrow();
+      });
       return versionView(v);
     }
 
@@ -605,6 +668,9 @@ export class DocumentService {
     const doc = await withScope(this.db, { householdId: p.householdId }, (trx) =>
       this.fetch(trx, p, documentId),
     );
+    // A new copy replaces the document and settles its reminders, which is
+    // changing it: a teen may do that to their own documents only.
+    this.mustOwnIfTeen(p, doc);
     const scopeRef = scopeFor(doc, p.householdId);
     const { vaultId, adapter, scopeKeyId, fileKeyWrapped, fileKey } = await withScope(
       this.db,
@@ -661,6 +727,23 @@ export class DocumentService {
     const sha256 = plainHash.digest();
 
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // The file was encrypted for the document as it was when the upload
+      // began. If it has since been made private, or moved to somebody
+      // else, that key is the wrong one — and the uploader may no longer be
+      // allowed to see it at all. Ask again, at the moment it is recorded.
+      const now = await this.fetch(trx, p, documentId);
+      this.mustOwnIfTeen(p, now);
+      const was = scopeFor(doc, p.householdId);
+      const is = scopeFor(now, p.householdId);
+      if (was.kind !== is.kind || was.memberId !== is.memberId) {
+        await adapter.delete(tmpKey).catch(() => undefined);
+        throw new ApiError(
+          409,
+          'document_changed',
+          'Who can see this document changed while the file was uploading. Try again.',
+          { retriable: true },
+        );
+      }
       const last = await trx
         .selectFrom('document_version')
         .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
@@ -671,7 +754,7 @@ export class DocumentService {
         householdId: p.householdId,
         documentId,
         versionNo,
-        sha256: sha256.toString('hex'),
+        name: randomBytes(8).toString('hex'),
         ext,
       });
       // Move into the boring layout. Local: rename is cheap; S3: copy would
@@ -884,10 +967,26 @@ export class DocumentService {
       const row = await trx
         .selectFrom('document_version')
         .innerJoin('document', 'document.id', 'document_version.document_id')
-        .select(['document.visibility', 'document.is_essential'])
+        .select(['document.visibility', 'document.is_essential', 'document.owner_member_id'])
         .where('document_version.id', '=', versionId)
         .executeTakeFirst();
-      if (!row) return false; // a missing version is a 404 further down
+      // A missing version, and one the caller may not see, are both a 404
+      // further down. Asking for a credential first would answer "it is
+      // there, and it is private" to somebody who must not know.
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
+      return row.visibility === 'private' || row.is_essential;
+    });
+  }
+
+  /** The same question for a whole document: before a link to it is made. */
+  async isSensitiveDocument(p: Principal, documentId: string): Promise<boolean> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('document')
+        .select(['visibility', 'is_essential', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
       return row.visibility === 'private' || row.is_essential;
     });
   }
@@ -1016,6 +1115,9 @@ export class DocumentService {
     if (input.title !== undefined) out.title = input.title?.trim() || null;
     if (input.category !== undefined) out.category = input.category;
     if (input.owner_member_id !== undefined) {
+      if (current && input.owner_member_id !== current.owner_member_id) {
+        await this.mayHandOver(trx, p, current);
+      }
       if (input.owner_member_id !== null) {
         const m = await trx
           .selectFrom('member')
@@ -1204,3 +1306,10 @@ async function moveObject(
   await adapter.delete(from);
   return to;
 }
+
+const keyReused = () =>
+  new ApiError(
+    422,
+    'idempotency_key_reused',
+    'That Idempotency-Key was already used for a different upload. Use a new one for each file.',
+  );

@@ -7,6 +7,7 @@ import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SoftwareAuthenticator } from './passkey-test-authenticator.js';
+import { PasswordService } from './passwords.js';
 import type { Tokens } from './service.js';
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
@@ -131,6 +132,22 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
     expect((await h.app.inject({ url: '/api/v1/me', headers: h.as(elsewhere) })).statusCode).toBe(
       200,
     );
+    // Both sign-ins have turned notifications on.
+    for (const [t, name] of [
+      [owner, 'old-laptop'],
+      [elsewhere, 'this-phone'],
+    ] as const) {
+      const registered = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/devices',
+        headers: h.as(t),
+        payload: {
+          endpoint: `https://push.example.test/${name}`,
+          keys: { p256dh: 'k', auth: 'a' },
+        },
+      });
+      expect(registered.statusCode, registered.body).toBe(201);
+    }
 
     const res = await change(
       { current_password: 'a whole new password', new_password: 'a third password entirely' },
@@ -143,6 +160,11 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
       200,
     );
     expect((await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) })).statusCode).toBe(401);
+    // And the signed-out one stops being told things: its device is gone.
+    const devices = json<{ items: Array<{ endpoint: string }> }>(
+      await h.app.inject({ url: '/api/v1/devices', headers: h.as(elsewhere) }),
+    ).items.map((d) => d.endpoint);
+    expect(devices).toEqual(['https://push.example.test/this-phone']);
     owner = elsewhere;
   });
 
@@ -173,6 +195,12 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
 
   it('a passkey is that proof, so somebody who never knew a password can set one', async () => {
     const device = new SoftwareAuthenticator();
+    // Adding a passkey asks for a fresh credential too (0.4.2), and the
+    // test before this one left the session cold. Warm it, as a step-up
+    // with the password would.
+    await withHousehold(h.db, owner.household_id, (trx) =>
+      trx.updateTable('session').set({ verified_at: new Date() }).execute(),
+    );
     const options = await h.app.inject({
       method: 'POST',
       url: '/api/v1/auth/passkeys/challenge',
@@ -277,6 +305,9 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
       account_ids: string[];
     };
     expect(last.email_only).toBe(true);
+    // By the operator's mail server, never the household's: an owner can
+    // point the household's at themselves and read the link.
+    expect((last as { via?: string }).via).toBe('operator');
     expect(last.url_label).toBe('Set a new password');
     expect(last.url).toMatch(/\/reset\/[A-Za-z0-9_-]{20,}$/);
   });
@@ -353,6 +384,37 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
       ),
     );
     expect(key).toBeInstanceOf(Buffer);
+  });
+
+  it('a reset removes every passkey, and nothing else', async () => {
+    // A passkey planted from a borrowed session must not outlast the reset
+    // its owner does to get their account back.
+    const account = await h.db
+      .selectFrom('account')
+      .select('id')
+      .where('email', '=', 'sam@example.test')
+      .executeTakeFirstOrThrow();
+    await h.db
+      .insertInto('credential')
+      .values([
+        { account_id: account.id, kind: 'passkey', label: 'Planted' },
+        { account_id: account.id, kind: 'recovery_share', label: 'Kept' },
+      ])
+      .execute();
+    await forgot('sam@example.test');
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/password-resets/' + tokenOf(lastLink() as string),
+      payload: { password: 'after the passkey went' },
+      ...peer(),
+    });
+    expect(res.statusCode).toBe(200);
+    const left = await h.db
+      .selectFrom('credential')
+      .select('kind')
+      .where('account_id', '=', account.id)
+      .execute();
+    expect(left.map((c) => c.kind)).toEqual(['recovery_share']);
   });
 
   it('a link is good once', async () => {
@@ -448,5 +510,69 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
     expect(deriveKey(TEST_MASTER, 'vault-credentials')).not.toEqual(
       deriveKey(TEST_MASTER, 'totp-secrets'),
     );
+  });
+});
+
+/**
+ * Where a reset link may travel when whoever runs the server has not set
+ * FDV_SMTP_URL. The household's own mail server is one an owner controls —
+ * point it at a mail catcher, press "forgotten password" for another adult,
+ * and the link arrives in the owner's hands. So without the operator's
+ * server, a link goes by email only to the one person who controls the
+ * household's: its only owner. Everybody else asks whoever runs the vault.
+ */
+describe.skipIf(!testAdminUrl())('reset links and whose mail server carries them', () => {
+  let h: Harness;
+  let owner: Tokens;
+  const sent: Array<{ accountIds: string[]; operatorMail?: boolean }> = [];
+  let passwords: PasswordService;
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    await h.join(owner, { name: 'Sam', email: 'sam-mail@example.test', role: 'adult' });
+    passwords = new PasswordService(
+      h.db,
+      new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
+      null,
+      'http://localhost:8080',
+      async (a) => {
+        sent.push(a);
+      },
+      false,
+    );
+  }, 90_000);
+  afterAll(() => h.close());
+
+  const resetsFor = (email: string) =>
+    h.db
+      .selectFrom('password_reset')
+      .innerJoin('account', 'account.id', 'password_reset.account_id')
+      .select('password_reset.id')
+      .where('account.email', '=', email)
+      .execute();
+
+  it('another adult is sent nothing, and no link is made that could be caught', async () => {
+    await passwords.forgot('sam-mail@example.test', {});
+    expect(sent).toEqual([]);
+    expect(await resetsFor('sam-mail@example.test')).toEqual([]);
+  });
+
+  it('the only owner is sent theirs through the mail server they control', async () => {
+    await passwords.forgot('owner@example.test', {});
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.operatorMail).toBeUndefined();
+  });
+
+  it('once there is a second owner, not even an owner is', async () => {
+    const co = await h.join(owner, {
+      name: 'Co',
+      email: 'co-owner@example.test',
+      role: 'owner',
+    });
+    expect(co.role).toBe('owner');
+    sent.length = 0;
+    await passwords.forgot('owner@example.test', {});
+    expect(sent).toEqual([]);
   });
 });

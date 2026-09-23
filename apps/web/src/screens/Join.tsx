@@ -22,6 +22,7 @@ export function JoinScreen() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
+  const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +46,13 @@ export function JoinScreen() {
     setBusy(true);
     setError(null);
     try {
-      session.accept(await api.acceptInvitation(token ?? '', { code, password }));
+      session.accept(
+        await api.acceptInvitation(token ?? '', {
+          code,
+          password,
+          ...(email && email.trim() ? { email: email.trim() } : {}),
+        }),
+      );
       markAuthChanged();
       await navigate('/', { replace: true });
     } catch (err) {
@@ -90,7 +97,6 @@ export function JoinScreen() {
         <p className="muted">
           {preview.role_label}: {roleDescription(preview.role)}
         </p>
-        <p className="muted">Your sign-in will be {preview.email}.</p>
       </section>
 
       <form onSubmit={(e) => void submit(e)} className="card stack">
@@ -102,6 +108,15 @@ export function JoinScreen() {
           placeholder="ABCD-EFGH"
           autoComplete="one-time-code"
           hint="It came separately from the link. Capitals and dashes do not matter."
+        />
+        <Field
+          id="join-email"
+          label="The email you will sign in with"
+          type="email"
+          value={email ?? preview.email}
+          onChange={setEmail}
+          autoComplete="email"
+          hint="If you ever forget your password, the link to set a new one comes here — so make it an address only you can read."
         />
         <Field
           id="join-password"
