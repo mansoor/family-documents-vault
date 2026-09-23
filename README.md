@@ -182,6 +182,18 @@ Taking away somebody's sign-in leaves the person: their record, their
 documents and their own private key are untouched, and an invitation brings
 them back. Only an owner can do it, and not to another owner.
 
+### Seeing what has happened
+
+Settings → **What has been happening** is the household's activity log, written
+as sentences: _Sarah downloaded "Home insurance policy" — yesterday, 4:12pm._
+Owners, adults and teens can read it; a viewer cannot.
+
+Nothing appears in it that the reader could not already see. Lines about a
+private document are in its owner's copy of the list and nobody else's — left
+out entirely rather than shown with the details removed, because "somebody did
+something to a document" between two adults is worse than silence. The full
+hash-chained record is separate, is verified nightly, and is in the export.
+
 ### Sending one document to somebody outside the family
 
 The landlord wants the tenancy agreement; the accountant wants last year's tax

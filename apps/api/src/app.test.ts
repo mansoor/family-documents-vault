@@ -47,6 +47,7 @@ async function make(
       invitations: anyStub,
       coOwners: anyStub,
       shares: anyStub,
+      audit: anyStub,
       visibility: anyStub,
       totp: anyStub,
       passkeys: anyStub,

@@ -177,8 +177,12 @@ export async function registerDocuments(
         z.object({ visibility: z.enum(['household', 'adults', 'private']) }),
         req.body,
       );
-      await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req));
-      return reply.status(204).send();
+      // Answering with the notice rather than 204: the moment somebody is
+      // told "only you can open this" is part of the act, not a separate
+      // thing the client has to know to go and ask about (SEC-19).
+      return reply.send(
+        await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req)),
+      );
     },
   );
 

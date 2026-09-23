@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
 import { SharePanel } from './Share.js';
+import { VisibilityControl } from './Visibility.js';
 
 /**
  * Document detail: a preview, the facts in a plain two-column list, the
@@ -12,7 +13,7 @@ import { SharePanel } from './Share.js';
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken, guarded, authVersion } = useApp();
+  const { withToken, guarded, authVersion, session } = useApp();
   const navigate = useNavigate();
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -139,6 +140,12 @@ export function DocumentScreen() {
         <StatusBadge status={doc.status} />
         <span className="muted">{visibilityLabel}</span>
       </div>
+      <VisibilityControl
+        documentId={doc.id}
+        current={doc.visibility}
+        isMine={doc.owner_member_id !== null && doc.owner_member_id === session.info?.member_id}
+        onChanged={reload}
+      />
       <ErrorNote message={actionError} />
       {latest && <Button onClick={() => void download(latest)}>Download</Button>}
 

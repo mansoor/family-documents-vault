@@ -4,6 +4,7 @@ import { AppProvider, useApp } from './app-context.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
+import { ActivityScreen } from './screens/Activity.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
 import { SharedScreen } from './screens/Shared.js';
@@ -167,6 +168,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <NotificationsScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/activity"
+            element={
+              <Gate need="signed-in">
+                <ActivityScreen />
               </Gate>
             }
           />

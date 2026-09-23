@@ -3,6 +3,7 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 import type {
+  ActivityLine,
   Capabilities,
   Role,
   DateValue,
@@ -456,6 +457,17 @@ export const api = {
     token: string,
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
+
+  setVisibility: (token: string, documentId: string, visibility: Visibility) =>
+    request<{ notice: { title: string; body: string } | null }>(
+      `/api/v1/documents/${documentId}/visibility`,
+      { method: 'POST', body: { visibility }, token },
+    ),
+  activity: (token: string, before?: number) =>
+    request<{ items: ActivityLine[]; next: number | null }>(
+      `/api/v1/audit${before ? `?before=${before}` : ''}`,
+      { token },
+    ),
 
   share: (
     token: string,

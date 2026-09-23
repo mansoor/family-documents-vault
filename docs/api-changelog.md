@@ -161,6 +161,25 @@ email, role, role_label, invited_by, expires_at }`. Rate-limited.
   Creating a second invitation for the same person revokes the first: nobody
   holds two live links.
 
+- The household activity log (SHR-07). `GET /api/v1/audit?before=&limit=` →
+  `{ items: [{ id, at, text, notable, document_id }], next }`, newest first.
+  `text` is the whole sentence and is safe to show verbatim; `next` is the id
+  to pass as `before` for the page after. Owners, adults and teens
+  (`audit.read`); a viewer is refused.
+
+  Lines about a private document are returned only to the member it belongs to,
+  and adults-only documents only to adults — **left out, not redacted**, so
+  there is no gap where one used to be. Actions that cannot be said in a
+  sentence (step-ups, reminder housekeeping, dismissed suggestions) are not in
+  this list; they remain in the hash-chained log, the nightly verification and
+  the export. An event with no signed-in actor, such as a shared link being
+  opened, is attributed to its label.
+
+- **Changed:** `POST /api/v1/documents/{id}/visibility` answers `200
+{ notice }` instead of `204`. `notice` is `{ title, body }` the first time a
+  given member makes a given document private, and `null` every other time —
+  the SEC-19 moment, said once and never repeated for that document.
+
 - Share links (SHR-05). A link carries a 32-byte secret; the server stores only
   its SHA-256, so it is shown once at creation and can be replaced but never
   recovered. An optional PIN is four digits, hashed with Argon2 and guarded by a
