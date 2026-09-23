@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPABILITIES,
   can,
+  canSee,
   capabilitiesFor,
   capabilityToInvite,
   refusalFor,
@@ -68,5 +69,27 @@ describe('the role matrix', () => {
 
   it('every role is covered by every capability, one way or the other', () => {
     for (const r of ROLES) for (const c of CAPABILITIES) expect(typeof can(r, c)).toBe('boolean');
+  });
+
+  it('who may see a document: everyone, the adults, or only its owner', () => {
+    const me = 'member-me';
+    const doc = (visibility: string, owner: string | null = me) => ({
+      visibility,
+      owner_member_id: owner,
+    });
+    for (const role of ROLES) {
+      expect(canSee({ role, memberId: me }, doc('household', 'someone-else')), role).toBe(true);
+      expect(canSee({ role, memberId: me }, doc('private')), role).toBe(true);
+      expect(canSee({ role, memberId: me }, doc('private', 'someone-else')), role).toBe(false);
+      expect(canSee({ role, memberId: me }, doc('adults')), role).toBe(
+        role === 'owner' || role === 'adult',
+      );
+    }
+    // Being an owner opens nothing private that belongs to somebody else.
+    expect(canSee({ role: 'owner', memberId: me }, doc('private', 'spouse'))).toBe(false);
+    // Nobody without a member matches a private document with no owner.
+    expect(canSee({ role: 'owner', memberId: null }, doc('private', null))).toBe(false);
+    // A value this code has never heard of is closed, not open.
+    expect(canSee({ role: 'owner', memberId: me }, doc('sealed'))).toBe(false);
   });
 });

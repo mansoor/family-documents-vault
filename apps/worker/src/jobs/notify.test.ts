@@ -42,6 +42,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
   timezone: 'UTC',
   local_date: '2026-09-22',
   kind: 'daily',
+  recipient: { account_id: 'acc', email: 'owner@example.test' },
   items: [
     {
       reminder_id: 'r1',
@@ -284,7 +285,14 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
         baseUrl: 'x',
         log: () => undefined,
       });
-      expect(await notifier.digest(digest({ household_id: hh }))).toEqual(['email']);
+      expect(
+        await notifier.digest(
+          digest({
+            household_id: hh,
+            recipient: { account_id: accountId, email: 'owner@example.test' },
+          }),
+        ),
+      ).toEqual(['email']);
     },
     30_000,
   );

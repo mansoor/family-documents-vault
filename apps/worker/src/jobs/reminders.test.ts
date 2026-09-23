@@ -36,6 +36,14 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
       "insert into member (household_id, display_name) values ($1, 'M') returning id",
       [hh],
     );
+    // Somebody to send the digest to: a digest is always one person's.
+    const a = await admin.query<{ id: string }>(
+      "insert into account (email) values ('clockwork@example.test') returning id",
+    );
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [a.rows[0]?.id, hh, m.rows[0]?.id],
+    );
     await withHousehold(db, hh, async (trx) => {
       const docs: Array<[string, string]> = [
         ['Passport', '2026-09-20'],

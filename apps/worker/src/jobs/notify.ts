@@ -15,6 +15,11 @@ import type { Digest, Notifier } from './reminders.js';
  *
  * Nothing is sent per item. One message carries the day's list, and a
  * failure on one channel never stops the other.
+ *
+ * Each call is one person's digest, already cut to what they may see (see
+ * `sendToEach` in reminders.ts). So push goes only to that person's own
+ * devices and email only to their own address, one message each: never a
+ * household-wide list, and never everybody's address on one To: line.
  */
 
 export interface VapidKeys {
@@ -82,10 +87,10 @@ export function openPassword(key: Buffer, sealed: Buffer, householdId: string): 
 }
 
 /**
- * The real notifier: push to every registered device whose owner wants it,
- * then email through the household's SMTP to everyone who wants that.
- * Returns the channels that actually delivered, which is what the ledger
- * records.
+ * The real notifier: push to the recipient's registered devices if they
+ * want it, then email through the household's SMTP if they want that.
+ * Returns the channels that actually reached them, which is what the
+ * ledger records.
  */
 export function createNotifier(deps: NotifyDeps): Notifier {
   if (deps.vapid) {
@@ -101,6 +106,7 @@ export function createNotifier(deps: NotifyDeps): Notifier {
       if (channels.length === 0) {
         deps.log('info', 'digest had nowhere to go', {
           household: d.household_name,
+          account_id: d.recipient.account_id,
           count: d.items.length,
         });
       }
@@ -126,6 +132,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
         'device.auth',
         'notification_preference.daily_push',
       ])
+      .where('device.account_id', '=', d.recipient.account_id)
       .where('device.failed_at', 'is', null)
       .where('device.kind', '=', 'web_push')
       .execute(),
@@ -195,26 +202,20 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
       .executeTakeFirst();
     if (!smtp || smtp.status !== 'ok') return null;
     const wantField = d.kind === 'weekly' ? 'weekly_email' : 'daily_email';
-    const people = await trx
-      .selectFrom('account_household')
-      .innerJoin('account', 'account.id', 'account_household.account_id')
-      .leftJoin('notification_preference', (j) =>
-        j
-          .onRef('notification_preference.account_id', '=', 'account_household.account_id')
-          .onRef('notification_preference.household_id', '=', 'account_household.household_id'),
-      )
-      .select(['account.email', `notification_preference.${wantField} as wants`])
-      .where('account.disabled_at', 'is', null)
-      .execute();
+    const pref = await trx
+      .selectFrom('notification_preference')
+      .select([`${wantField} as wants`])
+      .where('account_id', '=', d.recipient.account_id)
+      .where('household_id', '=', d.household_id)
+      .executeTakeFirst();
+    const wants = pref?.wants ?? null;
     // Defaults: weekly on, daily off (design: per-item email is off).
-    const recipients = people
-      .filter((p) => (p.wants === null ? d.kind === 'weekly' : p.wants === true))
-      .map((p) => p.email);
-    return { smtp, recipients };
+    const wanted = wants === null ? d.kind === 'weekly' : wants === true;
+    return { smtp, wanted };
   });
-  if (!ctx || ctx.recipients.length === 0) return 0;
+  if (!ctx || !ctx.wanted) return 0;
 
-  const { smtp, recipients } = ctx;
+  const { smtp } = ctx;
   const transport = nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -231,12 +232,12 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
   try {
     await transport.sendMail({
       from: `"${smtp.from_name}" <${smtp.from_email}>`,
-      to: recipients.join(', '),
+      to: d.recipient.email,
       subject: subject(d),
       text: textBody(d, deps.baseUrl),
       html: htmlBody(d, deps.baseUrl),
     });
-    return recipients.length;
+    return 1;
   } catch (err) {
     deps.log('warn', 'email failed', {
       household: d.household_name,

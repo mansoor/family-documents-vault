@@ -1,5 +1,5 @@
 import { withHousehold, type Db } from '@fdv/db';
-import { addDays, deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
+import { addDays, canSee, deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
 import { sql } from 'kysely';
 import type pg from 'pg';
 
@@ -11,14 +11,29 @@ import type pg from 'pg';
  *
  * `deliver` (every hour): for each household whose local hour is 9 and
  * which has not had today's digest, collect everything due that has no
- * delivery row and send ONE notification (REM-05). Nothing fires
- * individually, and a server that was off for nine days produces exactly
- * one summary on restart, because the digest covers every undelivered
- * reminder, however old (REM-13).
+ * delivery row and send ONE notification per person (REM-05). Nothing
+ * fires individually, and a server that was off for nine days produces
+ * exactly one summary on restart, because the digest covers every
+ * undelivered reminder, however old (REM-13).
+ *
+ * "Per person" is the privacy wall, not a nicety. Each copy is cut to the
+ * documents that person may see, by the same rule the API applies to every
+ * list (`canSee` in `@fdv/shared`). Until 0.4.2 the household got one copy
+ * with every title in it, which put private and adults-only titles on
+ * other people's lock screens and in their inboxes.
  *
  * `refreshStatus` (nightly): materialises status_cache for fast list
  * filtering. Never authoritative — status is computed on read.
  */
+
+export interface DigestItem {
+  reminder_id: string;
+  document_id: string;
+  title: string;
+  label: string;
+  note: string | null;
+  overdue: boolean;
+}
 
 export interface Digest {
   household_id: string;
@@ -26,19 +41,18 @@ export interface Digest {
   timezone: string;
   local_date: string;
   kind: 'daily' | 'catch_up' | 'weekly';
-  items: Array<{
-    reminder_id: string;
-    document_id: string;
-    title: string;
-    label: string;
-    note: string | null;
-    overdue: boolean;
-  }>;
+  /**
+   * Who this copy is for. A digest is always one person's, already cut to
+   * what they may see: a title never reaches somebody the document is
+   * hidden from — not a teen, not a viewer, not the other adult.
+   */
+  recipient: { account_id: string; email: string };
+  items: DigestItem[];
 }
 
 /** The seam 2.3 fills with email and push. */
 export interface Notifier {
-  /** Returns the channels it actually delivered on. */
+  /** Sends one person their digest. Returns the channels that reached them. */
   digest(d: Digest): Promise<string[]>;
 }
 
@@ -46,11 +60,12 @@ export const logNotifier = (
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void,
 ): Notifier => ({
   async digest(d) {
+    // Counts, not titles. The log is read by whoever runs the server, and
+    // the titles are the part that belongs to the family.
     log('info', 'reminder digest', {
       household: d.household_name,
       kind: d.kind,
       count: d.items.length,
-      items: d.items.map((i) => `${i.title}: ${i.label}`),
     });
     return ['log'];
   },
@@ -75,6 +90,73 @@ async function households(admin: pg.Pool) {
   );
   return rows;
 }
+
+/** A reminder about to be sent, with what decides who may hear of it. */
+interface Due extends DigestItem {
+  fire_at: string;
+  visibility: string;
+  owner_member_id: string | null;
+}
+
+/** Everyone in the household whose sign-in still works. */
+function people(trx: Db) {
+  return trx
+    .selectFrom('account_household')
+    .innerJoin('account', 'account.id', 'account_household.account_id')
+    .select([
+      'account_household.account_id',
+      'account_household.member_id',
+      'account_household.role',
+      'account.email',
+    ])
+    .where('account.disabled_at', 'is', null)
+    .orderBy('account_household.joined_at')
+    .execute();
+}
+
+/**
+ * Sends each person the part of `due` they may see, and nobody anything
+ * when they may see none of it. Returns, for each reminder, the channels
+ * that carried it to at least one person — which is what the ledger
+ * records, so a reminder only one person could read is not marked as
+ * reaching the family.
+ */
+async function sendToEach(
+  trx: Db,
+  notifier: Notifier,
+  base: Omit<Digest, 'recipient' | 'items' | 'kind'>,
+  due: Due[],
+  kindOf: (mine: Due[]) => Digest['kind'],
+): Promise<Map<string, Set<string>>> {
+  const reached = new Map<string, Set<string>>();
+  for (const person of await people(trx)) {
+    const viewer = { role: person.role, memberId: person.member_id };
+    const mine = due.filter((r) => canSee(viewer, r));
+    if (mine.length === 0) continue;
+    const channels = await notifier.digest({
+      ...base,
+      kind: kindOf(mine),
+      recipient: { account_id: person.account_id, email: person.email },
+      items: mine.map((r) => ({
+        reminder_id: r.reminder_id,
+        document_id: r.document_id,
+        title: r.title,
+        label: r.label,
+        note: r.note,
+        overdue: r.overdue,
+      })),
+    });
+    for (const r of mine) {
+      const set = reached.get(r.reminder_id) ?? new Set<string>();
+      for (const c of channels) set.add(c);
+      reached.set(r.reminder_id, set);
+    }
+  }
+  return reached;
+}
+
+const union = (reached: Map<string, Set<string>>) =>
+  [...new Set([...reached.values()].flatMap((s) => [...s]))].sort();
 
 export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> {
   const now = deps.now?.() ?? new Date();
@@ -135,6 +217,8 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
           'reminder.status',
           'reminder.snoozed_until',
           'document.title',
+          'document.visibility',
+          'document.owner_member_id',
         ])
         .where('reminder.status', '=', 'due')
         .where('document.deleted_at', 'is', null)
@@ -143,29 +227,34 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
         .execute();
       if (due.length === 0) return false;
 
-      const oldest = due.reduce((m, r) => (String(r.fire_at) < m ? String(r.fire_at) : m), today);
-      const kind: Digest['kind'] =
-        daysBetween(String(oldest).slice(0, 10), today) > 1 ? 'catch_up' : 'daily';
-      const digest: Digest = {
-        household_id: hh.id,
-        household_name: hh.name,
-        timezone: hh.timezone,
-        local_date: today,
-        kind,
-        items: due.map((r) => {
-          const fireAt = String(r.fire_at).slice(0, 10);
-          return {
-            reminder_id: r.id,
-            document_id: r.document_id,
-            title: r.title ?? 'Untitled',
-            label: reminderLabel(fireAt, today, 'due', null),
-            note: r.note,
-            overdue: fireAt < today,
-          };
-        }),
-      };
-      const channels = await deps.notifier.digest(digest);
+      const items: Due[] = due.map((r) => {
+        const fireAt = String(r.fire_at).slice(0, 10);
+        return {
+          reminder_id: r.id,
+          document_id: r.document_id,
+          title: r.title ?? 'Untitled',
+          label: reminderLabel(fireAt, today, 'due', null),
+          note: r.note,
+          overdue: fireAt < today,
+          fire_at: fireAt,
+          visibility: r.visibility,
+          owner_member_id: r.owner_member_id,
+        };
+      });
+      const reached = await sendToEach(
+        trx,
+        deps.notifier,
+        { household_id: hh.id, household_name: hh.name, timezone: hh.timezone, local_date: today },
+        items,
+        // Whether this person's copy is a catch-up depends on what is in
+        // *their* copy, not on the oldest thing in the household.
+        (mine) => {
+          const oldest = mine.reduce((m, r) => (r.fire_at < m ? r.fire_at : m), today);
+          return daysBetween(oldest, today) > 1 ? 'catch_up' : 'daily';
+        },
+      );
       for (const r of due) {
+        const channels = [...(reached.get(r.id) ?? [])];
         for (const channel of channels.length ? channels : ['none']) {
           await trx
             .insertInto('reminder_delivery')
@@ -181,7 +270,7 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
           local_date: today,
           kind: 'daily',
           item_count: due.length,
-          channels,
+          channels: union(reached),
         })
         .execute();
       return true;
@@ -228,6 +317,8 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
           'reminder.fire_at',
           'reminder.note',
           'document.title',
+          'document.visibility',
+          'document.owner_member_id',
         ])
         .where('document.deleted_at', 'is', null)
         .where('reminder.status', 'in', ['due', 'scheduled'])
@@ -235,25 +326,27 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
         .orderBy('reminder.fire_at')
         .execute();
       if (rows.length === 0) return false;
-      const digest: Digest = {
-        household_id: hh.id,
-        household_name: hh.name,
-        timezone: hh.timezone,
-        local_date: today,
-        kind: 'weekly',
-        items: rows.map((r) => {
-          const fireAt = String(r.fire_at).slice(0, 10);
-          return {
-            reminder_id: r.id,
-            document_id: r.document_id,
-            title: r.title ?? 'Untitled',
-            label: reminderLabel(fireAt, today, 'due', null),
-            note: r.note,
-            overdue: fireAt < today,
-          };
-        }),
-      };
-      const channels = await deps.notifier.digest(digest);
+      const items: Due[] = rows.map((r) => {
+        const fireAt = String(r.fire_at).slice(0, 10);
+        return {
+          reminder_id: r.id,
+          document_id: r.document_id,
+          title: r.title ?? 'Untitled',
+          label: reminderLabel(fireAt, today, 'due', null),
+          note: r.note,
+          overdue: fireAt < today,
+          fire_at: fireAt,
+          visibility: r.visibility,
+          owner_member_id: r.owner_member_id,
+        };
+      });
+      const reached = await sendToEach(
+        trx,
+        deps.notifier,
+        { household_id: hh.id, household_name: hh.name, timezone: hh.timezone, local_date: today },
+        items,
+        () => 'weekly',
+      );
       await trx
         .insertInto('notification_digest')
         .values({
@@ -261,7 +354,7 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
           local_date: today,
           kind: 'weekly',
           item_count: rows.length,
-          channels,
+          channels: union(reached),
         })
         .execute();
       return true;

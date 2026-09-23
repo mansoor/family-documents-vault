@@ -6,6 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-23
+
+A privacy fix that every vault with more than one person in it should take, and
+the password work that was tagged 0.4.1 on the development branch.
+
+### Security
+
+- **The reminder digests leaked titles across the privacy wall.** The daily and weekly digests — push and email alike — were built once for the whole household and sent to everybody in it. So the title of one adult's _Only me_ document reached the other adult's lock screen and inbox, and _Adults only_ titles reached teens and viewers. Titles, due dates and reminder notes were exposed, never a document's contents, but a title is often the sensitive part. Each person now gets their own digest, cut to what they may see by the same rule every list in the app uses, and somebody who may see none of it is sent nothing. Every email now goes to one address, not the whole family on one To: line. Present since 0.4.0, when other people could first be given a sign-in. **Upgrade if anyone besides you signs in to your vault.**
+
 ### Added
 
 - **Change your password**, in Settings. It also rewraps the key to your own _Only me_ documents, so they come with it rather than being left behind, and every other device you are signed in on is signed out. Somebody who signs in with a passkey and never had a password can set one by confirming it is them instead.
