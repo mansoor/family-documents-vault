@@ -445,6 +445,95 @@ describe('App', () => {
     await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBeNull());
   });
 
+  it('shares one document by link, and says exactly what the link can do', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    fireEvent.change(screen.getByLabelText('Who is it for?'), {
+      target: { value: 'the letting agent' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    await screen.findByText(/\/shared\/share-secret-0123456789abcdef/);
+    expect(
+      screen.getByText(/this one document until it expires, and nothing else/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/every time it is opened/)).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    // Back to the document, with the live link listed and takeable back.
+    await screen.findByText(/Shared with the letting agent, not opened yet/);
+    fireEvent.click(screen.getByRole('button', { name: 'Take it back' }));
+    await waitFor(() => expect(state.shares).toHaveLength(0));
+  });
+
+  it('a PIN is shown separately, with the reason', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    fireEvent.click(screen.getByLabelText(/four-digit PIN/));
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    await screen.findByText('4821');
+    expect(screen.getByText(/not the same message/)).toBeInTheDocument();
+  });
+
+  it('the person at the other end gets the document and nothing else', async () => {
+    installFakeApi(fresh());
+    window.history.replaceState({}, '', '/shared/share-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+    expect(screen.getByText('Mansoor Seikh')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Download tenancy.pdf/ })).toBeInTheDocument();
+    expect(screen.getByText(/They can see that you opened it/)).toBeInTheDocument();
+    // No sign of the rest of the vault: no navigation, no search, no sign-in.
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('a PIN on a link withholds the title until it is right', async () => {
+    installFakeApi(fresh({ sharePin: '4821' }));
+    window.history.replaceState({}, '', '/shared/share-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByText(/put a PIN on it/);
+    // The title is not on the page yet.
+    expect(screen.queryByText('Flat 3 tenancy agreement')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/four-digit PIN they gave you/), {
+      target: { value: '0000' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the document' }));
+    await screen.findByText(/That PIN is not right/);
+
+    fireEvent.change(screen.getByLabelText(/four-digit PIN they gave you/), {
+      target: { value: '4821' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the document' }));
+    await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+  });
+
+  it('a link that has been taken back says so, without saying what it was', async () => {
+    installFakeApi(fresh({ shareValid: false }));
+    window.history.replaceState({}, '', '/shared/nope');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'This link cannot be opened' });
+    expect(screen.getByText(/Ask whoever sent it/)).toBeInTheDocument();
+    expect(screen.queryByText(/tenancy/i)).not.toBeInTheDocument();
+  });
+
   it('joining says whose vault it is before asking for anything', async () => {
     const state = fresh();
     installFakeApi(state);

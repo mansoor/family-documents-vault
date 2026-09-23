@@ -6,6 +6,7 @@ import { DocumentScreen } from './screens/Document.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
+import { SharedScreen } from './screens/Shared.js';
 import { NotificationsScreen } from './screens/Notifications.js';
 import {
   PeopleScreen,
@@ -78,6 +79,9 @@ export function App() {
               first should not throw the link away either, so this is
               outside both gates. */}
           <Route path="/join/:token" element={<JoinScreen />} />
+          {/* Outside the gates entirely: whoever opens this has no
+              account and is not going to make one. */}
+          <Route path="/shared/:token" element={<SharedScreen />} />
           <Route
             path="/sign-in"
             element={

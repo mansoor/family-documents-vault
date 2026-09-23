@@ -161,6 +161,35 @@ email, role, role_label, invited_by, expires_at }`. Rate-limited.
   Creating a second invitation for the same person revokes the first: nobody
   holds two live links.
 
+- Share links (SHR-05). A link carries a 32-byte secret; the server stores only
+  its SHA-256, so it is shown once at creation and can be replaced but never
+  recovered. An optional PIN is four digits, hashed with Argon2 and guarded by a
+  ten-attempt counter.
+
+  - `POST /api/v1/documents/{id}/share` — `{ expires_in_days?, recipient_label?,
+with_pin? }` → `201 { share, link_token, pin? }`. Adults only
+    (`document.share`). `422 nothing_to_share` when the document has no file on
+    it. Somebody else's private document is `404`, not `403`.
+  - `GET /api/v1/shares` — every live and dead link the caller may know about,
+    with `open_count`, `last_opened_at`, `state` (`active`, `expired`,
+    `revoked`, `locked`) and a `summary` sentence. Links to a private document
+    appear only for its owner.
+  - `DELETE /api/v1/shares/{id}` — revokes it, `204`.
+  - `GET /api/v1/shared/{link_token}` — **unauthenticated**:
+    `{ household_name, needs_pin, expires_at, document_title, shared_by }`.
+    `document_title` is `null` while a PIN is outstanding.
+  - `POST /api/v1/shared/{link_token}/open` — **unauthenticated**, `{ pin? }` →
+    the document's details. This is the call that counts as an open and writes
+    `share.opened` to the audit log under an actor _label_ rather than an
+    account. `401 pin_wrong` for a bad PIN.
+  - `GET /api/v1/shared/{link_token}/content?pin=` — **unauthenticated**; the
+    file, with `Cache-Control: private, no-store` and
+    `X-Robots-Tag: noindex, nofollow`. Logged as `share.downloaded`, which does
+    not count as a second open.
+
+  Every dead end — unknown, expired, revoked, locked, or a document moved to
+  the trash — is `404 link_not_valid` with one message.
+
 - Co-owners (bearer; owner, and all of them ask for step-up).
 
   - `POST /api/v1/members/{id}/role` — `{ role }` → `{ applied, role, request?, message }`.

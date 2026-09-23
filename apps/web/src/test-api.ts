@@ -11,6 +11,10 @@ export interface FakeState {
   members: Array<Record<string, unknown>>;
   invitations: Array<Record<string, unknown> & { id: string }>;
   ownerChanges: Array<Record<string, unknown> & { id: string }>;
+  shares: Array<Record<string, unknown> & { id: string }>;
+  /** Set to require a PIN on the shared-document page. */
+  sharePin: string | null;
+  shareValid: boolean;
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
@@ -160,6 +164,9 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     members: [ME],
     invitations: [],
     ownerChanges: [],
+    shares: [],
+    sharePin: null,
+    shareValid: true,
     documents: [PASSPORT],
     types: TYPES,
     suggestions: [],
@@ -302,6 +309,85 @@ export function installFakeApi(state: FakeState) {
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
+    if (path.endsWith('/share') && method === 'POST') {
+      const documentId = path.split('/')[4] as string;
+      const b = body as { recipient_label?: string; with_pin?: boolean };
+      const share = {
+        id: `sh-${state.shares.length}`,
+        document_id: documentId,
+        document_title: 'Mansoor’s passport',
+        recipient_label: b.recipient_label ?? null,
+        created_by_name: 'Mansoor Seikh',
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        has_pin: Boolean(b.with_pin),
+        open_count: 0,
+        last_opened_at: null,
+        state: 'active',
+        summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September.`,
+      };
+      state.shares.push(share);
+      return json(
+        {
+          share,
+          link_token: 'share-secret-0123456789abcdef',
+          ...(b.with_pin ? { pin: '4821' } : {}),
+        },
+        201,
+      );
+    }
+    if (path.startsWith('/api/v1/shares/') && method === 'DELETE') {
+      const id = path.slice('/api/v1/shares/'.length);
+      state.shares = state.shares.filter((x) => x.id !== id);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path.startsWith('/api/v1/shared/') && path.endsWith('/open')) {
+      if (state.sharePin && (body as { pin?: string }).pin !== state.sharePin) {
+        return json(
+          {
+            error: {
+              code: 'pin_wrong',
+              message: 'That PIN is not right. Check with whoever sent you the link.',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          401,
+        );
+      }
+      return json({
+        document_title: 'Flat 3 tenancy agreement',
+        document_type: 'Lease or tenancy agreement',
+        shared_by: 'Mansoor Seikh',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        byte_size: 1024,
+        content_type: 'application/pdf',
+        filename: 'tenancy.pdf',
+      });
+    }
+    if (path.startsWith('/api/v1/shared/') && method === 'GET') {
+      if (!state.shareValid) {
+        return json(
+          {
+            error: {
+              code: 'link_not_valid',
+              message: 'That link is not valid any more. Ask whoever sent it for a new one.',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          404,
+        );
+      }
+      return json({
+        household_name: 'The Seikh family',
+        needs_pin: Boolean(state.sharePin),
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        document_title: state.sharePin ? null : 'Flat 3 tenancy agreement',
+        shared_by: 'Mansoor Seikh',
+      });
     }
     if (path === '/api/v1/owner-changes' && method === 'GET')
       return json({ items: state.ownerChanges });

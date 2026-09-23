@@ -171,6 +171,46 @@ export interface InvitationPreview {
   expires_at: string;
 }
 
+export interface Share {
+  id: string;
+  document_id: string;
+  document_title: string | null;
+  recipient_label: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  expires_at: string;
+  has_pin: boolean;
+  open_count: number;
+  last_opened_at: string | null;
+  state: 'active' | 'expired' | 'revoked' | 'locked';
+  summary: string;
+}
+
+/** The link and the PIN exist here and nowhere else. */
+export interface CreatedShare {
+  share: Share;
+  link_token: string;
+  pin?: string;
+}
+
+export interface SharePreview {
+  household_name: string;
+  needs_pin: boolean;
+  expires_at: string;
+  document_title: string | null;
+  shared_by: string | null;
+}
+
+export interface SharedDocument {
+  document_title: string | null;
+  document_type: string | null;
+  shared_by: string | null;
+  expires_at: string;
+  byte_size: number;
+  content_type: string;
+  filename: string;
+}
+
 export interface OwnerChange {
   id: string;
   target_member_id: string;
@@ -416,6 +456,30 @@ export const api = {
     token: string,
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
+
+  share: (
+    token: string,
+    documentId: string,
+    body: { expires_in_days?: number; recipient_label?: string; with_pin?: boolean },
+  ) =>
+    request<CreatedShare>(`/api/v1/documents/${documentId}/share`, {
+      method: 'POST',
+      body,
+      token,
+    }),
+  shares: (token: string) => request<{ items: Share[] }>('/api/v1/shares', { token }),
+  revokeShare: (token: string, id: string) =>
+    request<void>(`/api/v1/shares/${id}`, { method: 'DELETE', token }),
+  // The two the recipient calls, with no sign-in at all.
+  sharePreview: (linkToken: string) =>
+    request<SharePreview>(`/api/v1/shared/${encodeURIComponent(linkToken)}`),
+  openShare: (linkToken: string, pin?: string) =>
+    request<SharedDocument>(`/api/v1/shared/${encodeURIComponent(linkToken)}/open`, {
+      method: 'POST',
+      body: pin ? { pin } : {},
+    }),
+  sharedContentUrl: (linkToken: string, pin?: string) =>
+    `/api/v1/shared/${encodeURIComponent(linkToken)}/content${pin ? `?pin=${encodeURIComponent(pin)}` : ''}`,
 
   setRole: (token: string, memberId: string, role: Role) =>
     request<RoleChangeResult>(`/api/v1/members/${memberId}/role`, {

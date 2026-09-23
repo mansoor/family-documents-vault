@@ -182,6 +182,23 @@ Taking away somebody's sign-in leaves the person: their record, their
 documents and their own private key are untouched, and an invitation brings
 them back. Only an owner can do it, and not to another owner.
 
+### Sending one document to somebody outside the family
+
+The landlord wants the tenancy agreement; the accountant wants last year's tax
+return. On the document, **Share a link** makes a read-only link to that one
+document:
+
+- it stops working after seven days, or whatever you set;
+- it can carry a four-digit PIN, which you give them some other way;
+- you can take it back at any moment;
+- every time it is opened you see it, next to the link;
+- and it reaches nothing else in the vault. There is no account at the other
+  end and nothing to sign up for.
+
+The link is shown once — the vault keeps only a hash of it — so a lost link is
+replaced rather than recovered. A document moved to the trash stops being
+shared straight away, without anyone having to remember the link exists.
+
 ### When a new device signs in
 
 If somebody signs in on a device your account has not used before, you are

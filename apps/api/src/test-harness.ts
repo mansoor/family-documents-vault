@@ -19,6 +19,7 @@ import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
+import { ShareService } from './documents/shares.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
@@ -127,6 +128,7 @@ export async function createHarness(): Promise<Harness> {
       deriveSealedKey(TEST_MASTER),
     ),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
+    shares: new ShareService(db, keys, vaults),
     reminders,
     notifications: new NotificationService(
       db,

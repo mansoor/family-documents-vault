@@ -141,6 +141,23 @@ export interface Schema {
     revoked_by: string | null;
   };
 
+  share_link: {
+    id: Generated<string>;
+    household_id: string;
+    document_id: string;
+    token_hash: Buffer;
+    pin_hash: string | null;
+    recipient_label: string | null;
+    created_by: string;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+    open_count: Generated<number>;
+    last_opened_at: Timestamp | null;
+    attempts: Generated<number>;
+  };
+
   owner_change_request: {
     id: Generated<string>;
     household_id: string;

@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
+import { SharePanel } from './Share.js';
 
 /**
  * Document detail: a preview, the facts in a plain two-column list, the
@@ -219,6 +220,7 @@ export function DocumentScreen() {
           <p>{doc.notes}</p>
         </section>
       )}
+      <SharePanel documentId={doc.id} documentTitle={doc.title} />
       <Button kind="link" onClick={() => void remove()}>
         Move to the bin
       </Button>

@@ -20,6 +20,7 @@ import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
+import { ShareService } from './documents/shares.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -149,6 +150,7 @@ async function main(): Promise<void> {
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert),
+    shares: new ShareService(db, keys, vaults),
     suggestions: new SuggestionService(db),
     stepUp: new StepUpService(db, passkeys, totp),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
