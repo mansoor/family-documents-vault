@@ -5,6 +5,13 @@ import type { AuthService, Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
 import type { StepUpService } from './step-up.js';
+import {
+  changeBody,
+  forgotBody,
+  resetBody,
+  type PasswordService,
+  type ResetPreview,
+} from './passwords.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -50,6 +57,7 @@ export function registerAuth(
   totp?: TotpService,
   passkeys?: PasskeyService,
   stepUp?: StepUpService,
+  passwords?: PasswordService,
 ): void {
   app.decorateRequest('principal', null);
 
@@ -236,6 +244,47 @@ export function registerAuth(
       return reply.status(204).send();
     });
   }
+
+  if (!passwords) return;
+
+  // Changing one while signed in. Not rate-limited beyond the global
+  // ceiling: it already takes either the current password or a step-up.
+  app.post('/api/v1/auth/password/change', { preHandler: app.requireAuth }, async (req, reply) => {
+    await passwords.change(req.principal as Principal, parse(changeBody, req.body), metaOf(req));
+    return reply.status(204).send();
+  });
+
+  // And the three for somebody who cannot sign in at all.
+  app.post('/api/v1/auth/password/forgot', tight, async (req, reply) => {
+    await passwords.forgot(parse(forgotBody, req.body).email, metaOf(req));
+    // Always the same answer. Whether the address is known is not this
+    // endpoint's news to give.
+    return reply.status(202).send({
+      message: 'If that address has a sign-in here, a link is on its way to it.',
+    });
+  });
+
+  app.get<{ Params: { token: string } }>('/api/v1/password-resets/:token', tight, async (req) => {
+    const { token } = parse(z.object({ token: z.string().min(16).max(256) }), req.params);
+    return passwords.preview(token) satisfies Promise<ResetPreview>;
+  });
+
+  app.post<{ Params: { token: string } }>(
+    '/api/v1/password-resets/:token',
+    tight,
+    async (req, reply) => {
+      const { token } = parse(z.object({ token: z.string().min(16).max(256) }), req.params);
+      const { email } = await passwords.reset(
+        token,
+        parse(resetBody, req.body).password,
+        metaOf(req),
+      );
+      // No session handed back on purpose: an account with two-step
+      // sign-in must still be asked for its code, and a reset that
+      // returned a session would walk straight past it.
+      return reply.status(200).send({ email });
+    },
+  );
 }
 
 declare module 'fastify' {

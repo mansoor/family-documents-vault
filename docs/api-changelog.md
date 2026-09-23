@@ -161,6 +161,38 @@ email, role, role_label, invited_by, expires_at }`. Rate-limited.
   Creating a second invitation for the same person revokes the first: nobody
   holds two live links.
 
+- Passwords. A member's scope key is wrapped by a key derived from their
+  password, so both routes below rewrap it: with the current password it is
+  unwrapped with the old credential and rewrapped with the new one, and without
+  it the key comes back through the master key and is given a fresh wrap.
+
+  - `POST /api/v1/auth/password/change` (bearer) — `{ current_password?,
+new_password }` → `204`. `current_password` may be omitted only by a
+    session that has stepped up within the last five minutes
+    (`403 step_up_required`, action `change_password`), which is how somebody
+    who signs in with a passkey sets a first password. `401
+invalid_credentials` for a wrong current password — note that this is _not_
+    a dead session. Revokes every other session for the account.
+  - `POST /api/v1/auth/password/forgot` — **unauthenticated**, `{ email }` →
+    `202` with a fixed message, identical for a known and an unknown address.
+    When the address is known, an `alert.send` job carries a one-time link to
+    it, email only.
+  - `GET /api/v1/password-resets/{token}` — **unauthenticated**:
+    `{ household_name, email, issued_by_operator, expires_at }`.
+  - `POST /api/v1/password-resets/{token}` — **unauthenticated**,
+    `{ password }` → `200 { email }`. Deliberately returns **no session**: an
+    account with two-step sign-in must still be asked for its code. Revokes
+    every session for the account. A link lives one hour, is good once, and
+    asking for another retires the first.
+
+  Every dead link — unknown, spent or expired — is `404 reset_not_valid`.
+
+  There is **no endpoint by which one member resets another's password**, and
+  a test asserts the obvious spellings all 404. An owner who could do it could
+  sign in as that person and read their private documents. A household with no
+  mail server uses `cli.mjs reset-password <email>`, which is available to
+  whoever holds the master key and therefore can read everything anyway.
+
 - The household activity log (SHR-07). `GET /api/v1/audit?before=&limit=` →
   `{ items: [{ id, at, text, notable, document_id }], next }`, newest first.
   `text` is the whole sentence and is safe to show verbatim; `next` is the id

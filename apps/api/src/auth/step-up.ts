@@ -24,13 +24,20 @@ export const STEP_UP_WINDOW_MS = 5 * 60 * 1000;
 
 /** The actions that ask. The name travels to the client, which says why. */
 export type StepUpAction =
-  'open_private_document' | 'change_storage' | 'change_people' | 'export_everything';
+  | 'open_private_document'
+  | 'change_storage'
+  | 'change_people'
+  | 'export_everything'
+  | 'change_password';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
   change_storage: 'to change where your files are kept',
   change_people: 'to change who is in the family',
   export_everything: 'to export everything',
+  // Setting a password without knowing the old one is only safe if
+  // somebody has just proved who they are some other way.
+  change_password: 'to set a new password',
 };
 
 export class StepUpService {

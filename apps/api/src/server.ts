@@ -16,6 +16,7 @@ import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
+import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
@@ -122,6 +123,7 @@ async function main(): Promise<void> {
     passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
   );
 
+  const stepUpService = new StepUpService(db, passkeys, totp);
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
@@ -154,7 +156,8 @@ async function main(): Promise<void> {
     shares: new ShareService(db, keys, vaults),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
-    stepUp: new StepUpService(db, passkeys, totp),
+    stepUp: stepUpService,
+    passwords: new PasswordService(db, keys, stepUpService, config.FDV_BASE_URL, alert),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 

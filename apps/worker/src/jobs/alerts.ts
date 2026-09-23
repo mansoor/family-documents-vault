@@ -24,6 +24,14 @@ export interface Alert {
   account_ids: string[];
   subject: string;
   body: string;
+  /** Where the button goes, when somewhere better than the vault's front page. */
+  url?: string;
+  url_label?: string;
+  /**
+   * Skip push. A lock screen is a poor place for a link that opens an
+   * account, and for the news that somebody changed your password.
+   */
+  email_only?: boolean;
 }
 
 export interface AlertDeps {
@@ -47,7 +55,7 @@ export function isAlert(data: unknown): data is Alert {
 export async function sendAlert(deps: AlertDeps, alert: Alert): Promise<string[]> {
   if (alert.account_ids.length === 0) return [];
   const channels: string[] = [];
-  if ((await pushAlert(deps, alert)) > 0) channels.push('push');
+  if (!alert.email_only && (await pushAlert(deps, alert)) > 0) channels.push('push');
   if ((await emailAlert(deps, alert)) > 0) channels.push('email');
   if (channels.length === 0) {
     // Worth a line in the log: the point of an alert is that somebody
@@ -152,6 +160,8 @@ async function emailAlert(deps: AlertDeps, alert: Alert): Promise<number> {
 }
 
 export function htmlAlert(alert: Alert, baseUrl: string): string {
+  const href = alert.url ?? baseUrl;
+  const label = alert.url_label ?? 'Open your vault';
   const esc = (s: string) =>
     s.replace(
       /[&<>"]/g,
@@ -160,7 +170,7 @@ export function htmlAlert(alert: Alert, baseUrl: string): string {
   return `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#faf8f4;color:#1c1917;padding:24px">
 <h1 style="font-size:20px;margin:0 0 12px">${esc(alert.subject)}</h1>
 <p style="margin:0 0 20px;line-height:1.5">${esc(alert.body)}</p>
-<p><a href="${esc(baseUrl)}" style="background:#1f5d4c;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;display:inline-block">Open your vault</a></p>
+<p><a href="${esc(href)}" style="background:#1f5d4c;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;display:inline-block">${esc(label)}</a></p>
 <p style="color:#5e574e;font-size:13px;margin-top:20px">This is about who can get into your vault, so it is not something the app can be told to stop sending.</p>
 </body></html>`;
 }

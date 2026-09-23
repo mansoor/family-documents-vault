@@ -21,6 +21,11 @@ import { StepUpPrompt } from './StepUpPrompt.js';
 export const UNREACHABLE =
   "We can't reach the vault right now. Check that it is running, then reload.";
 
+/** The two codes that mean this session cannot be used again. */
+function isSessionOver(err: ApiRequestError): boolean {
+  return err.status === 401 && (err.code === 'session_ended' || err.code === 'unauthenticated');
+}
+
 export function describeError(err: unknown): string {
   return err instanceof ApiRequestError ? err.message : UNREACHABLE;
 }
@@ -77,7 +82,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         return await fn(token);
       } catch (err) {
-        if (err instanceof ApiRequestError && err.status === 401) {
+        // Not every 401 means the session is over. The API also answers
+        // 401 when a credential presented *inside* a request was wrong —
+        // a mistyped current password, a passkey that is not yours — and
+        // signing somebody out for a typo is its own small betrayal.
+        // Only the two codes that actually mean "this session is done"
+        // end it; anything else is the caller's to show.
+        if (err instanceof ApiRequestError && isSessionOver(err)) {
           session.clear();
           markAuthChanged();
           return null;

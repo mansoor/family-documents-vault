@@ -594,6 +594,110 @@ describe('App', () => {
     );
   });
 
+  it('changes a password, and says what comes with it', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
+    // The thing a person would not guess: it is also the key to their own
+    // private documents, and the other devices go.
+    expect(screen.getByText(/also unlocks your own private documents/)).toBeInTheDocument();
+    expect(screen.getByText(/Every other device/)).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.change(screen.getByLabelText('Your password now'), {
+      target: { value: 'wrong one entirely' },
+    });
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a whole new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
+    await screen.findByText("That isn't your current password.");
+
+    fireEvent.change(screen.getByLabelText('Your password now'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
+    await screen.findByText(/Your password is changed/);
+    expect(state.passwordChanged).toBe('a whole new password');
+  });
+
+  it('somebody with only a passkey is asked to prove it is them instead', async () => {
+    const state = fresh({ stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'set without the old one' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
+
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(screen.getByText(/to set a new password/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    // The prompt hands control back and the change goes through by itself.
+    await waitFor(() => expect(state.passwordChanged).toBe('set without the old one'));
+  });
+
+  it('a forgotten password answers the same way whoever asks', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/sign-in');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'I have forgotten my password' }));
+    await screen.findByRole('heading', { name: 'Forgotten your password' });
+    fireEvent.change(screen.getByLabelText('Your email'), {
+      target: { value: 'nobody@example.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send me a link' }));
+
+    await screen.findByText(/If that address has a sign-in here/);
+    // And it says the two things a self-hoster needs to know when nothing
+    // arrives, including why another adult cannot do it for them.
+    expect(screen.getByText(/may not have a mail server/)).toBeInTheDocument();
+    expect(screen.getByText(/way into your private documents/)).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('the reset link says whose account it is, then sends you to sign in again', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/reset/reset-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    expect(screen.getByText('mansoor@example.test')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a brand new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Set my new password' }));
+
+    // Not signed in by it: two-step sign-in must still be asked for.
+    await screen.findByRole('heading', { name: 'That is done' });
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
+    expect(state.passwordChanged).toBe('a brand new password');
+  });
+
+  it('a reset link that has been used says so, and offers a new one', async () => {
+    installFakeApi(fresh({ resetValid: false }));
+    window.history.replaceState({}, '', '/reset/nope');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'This link cannot be used' });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask for a new one' }));
+    await screen.findByRole('heading', { name: 'Forgotten your password' });
+  });
+
   it('joining says whose vault it is before asking for anything', async () => {
     const state = fresh();
     installFakeApi(state);

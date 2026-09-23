@@ -182,6 +182,33 @@ Taking away somebody's sign-in leaves the person: their record, their
 documents and their own private key are untouched, and an invitation brings
 them back. Only an owner can do it, and not to another owner.
 
+### Passwords
+
+**Changing one** is in Settings. Your password is not only a way in: it also
+unlocks your own _Only me_ documents, so changing it moves that key across too,
+and every other device you are signed in on is signed out. If you sign in with
+a passkey and never had a password, you can set one by confirming it is you.
+
+**Forgetting one** is answered from the sign-in page: the vault emails a link to
+the address you sign in with. It works once, stops working after an hour, and
+signs every device out when it is used. It does not sign you in — if two-step
+sign-in is switched on, you are still asked for the code.
+
+That needs a mail server, which a self-hosted vault may not have. When it does
+not, whoever runs the vault can make a link from the command line:
+
+```bash
+docker compose exec api node apps/api/dist/cli.mjs reset-password someone@example.com
+```
+
+It prints a one-time link to hand over directly.
+
+**No owner or adult can reset another person's password**, and that is
+deliberate rather than an omission: they could then sign in as that person and
+read their private documents, which is the one thing the privacy wall exists to
+prevent. The two routes above are the only ones, and the second belongs to
+whoever holds the master key — who can already read everything.
+
 ### Seeing what has happened
 
 Settings → **What has been happening** is the household's activity log, written

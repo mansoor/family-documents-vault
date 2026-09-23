@@ -5,6 +5,7 @@ import type { AuditService } from './audit/service.js';
 import { registerAuth } from './auth/routes.js';
 import type { PasskeyService } from './auth/passkeys.js';
 import type { StepUpService } from './auth/step-up.js';
+import type { PasswordService } from './auth/passwords.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
@@ -55,6 +56,7 @@ export interface AppDeps {
   coOwners: CoOwnerService;
   shares: ShareService;
   audit: AuditService;
+  passwords: PasswordService;
   logger?: boolean | object;
 }
 
@@ -142,7 +144,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp);
+  registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp, deps.passwords);
   registerVaults(app, deps.vaults, deps.stepUp);
   registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners);
   registerExports(app, deps.exports, deps.stepUp);

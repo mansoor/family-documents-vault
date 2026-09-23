@@ -90,8 +90,21 @@ const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_
   path: ['FDV_MASTER_KEY'],
 });
 
+/**
+ * An environment variable set to nothing is not set.
+ *
+ * Compose writes `FDV_RP_ID: ${FDV_RP_ID:-}` for anything optional, which
+ * hands the container an empty string rather than leaving the variable
+ * out. Without this, every optional setting would have to tolerate `''`
+ * on its own, and the one that forgot would fail at startup with a
+ * message about a field the self-hoster never set.
+ */
+function present(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  const parsed = withMasterKey.safeParse(env);
+  const parsed = withMasterKey.safeParse(present(env));
   if (!parsed.success) {
     const problems = parsed.error.issues
       .map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`)

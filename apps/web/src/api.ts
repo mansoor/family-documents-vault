@@ -172,6 +172,14 @@ export interface InvitationPreview {
   expires_at: string;
 }
 
+export interface ResetPreview {
+  household_name: string | null;
+  email: string;
+  /** True when the person who runs the server made the link. */
+  issued_by_operator: boolean;
+  expires_at: string;
+}
+
 export interface Share {
   id: string;
   document_id: string;
@@ -457,6 +465,22 @@ export const api = {
     token: string,
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
+
+  changePassword: (token: string, body: { current_password?: string; new_password: string }) =>
+    request<void>('/api/v1/auth/password/change', { method: 'POST', body, token }),
+  // The three for somebody who cannot sign in at all.
+  forgotPassword: (email: string) =>
+    request<{ message: string }>('/api/v1/auth/password/forgot', {
+      method: 'POST',
+      body: { email },
+    }),
+  resetPreview: (linkToken: string) =>
+    request<ResetPreview>(`/api/v1/password-resets/${encodeURIComponent(linkToken)}`),
+  resetPassword: (linkToken: string, password: string) =>
+    request<{ email: string }>(`/api/v1/password-resets/${encodeURIComponent(linkToken)}`, {
+      method: 'POST',
+      body: { password },
+    }),
 
   setVisibility: (token: string, documentId: string, visibility: Visibility) =>
     request<{ notice: { title: string; body: string } | null }>(
