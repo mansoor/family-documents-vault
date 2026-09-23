@@ -10,6 +10,7 @@ import type { SealedSearchService } from './documents/sealed-search.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
 import type { InvitationService } from './household/invitations.js';
+import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
@@ -48,6 +49,7 @@ export interface AppDeps {
   notifications: NotificationService;
   household: HouseholdService;
   invitations: InvitationService;
+  coOwners: CoOwnerService;
   logger?: boolean | object;
 }
 
@@ -137,7 +139,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
 
   registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp);
   registerVaults(app, deps.vaults, deps.stepUp);
-  registerHousehold(app, deps.household, deps.stepUp, deps.invitations);
+  registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners);
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);

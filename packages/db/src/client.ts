@@ -141,6 +141,30 @@ export interface Schema {
     revoked_by: string | null;
   };
 
+  owner_change_request: {
+    id: Generated<string>;
+    household_id: string;
+    target_account: string;
+    requested_by: string;
+    action: 'promote' | 'demote';
+    requested_at: GeneratedTimestamp;
+    opens_at: Timestamp;
+    lapses_at: Timestamp;
+    refused_at: Timestamp | null;
+    completed_at: Timestamp | null;
+    completed_by: string | null;
+  };
+
+  known_device: {
+    id: Generated<string>;
+    account_id: string;
+    household_id: string;
+    fingerprint: Buffer;
+    label: string;
+    first_seen_at: GeneratedTimestamp;
+    last_seen_at: GeneratedTimestamp;
+  };
+
   scope_key: {
     id: Generated<string>;
     household_id: string;

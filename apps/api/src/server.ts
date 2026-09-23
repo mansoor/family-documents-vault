@@ -19,6 +19,7 @@ import { StepUpService } from './auth/step-up.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
+import { CoOwnerService } from './household/co-owners.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -90,6 +91,19 @@ async function main(): Promise<void> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     await boss.send(name, data);
   };
+  /**
+   * An alert goes on the queue rather than out of the API: the worker owns
+   * push and the household's mail server, and a sign-in must not wait for
+   * an SMTP handshake. The job name matches `JOBS.alertSend` in the worker.
+   */
+  const alert = (a: { householdId: string; accountIds: string[]; subject: string; body: string }) =>
+    enqueue('alert.send', {
+      household_id: a.householdId,
+      account_ids: a.accountIds,
+      subject: a.subject,
+      body: a.body,
+    });
+
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
   const auth = new AuthService(
@@ -97,6 +111,7 @@ async function main(): Promise<void> {
     deriveSigningKey(masterSecret),
     keys,
     (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
+    alert,
     totp,
   );
   const passkeys = new PasskeyService(
@@ -133,6 +148,7 @@ async function main(): Promise<void> {
     ),
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
+    coOwners: new CoOwnerService(db, alert),
     suggestions: new SuggestionService(db),
     stepUp: new StepUpService(db, passkeys, totp),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),

@@ -1,0 +1,568 @@
+import { appendAudit, withScope, type Db } from '@fdv/db';
+import { roleLabel, ROLES, type Role } from '@fdv/shared';
+import { z } from 'zod';
+import type { Principal, RequestMeta } from '../auth/service.js';
+import { requireCapability } from '../authz.js';
+import { ApiError, notFound } from '../errors.js';
+
+/**
+ * Co-owners (SHR-09, SHR-10).
+ *
+ * Several accounts may hold the owner role with identical powers. Two
+ * rules keep that from becoming a way to hurt somebody:
+ *
+ *  - **At least one owner always remains.** Enforced by a deferred
+ *    constraint trigger, not here, because a household with no owner
+ *    cannot appoint one and the application is the thing most likely to
+ *    be wrong.
+ *  - **Taking the owner role off somebody else takes seven days**, during
+ *    which they can refuse and everybody is told. A shared vault in a bad
+ *    divorce is a real scenario; a one-tap lockout of a spouse would be a
+ *    weapon. Promotion is immediate: it only adds powers. Leaving of your
+ *    own accord is immediate too, as long as another owner remains.
+ */
+
+const NOTICE_DAYS = 7;
+/** A request nobody completes stops hanging over the household. */
+const LAPSE_DAYS = 30;
+
+export const roleChangeBody = z.object({ role: z.enum(ROLES) }).strict();
+
+export interface OwnerChangeView {
+  id: string;
+  target_member_id: string;
+  target_name: string;
+  requested_by_name: string | null;
+  action: 'promote' | 'demote';
+  requested_at: string;
+  opens_at: string;
+  lapses_at: string;
+  state: 'waiting' | 'ready' | 'refused' | 'completed' | 'lapsed';
+  /** True when the caller is the person the request is about. */
+  about_me: boolean;
+  /** One sentence for whoever is looking at it. */
+  summary: string;
+}
+
+/** What a role change did, so the client can say the right thing. */
+export interface RoleChangeResult {
+  applied: boolean;
+  role: Role;
+  request?: OwnerChangeView;
+  message: string;
+}
+
+export class CoOwnerService {
+  constructor(
+    private readonly db: Db,
+    /** Tells a set of accounts something. Returns without waiting. */
+    private readonly alert: (input: {
+      householdId: string;
+      accountIds: string[];
+      subject: string;
+      body: string;
+    }) => Promise<void> = async () => undefined,
+  ) {}
+
+  // ------------------------------------------------------------- changing
+
+  async changeRole(
+    p: Principal,
+    memberId: string,
+    to: Role,
+    meta: RequestMeta,
+  ): Promise<RoleChangeResult> {
+    requireCapability(p, 'role.change');
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const target = await this.membership(trx, memberId);
+      if (target.account_id === p.accountId) {
+        // Changing your own role is either meaningless or a way round the
+        // notice period, depending on which way it goes.
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'You cannot change your own role. Ask another owner.',
+        );
+      }
+      if (target.role === to) {
+        return {
+          applied: false,
+          role: to,
+          message: `${target.display_name} is already ${article(to)}.`,
+        };
+      }
+
+      // Taking the owner role away is the only change that waits.
+      if (target.role === 'owner') {
+        const request = await this.openRequest(trx, p, target, 'demote', to, meta);
+        return {
+          applied: false,
+          role: target.role,
+          request,
+          message: `Every owner has been told. ${target.display_name} stays an owner until ${formatDay(request.opens_at)}, and can refuse before then.`,
+        };
+      }
+
+      await trx
+        .updateTable('account_household')
+        .set({ role: to })
+        .where('account_id', '=', target.account_id)
+        .where('household_id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.role_changed',
+        objectType: 'member',
+        objectId: memberId,
+        detail: { from: target.role, to },
+        ip: meta.ip,
+      });
+
+      if (to === 'owner') {
+        // Promotion is immediate and everybody hears about it, because a
+        // new owner can change where the family's files are kept.
+        const adults = await this.adultAccounts(trx, p.accountId);
+        await this.alert({
+          householdId: p.householdId,
+          accountIds: adults,
+          subject: `${target.display_name} is now an owner`,
+          body: `${target.display_name} can now change where your files are kept, who is in the family, and the emergency contacts. If this is a surprise, sign in and look at the activity log.`,
+        });
+      }
+      return {
+        applied: true,
+        role: to,
+        message: `${target.display_name} is now ${article(to)}.`,
+      };
+    });
+  }
+
+  /** Giving up the owner role yourself, which needs no notice at all. */
+  async stepDown(p: Principal, to: Role, meta: RequestMeta): Promise<RoleChangeResult> {
+    if (p.role !== 'owner') {
+      throw new ApiError(422, 'validation_failed', 'Only an owner can step down.');
+    }
+    if (to === 'owner') {
+      throw new ApiError(422, 'validation_failed', 'Choose what you want to become instead.');
+    }
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      await trx
+        .updateTable('account_household')
+        .set({ role: to })
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.stepped_down',
+        detail: { to },
+        ip: meta.ip,
+      });
+      return {
+        applied: true,
+        role: to,
+        message: `You are ${article(to)} now. Another owner can give the role back.`,
+      };
+    });
+  }
+
+  /** Takes a person's sign-in away. The person and their documents stay. */
+  async removeSignIn(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
+    requireCapability(p, 'member.remove');
+    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const target = await this.membership(trx, memberId);
+      if (target.account_id === p.accountId) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'To leave the household yourself, step down first and ask another owner.',
+        );
+      }
+      if (target.role === 'owner') {
+        throw new ApiError(
+          409,
+          'owner_notice_required',
+          `${target.display_name} is an owner. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+        );
+      }
+      await trx
+        .deleteFrom('account_household')
+        .where('account_id', '=', target.account_id)
+        .where('household_id', '=', p.householdId)
+        .execute();
+      // Their sessions end with their membership; the person, their member
+      // row and their documents are untouched.
+      await trx
+        .updateTable('session')
+        .set({ revoked_at: new Date(), revoked_reason: 'membership removed' })
+        .where('account_id', '=', target.account_id)
+        .where('household_id', '=', p.householdId)
+        .where('revoked_at', 'is', null)
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.sign_in_removed',
+        objectType: 'member',
+        objectId: memberId,
+        detail: { role: target.role },
+        ip: meta.ip,
+      });
+    });
+  }
+
+  // ------------------------------------------------------------- requests
+
+  async list(p: Principal): Promise<OwnerChangeView[]> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const rows = await this.rows(trx);
+      return rows.map((r) => this.view(r, p));
+    });
+  }
+
+  /** The person a demotion is about says no, and that is the end of it. */
+  async refuse(p: Principal, id: string, meta: RequestMeta): Promise<OwnerChangeView> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = (await this.rows(trx)).find((r) => r.id === id);
+      if (!row) throw notFound('That request');
+      if (row.target_account !== p.accountId) {
+        throw new ApiError(
+          403,
+          'forbidden',
+          'Only the person a request is about can refuse it. Any owner can withdraw one.',
+        );
+      }
+      if (row.completed_at || row.refused_at) {
+        throw new ApiError(409, 'already_settled', 'That request has already been settled.');
+      }
+      await this.settle(trx, id, { refused_at: new Date() });
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'owner_change.refused',
+        objectType: 'owner_change_request',
+        objectId: id,
+        ip: meta.ip,
+      });
+      await this.alert({
+        householdId: p.householdId,
+        accountIds: [row.requested_by],
+        subject: `${row.target_name} refused the change`,
+        body: `${row.target_name} stays an owner of ${row.household_name}.`,
+      });
+      const after = (await this.rows(trx)).find((r) => r.id === id);
+      return this.view(after as OwnerChangeRow, p);
+    });
+  }
+
+  /** Any owner may withdraw a request they no longer want. */
+  async withdraw(p: Principal, id: string, meta: RequestMeta): Promise<void> {
+    requireCapability(p, 'role.change');
+    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = (await this.rows(trx)).find((r) => r.id === id);
+      if (!row) throw notFound('That request');
+      if (row.completed_at || row.refused_at) {
+        throw new ApiError(409, 'already_settled', 'That request has already been settled.');
+      }
+      await this.settle(trx, id, { refused_at: new Date() });
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'owner_change.withdrawn',
+        objectType: 'owner_change_request',
+        objectId: id,
+        ip: meta.ip,
+      });
+    });
+  }
+
+  /**
+   * Carries out a demotion whose notice period has passed. Deliberately
+   * something an owner does rather than something the clock does: seven
+   * days later, somebody still has to mean it.
+   */
+  async complete(p: Principal, id: string, meta: RequestMeta): Promise<RoleChangeResult> {
+    requireCapability(p, 'role.change');
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = (await this.rows(trx)).find((r) => r.id === id);
+      if (!row) throw notFound('That request');
+      if (row.completed_at || row.refused_at) {
+        throw new ApiError(409, 'already_settled', 'That request has already been settled.');
+      }
+      if (row.opens_at.getTime() > Date.now()) {
+        throw new ApiError(
+          409,
+          'notice_period',
+          `The seven days are not up. This can be carried out on ${formatDay(row.opens_at.toISOString())}.`,
+        );
+      }
+      if (row.lapses_at.getTime() < Date.now()) {
+        throw new ApiError(
+          409,
+          'request_lapsed',
+          'That request is too old to carry out. Ask again if you still want to.',
+        );
+      }
+      // The household may have changed shape in the seven days: the other
+      // owner can have stepped down, leaving this one the only one.
+      await this.lastOwnerCheck(trx, row.target_account, row.target_name);
+      await trx
+        .updateTable('account_household')
+        .set({ role: 'adult' })
+        .where('account_id', '=', row.target_account)
+        .where('household_id', '=', p.householdId)
+        .execute();
+      await this.settle(trx, id, { completed_at: new Date(), completed_by: p.accountId });
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.role_changed',
+        objectType: 'member',
+        objectId: row.target_member_id,
+        detail: { from: 'owner', to: 'adult', via: 'owner_change_request' },
+        ip: meta.ip,
+      });
+      await this.alert({
+        householdId: p.householdId,
+        accountIds: [row.target_account],
+        subject: `You are no longer an owner of ${row.household_name}`,
+        body: 'You are still an adult in the household: everything day to day is unchanged, and your own private documents are untouched.',
+      });
+      return {
+        applied: true,
+        role: 'adult',
+        message: `${row.target_name} is an adult now.`,
+      };
+    });
+  }
+
+  // -------------------------------------------------------------- helpers
+
+  /**
+   * The household must keep an owner. The database guarantees it with a
+   * trigger; this is so that the refusal arrives as a sentence rather
+   * than as a failed transaction, and arrives when the person asks
+   * rather than seven days later.
+   */
+  private async lastOwnerCheck(trx: Db, targetAccount: string, name: string): Promise<void> {
+    const others = await trx
+      .selectFrom('account_household')
+      .select(['account_id'])
+      .where('role', '=', 'owner')
+      .where('account_id', '!=', targetAccount)
+      .execute();
+    if (others.length === 0) {
+      throw new ApiError(
+        409,
+        'last_owner',
+        `${name} is the only owner left. Make somebody else an owner first, and this can go ahead afterwards.`,
+      );
+    }
+  }
+
+  private async openRequest(
+    trx: Db,
+    p: Principal,
+    target: { account_id: string; display_name: string },
+    action: 'promote' | 'demote',
+    to: Role,
+    meta: RequestMeta,
+  ): Promise<OwnerChangeView> {
+    if (to !== 'adult') {
+      // Anything further down can be done once they are an adult, and one
+      // notice period per decision is enough.
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'An owner can only be made an adult. Change it again afterwards if you need to.',
+      );
+    }
+    await this.lastOwnerCheck(trx, target.account_id, target.display_name);
+    const now = Date.now();
+    const existing = await trx
+      .selectFrom('owner_change_request')
+      .select(['id'])
+      .where('target_account', '=', target.account_id)
+      .where('refused_at', 'is', null)
+      .where('completed_at', 'is', null)
+      .executeTakeFirst();
+    if (existing) {
+      throw new ApiError(
+        409,
+        'already_requested',
+        `Somebody has already asked for this. It is waiting, and ${target.display_name} has been told.`,
+      );
+    }
+    const row = await trx
+      .insertInto('owner_change_request')
+      .values({
+        household_id: p.householdId,
+        target_account: target.account_id,
+        requested_by: p.accountId,
+        action,
+        opens_at: new Date(now + NOTICE_DAYS * 864e5),
+        lapses_at: new Date(now + LAPSE_DAYS * 864e5),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'owner_change.requested',
+      objectType: 'owner_change_request',
+      objectId: row.id,
+      detail: { action, target_account: target.account_id },
+      ip: meta.ip,
+    });
+
+    // Everybody who could be affected hears about it, not only the person
+    // it is about: this is the alarm, and it should be loud.
+    const owners = await trx
+      .selectFrom('account_household')
+      .select(['account_id'])
+      .where('role', '=', 'owner')
+      .execute();
+    await this.alert({
+      householdId: p.householdId,
+      accountIds: [...new Set(owners.map((o) => o.account_id))],
+      subject: `A request to take away ${target.display_name}'s owner role`,
+      body: `In seven days ${target.display_name} becomes an adult unless they refuse. Nothing has changed yet, and they can refuse at any time before then.`,
+    });
+
+    const made = (await this.rows(trx)).find((r) => r.id === row.id) as OwnerChangeRow;
+    return this.view(made, p);
+  }
+
+  private async membership(trx: Db, memberId: string) {
+    const row = await trx
+      .selectFrom('account_household')
+      .innerJoin('member', 'member.id', 'account_household.member_id')
+      .select([
+        'account_household.account_id',
+        'account_household.role',
+        'member.display_name',
+        'member.id as member_id',
+      ])
+      .where('account_household.member_id', '=', memberId)
+      .executeTakeFirst();
+    if (!row) throw notFound('That sign-in');
+    return row;
+  }
+
+  private async adultAccounts(trx: Db, except: string): Promise<string[]> {
+    const rows = await trx
+      .selectFrom('account_household')
+      .select(['account_id'])
+      .where('role', 'in', ['owner', 'adult'])
+      .execute();
+    return rows.map((r) => r.account_id).filter((id) => id !== except);
+  }
+
+  private settle(trx: Db, id: string, values: Record<string, unknown>) {
+    return trx.updateTable('owner_change_request').set(values).where('id', '=', id).execute();
+  }
+
+  private async rows(trx: Db): Promise<OwnerChangeRow[]> {
+    return trx
+      .selectFrom('owner_change_request')
+      .innerJoin('account_household as target', (j) =>
+        j
+          .onRef('target.account_id', '=', 'owner_change_request.target_account')
+          .onRef('target.household_id', '=', 'owner_change_request.household_id'),
+      )
+      .innerJoin('member as target_member', 'target_member.id', 'target.member_id')
+      .innerJoin('household', 'household.id', 'owner_change_request.household_id')
+      .leftJoin('account_household as asker', (j) =>
+        j
+          .onRef('asker.account_id', '=', 'owner_change_request.requested_by')
+          .onRef('asker.household_id', '=', 'owner_change_request.household_id'),
+      )
+      .leftJoin('member as asker_member', 'asker_member.id', 'asker.member_id')
+      .select([
+        'owner_change_request.id',
+        'owner_change_request.target_account',
+        'owner_change_request.requested_by',
+        'owner_change_request.action',
+        'owner_change_request.requested_at',
+        'owner_change_request.opens_at',
+        'owner_change_request.lapses_at',
+        'owner_change_request.refused_at',
+        'owner_change_request.completed_at',
+        'target_member.id as target_member_id',
+        'target_member.display_name as target_name',
+        'asker_member.display_name as requested_by_name',
+        'household.name as household_name',
+      ])
+      .orderBy('owner_change_request.requested_at', 'desc')
+      .execute();
+  }
+
+  private view(r: OwnerChangeRow, p: Principal): OwnerChangeView {
+    const aboutMe = r.target_account === p.accountId;
+    const state: OwnerChangeView['state'] = r.completed_at
+      ? 'completed'
+      : r.refused_at
+        ? 'refused'
+        : r.lapses_at.getTime() < Date.now()
+          ? 'lapsed'
+          : r.opens_at.getTime() > Date.now()
+            ? 'waiting'
+            : 'ready';
+    return {
+      id: r.id,
+      target_member_id: r.target_member_id,
+      target_name: r.target_name,
+      requested_by_name: r.requested_by_name,
+      action: r.action,
+      requested_at: r.requested_at.toISOString(),
+      opens_at: r.opens_at.toISOString(),
+      lapses_at: r.lapses_at.toISOString(),
+      state,
+      about_me: aboutMe,
+      summary: summarise(r, state, aboutMe),
+    };
+  }
+}
+
+interface OwnerChangeRow {
+  id: string;
+  target_account: string;
+  requested_by: string;
+  action: 'promote' | 'demote';
+  requested_at: Date;
+  opens_at: Date;
+  lapses_at: Date;
+  refused_at: Date | null;
+  completed_at: Date | null;
+  target_member_id: string;
+  target_name: string;
+  requested_by_name: string | null;
+  household_name: string;
+}
+
+function summarise(r: OwnerChangeRow, state: OwnerChangeView['state'], aboutMe: boolean): string {
+  const who = aboutMe ? 'you' : r.target_name;
+  const asker = r.requested_by_name ?? 'An owner';
+  switch (state) {
+    case 'waiting':
+      return `${asker} asked for ${who} to stop being an owner. Nothing changes until ${formatDay(r.opens_at.toISOString())}${aboutMe ? ', and you can refuse before then' : ''}.`;
+    case 'ready':
+      return `The seven days are up. ${who === 'you' ? 'You' : who} can be made an adult now${aboutMe ? ', unless you refuse' : ''}.`;
+    case 'refused':
+      return `${who === 'you' ? 'You' : who} refused. ${aboutMe ? 'You are' : `${r.target_name} is`} still an owner.`;
+    case 'completed':
+      return `${who === 'you' ? 'You are' : `${r.target_name} is`} an adult now.`;
+    case 'lapsed':
+      return 'Nobody carried this out, so it no longer counts.';
+  }
+}
+
+const article = (role: Role) =>
+  `${role === 'owner' || role === 'adult' ? 'an' : 'a'} ${roleLabel(role).toLowerCase()}`;
+
+/** "30 September", in the reader's own words rather than an ISO string. */
+function formatDay(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+}

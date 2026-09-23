@@ -161,6 +161,43 @@ email, role, role_label, invited_by, expires_at }`. Rate-limited.
   Creating a second invitation for the same person revokes the first: nobody
   holds two live links.
 
+- Co-owners (bearer; owner, and all of them ask for step-up).
+
+  - `POST /api/v1/members/{id}/role` — `{ role }` → `{ applied, role, request?, message }`.
+    `message` is written for a person and safe to show. Promoting and any
+    change to a non-owner applies at once (`applied: true`). Taking the owner
+    role off somebody else answers `applied: false` with a `request`: nothing
+    has changed yet. `422` for your own role, `409 already_requested` when one
+    is already waiting.
+  - `POST /api/v1/me/step-down` — `{ role }`. Immediate, as long as another
+    owner remains.
+  - `DELETE /api/v1/members/{id}/sign-in` — `204`. The member row, their
+    documents and their scope key stay; their sessions are revoked.
+    `409 owner_notice_required` for an owner.
+  - `GET /api/v1/owner-changes` — every member sees these, because one may be
+    about them: `{ items: [{ id, target_member_id, target_name,
+requested_by_name, action, requested_at, opens_at, lapses_at, state,
+about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
+    `completed`, `lapsed`. `summary` is a sentence.
+  - `POST /api/v1/owner-changes/{id}/refuse` — only the person it is about;
+    `403` otherwise.
+  - `POST /api/v1/owner-changes/{id}/complete` — any owner, once `opens_at`
+    has passed. `409 notice_period` before then, `409 request_lapsed` after
+    thirty days.
+  - `DELETE /api/v1/owner-changes/{id}` — any owner withdraws it.
+
+  A role change takes effect on the next request, not on the next token: the
+  `role` in an access token is advisory and the server reads the live one.
+
+  A household always keeps at least one owner. That is a deferred constraint
+  trigger, so the last owner cannot be demoted or removed by any route,
+  including one that does both halves of a swap in a single transaction.
+
+- New-device alerts (SEC-11). A sign-in from a user agent an account has not
+  used before enqueues `alert.send`, delivered by push and by the household's
+  mail server at once rather than in the daily digest. There is no preference
+  to switch it off. The first device an account uses is never an alert.
+
 - Roles. Every endpoint that refuses on the grounds of a role now answers
   `403 { "error": { "code": "forbidden", "message": … } }`, where `message`
   says who _can_ do it and is safe to show verbatim. The check runs before

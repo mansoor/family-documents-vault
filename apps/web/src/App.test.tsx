@@ -403,6 +403,48 @@ describe('App', () => {
     await expectAccessible();
   });
 
+  it('asking to take away an owner’s role says it waits, and they can refuse', async () => {
+    const coOwner = { ...AISHA, id: 'm-1', display_name: 'Sam', has_account: true, role: 'owner' };
+    const state = fresh({ members: [ME, coOwner] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people/m-1');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'What Sam can do' });
+    fireEvent.click(screen.getByRole('button', { name: 'Adult' }));
+    // Before pressing anything, the screen says what will and will not
+    // happen — the seven days are the feature, not a technicality.
+    expect(screen.getByText(/takes seven days/)).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change what they can do' }));
+    await screen.findByText(/Every owner has been told/);
+    // Sam is still an owner until it is carried out.
+    expect(state.members.find((m) => m.id === 'm-1')?.role).toBe('owner');
+
+    // And it is waiting on the People screen, where nobody has to look for it.
+    window.history.replaceState({}, '', '/people');
+    fireEvent.click(screen.getByRole('link', { name: 'People' }));
+    await screen.findByText(/asked for Sam to stop being an owner/);
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw it' }));
+    await waitFor(() => expect(screen.queryByText(/stop being an owner/)).not.toBeInTheDocument());
+  });
+
+  it('taking a sign-in away says what survives it', async () => {
+    const kid = { ...AISHA, id: 'm-1', display_name: 'Aisha', has_account: true, role: 'teen' };
+    const state = fresh({ members: [ME, kid] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people/m-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Take away their sign-in' }));
+    expect(screen.getByText(/their documents are untouched/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, take their sign-in away' }));
+    await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBeNull());
+  });
+
   it('joining says whose vault it is before asking for anything', async () => {
     const state = fresh();
     installFakeApi(state);

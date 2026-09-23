@@ -5,6 +5,7 @@ import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import { createNotifier } from './jobs/notify.js';
+import { isAlert, sendAlert } from './jobs/alerts.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
@@ -99,6 +100,26 @@ async function main(): Promise<void> {
     log,
   });
   void logNotifier;
+
+  const alertDeps = {
+    app: dbs.app,
+    vapid,
+    smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+    baseUrl: config.FDV_BASE_URL,
+    log,
+  };
+  await boss.createQueue(JOBS.alertSend);
+  await boss.work(JOBS.alertSend, async (jobs) => {
+    for (const job of jobs) {
+      if (!isAlert(job.data)) {
+        log('warn', 'alert job had the wrong shape', { id: job.id });
+        continue;
+      }
+      const channels = await sendAlert(alertDeps, job.data);
+      log('info', 'alert sent', { subject: job.data.subject, channels });
+    }
+  });
+
   const reminderDeps = {
     admin: dbs.admin,
     app: dbs.app,

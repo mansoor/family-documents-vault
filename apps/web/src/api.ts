@@ -171,6 +171,27 @@ export interface InvitationPreview {
   expires_at: string;
 }
 
+export interface OwnerChange {
+  id: string;
+  target_member_id: string;
+  target_name: string;
+  requested_by_name: string | null;
+  action: 'promote' | 'demote';
+  requested_at: string;
+  opens_at: string;
+  lapses_at: string;
+  state: 'waiting' | 'ready' | 'refused' | 'completed' | 'lapsed';
+  about_me: boolean;
+  summary: string;
+}
+
+export interface RoleChangeResult {
+  applied: boolean;
+  role: Role;
+  request?: OwnerChange;
+  message: string;
+}
+
 export interface Profile {
   household_name: string;
   owns_home: boolean | null;
@@ -395,6 +416,25 @@ export const api = {
     token: string,
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
+
+  setRole: (token: string, memberId: string, role: Role) =>
+    request<RoleChangeResult>(`/api/v1/members/${memberId}/role`, {
+      method: 'POST',
+      body: { role },
+      token,
+    }),
+  stepDown: (token: string, role: Role) =>
+    request<RoleChangeResult>('/api/v1/me/step-down', { method: 'POST', body: { role }, token }),
+  removeSignIn: (token: string, memberId: string) =>
+    request<void>(`/api/v1/members/${memberId}/sign-in`, { method: 'DELETE', token }),
+  ownerChanges: (token: string) =>
+    request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
+  refuseOwnerChange: (token: string, id: string) =>
+    request<OwnerChange>(`/api/v1/owner-changes/${id}/refuse`, { method: 'POST', token }),
+  completeOwnerChange: (token: string, id: string) =>
+    request<RoleChangeResult>(`/api/v1/owner-changes/${id}/complete`, { method: 'POST', token }),
+  withdrawOwnerChange: (token: string, id: string) =>
+    request<void>(`/api/v1/owner-changes/${id}`, { method: 'DELETE', token }),
 
   invitations: (token: string) =>
     request<{ items: Invitation[] }>('/api/v1/invitations', { token }),

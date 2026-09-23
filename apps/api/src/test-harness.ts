@@ -18,6 +18,7 @@ import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
+import { CoOwnerService } from './household/co-owners.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
@@ -91,6 +92,13 @@ export async function createHarness(): Promise<Harness> {
     deriveSigningKey(TEST_MASTER),
     keys,
     (trx, hh) => vaults.createDefaultLocal(trx, hh),
+    (a) =>
+      enqueue('alert.send', {
+        household_id: a.householdId,
+        account_ids: a.accountIds,
+        subject: a.subject,
+        body: a.body,
+      }),
     totp,
   );
   const passkeys = new PasskeyService(
@@ -128,6 +136,14 @@ export async function createHarness(): Promise<Harness> {
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     invitations,
+    coOwners: new CoOwnerService(db, (a) =>
+      enqueue('alert.send', {
+        household_id: a.householdId,
+        account_ids: a.accountIds,
+        subject: a.subject,
+        body: a.body,
+      }),
+    ),
     suggestions: new SuggestionService(db),
     logger: false,
   });

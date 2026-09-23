@@ -9,6 +9,7 @@ import {
   inviteExistingBody,
   type InvitationService,
 } from './invitations.js';
+import { roleChangeBody, type CoOwnerService } from './co-owners.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { Capability } from '@fdv/shared';
 import { needs } from '../authz.js';
@@ -18,6 +19,7 @@ export function registerHousehold(
   household: HouseholdService,
   stepUp?: StepUpService,
   invitations?: InvitationService,
+  coOwners?: CoOwnerService,
 ): void {
   const auth = { preHandler: app.requireAuth };
   const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
@@ -38,10 +40,56 @@ export function registerHousehold(
     return reply.status(201).send(m);
   });
 
-  if (!invitations) return;
-
   const params = <T>(schema: z.ZodType<T>, req: FastifyRequest) => parse(schema, req.params);
   const idParam = z.object({ id: z.string().uuid() });
+
+  if (coOwners) {
+    // Who can do what is the most consequential setting in the vault, so
+    // every one of these asks for a credential again first (SEC-17).
+    app.post('/api/v1/members/:id/role', auth, async (req) => {
+      await stepUp?.require(principal(req), 'change_people');
+      return coOwners.changeRole(
+        principal(req),
+        params(idParam, req).id,
+        parse(roleChangeBody, req.body).role,
+        metaOf(req),
+      );
+    });
+
+    app.post('/api/v1/me/step-down', auth, async (req) => {
+      await stepUp?.require(principal(req), 'change_people');
+      return coOwners.stepDown(principal(req), parse(roleChangeBody, req.body).role, metaOf(req));
+    });
+
+    app.delete('/api/v1/members/:id/sign-in', auth, async (req, reply) => {
+      await stepUp?.require(principal(req), 'change_people');
+      await coOwners.removeSignIn(principal(req), params(idParam, req).id, metaOf(req));
+      return reply.status(204).send();
+    });
+
+    // Everyone in the household can see these, including the person a
+    // request is about — that is the whole point of the notice period.
+    app.get('/api/v1/owner-changes', auth, async (req) => ({
+      items: await coOwners.list(principal(req)),
+    }));
+
+    app.post('/api/v1/owner-changes/:id/refuse', auth, async (req) => {
+      await stepUp?.require(principal(req), 'change_people');
+      return coOwners.refuse(principal(req), params(idParam, req).id, metaOf(req));
+    });
+
+    app.post('/api/v1/owner-changes/:id/complete', auth, async (req) => {
+      await stepUp?.require(principal(req), 'change_people');
+      return coOwners.complete(principal(req), params(idParam, req).id, metaOf(req));
+    });
+
+    app.delete('/api/v1/owner-changes/:id', auth, async (req, reply) => {
+      await coOwners.withdraw(principal(req), params(idParam, req).id, metaOf(req));
+      return reply.status(204).send();
+    });
+  }
+
+  if (!invitations) return;
   // A link secret, not a uuid: base64url of 32 bytes.
   const tokenParam = z.object({ token: z.string().min(16).max(256) });
 

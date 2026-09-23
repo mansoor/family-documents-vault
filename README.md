@@ -162,6 +162,35 @@ An owner can hand out any role. An adult can give a teen or a viewer a
 sign-in, but only an owner can make another adult or owner, because that
 opens the adults-only documents.
 
+### Two owners, and what happens when that ends
+
+Several people can be owners at once, with identical powers, so that the
+household keeps running when one of them cannot. Making somebody an owner is
+immediate, and every other adult is told.
+
+**Taking an owner's role away is not immediate.** It starts a seven-day
+notice: everybody is told at once, the person it is about can refuse at any
+time during it, and after the seven days an owner still has to come back and
+carry it out. A shared vault during a bad separation is a real situation, and
+a one-tap lockout would be a weapon rather than a feature. Stepping down
+yourself is immediate.
+
+**At least one owner always remains.** That is enforced by the database, not
+by the app, because a household with no owner cannot appoint one.
+
+Taking away somebody's sign-in leaves the person: their record, their
+documents and their own private key are untouched, and an invitation brings
+them back. Only an owner can do it, and not to another owner.
+
+### When a new device signs in
+
+If somebody signs in on a device your account has not used before, you are
+told — by push, and by email if the household has a mail server set up. It
+cannot be switched off, because it is about who can get into your vault. The
+signal is the browser's own description of itself, so a browser update can
+make a familiar device look new: it errs towards telling you about a sign-in
+you already knew about rather than staying quiet about one you did not.
+
 ## How your files are protected
 
 - The **server is the encryption boundary**. Every file version gets its own random AES-256-GCM key; that key is wrapped by a per-household scope key; scope keys are wrapped by the master key, which lives only in your `.env` (or a key file) — never in the database.

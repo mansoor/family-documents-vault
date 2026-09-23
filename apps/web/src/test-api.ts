@@ -10,6 +10,7 @@ export interface FakeState {
   displayName: string;
   members: Array<Record<string, unknown>>;
   invitations: Array<Record<string, unknown> & { id: string }>;
+  ownerChanges: Array<Record<string, unknown> & { id: string }>;
   documents: Array<Record<string, unknown>>;
   types: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
@@ -158,6 +159,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     displayName: 'The Seikh family',
     members: [ME],
     invitations: [],
+    ownerChanges: [],
     documents: [PASSPORT],
     types: TYPES,
     suggestions: [],
@@ -300,6 +302,54 @@ export function installFakeApi(state: FakeState) {
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    if (path === '/api/v1/owner-changes' && method === 'GET')
+      return json({ items: state.ownerChanges });
+    if (path.startsWith('/api/v1/owner-changes/') && path.endsWith('/refuse')) {
+      const id = path.split('/')[4] as string;
+      state.ownerChanges = state.ownerChanges.filter((r) => r.id !== id);
+      return json({ id, state: 'refused' });
+    }
+    if (path.startsWith('/api/v1/owner-changes/') && method === 'DELETE') {
+      const id = path.slice('/api/v1/owner-changes/'.length);
+      state.ownerChanges = state.ownerChanges.filter((r) => r.id !== id);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path.endsWith('/role') && method === 'POST') {
+      const memberId = path.split('/')[4] as string;
+      const role = (body as { role: string }).role;
+      const target = state.members.find((m) => m.id === memberId);
+      if (target?.role === 'owner' && role !== 'owner') {
+        state.ownerChanges.push({
+          id: 'ocr-1',
+          target_member_id: memberId,
+          target_name: String(target.display_name),
+          requested_by_name: 'Mansoor Seikh',
+          action: 'demote',
+          requested_at: new Date().toISOString(),
+          opens_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+          lapses_at: new Date(Date.now() + 30 * 864e5).toISOString(),
+          state: 'waiting',
+          about_me: false,
+          summary: `Mansoor Seikh asked for ${String(target.display_name)} to stop being an owner. Nothing changes until then.`,
+        });
+        return json({
+          applied: false,
+          role: 'owner',
+          message: 'Every owner has been told. They can refuse before then.',
+        });
+      }
+      if (target) target.role = role;
+      return json({ applied: true, role, message: `They are now ${role}.` });
+    }
+    if (path.endsWith('/sign-in') && method === 'DELETE') {
+      const memberId = path.split('/')[4] as string;
+      const target = state.members.find((m) => m.id === memberId);
+      if (target) {
+        target.has_account = false;
+        target.role = null;
+      }
+      return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path === '/api/v1/invitations' && method === 'GET')
       return json({ items: state.invitations });
