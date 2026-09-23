@@ -7,6 +7,7 @@ import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
+import type { ShareService } from './documents/shares.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
 import type { InvitationService } from './household/invitations.js';
@@ -50,6 +51,7 @@ export interface AppDeps {
   household: HouseholdService;
   invitations: InvitationService;
   coOwners: CoOwnerService;
+  shares: ShareService;
   logger?: boolean | object;
 }
 
@@ -151,6 +153,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     config.FDV_MAX_UPLOAD_BYTES,
     deps.sealedSearch,
     deps.stepUp,
+    deps.shares,
   );
 
   return app;
