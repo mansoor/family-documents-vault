@@ -74,9 +74,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const got = await session.token();
       if (got.kind === 'offline') {
         // No answer is not "signed out": the session is kept, and the
-        // screen says the vault cannot be reached rather than showing an
-        // empty household as if there were nothing in it.
-        setConnectionError(UNREACHABLE);
+        // screen that asked says the vault cannot be reached, rather than
+        // showing an empty household as if there were nothing in it. Only
+        // that screen: a blip must not wipe a half-filled form.
         throw new NetworkError('offline');
       }
       if (got.kind !== 'ok') {

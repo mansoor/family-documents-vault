@@ -112,6 +112,21 @@ describe('a vault address, from whatever was typed or pasted', () => {
     }
   });
 
+  it('a number written the way a browser reads as octal or hex is refused, not trusted', () => {
+    // A browser reads 010.0.0.1 as 8.0.0.1: public, though it looks private.
+    for (const sly of [
+      'http://010.0.0.1',
+      'http://172.016.0.1',
+      'http://0x7f.0.0.1',
+      'http://2130706433',
+      'http://1.2.3',
+    ]) {
+      expect(serverOriginFrom(sly), sly).toBeNull();
+    }
+    expect(isPrivateHost('010.0.0.1')).toBe(false);
+    expect(serverOriginFrom('http://10.0.0.1')?.origin).toBe('http://10.0.0.1');
+  });
+
   it('192.168.1.20 and 100.100.1.1 are private, 8.8.8.8 is not', () => {
     expect(isPrivateHost('192.168.1.20')).toBe(true);
     expect(isPrivateHost('100.100.1.1')).toBe(true);

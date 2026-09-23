@@ -1,4 +1,10 @@
-import { SessionCore, type StoredSession, type TokenResult, type TokenStore } from '@fdv/client';
+import {
+  SessionCore,
+  type CrossContextLock,
+  type StoredSession,
+  type TokenResult,
+  type TokenStore,
+} from '@fdv/client';
 import { api, type Tokens } from './api.js';
 import { disable as disablePush } from './push.js';
 
@@ -41,6 +47,20 @@ const localStorageStore: TokenStore = {
 };
 
 /**
+ * Tabs of the vault share one session in localStorage, so they take turns
+ * refreshing it: a tab that waited reads the token the other just saved,
+ * rather than presenting a spent one and ending the session for both.
+ * Web Locks exist only in secure contexts (https, or localhost); on plain
+ * http over the LAN the store is still re-read before every refresh.
+ */
+const tabLock: CrossContextLock | undefined =
+  typeof navigator !== 'undefined' && 'locks' in navigator
+    ? <T>(fn: () => Promise<T>): Promise<T> =>
+        // Typed as Promise<Promise<T>> for an async callback; it resolves to T.
+        navigator.locks.request('fdv.refresh', fn) as unknown as Promise<T>
+    : undefined;
+
+/**
  * The signed-in role, for deciding what to put on the screen.
  *
  * It is a plain function rather than something off the context because
@@ -55,7 +75,10 @@ export function storedRole(): Tokens['role'] {
 export class Session {
   // localStorage can be read at once, so the web starts already knowing
   // whether anybody is signed in; a phone calls hydrate() instead.
-  private readonly core = new SessionCore(api, localStorageStore, read());
+  private readonly core = new SessionCore(api, localStorageStore, {
+    initial: read(),
+    ...(tabLock ? { lock: tabLock } : {}),
+  });
 
   get signedIn(): boolean {
     return this.core.signedIn;

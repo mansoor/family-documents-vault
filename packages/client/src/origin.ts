@@ -43,6 +43,13 @@ export function serverOriginFrom(input: string): ServerAddress | null {
   ) {
     return null;
   }
+  // A host whose last label is a number is an IPv4 address to a browser,
+  // which also reads 010 as octal and 0x7f as hex: "010.0.0.1" is
+  // 8.0.0.1, a public address that merely looks private. Only plain
+  // dotted-decimal is accepted, so what is shown is what is reached.
+  if (!host.startsWith('[') && /^(0x[0-9a-f]*|\d+)$/i.test(host.split('.').pop() ?? '')) {
+    if (!isDottedDecimal(host)) return null;
+  }
   const port = hp[2];
   if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) return null;
   const shownPort = port !== undefined && port !== DEFAULT_PORT[scheme] ? `:${Number(port)}` : '';
@@ -63,7 +70,7 @@ export function serverOriginFrom(input: string): ServerAddress | null {
 export function isPrivateHost(host: string): boolean {
   const h = host.toLowerCase().replace(/^\[|\]$/g, '');
   if (h === 'localhost' || /\.(local|lan|home\.arpa|localhost)$/.test(h)) return true;
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  const v4 = isDottedDecimal(h) ? /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h) : null;
   if (v4) {
     const a = Number(v4[1]);
     const b = Number(v4[2]);
@@ -80,4 +87,10 @@ export function isPrivateHost(host: string): boolean {
     return h === '::1' || /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
   }
   return false;
+}
+
+/** Four numbers 0–255, written without leading zeros. */
+function isDottedDecimal(host: string): boolean {
+  const parts = host.split('.');
+  return parts.length === 4 && parts.every((p) => /^(0|[1-9]\d{0,2})$/.test(p) && Number(p) <= 255);
 }

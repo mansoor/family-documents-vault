@@ -155,13 +155,15 @@ describe('App', () => {
     expect(window.location.pathname).toBe('/settings');
   });
 
-  it('losing the network shows Not connected, not an empty household', async () => {
+  it('losing the network says so, instead of showing an empty household', async () => {
     const state = fresh({ offline: true });
     installFakeApi(state);
     signedIn();
     window.history.replaceState({}, '', '/');
     render(<App />);
-    expect(await screen.findByText('Not connected')).toBeInTheDocument();
+    expect(await screen.findByText(/can't reach the vault right now/)).toBeInTheDocument();
+    // Said on the screen that asked, not by replacing the whole app.
+    expect(screen.queryByText('Not connected')).toBeNull();
     // No answer is not "signed out": the session is still there for later.
     expect(localStorage.getItem('fdv.session')).not.toBeNull();
   });
