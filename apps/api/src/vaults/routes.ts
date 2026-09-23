@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import type { VaultService } from './service.js';
+import type { StepUpService } from '../auth/step-up.js';
 
 const newVault = z.object({
   provider: z.string().min(1).max(32),
@@ -17,7 +18,11 @@ const newVault = z.object({
   secret_access_key: z.string().min(1).max(1024),
 });
 
-export function registerVaults(app: FastifyInstance, vaults: VaultService): void {
+export function registerVaults(
+  app: FastifyInstance,
+  vaults: VaultService,
+  stepUp?: StepUpService,
+): void {
   const auth = { preHandler: app.requireAuth };
 
   /** The provider list the Storage screen offers, with presets. Public shape, no secrets. */
@@ -30,6 +35,9 @@ export function registerVaults(app: FastifyInstance, vaults: VaultService): void
   }));
 
   app.post('/api/v1/vaults', auth, async (req, reply) => {
+    // Where the family's files live is as consequential as the files
+    // themselves (SEC-17).
+    await stepUp?.require(req.principal as Principal, 'change_storage');
     const b = parse(newVault, req.body);
     const created = await vaults.create(
       req.principal as Principal,
@@ -54,11 +62,13 @@ export function registerVaults(app: FastifyInstance, vaults: VaultService): void
   );
 
   app.post<{ Params: { id: string } }>('/api/v1/vaults/:id/activate', auth, async (req, reply) => {
+    await stepUp?.require(req.principal as Principal, 'change_storage');
     await vaults.activate(req.principal as Principal, req.params.id, metaOf(req));
     return reply.status(204).send();
   });
 
   app.delete<{ Params: { id: string } }>('/api/v1/vaults/:id', auth, async (req, reply) => {
+    await stepUp?.require(req.principal as Principal, 'change_storage');
     await vaults.remove(req.principal as Principal, req.params.id, metaOf(req));
     return reply.status(204).send();
   });

@@ -293,4 +293,51 @@ describe('App', () => {
     ).toBe(true);
     await screen.findByText('None yet.');
   });
+  it('asks who is asking before exporting, then carries on by itself', async () => {
+    const state = fresh({ stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(screen.getByText(/to export everything/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // The wrong password does not get through.
+    fireEvent.change(screen.getByLabelText('Or your password'), { target: { value: 'nope' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await screen.findByText("That didn't match. Try again.");
+
+    fireEvent.change(screen.getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    // The prompt closes and the export the person asked for happens —
+    // they do not have to press the button again.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const exportCalls = state.calls.filter(
+      (c) => c.method === 'POST' && c.url === '/api/v1/exports',
+    );
+    expect(exportCalls).toHaveLength(2);
+  });
+
+  it('cancelling the prompt does nothing at all', async () => {
+    const state = fresh({ stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/exports'),
+    ).toHaveLength(1);
+  });
 });

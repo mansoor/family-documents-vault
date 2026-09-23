@@ -261,7 +261,7 @@ function TwoStep() {
 
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
-  const { withToken, authVersion } = useApp();
+  const { withToken, guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
@@ -275,7 +275,7 @@ function ExportSection() {
   const start = async () => {
     setError(null);
     try {
-      await withToken((t) => api.requestExport(t));
+      await guarded((t) => api.requestExport(t));
       await reload();
     } catch (err) {
       setError(describeError(err));
@@ -349,7 +349,7 @@ function shortAgent(ua: string | null): string {
  * "Where your files are kept" — the Storage board from the prototype.
  */
 export function StorageScreen() {
-  const { withToken, authVersion } = useApp();
+  const { withToken, guarded, authVersion } = useApp();
   const [notice, setNotice] = useState<string | null>(null);
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -360,12 +360,12 @@ export function StorageScreen() {
   );
 
   const activate = async (id: string) => {
-    await withToken((t) => api.activateVault(t, id));
+    await guarded((t) => api.activateVault(t, id));
     setNotice('Done. New files will be kept there from now on.');
     await reload();
   };
   const remove = async (id: string) => {
-    await withToken((t) => api.removeVault(t, id));
+    await guarded((t) => api.removeVault(t, id));
     await reload();
   };
 
@@ -420,7 +420,7 @@ export function StorageScreen() {
         providers={data?.providers ?? []}
         onAdd={async (body) => {
           try {
-            const created = await withToken((t) => api.addVault(t, body));
+            const created = await guarded((t) => api.addVault(t, body));
             if (!created) return null;
             const result = await withToken((t) => api.testVault(t, created.id));
             await reload();

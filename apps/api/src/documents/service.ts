@@ -851,6 +851,25 @@ export class DocumentService {
     });
   }
 
+  /**
+   * Is this version's document one the design asks for a fresh credential
+   * before opening — the Essentials, and anything marked "only me"
+   * (SEC-17)? One small query, so the answer costs a download nothing it
+   * would not have paid anyway.
+   */
+  async isSensitive(p: Principal, versionId: string): Promise<boolean> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('document_version')
+        .innerJoin('document', 'document.id', 'document_version.document_id')
+        .select(['document.visibility', 'document.is_essential'])
+        .where('document_version.id', '=', versionId)
+        .executeTakeFirst();
+      if (!row) return false; // a missing version is a 404 further down
+      return row.visibility === 'private' || row.is_essential;
+    });
+  }
+
   /** The cached, encrypted thumbnail, decrypted on the way out. Null until the worker has run. */
   async thumbnail(p: Principal, versionId: string): Promise<Buffer | null> {
     const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {

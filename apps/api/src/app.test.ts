@@ -47,6 +47,7 @@ async function make(
       visibility: anyStub,
       totp: anyStub,
       passkeys: anyStub,
+      stepUp: anyStub,
       exports: anyStub,
       reminders: anyStub,
       suggestions: anyStub,

@@ -23,6 +23,8 @@ export interface FakeState {
     transports: string[];
   }>;
   lastQuery?: string;
+  /** True until a credential has been presented again (SEC-17). */
+  stepUpNeeded: boolean;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
 
@@ -157,6 +159,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     suggestions: [],
     sealed: [],
     passkeys: [],
+    stepUpNeeded: false,
     calls: [],
     ...over,
   };
@@ -211,6 +214,44 @@ export function installFakeApi(state: FakeState) {
       state.passkeys = state.passkeys.filter((k) => k.id !== id);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
+    if (path === '/api/v1/exports' && method === 'POST') {
+      // SEC-17: the first attempt asks who is asking, until a credential
+      // has been presented.
+      if (state.stepUpNeeded) {
+        return json(
+          {
+            error: {
+              code: 'step_up_required',
+              message: 'Please confirm it is you to export everything.',
+              action: 'export_everything',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          403,
+        );
+      }
+      return json({ id: 'ex-1', state: 'queued' }, 202);
+    }
+    if (path === '/api/v1/auth/step-up' && method === 'POST') {
+      const b = body as { password?: string };
+      if (b?.password !== 'correct horse battery') {
+        return json(
+          {
+            error: {
+              code: 'invalid_credentials',
+              message: "That didn't match.",
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          401,
+        );
+      }
+      state.stepUpNeeded = false;
+      return json({ verified_at: new Date().toISOString(), expires_in: 300 });
+    }
+    if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
     if (path === '/api/v1/reminders') return json({ items: [] });
     if (path === '/api/v1/suggestions') {

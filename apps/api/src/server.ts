@@ -15,6 +15,7 @@ import { ReminderService } from './reminders/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
+import { StepUpService } from './auth/step-up.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { VaultService } from './vaults/service.js';
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
     ),
     household: new HouseholdService(db, keys),
     suggestions: new SuggestionService(db),
+    stepUp: new StepUpService(db, passkeys, totp),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 

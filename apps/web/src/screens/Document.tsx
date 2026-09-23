@@ -11,7 +11,7 @@ import { BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken, authVersion } = useApp();
+  const { withToken, guarded, authVersion } = useApp();
   const navigate = useNavigate();
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -48,7 +48,8 @@ export function DocumentScreen() {
   const download = async (v: VersionView) => {
     setActionError(null);
     try {
-      const blob = await withToken((t) => api.content(t, v.id));
+      // An Essential or an "only me" document may ask who is asking first.
+      const blob = await guarded((t) => api.content(t, v.id));
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

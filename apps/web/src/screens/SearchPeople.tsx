@@ -230,7 +230,7 @@ export function sanitiseSnippet(s: string): string {
 }
 
 export function PeopleScreen() {
-  const { authVersion, withToken } = useApp();
+  const { authVersion, guarded } = useApp();
   const { data, error, reload } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   const navigate = useNavigate();
   const [adding, setAdding] = useState(false);
@@ -245,7 +245,7 @@ export function PeopleScreen() {
     setBusy(true);
     setAddError(null);
     try {
-      await withToken((t) => api.addMember(t, { display_name: name, date_of_birth: dob || null }));
+      await guarded((t) => api.addMember(t, { display_name: name, date_of_birth: dob || null }));
       setName('');
       setDob('');
       setAdding(false);
