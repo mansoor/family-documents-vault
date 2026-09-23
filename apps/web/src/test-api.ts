@@ -14,6 +14,14 @@ export interface FakeState {
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
+  passkeys: Array<{
+    id: string;
+    label: string | null;
+    created_at: string;
+    last_used_at: string | null;
+    backed_up: boolean | null;
+    transports: string[];
+  }>;
   lastQuery?: string;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
 }
@@ -89,6 +97,16 @@ export const TYPES = [
   },
 ];
 
+/** A passkey already enrolled on some device. */
+export const PASSKEY = {
+  id: 'pk-1',
+  label: "Mansoor's phone",
+  created_at: '2026-09-20T09:14:00Z',
+  last_used_at: null,
+  backed_up: true,
+  transports: ['internal'],
+};
+
 /** A hit that only the owner's own session can see. */
 export const SEALED_HIT = {
   document_id: 'doc-sealed',
@@ -138,6 +156,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     types: TYPES,
     suggestions: [],
     sealed: [],
+    passkeys: [],
     calls: [],
     ...over,
   };
@@ -162,7 +181,7 @@ export function installFakeApi(state: FakeState) {
         edition: 'self_hosted',
         protection_mode: 'standard',
         setup_required: state.setupRequired,
-        features: {},
+        features: { passkeys: true },
         limits: {},
         deprecations: [],
         branding: { display_name: state.displayName },
@@ -185,6 +204,13 @@ export function installFakeApi(state: FakeState) {
         totp_required: false,
       });
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
+    if (path === '/api/v1/auth/passkeys' && method === 'GET')
+      return json({ items: state.passkeys });
+    if (path.startsWith('/api/v1/auth/passkeys/') && method === 'DELETE') {
+      const id = path.slice('/api/v1/auth/passkeys/'.length);
+      state.passkeys = state.passkeys.filter((k) => k.id !== id);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/exports') return json({ items: [] });
     if (path === '/api/v1/reminders') return json({ items: [] });
     if (path === '/api/v1/suggestions') {

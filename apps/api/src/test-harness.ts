@@ -18,6 +18,7 @@ import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
+import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 
@@ -69,17 +70,19 @@ export async function createHarness(): Promise<Harness> {
     deriveKey(TEST_MASTER, 'totp-secrets'),
     deriveSigningKey(TEST_MASTER),
   );
+  const auth = new AuthService(
+    db,
+    deriveSigningKey(TEST_MASTER),
+    keys,
+    (trx, hh) => vaults.createDefaultLocal(trx, hh),
+    totp,
+  );
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
-    auth: new AuthService(
-      db,
-      deriveSigningKey(TEST_MASTER),
-      keys,
-      (trx, hh) => vaults.createDefaultLocal(trx, hh),
-      totp,
-    ),
+    auth,
     totp,
+    passkeys: new PasskeyService(db, auth, passkeyConfig('http://localhost:8080', 'Test vault')),
     visibility: new VisibilityService(db, keys),
     vaults,
     documents: new DocumentService(

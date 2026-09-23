@@ -30,7 +30,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
     protection_mode: 'standard',
     setup_required: config.setupRequired,
     features: {
-      passkeys: false,
+      passkeys: true,
       private_mode: false,
       email_ingest: false,
       push: false,

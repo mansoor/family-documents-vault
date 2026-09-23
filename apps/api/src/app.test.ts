@@ -46,6 +46,7 @@ async function make(
       household: householdStub,
       visibility: anyStub,
       totp: anyStub,
+      passkeys: anyStub,
       exports: anyStub,
       reminders: anyStub,
       suggestions: anyStub,

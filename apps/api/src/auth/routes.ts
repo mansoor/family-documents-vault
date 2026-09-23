@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ApiError } from '../errors.js';
 import type { AuthService, Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
+import type { PasskeyService } from './passkeys.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -42,7 +43,12 @@ export function metaOf(req: FastifyRequest): RequestMeta {
  * any route can use; it populates `request.principal` or fails with the
  * envelope.
  */
-export function registerAuth(app: FastifyInstance, auth: AuthService, totp?: TotpService): void {
+export function registerAuth(
+  app: FastifyInstance,
+  auth: AuthService,
+  totp?: TotpService,
+  passkeys?: PasskeyService,
+): void {
   app.decorateRequest('principal', null);
 
   app.decorate('requireAuth', async (req: FastifyRequest) => {
@@ -110,16 +116,78 @@ export function registerAuth(app: FastifyInstance, auth: AuthService, totp?: Tot
   app.get('/api/v1/me', { preHandler: app.requireAuth }, async (req) => {
     const p = req.principal as Principal;
     const enabled = totp ? await totp.isEnabled(p.accountId) : false;
+    const passkey = passkeys ? await passkeys.has(p.accountId) : false;
     return {
       account_id: p.accountId,
       household_id: p.householdId,
       member_id: p.memberId,
       role: p.role,
       totp_enabled: enabled,
-      // SEC-03: owners must have two-step sign-in; the app nags until they do.
-      totp_required: p.role === 'owner' && !enabled,
+      has_passkey: passkey,
+      // SEC-03: an owner must have something beyond a password. A passkey
+      // is that something — it is phishing-resistant and device-bound —
+      // so it satisfies the rule as well as an authenticator app does.
+      totp_required: p.role === 'owner' && !enabled && !passkey,
     };
   });
+
+  if (passkeys) {
+    // Signing in. Both are public: the whole point is that they work
+    // before there is a session.
+    app.post('/api/v1/auth/passkey/challenge', tight, async (req) => {
+      const body = parse(
+        z.object({ email: z.string().trim().toLowerCase().email().optional() }).default({}),
+        req.body ?? {},
+      );
+      return passkeys.startAuthentication(body.email);
+    });
+
+    app.post('/api/v1/auth/passkey/verify', tight, async (req) => {
+      const body = parse(z.object({ response: z.record(z.string(), z.unknown()) }), req.body);
+      return passkeys.finishAuthentication(body.response as never, metaOf(req));
+    });
+
+    // Managing your own passkeys, which needs a session you already have.
+    const auth_ = { preHandler: app.requireAuth };
+
+    app.get('/api/v1/auth/passkeys', auth_, async (req) => ({
+      items: await passkeys.list(req.principal as Principal),
+    }));
+
+    app.post('/api/v1/auth/passkeys/challenge', auth_, async (req) =>
+      passkeys.startRegistration(req.principal as Principal),
+    );
+
+    app.post('/api/v1/auth/passkeys', auth_, async (req, reply) => {
+      const body = parse(
+        z.object({
+          response: z.record(z.string(), z.unknown()),
+          label: z.string().trim().max(60).nullable().optional(),
+        }),
+        req.body,
+      );
+      const created = await passkeys.finishRegistration(
+        req.principal as Principal,
+        body.response as never,
+        body.label ?? null,
+        metaOf(req),
+      );
+      return reply.status(201).send(created);
+    });
+
+    app.delete<{ Params: { id: string } }>(
+      '/api/v1/auth/passkeys/:id',
+      auth_,
+      async (req, reply) => {
+        await passkeys.remove(
+          req.principal as Principal,
+          parse(z.string().uuid(), req.params.id),
+          metaOf(req),
+        );
+        return reply.status(204).send();
+      },
+    );
+  }
 
   if (totp) {
     app.post('/api/v1/auth/totp/enrol', { preHandler: app.requireAuth }, async (req) => {

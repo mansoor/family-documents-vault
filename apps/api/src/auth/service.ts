@@ -196,7 +196,12 @@ export class AuthService {
     return this.openSessionForAccount(accountId, meta, 'password+totp');
   }
 
-  private async openSessionForAccount(
+  /**
+   * Opens a session for an account that has already proved who it is.
+   * Public so the passkey service can finish a sign-in; there is no check
+   * inside it, so every caller must have done the proving first.
+   */
+  async openSessionForAccount(
     accountId: string,
     meta: RequestMeta,
     method: string,

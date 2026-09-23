@@ -8,6 +8,7 @@ import {
   installFakeApi,
   ME,
   MISSING_BIRTH_CERTIFICATE,
+  PASSKEY,
   SEALED_HIT,
   signedIn,
 } from './test-api.js';
@@ -269,5 +270,27 @@ describe('App', () => {
       target: { value: 'zqxjkv' },
     });
     await screen.findByText('Nothing in your 1 private document matched.');
+  });
+  it('lists passkeys, removes one, and says why it cannot add another here', async () => {
+    const state = fresh({ passkeys: [{ ...PASSKEY }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Passkeys' });
+    await screen.findByText("Mansoor's phone");
+    expect(screen.getByText(/synced to your other devices/)).toBeInTheDocument();
+    // jsdom has no authenticator, so the honest thing is to say so rather
+    // than offer a button that cannot work.
+    expect(screen.getByText('This browser cannot make passkeys.')).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0] as HTMLElement);
+    await waitFor(() => expect(screen.queryByText("Mansoor's phone")).not.toBeInTheDocument());
+    expect(
+      state.calls.some((c) => c.method === 'DELETE' && c.url === '/api/v1/auth/passkeys/pk-1'),
+    ).toBe(true);
+    await screen.findByText('None yet.');
   });
 });
