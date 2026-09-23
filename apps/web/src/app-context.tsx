@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { api, ApiRequestError } from './api.js';
+import { StepUpCoordinator } from '@fdv/client';
+import { api, ApiRequestError, isSessionOver, NetworkError } from './api.js';
 import { Session } from './session.js';
 import { StepUpPrompt } from './StepUpPrompt.js';
 
@@ -20,11 +21,6 @@ import { StepUpPrompt } from './StepUpPrompt.js';
 
 export const UNREACHABLE =
   "We can't reach the vault right now. Check that it is running, then reload.";
-
-/** The two codes that mean this session cannot be used again. */
-function isSessionOver(err: ApiRequestError): boolean {
-  return err.status === 401 && (err.code === 'session_ended' || err.code === 'unauthenticated');
-}
 
 export function describeError(err: unknown): string {
   return err instanceof ApiRequestError ? err.message : UNREACHABLE;
@@ -67,6 +63,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Capabilities are fetched from the network; state is set in the callback.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reloadCaps();
   }, [reloadCaps]);
 
@@ -74,13 +71,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const withToken = useCallback(
     async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
-      const token = await session.token();
-      if (!token) {
+      const got = await session.token();
+      if (got.kind === 'offline') {
+        // No answer is not "signed out": the session is kept, and the
+        // screen says the vault cannot be reached rather than showing an
+        // empty household as if there were nothing in it.
+        setConnectionError(UNREACHABLE);
+        throw new NetworkError('offline');
+      }
+      if (got.kind !== 'ok') {
         markAuthChanged();
         return null;
       }
       try {
-        return await fn(token);
+        return await fn(got.token);
       } catch (err) {
         // Not every 401 means the session is over. The API also answers
         // 401 when a credential presented *inside* a request was wrong —
@@ -88,7 +92,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // signing somebody out for a typo is its own small betrayal.
         // Only the two codes that actually mean "this session is done"
         // end it; anything else is the caller's to show.
-        if (err instanceof ApiRequestError && isSessionOver(err)) {
+        if (isSessionOver(err)) {
           session.clear();
           markAuthChanged();
           return null;
@@ -109,21 +113,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     settle: (ok: boolean) => void;
   } | null>(null);
 
+  // One prompt, however many requests ask at once: they all wait on it and
+  // all carry on when it is answered. Until 0.4.3 a second request replaced
+  // the first's prompt, and the first then waited for ever.
+  const stepUp = useMemo(
+    () =>
+      new StepUpCoordinator(
+        (req) =>
+          new Promise<boolean>((settle) =>
+            setAsking({
+              ...req,
+              settle: (ok) => {
+                setAsking(null);
+                settle(ok);
+              },
+            }),
+          ),
+      ),
+    [],
+  );
+
   const guarded = useCallback(
     async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
       try {
         return await withToken(fn);
       } catch (err) {
         if (!(err instanceof ApiRequestError) || err.code !== 'step_up_required') throw err;
-        const confirmed = await new Promise<boolean>((settle) =>
-          setAsking({ action: err.action ?? '', message: err.message, settle }),
-        );
-        setAsking(null);
+        const confirmed = await stepUp.confirm({ action: err.action ?? '', message: err.message });
         if (!confirmed) return null;
         return await withToken(fn);
       }
     },
-    [withToken],
+    [withToken, stepUp],
   );
 
   const value = useMemo<AppState>(

@@ -29,9 +29,9 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
     setBusy(true);
     setError(null);
     try {
-      const token = await session.token();
-      if (!token) return props.onSettled(false);
-      await api.stepUp(token, { password });
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onSettled(false);
+      await api.stepUp(got.token, { password });
       props.onSettled(true);
     } catch {
       setError("That didn't match. Try again.");
@@ -46,9 +46,9 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
     try {
       const options = await api.passkeyChallenge();
       const response = await passkeys.assert(options);
-      const token = await session.token();
-      if (!token) return props.onSettled(false);
-      await api.stepUp(token, { passkey: response });
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onSettled(false);
+      await api.stepUp(got.token, { passkey: response });
       props.onSettled(true);
     } catch (err) {
       setError(passkeys.describe(err));

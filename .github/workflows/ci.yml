@@ -27,6 +27,13 @@ jobs:
             exit 1
           fi
           echo "OK: no private folders in the tree."
+      - name: Fail if phone-app files or signing keys were committed
+        run: |
+          if git ls-files | grep -E '(^|/)(android|ios|\.expo)/|\.(jks|keystore|p12|p8)$|(^|/)(google-services\.json|GoogleService-Info\.plist)$' ; then
+            echo "::error::The phone app and its keys belong in the private repository."
+            exit 1
+          fi
+          echo "OK: nothing from the phone app in the tree."
 
   check:
     name: Lint, typecheck, test

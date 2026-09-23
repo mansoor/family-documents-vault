@@ -105,6 +105,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@fdv/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@types/form-data':
         specifier: ^2.5.2
         version: 2.5.2
@@ -120,6 +123,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@fdv/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@fdv/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -224,6 +230,12 @@ importers:
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
+
+  packages/client:
+    dependencies:
+      '@fdv/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/crypto:
     dependencies:

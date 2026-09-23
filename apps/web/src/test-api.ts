@@ -46,6 +46,18 @@ export interface FakeState {
   lastQuery?: string;
   /** True until a credential has been presented again (SEC-17). */
   stepUpNeeded: boolean;
+  /**
+   * Refresh tokens rotate, and a spent one presented again ends the
+   * session — as the real server does. Until 0.4.3 this fake handed back
+   * the same token for ever, which is why no test ever caught the web app
+   * refreshing twice at once and signing somebody out.
+   */
+  refreshToken: string;
+  spentRefresh: string | null;
+  sessionEnded: boolean;
+  refreshCalls: number;
+  /** Every request but the capability document fails, as if offline. */
+  offline: boolean;
   /** False when the link has expired, been used or been revoked. */
   invitationValid: boolean;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
@@ -175,6 +187,11 @@ export const MISSING_BIRTH_CERTIFICATE = {
 export function fresh(over: Partial<FakeState> = {}): FakeState {
   return {
     setupRequired: false,
+    refreshToken: 'hh.secret',
+    spentRefresh: null,
+    sessionEnded: false,
+    refreshCalls: 0,
+    offline: false,
     displayName: 'The Seikh family',
     members: [ME],
     invitations: [],
@@ -210,6 +227,9 @@ export function installFakeApi(state: FakeState) {
     const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
     state.calls.push({ method, url, body, headers: init?.headers as Record<string, string> });
 
+    if (state.offline && path !== '/api/v1/capabilities') {
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
     if (path === '/api/v1/capabilities') {
       return json({
         product: 'family-document-vault',
@@ -230,10 +250,35 @@ export function installFakeApi(state: FakeState) {
       state.displayName = (body as { household_name: string }).household_name;
       return json(TOKENS, 201);
     }
-    if (path === '/api/v1/auth/password') return json(TOKENS);
-    // The real server decides the role from the session, not the client,
-    // so refreshing must not hand back a role the test did not sign in as.
-    if (path === '/api/v1/auth/refresh') return json({ ...TOKENS, role: storedRole() });
+    if (path === '/api/v1/auth/password') {
+      state.refreshToken = TOKENS.refresh_token;
+      state.spentRefresh = null;
+      state.sessionEnded = false;
+      return json(TOKENS);
+    }
+    if (path === '/api/v1/auth/refresh') {
+      state.refreshCalls++;
+      const presented = (body as { refresh_token: string }).refresh_token;
+      if (presented === state.spentRefresh) state.sessionEnded = true;
+      if (state.sessionEnded || presented !== state.refreshToken) {
+        return json(
+          {
+            error: {
+              code: 'session_ended',
+              message: 'That session has ended. Sign in again.',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          401,
+        );
+      }
+      state.spentRefresh = presented;
+      state.refreshToken = `hh.secret.${state.refreshCalls}`;
+      // The real server decides the role from the session, not the client,
+      // so refreshing must not hand back a role the test did not sign in as.
+      return json({ ...TOKENS, refresh_token: state.refreshToken, role: storedRole() });
+    }
     if (path === '/api/v1/me')
       return json({
         account_id: 'a',
