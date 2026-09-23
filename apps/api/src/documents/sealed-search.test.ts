@@ -68,7 +68,7 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
       headers: h.as(owner),
       payload: { visibility: 'private' },
     });
-    expect(hidden.statusCode).toBe(204);
+    expect(hidden.statusCode).toBe(200);
     return id;
   };
 

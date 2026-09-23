@@ -10,6 +10,8 @@ export interface ErrorBody {
     detail?: string;
     retriable: boolean;
     request_id: string;
+    /** Which consequential action asked for a fresh credential (SEC-17). */
+    action?: string;
   };
 }
 
@@ -18,7 +20,7 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
-    public readonly options: { detail?: string; retriable?: boolean } = {},
+    public readonly options: { detail?: string; retriable?: boolean; action?: string } = {},
   ) {
     super(message);
     this.name = 'ApiError';
@@ -32,6 +34,7 @@ export class ApiError extends Error {
       request_id: requestId,
     };
     if (this.options.detail !== undefined) error.detail = this.options.detail;
+    if (this.options.action !== undefined) error.action = this.options.action;
     return { error };
   }
 }

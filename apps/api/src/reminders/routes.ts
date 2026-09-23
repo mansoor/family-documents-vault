@@ -3,11 +3,14 @@ import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import type { ReminderService } from './service.js';
+import type { Capability } from '@fdv/shared';
+import { needs } from '../authz.js';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export function registerReminders(app: FastifyInstance, reminders: ReminderService): void {
   const auth = { preHandler: app.requireAuth };
+  const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
   app.get<{ Querystring: { state?: string } }>('/api/v1/reminders', auth, async (req) => {
@@ -15,7 +18,7 @@ export function registerReminders(app: FastifyInstance, reminders: ReminderServi
     return { items: await reminders.list(principal(req), state) };
   });
 
-  app.post('/api/v1/reminders', auth, async (req, reply) => {
+  app.post('/api/v1/reminders', guard('reminder.manage'), async (req, reply) => {
     const body = parse(
       z.object({
         document_id: z.string().uuid(),

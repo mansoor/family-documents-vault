@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { migrateUp } from './migrate.js';
+import { listMigrations, migrateUp } from './migrate.js';
 
 /**
  * Test support: a fresh, fully migrated database per test file.
@@ -52,13 +52,29 @@ function withDatabase(url: string, name: string, user?: string, password?: strin
   return u.toString();
 }
 
-/** Builds the template if it is missing. The caller holds the setup lock. */
+/**
+ * Builds the template if it is missing, or if a migration has been added
+ * since it was built. The caller holds the setup lock.
+ *
+ * That second condition is not optional: the template survives between
+ * runs, so without it a new migration is invisible locally and every test
+ * runs against yesterday's schema. CI never sees it — a fresh cluster has
+ * no template — which is exactly what makes it worth checking here.
+ */
 async function ensureTemplate(root: pg.Client, adminUrl: string): Promise<void> {
   const { rows } = await root.query<{ ok: boolean }>(
     'select exists (select 1 from pg_database where datname = $1) as ok',
     [TEMPLATE],
   );
-  if (rows[0]?.ok) return;
+  if (rows[0]?.ok) {
+    if (await templateIsCurrent(adminUrl)) return;
+    // Sessions on the template would block the drop; there should be none,
+    // because copying only holds it briefly under the same lock.
+    await root.query(`select pg_terminate_backend(pid) from pg_stat_activity where datname = $1`, [
+      TEMPLATE,
+    ]);
+    await root.query(`drop database if exists ${TEMPLATE} with (force)`);
+  }
   await root.query(`create database ${TEMPLATE}`);
   const pool = new pg.Pool({ connectionString: withDatabase(adminUrl, TEMPLATE), max: 2 });
   try {
@@ -78,6 +94,23 @@ async function ensureRole(root: pg.Client): Promise<void> {
   await root.query(
     `create role ${TEST_APP_ROLE} login password '${TEST_APP_PASSWORD}' in role fdv_app`,
   );
+}
+
+/** Has every migration on disk been applied to the template? */
+async function templateIsCurrent(adminUrl: string): Promise<boolean> {
+  const latest = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
+  const client = new pg.Client({ connectionString: withDatabase(adminUrl, TEMPLATE) });
+  await client.connect();
+  try {
+    const { rows } = await client.query<{ version: number | null }>(
+      'select max(version)::int as version from schema_migration',
+    );
+    return (rows[0]?.version ?? 0) >= latest;
+  } catch {
+    return false; // no schema_migration table: not a template we can trust
+  } finally {
+    await client.end();
+  }
 }
 
 export async function createTestDatabase(adminUrl = testAdminUrl()): Promise<TestDatabase> {

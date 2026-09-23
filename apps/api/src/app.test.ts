@@ -5,7 +5,7 @@ import type { AuthService } from './auth/service.js';
 import type { DocumentService } from './documents/service.js';
 import type { HouseholdService } from './household/service.js';
 import type { VaultService } from './vaults/service.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type ApiConfig } from './config.js';
 
 const config = loadConfig({
   DATABASE_URL: 'postgres://unused',
@@ -30,23 +30,35 @@ afterEach(async () => {
   app = undefined;
 });
 
-async function make(pingDatabase: () => Promise<void> = async () => undefined) {
-  app = await buildApp(config, {
-    serverVersion: '0.0.1',
-    pingDatabase,
-    auth: authStub,
-    vaults: vaultsStub,
-    documents: documentsStub,
-    sealedSearch: anyStub,
-    household: householdStub,
-    visibility: anyStub,
-    totp: anyStub,
-    exports: anyStub,
-    reminders: anyStub,
-    suggestions: anyStub,
-    notifications: anyStub,
-    logger: false,
-  });
+async function make(
+  pingDatabase: () => Promise<void> = async () => undefined,
+  over: Partial<ApiConfig> = {},
+) {
+  app = await buildApp(
+    { ...config, ...over },
+    {
+      serverVersion: '0.0.1',
+      pingDatabase,
+      auth: authStub,
+      vaults: vaultsStub,
+      documents: documentsStub,
+      sealedSearch: anyStub,
+      household: householdStub,
+      invitations: anyStub,
+      coOwners: anyStub,
+      shares: anyStub,
+      audit: anyStub,
+      visibility: anyStub,
+      totp: anyStub,
+      passkeys: anyStub,
+      stepUp: anyStub,
+      exports: anyStub,
+      reminders: anyStub,
+      suggestions: anyStub,
+      notifications: anyStub,
+      logger: false,
+    },
+  );
   return app;
 }
 
@@ -107,6 +119,47 @@ describe('error envelope', () => {
       headers: { 'x-request-id': 'abc-123' },
     });
     expect(res.headers['x-request-id']).toBe('abc-123');
+  });
+});
+
+describe('whose X-Forwarded-For is believed', () => {
+  // The audit log records where an action came from and the rate limiter
+  // counts per address. Believing any caller's header would let anyone
+  // write their own address into someone else's log.
+  const seen = async (headers: Record<string, string>, over: Partial<ApiConfig> = {}) => {
+    const built = await make(undefined, over);
+    let ip = '';
+    built.get('/spy', (req) => {
+      ip = req.ip;
+      return { ok: true };
+    });
+    await built.inject({ url: '/spy', headers, remoteAddress: '10.1.2.3' });
+    return ip;
+  };
+
+  it('by default a private proxy is believed', async () => {
+    expect(await seen({ 'x-forwarded-for': '203.0.113.9' })).toBe('203.0.113.9');
+  });
+
+  it('with none, the header is ignored entirely', async () => {
+    expect(await seen({ 'x-forwarded-for': '203.0.113.9' }, { FDV_TRUST_PROXY: 'none' })).toBe(
+      '10.1.2.3',
+    );
+  });
+
+  it('a caller from a public address cannot claim to be a proxy', async () => {
+    const built = await make();
+    let ip = '';
+    built.get('/spy2', (req) => {
+      ip = req.ip;
+      return { ok: true };
+    });
+    await built.inject({
+      url: '/spy2',
+      headers: { 'x-forwarded-for': '198.51.100.7' },
+      remoteAddress: '203.0.113.200',
+    });
+    expect(ip).toBe('203.0.113.200');
   });
 });
 

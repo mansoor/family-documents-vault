@@ -1,12 +1,19 @@
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerAudit } from './audit/routes.js';
+import type { AuditService } from './audit/service.js';
 import { registerAuth } from './auth/routes.js';
+import type { PasskeyService } from './auth/passkeys.js';
+import type { StepUpService } from './auth/step-up.js';
 import type { AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
+import type { ShareService } from './documents/shares.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
+import type { InvitationService } from './household/invitations.js';
+import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
@@ -37,12 +44,31 @@ export interface AppDeps {
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
+  passkeys: PasskeyService;
+  stepUp: StepUpService;
   exports: ExportService;
   reminders: ReminderService;
   suggestions: SuggestionService;
   notifications: NotificationService;
   household: HouseholdService;
+  invitations: InvitationService;
+  coOwners: CoOwnerService;
+  shares: ShareService;
+  audit: AuditService;
   logger?: boolean | object;
+}
+
+/**
+ * The audit log records who did what from where, and the rate limiter
+ * counts per address; both read `X-Forwarded-For`, so who may set it
+ * matters. Trusting every caller would let anyone write their own address
+ * into the log. The default trusts only private ranges — the container
+ * network and a reverse proxy on the same LAN.
+ */
+function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
+  if (mode === 'all') return true;
+  if (mode === 'none') return false;
+  return ['127.0.0.1/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'];
 }
 
 export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
@@ -50,7 +76,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     logger: deps.logger ?? { level: config.LOG_LEVEL },
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
-    trustProxy: true,
+    trustProxy: trustProxy(config.FDV_TRUST_PROXY),
   });
 
   app.addHook('onSend', async (req, reply) => {
@@ -116,19 +142,22 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
-  registerAuth(app, deps.auth, deps.totp);
-  registerVaults(app, deps.vaults);
-  registerHousehold(app, deps.household);
-  registerExports(app, deps.exports);
+  registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp);
+  registerVaults(app, deps.vaults, deps.stepUp);
+  registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners);
+  registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
   registerNotifications(app, deps.notifications);
+  registerAudit(app, deps.audit);
   await registerDocuments(
     app,
     deps.documents,
     deps.visibility,
     config.FDV_MAX_UPLOAD_BYTES,
     deps.sealedSearch,
+    deps.stepUp,
+    deps.shares,
   );
 
   return app;

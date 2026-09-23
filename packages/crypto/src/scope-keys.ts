@@ -124,6 +124,30 @@ export class ScopeKeys {
     return unwrapKey(row.key_wrapped_cred, await credentialKey(password, params), credBinding(ref));
   }
 
+  /**
+   * Gives a member key a credential wrap it did not have.
+   *
+   * A person added without a sign-in has a member key wrapped by the
+   * master key alone — there was no password to wrap it with. When they
+   * accept an invitation and choose one, this adds the second wrap, so
+   * from then on their private documents can be reached with what they
+   * know and not only with what the server holds.
+   */
+  async attachCredential(trx: Db, ref: ScopeRef, password: string): Promise<void> {
+    const key = (await this.unwrap(trx, ref)).key;
+    const params = newKdfParams();
+    await trx
+      .updateTable('scope_key')
+      .set({
+        key_wrapped_cred: wrapKey(key, await credentialKey(password, params), credBinding(ref)),
+        kdf_params: JSON.stringify(params),
+      })
+      .where('household_id', '=', ref.householdId)
+      .where('kind', '=', 'member')
+      .where('member_id', '=', ref.memberId ?? '')
+      .execute();
+  }
+
   /** On password change: rewrap the member key under the new credential. */
   async rewrapCredential(trx: Db, ref: ScopeRef, oldPassword: string, newPassword: string) {
     const key = await this.unwrapWithCredential(trx, ref, oldPassword);

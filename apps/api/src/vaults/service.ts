@@ -9,6 +9,7 @@ import {
 } from '@fdv/storage';
 import { ApiError } from '../errors.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
+import { requireCapability } from '../authz.js';
 
 /**
  * Vaults: where a household's files are kept. One local vault is created
@@ -46,11 +47,7 @@ export interface NewS3Vault {
   secretAccessKey: string;
 }
 
-const ownerOnly = (p: Principal) => {
-  if (p.role !== 'owner') {
-    throw new ApiError(403, 'forbidden', 'Only an owner can change where files are kept.');
-  }
-};
+const ownerOnly = (p: Principal) => requireCapability(p, 'storage.manage');
 
 export class VaultService {
   constructor(

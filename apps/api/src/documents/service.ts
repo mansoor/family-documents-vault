@@ -25,6 +25,7 @@ import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
+import { allows, requireCapability } from '../authz.js';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -185,7 +186,7 @@ export class DocumentService {
       <A extends string, B>(a: A, op: '=', b: B): Expression<SqlBool>;
     }) => {
       const clauses: Expression<SqlBool>[] = [eb('document.visibility', '=', 'household')];
-      if (p.role === 'owner' || p.role === 'adult') {
+      if (allows(p, 'document.see_adults')) {
         clauses.push(eb('document.visibility', '=', 'adults'));
       }
       clauses.push(
@@ -199,8 +200,18 @@ export class DocumentService {
   }
 
   private canWrite(p: Principal): void {
-    if (p.role === 'viewer') {
-      throw new ApiError(403, 'forbidden', 'Viewers can look at documents but not change them.');
+    requireCapability(p, 'document.edit');
+  }
+
+  /**
+   * The ownership half of the teen rule: the matrix says a teen may change
+   * documents, this says only their own. It applies to the trash as much
+   * as to editing — being unable to correct a parent's council tax bill
+   * but able to throw it away would be a strange kind of protection.
+   */
+  private mustOwnIfTeen(p: Principal, row: { owner_member_id: string | null }): void {
+    if (p.role === 'teen' && row.owner_member_id !== p.memberId) {
+      throw new ApiError(403, 'forbidden', 'You can only change your own documents.');
     }
   }
 
@@ -312,6 +323,17 @@ export class DocumentService {
     this.canWrite(p);
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const values = await this.columns(trx, p, input, null);
+      // A teen's documents are their own, and only their own. Without
+      // this, adding one without naming a person makes a family document
+      // they are immediately unable to change — which is what the rule
+      // says if nobody asks what "their own" means at the moment of
+      // creation. Naming somebody else is refused for the same reason:
+      // it would put the document out of their reach as they filed it.
+      const named = (values as { owner_member_id?: string | null }).owner_member_id;
+      if (p.role === 'teen' && named != null && named !== p.memberId) {
+        throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
+      }
+      const mine = p.role === 'teen' ? { owner_member_id: p.memberId } : {};
       const row = await trx
         .insertInto('document')
         .values({
@@ -319,6 +341,7 @@ export class DocumentService {
           created_by: p.accountId,
           updated_by: p.accountId,
           ...values,
+          ...mine,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -362,9 +385,7 @@ export class DocumentService {
           },
         );
       }
-      if (p.role === 'teen' && current.owner_member_id !== p.memberId) {
-        throw new ApiError(403, 'forbidden', 'You can only change your own documents.');
-      }
+      this.mustOwnIfTeen(p, current);
       const values = await this.columns(trx, p, input, current);
       const row = await trx
         .updateTable('document')
@@ -392,7 +413,7 @@ export class DocumentService {
   async softDelete(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     this.canWrite(p);
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
-      await this.fetch(trx, p, id);
+      this.mustOwnIfTeen(p, await this.fetch(trx, p, id));
       await trx
         .updateTable('document')
         .set({ deleted_at: new Date(), updated_at: new Date(), updated_by: p.accountId })
@@ -414,6 +435,7 @@ export class DocumentService {
     this.canWrite(p);
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const row = await this.fetch(trx, p, id, true);
+      this.mustOwnIfTeen(p, row);
       if (!row.deleted_at) return this.view(trx, row);
       const restored = await trx
         .updateTable('document')
@@ -733,7 +755,7 @@ export class DocumentService {
     sealed_pending: { count: number; token?: string };
   }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
-    const adultsOk = p.role === 'owner' || p.role === 'adult';
+    const adultsOk = allows(p, 'document.see_adults');
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const rows = await sql<{
         document_id: string;
@@ -848,6 +870,25 @@ export class DocumentService {
           }),
         },
       };
+    });
+  }
+
+  /**
+   * Is this version's document one the design asks for a fresh credential
+   * before opening — the Essentials, and anything marked "only me"
+   * (SEC-17)? One small query, so the answer costs a download nothing it
+   * would not have paid anyway.
+   */
+  async isSensitive(p: Principal, versionId: string): Promise<boolean> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('document_version')
+        .innerJoin('document', 'document.id', 'document_version.document_id')
+        .select(['document.visibility', 'document.is_essential'])
+        .where('document_version.id', '=', versionId)
+        .executeTakeFirst();
+      if (!row) return false; // a missing version is a 404 further down
+      return row.visibility === 'private' || row.is_essential;
     });
   }
 

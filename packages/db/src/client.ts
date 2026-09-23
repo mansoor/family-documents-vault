@@ -80,6 +80,19 @@ export interface Schema {
     label: string | null;
     created_at: GeneratedTimestamp;
     last_used_at: Timestamp | null;
+    transports: Generated<string[]>;
+    backed_up: boolean | null;
+    aaguid: string | null;
+  };
+
+  webauthn_challenge: {
+    id: Generated<string>;
+    challenge: Buffer;
+    purpose: 'register' | 'authenticate';
+    account_id: string | null;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    used_at: Timestamp | null;
   };
 
   session: {
@@ -95,6 +108,7 @@ export interface Schema {
     expires_at: Timestamp;
     revoked_at: Timestamp | null;
     revoked_reason: string | null;
+    verified_at: Timestamp | null;
   };
 
   household_profile: {
@@ -107,6 +121,72 @@ export interface Schema {
     country: string | null;
     answered_at: Timestamp | null;
     extra: GeneratedJson;
+  };
+
+  invitation: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    email: string;
+    role: Role;
+    token_hash: Buffer;
+    code_hash: string;
+    invited_by: string;
+    attempts: Generated<number>;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    accepted_at: Timestamp | null;
+    accepted_by: string | null;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+  };
+
+  private_notice: {
+    household_id: string;
+    document_id: string;
+    member_id: string;
+    shown_at: GeneratedTimestamp;
+  };
+
+  share_link: {
+    id: Generated<string>;
+    household_id: string;
+    document_id: string;
+    token_hash: Buffer;
+    pin_hash: string | null;
+    recipient_label: string | null;
+    created_by: string;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+    open_count: Generated<number>;
+    last_opened_at: Timestamp | null;
+    attempts: Generated<number>;
+  };
+
+  owner_change_request: {
+    id: Generated<string>;
+    household_id: string;
+    target_account: string;
+    requested_by: string;
+    action: 'promote' | 'demote';
+    requested_at: GeneratedTimestamp;
+    opens_at: Timestamp;
+    lapses_at: Timestamp;
+    refused_at: Timestamp | null;
+    completed_at: Timestamp | null;
+    completed_by: string | null;
+  };
+
+  known_device: {
+    id: Generated<string>;
+    account_id: string;
+    household_id: string;
+    fingerprint: Buffer;
+    label: string;
+    first_seen_at: GeneratedTimestamp;
+    last_seen_at: GeneratedTimestamp;
   };
 
   scope_key: {

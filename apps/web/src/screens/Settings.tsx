@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import QRCode from 'qrcode';
 import { Link, useNavigate } from 'react-router';
+import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { can } from '@fdv/shared';
+import { storedRole } from '../session.js';
 
 export function SettingsScreen() {
   const { caps, session, markAuthChanged, authVersion } = useApp();
@@ -31,6 +34,14 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
+        {can(storedRole(), 'audit.read') && (
+          <li>
+            <Link to="/settings/activity" className="rowbtn">
+              <span className="doc-title">What has been happening</span>
+              <span className="muted">Everything anybody has done in this vault</span>
+            </Link>
+          </li>
+        )}
         <li>
           <Link to="/settings/notifications" className="rowbtn">
             <span className="doc-title">How you hear about things</span>
@@ -66,6 +77,7 @@ export function SettingsScreen() {
           ))}
         </ul>
       </section>
+      <Passkeys />
       <TwoStep />
       <ExportSection />
       <Button kind="quiet" onClick={() => void signOut()}>
@@ -73,6 +85,99 @@ export function SettingsScreen() {
       </Button>
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * Passkeys: the primary credential. A face or a fingerprint on this
+ * device, checked by the device, with nothing shared that could be
+ * phished or stolen from the server.
+ */
+function Passkeys() {
+  const { withToken, authVersion } = useApp();
+  const { data, reload } = useLoad(async (t) => (await api.passkeys(t)).items, [authVersion]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [label, setLabel] = useState('');
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await withToken((t) => passkeys.enrol(t, label.trim() || 'This device'));
+      setLabel('');
+      await reload();
+    } catch (err) {
+      setError(passkeys.describe(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setError(null);
+    try {
+      await withToken((t) => api.removePasskey(t, id));
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+
+  return (
+    <section aria-labelledby="passkeys-h" className="card stack">
+      <h2 id="passkeys-h" style={{ fontSize: 18 }}>
+        Passkeys
+      </h2>
+      <p className="muted">
+        Sign in with your face, your fingerprint or your screen lock. There is nothing to remember
+        and nothing a fake sign-in page could take.
+      </p>
+      <ul className="list">
+        {(data ?? []).map((k) => (
+          <li key={k.id}>
+            <span>
+              <strong>{k.label ?? 'A passkey'}</strong>
+              <span className="muted">
+                Added {new Date(k.created_at).toLocaleDateString()}
+                {k.last_used_at
+                  ? ` · last used ${new Date(k.last_used_at).toLocaleDateString()}`
+                  : ' · not used yet'}
+                {k.backed_up ? ' · synced to your other devices' : ''}
+              </span>
+            </span>
+            <Button kind="quiet" onClick={() => void remove(k.id)}>
+              Remove
+            </Button>
+          </li>
+        ))}
+        {data?.length === 0 && <li className="muted">None yet.</li>}
+      </ul>
+      <ErrorNote message={error} />
+      {!passkeys.supported() ? (
+        <p className="status status-warn">This browser cannot make passkeys.</p>
+      ) : !passkeys.secureEnough() ? (
+        <p className="status status-warn">
+          Passkeys need a secure connection. The vault is reachable at an address the browser does
+          not trust yet — the README explains how to give it one.
+        </p>
+      ) : (
+        <form onSubmit={(e) => void add(e)} className="stack">
+          <Field
+            id="passkey-label"
+            label="What to call this device"
+            value={label}
+            onChange={setLabel}
+            required={false}
+            hint="So you can tell them apart later."
+          />
+          <Button type="submit" disabled={busy}>
+            {busy ? 'Waiting for your device…' : 'Add a passkey on this device'}
+          </Button>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -166,7 +271,7 @@ function TwoStep() {
 
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
-  const { withToken, authVersion } = useApp();
+  const { withToken, guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
@@ -180,7 +285,7 @@ function ExportSection() {
   const start = async () => {
     setError(null);
     try {
-      await withToken((t) => api.requestExport(t));
+      await guarded((t) => api.requestExport(t));
       await reload();
     } catch (err) {
       setError(describeError(err));
@@ -254,7 +359,7 @@ function shortAgent(ua: string | null): string {
  * "Where your files are kept" — the Storage board from the prototype.
  */
 export function StorageScreen() {
-  const { withToken, authVersion } = useApp();
+  const { withToken, guarded, authVersion } = useApp();
   const [notice, setNotice] = useState<string | null>(null);
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -265,12 +370,12 @@ export function StorageScreen() {
   );
 
   const activate = async (id: string) => {
-    await withToken((t) => api.activateVault(t, id));
+    await guarded((t) => api.activateVault(t, id));
     setNotice('Done. New files will be kept there from now on.');
     await reload();
   };
   const remove = async (id: string) => {
-    await withToken((t) => api.removeVault(t, id));
+    await guarded((t) => api.removeVault(t, id));
     await reload();
   };
 
@@ -325,7 +430,7 @@ export function StorageScreen() {
         providers={data?.providers ?? []}
         onAdd={async (body) => {
           try {
-            const created = await withToken((t) => api.addVault(t, body));
+            const created = await guarded((t) => api.addVault(t, body));
             if (!created) return null;
             const result = await withToken((t) => api.testVault(t, created.id));
             await reload();

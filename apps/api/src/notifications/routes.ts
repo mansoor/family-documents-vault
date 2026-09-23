@@ -9,12 +9,15 @@ import {
   SMTP_PRESETS,
   type NotificationService,
 } from './service.js';
+import type { Capability } from '@fdv/shared';
+import { needs } from '../authz.js';
 
 export function registerNotifications(
   app: FastifyInstance,
   notifications: NotificationService,
 ): void {
   const auth = { preHandler: app.requireAuth };
+  const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
   // Public: the browser needs this before it can ask for permission.
@@ -53,10 +56,10 @@ export function registerNotifications(
     Object.entries(SMTP_PRESETS).map(([key, p]) => ({ key, ...p })),
   );
   app.get('/api/v1/notifications/smtp', auth, async (req) => notifications.smtp(principal(req)));
-  app.put('/api/v1/notifications/smtp', auth, async (req) =>
+  app.put('/api/v1/notifications/smtp', guard('notifications.manage'), async (req) =>
     notifications.saveSmtp(principal(req), parse(smtpBody, req.body), metaOf(req)),
   );
-  app.post('/api/v1/notifications/smtp/test', auth, async (req) =>
+  app.post('/api/v1/notifications/smtp/test', guard('notifications.manage'), async (req) =>
     notifications.testSmtp(principal(req), metaOf(req)),
   );
 }

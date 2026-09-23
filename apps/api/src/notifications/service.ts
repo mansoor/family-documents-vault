@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { requireCapability } from '../authz.js';
 
 /**
  * Devices that want push, who wants email, and the household's own SMTP
@@ -105,10 +106,7 @@ export interface SmtpView {
   last_error: string | null;
 }
 
-const ownerOnly = (p: Principal) => {
-  if (p.role !== 'owner')
-    throw new ApiError(403, 'forbidden', 'Only an owner can change how email is sent.');
-};
+const ownerOnly = (p: Principal) => requireCapability(p, 'notifications.manage');
 
 export function sealPassword(key: Buffer, password: string, householdId: string): Buffer {
   const iv = randomBytes(12);

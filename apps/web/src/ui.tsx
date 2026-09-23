@@ -1,6 +1,7 @@
-import type { Status } from '@fdv/shared';
+import { can, type Status } from '@fdv/shared';
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router';
+import { storedRole } from './session.js';
 
 /** Small shared pieces, styled from the tokens in styles.css. */
 
@@ -204,6 +205,7 @@ export function TopBar({
 }
 
 export function BottomNav() {
+  const canAdd = can(storedRole(), 'document.add');
   const item = (to: string, label: string, icon: string) => (
     <NavLink
       to={to}
@@ -220,9 +222,13 @@ export function BottomNav() {
     <nav className="bottomnav" aria-label="Main">
       {item('/', 'Home', '⌂')}
       {item('/search', 'Search', '⌕')}
-      <NavLink to="/add" className="fab" aria-label="Add a document">
-        +
-      </NavLink>
+      {/* A viewer can open and download, and nothing else: an Add button
+          that always refuses is worse than no Add button. */}
+      {canAdd && (
+        <NavLink to="/add" className="fab" aria-label="Add a document">
+          +
+        </NavLink>
+      )}
       {item('/reminders', 'Reminders', '◷')}
       {item('/people', 'People', '☺')}
     </nav>

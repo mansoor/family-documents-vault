@@ -13,6 +13,7 @@ import {
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { allows, requireCapability } from '../authz.js';
 
 /**
  * "We noticed something missing" (REM-10).
@@ -174,7 +175,7 @@ export class SuggestionService {
     trx: Db,
     p: Principal,
   ): Promise<{ household: Map<string, number>; perMember: Map<string, number> }> {
-    const adultsOk = p.role === 'owner' || p.role === 'adult';
+    const adultsOk = allows(p, 'document.see_adults');
     const rows = await sql<{ type_key: string; owner_member_id: string | null; n: string }>`
       select type_key, owner_member_id, count(*) as n
         from document
@@ -258,9 +259,7 @@ export class SuggestionService {
   }
 
   private canDecide(p: Principal): void {
-    if (p.role !== 'owner' && p.role !== 'adult') {
-      throw new ApiError(403, 'forbidden', 'Only adults can decide what the family does not need.');
-    }
+    requireCapability(p, 'profile.edit');
   }
 
   private split(key: string): { ruleKey: string; memberId: string | null } {

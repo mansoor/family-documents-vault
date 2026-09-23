@@ -8,6 +8,7 @@ import {
   installFakeApi,
   ME,
   MISSING_BIRTH_CERTIFICATE,
+  PASSKEY,
   SEALED_HIT,
   signedIn,
 } from './test-api.js';
@@ -269,5 +270,365 @@ describe('App', () => {
       target: { value: 'zqxjkv' },
     });
     await screen.findByText('Nothing in your 1 private document matched.');
+  });
+  it('lists passkeys, removes one, and says why it cannot add another here', async () => {
+    const state = fresh({ passkeys: [{ ...PASSKEY }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Passkeys' });
+    await screen.findByText("Mansoor's phone");
+    expect(screen.getByText(/synced to your other devices/)).toBeInTheDocument();
+    // jsdom has no authenticator, so the honest thing is to say so rather
+    // than offer a button that cannot work.
+    expect(screen.getByText('This browser cannot make passkeys.')).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0] as HTMLElement);
+    await waitFor(() => expect(screen.queryByText("Mansoor's phone")).not.toBeInTheDocument());
+    expect(
+      state.calls.some((c) => c.method === 'DELETE' && c.url === '/api/v1/auth/passkeys/pk-1'),
+    ).toBe(true);
+    await screen.findByText('None yet.');
+  });
+  it('asks who is asking before exporting, then carries on by itself', async () => {
+    const state = fresh({ stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(screen.getByText(/to export everything/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // The wrong password does not get through.
+    fireEvent.change(screen.getByLabelText('Or your password'), { target: { value: 'nope' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await screen.findByText("That didn't match. Try again.");
+
+    fireEvent.change(screen.getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+    // The prompt closes and the export the person asked for happens —
+    // they do not have to press the button again.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const exportCalls = state.calls.filter(
+      (c) => c.method === 'POST' && c.url === '/api/v1/exports',
+    );
+    expect(exportCalls).toHaveLength(2);
+  });
+
+  it('cancelling the prompt does nothing at all', async () => {
+    const state = fresh({ stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Make an export' }));
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(
+      state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/exports'),
+    ).toHaveLength(1);
+  });
+  it('invites another adult and shows the two halves exactly once', async () => {
+    const state = fresh({ members: [ME, AISHA] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Invite someone to sign in' }));
+    fireEvent.change(screen.getByLabelText('Their name'), { target: { value: 'Sam' } });
+    fireEvent.change(screen.getByLabelText('Their email address'), {
+      target: { value: 'sam@example.test' },
+    });
+    // An owner may hand out any role; the description changes with the choice.
+    fireEvent.click(screen.getByRole('button', { name: 'Teen' }));
+    expect(screen.getByText(/anything shared with the whole family/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Adult' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make the invitation' }));
+    await screen.findByRole('heading', { name: 'Send these to Sam' });
+    expect(screen.getByText(/\/join\/link-secret-0123456789abcdef/)).toBeInTheDocument();
+    expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
+    expect(screen.getByText(/only time they are shown/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // Closing the card puts them in the waiting list, without the secrets.
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await screen.findByRole('heading', { name: 'Waiting to be accepted' });
+    expect(screen.queryByText('ABCD-EFGH')).not.toBeInTheDocument();
+  });
+
+  it('a teen is not offered the invite button at all', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn('teen');
+    window.history.replaceState({}, '', '/people');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'People' });
+    expect(
+      screen.queryByRole('button', { name: 'Invite someone to sign in' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add someone' })).not.toBeInTheDocument();
+    // And the screen never asks the server for something it may not have.
+    expect(state.calls.some((c) => c.url === '/api/v1/invitations')).toBe(false);
+  });
+
+  it('a viewer is shown nothing they would be refused', async () => {
+    const state = fresh({ suggestions: [MISSING_BIRTH_CERTIFICATE], members: [ME, AISHA] });
+    installFakeApi(state);
+    signedIn('viewer');
+    render(<App />);
+
+    // What they came for is there…
+    await screen.findByText("Mansoor's passport");
+    // …and the things a viewer cannot do are simply not on the screen: no
+    // add button, no add-a-person chip, and no list of jobs for somebody
+    // else to do.
+    expect(screen.queryByLabelText('Add a document')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Add a person')).not.toBeInTheDocument();
+    expect(screen.queryByText('We noticed something missing')).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('asking to take away an owner’s role says it waits, and they can refuse', async () => {
+    const coOwner = { ...AISHA, id: 'm-1', display_name: 'Sam', has_account: true, role: 'owner' };
+    const state = fresh({ members: [ME, coOwner] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people/m-1');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'What Sam can do' });
+    fireEvent.click(screen.getByRole('button', { name: 'Adult' }));
+    // Before pressing anything, the screen says what will and will not
+    // happen — the seven days are the feature, not a technicality.
+    expect(screen.getByText(/takes seven days/)).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change what they can do' }));
+    await screen.findByText(/Every owner has been told/);
+    // Sam is still an owner until it is carried out.
+    expect(state.members.find((m) => m.id === 'm-1')?.role).toBe('owner');
+
+    // And it is waiting on the People screen, where nobody has to look for it.
+    window.history.replaceState({}, '', '/people');
+    fireEvent.click(screen.getByRole('link', { name: 'People' }));
+    await screen.findByText(/asked for Sam to stop being an owner/);
+    fireEvent.click(screen.getByRole('button', { name: 'Withdraw it' }));
+    await waitFor(() => expect(screen.queryByText(/stop being an owner/)).not.toBeInTheDocument());
+  });
+
+  it('taking a sign-in away says what survives it', async () => {
+    const kid = { ...AISHA, id: 'm-1', display_name: 'Aisha', has_account: true, role: 'teen' };
+    const state = fresh({ members: [ME, kid] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/people/m-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Take away their sign-in' }));
+    expect(screen.getByText(/their documents are untouched/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, take their sign-in away' }));
+    await waitFor(() => expect(state.members.find((m) => m.id === 'm-1')?.role).toBeNull());
+  });
+
+  it('shares one document by link, and says exactly what the link can do', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    fireEvent.change(screen.getByLabelText('Who is it for?'), {
+      target: { value: 'the letting agent' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    await screen.findByText(/\/shared\/share-secret-0123456789abcdef/);
+    expect(
+      screen.getByText(/this one document until it expires, and nothing else/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/every time it is opened/)).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    // Back to the document, with the live link listed and takeable back.
+    await screen.findByText(/Shared with the letting agent, not opened yet/);
+    fireEvent.click(screen.getByRole('button', { name: 'Take it back' }));
+    await waitFor(() => expect(state.shares).toHaveLength(0));
+  });
+
+  it('a PIN is shown separately, with the reason', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    fireEvent.click(screen.getByLabelText(/four-digit PIN/));
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    await screen.findByText('4821');
+    expect(screen.getByText(/not the same message/)).toBeInTheDocument();
+  });
+
+  it('the person at the other end gets the document and nothing else', async () => {
+    installFakeApi(fresh());
+    window.history.replaceState({}, '', '/shared/share-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+    expect(screen.getByText('Mansoor Seikh')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Download tenancy.pdf/ })).toBeInTheDocument();
+    expect(screen.getByText(/They can see that you opened it/)).toBeInTheDocument();
+    // No sign of the rest of the vault: no navigation, no search, no sign-in.
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign in' })).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('a PIN on a link withholds the title until it is right', async () => {
+    installFakeApi(fresh({ sharePin: '4821' }));
+    window.history.replaceState({}, '', '/shared/share-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByText(/put a PIN on it/);
+    // The title is not on the page yet.
+    expect(screen.queryByText('Flat 3 tenancy agreement')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/four-digit PIN they gave you/), {
+      target: { value: '0000' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the document' }));
+    await screen.findByText(/That PIN is not right/);
+
+    fireEvent.change(screen.getByLabelText(/four-digit PIN they gave you/), {
+      target: { value: '4821' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the document' }));
+    await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+  });
+
+  it('a link that has been taken back says so, without saying what it was', async () => {
+    installFakeApi(fresh({ shareValid: false }));
+    window.history.replaceState({}, '', '/shared/nope');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'This link cannot be opened' });
+    expect(screen.getByText(/Ask whoever sent it/)).toBeInTheDocument();
+    expect(screen.queryByText(/tenancy/i)).not.toBeInTheDocument();
+  });
+
+  it('the activity log reads like sentences with times', async () => {
+    const state = fresh({
+      activity: [
+        {
+          id: 3,
+          at: new Date(Date.now() - 864e5).toISOString(),
+          text: 'Sarah downloaded “Home insurance policy”',
+          notable: false,
+          document_id: 'doc-1',
+        },
+        {
+          id: 2,
+          at: new Date(Date.now() - 3 * 864e5).toISOString(),
+          text: 'Sarah changed where the files are kept',
+          notable: true,
+          document_id: null,
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings/activity');
+    render(<App />);
+
+    await screen.findByText('Sarah downloaded “Home insurance policy”');
+    expect(screen.getByText(/^yesterday, /)).toBeInTheDocument();
+    expect(screen.getByText(/private documents are only ever in your copy/)).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('marking a document private says the thing that has to be said, once', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Change who can see this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    expect(screen.getByText(/Nobody else, including the owner of this vault/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The sentence, at the moment it becomes true.
+    await screen.findByRole('heading', { name: 'Only you can open this' });
+    expect(screen.getByText(/unless you leave a key/)).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'I understand' }));
+
+    // And never again for this document: the server decides, and says null.
+    await screen.findByRole('button', { name: 'Change who can see this' });
+    fireEvent.click(screen.getByRole('button', { name: 'Change who can see this' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone in the family' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('heading', { name: 'Only you can open this' }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it('joining says whose vault it is before asking for anything', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/join/link-secret-0123456789abcdef');
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    expect(screen.getByText('Mansoor Seikh')).toBeInTheDocument();
+    expect(screen.getByText(/Cannot change storage or remove people/)).toBeInTheDocument();
+    await expectAccessible();
+
+    // A wrong code is an ordinary mistake, and says how many tries are left.
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'ZZZZ-ZZZZ' },
+    });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'a long enough password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    await screen.findByText('That code is not right. 4 tries left.');
+
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'abcd efgh' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    // Straight into the signed-in app: no second sign-in step.
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+  });
+
+  it('an invitation that is no longer valid says so, and offers the way back', async () => {
+    installFakeApi(fresh({ invitationValid: false }));
+    window.history.replaceState({}, '', '/join/nope');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'This invitation cannot be used' });
+    expect(screen.getByText(/Ask whoever invited you/)).toBeInTheDocument();
+    await expectAccessible();
   });
 });

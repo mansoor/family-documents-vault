@@ -54,21 +54,70 @@ From then on: **Add** a document from a photo or a file, confirm what it is and 
 
 To stop: `docker compose down`. Your data stays in the `fdv_db-data` and `fdv_vault-data` volumes.
 
+## Reaching it from the rest of the house
+
+`http://localhost:8080` is all you need on the machine the vault runs on: browsers treat
+localhost as a secure origin, so everything works there. They do **not** extend that to
+`http://192.168.1.20:8080`, and three things a family wants depend on it:
+
+- **Passkeys** — the browser refuses to create one on an insecure origin.
+- **The day's reminders arriving on a phone** — web push needs a service worker, which
+  needs HTTPS.
+- **Installing the vault to a home screen** as an app.
+
+So before you hand the address to anyone else in the house, give it a certificate. The
+compose overlay does it with [Caddy](https://caddyserver.com):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+```
+
+**A name for the house, with a certificate Caddy issues itself** (the default). Set
+`FDV_HOSTNAME` in `.env` to a name every device can resolve — a Tailscale name, an mDNS
+name like `vault.local`, or one your router serves — and set `FDV_BASE_URL` to the
+matching `https://` address, since that is what reminder emails link back to. Caddy makes
+its own certificate authority the first time it starts. Each device trusts that CA once:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./vault-ca.crt
+```
+
+Install `vault-ca.crt` on each phone and laptop (iOS: Settings → General → VPN & Device
+Management, then Certificate Trust Settings; Android: Settings → Security → Encryption &
+credentials; macOS: Keychain Access, set to Always Trust; Windows: Trusted Root
+Certification Authorities). Nothing leaves your network and no certificate authority is
+contacted.
+
+**A real name from Let's Encrypt.** If the vault is reachable from the internet at a name
+you own, point `FDV_CADDYFILE=./docker/caddy/Caddyfile.public` at it, set `FDV_HOSTNAME`
+and `FDV_TLS_EMAIL`, and open ports 80 and 443. Caddy gets and renews the certificate
+itself. Think about this one first: a vault on the open internet is a vault anyone can
+knock on.
+
+**The middle road, and the one worth taking.** Run [Tailscale](https://tailscale.com) on
+the server and on the family's devices, use the internal Caddyfile with the Tailscale name
+as `FDV_HOSTNAME`, and nothing is exposed to the internet at all — every device reaches
+the vault over the private network, with a name and a certificate that just work.
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
 
-| Variable               | Default            | What it is                                                                                                                                         |
-| ---------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FDV_MASTER_KEY`       | generated          | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
-| `FDV_DB_PASSWORD`      | generated          | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
-| `FDV_DB_APP_PASSWORD`  | generated          | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
-| `FDV_MAX_UPLOAD_BYTES` | `104857600`        | Largest single file the vault accepts (100 MB).                                                                                                    |
-| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`      | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
-| `FDV_DISPLAY_NAME`     | `Our family vault` | What your family calls the vault. Shown on every screen.                                                                                           |
-| `FDV_PORT`             | `8080`             | The port the web app listens on.                                                                                                                   |
-| `LOG_LEVEL`            | `info`             | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
-| `FDV_VERSION`          | `latest`           | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| Variable               | Default                 | What it is                                                                                                                                         |
+| ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FDV_MASTER_KEY`       | generated               | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
+| `FDV_DB_PASSWORD`      | generated               | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
+| `FDV_DB_APP_PASSWORD`  | generated               | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_MAX_UPLOAD_BYTES` | `104857600`             | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`           | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
+| `FDV_DISPLAY_NAME`     | `Our family vault`      | What your family calls the vault. Shown on every screen.                                                                                           |
+| `FDV_PORT`             | `8080`                  | The port the web app listens on.                                                                                                                   |
+| `LOG_LEVEL`            | `info`                  | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
+| `FDV_VERSION`          | `latest`                | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| `FDV_HOSTNAME`         | `vault.local`           | The name devices use, when the TLS overlay is running.                                                                                             |
+| `FDV_BASE_URL`         | `http://localhost:8080` | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                           |
+| `FDV_CADDYFILE`        | internal                | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                  |
+| `FDV_TRUST_PROXY`      | `private`               | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.       |
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -79,6 +128,97 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
+
+### Inviting the rest of the family
+
+Everybody in the household is a **member** — including a child or an elderly
+parent who never signs in and simply has documents. Giving someone a sign-in
+is a separate step, on the People screen:
+
+1. An adult chooses **Invite someone to sign in**, gives their name, an email
+   address (which becomes their sign-in) and a role.
+2. The vault produces a **link** and an eight-character **code**, and shows
+   them once. Send them separately — the link in a message, the code by phone
+   or in person. Anyone holding both can sign in as that person.
+3. They open the link, which tells them whose vault it is, who invited them
+   and what they will be able to do, then type the code and choose their own
+   password. That password also unlocks their own _Only me_ documents, so the
+   vault cannot reset it for them.
+
+The invitation lasts seven days and can be cancelled at any time. Five wrong
+codes and it stops working. Nothing is emailed — the vault does not need a
+mail server to bring somebody in, and you pass the invitation on yourself.
+
+The four roles:
+
+| Role       | Can                                                                                                                      | Cannot                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| **Owner**  | Everything, including storage, people and emergency contacts                                                             | —                                                                      |
+| **Adult**  | Everything day to day: add, edit and download every _Everyone_ and _Adults only_ document, manage their own private ones | Change storage, remove people, see another adult's _Only me_ documents |
+| **Teen**   | Their own documents, plus anything shared with the whole family                                                          | See _Adults only_ documents, or change anyone else's                   |
+| **Viewer** | Open and download what the family shares                                                                                 | Change anything. For an accountant, a lawyer, a carer                  |
+
+An owner can hand out any role. An adult can give a teen or a viewer a
+sign-in, but only an owner can make another adult or owner, because that
+opens the adults-only documents.
+
+### Two owners, and what happens when that ends
+
+Several people can be owners at once, with identical powers, so that the
+household keeps running when one of them cannot. Making somebody an owner is
+immediate, and every other adult is told.
+
+**Taking an owner's role away is not immediate.** It starts a seven-day
+notice: everybody is told at once, the person it is about can refuse at any
+time during it, and after the seven days an owner still has to come back and
+carry it out. A shared vault during a bad separation is a real situation, and
+a one-tap lockout would be a weapon rather than a feature. Stepping down
+yourself is immediate.
+
+**At least one owner always remains.** That is enforced by the database, not
+by the app, because a household with no owner cannot appoint one.
+
+Taking away somebody's sign-in leaves the person: their record, their
+documents and their own private key are untouched, and an invitation brings
+them back. Only an owner can do it, and not to another owner.
+
+### Seeing what has happened
+
+Settings → **What has been happening** is the household's activity log, written
+as sentences: _Sarah downloaded "Home insurance policy" — yesterday, 4:12pm._
+Owners, adults and teens can read it; a viewer cannot.
+
+Nothing appears in it that the reader could not already see. Lines about a
+private document are in its owner's copy of the list and nobody else's — left
+out entirely rather than shown with the details removed, because "somebody did
+something to a document" between two adults is worse than silence. The full
+hash-chained record is separate, is verified nightly, and is in the export.
+
+### Sending one document to somebody outside the family
+
+The landlord wants the tenancy agreement; the accountant wants last year's tax
+return. On the document, **Share a link** makes a read-only link to that one
+document:
+
+- it stops working after seven days, or whatever you set;
+- it can carry a four-digit PIN, which you give them some other way;
+- you can take it back at any moment;
+- every time it is opened you see it, next to the link;
+- and it reaches nothing else in the vault. There is no account at the other
+  end and nothing to sign up for.
+
+The link is shown once — the vault keeps only a hash of it — so a lost link is
+replaced rather than recovered. A document moved to the trash stops being
+shared straight away, without anyone having to remember the link exists.
+
+### When a new device signs in
+
+If somebody signs in on a device your account has not used before, you are
+told — by push, and by email if the household has a mail server set up. It
+cannot be switched off, because it is about who can get into your vault. The
+signal is the browser's own description of itself, so a browser update can
+make a familiar device look new: it errs towards telling you about a sign-in
+you already knew about rather than staying quiet about one you did not.
 
 ## How your files are protected
 

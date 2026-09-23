@@ -5,8 +5,10 @@ import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { SealedSearchService } from './sealed-search.js';
+import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
+import { openBody, shareBody, type ShareService } from './shares.js';
 
 const dateValue = z
   .object({
@@ -77,6 +79,8 @@ export async function registerDocuments(
   visibility: VisibilityService,
   maxUploadBytes: number,
   sealed: SealedSearchService,
+  stepUp?: StepUpService,
+  shares?: ShareService,
 ) {
   await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1 } });
   const auth = { preHandler: app.requireAuth };
@@ -173,8 +177,12 @@ export async function registerDocuments(
         z.object({ visibility: z.enum(['household', 'adults', 'private']) }),
         req.body,
       );
-      await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req));
-      return reply.status(204).send();
+      // Answering with the notice rather than 204: the moment somebody is
+      // told "only you can open this" is part of the act, not a separate
+      // thing the client has to know to go and ask about (SEC-19).
+      return reply.send(
+        await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req)),
+      );
     },
   );
 
@@ -247,6 +255,11 @@ export async function registerDocuments(
 
   app.get<{ Params: { id: string } }>('/api/v1/versions/:id/content', auth, async (req, reply) => {
     const p = principal(req);
+    // An Essential or an "only me" document asks who is asking, once
+    // every five minutes (SEC-17). Everything else opens straight away.
+    if (stepUp && (await docs.isSensitive(p, req.params.id))) {
+      await stepUp.require(p, 'open_private_document');
+    }
     const meta = await docs.versionMeta(p, req.params.id);
     const total = meta.byte_size;
     const range = parseRange(req.headers.range, total);
@@ -267,4 +280,63 @@ export async function registerDocuments(
     reply.header('content-length', String(served.end - served.start + 1));
     return reply.send(stream);
   });
+
+  if (!shares) return;
+
+  const idParam = z.object({ id: z.string().uuid() });
+  const tokenParam = z.object({ token: z.string().min(16).max(256) });
+
+  app.post<{ Params: { id: string } }>('/api/v1/documents/:id/share', auth, async (req, reply) => {
+    const created = await shares.create(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(shareBody, req.body ?? {}),
+      metaOf(req),
+    );
+    return reply.status(201).send(created);
+  });
+
+  app.get('/api/v1/shares', auth, async (req) => ({ items: await shares.list(principal(req)) }));
+
+  app.delete<{ Params: { id: string } }>('/api/v1/shares/:id', auth, async (req, reply) => {
+    await shares.revoke(principal(req), parse(idParam, req.params).id, metaOf(req));
+    return reply.status(204).send();
+  });
+
+  // The three the recipient calls. Nobody signs in for these, so they are
+  // rate-limited like the front door.
+  const tight = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+
+  app.get<{ Params: { token: string } }>('/api/v1/shared/:token', tight, async (req) =>
+    shares.preview(parse(tokenParam, req.params).token),
+  );
+
+  app.post<{ Params: { token: string } }>('/api/v1/shared/:token/open', tight, async (req) =>
+    shares.open(parse(tokenParam, req.params).token, parse(openBody, req.body ?? {}), metaOf(req)),
+  );
+
+  app.get<{ Params: { token: string }; Querystring: { pin?: string } }>(
+    '/api/v1/shared/:token/content',
+    tight,
+    async (req, reply) => {
+      // The PIN comes on the query string because this is a plain link a
+      // browser follows; the whole URL is already the secret.
+      const { stream, total, contentType, filename } = await shares.content(
+        parse(tokenParam, req.params).token,
+        parse(openBody, { ...(req.query.pin ? { pin: req.query.pin } : {}) }),
+        metaOf(req),
+      );
+      reply.header('content-type', contentType);
+      reply.header(
+        'content-disposition',
+        `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      );
+      reply.header('content-length', String(total));
+      reply.header('cache-control', 'private, no-store');
+      // A shared document must never end up in somebody else's search
+      // results or a proxy's cache.
+      reply.header('x-robots-tag', 'noindex, nofollow');
+      return reply.send(stream);
+    },
+  );
 }

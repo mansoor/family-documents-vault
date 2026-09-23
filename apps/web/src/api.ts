@@ -1,5 +1,11 @@
 import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from '@simplewebauthn/browser';
+import type {
+  ActivityLine,
   Capabilities,
+  Role,
   DateValue,
   DocumentTypeView,
   DocumentView,
@@ -19,6 +25,8 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
+    /** Which consequential action asked for a fresh credential (SEC-17). */
+    public readonly action?: string,
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -32,7 +40,7 @@ export interface Tokens {
   refresh_expires_in: number;
   household_id: string;
   member_id: string;
-  role: 'owner' | 'adult' | 'teen' | 'viewer';
+  role: Role;
   scopes_unlocked: string[];
 }
 
@@ -40,7 +48,7 @@ export interface Me {
   account_id: string;
   household_id: string;
   member_id: string;
-  role: Tokens['role'];
+  role: Role;
   totp_enabled: boolean;
   totp_required: boolean;
 }
@@ -109,6 +117,15 @@ export interface TestOutcome {
   code?: string;
 }
 
+export interface PasskeyView {
+  id: string;
+  label: string | null;
+  created_at: string;
+  last_used_at: string | null;
+  backed_up: boolean | null;
+  transports: string[];
+}
+
 export interface Member {
   id: string;
   display_name: string;
@@ -117,9 +134,103 @@ export interface Member {
   is_deceased: boolean;
   colour: number;
   has_account: boolean;
-  role: string | null;
+  role: Role | null;
   is_me: boolean;
   document_count: number;
+}
+
+export interface Invitation {
+  id: string;
+  member_id: string;
+  display_name: string;
+  email: string;
+  role: Role;
+  invited_by: string | null;
+  created_at: string;
+  expires_at: string;
+  state: 'pending' | 'accepted' | 'revoked' | 'expired' | 'locked';
+  attempts_left: number;
+}
+
+/**
+ * The link and the code are in this response and nowhere else — the server
+ * keeps only their hashes, so this is the one moment they exist.
+ */
+export interface CreatedInvitation {
+  invitation: Invitation;
+  link_token: string;
+  code: string;
+}
+
+export interface InvitationPreview {
+  household_name: string;
+  display_name: string;
+  email: string;
+  role: Role;
+  role_label: string;
+  invited_by: string | null;
+  expires_at: string;
+}
+
+export interface Share {
+  id: string;
+  document_id: string;
+  document_title: string | null;
+  recipient_label: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  expires_at: string;
+  has_pin: boolean;
+  open_count: number;
+  last_opened_at: string | null;
+  state: 'active' | 'expired' | 'revoked' | 'locked';
+  summary: string;
+}
+
+/** The link and the PIN exist here and nowhere else. */
+export interface CreatedShare {
+  share: Share;
+  link_token: string;
+  pin?: string;
+}
+
+export interface SharePreview {
+  household_name: string;
+  needs_pin: boolean;
+  expires_at: string;
+  document_title: string | null;
+  shared_by: string | null;
+}
+
+export interface SharedDocument {
+  document_title: string | null;
+  document_type: string | null;
+  shared_by: string | null;
+  expires_at: string;
+  byte_size: number;
+  content_type: string;
+  filename: string;
+}
+
+export interface OwnerChange {
+  id: string;
+  target_member_id: string;
+  target_name: string;
+  requested_by_name: string | null;
+  action: 'promote' | 'demote';
+  requested_at: string;
+  opens_at: string;
+  lapses_at: string;
+  state: 'waiting' | 'ready' | 'refused' | 'completed' | 'lapsed';
+  about_me: boolean;
+  summary: string;
+}
+
+export interface RoleChangeResult {
+  applied: boolean;
+  role: Role;
+  request?: OwnerChange;
+  message: string;
 }
 
 export interface Profile {
@@ -237,14 +348,18 @@ export interface RequestOptions {
 async function toError(res: Response): Promise<ApiRequestError> {
   let code = 'http_error';
   let message = `The server answered ${res.status}.`;
+  let action: string | undefined;
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    const body = (await res.json()) as {
+      error?: { code?: string; message?: string; action?: string };
+    };
     code = body.error?.code ?? code;
     message = body.error?.message ?? message;
+    action = body.error?.action;
   } catch {
     // not JSON; keep the generic message
   }
-  return new ApiRequestError(res.status, code, message);
+  return new ApiRequestError(res.status, code, message, action);
 }
 
 async function send(path: string, opts: RequestOptions): Promise<Response> {
@@ -343,6 +458,77 @@ export const api = {
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
 
+  setVisibility: (token: string, documentId: string, visibility: Visibility) =>
+    request<{ notice: { title: string; body: string } | null }>(
+      `/api/v1/documents/${documentId}/visibility`,
+      { method: 'POST', body: { visibility }, token },
+    ),
+  activity: (token: string, before?: number) =>
+    request<{ items: ActivityLine[]; next: number | null }>(
+      `/api/v1/audit${before ? `?before=${before}` : ''}`,
+      { token },
+    ),
+
+  share: (
+    token: string,
+    documentId: string,
+    body: { expires_in_days?: number; recipient_label?: string; with_pin?: boolean },
+  ) =>
+    request<CreatedShare>(`/api/v1/documents/${documentId}/share`, {
+      method: 'POST',
+      body,
+      token,
+    }),
+  shares: (token: string) => request<{ items: Share[] }>('/api/v1/shares', { token }),
+  revokeShare: (token: string, id: string) =>
+    request<void>(`/api/v1/shares/${id}`, { method: 'DELETE', token }),
+  // The two the recipient calls, with no sign-in at all.
+  sharePreview: (linkToken: string) =>
+    request<SharePreview>(`/api/v1/shared/${encodeURIComponent(linkToken)}`),
+  openShare: (linkToken: string, pin?: string) =>
+    request<SharedDocument>(`/api/v1/shared/${encodeURIComponent(linkToken)}/open`, {
+      method: 'POST',
+      body: pin ? { pin } : {},
+    }),
+  sharedContentUrl: (linkToken: string, pin?: string) =>
+    `/api/v1/shared/${encodeURIComponent(linkToken)}/content${pin ? `?pin=${encodeURIComponent(pin)}` : ''}`,
+
+  setRole: (token: string, memberId: string, role: Role) =>
+    request<RoleChangeResult>(`/api/v1/members/${memberId}/role`, {
+      method: 'POST',
+      body: { role },
+      token,
+    }),
+  stepDown: (token: string, role: Role) =>
+    request<RoleChangeResult>('/api/v1/me/step-down', { method: 'POST', body: { role }, token }),
+  removeSignIn: (token: string, memberId: string) =>
+    request<void>(`/api/v1/members/${memberId}/sign-in`, { method: 'DELETE', token }),
+  ownerChanges: (token: string) =>
+    request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
+  refuseOwnerChange: (token: string, id: string) =>
+    request<OwnerChange>(`/api/v1/owner-changes/${id}/refuse`, { method: 'POST', token }),
+  completeOwnerChange: (token: string, id: string) =>
+    request<RoleChangeResult>(`/api/v1/owner-changes/${id}/complete`, { method: 'POST', token }),
+  withdrawOwnerChange: (token: string, id: string) =>
+    request<void>(`/api/v1/owner-changes/${id}`, { method: 'DELETE', token }),
+
+  invitations: (token: string) =>
+    request<{ items: Invitation[] }>('/api/v1/invitations', { token }),
+  invite: (
+    token: string,
+    body: { member_id?: string; display_name?: string; email: string; role: Role },
+  ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
+  revokeInvitation: (token: string, id: string) =>
+    request<void>(`/api/v1/invitations/${id}`, { method: 'DELETE', token }),
+  // The two the invitee calls, before they have any token at all.
+  invitationPreview: (linkToken: string) =>
+    request<InvitationPreview>(`/api/v1/invitations/${encodeURIComponent(linkToken)}`),
+  acceptInvitation: (linkToken: string, body: { code: string; password: string }) =>
+    request<Tokens>(`/api/v1/invitations/${encodeURIComponent(linkToken)}/accept`, {
+      method: 'POST',
+      body,
+    }),
+
   documentTypes: (token: string) =>
     request<{ items: DocumentTypeView[] }>('/api/v1/document-types', { token }),
   documents: (token: string, params: Params = {}) =>
@@ -414,6 +600,38 @@ export const api = {
       method: 'POST',
       token,
     }),
+  passkeys: (token: string) =>
+    request<{ items: PasskeyView[] }>('/api/v1/auth/passkeys', { token }),
+  passkeyRegisterChallenge: (token: string) =>
+    request<PublicKeyCredentialCreationOptionsJSON>('/api/v1/auth/passkeys/challenge', {
+      method: 'POST',
+      token,
+    }),
+  passkeyRegister: (token: string, response: unknown, label: string) =>
+    request<PasskeyView>('/api/v1/auth/passkeys', {
+      method: 'POST',
+      body: { response, label },
+      token,
+    }),
+  removePasskey: (token: string, id: string) =>
+    request<void>(`/api/v1/auth/passkeys/${id}`, { method: 'DELETE', token }),
+  passkeyChallenge: (email?: string) =>
+    request<PublicKeyCredentialRequestOptionsJSON>('/api/v1/auth/passkey/challenge', {
+      method: 'POST',
+      body: email ? { email } : {},
+    }),
+  passkeyVerify: (response: unknown) =>
+    request<Tokens>('/api/v1/auth/passkey/verify', { method: 'POST', body: { response } }),
+
+  stepUpState: (token: string) =>
+    request<{ verified_at: string | null; expires_in: number }>('/api/v1/auth/step-up', { token }),
+  stepUp: (token: string, body: { password?: string; code?: string; passkey?: unknown }) =>
+    request<{ verified_at: string; expires_in: number }>('/api/v1/auth/step-up', {
+      method: 'POST',
+      body,
+      token,
+    }),
+
   suggestions: (token: string, dismissed = false) =>
     request<{ items: SuggestionView[]; profile_answered: boolean; dismissed_count: number }>(
       `/api/v1/suggestions${dismissed ? '?dismissed=true' : ''}`,

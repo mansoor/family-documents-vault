@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
+import * as passkeys from '../passkeys.js';
 import { api } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
@@ -75,6 +76,25 @@ export function SignInScreen() {
     }
   };
 
+  /**
+   * A passkey signs in on its own: no password, and no second step, because
+   * the device already checked who is holding it.
+   */
+  const withPasskey = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const tokens = await passkeys.signIn(email.trim() || undefined);
+      session.accept(tokens);
+      markAuthChanged();
+      void navigate('/', { replace: true });
+    } catch (err) {
+      setError(passkeys.describe(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (mfaToken) {
     return (
       <main className="page">
@@ -129,6 +149,16 @@ export function SignInScreen() {
         <Button type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
+        {caps?.features.passkeys && passkeys.supported() && passkeys.secureEnough() && (
+          <>
+            <p className="muted" style={{ textAlign: 'center' }}>
+              or
+            </p>
+            <Button kind="quiet" disabled={busy} onClick={() => void withPasskey()}>
+              {busy ? 'Waiting for your device…' : 'Use a passkey'}
+            </Button>
+          </>
+        )}
       </form>
     </main>
   );

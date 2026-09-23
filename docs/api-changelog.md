@@ -128,6 +128,132 @@ against self-hosted servers that are months or years behind.
 
 - Exports (bearer; adults). `POST /api/v1/exports` → `202 { id, state: "queued", … }`; `GET /api/v1/exports` and `GET /api/v1/exports/{id}` report `state` (`queued`, `running`, `done`, `failed`), `document_count`, `byte_size`, `expires_at`; `GET /api/v1/exports/{id}/content` streams the ZIP (`410 export_expired` after seven days). The ZIP holds every original the requester can see, in folders by category, plus `index.json`, `index.csv`, `index.html` and `README.txt`.
 
+- Invitations (SHR-02). An invitation carries two secrets: a **link token**
+  (32 random bytes, base64url) and an eight-character **code**. The server
+  stores only their hashes, so both appear once, in the `201` that creates
+  the invitation, and cannot be retrieved afterwards.
+
+  - `POST /api/v1/invitations` — `{ member_id | display_name, email, role }`
+    → `201 { invitation, link_token, code }`. `member_id` invites someone
+    already in the household who has no sign-in; `display_name` adds them.
+    Exactly one of the two. Requires an adult, and `role` of `adult` or
+    `owner` requires an owner (`403 forbidden`). `409 email_in_use` when the
+    address already signs in here; `409 already_signed_in` when the person
+    does. Asks for step-up (`change_people`).
+  - `POST /api/v1/members/{id}/invite` — the same thing for an existing
+    person: `{ email, role }`.
+  - `GET /api/v1/invitations` — `{ items: [{ id, member_id, display_name,
+email, role, invited_by, created_at, expires_at, state, attempts_left }] }`,
+    `state` one of `pending`, `accepted`, `revoked`, `expired`, `locked`.
+    Adults only.
+  - `DELETE /api/v1/invitations/{id}` — revokes a pending one, `204`.
+  - `GET /api/v1/invitations/{link_token}` — **unauthenticated**. What the
+    invitee is shown before deciding: `{ household_name, display_name,
+email, role, role_label, invited_by, expires_at }`. Rate-limited.
+  - `POST /api/v1/invitations/{link_token}/accept` — **unauthenticated**.
+    `{ code, password }` → `201` with the same token set as a sign-in. The
+    code is compared case- and punctuation-insensitively. A wrong code is
+    `401 invitation_code_wrong` and says how many tries are left; after five
+    the invitation is dead. Anything else wrong with the link — unknown,
+    expired, revoked, already used, locked — is `404 invitation_not_valid`
+    with one message, so a link cannot be probed for its state.
+
+  Creating a second invitation for the same person revokes the first: nobody
+  holds two live links.
+
+- The household activity log (SHR-07). `GET /api/v1/audit?before=&limit=` →
+  `{ items: [{ id, at, text, notable, document_id }], next }`, newest first.
+  `text` is the whole sentence and is safe to show verbatim; `next` is the id
+  to pass as `before` for the page after. Owners, adults and teens
+  (`audit.read`); a viewer is refused.
+
+  Lines about a private document are returned only to the member it belongs to,
+  and adults-only documents only to adults — **left out, not redacted**, so
+  there is no gap where one used to be. Actions that cannot be said in a
+  sentence (step-ups, reminder housekeeping, dismissed suggestions) are not in
+  this list; they remain in the hash-chained log, the nightly verification and
+  the export. An event with no signed-in actor, such as a shared link being
+  opened, is attributed to its label.
+
+- **Changed:** `POST /api/v1/documents/{id}/visibility` answers `200
+{ notice }` instead of `204`. `notice` is `{ title, body }` the first time a
+  given member makes a given document private, and `null` every other time —
+  the SEC-19 moment, said once and never repeated for that document.
+
+- Share links (SHR-05). A link carries a 32-byte secret; the server stores only
+  its SHA-256, so it is shown once at creation and can be replaced but never
+  recovered. An optional PIN is four digits, hashed with Argon2 and guarded by a
+  ten-attempt counter.
+
+  - `POST /api/v1/documents/{id}/share` — `{ expires_in_days?, recipient_label?,
+with_pin? }` → `201 { share, link_token, pin? }`. Adults only
+    (`document.share`). `422 nothing_to_share` when the document has no file on
+    it. Somebody else's private document is `404`, not `403`.
+  - `GET /api/v1/shares` — every live and dead link the caller may know about,
+    with `open_count`, `last_opened_at`, `state` (`active`, `expired`,
+    `revoked`, `locked`) and a `summary` sentence. Links to a private document
+    appear only for its owner.
+  - `DELETE /api/v1/shares/{id}` — revokes it, `204`.
+  - `GET /api/v1/shared/{link_token}` — **unauthenticated**:
+    `{ household_name, needs_pin, expires_at, document_title, shared_by }`.
+    `document_title` is `null` while a PIN is outstanding.
+  - `POST /api/v1/shared/{link_token}/open` — **unauthenticated**, `{ pin? }` →
+    the document's details. This is the call that counts as an open and writes
+    `share.opened` to the audit log under an actor _label_ rather than an
+    account. `401 pin_wrong` for a bad PIN.
+  - `GET /api/v1/shared/{link_token}/content?pin=` — **unauthenticated**; the
+    file, with `Cache-Control: private, no-store` and
+    `X-Robots-Tag: noindex, nofollow`. Logged as `share.downloaded`, which does
+    not count as a second open.
+
+  Every dead end — unknown, expired, revoked, locked, or a document moved to
+  the trash — is `404 link_not_valid` with one message.
+
+- Co-owners (bearer; owner, and all of them ask for step-up).
+
+  - `POST /api/v1/members/{id}/role` — `{ role }` → `{ applied, role, request?, message }`.
+    `message` is written for a person and safe to show. Promoting and any
+    change to a non-owner applies at once (`applied: true`). Taking the owner
+    role off somebody else answers `applied: false` with a `request`: nothing
+    has changed yet. `422` for your own role, `409 already_requested` when one
+    is already waiting.
+  - `POST /api/v1/me/step-down` — `{ role }`. Immediate, as long as another
+    owner remains.
+  - `DELETE /api/v1/members/{id}/sign-in` — `204`. The member row, their
+    documents and their scope key stay; their sessions are revoked.
+    `409 owner_notice_required` for an owner.
+  - `GET /api/v1/owner-changes` — every member sees these, because one may be
+    about them: `{ items: [{ id, target_member_id, target_name,
+requested_by_name, action, requested_at, opens_at, lapses_at, state,
+about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
+    `completed`, `lapsed`. `summary` is a sentence.
+  - `POST /api/v1/owner-changes/{id}/refuse` — only the person it is about;
+    `403` otherwise.
+  - `POST /api/v1/owner-changes/{id}/complete` — any owner, once `opens_at`
+    has passed. `409 notice_period` before then, `409 request_lapsed` after
+    thirty days.
+  - `DELETE /api/v1/owner-changes/{id}` — any owner withdraws it.
+
+  A role change takes effect on the next request, not on the next token: the
+  `role` in an access token is advisory and the server reads the live one.
+
+  A household always keeps at least one owner. That is a deferred constraint
+  trigger, so the last owner cannot be demoted or removed by any route,
+  including one that does both halves of a swap in a single transaction.
+
+- New-device alerts (SEC-11). A sign-in from a user agent an account has not
+  used before enqueues `alert.send`, delivered by push and by the household's
+  mail server at once rather than in the daily digest. There is no preference
+  to switch it off. The first device an account uses is never an alert.
+
+- Roles. Every endpoint that refuses on the grounds of a role now answers
+  `403 { "error": { "code": "forbidden", "message": … } }`, where `message`
+  says who _can_ do it and is safe to show verbatim. The check runs before
+  the body is validated, so a caller who is not allowed is told that rather
+  than being told about their form. An adults-only document remains absent
+  rather than refused (`404`) for teens and viewers, in listings, in search
+  and by id — telling them it exists would be the leak.
+
 ## Deprecations in effect
 
 None.

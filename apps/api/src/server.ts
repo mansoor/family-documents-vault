@@ -14,8 +14,14 @@ import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
+import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
+import { StepUpService } from './auth/step-up.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
+import { InvitationService } from './household/invitations.js';
+import { CoOwnerService } from './household/co-owners.js';
+import { ShareService } from './documents/shares.js';
+import { AuditService } from './audit/service.js';
 import { VaultService } from './vaults/service.js';
 
 async function readVersion(): Promise<string> {
@@ -87,19 +93,43 @@ async function main(): Promise<void> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     await boss.send(name, data);
   };
+  /**
+   * An alert goes on the queue rather than out of the API: the worker owns
+   * push and the household's mail server, and a sign-in must not wait for
+   * an SMTP handshake. The job name matches `JOBS.alertSend` in the worker.
+   */
+  const alert = (a: { householdId: string; accountIds: string[]; subject: string; body: string }) =>
+    enqueue('alert.send', {
+      household_id: a.householdId,
+      account_ids: a.accountIds,
+      subject: a.subject,
+      body: a.body,
+    });
+
+  // Passkeys are bound to the address the vault is published at, so this
+  // is where FDV_BASE_URL stops being cosmetic.
+  const auth = new AuthService(
+    db,
+    deriveSigningKey(masterSecret),
+    keys,
+    (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
+    alert,
+    totp,
+  );
+  const passkeys = new PasskeyService(
+    db,
+    auth,
+    passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
+  );
+
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
       await pool.query('select 1');
     },
-    auth: new AuthService(
-      db,
-      deriveSigningKey(masterSecret),
-      keys,
-      (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
-      totp,
-    ),
+    auth,
     totp,
+    passkeys,
     visibility: new VisibilityService(db, keys),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
@@ -119,7 +149,12 @@ async function main(): Promise<void> {
       config.FDV_VAPID_PUBLIC_KEY ?? null,
     ),
     household: new HouseholdService(db, keys),
+    invitations: new InvitationService(db, keys, auth),
+    coOwners: new CoOwnerService(db, alert),
+    shares: new ShareService(db, keys, vaults),
+    audit: new AuditService(db),
     suggestions: new SuggestionService(db),
+    stepUp: new StepUpService(db, passkeys, totp),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 
