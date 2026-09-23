@@ -13,6 +13,18 @@ playwright-report/
 test-results/
 .playwright/
 
+# ---- the phone app lives in its own private repository ----
+# Never here: its native projects, its build output, or anything that signs it.
+android/
+ios/
+.expo/
+*.jks
+*.keystore
+*.p12
+*.p8
+google-services.json
+GoogleService-Info.plist
+
 # ---- environment / secrets ----
 .env
 .env.*

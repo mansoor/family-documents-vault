@@ -23,6 +23,7 @@ COPY apps/api/package.json apps/api/
 COPY apps/worker/package.json apps/worker/
 COPY apps/web/package.json apps/web/
 COPY packages/shared/package.json packages/shared/
+COPY packages/client/package.json packages/client/
 COPY packages/db/package.json packages/db/
 
 # ---------------------------------------------------------------- build

@@ -8,3 +8,13 @@ if [ -n "$blocked" ]; then
   echo "docs-private/ and prototype/ are private and must never be committed." >&2
   exit 1
 fi
+
+# Nor anything from the phone app, which lives in its own private repository:
+# native projects, Expo state, or a signing key.
+mobile=$(git diff --cached --name-only | grep -E '(^|/)(android|ios|\.expo)/|\.(jks|keystore|p12|p8)$|(^|/)(google-services\.json|GoogleService-Info\.plist)$' || true)
+if [ -n "$mobile" ]; then
+  echo "pre-commit: refusing to commit phone-app files or signing keys:" >&2
+  echo "$mobile" | sed 's/^/  /' >&2
+  echo "The phone app lives in its own private repository." >&2
+  exit 1
+fi

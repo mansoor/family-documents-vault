@@ -1,3 +1,4 @@
+import type { SearchHit as WireSearchHit } from '@fdv/shared';
 import { createHash, randomBytes } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -122,17 +123,8 @@ export interface SearchQuery {
   limit?: number | undefined;
 }
 
-export interface SearchHit {
-  document_id: string;
-  title: string | null;
-  type_key: string | null;
-  category: string | null;
-  owner_member_id: string | null;
-  status: DocumentView['status'];
-  snippet: string;
-  matched_in: 'title' | 'content';
-  rank: number;
-}
+/** A search result: the shared wire type, with the rank the server always sends. */
+export type SearchHit = WireSearchHit & { rank: number };
 
 export class DocumentService {
   constructor(

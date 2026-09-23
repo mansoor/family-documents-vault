@@ -1,23 +1,27 @@
-import { api, ApiRequestError, type Tokens } from './api.js';
+import {
+  SessionCore,
+  type CrossContextLock,
+  type StoredSession,
+  type TokenResult,
+  type TokenStore,
+} from '@fdv/client';
+import { api, type Tokens } from './api.js';
 import { disable as disablePush } from './push.js';
 
 /**
- * Holds the signed-in session for the web app.
+ * Holds the signed-in session for the web app: `@fdv/client`'s session
+ * core over localStorage.
  *
  * The refresh token is kept in localStorage so the app survives a reload;
- * the access token lives in memory only and is renewed through the refresh
- * endpoint. Everything storage-related is wrapped, because private windows
- * and blocked site data make localStorage throw.
+ * the access token lives in memory only and is renewed through the
+ * refresh endpoint — once at a time, however many screens ask at once
+ * (see `SessionCore`). Everything storage-related is wrapped, because
+ * private windows and blocked site data make localStorage throw.
  */
 
 const KEY = 'fdv.session';
 
-export interface StoredSession {
-  refresh_token: string;
-  household_id: string;
-  member_id: string;
-  role: Tokens['role'];
-}
+export type { StoredSession } from '@fdv/client';
 
 function read(): StoredSession | null {
   try {
@@ -37,6 +41,25 @@ function write(s: StoredSession | null) {
   }
 }
 
+const localStorageStore: TokenStore = {
+  load: async () => read(),
+  save: async (s) => write(s),
+};
+
+/**
+ * Tabs of the vault share one session in localStorage, so they take turns
+ * refreshing it: a tab that waited reads the token the other just saved,
+ * rather than presenting a spent one and ending the session for both.
+ * Web Locks exist only in secure contexts (https, or localhost); on plain
+ * http over the LAN the store is still re-read before every refresh.
+ */
+const tabLock: CrossContextLock | undefined =
+  typeof navigator !== 'undefined' && 'locks' in navigator
+    ? <T>(fn: () => Promise<T>): Promise<T> =>
+        // Typed as Promise<Promise<T>> for an async callback; it resolves to T.
+        navigator.locks.request('fdv.refresh', fn) as unknown as Promise<T>
+    : undefined;
+
 /**
  * The signed-in role, for deciding what to put on the screen.
  *
@@ -50,57 +73,43 @@ export function storedRole(): Tokens['role'] {
 }
 
 export class Session {
-  private access: string | null = null;
-  private accessExpiresAt = 0;
-  private stored: StoredSession | null = read();
+  // localStorage can be read at once, so the web starts already knowing
+  // whether anybody is signed in; a phone calls hydrate() instead.
+  private readonly core = new SessionCore(api, localStorageStore, {
+    initial: read(),
+    ...(tabLock ? { lock: tabLock } : {}),
+  });
 
   get signedIn(): boolean {
-    return this.stored !== null;
+    return this.core.signedIn;
   }
 
   get info(): StoredSession | null {
-    return this.stored;
+    return this.core.info;
   }
 
   accept(tokens: Tokens) {
-    this.access = tokens.access_token;
-    this.accessExpiresAt = Date.now() + (tokens.expires_in - 30) * 1000;
-    this.stored = {
-      refresh_token: tokens.refresh_token,
-      household_id: tokens.household_id,
-      member_id: tokens.member_id,
-      role: tokens.role,
-    };
-    write(this.stored);
+    // The in-memory half is set before this returns; the store write is
+    // localStorage, which is synchronous underneath.
+    void this.core.accept(tokens);
   }
 
   clear() {
-    this.access = null;
-    this.accessExpiresAt = 0;
-    this.stored = null;
-    write(null);
+    void this.core.clear();
   }
 
-  /** A valid access token, refreshing when needed. Null when signed out. */
-  async token(): Promise<string | null> {
-    if (this.access && Date.now() < this.accessExpiresAt) return this.access;
-    if (!this.stored) return null;
-    try {
-      this.accept(await api.refresh(this.stored.refresh_token));
-      return this.access;
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 401) this.clear();
-      return null;
-    }
+  /** A usable access token — or why there is not one. */
+  token(): Promise<TokenResult> {
+    return this.core.token();
   }
 
   async signOut() {
-    const t = await this.token();
-    if (t) {
+    const r = await this.token();
+    if (r.kind === 'ok') {
       // This browser stops being told things before the sign-in ends, so
       // the next person to use it is not sent the last one's digest.
-      await disablePush(t).catch(() => undefined);
-      await api.logout(t).catch(() => undefined);
+      await disablePush(r.token).catch(() => undefined);
+      await api.logout(r.token).catch(() => undefined);
     }
     this.clear();
   }

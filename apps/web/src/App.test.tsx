@@ -136,6 +136,38 @@ describe('App', () => {
     });
   });
 
+  it('reloading Settings with an expired access token signs nobody out', async () => {
+    // Settings loads four panels at once, and after a reload none of them
+    // has an access token. Until 0.4.3 each refreshed on its own; the
+    // server saw one refresh token presented four times, took it as theft
+    // and ended the session — so a reload of Settings was a sign-out.
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    await waitFor(() =>
+      expect(state.calls.filter((c) => c.url.startsWith('/api/v1/auth/sessions'))).toHaveLength(1),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(state.refreshCalls).toBe(1);
+    expect(state.sessionEnded).toBe(false);
+    expect(window.location.pathname).toBe('/settings');
+  });
+
+  it('losing the network says so, instead of showing an empty household', async () => {
+    const state = fresh({ offline: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/');
+    render(<App />);
+    expect(await screen.findByText(/can't reach the vault right now/)).toBeInTheDocument();
+    // Said on the screen that asked, not by replacing the whole app.
+    expect(screen.queryByText('Not connected')).toBeNull();
+    // No answer is not "signed out": the session is still there for later.
+    expect(localStorage.getItem('fdv.session')).not.toBeNull();
+  });
+
   it('searches and renders snippets with highlights but without scripts', async () => {
     const state = fresh();
     installFakeApi(state);
