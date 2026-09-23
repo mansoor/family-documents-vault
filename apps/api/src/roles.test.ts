@@ -79,6 +79,22 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
     return created.json<DocumentView>().id;
   };
 
+  /**
+   * Somebody expendable, with a real sign-in. The two probes below change
+   * or remove a person, so they cannot be aimed at anyone the rest of the
+   * file still needs.
+   */
+  let spare = 0;
+  const disposablePerson = async () => {
+    const n = ++spare;
+    const who = await h.join(people.owner, {
+      name: `Spare ${n}`,
+      email: `spare${n}@example.test`,
+      role: 'adult',
+    });
+    return who.member_id;
+  };
+
   const probes: Probe[] = [
     {
       capability: 'document.add',
@@ -179,6 +195,27 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
             email: `a${Math.random().toString(36).slice(2, 8)}@example.test`,
             role: 'adult',
           },
+        }),
+    },
+    {
+      capability: 'member.remove',
+      what: "take away somebody's sign-in",
+      call: async (t) =>
+        h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/members/${await disposablePerson()}/sign-in`,
+          headers: h.as(t),
+        }),
+    },
+    {
+      capability: 'role.change',
+      what: 'change what somebody is allowed to do',
+      call: async (t) =>
+        h.app.inject({
+          method: 'POST',
+          url: `/api/v1/members/${await disposablePerson()}/role`,
+          headers: h.as(t),
+          payload: { role: 'viewer' },
         }),
     },
     {
@@ -368,8 +405,6 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
    */
   const NOT_YET_ENFORCED: Partial<Record<Capability, string>> = {
     'document.see_adults': 'a filter, not a refusal — the test above',
-    'member.remove': '3.2b, with the owner floor',
-    'role.change': '3.2b, with the owner floor',
     'document.share': '3.3, share links',
     'audit.read': '3.3, the activity log',
   };

@@ -73,7 +73,8 @@ export function htmlBody(d: Digest, baseUrl: string): string {
 </body></html>`;
 }
 
-function openPassword(key: Buffer, sealed: Buffer, householdId: string): string {
+/** Shared with the alert job, which uses the same household mail server. */
+export function openPassword(key: Buffer, sealed: Buffer, householdId: string): string {
   const d = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12));
   d.setAAD(Buffer.from(`smtp:${householdId}`));
   d.setAuthTag(sealed.subarray(12, 28));

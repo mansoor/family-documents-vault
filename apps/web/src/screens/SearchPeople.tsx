@@ -16,6 +16,7 @@ import {
 } from '../ui.js';
 import { addLink, DocRow } from './Home.js';
 import { InvitePanel } from './Invite.js';
+import { OwnerChangeNotices, RoleControls } from './Roles.js';
 
 /**
  * Search: one field, live results, filter chips for person and category.
@@ -242,7 +243,9 @@ export function PeopleScreen() {
       const invitations = can(myRole, 'member.invite')
         ? (await api.invitations(t)).items
         : ([] as Invitation[]);
-      return { members, invitations };
+      // Everybody sees these, because one of them may be about them.
+      const changes = (await api.ownerChanges(t)).items;
+      return { members, invitations, changes };
     },
     [authVersion],
   );
@@ -274,6 +277,7 @@ export function PeopleScreen() {
     <main className="page page-top has-nav">
       <TopBar title="People" />
       <ErrorNote message={error} />
+      <OwnerChangeNotices items={data?.changes ?? []} onChanged={reload} />
       <p className="muted">{data ? `${data.members.length} in the household` : ''}</p>
       <ul className="list">
         {(data?.members ?? []).map((m) => (
@@ -339,7 +343,7 @@ export function PersonScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion } = useApp();
   const navigate = useNavigate();
-  const { data, error } = useLoad(
+  const { data, error, reload } = useLoad(
     async (t) => {
       const [members, docs] = await Promise.all([
         api.members(t),
@@ -359,6 +363,7 @@ export function PersonScreen() {
         ))}
         {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
       </ul>
+      {data?.member && <RoleControls member={data.member} onChanged={reload} />}
       <BottomNav />
     </main>
   );

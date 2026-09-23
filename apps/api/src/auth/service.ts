@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { appendAudit, withScope, type Db, type Role } from '@fdv/db';
 import argon2 from 'argon2';
@@ -85,6 +85,13 @@ export class AuthService {
       householdId: string,
     ) => Promise<void> = async () => undefined,
     /** Answers whether an account must present a second factor, and mints the interim token. */
+    /** Tells named accounts something at once (SEC-11). */
+    private readonly alert: (input: {
+      householdId: string;
+      accountIds: string[];
+      subject: string;
+      body: string;
+    }) => Promise<void> = async () => undefined,
     private readonly mfa: {
       isEnabled: (accountId: string) => Promise<boolean>;
       mfaToken: (accountId: string) => Promise<string>;
@@ -266,7 +273,60 @@ export class AuthService {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
+    await this.noteDevice(trx, p, meta);
     return this.tokens({ ...p, sessionId: session.id }, refresh);
+  }
+
+  /**
+   * New-device alerts (SEC-11).
+   *
+   * A browser tells us its user agent and nothing else, so this is a weak
+   * signal, and it is built to fail in the safe direction: two laptops
+   * running the same browser version look alike and the second one is
+   * quiet, while a browser update makes a device look new and you are
+   * told about a sign-in you already knew about. Being told twice is a
+   * nuisance; not being told is the thing this exists to prevent.
+   *
+   * The first device an account ever uses is never an alert — there is
+   * nobody to tell and nothing surprising about it.
+   */
+  private async noteDevice(
+    trx: Db,
+    p: Omit<Principal, 'sessionId'>,
+    meta: RequestMeta,
+  ): Promise<void> {
+    const agent = meta.userAgent ?? 'unknown';
+    const fingerprint = createHash('sha256').update(agent, 'utf8').digest();
+    const seen = await trx
+      .selectFrom('known_device')
+      .select(['id', 'fingerprint'])
+      .where('account_id', '=', p.accountId)
+      .execute();
+    const known = seen.find((d) => d.fingerprint.equals(fingerprint));
+    if (known) {
+      await trx
+        .updateTable('known_device')
+        .set({ last_seen_at: new Date() })
+        .where('id', '=', known.id)
+        .execute();
+      return;
+    }
+    await trx
+      .insertInto('known_device')
+      .values({
+        account_id: p.accountId,
+        household_id: p.householdId,
+        fingerprint,
+        label: describeDevice(agent),
+      })
+      .execute();
+    if (seen.length === 0) return;
+    await this.alert({
+      householdId: p.householdId,
+      accountIds: [p.accountId],
+      subject: 'A new device signed in to your vault',
+      body: `Somebody signed in on ${describeDevice(agent)}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it was not, change your password and sign that device out under Settings.`,
+    });
   }
 
   private async tokens(p: Principal, refresh: string): Promise<Tokens> {
@@ -385,12 +445,22 @@ export class AuthService {
     } catch {
       throw new ApiError(401, 'unauthenticated', 'Please sign in.');
     }
+    // The role is read from the household and not from the token. An
+    // access token lasts fifteen minutes and a role change has to take
+    // effect now: somebody just made an owner should not be told they
+    // cannot, and somebody just removed from the household has no row
+    // here and so has no session either.
     const open = await withScope(this.db, { householdId: claims.hid }, (trx) =>
       trx
         .selectFrom('session')
-        .select('id')
-        .where('id', '=', claims.sid)
-        .where('revoked_at', 'is', null)
+        .innerJoin('account_household', (j) =>
+          j
+            .onRef('account_household.account_id', '=', 'session.account_id')
+            .onRef('account_household.household_id', '=', 'session.household_id'),
+        )
+        .select(['session.id', 'account_household.role', 'account_household.member_id'])
+        .where('session.id', '=', claims.sid)
+        .where('session.revoked_at', 'is', null)
         .executeTakeFirst(),
     );
     if (!open) throw sessionEnded('session revoked');
@@ -398,8 +468,8 @@ export class AuthService {
       accountId: claims.sub,
       sessionId: claims.sid,
       householdId: claims.hid,
-      memberId: claims.mid,
-      role: claims.role,
+      memberId: open.member_id,
+      role: open.role,
     };
   }
 
@@ -455,4 +525,38 @@ export class AuthService {
       });
     });
   }
+}
+
+/**
+ * A user agent in words a person recognises. Deliberately coarse: the
+ * point is "a phone" or "this computer", not a version number.
+ */
+export function describeDevice(agent: string): string {
+  const a = agent.toLowerCase();
+  const browser = a.includes('firefox')
+    ? 'Firefox'
+    : a.includes('edg/')
+      ? 'Edge'
+      : a.includes('chrome') && !a.includes('chromium')
+        ? 'Chrome'
+        : a.includes('safari')
+          ? 'Safari'
+          : null;
+  const platform = a.includes('iphone')
+    ? 'an iPhone'
+    : a.includes('ipad')
+      ? 'an iPad'
+      : a.includes('android')
+        ? 'an Android phone'
+        : a.includes('mac os')
+          ? 'a Mac'
+          : a.includes('windows')
+            ? 'a Windows computer'
+            : a.includes('linux')
+              ? 'a Linux computer'
+              : null;
+  if (browser && platform) return `${browser} on ${platform}`;
+  if (platform) return platform;
+  if (browser) return browser;
+  return 'a device we could not recognise';
 }

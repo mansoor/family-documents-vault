@@ -45,6 +45,7 @@ async function make(
       sealedSearch: anyStub,
       household: householdStub,
       invitations: anyStub,
+      coOwners: anyStub,
       visibility: anyStub,
       totp: anyStub,
       passkeys: anyStub,
