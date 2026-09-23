@@ -7,6 +7,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
 import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
+import { ChangePassword } from './Password.js';
 
 export function SettingsScreen() {
   const { caps, session, markAuthChanged, authVersion } = useApp();
@@ -57,6 +58,7 @@ export function SettingsScreen() {
           </li>
         )}
       </ul>
+      <ChangePassword />
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices

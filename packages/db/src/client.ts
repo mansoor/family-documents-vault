@@ -85,6 +85,17 @@ export interface Schema {
     aaguid: string | null;
   };
 
+  password_reset: {
+    id: Generated<string>;
+    account_id: string;
+    token_hash: Buffer;
+    issued_by: 'self' | 'operator';
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    used_at: Timestamp | null;
+    ip: string | null;
+  };
+
   webauthn_challenge: {
     id: Generated<string>;
     challenge: Buffer;

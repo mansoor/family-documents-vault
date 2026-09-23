@@ -21,6 +21,12 @@ export interface FakeState {
   }>;
   /** True once the "only you can open this" moment has been shown. */
   privateNoticeShown: boolean;
+  /** The password last set through either password route. */
+  passwordChanged: string | null;
+  /** The address the forgotten-password form was submitted with. */
+  forgotFor: string | null;
+  resetValid: boolean;
+  resetByOperator: boolean;
   /** Set to require a PIN on the shared-document page. */
   sharePin: string | null;
   shareValid: boolean;
@@ -176,6 +182,10 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     shares: [],
     activity: [],
     privateNoticeShown: false,
+    passwordChanged: null,
+    forgotFor: null,
+    resetValid: true,
+    resetByOperator: false,
     sharePin: null,
     shareValid: true,
     documents: [PASSPORT],
@@ -320,6 +330,70 @@ export function installFakeApi(state: FakeState) {
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    if (path === '/api/v1/auth/password/change' && method === 'POST') {
+      const b = body as { current_password?: string; new_password: string };
+      if (state.stepUpNeeded && !b.current_password) {
+        return json(
+          {
+            error: {
+              code: 'step_up_required',
+              message: 'Please confirm it is you to set a new password.',
+              action: 'change_password',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          403,
+        );
+      }
+      if (b.current_password && b.current_password !== 'correct horse battery') {
+        return json(
+          {
+            error: {
+              code: 'invalid_credentials',
+              message: "That isn't your current password.",
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          401,
+        );
+      }
+      state.passwordChanged = b.new_password;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    if (path === '/api/v1/auth/password/forgot' && method === 'POST') {
+      state.forgotFor = (body as { email: string }).email;
+      return json(
+        { message: 'If that address has a sign-in here, a link is on its way to it.' },
+        202,
+      );
+    }
+    if (path.startsWith('/api/v1/password-resets/')) {
+      if (!state.resetValid) {
+        return json(
+          {
+            error: {
+              code: 'reset_not_valid',
+              message: 'That link is not valid any more. Ask for a new one from the sign-in page.',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          404,
+        );
+      }
+      if (method === 'POST') {
+        state.passwordChanged = (body as { password: string }).password;
+        return json({ email: 'mansoor@example.test' });
+      }
+      return json({
+        household_name: 'The Seikh family',
+        email: 'mansoor@example.test',
+        issued_by_operator: state.resetByOperator,
+        expires_at: new Date(Date.now() + 36e5).toISOString(),
+      });
     }
     if (path.startsWith('/api/v1/audit')) return json({ items: state.activity, next: null });
     if (path.endsWith('/visibility') && method === 'POST') {

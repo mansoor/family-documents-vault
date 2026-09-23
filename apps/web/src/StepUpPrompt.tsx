@@ -13,9 +13,11 @@ import { Button, ErrorNote, Field } from './ui.js';
  * nothing is lost.
  */
 export function StepUpPrompt(props: { message: string; onSettled: (confirmed: boolean) => void }) {
-  // Deliberately not `withToken`: it treats any 401 as a dead session and
-  // signs you out. Here a 401 means the password was wrong, which is an
-  // ordinary thing to type by accident and must not end the session.
+  // A wrong password here answers 401 with `invalid_credentials`, which
+  // `withToken` now leaves alone — only `session_ended` and
+  // `unauthenticated` end a session. Going through the session directly
+  // anyway, because this prompt must never be the thing that signs
+  // somebody out, whatever the shared helper does later.
   const { session } = useApp();
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);

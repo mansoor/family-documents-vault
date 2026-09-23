@@ -48,6 +48,7 @@ async function make(
       coOwners: anyStub,
       shares: anyStub,
       audit: anyStub,
+      passwords: anyStub,
       visibility: anyStub,
       totp: anyStub,
       passkeys: anyStub,
@@ -178,5 +179,23 @@ describe('loadConfig', () => {
     expect(c.PORT).toBe(3000);
     expect(c.FDV_EDITION).toBe('self_hosted');
     expect(c.FDV_MAX_UPLOAD_BYTES).toBe(104857600);
+  });
+
+  it('treats a variable set to nothing as one that is not set', () => {
+    // Compose writes `FDV_RP_ID: ${FDV_RP_ID:-}` for everything optional,
+    // so the container is handed an empty string rather than nothing at
+    // all. Failing on that would be a startup error about a setting the
+    // self-hoster never touched.
+    const c = loadConfig({
+      DATABASE_URL: 'x',
+      FDV_MASTER_KEY: config.FDV_MASTER_KEY,
+      FDV_RP_ID: '',
+      FDV_MAX_UPLOAD_BYTES: '',
+      FDV_VAPID_PUBLIC_KEY: '',
+      FDV_BASE_URL: '',
+    });
+    expect(c.FDV_RP_ID).toBeUndefined();
+    expect(c.FDV_MAX_UPLOAD_BYTES).toBe(104857600);
+    expect(c.FDV_BASE_URL).toBe('http://localhost:8080');
   });
 });

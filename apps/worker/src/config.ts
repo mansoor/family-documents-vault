@@ -52,8 +52,17 @@ const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_
   path: ['FDV_MASTER_KEY'],
 });
 
+/**
+ * An environment variable set to nothing is not set. Compose writes
+ * `${FDV_VAPID_PUBLIC_KEY:-}` for anything optional, which hands the
+ * container an empty string rather than leaving the variable out.
+ */
+function present(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const parsed = withMasterKey.safeParse(env);
+  const parsed = withMasterKey.safeParse(present(env));
   if (!parsed.success) {
     const problems = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`);
     throw new Error(`invalid configuration:\n${problems.join('\n')}`);

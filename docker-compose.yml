@@ -40,6 +40,14 @@ services:
       FDV_MASTER_KEY: ${FDV_MASTER_KEY:?run scripts/gen-env.mjs first}
       FDV_DISPLAY_NAME: ${FDV_DISPLAY_NAME:-Our family vault}
       FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
+      # Where the vault is published. The API needs it for the same reason
+      # the worker does — links it puts in email — and for two things only
+      # it does: checking the origin a passkey was signed for, and deciding
+      # whose X-Forwarded-For to believe.
+      FDV_BASE_URL: ${FDV_BASE_URL:-http://localhost:8080}
+      FDV_RP_ID: ${FDV_RP_ID:-}
+      FDV_TRUST_PROXY: ${FDV_TRUST_PROXY:-private}
+      FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data
