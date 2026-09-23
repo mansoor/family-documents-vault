@@ -16,6 +16,7 @@ import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
+import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { InvitationService } from './household/invitations.js';
@@ -23,6 +24,7 @@ import { CoOwnerService } from './household/co-owners.js';
 import { ShareService } from './documents/shares.js';
 import { AuditService } from './audit/service.js';
 import { VaultService } from './vaults/service.js';
+import { alertJob, type AlertRequest } from './alert-job.js';
 
 async function readVersion(): Promise<string> {
   const url = new URL('../package.json', import.meta.url);
@@ -98,13 +100,7 @@ async function main(): Promise<void> {
    * push and the household's mail server, and a sign-in must not wait for
    * an SMTP handshake. The job name matches `JOBS.alertSend` in the worker.
    */
-  const alert = (a: { householdId: string; accountIds: string[]; subject: string; body: string }) =>
-    enqueue('alert.send', {
-      household_id: a.householdId,
-      account_ids: a.accountIds,
-      subject: a.subject,
-      body: a.body,
-    });
+  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
 
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
@@ -122,6 +118,7 @@ async function main(): Promise<void> {
     passkeyConfig(config.FDV_BASE_URL, config.FDV_DISPLAY_NAME, config.FDV_RP_ID),
   );
 
+  const stepUpService = new StepUpService(db, passkeys, totp);
   const app = await buildApp(config, {
     serverVersion: version,
     pingDatabase: async () => {
@@ -147,6 +144,7 @@ async function main(): Promise<void> {
       db,
       deriveKey(masterSecret, 'smtp-credentials'),
       config.FDV_VAPID_PUBLIC_KEY ?? null,
+      alert,
     ),
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
@@ -154,7 +152,15 @@ async function main(): Promise<void> {
     shares: new ShareService(db, keys, vaults),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
-    stepUp: new StepUpService(db, passkeys, totp),
+    stepUp: stepUpService,
+    passwords: new PasswordService(
+      db,
+      keys,
+      stepUpService,
+      config.FDV_BASE_URL,
+      alert,
+      Boolean(config.FDV_SMTP_URL),
+    ),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 

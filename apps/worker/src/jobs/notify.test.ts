@@ -42,6 +42,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
   timezone: 'UTC',
   local_date: '2026-09-22',
   kind: 'daily',
+  recipient: { account_id: 'acc', email: 'owner@example.test' },
   items: [
     {
       reminder_id: 'r1',
@@ -50,6 +51,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       label: 'Overdue by 3 days',
       note: null,
       overdue: true,
+      private: false,
     },
     {
       reminder_id: 'r2',
@@ -58,6 +60,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       label: 'In 12 days · 2 Oct',
       note: 'Renew online',
       overdue: false,
+      private: false,
     },
   ],
   ...over,
@@ -85,6 +88,21 @@ describe('digest copy', () => {
     );
     expect(nasty).not.toContain('<script>');
     expect(nasty).toContain('&lt;script&gt;');
+  });
+
+  it('a private document is never named by email, even to the person it belongs to', () => {
+    const secret = {
+      ...(digest().items[0] as Digest['items'][number]),
+      title: 'Therapy notes',
+      note: 'Bring the letter',
+      private: true,
+    };
+    const d = digest({ items: [secret] });
+    for (const body of [textBody(d, 'x'), htmlBody(d, 'x')]) {
+      expect(body).not.toContain('Therapy notes');
+      expect(body).not.toContain('Bring the letter');
+      expect(body).toContain('One of your private documents');
+    }
   });
 
   it('the catch-up wording differs from the daily one', () => {
@@ -284,7 +302,14 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
         baseUrl: 'x',
         log: () => undefined,
       });
-      expect(await notifier.digest(digest({ household_id: hh }))).toEqual(['email']);
+      expect(
+        await notifier.digest(
+          digest({
+            household_id: hh,
+            recipient: { account_id: accountId, email: 'owner@example.test' },
+          }),
+        ),
+      ).toEqual(['email']);
     },
     30_000,
   );

@@ -1,5 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import { withHousehold, type Db } from '@fdv/db';
+import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import webpush from 'web-push';
 import type { Digest, Notifier } from './reminders.js';
@@ -15,6 +16,11 @@ import type { Digest, Notifier } from './reminders.js';
  *
  * Nothing is sent per item. One message carries the day's list, and a
  * failure on one channel never stops the other.
+ *
+ * Each call is one person's digest, already cut to what they may see (see
+ * `sendToEach` in reminders.ts). So push goes only to that person's own
+ * devices and email only to their own address, one message each: never a
+ * household-wide list, and never everybody's address on one To: line.
  */
 
 export interface VapidKeys {
@@ -41,8 +47,22 @@ export function subject(d: Digest): string {
   return n === 1 ? '1 thing needs attention' : `${n} things need attention`;
 }
 
+/**
+ * What an email may say about an item. Email goes through the household's
+ * mail server, which an owner can point anywhere, so a private document is
+ * named only as that — its title and note stay for push and the app.
+ */
+export function forEmail(i: Digest['items'][number]): { title: string; note: string | null } {
+  return i.private
+    ? { title: 'One of your private documents', note: null }
+    : { title: i.title, note: i.note };
+}
+
 export function textBody(d: Digest, baseUrl: string): string {
-  const lines = d.items.map((i) => `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`);
+  const lines = d.items.map((item) => {
+    const i = { ...item, ...forEmail(item) };
+    return `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`;
+  });
   const intro =
     d.kind === 'catch_up'
       ? 'While nobody was looking, these came up:'
@@ -59,6 +79,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
     );
   const rows = d.items
+    .map((item) => ({ ...item, ...forEmail(item) }))
     .map(
       (i) =>
         `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(i.label)}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,
@@ -73,6 +94,34 @@ export function htmlBody(d: Digest, baseUrl: string): string {
 </body></html>`;
 }
 
+/**
+ * Whether the mail server turned down this recipient, as opposed to
+ * failing. Since each person's digest is its own message, one mistyped
+ * address in an invitation would otherwise mark the household's mail
+ * server broken for everybody — and switch off the security alerts, which
+ * only go out through a server marked working.
+ */
+export function recipientRefused(err: unknown): boolean {
+  const e = err as { code?: unknown; command?: unknown; rejected?: unknown } | null;
+  return e?.code === 'EENVELOPE' && (e.command === 'RCPT TO' || Array.isArray(e.rejected));
+}
+
+/**
+ * A device is only pushed to while the sign-in that turned it on is live.
+ * Signing out, a revoked session, a password change and a removed sign-in
+ * all end it, and with it every notification to that browser (0020).
+ * Devices from before 0.4.2 name no session, and are sent to only while
+ * the account has some live session in the household.
+ */
+export const liveDevice = sql<boolean>`(
+  (device.session_id is not null and exists (
+     select 1 from session s
+      where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))
+  or (device.session_id is null and exists (
+     select 1 from session s
+      where s.account_id = device.account_id and s.household_id = device.household_id
+        and s.revoked_at is null and s.expires_at > now())))`;
+
 /** Shared with the alert job, which uses the same household mail server. */
 export function openPassword(key: Buffer, sealed: Buffer, householdId: string): string {
   const d = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, 12));
@@ -82,10 +131,10 @@ export function openPassword(key: Buffer, sealed: Buffer, householdId: string): 
 }
 
 /**
- * The real notifier: push to every registered device whose owner wants it,
- * then email through the household's SMTP to everyone who wants that.
- * Returns the channels that actually delivered, which is what the ledger
- * records.
+ * The real notifier: push to the recipient's registered devices if they
+ * want it, then email through the household's SMTP if they want that.
+ * Returns the channels that actually reached them, which is what the
+ * ledger records.
  */
 export function createNotifier(deps: NotifyDeps): Notifier {
   if (deps.vapid) {
@@ -101,6 +150,7 @@ export function createNotifier(deps: NotifyDeps): Notifier {
       if (channels.length === 0) {
         deps.log('info', 'digest had nowhere to go', {
           household: d.household_name,
+          account_id: d.recipient.account_id,
           count: d.items.length,
         });
       }
@@ -126,8 +176,10 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
         'device.auth',
         'notification_preference.daily_push',
       ])
+      .where('device.account_id', '=', d.recipient.account_id)
       .where('device.failed_at', 'is', null)
       .where('device.kind', '=', 'web_push')
+      .where(liveDevice)
       .execute(),
   );
   const wanted = devices.filter((x) => x.daily_push !== false && x.p256dh && x.auth);
@@ -195,26 +247,20 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
       .executeTakeFirst();
     if (!smtp || smtp.status !== 'ok') return null;
     const wantField = d.kind === 'weekly' ? 'weekly_email' : 'daily_email';
-    const people = await trx
-      .selectFrom('account_household')
-      .innerJoin('account', 'account.id', 'account_household.account_id')
-      .leftJoin('notification_preference', (j) =>
-        j
-          .onRef('notification_preference.account_id', '=', 'account_household.account_id')
-          .onRef('notification_preference.household_id', '=', 'account_household.household_id'),
-      )
-      .select(['account.email', `notification_preference.${wantField} as wants`])
-      .where('account.disabled_at', 'is', null)
-      .execute();
+    const pref = await trx
+      .selectFrom('notification_preference')
+      .select([`${wantField} as wants`])
+      .where('account_id', '=', d.recipient.account_id)
+      .where('household_id', '=', d.household_id)
+      .executeTakeFirst();
+    const wants = pref?.wants ?? null;
     // Defaults: weekly on, daily off (design: per-item email is off).
-    const recipients = people
-      .filter((p) => (p.wants === null ? d.kind === 'weekly' : p.wants === true))
-      .map((p) => p.email);
-    return { smtp, recipients };
+    const wanted = wants === null ? d.kind === 'weekly' : wants === true;
+    return { smtp, wanted };
   });
-  if (!ctx || ctx.recipients.length === 0) return 0;
+  if (!ctx || !ctx.wanted) return 0;
 
-  const { smtp, recipients } = ctx;
+  const { smtp } = ctx;
   const transport = nodemailer.createTransport({
     host: smtp.host,
     port: smtp.port,
@@ -231,15 +277,26 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
   try {
     await transport.sendMail({
       from: `"${smtp.from_name}" <${smtp.from_email}>`,
-      to: recipients.join(', '),
+      to: d.recipient.email,
       subject: subject(d),
       text: textBody(d, deps.baseUrl),
       html: htmlBody(d, deps.baseUrl),
     });
-    return recipients.length;
+    return 1;
   } catch (err) {
+    if (recipientRefused(err)) {
+      // This one address, not the mail server: the rest of the family still
+      // gets their digests, and their security alerts, from it.
+      deps.log('warn', 'email address refused', {
+        household: d.household_name,
+        account_id: d.recipient.account_id,
+        error: (err as Error).message,
+      });
+      return 0;
+    }
     deps.log('warn', 'email failed', {
       household: d.household_name,
+      account_id: d.recipient.account_id,
       error: (err as Error).message,
     });
     await withHousehold(deps.app, d.household_id, (trx) =>

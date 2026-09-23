@@ -102,6 +102,9 @@ async function main(): Promise<void> {
   void logNotifier;
 
   const alertDeps = {
+    operatorMail: config.FDV_SMTP_URL
+      ? { url: config.FDV_SMTP_URL, from: config.FDV_SMTP_FROM }
+      : null,
     app: dbs.app,
     vapid,
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),

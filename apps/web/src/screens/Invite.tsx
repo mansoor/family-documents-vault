@@ -28,7 +28,9 @@ export function InvitePanel(props: {
   if (!can(myRole, 'member.invite')) return null;
 
   const pending = props.invitations.filter((i) => i.state === 'pending');
-  const withoutSignIn = props.members.filter((m) => !m.has_account);
+  // Somebody whose sign-in was taken away is given it back, not invited:
+  // an invitation would hand their private documents to whoever accepts it.
+  const withoutSignIn = props.members.filter((m) => !m.has_account && !m.sign_in_removed);
 
   if (created) {
     return <HandOver created={created} onDone={() => setCreated(null)} />;

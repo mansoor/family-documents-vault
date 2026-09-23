@@ -25,8 +25,10 @@ import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
+import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
+import { alertJob, type AlertRequest } from './alert-job.js';
 
 /**
  * A fully wired API on a throwaway database with a temp local vault.
@@ -83,6 +85,8 @@ export async function createHarness(): Promise<Harness> {
   const enqueue = async (name: string, data: Record<string, unknown>) => {
     jobs.push({ name, data });
   };
+  // The same mapping as production, not a copy of it: see alert-job.ts.
+  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
   const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
@@ -94,13 +98,7 @@ export async function createHarness(): Promise<Harness> {
     deriveSigningKey(TEST_MASTER),
     keys,
     (trx, hh) => vaults.createDefaultLocal(trx, hh),
-    (a) =>
-      enqueue('alert.send', {
-        household_id: a.householdId,
-        account_ids: a.accountIds,
-        subject: a.subject,
-        body: a.body,
-      }),
+    alert,
     totp,
   );
   const passkeys = new PasskeyService(
@@ -110,13 +108,18 @@ export async function createHarness(): Promise<Harness> {
   );
   const invitations = new InvitationService(db, keys, auth);
   let joined = 1;
+  const stepUp = new StepUpService(db, passkeys, totp);
+  // As if the operator had set FDV_SMTP_URL; passwords.test.ts builds one
+  // without it to test the other route.
+  const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert, true);
   const app = await buildApp(config, {
     serverVersion: '0.0.0-test',
     pingDatabase: async () => undefined,
     auth,
     totp,
     passkeys,
-    stepUp: new StepUpService(db, passkeys, totp),
+    stepUp: stepUp,
+    passwords,
     visibility: new VisibilityService(db, keys),
     vaults,
     documents: new DocumentService(
@@ -136,18 +139,12 @@ export async function createHarness(): Promise<Harness> {
       db,
       deriveKey(TEST_MASTER, 'smtp-credentials'),
       'test-vapid-public-key',
+      alert,
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     invitations,
-    coOwners: new CoOwnerService(db, (a) =>
-      enqueue('alert.send', {
-        household_id: a.householdId,
-        account_ids: a.accountIds,
-        subject: a.subject,
-        body: a.body,
-      }),
-    ),
+    coOwners: new CoOwnerService(db, alert),
     suggestions: new SuggestionService(db),
     logger: false,
   });

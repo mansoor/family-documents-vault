@@ -21,6 +21,16 @@ const schema = z.object({
     .url()
     .default('http://localhost:8080')
     .describe('Where your vault is reachable; used for links in notifications.'),
+  FDV_SMTP_URL: z
+    .string()
+    .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')
+    .optional()
+    .describe('The operator\u2019s mail server, for password-reset links only.'),
+  FDV_SMTP_FROM: z
+    .string()
+    .min(3)
+    .default('Family Document Vault <vault@localhost>')
+    .describe('Who password-reset emails come from.'),
   FDV_VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   FDV_VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   FDV_VAPID_SUBJECT: z.string().min(1).default('mailto:vault@localhost'),
@@ -52,8 +62,17 @@ const withMasterKey = schema.refine((c) => c.FDV_MASTER_KEY || c.FDV_MASTER_KEY_
   path: ['FDV_MASTER_KEY'],
 });
 
+/**
+ * An environment variable set to nothing is not set. Compose writes
+ * `${FDV_VAPID_PUBLIC_KEY:-}` for anything optional, which hands the
+ * container an empty string rather than leaving the variable out.
+ */
+function present(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([, v]) => v !== ''));
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const parsed = withMasterKey.safeParse(env);
+  const parsed = withMasterKey.safeParse(present(env));
   if (!parsed.success) {
     const problems = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`);
     throw new Error(`invalid configuration:\n${problems.join('\n')}`);

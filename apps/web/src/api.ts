@@ -137,6 +137,8 @@ export interface Member {
   role: Role | null;
   is_me: boolean;
   document_count: number;
+  /** Their sign-in was taken away and can be given back — never re-invited. */
+  sign_in_removed?: boolean;
 }
 
 export interface Invitation {
@@ -169,6 +171,14 @@ export interface InvitationPreview {
   role: Role;
   role_label: string;
   invited_by: string | null;
+  expires_at: string;
+}
+
+export interface ResetPreview {
+  household_name: string | null;
+  email: string;
+  /** True when the person who runs the server made the link. */
+  issued_by_operator: boolean;
   expires_at: string;
 }
 
@@ -458,6 +468,22 @@ export const api = {
     body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
   ) => request<Member>('/api/v1/members', { method: 'POST', body, token }),
 
+  changePassword: (token: string, body: { current_password?: string; new_password: string }) =>
+    request<void>('/api/v1/auth/password/change', { method: 'POST', body, token }),
+  // The three for somebody who cannot sign in at all.
+  forgotPassword: (email: string) =>
+    request<{ message: string }>('/api/v1/auth/password/forgot', {
+      method: 'POST',
+      body: { email },
+    }),
+  resetPreview: (linkToken: string) =>
+    request<ResetPreview>(`/api/v1/password-resets/${encodeURIComponent(linkToken)}`),
+  resetPassword: (linkToken: string, password: string) =>
+    request<{ email: string }>(`/api/v1/password-resets/${encodeURIComponent(linkToken)}`, {
+      method: 'POST',
+      body: { password },
+    }),
+
   setVisibility: (token: string, documentId: string, visibility: Visibility) =>
     request<{ notice: { title: string; body: string } | null }>(
       `/api/v1/documents/${documentId}/visibility`,
@@ -503,6 +529,12 @@ export const api = {
     request<RoleChangeResult>('/api/v1/me/step-down', { method: 'POST', body: { role }, token }),
   removeSignIn: (token: string, memberId: string) =>
     request<void>(`/api/v1/members/${memberId}/sign-in`, { method: 'DELETE', token }),
+  restoreSignIn: (token: string, memberId: string, role: 'adult' | 'teen' | 'viewer') =>
+    request<{ message: string }>(`/api/v1/members/${memberId}/sign-in`, {
+      method: 'POST',
+      token,
+      body: { role },
+    }),
   ownerChanges: (token: string) =>
     request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
   refuseOwnerChange: (token: string, id: string) =>
@@ -523,7 +555,7 @@ export const api = {
   // The two the invitee calls, before they have any token at all.
   invitationPreview: (linkToken: string) =>
     request<InvitationPreview>(`/api/v1/invitations/${encodeURIComponent(linkToken)}`),
-  acceptInvitation: (linkToken: string, body: { code: string; password: string }) =>
+  acceptInvitation: (linkToken: string, body: { code: string; password: string; email?: string }) =>
     request<Tokens>(`/api/v1/invitations/${encodeURIComponent(linkToken)}/accept`, {
       method: 'POST',
       body,

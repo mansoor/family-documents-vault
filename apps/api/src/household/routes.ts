@@ -67,6 +67,21 @@ export function registerHousehold(
       return reply.status(204).send();
     });
 
+    // The way back from the one above: the same account, never a new one.
+    app.post('/api/v1/members/:id/sign-in', guard('member.remove'), async (req) => {
+      await stepUp?.require(principal(req), 'change_people');
+      const body = parse(
+        z.object({ role: z.enum(['adult', 'teen', 'viewer']) }).strict(),
+        req.body,
+      );
+      return coOwners.restoreSignIn(
+        principal(req),
+        params(idParam, req).id,
+        body.role,
+        metaOf(req),
+      );
+    });
+
     // Everyone in the household can see these, including the person a
     // request is about — that is the whole point of the notice period.
     app.get('/api/v1/owner-changes', auth, async (req) => ({

@@ -4,6 +4,50 @@ All notable changes to Family Document Vault. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.4.2] - 2026-09-23
+
+A privacy fix that every vault with more than one person in it should take, and
+the password work that was tagged 0.4.1 on the development branch.
+
+### Security
+
+- **The reminder digests leaked titles across the privacy wall.** The daily and weekly digests — push and email alike — were built once for the whole household and sent to everybody in it. So the title of one adult's _Only me_ document reached the other adult's lock screen and inbox, and _Adults only_ titles reached teens and viewers. Titles, due dates and reminder notes were exposed, never a document's contents, but a title is often the sensitive part. Each person now gets their own digest, cut to what they may see by the same rule every list in the app uses, and somebody who may see none of it is sent nothing. Every email now goes to one address, not the whole family on one To: line. Present since 0.4.0, when other people could first be given a sign-in. **Upgrade if anyone besides you signs in to your vault.**
+- **An owner could download another adult's export**, and with it that adult's _Only me_ documents: an export is built from what its requester can see, and the download let any owner through. An export is now its requester's alone; nobody else can list it, look it up or download it.
+- **Taking somebody's sign-in away and then inviting them again handed their private documents to whoever accepted the invitation** — and whoever makes an invitation holds both its link and its code. A person who has had a sign-in can no longer be invited. An owner gives them their own sign-in back instead, from their page in People, and they sign in with the password only they know.
+- **The list of shared links showed teens and viewers the titles of _Adults only_ documents** that had been shared out of the house, and **the tag list applied no rule at all**, so anybody could read the tags on documents they could not open. Both now follow the same rule as every other list.
+- **A co-owner could take over another adult's account through the mail server.** The mail server set up in the app is one any owner can change, and password-reset links went through it — so an owner could point it at a mailbox of their own, ask for another adult's reset, and read their private documents. Reset links now go only through a mail server that nobody in the family can redirect: a new `FDV_SMTP_URL` set in `.env` by whoever runs the server, or the household's own, but only to its one owner. Otherwise nothing is sent and whoever runs the vault makes the link. **If more than one person signs in to your vault, set `FDV_SMTP_URL`** — see the README. For the same reason no email names a private document any more, even to the person it belongs to, and every other adult is told when the mail server is changed.
+- **A share link outlived the reason it was allowed.** A link made to a family document kept working after its owner made it _Only me_, and after the person who made it was demoted to teen or viewer or had their sign-in taken away. A link now works only while the person who made it could still open the document themselves, asked every time it is opened. An export stops being downloadable once the person who asked for it can no longer see the adults-only documents in it.
+- **Anyone could make themselves the owner of another adult's document and then mark it _Only me_**, taking it from the person it belonged to without it showing in their activity. A document that belongs to somebody with their own sign-in is now theirs to hand over, and a private document does not change hands at all.
+- **Adding a passkey needed no second look**, so a few unattended minutes with an open session bought permanent access that outlived any later password change. Adding or removing one now asks for your password or an existing passkey, and a password reset removes every passkey. Starting two-step sign-in again no longer quietly switches it off.
+- **Whoever sent an invitation chose the address the new person would sign in with — and so where their password resets would go.** An inviter who used an address they could read could later reset the person's password and read their private documents. The person joining now chooses their own sign-in address, and is told why it matters.
+- **Switching on two-step sign-in needed no second look**, so a borrowed session could add its own authenticator and then pass every later check with it, up to setting a new password. It now asks for your password or a passkey first, as adding a passkey does.
+- **Downloading an export asked nothing**, although asking for one did; it holds every _Only me_ document you have. It now asks too. Making a document private retires the exports other people made while they could see it, and an export that finishes building after its requester was demoted comes out already expired.
+- An adult could quietly replace an owner's pending invitation with one of their own. Only whoever sent it, or an owner, can now.
+- A person with no sign-in who owns private documents is no longer invited, since whoever accepted would get them.
+- Replaying an upload's `Idempotency-Key` against a different document returned the other document's version — which could be somebody else's private upload, with its file name. It is refused now. A retried capture returns what the first attempt made instead of adding an empty document.
+- A stored file's name in your storage no longer contains a fingerprint of its contents, which let whoever controls the bucket confirm that a file they already had was among somebody's private documents. Files stored before this keep their names.
+- An upload that finishes after its document was made private is refused and asked to try again, rather than stored under the wrong key.
+- Making a share link to a private or Essential document now asks who is asking, as opening it does.
+- A teen can no longer add a new copy of somebody else's document.
+- Several requests about another person's private document — changing who can see it, deleting its reminder, revoking its link, opening its file from a session that had gone cold — answered "not allowed" rather than "not there", which confirmed it existed. They now say it is not there, as everything else does.
+- **A browser kept receiving notifications after its person signed out of it** — on a shared laptop, the next person to sit down saw the last one's digest — and a browser used with a stolen session kept receiving them after the password was changed. Notifications now stop when the sign-in that turned them on ends, a password change stops them everywhere else, and signing out of the web app turns them off for that browser.
+
+### Added
+
+- **Change your password**, in Settings. It also rewraps the key to your own _Only me_ documents, so they come with it rather than being left behind, and every other device you are signed in on is signed out. Somebody who signs in with a passkey and never had a password can set one by confirming it is them instead.
+- **Forgotten password.** The sign-in page sends a link to the address you sign in with; it works once and stops working in an hour, and using it signs every device out. It does not sign you in, so two-step sign-in is still asked for afterwards. The page answers the same way whether or not the address is known.
+- For a household with no mail server, `reset-password <email>` on the command line prints a one-time link for whoever runs the vault to hand over. **No owner or adult can reset anybody else's password**, deliberately: they could then sign in as that person and read their private documents.
+
+### Fixed
+
+- **Forgotten-password emails had no link in them.** The server dropped the link, and the "email only" flag, when it queued the message, so the email's button went to the front page and "your password was changed" was also pushed to lock screens. The tests passed because they used a separate, correct copy of the same code; there is now one copy. The link is also in the plain-text part of the email now, for mail clients that show no buttons.
+- One mistyped address in the family no longer stops everybody else's email. Each person's digest is its own message now, and a mail server refusing one recipient used to mark the whole household's mail server as broken, which also silenced the security alerts.
+- The API container was never given `FDV_BASE_URL`, `FDV_RP_ID` or `FDV_TRUST_PROXY`, so setting them in `.env` did nothing to it. Passkeys were checked against `http://localhost:8080` whatever address the vault was actually published at, which broke them on any TLS or non-default-port setup; `FDV_TRUST_PROXY` silently stayed on its default. Found while checking where a password-reset link pointed.
+- A setting written as an empty string — which is what Compose hands a container for anything optional — is now treated as unset rather than as a value that fails validation at startup.
+- A mistyped password inside the app — at the step-up prompt, or in the change-password form — signed you out, because the web app treated every 401 as a dead session. Only the two codes that mean the session is over end it now.
+
 ## [0.4.0] - 2026-09-23
 
 Phase 3 — **Family.** The vault stops being one person's and becomes the

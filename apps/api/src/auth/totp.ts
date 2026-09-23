@@ -31,6 +31,21 @@ export class TotpService {
     email: string,
     meta: RequestMeta,
   ): Promise<{ secret: string; otpauth_url: string }> {
+    // Starting again would overwrite a working secret and switch two-step
+    // sign-in off without a code — for an owner, round the rule that they
+    // must keep it on. Turning it off takes a code; so does starting over.
+    const current = await this.db
+      .selectFrom('account')
+      .select(['totp_confirmed_at'])
+      .where('id', '=', p.accountId)
+      .executeTakeFirstOrThrow();
+    if (current.totp_confirmed_at) {
+      throw new ApiError(
+        409,
+        'totp_already_on',
+        'Two-step sign-in is already on. To use a new app, turn it off first with a code from the one you have.',
+      );
+    }
     const secret = new OTPAuth.Secret({ size: 20 });
     const totp = new OTPAuth.TOTP({ issuer: ISSUER, label: email, secret, digits: 6, period: 30 });
     await this.db

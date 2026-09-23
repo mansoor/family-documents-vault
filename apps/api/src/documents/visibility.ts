@@ -4,6 +4,7 @@ import { appendAudit, withScope, type Db, type Visibility } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
+import { canSee } from '@fdv/shared';
 
 /**
  * Changing a document's visibility (SEC-13, FND-07, decision 2).
@@ -44,7 +45,11 @@ export class VisibilityService {
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      if (!doc) throw new ApiError(404, 'not_found', 'That document is not in the vault.');
+      // Somebody else's private document is not there, as it is everywhere
+      // else — a 403 here would confirm that it exists.
+      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
+        throw new ApiError(404, 'not_found', 'That document is not in the vault.');
+      }
       // Only the owning member may see a private document, so only they may
       // move one in or out of private.
       if (
@@ -58,6 +63,16 @@ export class VisibilityService {
         );
       }
       if (doc.visibility === to) return { notice: null };
+      // Made private, it leaves every export somebody else asked for:
+      // those were built while they could see it.
+      if (to === 'private') {
+        await trx
+          .updateTable('export')
+          .set({ expires_at: new Date() })
+          .where('requested_by', '!=', p.accountId)
+          .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
+          .execute();
+      }
 
       const from = await this.keys.unwrap(
         trx,

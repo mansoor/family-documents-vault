@@ -1,4 +1,5 @@
 import { api, ApiRequestError, type Tokens } from './api.js';
+import { disable as disablePush } from './push.js';
 
 /**
  * Holds the signed-in session for the web app.
@@ -95,7 +96,12 @@ export class Session {
 
   async signOut() {
     const t = await this.token();
-    if (t) await api.logout(t).catch(() => undefined);
+    if (t) {
+      // This browser stops being told things before the sign-in ends, so
+      // the next person to use it is not sent the last one's digest.
+      await disablePush(t).catch(() => undefined);
+      await api.logout(t).catch(() => undefined);
+    }
     this.clear();
   }
 }

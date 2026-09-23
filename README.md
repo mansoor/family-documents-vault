@@ -103,21 +103,23 @@ the vault over the private network, with a name and a certificate that just work
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).
 
-| Variable               | Default                 | What it is                                                                                                                                         |
-| ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FDV_MASTER_KEY`       | generated               | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
-| `FDV_DB_PASSWORD`      | generated               | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
-| `FDV_DB_APP_PASSWORD`  | generated               | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
-| `FDV_MAX_UPLOAD_BYTES` | `104857600`             | Largest single file the vault accepts (100 MB).                                                                                                    |
-| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`           | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
-| `FDV_DISPLAY_NAME`     | `Our family vault`      | What your family calls the vault. Shown on every screen.                                                                                           |
-| `FDV_PORT`             | `8080`                  | The port the web app listens on.                                                                                                                   |
-| `LOG_LEVEL`            | `info`                  | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
-| `FDV_VERSION`          | `latest`                | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
-| `FDV_HOSTNAME`         | `vault.local`           | The name devices use, when the TLS overlay is running.                                                                                             |
-| `FDV_BASE_URL`         | `http://localhost:8080` | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                           |
-| `FDV_CADDYFILE`        | internal                | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                  |
-| `FDV_TRUST_PROXY`      | `private`               | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.       |
+| Variable               | Default                                   | What it is                                                                                                                                         |
+| ---------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FDV_MASTER_KEY`       | generated                                 | The key that wraps every other key. **Back it up outside the server.** If it is lost, the documents are lost.                                      |
+| `FDV_DB_PASSWORD`      | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
+| `FDV_DB_APP_PASSWORD`  | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
+| `FDV_MAX_UPLOAD_BYTES` | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_LOCAL_VAULT_DIR`  | `/data/vault`                             | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
+| `FDV_DISPLAY_NAME`     | `Our family vault`                        | What your family calls the vault. Shown on every screen.                                                                                           |
+| `FDV_PORT`             | `8080`                                    | The port the web app listens on.                                                                                                                   |
+| `LOG_LEVEL`            | `info`                                    | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                              |
+| `FDV_VERSION`          | `latest`                                  | Image tag to run. Pin it to a release once you are past testing.                                                                                   |
+| `FDV_HOSTNAME`         | `vault.local`                             | The name devices use, when the TLS overlay is running.                                                                                             |
+| `FDV_BASE_URL`         | `http://localhost:8080`                   | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                           |
+| `FDV_CADDYFILE`        | internal                                  | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                  |
+| `FDV_TRUST_PROXY`      | `private`                                 | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.       |
+| `FDV_SMTP_URL`         | unset                                     | Your own mail server for password-reset links only, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. See [Passwords](#passwords).           |
+| `FDV_SMTP_FROM`        | `Family Document Vault <vault@localhost>` | Who those emails come from.                                                                                                                        |
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -181,6 +183,45 @@ by the app, because a household with no owner cannot appoint one.
 Taking away somebody's sign-in leaves the person: their record, their
 documents and their own private key are untouched, and an invitation brings
 them back. Only an owner can do it, and not to another owner.
+
+### Passwords
+
+**Changing one** is in Settings. Your password is not only a way in: it also
+unlocks your own _Only me_ documents, so changing it moves that key across too,
+and every other device you are signed in on is signed out. If you sign in with
+a passkey and never had a password, you can set one by confirming it is you.
+
+**Forgetting one** is answered from the sign-in page: the vault emails a link to
+the address you sign in with. It works once, stops working after an hour, and
+signs every device out and removes every passkey when it is used. It does not
+sign you in — if two-step sign-in is switched on, you are still asked for the
+code.
+
+**Which mail server carries that link matters.** The mail server an owner sets
+up in the app is one any owner can change — and point at a mailbox of their
+own. A reset link read by somebody else is a way into your private documents,
+so the vault only sends one:
+
+- through **`FDV_SMTP_URL`**, a mail server set in `.env` by whoever runs the
+  server, if there is one — this is the setting to add if more than one person
+  signs in to your vault; or
+- through the household's own mail server, but only to the household's **one
+  owner**, who is the only person who could redirect it.
+
+Anybody else is sent nothing, and the page answers exactly as it would have.
+Whoever runs the vault can make them a link from the command line:
+
+```bash
+docker compose exec api node apps/api/dist/cli.mjs reset-password someone@example.com
+```
+
+It prints a one-time link to hand over directly.
+
+**No owner or adult can reset another person's password**, and that is
+deliberate rather than an omission: they could then sign in as that person and
+read their private documents, which is the one thing the privacy wall exists to
+prevent. The two routes above are the only ones, and the second belongs to
+whoever holds the master key — who can already read everything.
 
 ### Seeing what has happened
 
@@ -260,7 +301,7 @@ The restore drill decrypts the newest backup, loads it into a scratch database, 
 
 **Notifications work out of the box.** Open the vault, go to _Settings → How you hear about things_, and turn them on: the day's reminders arrive on that device even when the vault is closed. Nothing is configured, no account anywhere is involved, and the signing keys are generated into your `.env`. On iPhone and iPad, add the vault to the home screen first — Apple only allows notifications for installed web apps.
 
-**Email is optional and uses your own mail account.** An owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
+**Email is optional and uses your own mail account.** Every other adult is told whenever an owner changes it, because everything the vault emails travels through it — and for the same reason no email ever names a private document, even to the person it belongs to; that is left to notifications, which are encrypted to your own device. An owner picks a provider (Gmail, Fastmail, iCloud, Outlook, Amazon SES, Postmark, or anything else with an SMTP server), pastes an address and an app password, and presses **Save and send a test**. A real message goes to your own address, and if it does not arrive the screen says why in plain words. Reminders then come from an address your family recognises, and no third party ever handles them.
 
 Each person chooses what they want: the day's reminders on their devices, the same by email, and a summary every Sunday evening.
 

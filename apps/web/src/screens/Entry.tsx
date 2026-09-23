@@ -159,6 +159,9 @@ export function SignInScreen() {
             </Button>
           </>
         )}
+        <Button kind="link" onClick={() => void navigate('/forgot-password')}>
+          I have forgotten my password
+        </Button>
       </form>
     </main>
   );

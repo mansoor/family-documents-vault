@@ -25,6 +25,9 @@ export function registerExports(
     exports.get(principal(req), req.params.id),
   );
   app.get<{ Params: { id: string } }>('/api/v1/exports/:id/content', auth, async (req, reply) => {
+    // It is everything its requester can see, "Only me" included, in one
+    // file: a session picked up off a desk must not be able to take it.
+    await stepUp?.require(principal(req), 'export_everything');
     const { stream, bytes } = await exports.content(principal(req), req.params.id, metaOf(req));
     reply.header('content-type', 'application/zip');
     reply.header('content-disposition', 'attachment; filename="family-document-vault-export.zip"');

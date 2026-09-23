@@ -7,6 +7,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
 import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
+import { ChangePassword } from './Password.js';
 
 export function SettingsScreen() {
   const { caps, session, markAuthChanged, authVersion } = useApp();
@@ -57,6 +58,7 @@ export function SettingsScreen() {
           </li>
         )}
       </ul>
+      <ChangePassword />
       <section aria-labelledby="devices-h">
         <h2 id="devices-h" className="section-h">
           Signed-in devices
@@ -94,7 +96,7 @@ export function SettingsScreen() {
  * phished or stolen from the server.
  */
 function Passkeys() {
-  const { withToken, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.passkeys(t)).items, [authVersion]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +107,7 @@ function Passkeys() {
     setBusy(true);
     setError(null);
     try {
-      await withToken((t) => passkeys.enrol(t, label.trim() || 'This device'));
+      await guarded((t) => passkeys.enrol(t, label.trim() || 'This device'));
       setLabel('');
       await reload();
     } catch (err) {
@@ -118,7 +120,7 @@ function Passkeys() {
   const remove = async (id: string) => {
     setError(null);
     try {
-      await withToken((t) => api.removePasskey(t, id));
+      await guarded((t) => api.removePasskey(t, id));
       await reload();
     } catch (err) {
       setError(describeError(err));
@@ -183,7 +185,7 @@ function Passkeys() {
 
 /** SEC-03: two-step sign-in, mandatory for owners. */
 function TwoStep() {
-  const { withToken, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data: me, reload } = useLoad(async (t) => api.me(t), [authVersion]);
   const [enrol, setEnrol] = useState<{ secret: string; otpauth_url: string; qr: string } | null>(
     null,
@@ -195,7 +197,7 @@ function TwoStep() {
   const start = async () => {
     setError(null);
     try {
-      const r = await withToken((t) => api.totpEnrol(t));
+      const r = await guarded((t) => api.totpEnrol(t));
       if (!r) return;
       const qr = await QRCode.toDataURL(r.otpauth_url, { margin: 1, width: 220 });
       setEnrol({ ...r, qr });
@@ -208,7 +210,7 @@ function TwoStep() {
     setBusy(true);
     setError(null);
     try {
-      await withToken((t) => api.totpConfirm(t, code));
+      await guarded((t) => api.totpConfirm(t, code));
       setEnrol(null);
       setCode('');
       await reload();
@@ -271,7 +273,7 @@ function TwoStep() {
 
 /** STO-07: one button, one ZIP, no lock-in. */
 function ExportSection() {
-  const { withToken, guarded, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data, reload } = useLoad(async (t) => (await api.exports(t)).items, [authVersion]);
   const [error, setError] = useState<string | null>(null);
   const pending = (data ?? []).some((e) => e.state === 'queued' || e.state === 'running');
@@ -294,7 +296,7 @@ function ExportSection() {
   const download = async (e: ExportRow) => {
     setError(null);
     try {
-      const blob = await withToken((t) => api.exportContent(t, e.id));
+      const blob = await guarded((t) => api.exportContent(t, e.id));
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
