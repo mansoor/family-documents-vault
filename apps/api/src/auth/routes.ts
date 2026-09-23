@@ -233,10 +233,14 @@ export function registerAuth(
   if (totp) {
     app.post('/api/v1/auth/totp/enrol', { preHandler: app.requireAuth }, async (req) => {
       const p = req.principal as Principal;
+      // Otherwise a borrowed session could add its own authenticator, then
+      // pass every later step-up with it — and set a new password.
+      await stepUp?.require(p, 'change_sign_in');
       const email = await auth.emailOf(p.accountId);
       return totp.enrol(p, email, metaOf(req));
     });
     app.post('/api/v1/auth/totp/confirm', { preHandler: app.requireAuth }, async (req, reply) => {
+      await stepUp?.require(req.principal as Principal, 'change_sign_in');
       const body = parse(z.object({ code: z.string().min(6).max(10) }), req.body);
       await totp.confirm(req.principal as Principal, body.code, metaOf(req));
       return reply.status(204).send();

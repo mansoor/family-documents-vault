@@ -241,6 +241,24 @@ export async function registerDocuments(
     const file = await req.file();
     if (!file) throw new ApiError(422, 'validation_failed', 'Attach one file.');
     const p = principal(req);
+    // A retried capture (CAP-13) is answered with what the first attempt
+    // made, before anything new is created.
+    const prior = await docs.priorUpload(p, key);
+    if (prior) {
+      file.file.resume();
+      const done = await docs.upload(
+        p,
+        prior.document_id,
+        { filename: file.filename, mime: file.mimetype, stream: file.file, idempotencyKey: key },
+        metaOf(req),
+      );
+      return reply.status(201).send({
+        document_id: done.document_id,
+        version_id: done.id,
+        job_id: null,
+        state: 'stored',
+      });
+    }
     const doc = await docs.create(p, { title: null }, metaOf(req));
     const version = await docs.upload(
       p,

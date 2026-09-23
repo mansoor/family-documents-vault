@@ -9,6 +9,7 @@ import { withHousehold, type Db } from '@fdv/db';
 import { formatDate, type DateValue } from '@fdv/shared';
 import { adapterFromRow } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
+import { sql } from 'kysely';
 
 /**
  * Full export (STO-07, design principle 7): a ZIP with every original the
@@ -203,7 +204,11 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       file_key_wrapped: wrapKey(fileKey, ctx.hhKey.key, `export:${export_id}`),
       wrapped_by_scope: ctx.hhKey.id,
       finished_at: new Date(),
-      expires_at: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      // Seven days — unless the requester was demoted, or lost their
+      // sign-in, while this was being built, which already set it to now.
+      expires_at: sql`least(coalesce(expires_at, 'infinity'::timestamptz), ${new Date(
+        Date.now() + 7 * 24 * 3600 * 1000,
+      )})`,
     });
     deps.log('info', 'export built', { export_id, documents: entries.length, bytes: size });
   } catch (err) {

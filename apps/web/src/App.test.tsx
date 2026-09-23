@@ -719,6 +719,13 @@ describe('App', () => {
     expect(screen.getByText(/Cannot change storage or remove people/)).toBeInTheDocument();
     await expectAccessible();
 
+    // The address they sign in with is theirs to choose: resets go there.
+    const address = screen.getByLabelText('The email you will sign in with');
+    expect((address as HTMLInputElement).value).toMatch(/@/);
+    expect(screen.getByText(/an address only you can read/)).toBeInTheDocument();
+    fireEvent.change(address, { target: { value: 'me@my-own.example.test' } });
+    expect((address as HTMLInputElement).value).toBe('me@my-own.example.test');
+
     // A wrong code is an ordinary mistake, and says how many tries are left.
     fireEvent.change(screen.getByLabelText('The code they gave you'), {
       target: { value: 'ZZZZ-ZZZZ' },

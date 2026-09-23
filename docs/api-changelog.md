@@ -335,6 +335,21 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     passkeys. `POST /api/v1/auth/password/forgot` sends a link only through the
     operator's mail server (`FDV_SMTP_URL`), or through the household's to its
     only owner; its answer is unchanged either way.
+  - `POST /api/v1/invitations/{token}/accept` takes an optional `email`: the
+    address the new account signs in with, chosen by the person joining.
+    `409 email_taken` if it is somebody's already. Creating an invitation for a
+    person who already has a pending one answers `409 already_invited` unless
+    the caller made it or is an owner. `409 had_sign_in` also covers a person
+    with no sign-in who owns private documents.
+  - `POST /api/v1/auth/totp/enrol` and `/confirm` ask for step-up
+    `change_sign_in`. `GET /api/v1/exports/{id}/content` asks for
+    `export_everything`.
+  - Uploads: an `Idempotency-Key` already used on another document answers
+    `422 idempotency_key_reused`; a replay on the same document still returns
+    the original version. `POST /api/v1/capture` with a key it has seen returns
+    the original `{ document_id, version_id }` and creates nothing. An upload
+    that completes after the document's visibility or owner changed answers
+    `409 document_changed` (`retriable: true`).
   - `POST /api/v1/devices` ties the device to the session that registered it,
     and nothing is pushed to it once that session ends — signed out, revoked,
     or expired. A password change removes the account's devices on every

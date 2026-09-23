@@ -63,6 +63,16 @@ export class VisibilityService {
         );
       }
       if (doc.visibility === to) return { notice: null };
+      // Made private, it leaves every export somebody else asked for:
+      // those were built while they could see it.
+      if (to === 'private') {
+        await trx
+          .updateTable('export')
+          .set({ expires_at: new Date() })
+          .where('requested_by', '!=', p.accountId)
+          .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
+          .execute();
+      }
 
       const from = await this.keys.unwrap(
         trx,

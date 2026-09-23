@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -239,6 +239,23 @@ export class DocumentService {
         `This belongs to ${holder.display_name}, who signs in themselves, so only they can hand it to somebody else.`,
       );
     }
+  }
+
+  /** The upload an Idempotency-Key already made, if any. */
+  async priorUpload(
+    p: Principal,
+    key: string,
+  ): Promise<{ document_id: string; version_id: string } | null> {
+    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+      trx
+        .selectFrom('upload_idempotency')
+        .select(['document_id', 'version_id'])
+        .where('idempotency_key', '=', key)
+        .executeTakeFirst(),
+    );
+    return row?.version_id && row.document_id
+      ? { document_id: row.document_id, version_id: row.version_id }
+      : null;
   }
 
   private canWrite(p: Principal): void {
@@ -625,22 +642,21 @@ export class DocumentService {
       throw new ApiError(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
     }
 
-    // Fast path: already done.
-    const existing = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      trx
-        .selectFrom('upload_idempotency')
-        .select('version_id')
-        .where('idempotency_key', '=', input.idempotencyKey)
-        .executeTakeFirst(),
-    );
-    if (existing?.version_id) {
-      const v = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-        trx
+    // Fast path: already done — for this document, and for somebody who
+    // can see it. A key replayed against another document is refused rather
+    // than answered with that document's version, which could be somebody
+    // else's private upload, filename and hash included.
+    const existing = await this.priorUpload(p, input.idempotencyKey);
+    if (existing) {
+      if (existing.document_id !== documentId) throw keyReused();
+      const v = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+        await this.fetch(trx, p, documentId);
+        return trx
           .selectFrom('document_version')
           .selectAll()
-          .where('id', '=', existing.version_id as string)
-          .executeTakeFirstOrThrow(),
-      );
+          .where('id', '=', existing.version_id)
+          .executeTakeFirstOrThrow();
+      });
       return versionView(v);
     }
 
@@ -711,6 +727,23 @@ export class DocumentService {
     const sha256 = plainHash.digest();
 
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // The file was encrypted for the document as it was when the upload
+      // began. If it has since been made private, or moved to somebody
+      // else, that key is the wrong one — and the uploader may no longer be
+      // allowed to see it at all. Ask again, at the moment it is recorded.
+      const now = await this.fetch(trx, p, documentId);
+      this.mustOwnIfTeen(p, now);
+      const was = scopeFor(doc, p.householdId);
+      const is = scopeFor(now, p.householdId);
+      if (was.kind !== is.kind || was.memberId !== is.memberId) {
+        await adapter.delete(tmpKey).catch(() => undefined);
+        throw new ApiError(
+          409,
+          'document_changed',
+          'Who can see this document changed while the file was uploading. Try again.',
+          { retriable: true },
+        );
+      }
       const last = await trx
         .selectFrom('document_version')
         .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
@@ -721,7 +754,7 @@ export class DocumentService {
         householdId: p.householdId,
         documentId,
         versionNo,
-        sha256: sha256.toString('hex'),
+        name: randomBytes(8).toString('hex'),
         ext,
       });
       // Move into the boring layout. Local: rename is cheap; S3: copy would
@@ -1273,3 +1306,10 @@ async function moveObject(
   await adapter.delete(from);
   return to;
 }
+
+const keyReused = () =>
+  new ApiError(
+    422,
+    'idempotency_key_reused',
+    'That Idempotency-Key was already used for a different upload. Use a new one for each file.',
+  );

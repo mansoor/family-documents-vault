@@ -60,6 +60,13 @@ export const inviteExistingBody = inviteFields.omit({ member_id: true, display_n
 export const acceptBody = z.object({
   code: z.string().trim().min(1).max(32),
   password: z.string().min(10, 'Use at least 10 characters.').max(1024),
+  /**
+   * The address the person will sign in with, chosen by them. Password
+   * resets go to it, so it must be theirs and not whoever typed the
+   * invitation's — who could otherwise reset their password later and read
+   * their private documents. Defaults to the address it was sent to.
+   */
+  email: z.string().trim().toLowerCase().email().max(254).optional(),
 });
 
 export interface InvitationView {
@@ -163,7 +170,23 @@ export class InvitationService {
         : await this.newMember(trx, p, input.display_name as string, meta);
 
       // Replacing a live invitation is what "send another one" means; the
-      // partial unique index would otherwise refuse the insert.
+      // partial unique index would otherwise refuse the insert. But only its
+      // maker or an owner may: otherwise any adult could quietly swap an
+      // owner's invitation for one of their own and accept it themselves.
+      const pending = await trx
+        .selectFrom('invitation')
+        .select(['invited_by'])
+        .where('member_id', '=', memberId)
+        .where('accepted_at', 'is', null)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (pending && pending.invited_by !== p.accountId && p.role !== 'owner') {
+        throw new ApiError(
+          409,
+          'already_invited',
+          'Somebody else has already invited this person. Ask them, or an owner, to send it again.',
+        );
+      }
       await trx
         .updateTable('invitation')
         .set({ revoked_at: new Date(), revoked_by: p.accountId })
@@ -241,7 +264,13 @@ export class InvitationService {
       .where('kind', '=', 'member')
       .where('member_id', '=', memberId)
       .executeTakeFirst();
-    if (key?.key_wrapped_cred) {
+    const owned = await trx
+      .selectFrom('document')
+      .select('id')
+      .where('owner_member_id', '=', memberId)
+      .where('visibility', '=', 'private')
+      .executeTakeFirst();
+    if (key?.key_wrapped_cred || owned) {
       throw new ApiError(
         409,
         'had_sign_in',
@@ -459,9 +488,22 @@ export class InvitationService {
         .executeTakeFirstOrThrow();
       await this.mustNeverHaveSignedIn(trx, row.member_id, member.display_name);
       const passwordHash = await argon2.hash(input.password, ARGON2);
+      const email = input.email ?? row.email;
+      const taken = await trx
+        .selectFrom('account')
+        .select('id')
+        .where('email', '=', email)
+        .executeTakeFirst();
+      if (taken) {
+        throw new ApiError(
+          409,
+          'email_taken',
+          'That address already has a sign-in here. Choose another one.',
+        );
+      }
       const account = await trx
         .insertInto('account')
-        .values({ email: row.email, password_hash: passwordHash })
+        .values({ email, password_hash: passwordHash })
         .returning('id')
         .executeTakeFirstOrThrow();
       await trx
@@ -491,7 +533,12 @@ export class InvitationService {
         action: 'invitation.accepted',
         objectType: 'invitation',
         objectId: row.id,
-        detail: { email: row.email, role: row.role, member_id: row.member_id },
+        detail: {
+          email,
+          ...(email !== row.email ? { invited_as: row.email } : {}),
+          role: row.role,
+          member_id: row.member_id,
+        },
         ip: meta.ip,
       });
       return account.id;

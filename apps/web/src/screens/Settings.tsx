@@ -185,7 +185,7 @@ function Passkeys() {
 
 /** SEC-03: two-step sign-in, mandatory for owners. */
 function TwoStep() {
-  const { withToken, authVersion } = useApp();
+  const { guarded, authVersion } = useApp();
   const { data: me, reload } = useLoad(async (t) => api.me(t), [authVersion]);
   const [enrol, setEnrol] = useState<{ secret: string; otpauth_url: string; qr: string } | null>(
     null,
@@ -197,7 +197,7 @@ function TwoStep() {
   const start = async () => {
     setError(null);
     try {
-      const r = await withToken((t) => api.totpEnrol(t));
+      const r = await guarded((t) => api.totpEnrol(t));
       if (!r) return;
       const qr = await QRCode.toDataURL(r.otpauth_url, { margin: 1, width: 220 });
       setEnrol({ ...r, qr });
@@ -210,7 +210,7 @@ function TwoStep() {
     setBusy(true);
     setError(null);
     try {
-      await withToken((t) => api.totpConfirm(t, code));
+      await guarded((t) => api.totpConfirm(t, code));
       setEnrol(null);
       setCode('');
       await reload();
@@ -296,7 +296,7 @@ function ExportSection() {
   const download = async (e: ExportRow) => {
     setError(null);
     try {
-      const blob = await withToken((t) => api.exportContent(t, e.id));
+      const blob = await guarded((t) => api.exportContent(t, e.id));
       if (!blob) return;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

@@ -878,3 +878,274 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
     expect(exp.expires_at?.getTime() ?? Infinity).toBeLessThanOrEqual(Date.now());
   });
 });
+
+/**
+ * Uploads, exports and invitations — the second round of the 0.4.2 sweep.
+ */
+describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitations', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let ownerSecret = '';
+  let ownerKey = '';
+  let samDoc = '';
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const as = (t: Tokens) => h.as(t);
+  let peers = 0;
+  const peer = () => ({ remoteAddress: `10.78.${peers >> 8}.${peers++ & 0xff}` });
+
+  const setFresh = (t: Tokens, fresh: boolean) =>
+    withHousehold(h.db, t.household_id, async (trx) => {
+      const a = await trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', t.member_id)
+        .executeTakeFirstOrThrow();
+      await trx
+        .updateTable('session')
+        .set({ verified_at: new Date(Date.now() - (fresh ? 0 : 10 * 60 * 1000)) })
+        .where('account_id', '=', a.account_id)
+        .execute();
+    });
+
+  const upload = (who: Tokens, documentId: string, key: string) => {
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'therapy-notes.pdf', contentType: 'application/pdf' });
+    return h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${documentId}/versions`,
+      headers: { ...as(who), ...form.getHeaders(), 'idempotency-key': key },
+      payload: form.getBuffer(),
+    });
+  };
+
+  const newDoc = async (who: Tokens, title: string, visibility = 'household') =>
+    json<DocumentView>(
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/documents',
+        headers: as(who),
+        payload: { title, owner_member_id: who.member_id, visibility },
+      }),
+    ).id;
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-up@example.test', role: 'adult' });
+    ownerSecret = await newDoc(owner, 'Owner secret', 'private');
+    ownerKey = randomUUID();
+    expect((await upload(owner, ownerSecret, ownerKey)).statusCode).toBe(201);
+    samDoc = await newDoc(sam, 'Sam bill');
+  }, 120_000);
+  afterAll(() => h.close());
+
+  it('an Idempotency-Key replayed on another document is refused, not answered', async () => {
+    // Sam somehow holds the key of the owner's private upload. Replaying it
+    // used to return that version — its filename and hash included.
+    const res = await upload(sam, samDoc, ownerKey);
+    expect(res.statusCode).toBe(422);
+    expect(json<{ error: { code: string } }>(res).error.code).toBe('idempotency_key_reused');
+    expect(res.body).not.toContain('therapy-notes');
+    // And aimed at the owner's document itself, it is simply not there.
+    expect((await upload(sam, ownerSecret, ownerKey)).statusCode).toBe(404);
+  });
+
+  it('a stored file is named by chance, not by what is in it', async () => {
+    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('document_version')
+        .select(['storage_key', 'sha256'])
+        .where('document_id', '=', ownerSecret)
+        .execute(),
+    );
+    for (const r of rows) {
+      expect(r.storage_key).not.toContain(r.sha256.toString('hex').slice(0, 16));
+    }
+  });
+
+  it('a retried capture returns what the first attempt made, and makes nothing new', async () => {
+    const key = randomUUID();
+    const capture = () => {
+      const form = new FormData();
+      form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+      return h.app.inject({
+        method: 'POST',
+        url: '/api/v1/capture',
+        headers: { ...as(sam), ...form.getHeaders(), 'idempotency-key': key },
+        payload: form.getBuffer(),
+      });
+    };
+    const count = async () =>
+      json<{ items: unknown[] }>(
+        await h.app.inject({ url: '/api/v1/documents?limit=200', headers: as(sam) }),
+      ).items.length;
+    const first = await capture();
+    expect(first.statusCode, first.body).toBe(201);
+    const before = await count();
+    const again = await capture();
+    expect(again.statusCode, again.body).toBe(201);
+    expect(json(again)).toEqual(json(first));
+    expect(await count()).toBe(before);
+  });
+
+  it('downloading an export asks who is asking, as requesting one does', async () => {
+    const asked = await h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: as(sam) });
+    const id = json<{ id: string }>(asked).id;
+    await setFresh(sam, false);
+    const res = await h.app.inject({ url: `/api/v1/exports/${id}/content`, headers: as(sam) });
+    expect(res.statusCode).toBe(403);
+    expect(json<{ error: { action: string } }>(res).error.action).toBe('export_everything');
+    await setFresh(sam, true);
+  });
+
+  it('making a document private retires the exports other people made while they could see it', async () => {
+    const asked = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers: as(owner),
+    });
+    const ownerExport = json<{ id: string }>(asked).id;
+    const samExport = json<{ items: Array<{ id: string }> }>(
+      await h.app.inject({ url: '/api/v1/exports', headers: as(sam) }),
+    ).items[0]?.id as string;
+    const marked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${samDoc}/visibility`,
+      headers: as(sam),
+      payload: { visibility: 'private' },
+    });
+    expect(marked.statusCode).toBe(200);
+    const expiry = (id: string) =>
+      withHousehold(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('export')
+          .select('expires_at')
+          .where('id', '=', id)
+          .executeTakeFirstOrThrow(),
+      );
+    expect((await expiry(ownerExport)).expires_at?.getTime() ?? Infinity).toBeLessThanOrEqual(
+      Date.now(),
+    );
+    // Sam's own export is Sam's, and holds Sam's own document either way.
+    expect((await expiry(samExport)).expires_at).toBeNull();
+  });
+
+  it('switching two-step sign-in on asks who is asking', async () => {
+    await setFresh(sam, false);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/totp/enrol',
+      headers: as(sam),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(json<{ error: { action: string } }>(res).error.action).toBe('change_sign_in');
+    await setFresh(sam, true);
+  });
+
+  it('the person invited chooses the address their password resets go to', async () => {
+    const invited = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations',
+      headers: as(owner),
+      payload: { display_name: 'Priya', email: 'priya.family@example.test', role: 'adult' },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const { link_token, code } = json<{ link_token: string; code: string }>(invited);
+    // An address that is already somebody's is refused.
+    const taken = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/invitations/${link_token}/accept`,
+      payload: { code, password: 'priyas own passphrase', email: 'sam-up@example.test' },
+      ...peer(),
+    });
+    expect(taken.statusCode).toBe(409);
+    const accepted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/invitations/${link_token}/accept`,
+      payload: { code, password: 'priyas own passphrase', email: 'priya@her-own.example.test' },
+      ...peer(),
+    });
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'priya@her-own.example.test', password: 'priyas own passphrase' },
+      ...peer(),
+    });
+    expect(signedIn.statusCode).toBe(200);
+    // The address the invitation was typed with is nobody's sign-in.
+    const typed = await h.db
+      .selectFrom('account')
+      .select('id')
+      .where('email', '=', 'priya.family@example.test')
+      .execute();
+    expect(typed).toEqual([]);
+  });
+
+  it('a person who owns private documents is not invited — the invitation would be a way into them', async () => {
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: as(owner),
+      payload: { display_name: 'Grandad' },
+    });
+    const grandad = json<MemberView>(added).id;
+    // How 0.4.1 could leave it: a private document handed to somebody with
+    // no sign-in.
+    await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .insertInto('document')
+        .values({
+          household_id: owner.household_id,
+          title: 'Grandad letter',
+          visibility: 'private',
+          owner_member_id: grandad,
+        })
+        .execute(),
+    );
+    const res = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${grandad}/invite`,
+      headers: as(owner),
+      payload: { email: 'grandad@example.test', role: 'viewer' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(json<{ error: { code: string } }>(res).error.code).toBe('had_sign_in');
+  });
+
+  it('an adult cannot swap an owner’s invitation for one of their own', async () => {
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: as(owner),
+      payload: { display_name: 'Sara' },
+    });
+    const sara = json<MemberView>(added).id;
+    const ownerInvite = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${sara}/invite`,
+      headers: as(owner),
+      payload: { email: 'sara@example.test', role: 'adult' },
+    });
+    expect(ownerInvite.statusCode).toBe(201);
+    const swapped = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${sara}/invite`,
+      headers: as(sam),
+      payload: { email: 'sam-alt@example.test', role: 'viewer' },
+    });
+    expect(swapped.statusCode).toBe(409);
+    expect(json<{ error: { code: string } }>(swapped).error.code).toBe('already_invited');
+    // The owner's invitation is still the live one.
+    const live = await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('invitation')
+        .select(['email', 'revoked_at'])
+        .where('member_id', '=', sara)
+        .execute(),
+    );
+    expect(live).toEqual([{ email: 'sara@example.test', revoked_at: null }]);
+  });
+});

@@ -555,7 +555,7 @@ export const api = {
   // The two the invitee calls, before they have any token at all.
   invitationPreview: (linkToken: string) =>
     request<InvitationPreview>(`/api/v1/invitations/${encodeURIComponent(linkToken)}`),
-  acceptInvitation: (linkToken: string, body: { code: string; password: string }) =>
+  acceptInvitation: (linkToken: string, body: { code: string; password: string; email?: string }) =>
     request<Tokens>(`/api/v1/invitations/${encodeURIComponent(linkToken)}/accept`, {
       method: 'POST',
       body,
