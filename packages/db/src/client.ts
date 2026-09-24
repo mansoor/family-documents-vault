@@ -324,9 +324,17 @@ export interface Schema {
   upload_idempotency: {
     idempotency_key: string;
     household_id: string;
-    document_id: string;
+    /** Null while a capture is pending: its document is made at the commit. */
+    document_id: string | null;
     version_id: string | null;
     created_at: GeneratedTimestamp;
+    account_id: string | null;
+    state: ColumnType<'pending' | 'done', 'pending' | 'done' | undefined, 'pending' | 'done'>;
+    request_kind: 'capture' | 'version';
+    claim_nonce: string | null;
+    claimed_at: GeneratedTimestamp;
+    temp_key: string | null;
+    temp_vault_id: string | null;
   };
 
   document_link: {

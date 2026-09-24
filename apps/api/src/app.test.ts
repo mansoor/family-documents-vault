@@ -121,6 +121,21 @@ describe('error envelope', () => {
     });
     expect(res.headers['x-request-id']).toBe('abc-123');
   });
+
+  it('a 429 says rate_limited, retriable, with Retry-After', async () => {
+    const server = await make();
+    // The ceiling for everything outside sign-in is 300 a minute.
+    let res = await server.inject('/api/v1/capabilities');
+    for (let i = 0; i < 300; i += 1) res = await server.inject('/api/v1/capabilities');
+    expect(res.statusCode).toBe(429);
+    const seconds = Number(res.headers['retry-after']);
+    expect(seconds).toBeGreaterThan(0);
+    expect(seconds).toBeLessThanOrEqual(60);
+    const body = res.json<{ error: { code: string; retriable: boolean; message: string } }>();
+    expect(body.error.code).toBe('rate_limited');
+    expect(body.error.retriable).toBe(true);
+    expect(body.error.message).toBe(`Too many requests at once. Try again in ${seconds} seconds.`);
+  });
 });
 
 describe('whose X-Forwarded-For is believed', () => {

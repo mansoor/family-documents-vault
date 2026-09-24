@@ -94,6 +94,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
 
   app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof ApiError) {
+      if (err.options.retryAfter !== undefined) {
+        void reply.header('retry-after', String(err.options.retryAfter));
+      }
       void reply.status(err.status).send(err.toBody(req.id));
       return;
     }
@@ -128,7 +131,22 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
 
   // Auth endpoints get a tight per-route limit (see routes); this is the
   // ceiling for everything else.
-  await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute' });
+  // Every 429, from here or a route's own limit, is the one envelope:
+  // rate_limited, retriable, with Retry-After (the plugin sets the header).
+  await app.register(rateLimit, {
+    global: true,
+    max: 300,
+    timeWindow: '1 minute',
+    errorResponseBuilder: (_req, context) => {
+      const seconds = Math.max(1, Math.ceil(context.ttl / 1000));
+      return new ApiError(
+        429,
+        'rate_limited',
+        `Too many requests at once. Try again in ${seconds} seconds.`,
+        { retriable: true, retryAfter: seconds },
+      );
+    },
+  });
 
   // API-01: the first call any client makes. Unauthenticated, cacheable.
   app.get('/api/v1/capabilities', async (req, reply) => {

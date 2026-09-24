@@ -22,6 +22,8 @@ export const JOBS = {
   remindersDeliver: 'reminders.deliver',
   /** Nightly: materialise status_cache. */
   statusRefresh: 'status.refresh',
+  /** Nightly: upload keys past their time, and claims whose try died. */
+  uploadsPrune: 'uploads.prune',
   /** Sunday evening: the week's summary by email. */
   remindersWeekly: 'reminders.weekly',
   /**

@@ -9,6 +9,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, ErrorNote, Field, Select, TopBar } from '../ui.js';
+import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /**
  * Add: the phone's camera or a file picker (CAP-01 arrives with the mobile
@@ -20,6 +21,7 @@ export function AddScreen() {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [keys] = useState(createUploadKeys);
   const input = useRef<HTMLInputElement>(null);
   // Arrived from a missing-document suggestion: it already knows what this
   // is and whose it is, so the confirm card should not ask again.
@@ -47,7 +49,9 @@ export function AddScreen() {
     setBusy(true);
     setError(null);
     try {
-      const r = await withToken((t) => api.capture(t, file, crypto.randomUUID()));
+      const key = keys.keyFor(file);
+      const r = await whileInProgress(() => withToken((t) => api.capture(t, file, key)));
+      keys.saved();
       if (r) void navigate(`/documents/${r.document_id}/confirm${suffix}`, { replace: true });
     } catch (err) {
       setError(describeError(err));
@@ -78,7 +82,13 @@ export function AddScreen() {
         capture="environment"
         aria-label="Choose a file"
         style={{ display: 'none' }}
-        onChange={(e) => void chosen(e.target.files?.[0])}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // Cleared, so choosing the same file again (after an error) is a
+          // change the browser reports, and a retry with the same key.
+          e.target.value = '';
+          void chosen(file);
+        }}
       />
       <ErrorNote message={error} />
       <Button onClick={() => input.current?.click()} disabled={busy}>

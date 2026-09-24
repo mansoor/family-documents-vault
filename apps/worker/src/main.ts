@@ -7,6 +7,7 @@ import { processVersion, type ProcessVersionJob } from './jobs/process-version.j
 import { createNotifier } from './jobs/notify.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
+import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import { createQueue, JOBS } from './queue.js';
 
@@ -148,6 +149,20 @@ async function main(): Promise<void> {
     log('info', 'status cache refreshed', await refreshStatus(reminderDeps));
   });
   await boss.schedule(JOBS.statusRefresh, '45 3 * * *');
+  await boss.createQueue(JOBS.uploadsPrune);
+  await boss.work(JOBS.uploadsPrune, async () => {
+    log(
+      'info',
+      'upload keys pruned',
+      await pruneUploads({
+        admin: dbs.admin,
+        app: dbs.app,
+        credentialsKey: processDeps.credentialsKey,
+        localRoot: processDeps.localRoot,
+      }),
+    );
+  });
+  await boss.schedule(JOBS.uploadsPrune, '25 4 * * *');
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);

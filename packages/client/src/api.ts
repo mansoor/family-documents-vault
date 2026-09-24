@@ -2,6 +2,7 @@ import type {
   ActivityLine,
   Capabilities,
   CaptureResult,
+  UploadStatus,
   Counts,
   CreatedInvitation,
   CreatedShare,
@@ -273,6 +274,13 @@ export function createApi(http: Http) {
         token,
         headers: { 'idempotency-key': idempotencyKey },
       }),
+    /**
+     * What became of one of the caller's own uploads (0.4.8, when
+     * `features.idempotent_capture`): done with its ids, in progress, or a
+     * 404 for a key never seen, someone else's, or a try that failed.
+     */
+    uploadStatus: (token: string, idempotencyKey: string) =>
+      request<UploadStatus>(`/api/v1/uploads/${encodeURIComponent(idempotencyKey)}`, { token }),
     content: (token: string, versionId: string): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/content`, { token }),
     thumbnail: (token: string, versionId: string): Promise<ResponseLike> =>

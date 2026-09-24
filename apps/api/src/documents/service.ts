@@ -1,5 +1,5 @@
-import type { SearchHit as WireSearchHit } from '@fdv/shared';
-import { createHash, randomBytes } from 'node:crypto';
+import type { UploadStatus, SearchHit as WireSearchHit } from '@fdv/shared';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -19,7 +19,7 @@ import {
   type DocumentView,
   type VersionView,
 } from '@fdv/shared';
-import { objectKey, readAll } from '@fdv/storage';
+import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
 import { sql, type Expression, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -79,6 +79,27 @@ export interface UploadInput {
   mime: string;
   stream: Readable;
   idempotencyKey: string;
+  /** True when the multipart parser cut the file off at the size limit. */
+  truncated?: () => boolean;
+}
+
+/** What an upload is for: a new document (capture), or a new version of one. */
+export type UploadTarget = { kind: 'capture' } | { kind: 'version'; documentId: string };
+
+/** A try that holds its key: everything the stream and the commit need. */
+interface Claim {
+  key: string;
+  nonce: string;
+  documentId: string;
+  /** A capture's new document, as it will be inserted. */
+  values: Record<string, never>;
+  scope: ReturnType<typeof scopeFor>;
+  vaultId: string;
+  adapter: StorageAdapter;
+  scopeKeyId: string;
+  fileKey: ReturnType<typeof newKey>;
+  fileKeyWrapped: ReturnType<typeof wrapKey>;
+  tempKey: string;
 }
 
 type DocRow = {
@@ -231,23 +252,6 @@ export class DocumentService {
         `This belongs to ${holder.display_name}, who signs in themselves, so only they can hand it to somebody else.`,
       );
     }
-  }
-
-  /** The upload an Idempotency-Key already made, if any. */
-  async priorUpload(
-    p: Principal,
-    key: string,
-  ): Promise<{ document_id: string; version_id: string } | null> {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      trx
-        .selectFrom('upload_idempotency')
-        .select(['document_id', 'version_id'])
-        .where('idempotency_key', '=', key)
-        .executeTakeFirst(),
-    );
-    return row?.version_id && row.document_id
-      ? { document_id: row.document_id, version_id: row.version_id }
-      : null;
   }
 
   private canWrite(p: Principal): void {
@@ -619,9 +623,9 @@ export class DocumentService {
   }
 
   /**
-   * Adds a version: sniffs the type, encrypts under a fresh file key
-   * wrapped by the document's scope key, stores, records. Idempotent on
-   * the key: a retried upload returns the version it already created.
+   * Adds a version to a document: sniffs the type, encrypts under a fresh
+   * file key wrapped by the document's scope key, stores, records. A retry
+   * with the same Idempotency-Key returns the version the first try made.
    */
   async upload(
     p: Principal,
@@ -629,187 +633,425 @@ export class DocumentService {
     input: UploadInput,
     meta: RequestMeta,
   ): Promise<VersionView> {
+    return (await this.accept(p, { kind: 'version', documentId }, input, meta)).version;
+  }
+
+  /**
+   * CAP-05: one file in, one Needs-info document out. The document and its
+   * first version are made together, at the commit, so an upload that fails
+   * leaves no empty document behind (CAP-13).
+   */
+  async capture(
+    p: Principal,
+    input: UploadInput,
+    meta: RequestMeta,
+  ): Promise<{ document_id: string; version_id: string; replayed: boolean }> {
+    const { version, replayed } = await this.accept(p, { kind: 'capture' }, input, meta);
+    return { document_id: version.document_id, version_id: version.id, replayed };
+  }
+
+  /**
+   * Every upload, a capture or a new version, is reserve-then-commit on its
+   * Idempotency-Key:
+   *
+   *  1. Claim, under a lock on the key: a pending row naming the account,
+   *     the kind of request, the document and a nonce for this try. A key
+   *     that is done is answered with what it made, but only to the account
+   *     that made it, for the same request, while they can still see it;
+   *     any other use of the key is refused without saying what it made. A
+   *     key pending for less than 15 minutes is another try still running.
+   *  2. Stream the bytes, encrypted, to a temporary object for this try.
+   *  3. Commit, in one transaction: the claim is still this try's, the
+   *     document (for a capture) and the version are made, the key is done.
+   *
+   * A try that fails deletes its temporary object and its claim, so the
+   * same key works again and nothing is left behind.
+   */
+  async accept(
+    p: Principal,
+    target: UploadTarget,
+    input: UploadInput,
+    meta: RequestMeta,
+  ): Promise<{ version: VersionView; replayed: boolean }> {
     this.canWrite(p);
-    if (!/^[0-9a-f-]{36}$/i.test(input.idempotencyKey)) {
-      throw new ApiError(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
+    if (!UUID.test(input.idempotencyKey)) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Idempotency-Key must be a UUID, written like 123e4567-e89b-42d3-a456-426614174000.',
+      );
     }
+    const claimed = await this.claim(p, target, input.idempotencyKey);
+    if ('replay' in claimed) return { version: claimed.replay, replayed: true };
+    const c = claimed;
 
-    // Fast path: already done — for this document, and for somebody who
-    // can see it. A key replayed against another document is refused rather
-    // than answered with that document's version, which could be somebody
-    // else's private upload, filename and hash included.
-    const existing = await this.priorUpload(p, input.idempotencyKey);
-    if (existing) {
-      if (existing.document_id !== documentId) throw keyReused();
-      const v = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
-        await this.fetch(trx, p, documentId);
-        return trx
-          .selectFrom('document_version')
-          .selectAll()
-          .where('id', '=', existing.version_id)
-          .executeTakeFirstOrThrow();
-      });
-      return versionView(v);
-    }
-
-    // The real type is detected from the bytes as they flow (CAP-03).
+    // The real type is detected from the bytes as they flow (CAP-03), and
+    // the plaintext hash is computed on the way in; the adapter verifies
+    // the ciphertext on the way out.
     const sniffer = sniffStream(input.mime, input.filename);
-
-    // Encrypt while streaming into the vault. The plaintext hash is computed
-    // on the way in; the adapter verifies the ciphertext on the way out.
-    const doc = await withScope(this.db, { householdId: p.householdId }, (trx) =>
-      this.fetch(trx, p, documentId),
-    );
-    // A new copy replaces the document and settles its reminders, which is
-    // changing it: a teen may do that to their own documents only.
-    this.mustOwnIfTeen(p, doc);
-    const scopeRef = scopeFor(doc, p.householdId);
-    const { vaultId, adapter, scopeKeyId, fileKeyWrapped, fileKey } = await withScope(
-      this.db,
-      { householdId: p.householdId },
-      async (trx) => {
-        const active = await this.vaults.activeAdapter(trx, p.householdId);
-        const scope = await this.keys.unwrap(trx, scopeRef);
-        const fileKey = newKey();
-        return {
-          ...active,
-          scopeKeyId: scope.id,
-          fileKey,
-          fileKeyWrapped: wrapKey(fileKey, scope.key, `version:${documentId}`),
-        };
-      },
-    );
-
     const plainHash = createHash('sha256');
     let plainBytes = 0;
     const counted = new PassThrough();
-    counted.on('data', (c: Buffer) => {
-      plainHash.update(c);
-      plainBytes += c.length;
-      if (plainBytes > this.maxUploadBytes)
-        counted.destroy(new ApiError(413, 'too_large', 'That file is too big for this vault.'));
+    counted.on('data', (chunk: Buffer) => {
+      plainHash.update(chunk);
+      plainBytes += chunk.length;
+      if (plainBytes > this.maxUploadBytes) counted.destroy(tooLarge());
     });
-    const enc = new EncryptStream(fileKey);
-    const tmpKey = `${p.householdId}/${documentId}/incoming/${input.idempotencyKey}.enc`;
+    const enc = new EncryptStream(c.fileKey);
 
     let put;
     let mime: string;
     let ext: string;
+    const storing = c.adapter.put(c.tempKey, enc);
+    const flowing = pipeline(input.stream, sniffer.stream, counted, enc);
     try {
-      const [p1, , d] = await Promise.all([
-        adapter.put(tmpKey, enc),
-        pipeline(input.stream, sniffer.stream, counted, enc),
-        sniffer.detected,
-      ]);
-      put = p1;
-      ({ mime, ext } = d);
+      const [stored, , detected] = await Promise.all([storing, flowing, sniffer.detected]);
+      put = stored;
+      ({ mime, ext } = detected);
+      // Cut off at the size limit on the way in: what arrived is not the file.
+      if (input.truncated?.()) throw tooLarge();
     } catch (err) {
-      await adapter.delete(tmpKey).catch(() => undefined);
+      // Stop the bytes and let the write finish failing before cleaning up:
+      // a refusal that comes early (a type the vault does not take) would
+      // otherwise leave a temporary object written after it was deleted.
+      enc.destroy();
+      await Promise.allSettled([storing, flowing]);
+      await this.release(p, c);
       if (err instanceof ApiError) throw err;
-      throw new ApiError(
-        503,
-        'storage_unreachable',
-        "We can't reach where your files are kept. Your file was not saved; try again.",
-        {
-          detail: (err as Error).message,
-          retriable: true,
-        },
-      );
+      throw storageUnreachable((err as Error).message);
     }
     const sha256 = plainHash.digest();
 
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
-      // The file was encrypted for the document as it was when the upload
-      // began. If it has since been made private, or moved to somebody
-      // else, that key is the wrong one — and the uploader may no longer be
-      // allowed to see it at all. Ask again, at the moment it is recorded.
-      const now = await this.fetch(trx, p, documentId);
-      this.mustOwnIfTeen(p, now);
-      const was = scopeFor(doc, p.householdId);
-      const is = scopeFor(now, p.householdId);
-      if (was.kind !== is.kind || was.memberId !== is.memberId) {
-        await adapter.delete(tmpKey).catch(() => undefined);
-        throw new ApiError(
-          409,
-          'document_changed',
-          'Who can see this document changed while the file was uploading. Try again.',
-          { retriable: true },
+    const moved: { to: string | null } = { to: null };
+    let version: VersionView;
+    try {
+      version = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+        await lockKey(trx, p.householdId, c.key);
+        const still = await trx
+          .selectFrom('upload_idempotency')
+          .select('idempotency_key')
+          .where('idempotency_key', '=', c.key)
+          .where('state', '=', 'pending')
+          .where('claim_nonce', '=', c.nonce)
+          .executeTakeFirst();
+        // Another try took the key over while this one was slow: it wins.
+        if (!still) throw uploadInProgress();
+
+        if (target.kind === 'version') {
+          // The document's row, locked before anything is read from it:
+          // version numbers, and who it is wrapped for, cannot change under
+          // this commit. Making it private takes the same lock (visibility.ts).
+          await trx
+            .selectFrom('document')
+            .select('id')
+            .where('id', '=', c.documentId)
+            .forUpdate()
+            .execute();
+        }
+
+        if (target.kind === 'capture') {
+          const row = await trx
+            .insertInto('document')
+            .values({
+              id: c.documentId,
+              household_id: p.householdId,
+              created_by: p.accountId,
+              updated_by: p.accountId,
+              ...c.values,
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
+          await appendAudit(trx, {
+            householdId: p.householdId,
+            actorAccountId: p.accountId,
+            action: 'document.created',
+            objectType: 'document',
+            objectId: row.id,
+            detail: { title: row.title, type_key: row.type_key },
+            ip: meta.ip,
+          });
+        } else {
+          // The file was encrypted for the document as it was when the
+          // upload began. If it has since been made private, or moved to
+          // somebody else, that key is the wrong one — and the uploader may
+          // no longer be allowed to see it at all. Ask again, under the lock.
+          const now = await this.fetch(trx, p, c.documentId);
+          this.mustOwnIfTeen(p, now);
+          const is = scopeFor(now, p.householdId);
+          if (c.scope.kind !== is.kind || c.scope.memberId !== is.memberId) {
+            throw new ApiError(
+              409,
+              'document_changed',
+              'Who can see this document changed while the file was uploading. Try again.',
+              { retriable: true },
+            );
+          }
+        }
+
+        const last = await trx
+          .selectFrom('document_version')
+          .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
+          .where('document_id', '=', c.documentId)
+          .executeTakeFirstOrThrow();
+        const versionNo = Number(last.n) + 1;
+        moved.to = objectKey({
+          householdId: p.householdId,
+          documentId: c.documentId,
+          versionNo,
+          name: randomBytes(8).toString('hex'),
+          ext,
+        });
+        const storageKey = await moveObject(c.adapter, c.tempKey, moved.to);
+
+        const row = await trx
+          .insertInto('document_version')
+          .values({
+            household_id: p.householdId,
+            document_id: c.documentId,
+            version_no: versionNo,
+            filename: input.filename,
+            mime,
+            byte_size: plainBytes,
+            sha256,
+            cipher_bytes: put.bytes,
+            cipher_sha256: Buffer.from(put.sha256, 'hex'),
+            storage_key: storageKey,
+            vault_id: c.vaultId,
+            file_key_wrapped: c.fileKeyWrapped,
+            wrapped_by_scope: c.scopeKeyId,
+            uploaded_by: p.accountId,
+          })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        await trx
+          .updateTable('upload_idempotency')
+          .set({
+            state: 'done',
+            document_id: c.documentId,
+            version_id: row.id,
+            temp_key: null,
+            temp_vault_id: null,
+          })
+          .where('idempotency_key', '=', c.key)
+          .execute();
+        await trx
+          .updateTable('document')
+          .set({ updated_at: new Date(), updated_by: p.accountId })
+          .where('id', '=', c.documentId)
+          .execute();
+        // REM-08: the user renewed and scanned it; do not also ask them to
+        // dismiss a notification.
+        if (versionNo > 1)
+          await this.reminders?.resolveOpen(trx, p.householdId, c.documentId, p.accountId);
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'document.version_added',
+          objectType: 'document',
+          objectId: c.documentId,
+          detail: { version_no: versionNo, mime, bytes: plainBytes },
+          ip: meta.ip,
+        });
+        return versionView(row);
+      });
+    } catch (err) {
+      await this.release(p, c, moved.to);
+      throw err;
+    }
+
+    // Enrichment runs after the version is committed and visible. A queue
+    // hiccup must not fail an upload that is already safely stored.
+    await this.enqueue('version.process', {
+      household_id: p.householdId,
+      version_id: version.id,
+    }).catch(() => undefined);
+    return { version, replayed: false };
+  }
+
+  /** Step 1 of accept(): the key is this try's, or it is answered or refused. */
+  private async claim(
+    p: Principal,
+    target: UploadTarget,
+    key: string,
+  ): Promise<{ replay: VersionView } | Claim> {
+    const nonce = randomUUID();
+    // A stale try's temporary object, deleted once the takeover is committed.
+    const leftovers: { key: string; vaultId: string }[] = [];
+    const out = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      await lockKey(trx, p.householdId, key);
+      // A document the caller cannot see is not there, whatever the key.
+      const doc = target.kind === 'version' ? await this.fetch(trx, p, target.documentId) : null;
+      const row = await trx
+        .selectFrom('upload_idempotency')
+        .selectAll()
+        .where('idempotency_key', '=', key)
+        .executeTakeFirst();
+      if (row) {
+        const same =
+          row.account_id === p.accountId &&
+          row.request_kind === target.kind &&
+          (target.kind === 'capture' || row.document_id === target.documentId);
+        if (!same) throw keyReused();
+        if (row.state === 'done') {
+          const visible = await this.fetch(trx, p, row.document_id as string).then(
+            () => true,
+            () => false,
+          );
+          if (!visible) throw keyReused();
+          const v = await trx
+            .selectFrom('document_version')
+            .selectAll()
+            .where('id', '=', row.version_id as string)
+            .executeTakeFirstOrThrow();
+          return { replay: versionView(v) };
+        }
+        if (Date.now() - row.claimed_at.getTime() < CLAIM_FRESH_MS) throw uploadInProgress();
+        if (row.temp_key && row.temp_vault_id) {
+          leftovers.push({ key: row.temp_key, vaultId: row.temp_vault_id });
+        }
+      }
+
+      // What the bytes will be encrypted for.
+      let documentId: string;
+      let scope: ReturnType<typeof scopeFor>;
+      let values: Record<string, never> = {};
+      if (doc) {
+        // A new copy replaces the document and settles its reminders, which
+        // is changing it: a teen may do that to their own documents only.
+        this.mustOwnIfTeen(p, doc);
+        documentId = doc.id;
+        scope = scopeFor(doc, p.householdId);
+      } else {
+        // The id is minted now, so the file key is wrapped for it.
+        documentId = randomUUID();
+        values = await this.captureColumns(trx, p);
+        scope = scopeFor(
+          {
+            visibility: (values.visibility as Visibility | undefined) ?? 'household',
+            owner_member_id: (values.owner_member_id as string | null | undefined) ?? null,
+          },
+          p.householdId,
         );
       }
-      const last = await trx
-        .selectFrom('document_version')
-        .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
-        .where('document_id', '=', documentId)
-        .executeTakeFirstOrThrow();
-      const versionNo = Number(last.n) + 1;
-      const finalKey = objectKey({
-        householdId: p.householdId,
+      const active = await this.vaults.activeAdapter(trx, p.householdId);
+      const scopeKey = await this.keys.unwrap(trx, scope);
+      const fileKey = newKey();
+      const tempKey = `${p.householdId}/${documentId}/incoming/${key.toLowerCase()}.${nonce}.enc`;
+      const claimRow = {
+        account_id: p.accountId,
+        state: 'pending' as const,
+        request_kind: target.kind,
+        document_id: target.kind === 'version' ? documentId : null,
+        version_id: null,
+        claim_nonce: nonce,
+        claimed_at: new Date(),
+        temp_key: tempKey,
+        temp_vault_id: active.vaultId,
+      };
+      // Taking over a stale claim: the nightly sweep may have deleted it
+      // meanwhile, in which case it is simply made again.
+      const taken = row
+        ? await trx
+            .updateTable('upload_idempotency')
+            .set(claimRow)
+            .where('idempotency_key', '=', key)
+            .executeTakeFirst()
+        : null;
+      if (!taken || Number(taken.numUpdatedRows) === 0) {
+        await trx
+          .insertInto('upload_idempotency')
+          .values({ idempotency_key: key, household_id: p.householdId, ...claimRow })
+          .execute();
+      }
+      return {
+        key,
+        nonce,
         documentId,
-        versionNo,
-        name: randomBytes(8).toString('hex'),
-        ext,
-      });
-      // Move into the boring layout. Local: rename is cheap; S3: copy would
-      // be needed — put wrote under the temp key, so re-put is avoided by
-      // keeping the temp key as the storage key when a move is unsupported.
-      const storageKey = await moveObject(adapter, tmpKey, finalKey);
+        values,
+        scope,
+        vaultId: active.vaultId,
+        adapter: active.adapter,
+        scopeKeyId: scopeKey.id,
+        fileKey,
+        fileKeyWrapped: wrapKey(fileKey, scopeKey.key, `version:${documentId}`),
+        tempKey,
+      } satisfies Claim;
+    });
+    for (const l of leftovers) await this.dropObject(p.householdId, l).catch(() => undefined);
+    return out;
+  }
 
-      const version = await trx
-        .insertInto('document_version')
-        .values({
-          household_id: p.householdId,
-          document_id: documentId,
-          version_no: versionNo,
-          filename: input.filename,
-          mime,
-          byte_size: plainBytes,
-          sha256,
-          cipher_bytes: put.bytes,
-          cipher_sha256: Buffer.from(put.sha256, 'hex'),
-          storage_key: storageKey,
-          vault_id: vaultId,
-          file_key_wrapped: fileKeyWrapped,
-          wrapped_by_scope: scopeKeyId,
-          uploaded_by: p.accountId,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
+  /** What a captured document starts as: untitled, and a teen's own. */
+  private async captureColumns(trx: Db, p: Principal): Promise<Record<string, never>> {
+    const values = await this.columns(trx, p, { title: null }, null);
+    return p.role === 'teen'
+      ? ({ ...values, owner_member_id: p.memberId } as unknown as Record<string, never>)
+      : values;
+  }
+
+  /**
+   * A failed try: its temporary object, the object it may have moved into
+   * place, and its claim — only while the claim is still this try's.
+   */
+  private async release(p: Principal, c: Claim, moved: string | null = null): Promise<void> {
+    await c.adapter.delete(c.tempKey).catch(() => undefined);
+    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // A commit whose answer was lost still holds this lock until it ends.
+      await lockKey(trx, p.householdId, c.key);
+      if (moved) {
+        // Only if no version points at it: a commit that did happen, with
+        // the answer lost on the way back, must keep its file.
+        const used = await trx
+          .selectFrom('document_version')
+          .select('id')
+          .where('storage_key', '=', moved)
+          .executeTakeFirst();
+        if (!used) await c.adapter.delete(moved).catch(() => undefined);
+      }
       await trx
-        .insertInto('upload_idempotency')
-        .values({
-          idempotency_key: input.idempotencyKey,
-          household_id: p.householdId,
-          document_id: documentId,
-          version_id: version.id,
-        })
+        .deleteFrom('upload_idempotency')
+        .where('idempotency_key', '=', c.key)
+        .where('state', '=', 'pending')
+        .where('claim_nonce', '=', c.nonce)
         .execute();
-      await trx
-        .updateTable('document')
-        .set({ updated_at: new Date(), updated_by: p.accountId })
-        .where('id', '=', documentId)
-        .execute();
-      // REM-08: the user renewed and scanned it; do not also ask them to
-      // dismiss a notification.
-      if (versionNo > 1)
-        await this.reminders?.resolveOpen(trx, p.householdId, documentId, p.accountId);
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'document.version_added',
-        objectType: 'document',
-        objectId: documentId,
-        detail: { version_no: versionNo, mime, bytes: plainBytes },
-        ip: meta.ip,
-      });
-      return versionView(version);
-    }).then(async (v) => {
-      // Enrichment runs after the version is committed and visible. A queue
-      // hiccup must not fail an upload that is already safely stored.
-      await this.enqueue('version.process', {
-        household_id: p.householdId,
-        version_id: v.id,
-      }).catch(() => undefined);
-      return v;
+    }).catch(() => undefined);
+  }
+
+  private async dropObject(householdId: string, at: { key: string; vaultId: string }) {
+    const adapter = await withScope(this.db, { householdId }, (trx) =>
+      this.vaults.adapterById(trx, at.vaultId),
+    );
+    await adapter.delete(at.key);
+  }
+
+  /**
+   * GET /uploads/{key}: what became of one of the caller's own uploads.
+   * Someone else's key, a key never seen, and a try that failed or died
+   * all look the same: not found.
+   */
+  async uploadStatus(p: Principal, key: string): Promise<UploadStatus> {
+    if (!UUID.test(key)) throw unknownUpload();
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('upload_idempotency')
+        .select(['state', 'document_id', 'version_id', 'claimed_at'])
+        .where('idempotency_key', '=', key)
+        .where('account_id', '=', p.accountId)
+        .executeTakeFirst();
+      if (!row) throw unknownUpload();
+      if (row.state === 'done' && row.document_id && row.version_id) {
+        const visible = await this.fetch(trx, p, row.document_id).then(
+          () => true,
+          () => false,
+        );
+        if (!visible) throw unknownUpload();
+        return { state: 'done', document_id: row.document_id, version_id: row.version_id };
+      }
+      if (row.state === 'pending' && Date.now() - row.claimed_at.getTime() < CLAIM_FRESH_MS) {
+        return { state: 'in_progress', since: row.claimed_at.toISOString() };
+      }
+      throw unknownUpload();
     });
   }
 
@@ -1162,7 +1404,7 @@ export class DocumentService {
   }
 }
 
-function scopeFor(doc: DocRow, householdId: string) {
+function scopeFor(doc: Pick<DocRow, 'visibility' | 'owner_member_id'>, householdId: string) {
   switch (doc.visibility) {
     case 'household':
       return { householdId, kind: 'household' as const };
@@ -1299,9 +1541,45 @@ async function moveObject(
   return to;
 }
 
+/** Upload keys are UUIDs, written the usual way: 8-4-4-4-12 hex digits. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A pending claim younger than this is a try that is still running. */
+const CLAIM_FRESH_MS = 15 * 60_000;
+
+/** One try at a time per key, in one household. */
+const lockKey = (trx: Db, householdId: string, key: string) =>
+  sql`select pg_advisory_xact_lock(hashtextextended(${`${householdId}:${key.toLowerCase()}`}, 0))`.execute(
+    trx,
+  );
+
+// None of these says what a key made: it may be somebody else's upload.
 const keyReused = () =>
   new ApiError(
-    422,
+    409,
     'idempotency_key_reused',
-    'That Idempotency-Key was already used for a different upload. Use a new one for each file.',
+    'That upload key was already used for something else.',
+  );
+
+const uploadInProgress = () =>
+  new ApiError(
+    409,
+    'upload_in_progress',
+    'This upload is already on its way. Trying again in a moment.',
+    {
+      retriable: true,
+      retryAfter: 5,
+    },
+  );
+
+const unknownUpload = () => new ApiError(404, 'not_found', 'That upload is not known here.');
+
+const tooLarge = () => new ApiError(413, 'too_large', 'That file is too big for this vault.');
+
+const storageUnreachable = (detail: string) =>
+  new ApiError(
+    503,
+    'storage_unreachable',
+    "We can't reach where your files are kept. Your file was not saved; try again.",
+    { detail, retriable: true, retryAfter: 30 },
   );

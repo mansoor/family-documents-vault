@@ -44,6 +44,8 @@ describe('buildCapabilities', () => {
       share_links: true,
       bulk_import: false,
       multi_household: false,
+      // 0.4.8: uploads are reserve-then-commit on their key (4.3).
+      idempotent_capture: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

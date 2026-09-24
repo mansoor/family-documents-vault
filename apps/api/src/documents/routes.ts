@@ -194,42 +194,7 @@ export async function registerDocuments(
     items: await docs.versions(principal(req), req.params.id),
   }));
 
-  const uploadHandler =
-    (documentId: (req: FastifyRequest) => string) =>
-    async (req: FastifyRequest, reply: FastifyReply) => {
-      const key = req.headers['idempotency-key'];
-      if (typeof key !== 'string' || !key) {
-        throw new ApiError(
-          422,
-          'validation_failed',
-          'Uploads need an Idempotency-Key header (a UUID).',
-        );
-      }
-      const file = await req.file();
-      if (!file) throw new ApiError(422, 'validation_failed', 'Attach one file.');
-      const version = await docs.upload(
-        principal(req),
-        documentId(req),
-        { filename: file.filename, mime: file.mimetype, stream: file.file, idempotencyKey: key },
-        metaOf(req),
-      );
-      if (file.file.truncated) {
-        throw new ApiError(413, 'too_large', 'That file is too big for this vault.');
-      }
-      return reply.status(201).send(version);
-    };
-
-  app.post<{ Params: { id: string } }>(
-    '/api/v1/documents/:id/versions',
-    auth,
-    uploadHandler((req) => (req.params as { id: string }).id),
-  );
-
-  /**
-   * POST /capture: one file in, one Needs-info document out (CAP-05). The
-   * document exists and is downloadable before any enrichment runs.
-   */
-  app.post('/api/v1/capture', auth, async (req, reply) => {
+  const uploadKey = (req: FastifyRequest): string => {
     const key = req.headers['idempotency-key'];
     if (typeof key !== 'string' || !key) {
       throw new ApiError(
@@ -238,38 +203,96 @@ export async function registerDocuments(
         'Uploads need an Idempotency-Key header (a UUID).',
       );
     }
+    return key;
+  };
+
+  const fileOf = async (req: FastifyRequest) => {
     const file = await req.file();
     if (!file) throw new ApiError(422, 'validation_failed', 'Attach one file.');
-    const p = principal(req);
-    // A retried capture (CAP-13) is answered with what the first attempt
-    // made, before anything new is created.
-    const prior = await docs.priorUpload(p, key);
-    if (prior) {
+    return file;
+  };
+
+  /**
+   * A retried upload is answered with what the first try made, marked as
+   * a replay. Its bytes are not needed, so they are drained, not stored.
+   */
+  const replayed = (reply: FastifyReply, file: { file: NodeJS.ReadableStream }, was: boolean) => {
+    if (!was) return;
+    file.file.resume();
+    void reply.header('idempotent-replayed', 'true');
+  };
+
+  /**
+   * A refusal before the bytes were read (the key is taken, the document is
+   * not there) still reads them, to nowhere, so the connection is left able
+   * to carry the answer and the next request.
+   */
+  const drained =
+    (file: { file: NodeJS.ReadableStream }) =>
+    (err: unknown): never => {
       file.file.resume();
-      const done = await docs.upload(
-        p,
-        prior.document_id,
-        { filename: file.filename, mime: file.mimetype, stream: file.file, idempotencyKey: key },
+      throw err;
+    };
+
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/versions',
+    auth,
+    async (req, reply) => {
+      const key = uploadKey(req);
+      const file = await fileOf(req);
+      const { version, replayed: was } = await docs
+        .accept(
+          principal(req),
+          { kind: 'version', documentId: req.params.id },
+          {
+            filename: file.filename,
+            mime: file.mimetype,
+            stream: file.file,
+            idempotencyKey: key,
+            truncated: () => file.file.truncated,
+          },
+          metaOf(req),
+        )
+        .catch(drained(file));
+      replayed(reply, file, was);
+      return reply.status(201).send(version);
+    },
+  );
+
+  /**
+   * POST /capture: one file in, one Needs-info document out (CAP-05). The
+   * document exists and is downloadable before any enrichment runs, and a
+   * retry with the same key makes nothing new (CAP-13).
+   */
+  app.post('/api/v1/capture', auth, async (req, reply) => {
+    const key = uploadKey(req);
+    const file = await fileOf(req);
+    const done = await docs
+      .capture(
+        principal(req),
+        {
+          filename: file.filename,
+          mime: file.mimetype,
+          stream: file.file,
+          idempotencyKey: key,
+          truncated: () => file.file.truncated,
+        },
         metaOf(req),
-      );
-      return reply.status(201).send({
-        document_id: done.document_id,
-        version_id: done.id,
-        job_id: null,
-        state: 'stored',
-      });
-    }
-    const doc = await docs.create(p, { title: null }, metaOf(req));
-    const version = await docs.upload(
-      p,
-      doc.id,
-      { filename: file.filename, mime: file.mimetype, stream: file.file, idempotencyKey: key },
-      metaOf(req),
-    );
-    return reply
-      .status(201)
-      .send({ document_id: doc.id, version_id: version.id, job_id: null, state: 'stored' });
+      )
+      .catch(drained(file));
+    replayed(reply, file, done.replayed);
+    return reply.status(201).send({
+      document_id: done.document_id,
+      version_id: done.version_id,
+      job_id: null,
+      state: 'stored',
+    });
   });
+
+  /** What became of one of the caller's own uploads: done, in progress, or not known. */
+  app.get<{ Params: { key: string } }>('/api/v1/uploads/:key', auth, async (req) =>
+    docs.uploadStatus(principal(req), req.params.key),
+  );
 
   app.get<{ Params: { id: string } }>('/api/v1/versions/:id/content', auth, async (req, reply) => {
     const p = principal(req);

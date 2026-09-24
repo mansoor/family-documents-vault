@@ -353,6 +353,14 @@ export interface CaptureResult {
   state: string;
 }
 
+/**
+ * GET /uploads/{key}: what became of one of the caller's own uploads. A key
+ * never seen, someone else's, or a try that failed is a 404.
+ */
+export type UploadStatus =
+  | { state: 'done'; document_id: string; version_id: string }
+  | { state: 'in_progress'; since: string };
+
 /** The single error envelope every failure uses (API-03). */
 export interface ErrorBody {
   error: {

@@ -945,7 +945,8 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
     // Sam somehow holds the key of the owner's private upload. Replaying it
     // used to return that version — its filename and hash included.
     const res = await upload(sam, samDoc, ownerKey);
-    expect(res.statusCode).toBe(422);
+    // 409 since 0.4.8 (422 before): the key is taken, the request is fine.
+    expect(res.statusCode).toBe(409);
     expect(json<{ error: { code: string } }>(res).error.code).toBe('idempotency_key_reused');
     expect(res.body).not.toContain('therapy-notes');
     // And aimed at the owner's document itself, it is simply not there.
