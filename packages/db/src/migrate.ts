@@ -2,6 +2,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
+import { applyPrivileges } from './privileges.js';
 
 /**
  * A deliberately small migration runner.
@@ -85,13 +86,18 @@ export async function migrationStatus(
 }
 
 /**
- * Applies every pending migration. Takes an advisory lock so that two API
- * replicas starting at once cannot both run the same file.
+ * Applies every pending migration, then the application role's privileges
+ * (privileges.ts) — every time, so a database restored from a backup, which
+ * carries none, is put right on the vault's first start. Takes an advisory
+ * lock so that two API replicas starting at once cannot both run the same
+ * file.
  */
 export async function migrateUp(
   pool: pg.Pool,
   dir = MIGRATIONS_DIR,
   log: (msg: string) => void = () => {},
+  /** Tests only: what the migrations alone produce, to hold privileges.ts to. */
+  opts: { privileges?: boolean } = {},
 ): Promise<Migration[]> {
   const client = await pool.connect();
   const applied: Migration[] = [];
@@ -117,6 +123,7 @@ export async function migrateUp(
       log(`applied ${m.version}_${m.name}`);
       applied.push(m);
     }
+    if (opts.privileges !== false) await applyPrivileges(client);
     return applied;
   } finally {
     await client.query('select pg_advisory_unlock($1)', [LOCK_KEY]).catch(() => undefined);
