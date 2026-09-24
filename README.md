@@ -337,9 +337,9 @@ Then run the commands above from `docker compose up -d --wait postgres` on. If t
 docker compose run --rm --no-deps -v "$PWD/fdv-2026-09-20T02-30-00-000Z.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
 ```
 
-**Never use `docker compose down -v`.** It deletes the files and the backups along with the database.
+**Never use `docker compose down -v`.** It deletes the files and the backups along with the database. If you run the vault behind TLS (`docker-compose.tls.yml`), give every `docker compose` command above the same `-f` files you always use.
 
-A database restored by hand — loaded with `psql` from `decrypt-backup <file> out.sql`, as this README once said — is put right the first time the vault starts on it.
+A database restored by hand — loaded with `psql` from `decrypt-backup <file> out.sql`, as this README once said — can read itself again from the first time the vault starts on it. But nothing signed anybody out: a phone signed out, or a password changed, since that backup is signed in again. Have everybody change their password, which signs out everything else of theirs, or restore again with `restore-backup`.
 
 **Export everything** in Settings makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all.
 

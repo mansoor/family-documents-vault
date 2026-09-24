@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream } from '@fdv/crypto';
 import { createPool, listMigrations, migrateUp } from '@fdv/db';
-import { libpqEnv, withDatabase } from './libpq.js';
+import { libpqConnection, withDatabase } from './libpq.js';
 
 /**
  * Putting a backup back (NFR-07).
@@ -28,11 +29,11 @@ import { libpqEnv, withDatabase } from './libpq.js';
  * policies and the audit log's trigger last, so a partial load would have
  * been a vault without its privacy wall.)
  *
- * A backup is the past: whatever was revoked or changed since it was made
- * is undone. So every session is ended — everybody signs in again — and
- * password-reset links still outstanding are expired; what cannot be
- * decided for the family (share links and invitations that are open again)
- * is reported.
+ * A backup is the past: whatever was revoked or ended since it was made
+ * comes back with it. So, in the same transaction, every session is ended
+ * — everybody signs in again — and what else can be ended safely is (see
+ * UNDO); what only the family can decide (passkeys, share links,
+ * invitations) is reported.
  */
 
 export interface RestoreTarget {
@@ -50,6 +51,8 @@ export interface RestoreReport {
   versions: number;
   /** Sessions ended, so that everybody signs in again. */
   sessionsEnded: number;
+  /** Requests to change who is an owner, withdrawn: they are asked again, with fresh notice. */
+  ownerChangesWithdrawn: number;
   /** Share links that work again: any revoked since the backup is among them. */
   liveShareLinks: number;
   openInvitations: number;
@@ -71,57 +74,46 @@ export async function restoreBackup(
 ): Promise<RestoreReport> {
   await assertEmpty(target.adminUrl);
   const known = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
-  await load(file, backupKey, target.adminUrl, known);
-  log('info', 'backup loaded', { file });
+  const undone = await load(file, backupKey, target.adminUrl, known);
+  log('info', 'backup loaded', { file, ...undone });
 
   try {
     const admin = createPool(target.adminUrl, 1);
-    let after: AfterRestore;
+    let open: StillOpen;
     try {
       // What the vault's own start does: bring an older backup up to date,
       // then give the application role its privileges.
       const applied = await migrateUp(admin, undefined, (m) => log('info', `migrate: ${m}`));
       if (applied.length) log('info', 'backup brought up to date', { migrations: applied.length });
-      after = await undoThePast(admin);
+      open = await stillOpen(admin);
     } finally {
       await admin.end();
     }
-    return { ...(await checkRestored(target)), ...after };
+    return { ...(await checkRestored(target)), ...undone, ...open };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
   }
 }
 
-interface AfterRestore {
+interface Undone {
   sessionsEnded: number;
+  ownerChangesWithdrawn: number;
+}
+
+interface StillOpen {
   liveShareLinks: number;
   openInvitations: number;
 }
 
-/**
- * A session revoked, a password changed, a phone signed out since the
- * backup: all of it came back with it. Ending every session makes the
- * restored vault ask everybody for the password it now has.
- */
-async function undoThePast(admin: ReturnType<typeof createPool>): Promise<AfterRestore> {
-  const ended = await admin.query(
-    `update session set revoked_at = now(), revoked_reason = 'restored from a backup'
-      where revoked_at is null`,
-  );
-  await admin.query(
-    `update password_reset set expires_at = now() where used_at is null and expires_at > now()`,
-  );
+/** What the family decides about, not the restore: counted for the report. */
+async function stillOpen(admin: ReturnType<typeof createPool>): Promise<StillOpen> {
   const { rows } = await admin.query<{ links: number; invitations: number }>(
     `select (select count(*)::int from share_link
               where revoked_at is null and (expires_at is null or expires_at > now())) as links,
             (select count(*)::int from invitation
               where accepted_at is null and revoked_at is null and expires_at > now()) as invitations`,
   );
-  return {
-    sessionsEnded: ended.rowCount ?? 0,
-    liveShareLinks: rows[0]?.links ?? 0,
-    openInvitations: rows[0]?.invitations ?? 0,
-  };
+  return { liveShareLinks: rows[0]?.links ?? 0, openInvitations: rows[0]?.invitations ?? 0 };
 }
 
 /**
@@ -129,11 +121,21 @@ async function undoThePast(admin: ReturnType<typeof createPool>): Promise<AfterR
  * copied file's modification time may not be.
  */
 export async function newestBackup(dir: string): Promise<string | null> {
-  const names = (await readdir(dir).catch(() => [] as string[]))
+  const last = (await backupNames(dir)).at(-1);
+  return last ? path.join(dir, last) : null;
+}
+
+/** The backup made before this one, in the same folder, if there is one. */
+export async function backupBefore(file: string, dir: string): Promise<string | null> {
+  const earlier = (await backupNames(dir)).filter((f) => f < path.basename(file)).at(-1);
+  return earlier ? path.join(dir, earlier) : null;
+}
+
+/** Oldest first. A backup still being written (".partial") is not one yet. */
+async function backupNames(dir: string): Promise<string[]> {
+  return (await readdir(dir).catch(() => [] as string[]))
     .filter((f) => /^fdv-.*\.sql\.enc$/.test(f))
     .sort();
-  const last = names.at(-1);
-  return last ? path.join(dir, last) : null;
 }
 
 const DRILL_PREFIX = 'fdv_restore_drill_';
@@ -227,21 +229,33 @@ async function assertEmpty(adminUrl: string): Promise<void> {
  * when the whole file has been read and authenticated, and only if the
  * backup is not from a newer release than this one.
  */
-async function load(file: string, key: Buffer, adminUrl: string, known: number): Promise<void> {
-  const psql = spawn('psql', ['--no-psqlrc', '--quiet', '--set', 'ON_ERROR_STOP=1'], {
-    // The connection goes in the environment, not on a command line other
-    // processes can read.
-    env: { ...process.env, ...libpqEnv(adminUrl), PGAPPNAME: 'fdv-restore' },
-    stdio: ['pipe', 'ignore', 'pipe'],
+async function load(file: string, key: Buffer, adminUrl: string, known: number): Promise<Undone> {
+  // The connection goes in the environment, not on a command line other
+  // processes can read.
+  const conn = libpqConnection(adminUrl);
+  const psql = spawn('psql', ['--no-psqlrc', '--quiet', '--set', 'ON_ERROR_STOP=1', ...conn.args], {
+    env: { ...process.env, ...conn.env, PGAPPNAME: 'fdv-restore' },
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
+  let stdout = '';
   let stderr = '';
+  psql.stdout.on('data', (c: Buffer) => {
+    stdout = (stdout + c.toString()).slice(-16000);
+  });
   psql.stderr.on('data', (c: Buffer) => {
     stderr = (stderr + c.toString()).slice(-4000);
   });
-  const exited = new Promise<number | null>((resolve, reject) => {
-    psql.on('error', reject);
+  const exited = new Promise<number | null>((resolve) => {
     psql.on('close', (code) => resolve(code));
+    psql.on('error', () => resolve(null));
   });
+  try {
+    await once(psql, 'spawn');
+  } catch (err) {
+    throw new Error(`psql could not be started: ${(err as Error).message}`, { cause: err });
+  }
+  // Whatever goes wrong writing to psql shows in the pipeline or in its exit.
+  psql.stdin.on('error', () => undefined);
 
   psql.stdin.write('begin;\n');
   try {
@@ -251,7 +265,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     // Nothing has been committed: stop psql before it could see the end of
     // its input, and the open transaction dies with the connection.
     psql.kill('SIGKILL');
-    await exited.catch(() => undefined);
+    await exited;
     throw new Error(
       stderr.trim()
         ? `the backup could not be loaded: ${stderr.trim()}`
@@ -259,12 +273,49 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
       { cause: err },
     );
   }
-  psql.stdin.end(`\n${versionGuard(known)}\ncommit;\n`);
+  psql.stdin.end(`\n${versionGuard(known)}\n${UNDO}\ncommit;\n`);
   const code = await exited;
   if (code !== 0) {
     throw new Error(`the backup could not be loaded (psql exited ${code}): ${stderr.trim()}`);
   }
+  const counted = (what: string) =>
+    Number(new RegExp(`fdv-restore:${what}=(\\d+)`).exec(stdout)?.[1] ?? 0);
+  return { sessionsEnded: counted('sessions'), ownerChangesWithdrawn: counted('owner_changes') };
 }
+
+/**
+ * What a backup brings back that had been ended since it was made, ended
+ * again — in the load's own transaction, so that no restored database
+ * exists without it. Everybody signs in again (a session revoked since, for
+ * a lost phone, would otherwise work); reset links are expired; a request
+ * to change who is an owner is withdrawn, to be asked again with fresh
+ * notice (one refused since would otherwise be open, and past its seven
+ * days); and browsers registered for notifications before 0.4.2, which no
+ * session ties to, are forgotten. Guarded for older schemas.
+ */
+const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
+do $undo$
+declare n int;
+begin
+  update public.session set revoked_at = now(), revoked_reason = 'restored from a backup'
+   where revoked_at is null;
+  get diagnostics n = row_count;
+  insert into pg_temp.fdv_restore_undone values ('sessions', n);
+  if to_regclass('public.password_reset') is not null then
+    update public.password_reset set expires_at = now() where used_at is null and expires_at > now();
+  end if;
+  if to_regclass('public.owner_change_request') is not null then
+    update public.owner_change_request set refused_at = now()
+     where refused_at is null and completed_at is null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('owner_changes', n);
+  end if;
+  if exists (select 1 from pg_attribute where attrelid = to_regclass('public.device')
+              and attname = 'session_id' and not attisdropped) then
+    delete from public.device where session_id is null;
+  end if;
+end $undo$;
+select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
 
 /** Refuses, inside the load's transaction, a backup this release cannot run. */
 function versionGuard(known: number): string {
@@ -287,7 +338,7 @@ end $guard$;`;
  */
 export async function checkRestored(
   target: RestoreTarget,
-): Promise<Omit<RestoreReport, keyof AfterRestore>> {
+): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen>> {
   const admin = createPool(target.adminUrl, 1);
   const app = createPool(target.appUrl, 1);
   try {

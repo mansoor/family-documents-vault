@@ -62,5 +62,7 @@ describe.skipIf(!testAdminUrl() || !hasPgDump())('backup.database job', () => {
     });
     const left = (await readdir(dir)).filter((f) => f.endsWith('.sql.enc'));
     expect(left.length).toBeLessThanOrEqual(1);
+    // Written under a temporary name and renamed when whole: none is left.
+    expect((await readdir(dir)).filter((f) => f.endsWith('.partial'))).toEqual([]);
   }, 60_000);
 });

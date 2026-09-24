@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream } from '@fdv/crypto';
-import { libpqEnv } from './libpq.js';
+import { libpqConnection } from './libpq.js';
 
 /**
  * Nightly encrypted database dump (NFR-07). `pg_dump` streams through the
@@ -29,9 +29,13 @@ export async function backupDatabase(deps: BackupDeps): Promise<{ file: string; 
   await mkdir(deps.dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const file = path.join(deps.dir, `fdv-${stamp}.sql.enc`);
+  // Written under another name and renamed when whole: a backup cut short
+  // by a crash or a restart must never look like the newest one.
+  const partial = `${file}.partial`;
 
-  const dump = spawn('pg_dump', ['--no-owner', '--no-privileges', '--format=plain'], {
-    env: { ...process.env, ...libpqEnv(deps.adminUrl) },
+  const conn = libpqConnection(deps.adminUrl);
+  const dump = spawn('pg_dump', ['--no-owner', '--no-privileges', '--format=plain', ...conn.args], {
+    env: { ...process.env, ...conn.env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';
@@ -44,19 +48,24 @@ export async function backupDatabase(deps: BackupDeps): Promise<{ file: string; 
   });
   const enc = new EncryptStream(deps.backupKey);
   try {
-    await Promise.all([pipeline(dump.stdout, enc, createWriteStream(file)), exit]);
+    await Promise.all([pipeline(dump.stdout, enc, createWriteStream(partial)), exit]);
   } catch (err) {
-    await rm(file, { force: true });
+    await rm(partial, { force: true });
     throw err;
   }
+  await rename(partial, file);
   const bytes = (await stat(file)).size;
 
-  // Retention.
+  // Retention, and whatever a backup that was killed outright left behind.
   const cutoff = Date.now() - deps.retainDays * 24 * 3600 * 1000;
+  const dayAgo = Date.now() - 24 * 3600 * 1000;
   for (const f of await readdir(deps.dir)) {
-    if (!/^fdv-.*\.sql\.enc$/.test(f)) continue;
     const full = path.join(deps.dir, f);
-    if ((await stat(full)).mtimeMs < cutoff) await rm(full, { force: true });
+    if (/^fdv-.*\.sql\.enc$/.test(f)) {
+      if ((await stat(full)).mtimeMs < cutoff) await rm(full, { force: true });
+    } else if (/^fdv-.*\.sql\.enc\.partial$/.test(f)) {
+      if ((await stat(full)).mtimeMs < dayAgo) await rm(full, { force: true });
+    }
   }
   deps.log('info', 'database backed up', { file, bytes });
   return { file, bytes };

@@ -23,7 +23,9 @@ services:
       - db-data:/var/lib/postgresql/data
       - ./docker/postgres/init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U fdv -d fdv']
+      # Over TCP, as everything else connects: on a new volume the image
+      # first runs a setup server on the socket alone, which is not ready.
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U fdv -d fdv']
       interval: 5s
       timeout: 3s
       retries: 12

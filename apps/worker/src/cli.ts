@@ -6,6 +6,7 @@ import { DecryptStream, deriveKey } from '@fdv/crypto';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import {
+  backupBefore,
   newestBackup,
   restoreBackup,
   RestoreIncomplete,
@@ -118,6 +119,13 @@ async function main() {
         return;
       }
       console.error(`Nothing was restored; the database is as it was. ${(err as Error).message}`);
+      const older = a === 'latest' ? await backupBefore(file, config.FDV_BACKUP_DIR) : null;
+      if (older) {
+        console.error(
+          `\nIf this backup is damaged, restore the one before it:\n\n` +
+            `  docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-backup ${older}`,
+        );
+      }
       process.exitCode = 1;
     }
     return;
@@ -144,6 +152,7 @@ are in the other volume and are not touched:
   docker volume rm fdv_db-data
   docker compose up -d --wait postgres
 
+(With the same -f files you always use, such as docker-compose.tls.yml.)
 Never use "docker compose down -v": that deletes the files and the backups too.`;
 
 function summary(file: string, r: RestoreReport): string {
@@ -157,7 +166,16 @@ function summary(file: string, r: RestoreReport): string {
     'Everything since the backup was made is undone, so:',
     `  - Everybody has been signed out (${plural(r.sessionsEnded, 'session')}). Each person signs in`,
     '    with the password they had when the backup was made.',
+    '  - Passkeys and two-step sign-in are as they were then too. Anybody who removed a',
+    '    passkey or reset two-step sign-in since does it again, in Settings.',
   ];
+  if (r.ownerChangesWithdrawn > 0) {
+    lines.push(
+      `  - ${plural(r.ownerChangesWithdrawn, 'request')} to change who is an owner ` +
+        `${r.ownerChangesWithdrawn === 1 ? 'was' : 'were'} withdrawn;`,
+      '    ask again if it still stands, and everybody is told afresh.',
+    );
+  }
   if (r.liveShareLinks > 0) {
     lines.push(
       `  - ${plural(r.liveShareLinks, 'share link')} ${r.liveShareLinks === 1 ? 'works' : 'work'} ` +
@@ -172,7 +190,11 @@ function summary(file: string, r: RestoreReport): string {
       '    joins again with the same invitation, or is invited afresh.',
     );
   }
-  lines.push('', 'Now start the vault:  docker compose up -d');
+  lines.push(
+    '',
+    'Now start the vault:  docker compose up -d',
+    '(with the same -f files you always use, such as docker-compose.tls.yml)',
+  );
   return lines.join('\n');
 }
 

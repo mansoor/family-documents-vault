@@ -20,8 +20,9 @@ import pg from 'pg';
 import { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { backupDatabase } from './backup.js';
-import { libpqEnv } from './libpq.js';
+import { libpqConnection } from './libpq.js';
 import {
+  backupBefore,
   checkRestored,
   newestBackup,
   restoreBackup,
@@ -108,7 +109,12 @@ async function installQueue(url: string): Promise<void> {
   await boss.stop({ graceful: false });
 }
 
-/** A household with two people, three documents and somebody signed in. */
+/**
+ * A household with two people, three documents and somebody signed in —
+ * and what a backup should not bring back as it was: a password-reset link
+ * still out, a request to demote the other owner that is past its seven
+ * days, and a browser registered for notifications before 0.4.2.
+ */
 async function seed(url: string): Promise<string> {
   const hh = randomUUID();
   await withClient(url, async (c) => {
@@ -134,6 +140,32 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
+
+    const b = await c.query<{ id: string }>(
+      'insert into account (email) values ($1) returning id',
+      [`restore-other-${hh}@example.test`],
+    );
+    const other = b.rows[0]?.id;
+    await c.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [other, hh, m.rows[1]?.id],
+    );
+    await c.query(
+      `insert into owner_change_request
+         (household_id, target_account, requested_by, action, opens_at, lapses_at)
+       values ($1, $2, $3, 'demote', now() - interval '1 day', now() + interval '20 days')`,
+      [hh, other, account],
+    );
+    await c.query(
+      `insert into password_reset (account_id, token_hash, issued_by, expires_at)
+       values ($1, $2, 'self', now() + interval '1 hour')`,
+      [account, randomBytes(32)],
+    );
+    await c.query(
+      `insert into device (household_id, account_id, endpoint, p256dh, auth, session_id)
+       values ($1, $2, $3, 'k', 'a', null)`,
+      [hh, account, `https://push.example.test/${hh}`],
+    );
   });
   return hh;
 }
@@ -307,16 +339,38 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
 });
 
 describe('the connection for pg_dump and psql', () => {
-  it('goes in the environment, password and all', () => {
-    expect(libpqEnv('postgres://fdv:p%40ss%2Fword@db.example:5433/fdv?sslmode=require')).toEqual({
-      PGHOST: 'db.example',
-      PGPORT: '5433',
-      PGUSER: 'fdv',
-      PGPASSWORD: 'p@ss/word',
-      PGDATABASE: 'fdv',
-      PGSSLMODE: 'require',
+  it('goes in the environment, password and settings and all', () => {
+    expect(
+      libpqConnection(
+        'postgres://fdv:p%40ss%2Fword@db.example:5433/fdv?sslmode=verify-full&sslrootcert=/certs/ca.pem&connect_timeout=5',
+      ),
+    ).toEqual({
+      env: {
+        PGHOST: 'db.example',
+        PGPORT: '5433',
+        PGUSER: 'fdv',
+        PGPASSWORD: 'p@ss/word',
+        PGDATABASE: 'fdv',
+        PGSSLMODE: 'verify-full',
+        PGSSLROOTCERT: '/certs/ca.pem',
+        PGCONNECT_TIMEOUT: '5',
+      },
+      args: [],
     });
-    expect(libpqEnv('postgres://fdv@[::1]/x').PGHOST).toBe('::1');
+    expect(libpqConnection('postgres://fdv@[::1]/x').env.PGHOST).toBe('::1');
+    // A socket, named the way libpq's URIs allow.
+    expect(libpqConnection('postgres:///fdv?host=/var/run/postgresql&user=fdv').env).toEqual({
+      PGDATABASE: 'fdv',
+      PGHOST: '/var/run/postgresql',
+      PGUSER: 'fdv',
+    });
+  });
+
+  it('keeps a setting it cannot pass that way, rather than drop it', () => {
+    const url = 'postgres://fdv:pw@db.example/fdv?keepalives_idle=30';
+    expect(libpqConnection(url)).toEqual({ env: {}, args: ['--dbname', url] });
+    const hosts = 'postgres://fdv:pw@one.example:5432,two.example:5432/fdv';
+    expect(libpqConnection(hosts).args).toEqual(['--dbname', hosts]);
   });
 });
 
@@ -329,13 +383,53 @@ describe('the newest backup', () => {
         'fdv-2026-09-23T02-30-00-000Z.sql.enc',
         'fdv-2026-09-24T02-30-00-000Z.sql.enc',
         'fdv-2026-09-22T02-30-00-000Z.sql.enc',
+        // Still being written, or cut short by a crash: not a backup yet.
+        'fdv-2026-09-25T02-30-00-000Z.sql.enc.partial',
         'notes.txt',
       ]) {
         await writeFile(path.join(dir, f), 'x');
       }
-      expect(await newestBackup(dir)).toBe(path.join(dir, 'fdv-2026-09-24T02-30-00-000Z.sql.enc'));
+      const newest = path.join(dir, 'fdv-2026-09-24T02-30-00-000Z.sql.enc');
+      expect(await newestBackup(dir)).toBe(newest);
+      expect(await backupBefore(newest, dir)).toBe(
+        path.join(dir, 'fdv-2026-09-23T02-30-00-000Z.sql.enc'),
+      );
+      expect(
+        await backupBefore(path.join(dir, 'fdv-2026-09-22T02-30-00-000Z.sql.enc'), dir),
+      ).toBeNull();
       expect(await newestBackup(path.join(dir, 'missing'))).toBeNull();
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(!testAdminUrl())('a restore without psql', () => {
+  it('says so, leaves the database empty and the drill leaves nothing behind', async () => {
+    const t = await createEmptyDatabase();
+    const dir = await mkdtemp(path.join(tmpdir(), 'fdv-nopsql-'));
+    const saved = process.env.PATH;
+    try {
+      const file = path.join(dir, 'fdv-2026-09-24T02-30-00-000Z.sql.enc');
+      await writeFile(file, 'not reached');
+      process.env.PATH = dir; // nothing called psql in it
+      const into = { adminUrl: t.adminUrl, appUrl: t.appUrl };
+      await expect(restoreBackup(file, KEY, into, quiet)).rejects.toThrow(
+        /psql could not be started/,
+      );
+      await expect(
+        restoreDrill({ file, backupKey: KEY, adminUrl: t.adminUrl, appUrl: t.appUrl, log: quiet }),
+      ).rejects.toThrow(/psql could not be started/);
+      process.env.PATH = saved;
+      expect(await tablesIn(t.adminUrl)).toBe(0);
+      const left = await sql(
+        t.adminUrl,
+        "select datname from pg_database where datname like 'fdv\\_restore\\_drill\\_%'",
+      );
+      expect(left.rows).toEqual([]);
+    } finally {
+      process.env.PATH = saved;
+      await t.drop();
       await rm(dir, { recursive: true, force: true });
     }
   });
@@ -383,7 +477,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  it('comes back exactly as the vault had it, and nobody is still signed in', async () => {
+  it('comes back exactly as the vault had it, and nothing ended since is live again', async () => {
     const t = await empty();
     const report = await restoreBackup(file, KEY, into(t), quiet);
     expect(report).toMatchObject({
@@ -392,15 +486,21 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       members: 2,
       documents: 3,
       sessionsEnded: 1,
+      ownerChangesWithdrawn: 1,
     });
     // Every privilege, owner, policy and default — PUBLIC's included — as
     // the vault it came from had them.
     expect(await snapshot(t.adminUrl)).toEqual(vaultPrivileges);
     const { rows } = await sql(
       t.adminUrl,
-      'select count(*)::int as n from session where revoked_at is null',
+      `select (select count(*)::int from session where revoked_at is null) as sessions,
+              (select count(*)::int from password_reset
+                where used_at is null and expires_at > now()) as resets,
+              (select count(*)::int from owner_change_request
+                where refused_at is null and completed_at is null) as owner_changes,
+              (select count(*)::int from device where session_id is null) as old_devices`,
     );
-    expect(rows[0]?.n).toBe(0);
+    expect(rows[0]).toEqual({ sessions: 0, resets: 0, owner_changes: 0, old_devices: 0 });
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,
