@@ -11,6 +11,7 @@ All notable changes to Family Document Vault. The format follows
 - **Every vault said it was version 0.0.1.** The capability document now reports the release it actually is, stamped into the image when it is built; a release can no longer be tagged with a different number.
 - The capability document said push notifications and share links were switched off, long after both had shipped. They now say what the vault can do: share links are on, and push is on whenever the vault has its notification keys.
 - Amber status text — "Expires in 12 days", "Needs a name" — was too pale to read comfortably (3.6:1 against white, below the WCAG AA 4.5:1). It is darker now, and the red is too.
+- Text boxes and drop-downs had an edge too faint to find (1.3:1 against white); it is now at least 3.5:1, as WCAG asks of a control's outline.
 
 - **Reloading Settings could sign you out.** Its panels each asked for a fresh sign-in token at once, the vault saw one refresh token presented four times, took it as stolen and ended the session. Every screen now shares one refresh, however many things ask for it together.
 - Losing the network looked like having no documents: the household appeared empty. It now says the vault cannot be reached, and you stay signed in for when it comes back.
@@ -18,7 +19,7 @@ All notable changes to Family Document Vault. The format follows
 
 ### Changed
 
-- The colours, sizes, category names and member colours the apps draw with are now written once, in `@fdv/shared`, for the web and the phone alike; a test fails if the web's stylesheet ever disagrees with them.
+- The colours, sizes, category names and member colours the apps draw with are now written once, in `@fdv/shared`, for the web and the phone alike; a test fails if the web's stylesheet ever disagrees with them, has a value they lack, or writes a colour outside them.
 - The web app now talks to the vault through `@fdv/client`, a new package with no browser code in it, so the phone app can use the same client. The wire types moved to `@fdv/shared`, where the server uses them too.
 
 ## [0.4.2] - 2026-09-23

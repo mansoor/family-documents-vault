@@ -41,6 +41,8 @@ export const TEST_MASTER = 'test-master-key-that-is-long-enough-0123456789';
 export interface Harness {
   app: FastifyInstance;
   db: Db;
+  /** The owning role, for fixtures that must go round the application role. */
+  adminUrl: string;
   vaultDir: string;
   /** Jobs the API asked the worker to run. */
   jobs: Array<{ name: string; data: Record<string, unknown> }>;
@@ -155,6 +157,7 @@ export async function createHarness(): Promise<Harness> {
   return {
     app,
     db,
+    adminUrl: tdb.adminUrl,
     vaultDir,
     jobs,
     async close() {

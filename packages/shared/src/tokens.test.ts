@@ -4,6 +4,8 @@ import { AVATAR, avatarColour, colours, contrast, statusTone } from './tokens.js
 
 /** WCAG 2.2 AA for body text (NFR-09). */
 const AA = 4.5;
+/** WCAG 2.2 AA for what marks out a control (1.4.11). */
+const NON_TEXT = 3;
 
 describe('the design tokens', () => {
   it('every text colour meets AA on each background it is drawn on', () => {
@@ -31,6 +33,20 @@ describe('the design tokens', () => {
       const ratio = contrast(colours[text], colours[background]);
       expect(ratio, `${text} on ${background}: ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA);
     }
+  });
+
+  it('a text box or select is visible against every background it sits on', () => {
+    for (const background of ['surface', 'bg'] as const) {
+      const ratio = contrast(colours.borderInput, colours[background]);
+      expect(ratio, `borderInput on ${background}`).toBeGreaterThanOrEqual(NON_TEXT);
+    }
+    // The plain border is for cards and dividers, which need not stand out.
+    expect(contrast(colours.border, colours.surface)).toBeLessThan(NON_TEXT);
+  });
+
+  it('the translucent colours are ink and accent, not new ones', () => {
+    expect(colours.scrim.slice(0, 7)).toBe(colours.ink);
+    expect(colours.accentGlow.slice(0, 7)).toBe(colours.accent);
   });
 
   it('the amber the web used before 0.4.4 would fail, which is why it changed', () => {

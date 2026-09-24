@@ -7,6 +7,7 @@
   --surface: #ffffff;
   --border: #e6e0d6;
   --border-strong: #ddd6c9;
+  --border-input: #8a8275; /* a control's edge: 3:1 at least (WCAG 1.4.11) */
   --ink: #1c1a17;
   --ink-soft: #3c362f;
   --ink-muted: #5e574e;
@@ -19,6 +20,8 @@
   --danger: #962d2d;
   --danger-soft: #fbeaea;
   --highlight: #f3ead0;
+  --scrim: #1c1a1773;
+  --accent-glow: #1f5d4c59;
 
   --font-body: Figtree, system-ui, sans-serif;
   --font-display: Fraunces, Georgia, serif;
@@ -148,7 +151,7 @@ h3 {
   font-size: 16px;
   min-height: var(--tap);
   padding: 0 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-m);
   background: var(--surface);
   color: var(--ink);
@@ -291,7 +294,7 @@ h3 {
   font-size: 16px;
   min-height: var(--tap);
   padding: 0 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-input);
   border-radius: var(--radius-m);
   background: var(--surface);
   color: var(--ink);
@@ -611,7 +614,7 @@ h3 {
   display: grid;
   place-items: center;
   margin-top: -28px;
-  box-shadow: 0 4px 14px rgba(31, 93, 76, 0.35);
+  box-shadow: 0 4px 14px var(--accent-glow);
 }
 
 @media (min-width: 720px) {
@@ -686,7 +689,7 @@ h3 {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(28, 26, 23, 0.45);
+  background: var(--scrim);
   display: flex;
   align-items: flex-end;
   justify-content: center;

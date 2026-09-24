@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { meetsMinimum, parseVersion, type Capabilities } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -85,16 +86,19 @@ describe('the version a server reports', () => {
 describe.skipIf(!testAdminUrl())('the capability document, served', () => {
   let a: Harness;
   let b: Harness;
+  let c: Harness;
   const caps = async (h: Harness) =>
     (await h.app.inject({ url: '/api/v1/capabilities' })).json<Capabilities>();
 
   beforeAll(async () => {
     a = await createHarness();
     b = await createHarness();
+    c = await createHarness();
   }, 90_000);
   afterAll(async () => {
     await a.close();
     await b.close();
+    await c.close();
   });
 
   it('carries the installation id: the same every time, different for another vault', async () => {
@@ -109,6 +113,22 @@ describe.skipIf(!testAdminUrl())('the capability document, served', () => {
     const got = await caps(a);
     expect(got.features.share_links).toBe(true);
     expect(typeof got.features.push).toBe('boolean');
+  });
+
+  it('a vault whose id cannot be read still answers, and asks again next time', async () => {
+    // As a database loaded from a dump without its grants would be.
+    const admin = createPool(c.adminUrl, 1);
+    try {
+      await admin.query('revoke select on instance from fdv_app');
+      const res = await c.app.inject({ url: '/api/v1/capabilities' });
+      expect(res.statusCode).toBe(200);
+      expect('instance_id' in res.json<Capabilities>()).toBe(false);
+
+      await admin.query('grant select on instance to fdv_app');
+      expect((await caps(c)).instance_id).toMatch(/^[0-9a-f-]{36}$/);
+    } finally {
+      await admin.end();
+    }
   });
 
   it('the application role can read the installation id but never change it', async () => {

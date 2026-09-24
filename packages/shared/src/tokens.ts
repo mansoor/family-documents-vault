@@ -17,6 +17,9 @@ export const colours = {
   surface: '#FFFFFF',
   border: '#E6E0D6',
   borderStrong: '#DDD6C9',
+  // What marks out a text box or a select. `border` is 1.3:1, too faint
+  // for a control's edge (WCAG 1.4.11 asks 3:1); this is at least 3.5:1.
+  borderInput: '#8A8275',
   ink: '#1C1A17',
   inkSoft: '#3C362F',
   inkMuted: '#5E574E',
@@ -30,6 +33,10 @@ export const colours = {
   dangerSoft: '#FBEAEA',
   highlight: '#F3EAD0',
   onAccent: '#FFFFFF',
+  /** Ink at 45%: behind a sheet, so the page still shows through. */
+  scrim: '#1C1A1773',
+  /** Accent at 35%: the shadow under the add button. */
+  accentGlow: '#1F5D4C59',
 } as const;
 
 export type ColourRole = keyof typeof colours;
