@@ -38,6 +38,18 @@ update owner_change_request r
 -- The ones a restore ended: a refusal no audit event accounts for. Every
 -- refusal appends 'owner_change.refused', and every withdrawal was
 -- reclassified just above; only the restore wrote refused_at silently.
+-- 0.4.5's restore also wrote it on requests that had lapsed long before
+-- the restore: those lapsed, and say so.
+update owner_change_request r
+   set lapsed_at  = r.lapses_at,
+       refused_at = null
+ where r.refused_at is not null
+   and r.lapses_at <= r.refused_at
+   and not exists (
+     select 1 from audit_event a
+      where a.object_id = r.id
+        and a.action in ('owner_change.refused', 'owner_change.withdrawn'));
+
 update owner_change_request r
    set withdrawn_at  = r.refused_at,
        withdrawn_why = 'restored',
@@ -48,8 +60,28 @@ update owner_change_request r
       where a.object_id = r.id
         and a.action in ('owner_change.refused', 'owner_change.withdrawn'));
 
--- Requests still live about somebody who is no longer an owner: stepping
--- down is the only way that happens, so they are closed as that.
+-- Requests still live about somebody who stepped down while they were
+-- waiting — stepping down closes them now. The audit log says when, even
+-- if that person has been made an owner again since.
+update owner_change_request r
+   set withdrawn_at  = (select min(a.at) from audit_event a
+                         where a.household_id = r.household_id
+                           and a.action = 'member.stepped_down'
+                           and a.actor_account_id = r.target_account
+                           and a.at > r.requested_at),
+       withdrawn_by  = r.target_account,
+       withdrawn_why = 'stepped_down'
+ where r.refused_at is null and r.completed_at is null and r.lapsed_at is null
+   and r.withdrawn_at is null
+   and r.lapses_at > now()
+   and exists (select 1 from audit_event a
+                where a.household_id = r.household_id
+                  and a.action = 'member.stepped_down'
+                  and a.actor_account_id = r.target_account
+                  and a.at > r.requested_at);
+
+-- And any still live about somebody who is no longer an owner, which only
+-- stepping down leads to.
 update owner_change_request r
    set withdrawn_at  = now(),
        withdrawn_by  = r.target_account,
@@ -67,3 +99,26 @@ create unique index owner_change_one_live_per_target
   on owner_change_request (household_id, target_account)
   where refused_at is null and completed_at is null and lapsed_at is null
     and withdrawn_at is null;
+
+-- 0015's rule that a household keeps an owner, serialised. The trigger is
+-- deferred to commit, and two changes committing at the same moment — one
+-- owner's demotion carried out while the other steps down — each still
+-- saw the other as an owner, and both passed: a household with none. The
+-- per-household lock makes the second wait for the first, then look again
+-- (each statement reads afresh under READ COMMITTED).
+create or replace function assert_owner_remains() returns trigger
+  language plpgsql security definer set search_path = public as $$
+declare
+  hh uuid := coalesce(old.household_id, new.household_id);
+begin
+  perform pg_advisory_xact_lock(hashtext('owner_floor'), hashtext(hh::text));
+  if not exists (
+    select 1 from account_household
+     where household_id = hh
+       and role = 'owner'
+  ) then
+    raise exception 'a household must keep at least one owner'
+      using errcode = 'check_violation';
+  end if;
+  return null;
+end $$;

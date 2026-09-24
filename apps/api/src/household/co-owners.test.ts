@@ -718,4 +718,49 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     }
     expect(await samRole()).toBe('viewer');
   });
+
+  it('a refusal and "carry it out" at the same moment: the refusal stands whole', async () => {
+    // Both read the request open. The refusal settles it first; carrying
+    // it out used to overwrite that and demote Sam anyway.
+    for (const r of await requests(owner)) {
+      if (r.state !== 'waiting' && r.state !== 'ready') continue;
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/owner-changes/${r.id}`,
+        headers: h.as(owner),
+      });
+    }
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    await openNow(asked.id);
+
+    const pool = createPool(h.adminUrl, 1);
+    const hold = await pool.connect();
+    try {
+      await hold.query('begin');
+      await hold.query('update owner_change_request set refused_at = now() where id = $1', [
+        asked.id,
+      ]);
+      const pending = complete(asked.id);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const { rows } = await hold.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where pg_backend_pid() = any(pg_blocking_pids(pid))`,
+        );
+        blocked = (rows[0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked).toBe(true);
+      await hold.query('commit');
+      const done = await pending;
+      expect(done.statusCode).toBe(409);
+      expect(code(done)).toBe('already_settled');
+    } finally {
+      hold.release();
+      await pool.end();
+    }
+    expect(await samRole()).toBe('owner');
+    expect((await requests(owner)).find((r) => r.id === asked.id)?.state).toBe('refused');
+  });
 });

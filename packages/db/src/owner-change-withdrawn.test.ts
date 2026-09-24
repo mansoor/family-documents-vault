@@ -33,9 +33,16 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
     restored: randomUUID(),
     withdrawnThenSteppedDown: randomUUID(),
     steppedDown: randomUUID(),
+    steppedDownAndBack: randomUUID(),
+    lapsedBeforeRestore: randomUUID(),
     live: randomUUID(),
   };
-  const account: Record<'one' | 'two' | 'three', string> = { one: '', two: '', three: '' };
+  const account: Record<'one' | 'two' | 'three' | 'four', string> = {
+    one: '',
+    two: '',
+    three: '',
+    four: '',
+  };
   const daysAgo = (n: number) => new Date(Date.now() - n * 864e5);
   const withdrawnAt = daysAgo(5);
 
@@ -51,11 +58,13 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
     await migrateUp(admin, dir);
 
     await admin.query("insert into household (id, name) values ($1, 'Ended')", [hh]);
-    // One and Two are owners; Three was one, and stepped down.
+    // One and Two are owners; Three was one, and stepped down; Four stepped
+    // down and has been made an owner again since.
     for (const [name, role] of [
       ['one', 'owner'],
       ['two', 'owner'],
       ['three', 'adult'],
+      ['four', 'owner'],
     ] as const) {
       const m = await admin.query<{ id: string }>(
         'insert into member (household_id, display_name) values ($1, $2) returning id',
@@ -107,6 +116,20 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
     await audit(account.one, 'owner_change.withdrawn', ids.withdrawnThenSteppedDown);
     // About Three, who stepped down while it was waiting: still live.
     await request(ids.steppedDown, account.three, account.one, null);
+    // About Four: asked, then Four stepped down (the audit log has it),
+    // then Four was made an owner again. Stepping down closes it now.
+    await request(ids.steppedDownAndBack, account.four, account.one, null);
+    await audit(account.four, 'member.stepped_down', ids.steppedDownAndBack);
+    // About One: lapsed long ago, and a 0.4.5 restore then wrote refused_at
+    // on it anyway.
+    await admin.query(
+      `insert into owner_change_request
+         (id, household_id, target_account, requested_by, action, requested_at,
+          opens_at, lapses_at, refused_at)
+       values ($1, $2, $3, $4, 'demote', now() - interval '90 days',
+               now() - interval '83 days', now() - interval '60 days', now() - interval '1 day')`,
+      [ids.lapsedBeforeRestore, hh, account.one, account.two],
+    );
     // About One, still an owner: live, and staying so.
     await request(ids.live, account.one, account.two, null);
 
@@ -173,6 +196,33 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
       refused_at: null,
       withdrawn_by: account.three,
       withdrawn_why: 'stepped_down',
+    });
+  });
+
+  it('a request whose subject stepped down and came back is closed as of the step-down', async () => {
+    const stepped = (
+      await admin.query<{ at: Date }>(
+        "select at from audit_event where action = 'member.stepped_down' and actor_account_id = $1",
+        [account.four],
+      )
+    ).rows[0]?.at;
+    expect(await row(ids.steppedDownAndBack)).toEqual({
+      refused_at: null,
+      withdrawn_at: stepped,
+      withdrawn_by: account.four,
+      withdrawn_why: 'stepped_down',
+    });
+  });
+
+  it('a request that had lapsed before a restore wrote refused_at on it is a lapse', async () => {
+    const { rows } = await admin.query<{ lapsed: boolean }>(
+      'select lapsed_at = lapses_at as lapsed from owner_change_request where id = $1',
+      [ids.lapsedBeforeRestore],
+    );
+    expect(rows[0]?.lapsed).toBe(true);
+    expect(await row(ids.lapsedBeforeRestore)).toMatchObject({
+      refused_at: null,
+      withdrawn_at: null,
     });
   });
 

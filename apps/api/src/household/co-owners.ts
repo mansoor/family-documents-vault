@@ -454,13 +454,15 @@ export class CoOwnerService {
       // The household may have changed shape in the seven days: the other
       // owner can have stepped down, leaving this one the only one.
       await this.lastOwnerCheck(trx, row.target_account, row.target_name);
+      // Claimed before the role changes: a refusal or a withdrawal landing
+      // at the same moment wins or loses as a whole, never both.
+      await this.settle(trx, id, { completed_at: new Date(), completed_by: p.accountId });
       await trx
         .updateTable('account_household')
         .set({ role: 'adult' })
         .where('account_id', '=', row.target_account)
         .where('household_id', '=', p.householdId)
         .execute();
-      await this.settle(trx, id, { completed_at: new Date(), completed_by: p.accountId });
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -626,8 +628,26 @@ export class CoOwnerService {
     return rows.map((r) => r.account_id).filter((id) => id !== except);
   }
 
-  private settle(trx: Db, id: string, values: Record<string, unknown>) {
-    return trx.updateTable('owner_change_request').set(values).where('id', '=', id).execute();
+  /**
+   * Ends a request — if it is still open. Refusing, withdrawing and
+   * carrying out each read the request first; two of them at the same
+   * moment both see it open, and the one that settles it second must not
+   * overwrite the first. Whoever loses is told it is settled, and their
+   * transaction (with any role change in it) goes no further.
+   */
+  private async settle(trx: Db, id: string, values: Record<string, unknown>): Promise<void> {
+    const done = await trx
+      .updateTable('owner_change_request')
+      .set(values)
+      .where('id', '=', id)
+      .where('refused_at', 'is', null)
+      .where('completed_at', 'is', null)
+      .where('withdrawn_at', 'is', null)
+      .where('lapsed_at', 'is', null)
+      .executeTakeFirst();
+    if (done.numUpdatedRows === 0n) {
+      throw new ApiError(409, 'already_settled', 'That request has already been settled.');
+    }
   }
 
   private async rows(trx: Db): Promise<OwnerChangeRow[]> {
