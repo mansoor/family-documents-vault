@@ -6,13 +6,25 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-23
+
+A fix every vault should take before it ever needs a backup, and the work
+tagged 0.4.3 and 0.4.4 on the development branch.
+
+### Security
+
+- The nightly backup gave `pg_dump` the database owner's password on its command line, where any user of the machine could read it in the process list while the backup ran. It is passed in the environment now, as the restore's is.
+
 ### Fixed
 
+- **Restoring a backup gave a vault that could not read itself.** The nightly backup leaves out who may do what in the database, so that it loads anywhere — and nothing put that back, so a vault restored the way the README said could open none of its own data, or queue any work. The vault now gives its database user exactly its rights on every start, so a database restored from any backup already on disk is put right the first time the vault starts on it. **If you have restored a backup by hand, upgrading is all you need to do.**
+- **Restoring is one command now, and it checks its work.** `restore-backup` loads a backup into an empty database — never over one in use — brings a backup from an older release up to date, refuses one from a newer release, and checks the result the way the vault will read it before it says it is done. A file that was cut short or altered restores nothing at all. Everybody is signed out afterwards: a backup brings back sessions and passwords that were ended or changed after it was made. The README has a new Restoring section with the steps, for a lost database and for a new machine.
+- The restore drill counted rows as the database's owner, so it passed backups the vault could not have used. It now restores into a scratch database and checks it as the vault's own database user, through the same privacy rules, then removes the copy, even if it is interrupted. CI now backs up the end-to-end vault, loses its database, restores it as the README says and signs back in, on every change.
+- The README said database migrations could be reversed one version back. They cannot; the way back from an upgrade is the backup taken before it, and the README now says to take one.
 - **Every vault said it was version 0.0.1.** The capability document now reports the release it actually is, stamped into the image when it is built; a release can no longer be tagged with a different number.
 - The capability document said push notifications and share links were switched off, long after both had shipped. They now say what the vault can do: share links are on, and push is on whenever the vault has its notification keys.
 - Amber status text — "Expires in 12 days", "Needs a name" — was too pale to read comfortably (3.6:1 against white, below the WCAG AA 4.5:1). It is darker now, and the red is too.
 - Text boxes and drop-downs had an edge too faint to find (1.3:1 against white); it is now at least 3.5:1, as WCAG asks of a control's outline.
-
 - **Reloading Settings could sign you out.** Its panels each asked for a fresh sign-in token at once, the vault saw one refresh token presented four times, took it as stolen and ended the session. Every screen now shares one refresh, however many things ask for it together.
 - Losing the network looked like having no documents: the household appeared empty. It now says the vault cannot be reached, and you stay signed in for when it comes back.
 - Two "confirm it's you" prompts at once could leave one of them waiting for ever. They now share one prompt, and both carry on when it is answered.

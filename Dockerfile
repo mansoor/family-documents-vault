@@ -66,7 +66,8 @@ CMD ["node", "apps/api/dist/server.mjs"]
 
 # ---------------------------------------------------------------- worker
 FROM ${NODE_IMAGE} AS worker
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    FDV_MIGRATIONS_DIR=/app/migrations
 # OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages and
 # page counts), ImageMagick (thumbnails). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
@@ -78,6 +79,8 @@ COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY apps/worker/package.json ./apps/worker/package.json
 COPY scripts/restore-drill.sh ./scripts/restore-drill.sh
+# A restore brings an older backup up to date, as the API's start would.
+COPY packages/db/migrations ./migrations
 RUN mkdir -p /data/vault /data/backups && chown -R node:node /data
 USER node
 CMD ["node", "apps/worker/dist/main.mjs"]
