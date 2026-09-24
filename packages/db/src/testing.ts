@@ -130,6 +130,16 @@ export async function createTestDatabase(adminUrl = testAdminUrl()): Promise<Tes
     await root.end();
   }
 
+  // A copy of the template is a new vault, not the template's twin: give it
+  // its own installation id, as running the migrations afresh would have.
+  const own = new pg.Client({ connectionString: withDatabase(adminUrl, name) });
+  await own.connect();
+  try {
+    await own.query('update instance set instance_id = gen_random_uuid()');
+  } finally {
+    await own.end();
+  }
+
   return {
     name,
     adminUrl: withDatabase(adminUrl, name),

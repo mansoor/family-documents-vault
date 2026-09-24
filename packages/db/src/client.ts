@@ -382,6 +382,12 @@ export interface Schema {
     sent_at: GeneratedTimestamp;
   };
 
+  instance: {
+    singleton: Generated<boolean>;
+    instance_id: Generated<string>;
+    created_at: GeneratedTimestamp;
+  };
+
   device: {
     id: Generated<string>;
     household_id: string;

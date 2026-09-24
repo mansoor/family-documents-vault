@@ -6,6 +6,10 @@ export interface CapabilityConfig {
   displayName: string;
   maxUploadBytes: number;
   setupRequired: boolean;
+  /** Web Push keys are configured, so the vault can notify devices. */
+  pushEnabled: boolean;
+  /** This installation's identifier (migration 0021); null before it exists. */
+  instanceId: string | null;
 }
 
 /**
@@ -18,7 +22,10 @@ export const MIN_CLIENT_VERSION = '0.0.1';
  * Builds the capability document from server configuration.
  *
  * Every feature starts `false` and is switched on by the iteration that ships
- * it, so a client can never be told about something the server cannot do.
+ * it, so a client can never be told about something the server cannot do —
+ * and is switched on when it ships, so a client that hides what is not
+ * offered does not hide something that is. Until 0.4.4 `push` and
+ * `share_links` said false long after both had shipped.
  */
 export function buildCapabilities(config: CapabilityConfig): Capabilities {
   return {
@@ -33,8 +40,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       passkeys: true,
       private_mode: false,
       email_ingest: false,
-      push: false,
-      share_links: false,
+      // "This vault can send Web Push": the same fact as push-key's `enabled`.
+      push: config.pushEnabled,
+      share_links: true,
       bulk_import: false,
       multi_household: false,
     },
@@ -45,5 +53,6 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
     },
     deprecations: [],
     branding: { display_name: config.displayName },
+    ...(config.instanceId ? { instance_id: config.instanceId } : {}),
   };
 }
