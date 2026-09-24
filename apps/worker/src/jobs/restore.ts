@@ -306,9 +306,23 @@ begin
   end if;
   if to_regclass('public.owner_change_request') is not null then
     -- Only one still running: a lapsed one is over already, and on any
-    -- schema (lapsed_at is 0022's) its lapses_at has passed.
-    update public.owner_change_request set refused_at = now()
-     where refused_at is null and completed_at is null and lapses_at > now();
+    -- schema (lapsed_at is 0022's) its lapses_at has passed. Nobody
+    -- refused it, so it is not written down as a refusal: withdrawn by the
+    -- restore (0023), or, on a backup older than that, ended the way a
+    -- lapse ends — "no longer counts", which is true.
+    if exists (select 1 from pg_attribute where attrelid = 'public.owner_change_request'::regclass
+                and attname = 'withdrawn_at' and not attisdropped) then
+      update public.owner_change_request set withdrawn_at = now(), withdrawn_why = 'restored'
+       where refused_at is null and completed_at is null and withdrawn_at is null
+         and lapses_at > now();
+    elsif exists (select 1 from pg_attribute where attrelid = 'public.owner_change_request'::regclass
+                   and attname = 'lapsed_at' and not attisdropped) then
+      update public.owner_change_request set lapses_at = now(), lapsed_at = now()
+       where refused_at is null and completed_at is null and lapses_at > now();
+    else
+      update public.owner_change_request set lapses_at = now()
+       where refused_at is null and completed_at is null and lapses_at > now();
+    end if;
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('owner_changes', n);
   end if;

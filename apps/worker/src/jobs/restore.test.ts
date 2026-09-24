@@ -506,18 +506,22 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from password_reset
                 where used_at is null and expires_at > now()) as resets,
               (select count(*)::int from owner_change_request
-                where refused_at is null and completed_at is null
+                where refused_at is null and completed_at is null and withdrawn_at is null
                   and lapses_at > now()) as owner_changes,
               (select count(*)::int from owner_change_request
                 where refused_at is not null) as refused,
+              (select count(*)::int from owner_change_request
+                where withdrawn_why = 'restored') as restored,
               (select count(*)::int from device where session_id is null) as old_devices`,
     );
-    // The running request was withdrawn; the lapsed one was left alone.
+    // The running request was withdrawn — as withdrawn by the restore, not
+    // as refused by anybody — and the lapsed one was left alone.
     expect(rows[0]).toEqual({
       sessions: 0,
       resets: 0,
       owner_changes: 0,
-      refused: 1,
+      refused: 0,
+      restored: 1,
       old_devices: 0,
     });
     // The job queue came back too, and the vault can use it.
@@ -595,12 +599,15 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       expect(report).toMatchObject({ schema: known, households: 1, documents: 3 });
       const id = await sql(t.appUrl, 'select instance_id from instance');
       expect(id.rows).toHaveLength(1);
-      // 0022 ran on the way up and recorded the request that had lapsed.
-      const lapsed = await sql(
+      // A backup older than 0023 cannot say "withdrawn": the running request
+      // ends as a lapse does, and 0022 on the way up records both it and the
+      // one that had lapsed already. Nobody is said to have refused.
+      const ended = await sql(
         t.adminUrl,
-        'select count(*)::int as n from owner_change_request where lapsed_at is not null',
+        `select (select count(*)::int from owner_change_request where lapsed_at is not null) as lapsed,
+                (select count(*)::int from owner_change_request where refused_at is not null) as refused`,
       );
-      expect(lapsed.rows[0]?.n).toBe(1);
+      expect(ended.rows[0]).toEqual({ lapsed: 2, refused: 0 });
       await rm(olderDir, { recursive: true, force: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });

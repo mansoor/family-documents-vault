@@ -261,10 +261,12 @@ requested_by_name, action, requested_at, opens_at, lapses_at, state,
 about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     `completed`, `lapsed`. `summary` is a sentence.
   - `POST /api/v1/owner-changes/{id}/refuse` — only the person it is about;
-    `403` otherwise, `409 request_lapsed` once it has lapsed.
+    `403` otherwise, `409 already_settled` once refused, withdrawn or
+    completed, `409 request_lapsed` once it has lapsed.
   - `POST /api/v1/owner-changes/{id}/complete` — any owner, once `opens_at`
     has passed. `409 notice_period` before then, `409 request_lapsed` after
-    thirty days.
+    thirty days, `409 no_longer_owner` if the person is not an owner any
+    more.
   - `DELETE /api/v1/owner-changes/{id}` — any owner withdraws it.
     `409 already_settled` once settled, `409 request_lapsed` once lapsed.
 
@@ -379,6 +381,17 @@ already_requested` for ever, about a request no client showed.
     until 0.4.6 either one settled it.
   - Two owners asking at the same moment: one gets the request, the other
     `409 already_requested` (it was a `500`).
+
+- How an owner change ends (0.4.7).
+
+  - **New, additive:** `state` `withdrawn`, for a request that ended without
+    a refusal: an owner withdrew it, the person it was about stepped down,
+    or a restore from a backup withdrew it. `summary` says which. Until
+    0.4.7 a withdrawal answered `refused`. Treat a `state` you do not
+    recognise as settled.
+  - `POST /api/v1/me/step-down` closes the requests about the caller.
+  - `POST /api/v1/owner-changes/{id}/complete` answers `409
+no_longer_owner` when the person has stopped being an owner since.
 
 ## Deprecations in effect
 

@@ -38,7 +38,7 @@ export interface OwnerChangeView {
   requested_at: string;
   opens_at: string;
   lapses_at: string;
-  state: 'waiting' | 'ready' | 'refused' | 'completed' | 'lapsed';
+  state: 'waiting' | 'ready' | 'refused' | 'withdrawn' | 'completed' | 'lapsed';
   /** True when the caller is the person the request is about. */
   about_me: boolean;
   /** One sentence for whoever is looking at it. */
@@ -151,11 +151,25 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .execute();
       if (!can(to, 'document.see_adults')) await expireExportsOf(trx, p.accountId);
+      // A request to take the owner role off somebody who has now given it
+      // up has nothing left to do — carried out, it would make them an
+      // adult, whatever they chose to be, and tell them they had lost a role
+      // they gave away. It ends here, as what it is.
+      const closed = await trx
+        .updateTable('owner_change_request')
+        .set({ withdrawn_at: new Date(), withdrawn_by: p.accountId, withdrawn_why: 'stepped_down' })
+        .where('target_account', '=', p.accountId)
+        .where('refused_at', 'is', null)
+        .where('completed_at', 'is', null)
+        .where('lapsed_at', 'is', null)
+        .where('withdrawn_at', 'is', null)
+        .where('lapses_at', '>', new Date())
+        .executeTakeFirst();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'member.stepped_down',
-        detail: { to },
+        detail: { to, requests_closed: Number(closed.numUpdatedRows) },
         ip: meta.ip,
       });
       return {
@@ -330,7 +344,7 @@ export class CoOwnerService {
           'Only the person a request is about can refuse it. Any owner can withdraw one.',
         );
       }
-      if (row.completed_at || row.refused_at) {
+      if (row.completed_at || row.refused_at || row.withdrawn_at) {
         throw new ApiError(409, 'already_settled', 'That request has already been settled.');
       }
       if (hasLapsed(row)) {
@@ -366,7 +380,7 @@ export class CoOwnerService {
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
-      if (row.completed_at || row.refused_at) {
+      if (row.completed_at || row.refused_at || row.withdrawn_at) {
         throw new ApiError(409, 'already_settled', 'That request has already been settled.');
       }
       if (hasLapsed(row)) {
@@ -376,7 +390,11 @@ export class CoOwnerService {
           'That request has lapsed already: nothing will happen.',
         );
       }
-      await this.settle(trx, id, { refused_at: new Date() });
+      await this.settle(trx, id, {
+        withdrawn_at: new Date(),
+        withdrawn_by: p.accountId,
+        withdrawn_why: 'withdrawn',
+      });
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -398,7 +416,7 @@ export class CoOwnerService {
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
-      if (row.completed_at || row.refused_at) {
+      if (row.completed_at || row.refused_at || row.withdrawn_at) {
         throw new ApiError(409, 'already_settled', 'That request has already been settled.');
       }
       if (row.opens_at.getTime() > Date.now()) {
@@ -413,6 +431,15 @@ export class CoOwnerService {
           409,
           'request_lapsed',
           'That request is too old to carry out. Ask again if you still want to.',
+        );
+      }
+      // Stepping down closes the requests about you; this covers doing it
+      // at the same moment as somebody presses "carry it out".
+      if (row.target_role !== 'owner') {
+        throw new ApiError(
+          409,
+          'no_longer_owner',
+          `${row.target_name} is no longer an owner, so there is nothing to carry out.`,
         );
       }
       // The household may have changed shape in the seven days: the other
@@ -501,6 +528,7 @@ export class CoOwnerService {
       .where('refused_at', 'is', null)
       .where('completed_at', 'is', null)
       .where('lapsed_at', 'is', null)
+      .where('withdrawn_at', 'is', null)
       .where('lapses_at', '<=', new Date(now))
       .execute();
     const alreadyAsked = () =>
@@ -516,6 +544,7 @@ export class CoOwnerService {
       .where('refused_at', 'is', null)
       .where('completed_at', 'is', null)
       .where('lapsed_at', 'is', null)
+      .where('withdrawn_at', 'is', null)
       .executeTakeFirst();
     if (existing) throw alreadyAsked();
     const row = await trx
@@ -608,6 +637,12 @@ export class CoOwnerService {
           .onRef('asker.household_id', '=', 'owner_change_request.household_id'),
       )
       .leftJoin('member as asker_member', 'asker_member.id', 'asker.member_id')
+      .leftJoin('account_household as closer', (j) =>
+        j
+          .onRef('closer.account_id', '=', 'owner_change_request.withdrawn_by')
+          .onRef('closer.household_id', '=', 'owner_change_request.household_id'),
+      )
+      .leftJoin('member as closer_member', 'closer_member.id', 'closer.member_id')
       .select([
         'owner_change_request.id',
         'owner_change_request.target_account',
@@ -619,6 +654,11 @@ export class CoOwnerService {
         'owner_change_request.lapsed_at',
         'owner_change_request.refused_at',
         'owner_change_request.completed_at',
+        'owner_change_request.withdrawn_at',
+        'owner_change_request.withdrawn_by',
+        'owner_change_request.withdrawn_why',
+        'closer_member.display_name as withdrawn_by_name',
+        'target.role as target_role',
         'target_member.id as target_member_id',
         'target_member.display_name as target_name',
         'asker_member.display_name as requested_by_name',
@@ -634,11 +674,13 @@ export class CoOwnerService {
       ? 'completed'
       : r.refused_at
         ? 'refused'
-        : hasLapsed(r)
-          ? 'lapsed'
-          : r.opens_at.getTime() > Date.now()
-            ? 'waiting'
-            : 'ready';
+        : r.withdrawn_at
+          ? 'withdrawn'
+          : hasLapsed(r)
+            ? 'lapsed'
+            : r.opens_at.getTime() > Date.now()
+              ? 'waiting'
+              : 'ready';
     return {
       id: r.id,
       target_member_id: r.target_member_id,
@@ -650,7 +692,7 @@ export class CoOwnerService {
       lapses_at: r.lapses_at.toISOString(),
       state,
       about_me: aboutMe,
-      summary: summarise(r, state, aboutMe),
+      summary: summarise(r, state, aboutMe, p.accountId),
     };
   }
 }
@@ -666,6 +708,11 @@ interface OwnerChangeRow {
   lapsed_at: Date | null;
   refused_at: Date | null;
   completed_at: Date | null;
+  withdrawn_at: Date | null;
+  withdrawn_by: string | null;
+  withdrawn_why: 'withdrawn' | 'stepped_down' | 'restored' | null;
+  withdrawn_by_name: string | null;
+  target_role: Role;
   target_member_id: string;
   target_name: string;
   requested_by_name: string | null;
@@ -680,7 +727,12 @@ function hasLapsed(r: Pick<OwnerChangeRow, 'lapsed_at' | 'lapses_at'>): boolean 
   return r.lapsed_at !== null || r.lapses_at.getTime() <= Date.now();
 }
 
-function summarise(r: OwnerChangeRow, state: OwnerChangeView['state'], aboutMe: boolean): string {
+function summarise(
+  r: OwnerChangeRow,
+  state: OwnerChangeView['state'],
+  aboutMe: boolean,
+  me: string,
+): string {
   const who = aboutMe ? 'you' : r.target_name;
   const asker = r.requested_by_name ?? 'An owner';
   switch (state) {
@@ -690,6 +742,14 @@ function summarise(r: OwnerChangeRow, state: OwnerChangeView['state'], aboutMe: 
       return `The seven days are up. ${who === 'you' ? 'You' : who} can be made an adult now${aboutMe ? ', unless you refuse' : ''}.`;
     case 'refused':
       return `${who === 'you' ? 'You' : who} refused. ${aboutMe ? 'You are' : `${r.target_name} is`} still an owner.`;
+    case 'withdrawn':
+      if (r.withdrawn_why === 'stepped_down') {
+        return `${aboutMe ? 'You' : r.target_name} stepped down, so this no longer applies.`;
+      }
+      if (r.withdrawn_why === 'restored') {
+        return 'Withdrawn when the vault was restored from a backup. Ask again if it still stands.';
+      }
+      return `${r.withdrawn_by === me ? 'You' : (r.withdrawn_by_name ?? 'An owner')} withdrew it. ${aboutMe ? 'You are' : `${r.target_name} is`} still an owner.`;
     case 'completed':
       return `${who === 'you' ? 'You are' : `${r.target_name} is`} an adult now.`;
     case 'lapsed':
