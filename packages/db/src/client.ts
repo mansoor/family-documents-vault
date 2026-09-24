@@ -187,6 +187,8 @@ export interface Schema {
     requested_at: GeneratedTimestamp;
     opens_at: Timestamp;
     lapses_at: Timestamp;
+    /** Recorded once it has lapsed (0022), so a lapsed request is not live. */
+    lapsed_at: Timestamp | null;
     refused_at: Timestamp | null;
     completed_at: Timestamp | null;
     completed_by: string | null;

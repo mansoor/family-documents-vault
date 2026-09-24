@@ -305,8 +305,10 @@ begin
     update public.password_reset set expires_at = now() where used_at is null and expires_at > now();
   end if;
   if to_regclass('public.owner_change_request') is not null then
+    -- Only one still running: a lapsed one is over already, and on any
+    -- schema (lapsed_at is 0022's) its lapses_at has passed.
     update public.owner_change_request set refused_at = now()
-     where refused_at is null and completed_at is null;
+     where refused_at is null and completed_at is null and lapses_at > now();
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('owner_changes', n);
   end if;

@@ -6,6 +6,11 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Once a request to take away somebody's owner role had lapsed, nobody could ask again.** A request nobody carries out lapses after thirty days, but nothing recorded that it had: the vault went on treating it as waiting, the People screen stopped showing it — so it could not be withdrawn — and asking about that person again said "Somebody has already asked for this". A lapsed request is now recorded as lapsed, including any that lapsed before this release, and asking again starts afresh, with the full seven days' notice and everybody told. A lapsed request can no longer be refused or withdrawn either: nothing will happen, so there is nothing to act on.
+- Two owners asking at the same moment to take away the same person's owner role got an error; the second now hears that somebody has already asked.
+
 ## [0.4.5] - 2026-09-23
 
 A fix every vault should take before it ever needs a backup, and the work

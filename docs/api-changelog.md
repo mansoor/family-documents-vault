@@ -248,7 +248,8 @@ with_pin? }` → `201 { share, link_token, pin? }`. Adults only
     change to a non-owner applies at once (`applied: true`). Taking the owner
     role off somebody else answers `applied: false` with a `request`: nothing
     has changed yet. `422` for your own role, `409 already_requested` when one
-    is already waiting.
+    is already waiting or ready. A lapsed one does not count: asking again
+    after it opens a new request.
   - `POST /api/v1/me/step-down` — `{ role }`. Immediate, as long as another
     owner remains.
   - `DELETE /api/v1/members/{id}/sign-in` — `204`. The member row, their
@@ -260,11 +261,12 @@ requested_by_name, action, requested_at, opens_at, lapses_at, state,
 about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     `completed`, `lapsed`. `summary` is a sentence.
   - `POST /api/v1/owner-changes/{id}/refuse` — only the person it is about;
-    `403` otherwise.
+    `403` otherwise, `409 request_lapsed` once it has lapsed.
   - `POST /api/v1/owner-changes/{id}/complete` — any owner, once `opens_at`
     has passed. `409 notice_period` before then, `409 request_lapsed` after
     thirty days.
   - `DELETE /api/v1/owner-changes/{id}` — any owner withdraws it.
+    `409 already_settled` once settled, `409 request_lapsed` once lapsed.
 
   A role change takes effect on the next request, not on the next token: the
   `role` in an access token is advisory and the server reads the live one.
@@ -367,6 +369,16 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     installation and never changed. A client that approved a vault at an
     address can tell whether the same vault still answers there. Absent from
     older servers; clients must treat it as optional.
+
+- A lapsed owner change is over (0.4.6).
+
+  - `POST /api/v1/members/{id}/role` on an owner whose earlier request
+    lapsed opens a new request. Until 0.4.6 it answered `409
+already_requested` for ever, about a request no client showed.
+  - Refusing or withdrawing a lapsed request answers `409 request_lapsed`;
+    until 0.4.6 either one settled it.
+  - Two owners asking at the same moment: one gets the request, the other
+    `409 already_requested` (it was a `500`).
 
 ## Deprecations in effect
 
