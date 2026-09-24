@@ -1,6 +1,5 @@
-import { withHousehold } from '@fdv/db';
+import { createPool, withHousehold } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
@@ -500,8 +499,8 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
     const live = (await requests()).find((r) => r.state === 'waiting') as OwnerChangeView;
     expect((await act(owner, live.id, 'withdraw')).statusCode).toBe(204);
 
-    const hold = new pg.Client({ connectionString: h.adminUrl });
-    await hold.connect();
+    const pool = createPool(h.adminUrl, 1);
+    const hold = await pool.connect();
     try {
       await hold.query('begin');
       await hold.query(
@@ -529,7 +528,8 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
       expect(res.statusCode).toBe(409);
       expect(code(res)).toBe('already_requested');
     } finally {
-      await hold.end();
+      hold.release();
+      await pool.end();
     }
   });
 });
