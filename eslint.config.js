@@ -22,6 +22,8 @@ export default tseslint.config(
       parserOptions: {
         projectService: {
           allowDefaultProject: ['*.ts', 'apps/*/vitest.config.ts', 'packages/*/vitest.config.ts'],
+          // One per package's vitest.config.ts, plus the root's.
+          maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -52,6 +54,34 @@ export default tseslint.config(
     files: ['**/*.tsx'],
     plugins: { 'react-hooks': reactHooks },
     rules: reactHooks.configs.recommended.rules,
+  },
+  {
+    // The shared packages run everywhere: the API, the browser, and the
+    // phone. Anything that exists on only one of them stays out, so a
+    // package cannot quietly stop working on the others.
+    files: ['packages/shared/src/**/*.ts', 'packages/client/src/**/*.ts'],
+    ignores: ['**/*.test.ts', 'packages/client/src/testing/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                'node:*',
+                'react',
+                'react-dom',
+                'react-native',
+                'react-native/*',
+                'expo',
+                'expo-*',
+              ],
+              message: 'Shared packages must run in the browser, on the phone and in Node alike.',
+            },
+          ],
+        },
+      ],
+    },
   },
   prettier,
 );

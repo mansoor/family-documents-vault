@@ -1,3 +1,4 @@
+import type { Tokens } from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { appendAudit, withScope, type Db, type Role } from '@fdv/db';
@@ -32,16 +33,8 @@ const ARGON2: argon2.HashOptions & { raw?: false } = {
 // so that a wrong email and a wrong password take the same time.
 const DUMMY_HASH_PROMISE = argon2.hash('not-a-real-password', ARGON2);
 
-export interface Tokens {
-  access_token: string;
-  expires_in: number;
-  refresh_token: string;
-  refresh_expires_in: number;
-  household_id: string;
-  member_id: string;
-  role: Role;
-  scopes_unlocked: Array<'household' | 'adults' | 'member'>;
-}
+/** What a sign-in answers with: the shared wire type, written once in `@fdv/shared`. */
+export type { Tokens } from '@fdv/shared';
 
 export interface RequestMeta {
   ip?: string | null;

@@ -29,6 +29,8 @@ import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
+import { instanceIdReader } from './instance.js';
+import { serverVersion } from './version.js';
 
 /**
  * A fully wired API on a throwaway database with a temp local vault.
@@ -39,6 +41,8 @@ export const TEST_MASTER = 'test-master-key-that-is-long-enough-0123456789';
 export interface Harness {
   app: FastifyInstance;
   db: Db;
+  /** The owning role, for fixtures that must go round the application role. */
+  adminUrl: string;
   vaultDir: string;
   /** Jobs the API asked the worker to run. */
   jobs: Array<{ name: string; data: Record<string, unknown> }>;
@@ -113,7 +117,8 @@ export async function createHarness(): Promise<Harness> {
   // without it to test the other route.
   const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert, true);
   const app = await buildApp(config, {
-    serverVersion: '0.0.0-test',
+    serverVersion: await serverVersion(),
+    instanceId: instanceIdReader(db),
     pingDatabase: async () => undefined,
     auth,
     totp,
@@ -152,6 +157,7 @@ export async function createHarness(): Promise<Harness> {
   return {
     app,
     db,
+    adminUrl: tdb.adminUrl,
     vaultDir,
     jobs,
     async close() {

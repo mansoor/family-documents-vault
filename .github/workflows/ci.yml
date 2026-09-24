@@ -27,6 +27,13 @@ jobs:
             exit 1
           fi
           echo "OK: no private folders in the tree."
+      - name: Fail if phone-app files or signing keys were committed
+        run: |
+          if git ls-files | grep -E '(^|/)(android|ios|\.expo)/|\.(jks|keystore|p12|p8)$|(^|/)(google-services\.json|GoogleService-Info\.plist)$' ; then
+            echo "::error::The phone app and its keys belong in the private repository."
+            exit 1
+          fi
+          echo "OK: nothing from the phone app in the tree."
 
   check:
     name: Lint, typecheck, test
@@ -52,8 +59,10 @@ jobs:
       S3_TEST_SECRET: fdv-minio-test
     steps:
       - uses: actions/checkout@v4
-      - name: Install OCR and rendering tools (for the worker's processing tests)
-        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick
+      # pg_dump and psql of the server's major version, as the worker image
+      # pairs them: a newer pg_dump writes dumps PostgreSQL 16 cannot load.
+      - name: Install OCR and rendering tools, and PostgreSQL 16's client (for the worker's tests)
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils imagemagick postgresql-client-16
       - name: Start Mailpit (SMTP for the notification tests)
         run: |
           docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit:latest
@@ -74,6 +83,17 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: A release tag is the version in package.json
+        # The server reports package.json's version (stamped in at build),
+        # so a tag that disagrees would publish images that lie about
+        # what they are.
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$want" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, but package.json says $want. Bump the version before tagging."
+            exit 1
+          fi
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
@@ -138,6 +158,11 @@ jobs:
           done
           curl -sf http://localhost:8080/api/v1/capabilities
       - run: pnpm e2e
+      # The backup is only as good as the vault it gives back: back up, run
+      # the drill, lose the database, restore it as the README says, and
+      # sign back in to find everything there.
+      - name: Back up, lose the database, restore it as the README says
+        run: sh scripts/ci-restore.sh
       - name: The same stack, behind TLS, the way another device reaches it
         run: |
           echo "FDV_HOSTNAME=vault.test" >> .env

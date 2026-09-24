@@ -355,6 +355,19 @@ about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
     or expired. A password change removes the account's devices on every
     other session; a reset removes them all.
 
+- Capabilities that tell the truth (0.4.4).
+
+  - `server_version` is the release (for example `0.4.4`). Every earlier
+    server answered `0.0.1`, whatever it was.
+  - `features.push` is `true` exactly when the vault can send Web Push (its
+    VAPID keys are configured) — the same fact as
+    `GET /api/v1/notifications/push-key` `enabled`. `features.share_links`
+    is `true`. Both were hard-coded `false` although both had shipped.
+  - **New, additive:** `instance_id`, a random UUID made once per
+    installation and never changed. A client that approved a vault at an
+    address can tell whether the same vault still answers there. Absent from
+    older servers; clients must treat it as optional.
+
 ## Deprecations in effect
 
 None.

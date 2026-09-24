@@ -37,6 +37,8 @@ import { ApiError, notFound, notReady } from './errors.js';
  */
 export interface AppDeps {
   serverVersion: string;
+  /** This installation's identifier (migration 0021), or null if it cannot be read. */
+  instanceId?: () => Promise<string | null>;
   /** Resolves when the database answers; rejects otherwise. */
   pingDatabase: () => Promise<void>;
   auth: AuthService;
@@ -129,7 +131,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   await app.register(rateLimit, { global: true, max: 300, timeWindow: '1 minute' });
 
   // API-01: the first call any client makes. Unauthenticated, cacheable.
-  app.get('/api/v1/capabilities', async (_req, reply) => {
+  app.get('/api/v1/capabilities', async (req, reply) => {
     const setupRequired = !(await deps.auth.setupComplete());
     const householdName = setupRequired ? null : await deps.auth.displayName();
     // The document is cacheable — except while setup is pending, because a
@@ -141,6 +143,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       displayName: householdName ?? config.FDV_DISPLAY_NAME,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       setupRequired,
+      pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
+      // Without it the document is still true, only less specific; say
+      // why in the log rather than failing the first call every client makes.
+      instanceId: await (deps.instanceId?.() ?? Promise.resolve(null)).catch((err: unknown) => {
+        req.log.warn({ err }, 'the installation id could not be read');
+        return null;
+      }),
     });
   });
 

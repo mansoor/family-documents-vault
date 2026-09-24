@@ -293,7 +293,53 @@ docker compose exec worker node apps/worker/dist/cli.mjs backup-now
 docker compose exec worker sh scripts/restore-drill.sh
 ```
 
-The restore drill decrypts the newest backup, loads it into a scratch database, counts what came back and drops the scratch database again. Run it after you change anything about your backups, and let it reassure you occasionally. To restore for real: decrypt with `decrypt-backup <file> out.sql`, load `out.sql` into a fresh database, and point a fresh stack at it with the same `.env`.
+The restore drill restores the newest backup into a scratch database beside your own, checks it the way the vault will read it — as the vault's own database user, through the same privacy rules — and drops it again. Your vault is not touched. Run it after you change anything about your backups, and let it reassure you occasionally.
+
+### Restoring
+
+A restore goes into an empty database, never over a vault that is running: it refuses to. It gives the vault's database user its privileges back, brings a backup from an older release up to date, and checks the result before it says it is done. It refuses a backup from a newer release than the one you run — restore that with the newer release (`FDV_VERSION`).
+
+**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. The restore lists what else to look at, such as share links that work again.
+
+**If you lost the database but not the `fdv_vault-data` volume** (your files, and the backups in `/data/backups`), stop the vault, clear the database, and restore the newest backup into it:
+
+```bash
+docker compose down
+```
+
+```bash
+docker volume rm fdv_db-data
+```
+
+```bash
+docker compose up -d --wait postgres
+```
+
+```bash
+docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-backup latest
+```
+
+```bash
+docker compose up -d
+```
+
+To go further back, name a file instead of `latest`, such as `/data/backups/fdv-2026-09-20T02-30-00-000Z.sql.enc`.
+
+**On a new machine**, start from the three things above. Put your `.env` beside `docker-compose.yml`, and put your copy of the files back into the `fdv_vault-data` volume, owned by the container's user:
+
+```bash
+docker run --rm -v fdv_vault-data:/data -v "$PWD/vault-data-copy:/from:ro" alpine sh -c "cp -a /from/. /data/ && chown -R 1000:1000 /data"
+```
+
+Then run the commands above from `docker compose up -d --wait postgres` on. If the backup file is not in the volume, mount it into the restore instead; it must be readable by that user (`chmod 644` it):
+
+```bash
+docker compose run --rm --no-deps -v "$PWD/fdv-2026-09-20T02-30-00-000Z.sql.enc:/restore.sql.enc:ro" worker node apps/worker/dist/cli.mjs restore-backup /restore.sql.enc
+```
+
+**Never use `docker compose down -v`.** It deletes the files and the backups along with the database. If you run the vault behind TLS (`docker-compose.tls.yml`), give every `docker compose` command above the same `-f` files you always use.
+
+A database restored by hand — loaded with `psql` from `decrypt-backup <file> out.sql`, as this README once said — can read itself again from the first time the vault starts on it. But nothing signed anybody out: a phone signed out, or a password changed, since that backup is signed in again. Have everybody change their password, which signs out everything else of theirs, or restore again with `restore-backup`.
 
 **Export everything** in Settings makes a ZIP of every original plus a readable index — the way to leave, and a second backup that needs no software at all.
 
@@ -323,7 +369,7 @@ Then put the new value in `.env` as `FDV_MASTER_KEY`, run `docker compose up -d`
 
 ## Upgrading
 
-Images are version-tagged. Database migrations run automatically on start and are reversible one version back. Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
+Images are version-tagged. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it. So take one first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
 
 ## Developing
 

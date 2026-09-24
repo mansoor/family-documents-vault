@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fdv/client": "workspace:*",
     "@fdv/shared": "workspace:*",
     "@simplewebauthn/browser": "^14",
     "qrcode": "^1.5.4",
