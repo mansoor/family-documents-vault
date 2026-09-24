@@ -218,7 +218,7 @@ export interface OwnerChange {
   requested_at: string;
   opens_at: string;
   lapses_at: string;
-  state: 'waiting' | 'ready' | 'refused' | 'completed' | 'lapsed';
+  state: 'waiting' | 'ready' | 'refused' | 'withdrawn' | 'completed' | 'lapsed';
   about_me: boolean;
   summary: string;
 }

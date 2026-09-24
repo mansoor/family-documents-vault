@@ -533,3 +533,234 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
     }
   });
 });
+
+/**
+ * How a request ends when nobody refuses it. Until 0.4.7 an owner
+ * withdrawing a request was written down as the person refusing it, and a
+ * request about somebody who then stepped down stayed live — carried out,
+ * it made whatever they had become an adult and told them they were no
+ * longer an owner.
+ */
+describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let samMember = '';
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const setSamRole = (role: string) =>
+    h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${samMember}/role`,
+      headers: h.as(owner),
+      payload: { role },
+    });
+  const requests = async (as: Tokens) =>
+    json<{ items: OwnerChangeView[] }>(
+      await h.app.inject({ url: '/api/v1/owner-changes', headers: h.as(as) }),
+    ).items;
+  const samRole = async () =>
+    json<{ role: string }>(await h.app.inject({ url: '/api/v1/me', headers: h.as(sam) })).role;
+  const code = (r: { json: () => unknown }) => json<{ error: { code: string } }>(r).error.code;
+  const openNow = (id: string) =>
+    withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('owner_change_request')
+        .set({ opens_at: new Date(Date.now() - 1000) })
+        .where('id', '=', id)
+        .execute(),
+    );
+  const complete = (id: string) =>
+    h.app.inject({
+      method: 'POST',
+      url: `/api/v1/owner-changes/${id}/complete`,
+      headers: h.as(owner),
+    });
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-ends@example.test', role: 'adult' });
+    const members = json<{ items: MemberView[] }>(
+      await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
+    ).items;
+    samMember = members.find((m) => m.display_name === 'Sam')?.id as string;
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+  }, 90_000);
+  afterAll(() => h.close());
+
+  it('withdrawing it is not Sam refusing it, and Sam can be asked about again', async () => {
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    const withdrawn = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/owner-changes/${asked.id}`,
+      headers: h.as(owner),
+    });
+    expect(withdrawn.statusCode).toBe(204);
+
+    const mine = (await requests(owner)).find((r) => r.id === asked.id);
+    expect(mine?.state).toBe('withdrawn');
+    expect(mine?.summary).toBe('You withdrew it, so nothing changed.');
+    const theirs = (await requests(sam)).find((r) => r.id === asked.id);
+    expect(theirs?.summary).toBe('Owner withdrew it, so nothing changed.');
+    expect(theirs?.summary).not.toMatch(/refused/);
+
+    const refuse = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/owner-changes/${asked.id}/refuse`,
+      headers: h.as(sam),
+    });
+    expect(refuse.statusCode).toBe(409);
+    expect(code(refuse)).toBe('already_settled');
+
+    // A withdrawn request does not hold the place of a live one.
+    expect((await setSamRole('adult')).statusCode).toBe(200);
+  });
+
+  it('stepping down closes the request about you, and it cannot be carried out', async () => {
+    const live = (await requests(owner)).find((r) => r.state === 'waiting') as OwnerChangeView;
+    const stepped = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/me/step-down',
+      headers: h.as(sam),
+      payload: { role: 'viewer' },
+    });
+    expect(stepped.statusCode).toBe(200);
+
+    const seen = (await requests(owner)).find((r) => r.id === live.id);
+    expect(seen?.state).toBe('withdrawn');
+    expect(seen?.summary).toBe('Sam stepped down, so this no longer applies.');
+    expect((await requests(sam)).find((r) => r.id === live.id)?.summary).toBe(
+      'You stepped down, so this no longer applies.',
+    );
+
+    // Seven days on, "carry it out" would once have made Sam an adult.
+    await openNow(live.id);
+    const done = await complete(live.id);
+    expect(done.statusCode).toBe(409);
+    expect(code(done)).toBe('already_settled');
+    expect(await samRole()).toBe('viewer');
+
+    // The audit chain says what stepping down did.
+    const audit = await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('audit_event')
+        .select('detail')
+        .where('action', '=', 'member.stepped_down')
+        .orderBy('id', 'desc')
+        .executeTakeFirstOrThrow(),
+    );
+    expect(audit.detail).toMatchObject({ to: 'viewer', requests_closed: 1 });
+  });
+
+  it('carrying out a request about somebody who is no longer an owner is refused in words', async () => {
+    // Sam is made an owner again and asked about; then, at the moment the
+    // request is carried out, Sam is no longer one — the race stepping down
+    // could still win.
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    await openNow(asked.id);
+    await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('account_household')
+        .set({ role: 'teen' })
+        .where('member_id', '=', samMember)
+        .execute(),
+    );
+    const done = await complete(asked.id);
+    expect(done.statusCode).toBe(409);
+    expect(code(done)).toBe('no_longer_owner');
+    expect(await samRole()).toBe('teen');
+  });
+
+  it('a step-down still in flight when it is carried out is not overtaken', async () => {
+    // Sam is an owner under notice and steps down to viewer; the step-down
+    // has not committed yet when an owner presses "carry it out". Reading
+    // the role unlocked, the request saw "owner", waited for the row, and
+    // then made Sam an adult over the top of the step-down.
+    for (const r of await requests(owner)) {
+      if (r.state !== 'waiting' && r.state !== 'ready') continue;
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/owner-changes/${r.id}`,
+        headers: h.as(owner),
+      });
+    }
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    await openNow(asked.id);
+
+    const pool = createPool(h.adminUrl, 1);
+    const hold = await pool.connect();
+    try {
+      await hold.query('begin');
+      await hold.query("update account_household set role = 'viewer' where member_id = $1", [
+        samMember,
+      ]);
+      const pending = complete(asked.id);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const { rows } = await hold.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where pg_backend_pid() = any(pg_blocking_pids(pid))`,
+        );
+        blocked = (rows[0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked).toBe(true);
+      await hold.query('commit');
+      const done = await pending;
+      expect(done.statusCode).toBe(409);
+      expect(code(done)).toBe('no_longer_owner');
+    } finally {
+      hold.release();
+      await pool.end();
+    }
+    expect(await samRole()).toBe('viewer');
+  });
+
+  it('a refusal and "carry it out" at the same moment: the refusal stands whole', async () => {
+    // Both read the request open. The refusal settles it first; carrying
+    // it out used to overwrite that and demote Sam anyway.
+    for (const r of await requests(owner)) {
+      if (r.state !== 'waiting' && r.state !== 'ready') continue;
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/owner-changes/${r.id}`,
+        headers: h.as(owner),
+      });
+    }
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    await openNow(asked.id);
+
+    const pool = createPool(h.adminUrl, 1);
+    const hold = await pool.connect();
+    try {
+      await hold.query('begin');
+      await hold.query('update owner_change_request set refused_at = now() where id = $1', [
+        asked.id,
+      ]);
+      const pending = complete(asked.id);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const { rows } = await hold.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where pg_backend_pid() = any(pg_blocking_pids(pid))`,
+        );
+        blocked = (rows[0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked).toBe(true);
+      await hold.query('commit');
+      const done = await pending;
+      expect(done.statusCode).toBe(409);
+      expect(code(done)).toBe('already_settled');
+    } finally {
+      hold.release();
+      await pool.end();
+    }
+    expect(await samRole()).toBe('owner');
+    expect((await requests(owner)).find((r) => r.id === asked.id)?.state).toBe('refused');
+  });
+});

@@ -172,8 +172,8 @@ function summary(file: string, r: RestoreReport): string {
   if (r.ownerChangesWithdrawn > 0) {
     lines.push(
       `  - ${plural(r.ownerChangesWithdrawn, 'request')} to change who is an owner ` +
-        `${r.ownerChangesWithdrawn === 1 ? 'was' : 'were'} withdrawn;`,
-      '    ask again if it still stands, and everybody is told afresh.',
+        `${r.ownerChangesWithdrawn === 1 ? 'was' : 'were'} ended, so nothing changed;`,
+      '    an owner can ask again if it still stands, and everybody is told afresh.',
     );
   }
   if (r.liveShareLinks > 0) {

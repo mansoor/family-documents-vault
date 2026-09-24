@@ -192,6 +192,10 @@ export interface Schema {
     refused_at: Timestamp | null;
     completed_at: Timestamp | null;
     completed_by: string | null;
+    /** Ended without a refusal (0023): withdrawn, its subject stepped down, or a restore. */
+    withdrawn_at: Timestamp | null;
+    withdrawn_by: string | null;
+    withdrawn_why: 'withdrawn' | 'stepped_down' | 'restored' | null;
   };
 
   known_device: {
