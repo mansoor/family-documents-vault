@@ -259,7 +259,7 @@ with_pin? }` → `201 { share, link_token, pin? }`. Adults only
     about them: `{ items: [{ id, target_member_id, target_name,
 requested_by_name, action, requested_at, opens_at, lapses_at, state,
 about_me, summary }] }`, `state` one of `waiting`, `ready`, `refused`,
-    `completed`, `lapsed`. `summary` is a sentence.
+    `withdrawn`, `completed`, `lapsed`. `summary` is a sentence.
   - `POST /api/v1/owner-changes/{id}/refuse` — only the person it is about;
     `403` otherwise, `409 already_settled` once refused, withdrawn or
     completed, `409 request_lapsed` once it has lapsed.

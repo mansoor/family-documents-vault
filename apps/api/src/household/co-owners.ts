@@ -434,8 +434,17 @@ export class CoOwnerService {
         );
       }
       // Stepping down closes the requests about you; this covers doing it
-      // at the same moment as somebody presses "carry it out".
-      if (row.target_role !== 'owner') {
+      // at the same moment as somebody presses "carry it out". The role is
+      // read locked, so a step-down in flight either lands first and is
+      // seen here, or waits until this is done.
+      const current = await trx
+        .selectFrom('account_household')
+        .select('role')
+        .where('account_id', '=', row.target_account)
+        .where('household_id', '=', p.householdId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (current?.role !== 'owner') {
         throw new ApiError(
           409,
           'no_longer_owner',
@@ -658,7 +667,6 @@ export class CoOwnerService {
         'owner_change_request.withdrawn_by',
         'owner_change_request.withdrawn_why',
         'closer_member.display_name as withdrawn_by_name',
-        'target.role as target_role',
         'target_member.id as target_member_id',
         'target_member.display_name as target_name',
         'asker_member.display_name as requested_by_name',
@@ -712,7 +720,6 @@ interface OwnerChangeRow {
   withdrawn_by: string | null;
   withdrawn_why: 'withdrawn' | 'stepped_down' | 'restored' | null;
   withdrawn_by_name: string | null;
-  target_role: Role;
   target_member_id: string;
   target_name: string;
   requested_by_name: string | null;
@@ -747,9 +754,9 @@ function summarise(
         return `${aboutMe ? 'You' : r.target_name} stepped down, so this no longer applies.`;
       }
       if (r.withdrawn_why === 'restored') {
-        return 'Withdrawn when the vault was restored from a backup. Ask again if it still stands.';
+        return 'Withdrawn when the vault was restored from a backup, so nothing changed.';
       }
-      return `${r.withdrawn_by === me ? 'You' : (r.withdrawn_by_name ?? 'An owner')} withdrew it. ${aboutMe ? 'You are' : `${r.target_name} is`} still an owner.`;
+      return `${r.withdrawn_by === me ? 'You' : (r.withdrawn_by_name ?? 'An owner')} withdrew it, so nothing changed.`;
     case 'completed':
       return `${who === 'you' ? 'You are' : `${r.target_name} is`} an adult now.`;
     case 'lapsed':

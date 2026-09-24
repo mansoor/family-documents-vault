@@ -600,9 +600,9 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
 
     const mine = (await requests(owner)).find((r) => r.id === asked.id);
     expect(mine?.state).toBe('withdrawn');
-    expect(mine?.summary).toBe('You withdrew it. Sam is still an owner.');
+    expect(mine?.summary).toBe('You withdrew it, so nothing changed.');
     const theirs = (await requests(sam)).find((r) => r.id === asked.id);
-    expect(theirs?.summary).toBe('Owner withdrew it. You are still an owner.');
+    expect(theirs?.summary).toBe('Owner withdrew it, so nothing changed.');
     expect(theirs?.summary).not.toMatch(/refused/);
 
     const refuse = await h.app.inject({
@@ -671,5 +671,51 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     expect(done.statusCode).toBe(409);
     expect(code(done)).toBe('no_longer_owner');
     expect(await samRole()).toBe('teen');
+  });
+
+  it('a step-down still in flight when it is carried out is not overtaken', async () => {
+    // Sam is an owner under notice and steps down to viewer; the step-down
+    // has not committed yet when an owner presses "carry it out". Reading
+    // the role unlocked, the request saw "owner", waited for the row, and
+    // then made Sam an adult over the top of the step-down.
+    for (const r of await requests(owner)) {
+      if (r.state !== 'waiting' && r.state !== 'ready') continue;
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/owner-changes/${r.id}`,
+        headers: h.as(owner),
+      });
+    }
+    expect((await setSamRole('owner')).statusCode).toBe(200);
+    const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
+    await openNow(asked.id);
+
+    const pool = createPool(h.adminUrl, 1);
+    const hold = await pool.connect();
+    try {
+      await hold.query('begin');
+      await hold.query("update account_household set role = 'viewer' where member_id = $1", [
+        samMember,
+      ]);
+      const pending = complete(asked.id);
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const { rows } = await hold.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where pg_backend_pid() = any(pg_blocking_pids(pid))`,
+        );
+        blocked = (rows[0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked).toBe(true);
+      await hold.query('commit');
+      const done = await pending;
+      expect(done.statusCode).toBe(409);
+      expect(code(done)).toBe('no_longer_owner');
+    } finally {
+      hold.release();
+      await pool.end();
+    }
+    expect(await samRole()).toBe('viewer');
   });
 });

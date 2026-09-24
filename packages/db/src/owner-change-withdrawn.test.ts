@@ -12,11 +12,12 @@ import { createEmptyDatabase, testAdminUrl, type TestDatabase } from './testing.
 /**
  * Migration 0023 and the requests that ended before it.
  *
- * Until 0.4.7 a withdrawn request was written down as refused, and a
- * request about somebody who stepped down stayed live. The migration tells
- * the withdrawals apart by the audit log — each one appended
- * 'owner_change.withdrawn' against the request — and closes what stepping
- * down left open.
+ * Until 0.4.7 a withdrawn request was written down as refused — by an
+ * owner withdrawing it, and by a restore from a backup — and a request
+ * about somebody who stepped down stayed live. The migration tells the
+ * endings apart by the audit log and closes what stepping down left open.
+ * The histories here are the ordinary ones: withdraw and ask again,
+ * withdraw twice, withdraw and then step down.
  */
 describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it', () => {
   let tdb: TestDatabase;
@@ -26,12 +27,17 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
   const hh = randomUUID();
   const ids = {
     withdrawn: randomUUID(),
+    withdrawnAgain: randomUUID(),
     refused: randomUUID(),
+    askedAfter: randomUUID(),
+    restored: randomUUID(),
+    withdrawnThenSteppedDown: randomUUID(),
     steppedDown: randomUUID(),
     live: randomUUID(),
   };
   const account: Record<'one' | 'two' | 'three', string> = { one: '', two: '', three: '' };
-  const withdrawnAt = new Date(Date.now() - 5 * 864e5);
+  const daysAgo = (n: number) => new Date(Date.now() - n * 864e5);
+  const withdrawnAt = daysAgo(5);
 
   beforeAll(async () => {
     tdb = await createEmptyDatabase();
@@ -74,24 +80,31 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
                  now() + interval '1 day', now() + interval '24 days', $5)`,
         [id, hh, target, by, refusedAt],
       );
-    // About Two: withdrawn by One, which 0.4.6 recorded as refused_at.
+    const audit = (actor: string, action: string, id: string) =>
+      appendAudit(db, {
+        householdId: hh,
+        actorAccountId: actor,
+        action,
+        objectType: 'owner_change_request',
+        objectId: id,
+      });
+
+    // About Two: withdrawn by One — twice — and 0.4.6 recorded each as
+    // refused_at; asked a third time, and that one is live.
     await request(ids.withdrawn, account.two, account.one, withdrawnAt);
-    await appendAudit(db, {
-      householdId: hh,
-      actorAccountId: account.one,
-      action: 'owner_change.withdrawn',
-      objectType: 'owner_change_request',
-      objectId: ids.withdrawn,
-    });
-    // About Two again: this time Two did refuse it.
-    await request(ids.refused, account.two, account.one, new Date());
-    await appendAudit(db, {
-      householdId: hh,
-      actorAccountId: account.two,
-      action: 'owner_change.refused',
-      objectType: 'owner_change_request',
-      objectId: ids.refused,
-    });
+    await audit(account.one, 'owner_change.withdrawn', ids.withdrawn);
+    await request(ids.withdrawnAgain, account.two, account.one, daysAgo(3));
+    await audit(account.one, 'owner_change.withdrawn', ids.withdrawnAgain);
+    await request(ids.askedAfter, account.two, account.one, null);
+    // About Two again: this one Two did refuse.
+    await request(ids.refused, account.two, account.one, daysAgo(2));
+    await audit(account.two, 'owner_change.refused', ids.refused);
+    // About Two: ended by a 0.4.5 restore, which wrote refused_at and no
+    // audit event.
+    await request(ids.restored, account.two, account.one, daysAgo(1));
+    // About Three: withdrawn by One, and later Three stepped down.
+    await request(ids.withdrawnThenSteppedDown, account.three, account.one, daysAgo(4));
+    await audit(account.one, 'owner_change.withdrawn', ids.withdrawnThenSteppedDown);
     // About Three, who stepped down while it was waiting: still live.
     await request(ids.steppedDown, account.three, account.one, null);
     // About One, still an owner: live, and staying so.
@@ -126,6 +139,20 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
       withdrawn_by: account.one,
       withdrawn_why: 'withdrawn',
     });
+    expect(await row(ids.withdrawnAgain)).toMatchObject({
+      refused_at: null,
+      withdrawn_by: account.one,
+      withdrawn_why: 'withdrawn',
+    });
+  });
+
+  it('a request asked after a withdrawal is still the live one', async () => {
+    expect(await row(ids.askedAfter)).toEqual({
+      refused_at: null,
+      withdrawn_at: null,
+      withdrawn_by: null,
+      withdrawn_why: null,
+    });
   });
 
   it('a real refusal stays a refusal', async () => {
@@ -133,11 +160,26 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
     expect((await row(ids.refused))?.refused_at).not.toBeNull();
   });
 
+  it('a request a restore ended is recorded as that, not as a refusal', async () => {
+    expect(await row(ids.restored)).toMatchObject({
+      refused_at: null,
+      withdrawn_by: null,
+      withdrawn_why: 'restored',
+    });
+  });
+
   it('a request about somebody who stepped down is closed as that', async () => {
     expect(await row(ids.steppedDown)).toMatchObject({
       refused_at: null,
       withdrawn_by: account.three,
       withdrawn_why: 'stepped_down',
+    });
+  });
+
+  it('a withdrawal stays a withdrawal when its subject stepped down later', async () => {
+    expect(await row(ids.withdrawnThenSteppedDown)).toMatchObject({
+      withdrawn_by: account.one,
+      withdrawn_why: 'withdrawn',
     });
   });
 
@@ -150,7 +192,15 @@ describe.skipIf(!testAdminUrl())('migration 0023: requests that ended before it'
     });
   });
 
-  it('an ending always says why', async () => {
+  it('one live request per person, and an ending always says why', async () => {
+    await expect(
+      admin.query(
+        `insert into owner_change_request
+           (household_id, target_account, requested_by, action, opens_at, lapses_at)
+         values ($1, $2, $3, 'demote', now() + interval '7 days', now() + interval '30 days')`,
+        [hh, account.two, account.one],
+      ),
+    ).rejects.toMatchObject({ code: '23505' });
     await expect(
       admin.query('update owner_change_request set withdrawn_at = now() where id = $1', [ids.live]),
     ).rejects.toMatchObject({ code: '23514' });
