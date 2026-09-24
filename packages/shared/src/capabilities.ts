@@ -48,4 +48,10 @@ export interface Capabilities {
   limits: CapabilityLimits;
   deprecations: Deprecation[];
   branding: { display_name: string };
+  /**
+   * This installation, as a random identifier made once and never changed
+   * (0.4.4). A client that approved a vault at an address can tell whether
+   * the same vault still answers there. Absent from older servers.
+   */
+  instance_id?: string;
 }

@@ -1,4 +1,4 @@
-import { can, type Status } from '@fdv/shared';
+import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
@@ -132,17 +132,6 @@ export function Pills<T extends string>(props: {
   );
 }
 
-const AVATAR = [
-  '#1F5D4C',
-  '#B7791F',
-  '#4A5FA8',
-  '#B3261E',
-  '#6B4FA0',
-  '#2A7F8F',
-  '#8A6D3B',
-  '#5E574E',
-];
-
 export function Avatar({
   name,
   colour,
@@ -159,7 +148,7 @@ export function Avatar({
       style={{
         width: size,
         height: size,
-        background: AVATAR[colour % AVATAR.length],
+        background: avatarColour(colour),
         fontSize: size * 0.42,
       }}
     >
@@ -170,16 +159,9 @@ export function Avatar({
 
 /** Status is never colour alone: a dot plus words (NFR-09). */
 export function StatusBadge({ status }: { status: Status }) {
-  if (status.value === 'valid') return null;
-  const tone =
-    status.value === 'expired'
-      ? 'danger'
-      : status.value === 'expiring_soon' || status.value === 'needs_info'
-        ? 'warn'
-        : status.value === 'active'
-          ? 'ok'
-          : 'neutral';
-  return <span className={`status status-${tone}`}>{status.label}</span>;
+  const t = statusTone(status);
+  if (!t) return null;
+  return <span className={`status status-${t.tone}`}>{t.words}</span>;
 }
 
 export function TopBar({
@@ -235,19 +217,5 @@ export function BottomNav() {
   );
 }
 
-export const CATEGORY_LABELS: Record<string, string> = {
-  identity: 'Identity',
-  legal: 'Legal',
-  property: 'Property & vehicle',
-  financial: 'Financial',
-  tax: 'Tax',
-  insurance: 'Insurance',
-  medical: 'Medical',
-  education: 'Education',
-  bills: 'Bills & utilities',
-  work: 'Work',
-  pets: 'Pets',
-  other: 'Other',
-};
-
-export const categoryLabel = (c: string | null) => (c ? (CATEGORY_LABELS[c] ?? c) : 'Unsorted');
+// One list for every app: see @fdv/shared/tokens.ts.
+export { CATEGORY_LABELS, categoryLabel } from '@fdv/shared';

@@ -25,12 +25,8 @@ import { ShareService } from './documents/shares.js';
 import { AuditService } from './audit/service.js';
 import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
-
-async function readVersion(): Promise<string> {
-  const url = new URL('../package.json', import.meta.url);
-  const pkg = JSON.parse(await readFile(url, 'utf8')) as { version: string };
-  return pkg.version;
-}
+import { instanceIdReader } from './instance.js';
+import { serverVersion } from './version.js';
 
 /** The one secret behind the installation: from the variable, or a file. */
 async function resolveMasterSecret(config: ApiConfig): Promise<string> {
@@ -41,7 +37,7 @@ async function resolveMasterSecret(config: ApiConfig): Promise<string> {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const version = await readVersion();
+  const version = await serverVersion();
   const masterSecret = await resolveMasterSecret(config);
 
   if (config.FDV_RUN_MIGRATIONS === 'true') {
@@ -121,6 +117,7 @@ async function main(): Promise<void> {
   const stepUpService = new StepUpService(db, passkeys, totp);
   const app = await buildApp(config, {
     serverVersion: version,
+    instanceId: instanceIdReader(db),
     pingDatabase: async () => {
       await pool.query('select 1');
     },

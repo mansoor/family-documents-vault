@@ -37,6 +37,8 @@ import { ApiError, notFound, notReady } from './errors.js';
  */
 export interface AppDeps {
   serverVersion: string;
+  /** This installation's identifier (migration 0021), or null if it cannot be read. */
+  instanceId?: () => Promise<string | null>;
   /** Resolves when the database answers; rejects otherwise. */
   pingDatabase: () => Promise<void>;
   auth: AuthService;
@@ -141,6 +143,8 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       displayName: householdName ?? config.FDV_DISPLAY_NAME,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       setupRequired,
+      pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
+      instanceId: (await deps.instanceId?.()) ?? null,
     });
   });
 

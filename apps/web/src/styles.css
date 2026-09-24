@@ -1,5 +1,7 @@
-/* Design tokens, taken from the UI prototype. Every colour, radius and type
-   size the app uses is defined here and nowhere else. */
+/* Design tokens. The same values live in @fdv/shared (tokens.ts), which the
+   phone app draws with too; tokens-drift.test.ts fails if the two ever
+   disagree. Every colour, radius and type size the app uses is defined here
+   and nowhere else. */
 :root {
   --bg: #faf8f4;
   --surface: #ffffff;
@@ -11,8 +13,12 @@
   --accent: #1f5d4c;
   --accent-soft: #e9f0ec;
   --ok: #1f5d4c;
-  --warn: #b7791f;
-  --danger: #b3261e;
+  /* Until 0.4.4 amber was #b7791f: 3.64:1 on white, which fails WCAG AA. */
+  --warn: #8a4b08;
+  --warn-soft: #fdf3e7;
+  --danger: #962d2d;
+  --danger-soft: #fbeaea;
+  --highlight: #f3ead0;
 
   --font-body: Figtree, system-ui, sans-serif;
   --font-display: Fraunces, Georgia, serif;
@@ -265,12 +271,12 @@ h3 {
 }
 
 .badge-danger {
-  background: #f8e3e1;
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
 .badge-warn {
-  background: #f6ecd9;
+  background: var(--warn-soft);
   color: var(--warn);
 }
 
@@ -477,7 +483,7 @@ h3 {
 
 .snippet em {
   font-style: normal;
-  background: #f3ead0;
+  background: var(--highlight);
   border-radius: 3px;
   padding: 0 2px;
 }
