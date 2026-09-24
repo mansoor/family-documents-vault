@@ -333,6 +333,13 @@ export class CoOwnerService {
       if (row.completed_at || row.refused_at) {
         throw new ApiError(409, 'already_settled', 'That request has already been settled.');
       }
+      if (hasLapsed(row)) {
+        throw new ApiError(
+          409,
+          'request_lapsed',
+          'That request lapsed: nothing will happen, so there is nothing to refuse.',
+        );
+      }
       await this.settle(trx, id, { refused_at: new Date() });
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -361,6 +368,13 @@ export class CoOwnerService {
       if (!row) throw notFound('That request');
       if (row.completed_at || row.refused_at) {
         throw new ApiError(409, 'already_settled', 'That request has already been settled.');
+      }
+      if (hasLapsed(row)) {
+        throw new ApiError(
+          409,
+          'request_lapsed',
+          'That request has lapsed already: nothing will happen.',
+        );
       }
       await this.settle(trx, id, { refused_at: new Date() });
       await appendAudit(trx, {
@@ -394,7 +408,7 @@ export class CoOwnerService {
           `The seven days are not up. This can be carried out on ${formatDay(row.opens_at.toISOString())}.`,
         );
       }
-      if (row.lapses_at.getTime() < Date.now()) {
+      if (hasLapsed(row)) {
         throw new ApiError(
           409,
           'request_lapsed',
@@ -477,20 +491,33 @@ export class CoOwnerService {
     }
     await this.lastOwnerCheck(trx, target.account_id, target.display_name);
     const now = Date.now();
+    // A request nobody carried out in thirty days has lapsed; until it is
+    // recorded as lapsed it still counts as the one live request, and
+    // asking again would be refused over something nobody can see.
+    await trx
+      .updateTable('owner_change_request')
+      .set((eb) => ({ lapsed_at: eb.ref('lapses_at') }))
+      .where('target_account', '=', target.account_id)
+      .where('refused_at', 'is', null)
+      .where('completed_at', 'is', null)
+      .where('lapsed_at', 'is', null)
+      .where('lapses_at', '<=', new Date(now))
+      .execute();
+    const alreadyAsked = () =>
+      new ApiError(
+        409,
+        'already_requested',
+        `Somebody has already asked for this. It is waiting, and ${target.display_name} has been told.`,
+      );
     const existing = await trx
       .selectFrom('owner_change_request')
       .select(['id'])
       .where('target_account', '=', target.account_id)
       .where('refused_at', 'is', null)
       .where('completed_at', 'is', null)
+      .where('lapsed_at', 'is', null)
       .executeTakeFirst();
-    if (existing) {
-      throw new ApiError(
-        409,
-        'already_requested',
-        `Somebody has already asked for this. It is waiting, and ${target.display_name} has been told.`,
-      );
-    }
+    if (existing) throw alreadyAsked();
     const row = await trx
       .insertInto('owner_change_request')
       .values({
@@ -502,7 +529,12 @@ export class CoOwnerService {
         lapses_at: new Date(now + LAPSE_DAYS * 864e5),
       })
       .returning('id')
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow()
+      .catch((err: unknown) => {
+        // Two owners asking at the same moment: the database lets one in.
+        if ((err as { code?: string }).code === '23505') throw alreadyAsked();
+        throw err;
+      });
     await appendAudit(trx, {
       householdId: p.householdId,
       actorAccountId: p.accountId,
@@ -584,6 +616,7 @@ export class CoOwnerService {
         'owner_change_request.requested_at',
         'owner_change_request.opens_at',
         'owner_change_request.lapses_at',
+        'owner_change_request.lapsed_at',
         'owner_change_request.refused_at',
         'owner_change_request.completed_at',
         'target_member.id as target_member_id',
@@ -601,7 +634,7 @@ export class CoOwnerService {
       ? 'completed'
       : r.refused_at
         ? 'refused'
-        : r.lapses_at.getTime() < Date.now()
+        : hasLapsed(r)
           ? 'lapsed'
           : r.opens_at.getTime() > Date.now()
             ? 'waiting'
@@ -630,12 +663,21 @@ interface OwnerChangeRow {
   requested_at: Date;
   opens_at: Date;
   lapses_at: Date;
+  lapsed_at: Date | null;
   refused_at: Date | null;
   completed_at: Date | null;
   target_member_id: string;
   target_name: string;
   requested_by_name: string | null;
   household_name: string;
+}
+
+/**
+ * Nobody carried it out in time. Recorded (lapsed_at) when somebody asks
+ * again; until then the date says so.
+ */
+function hasLapsed(r: Pick<OwnerChangeRow, 'lapsed_at' | 'lapses_at'>): boolean {
+  return r.lapsed_at !== null || r.lapses_at.getTime() <= Date.now();
 }
 
 function summarise(r: OwnerChangeRow, state: OwnerChangeView['state'], aboutMe: boolean): string {

@@ -353,3 +353,141 @@ describe.skipIf(!testAdminUrl())('co-owners', () => {
     expect(after.filter((m) => m.role === 'owner')).toHaveLength(1);
   });
 });
+
+/**
+ * A request nobody carried out lapses after thirty days. Until 0.4.6 a
+ * lapsed request stayed "live": it kept its place in the one-live-request
+ * index, the People screen no longer showed it (so it could not be
+ * withdrawn), and asking again was refused with "somebody has already
+ * asked for this" — for ever.
+ */
+describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let samMember = '';
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const ask = () =>
+    h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${samMember}/role`,
+      headers: h.as(owner),
+      payload: { role: 'adult' },
+    });
+  const requests = async () =>
+    json<{ items: OwnerChangeView[] }>(
+      await h.app.inject({ url: '/api/v1/owner-changes', headers: h.as(owner) }),
+    ).items;
+  const act = (as: Tokens, id: string, what: 'refuse' | 'complete' | 'withdraw') =>
+    h.app.inject({
+      method: what === 'withdraw' ? 'DELETE' : 'POST',
+      url:
+        what === 'withdraw' ? `/api/v1/owner-changes/${id}` : `/api/v1/owner-changes/${id}/${what}`,
+      headers: h.as(as),
+    });
+  const code = (r: { json: () => unknown }) => json<{ error: { code: string } }>(r).error.code;
+  const askedAlerts = () =>
+    h.jobs.filter(
+      (j) =>
+        j.name === 'alert.send' &&
+        /take away Sam's owner role/.test((j.data as { subject: string }).subject),
+    ).length;
+  /** Thirty-one days ago, as far as this request is concerned. */
+  const lapse = (id: string) =>
+    withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('owner_change_request')
+        .set({
+          requested_at: new Date(Date.now() - 31 * 864e5),
+          opens_at: new Date(Date.now() - 24 * 864e5),
+          lapses_at: new Date(Date.now() - 864e5),
+        })
+        .where('id', '=', id)
+        .execute(),
+    );
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-lapse@example.test', role: 'adult' });
+    const members = json<{ items: MemberView[] }>(
+      await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
+    ).items;
+    samMember = members.find((m) => m.display_name === 'Sam')?.id as string;
+    const promoted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${samMember}/role`,
+      headers: h.as(owner),
+      payload: { role: 'owner' },
+    });
+    expect(promoted.statusCode).toBe(200);
+  }, 90_000);
+  afterAll(() => h.close());
+
+  it('lapses, and can then be asked again, with the full notice and everybody told', async () => {
+    const first = json<RoleChangeResult>(await ask()).request as OwnerChangeView;
+    expect(first.state).toBe('waiting');
+    await lapse(first.id);
+
+    const seen = (await requests()).find((r) => r.id === first.id);
+    expect(seen?.state).toBe('lapsed');
+    expect(seen?.summary).toMatch(/no longer counts/);
+
+    const toldBefore = askedAlerts();
+    const again = await ask();
+    expect(again.statusCode).toBe(200);
+    const second = json<RoleChangeResult>(again).request as OwnerChangeView;
+    expect(second.id).not.toBe(first.id);
+    expect(second.state).toBe('waiting');
+    const days = (Date.parse(second.opens_at) - Date.parse(second.requested_at)) / 864e5;
+    expect(Math.round(days)).toBe(7);
+    expect(askedAlerts()).toBe(toldBefore + 1);
+
+    // The old one is recorded as lapsed, and stays in the history as that.
+    const old = await withHousehold(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('owner_change_request')
+        .select(['lapsed_at', 'lapses_at', 'refused_at'])
+        .where('id', '=', first.id)
+        .executeTakeFirstOrThrow(),
+    );
+    expect(old.lapsed_at?.getTime()).toBe(old.lapses_at.getTime());
+    expect(old.refused_at).toBeNull();
+    expect((await requests()).map((r) => r.state)).toEqual(['waiting', 'lapsed']);
+
+    // A live request still stops a second one: asking twice does not start
+    // the clock again.
+    const third = await ask();
+    expect(third.statusCode).toBe(409);
+    expect(code(third)).toBe('already_requested');
+  });
+
+  it('a lapsed request cannot be refused, withdrawn or carried out', async () => {
+    const live = (await requests()).find((r) => r.state === 'waiting') as OwnerChangeView;
+    await lapse(live.id);
+    for (const [as, what] of [
+      [sam, 'refuse'],
+      [owner, 'withdraw'],
+      [owner, 'complete'],
+    ] as const) {
+      const res = await act(as, live.id, what);
+      expect(res.statusCode, what).toBe(409);
+      expect(code(res), what).toBe('request_lapsed');
+    }
+    // Sam is still an owner: a lapsed request changes nothing.
+    const me = json<{ role: string }>(
+      await h.app.inject({ url: '/api/v1/me', headers: h.as(sam) }),
+    );
+    expect(me.role).toBe('owner');
+  });
+
+  it('two owners asking at the same moment get one request, and the other a sentence', async () => {
+    // Clear the way: the last one lapsed, and asking again records that.
+    const results = await Promise.all([ask(), ask()]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const refused = results.find((r) => r.statusCode === 409);
+    expect(code(refused as { json: () => unknown })).toBe('already_requested');
+    expect((await requests()).filter((r) => r.state === 'waiting')).toHaveLength(1);
+  });
+});

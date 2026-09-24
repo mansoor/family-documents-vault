@@ -156,6 +156,15 @@ async function seed(url: string): Promise<string> {
        values ($1, $2, $3, 'demote', now() - interval '1 day', now() + interval '20 days')`,
       [hh, other, account],
     );
+    // And one about the first owner that lapsed long ago: over already, so
+    // the restore leaves it as it is rather than calling it refused.
+    await c.query(
+      `insert into owner_change_request
+         (household_id, target_account, requested_by, action, requested_at, opens_at, lapses_at)
+       values ($1, $2, $3, 'demote', now() - interval '60 days', now() - interval '53 days',
+               now() - interval '30 days')`,
+      [hh, account, other],
+    );
     await c.query(
       `insert into password_reset (account_id, token_hash, issued_by, expires_at)
        values ($1, $2, 'self', now() + interval '1 hour')`,
@@ -497,10 +506,20 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from password_reset
                 where used_at is null and expires_at > now()) as resets,
               (select count(*)::int from owner_change_request
-                where refused_at is null and completed_at is null) as owner_changes,
+                where refused_at is null and completed_at is null
+                  and lapses_at > now()) as owner_changes,
+              (select count(*)::int from owner_change_request
+                where refused_at is not null) as refused,
               (select count(*)::int from device where session_id is null) as old_devices`,
     );
-    expect(rows[0]).toEqual({ sessions: 0, resets: 0, owner_changes: 0, old_devices: 0 });
+    // The running request was withdrawn; the lapsed one was left alone.
+    expect(rows[0]).toEqual({
+      sessions: 0,
+      resets: 0,
+      owner_changes: 0,
+      refused: 1,
+      old_devices: 0,
+    });
     // The job queue came back too, and the vault can use it.
     const jobs = await sql(
       t.appUrl,
@@ -576,6 +595,12 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       expect(report).toMatchObject({ schema: known, households: 1, documents: 3 });
       const id = await sql(t.appUrl, 'select instance_id from instance');
       expect(id.rows).toHaveLength(1);
+      // 0022 ran on the way up and recorded the request that had lapsed.
+      const lapsed = await sql(
+        t.adminUrl,
+        'select count(*)::int as n from owner_change_request where lapsed_at is not null',
+      );
+      expect(lapsed.rows[0]?.n).toBe(1);
       await rm(olderDir, { recursive: true, force: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });
