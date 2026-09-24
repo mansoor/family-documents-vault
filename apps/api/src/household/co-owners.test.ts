@@ -1,5 +1,6 @@
 import { withHousehold } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
@@ -489,5 +490,46 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
     const refused = results.find((r) => r.statusCode === 409);
     expect(code(refused as { json: () => unknown })).toBe('already_requested');
     expect((await requests()).filter((r) => r.state === 'waiting')).toHaveLength(1);
+  });
+
+  it('a request that loses the race at the database is told in words too', async () => {
+    // The test above races on the lapse it records, so the loser stops at
+    // the check. Here there is nothing to lapse: another request, not yet
+    // committed, holds the place, the check cannot see it, and the insert
+    // is what the database refuses.
+    const live = (await requests()).find((r) => r.state === 'waiting') as OwnerChangeView;
+    expect((await act(owner, live.id, 'withdraw')).statusCode).toBe(204);
+
+    const hold = new pg.Client({ connectionString: h.adminUrl });
+    await hold.connect();
+    try {
+      await hold.query('begin');
+      await hold.query(
+        `insert into owner_change_request
+           (household_id, target_account, requested_by, action, opens_at, lapses_at)
+         select household_id, account_id, account_id, 'demote',
+                now() + interval '7 days', now() + interval '30 days'
+           from account_household where member_id = $1`,
+        [samMember],
+      );
+      const pending = ask();
+      // Wait until the ask is blocked behind the held insert, then let it go.
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked; i++) {
+        const { rows } = await hold.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where pg_backend_pid() = any(pg_blocking_pids(pid))`,
+        );
+        blocked = (rows[0]?.n ?? 0) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked).toBe(true);
+      await hold.query('commit');
+      const res = await pending;
+      expect(res.statusCode).toBe(409);
+      expect(code(res)).toBe('already_requested');
+    } finally {
+      await hold.end();
+    }
   });
 });
