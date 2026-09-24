@@ -39,11 +39,15 @@ export class VisibilityService {
   ): Promise<{ notice: { title: string; body: string } | null }> {
     requireCapability(p, 'document.visibility');
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // Locked before its versions are read: an upload committing a new
+      // version holds the same lock, so every version is rewrapped, the new
+      // one included (documents/service.ts accept()).
       const doc = await trx
         .selectFrom('document')
         .select(['id', 'visibility', 'owner_member_id'])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
+        .forUpdate()
         .executeTakeFirst();
       // Somebody else's private document is not there, as it is everywhere
       // else — a 403 here would confirm that it exists.

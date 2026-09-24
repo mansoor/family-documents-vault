@@ -1,4 +1,4 @@
-import type { Capabilities, DocumentView, Tokens } from '@fdv/shared';
+import type { Capabilities, DocumentView, ReminderView, Tokens } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
 /**
@@ -26,12 +26,27 @@ export interface FakeVaultState {
   /** access token → session id */
   access: Map<string, string>;
   documents: Array<{ id: string; title: string | null }>;
-  captures: Map<string, { document_id: string; version_id: string }>;
+  /** Upload keys and what each made; a key is for one kind of request. */
+  captures: Map<string, FakeUpload>;
+  /** What GET /reminders answers, whatever the state asked for. */
+  reminders: ReminderView[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
   offline: boolean;
 }
+
+interface FakeUpload {
+  kind: 'capture' | 'version';
+  document_id: string;
+  version_id: string;
+}
+
+/** The fake's installation id, as a real vault reports its own. */
+export const FAKE_INSTANCE_ID = '3b9e1d2c-7a6f-4e5d-9c8b-1a2f3e4d5c6b';
+
+/** Upload keys are UUIDs, written the usual way. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   const state: FakeVaultState = {
@@ -42,6 +57,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     access: new Map(),
     documents: [],
     captures: new Map(),
+    reminders: [],
     calls: [],
     offline: false,
   };
@@ -91,7 +107,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.3',
+        server_version: '0.4.8',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -105,10 +121,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           share_links: true,
           bulk_import: false,
           multi_household: false,
+          idempotent_capture: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
         branding: { display_name: 'A fake family' },
+        instance_id: FAKE_INSTANCE_ID,
       };
       return ok(caps);
     }
@@ -169,29 +187,74 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       return ok({ items: state.documents.map(viewOf), next_cursor: null, has_more: false });
     }
-    if (path === '/api/v1/capture' && init.method === 'POST') {
+    // Uploads, the way the real vault treats their keys: a retry is answered
+    // with what the first try made, marked as a replay; a key used for one
+    // request is refused for any other, without saying what it made.
+    const uploadTo = /^\/api\/v1\/documents\/([^/]+)\/versions$/.exec(path);
+    if ((path === '/api/v1/capture' || uploadTo) && init.method === 'POST') {
       const s = session();
       if (!('id' in s)) return s;
       const key = init.headers['idempotency-key'];
       if (!key)
         return fail(422, 'validation_failed', 'Uploads need an Idempotency-Key header (a UUID).');
+      if (!UUID.test(key)) return fail(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
       const type = init.headers['content-type'] ?? '';
       if (!(init.body instanceof Uint8Array) && !/^multipart\/form-data/.test(type)) {
         // A platform FormData sets its own content type; bytes must say so.
         if (!init.body) return fail(422, 'validation_failed', 'Attach one file.');
       }
-      const prior = state.captures.get(key);
-      if (prior) return ok({ ...prior, job_id: null, state: 'stored' }, 201);
-      const doc = { id: next('document'), title: null };
-      state.documents.push(doc);
-      const made = { document_id: doc.id, version_id: next('version') };
-      state.captures.set(key, made);
-      return ok({ ...made, job_id: null, state: 'stored' }, 201);
+      const kind = uploadTo ? 'version' : 'capture';
+      const target = uploadTo?.[1];
+      // As the real vault: a document that is not there is not there,
+      // whatever the key.
+      if (target !== undefined && !state.documents.some((d) => d.id === target)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      const prior = state.captures.get(key.toLowerCase());
+      if (prior) {
+        if (prior.kind !== kind || (target !== undefined && prior.document_id !== target)) {
+          return fail(
+            409,
+            'idempotency_key_reused',
+            'That upload key was already used for something else.',
+          );
+        }
+        return respond(201, answer(prior), { 'idempotent-replayed': 'true' });
+      }
+      let documentId = target;
+      if (documentId === undefined) {
+        const doc = { id: next('document'), title: null };
+        state.documents.push(doc);
+        documentId = doc.id;
+      }
+      const made: FakeUpload = { kind, document_id: documentId, version_id: next('version') };
+      state.captures.set(key.toLowerCase(), made);
+      return ok(answer(made), 201);
+    }
+    const uploadKey = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
+    if (uploadKey && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const made = state.captures.get(decodeURIComponent(uploadKey[1] as string).toLowerCase());
+      if (!made) return fail(404, 'not_found', 'That upload is not known here.');
+      return ok({ state: 'done', document_id: made.document_id, version_id: made.version_id });
+    }
+    if (path === '/api/v1/reminders' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return ok({ items: state.reminders });
     }
     return fail(404, 'not_found', `The fake vault has no ${init.method} ${path}.`);
   };
 
   return { fetch, state };
+}
+
+/** A capture's answer, or a new version's: the shape each endpoint returns. */
+function answer(made: FakeUpload) {
+  return made.kind === 'capture'
+    ? { document_id: made.document_id, version_id: made.version_id, job_id: null, state: 'stored' }
+    : { id: made.version_id, document_id: made.document_id };
 }
 
 function viewOf(doc: { id: string; title: string | null }): DocumentView {

@@ -72,8 +72,9 @@ against self-hosted servers that are months or years behind.
 - `GET /api/v1/me` — bearer; `{ account_id, household_id, member_id, role }`.
 
 - Errors: `401 unauthenticated` (no or bad bearer), `401 session_ended`
-  (revoked, expired or replayed), `422 validation_failed`, `429` with
-  `Retry-After` on the auth endpoints (10 requests per minute per address).
+  (revoked, expired or replayed), `422 validation_failed`, `429 rate_limited`
+  with `Retry-After` on the auth endpoints (10 requests per minute per
+  address) and everywhere else (300 per minute).
 
 - Vaults (where files are kept). All bearer; changes are owner-only.
   - `GET /api/v1/vaults` — `{ items: [{ id, kind, provider, label, endpoint, bucket, region, prefix, path_style, role, status, active, last_verified_at, last_error }] }`. Never includes keys.
@@ -392,6 +393,36 @@ already_requested` for ever, about a request no client showed.
   - `POST /api/v1/me/step-down` closes the requests about the caller.
   - `POST /api/v1/owner-changes/{id}/complete` answers `409
 no_longer_owner` when the person has stopped being an owner since.
+
+- Uploads you can retry (0.4.8, `features.idempotent_capture`).
+
+  - `POST /api/v1/capture` and `POST /api/v1/documents/{id}/versions` are
+    reserve-then-commit on their `Idempotency-Key`: a retry with the same
+    key never makes a second document or version, however the tries
+    overlap, and a failed try leaves nothing behind (not even an empty
+    Needs-info document), so the same key works again.
+  - A retry of a finished upload answers `201` with what the first try made
+    and the header `Idempotent-Replayed: true` — only to the account that
+    made it, for the same request, while it can still see the document.
+  - A try that overlaps one still running (for less than 15 minutes) answers
+    `409 upload_in_progress`, `retriable: true`, `Retry-After: 5`. Wait, and
+    retry with the same key. A try older than 15 minutes is taken over.
+  - **Changed:** a key used for another request, another document or by
+    another account answers `409 idempotency_key_reused` (it was `422`), and
+    never says what the key made.
+  - **Tightened:** the key must be a UUID written 8-4-4-4-12; any other
+    form answers `422 validation_failed`.
+  - **New, additive:** `GET /api/v1/uploads/{key}` — bearer; one of the
+    caller's own keys: `{ state: "done", document_id, version_id }` or
+    `{ state: "in_progress", since }`. A key never seen, someone else's, or a
+    try that failed answers `404 not_found`.
+  - **Fixed:** every `429`, from the general limit or an endpoint's own, is
+    the error envelope with `code: "rate_limited"`, `retriable: true` and a
+    `Retry-After` header. It answered `bad_request` with `retriable: false`.
+    `503 storage_unreachable` now carries `Retry-After: 30`.
+  - **Fixed:** a file cut off at the size limit on the way in answers `413
+too_large` and is not kept. Until 0.4.8 the part that arrived was stored
+    as a new version before the `413`.
 
 ## Deprecations in effect
 

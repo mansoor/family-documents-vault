@@ -29,6 +29,8 @@ export interface Scenario {
 
 const PDF = new TextEncoder().encode('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
 const CAPTURE_KEY = '4f1c2b3a-9d8e-4c7b-8a6f-5e4d3c2b1a09';
+const RACE_KEY = '8e7d6c5b-4a39-4281-9f0e-1d2c3b4a5f6e';
+const NEVER_USED = 'c0ffee00-1234-4567-89ab-cdef01234567';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -127,6 +129,56 @@ export const contractScenarios: Scenario[] = [
       const again = await api.capture(token, body, CAPTURE_KEY);
       expect(again.document_id).toBe(first.document_id);
       expect(again.version_id).toBe(first.version_id);
+    },
+  },
+  {
+    name: 'a retry never duplicates: two at once make one document, and the key says which',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const form = multipartBody([
+        { name: 'file', filename: 'race.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      const body = { kind: 'bytes' as const, bytes: form.bytes, contentType: form.contentType };
+      const before = (await api.documents(token)).items.length;
+      const tries = await Promise.allSettled([
+        api.capture(token, body, RACE_KEY),
+        api.capture(token, body, RACE_KEY),
+      ]);
+      // Each try is the one document, or told the other is on its way.
+      for (const t of tries) {
+        if (t.status === 'rejected') {
+          expect(t.reason).toBeInstanceOf(ApiRequestError);
+          expect((t.reason as ApiRequestError).code).toBe('upload_in_progress');
+          expect((t.reason as ApiRequestError).retriable).toBe(true);
+        }
+      }
+      const status = await api.uploadStatus(token, RACE_KEY);
+      if (status.state !== 'done') throw new Error(`expected done, got ${status.state}`);
+      for (const t of tries) {
+        if (t.status === 'fulfilled') expect(t.value.document_id).toBe(status.document_id);
+      }
+      const again = await api.capture(token, body, RACE_KEY);
+      expect(again.document_id).toBe(status.document_id);
+      expect(again.version_id).toBe(status.version_id);
+      expect((await api.documents(token)).items.length).toBe(before + 1);
+    },
+  },
+  {
+    name: 'a key never used is not known, and a capture key cannot add a version',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await refusal(api.uploadStatus(token, NEVER_USED))).status).toBe(404);
+      const made = await api.uploadStatus(token, CAPTURE_KEY);
+      if (made.state !== 'done') throw new Error(`expected done, got ${made.state}`);
+      const form = multipartBody([
+        { name: 'file', filename: 'other.pdf', contentType: 'application/pdf', bytes: PDF },
+      ]);
+      const body = { kind: 'bytes' as const, bytes: form.bytes, contentType: form.contentType };
+      const err = await refusal(api.upload(token, made.document_id, body, CAPTURE_KEY));
+      expect(err.status).toBe(409);
+      expect(err.code).toBe('idempotency_key_reused');
+      // It does not say what the key made: that could be somebody else's.
+      expect(JSON.stringify(err)).not.toContain(made.version_id);
     },
   },
   {

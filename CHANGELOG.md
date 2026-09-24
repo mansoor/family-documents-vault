@@ -6,7 +6,15 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Adding a document can be retried safely.** If the connection drops or the answer is lost on the way back, trying again never makes a second copy: the vault recognises the same upload and answers with what the first try made. Choosing the same file again after an error in the web app counts as trying again. An upload that fails leaves nothing behind — no empty "Needs info" document — and one that overlaps an earlier try still arriving waits for it rather than doubling up. For apps: `GET /api/v1/uploads/{key}` says what became of an upload (see the API changelog).
+
 ### Fixed
+
+- A file larger than the vault's limit was cut off at the limit, and the part that arrived was kept as a new copy of the document before the vault said it was too big. Nothing is kept now.
+- "Too many requests" said the request was wrong and not worth retrying. It now says to try again, and when.
+- A new copy of a document uploaded at the moment the document was made private (or un-private) could be kept under the old setting, after which the document could never be moved again. The two now wait for each other, and an upload that finishes after such a change is refused so it can be sent again.
 
 - **Once a request to take away somebody's owner role had lapsed, nobody could ask again.** A request nobody carries out lapses after thirty days, but nothing recorded that it had: the vault went on treating it as waiting, the People screen stopped showing it — so it could not be withdrawn — and asking about that person again said "Somebody has already asked for this". A lapsed request is now recorded as lapsed, including any that lapsed before this release, and asking again starts afresh, with the full seven days' notice and everybody told. A lapsed request can no longer be refused or withdrawn either: nothing will happen, so there is nothing to act on.
 - Two owners asking at the same moment to take away the same person's owner role got an error; the second now hears that somebody has already asked.

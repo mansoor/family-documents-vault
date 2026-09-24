@@ -20,6 +20,12 @@ export interface CapabilityFeatures {
   share_links: boolean;
   bulk_import: boolean;
   multi_household: boolean;
+  /**
+   * Uploads are reserve-then-commit (0.4.8): a retry with the same
+   * Idempotency-Key never makes a second document, overlapping tries get
+   * 409 upload_in_progress, and GET /uploads/{key} says what became of one.
+   */
+  idempotent_capture: boolean;
 }
 
 export interface CapabilityLimits {

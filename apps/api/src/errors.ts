@@ -20,7 +20,13 @@ export class ApiError extends Error {
     public readonly status: number,
     public readonly code: string,
     message: string,
-    public readonly options: { detail?: string; retriable?: boolean; action?: string } = {},
+    public readonly options: {
+      detail?: string;
+      retriable?: boolean;
+      action?: string;
+      /** Seconds to wait before trying again; sent as Retry-After. */
+      retryAfter?: number;
+    } = {},
   ) {
     super(message);
     this.name = 'ApiError';

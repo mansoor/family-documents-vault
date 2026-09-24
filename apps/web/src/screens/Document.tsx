@@ -6,6 +6,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
 import { SharePanel } from './Share.js';
 import { VisibilityControl } from './Visibility.js';
+import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /**
  * Document detail: a preview, the facts in a plain two-column list, the
@@ -29,6 +30,7 @@ export function DocumentScreen() {
   );
   const [thumb, setThumb] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [keys] = useState(createUploadKeys);
 
   const latest = data?.versions[0];
   useEffect(() => {
@@ -68,7 +70,9 @@ export function DocumentScreen() {
     if (!file || !data) return;
     setActionError(null);
     try {
-      await withToken((t) => api.upload(t, data.doc.id, file, crypto.randomUUID()));
+      const key = keys.keyFor(file);
+      await whileInProgress(() => withToken((t) => api.upload(t, data.doc.id, file, key)));
+      keys.saved();
       await reload();
     } catch (err) {
       setActionError(describeError(err));
@@ -216,7 +220,12 @@ export function DocumentScreen() {
             type="file"
             accept="image/*,application/pdf"
             style={{ display: 'none' }}
-            onChange={(e) => void addVersion(e.target.files?.[0])}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              // Cleared, so the same file chosen again is a retry, not nothing.
+              e.target.value = '';
+              void addVersion(file);
+            }}
           />
         </label>
       </section>

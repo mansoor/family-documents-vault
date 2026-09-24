@@ -784,4 +784,33 @@ describe('App', () => {
     expect(screen.getByText(/Ask whoever invited you/)).toBeInTheDocument();
     await expectAccessible();
   });
+  it('the same file chosen again after a failure is sent again, with the same key', async () => {
+    // A capture whose answer is lost may have been stored: sending it again
+    // with the same key is answered with what was stored, not a second
+    // copy. The file input is cleared after each choice, or choosing the
+    // same file again would not reach the app at all.
+    const state = fresh({ captureFailures: 100 });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    const file = new File(['%PDF-1.4'], 'passport.pdf', {
+      type: 'application/pdf',
+      lastModified: 1,
+    });
+
+    fireEvent.change(input, { target: { files: [file] } });
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    expect(input.value).toBe('');
+
+    state.captureFailures = 0;
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new/confirm'));
+    const keys = state.calls
+      .filter((c) => c.url.startsWith('/api/v1/capture'))
+      .map((c) => c.headers?.['idempotency-key']);
+    expect(keys.length).toBeGreaterThan(1);
+    expect(new Set(keys).size).toBe(1);
+  });
 });

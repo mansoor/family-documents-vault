@@ -61,6 +61,8 @@ export interface FakeState {
   /** False when the link has expired, been used or been revoked. */
   invitationValid: boolean;
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
+  /** Captures that fail as if the connection went, before the next succeeds. */
+  captureFailures?: number;
 }
 
 export const TOKENS = {
@@ -679,6 +681,10 @@ export function installFakeApi(state: FakeState) {
       return json({ items, next_cursor: null, has_more: false });
     }
     if (path === '/api/v1/capture') {
+      if (state.captureFailures) {
+        state.captureFailures -= 1;
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
       const doc = {
         ...PASSPORT,
         id: 'doc-new',
