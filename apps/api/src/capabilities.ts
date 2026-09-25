@@ -49,6 +49,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       capture_metadata: true,
       issued_by: true,
       page_previews: true,
+      offline_essentials: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

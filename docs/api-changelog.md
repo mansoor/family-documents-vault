@@ -460,6 +460,51 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
+- Essentials a phone may keep (0.4.13, `features.offline_essentials`).
+
+  - **New:** `POST /api/v1/offline/grant` `{password, include_private?}` →
+    `{granted_at, expires_at, include_private}`: this session may fill its
+    phone until `expires_at` — 30 days at most, never past the session's
+    own end. The password itself, not a code. Refusals: `422` from a
+    session with no installation id (only an app keeps documents), `401
+invalid_credentials` for a wrong password, `403` for viewers; 10 a
+    minute. `DELETE /api/v1/offline/grant` ends it (`204`); so does
+    anything that ends the session, and a password change (on this device
+    or another). It never relaxes the step-up on
+    `/content` or `/pages`.
+  - **New:** `GET /api/v1/offline/essentials` → `{items: [{document,
+version: {id, mime, page_count, preview_pages, preview_state},
+private}], grant, max_offline_days, server_time, truncated}` — the
+    complete set this person's phone may keep, at most 500: **what is not
+    in it is to be removed from the phone.** With no grant in force (never
+    given, ended, or lapsed) it is empty: keep nothing. Essentials the person can see,
+    not in the bin, with a file; teens only their own; viewers none; the
+    person's own Only me ones only under a grant with `include_private`.
+    `mayKeepOffline()` in `@fdv/shared` is the same rule.
+  - **New:** `GET /api/v1/offline/pages/{version_id}/{n}` — a page for the
+    phone's copy. Visibility first (`404`, as a version that does not
+    exist), then the current version of an Essential in the set (`404`),
+    then the grant (`403 offline_grant_required`). Otherwise as
+    `/versions/{id}/pages/{n}` (`preview_pending`, `no_preview`), without a
+    step-up. Recorded once per session and version as
+    `document.cached_offline`, not per page.
+  - **New:** `POST /api/v1/offline/opens` `{events: [{id, version_id,
+opened_at, mode: 'view'|'show', online}]}` (at most 200) → `{accepted,
+duplicates, dropped}`. Each event id is recorded once, however often
+    it is sent, as `document.opened_offline` on its document; an event
+    about something the person cannot see is dropped and writes nothing.
+    The record is dated when it arrived; the phone's `opened_at` is kept in
+    `detail`, never later than now nor earlier than `max_offline_days` ago.
+  - **New, additive:** `offline` on `GET /api/v1/auth/sessions` items: the
+    device keeps Essentials. New activity lines: "Sarah's phone kept …
+    for offline use", "Sarah opened … on their phone without a connection",
+    and the Show and online variants.
+  - **Not built:** the specification's general `GET /sync`. A phone keeps
+    only the Essentials, so it asks for exactly those.
+  - `@fdv/client`: `offlineGrant`, `endOfflineGrant`, `offlineEssentials`,
+    `offlinePage`, `offlineOpens`; the fake answers them from
+    `state.offlineEssentials`.
+
 - Pages the vault draws (0.4.12, `features.page_previews`).
 
   - **New:** `GET /api/v1/versions/{id}/pages/{n}` — page `n` (from 1) of a

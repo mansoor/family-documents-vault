@@ -52,6 +52,8 @@ describe('buildCapabilities', () => {
       issued_by: true,
       // 0.4.12: the vault draws each version's pages (4.7).
       page_previews: true,
+      // 0.4.13: a phone may keep the Essentials (4.9).
+      offline_essentials: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

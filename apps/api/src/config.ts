@@ -52,6 +52,16 @@ const schema = z.object({
     .positive()
     .default(100 * 1024 * 1024)
     .describe('Largest single file the vault accepts.'),
+  FDV_OFFLINE_MAX_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(365)
+    .default(90)
+    .describe(
+      'How many days a phone may show the Essentials it keeps without reaching the ' +
+        'vault. After that it hides them until it has checked in again.',
+    ),
 
   FDV_BASE_URL: z
     .string()

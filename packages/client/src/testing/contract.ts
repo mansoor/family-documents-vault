@@ -309,6 +309,33 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'a phone keeps Essentials only as the vault says, and only with a grant (0.4.13)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.offline_essentials).toBe(true);
+      const set = await api.offlineEssentials(token);
+      expect(set).toMatchObject({ grant: null, truncated: false });
+      expect(Array.isArray(set.items)).toBe(true);
+      expect(set.max_offline_days).toBeGreaterThan(0);
+      // Only an app keeps documents: a session with no installation id is refused.
+      const noApp = await refusal(api.offlineGrant(token, ctx.password));
+      expect(noApp.status).toBe(422);
+      // A page of a version that is not there is not there.
+      expect((await refusal(api.offlinePage(token, NEVER_USED, 1))).code).toBe('not_found');
+      // An open about something that is not there is dropped, not recorded.
+      const told = await api.offlineOpens(token, [
+        {
+          id: '7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d',
+          version_id: NEVER_USED,
+          opened_at: new Date().toISOString(),
+          mode: 'view',
+          online: false,
+        },
+      ]);
+      expect(told).toEqual({ accepted: 0, duplicates: 0, dropped: 1 });
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

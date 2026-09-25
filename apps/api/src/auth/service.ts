@@ -604,7 +604,15 @@ export class AuthService {
     return withScope(this.db, { householdId: p.householdId }, (trx) =>
       trx
         .selectFrom('session')
-        .select(['id', 'user_agent', 'ip', 'created_at', 'last_used_at', 'installation_id'])
+        .select([
+          'id',
+          'user_agent',
+          'ip',
+          'created_at',
+          'last_used_at',
+          'installation_id',
+          'offline_expires_at',
+        ])
         .where('account_id', '=', p.accountId)
         .where('revoked_at', 'is', null)
         .orderBy('last_used_at', 'desc')
@@ -619,6 +627,9 @@ export class AuthService {
         last_used_at: r.last_used_at,
         client: clientOf(r.installation_id, r.user_agent),
         label: describeDevice(r.user_agent ?? 'unknown'),
+        // It keeps Essentials for offline use (0.4.13): its grant is in force.
+        offline:
+          r.offline_expires_at !== null && new Date(r.offline_expires_at).getTime() > Date.now(),
       })),
     );
   }
