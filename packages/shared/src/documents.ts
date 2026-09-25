@@ -89,26 +89,94 @@ export function formatDate(d: DateValue, locale = 'en-GB'): string {
   }
 }
 
-/** Normalises a partial date to the end of its period: "2031-03" -> 2031-03-31 (month). */
-export function parseDateInput(input: string): DateValue | null {
-  const s = input.trim();
+/** The order of a numeric date in the reader's locale: 14/03/2031 or 03/14/2031. */
+export type DateOrder = 'dmy' | 'mdy';
+
+const MONTHS = [
+  'january',
+  'february',
+  'march',
+  'april',
+  'may',
+  'june',
+  'july',
+  'august',
+  'september',
+  'october',
+  'november',
+  'december',
+];
+
+/** 'Mar', 'march', 'Sept.' → 3, 3, 9; anything else → null. */
+function monthNumber(word: string): number | null {
+  const w = word.toLowerCase().replace(/\.$/, '');
+  if (w === 'sept') return 9;
+  const i = MONTHS.findIndex((m) => m === w || (w.length === 3 && m.startsWith(w)));
+  return i < 0 ? null : i + 1;
+}
+
+const pad = (n: number, width = 2) => String(n).padStart(width, '0');
+
+function dayValue(y: number, mo: number, d: number): DateValue | null {
+  if (mo < 1 || mo > 12 || d < 1) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d)
+    return null;
+  return { date: `${pad(y, 4)}-${pad(mo)}-${pad(d)}`, precision: 'day' };
+}
+
+function monthValue(y: number, mo: number): DateValue | null {
+  if (mo < 1 || mo > 12) return null;
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return { date: `${pad(y, 4)}-${pad(mo)}-${pad(last)}`, precision: 'month' };
+}
+
+/**
+ * A date as a person types it, to a date with its precision. A month is kept
+ * as its last day and a year as 31 December, so "expires March 2031" is
+ * still valid on 31 March.
+ *
+ * Accepted: 2031-03-14, 2031-03, 2031, 14 Mar 2031, 14 March 2031, 14th
+ * March 2031, March 14, 2031, Mar 2031, March 2031. A numeric date such as
+ * 14/03/2031 is read only when the caller says which order its reader's
+ * locale uses; without it, 03/04/2031 could be either and is refused.
+ */
+export function parseDateInput(input: string, opts: { order?: DateOrder } = {}): DateValue | null {
+  const s = input.trim().replace(/\s+/g, ' ');
   let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (m) {
-    const [, y, mo, d] = m;
-    const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
-    if (dt.getUTCMonth() !== Number(mo) - 1 || dt.getUTCDate() !== Number(d)) return null;
-    return { date: s, precision: 'day' };
-  }
+  if (m) return dayValue(Number(m[1]), Number(m[2]), Number(m[3]));
   m = /^(\d{4})-(\d{2})$/.exec(s);
-  if (m) {
-    const y = Number(m[1]);
-    const mo = Number(m[2]);
-    if (mo < 1 || mo > 12) return null;
-    const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-    return { date: `${m[1]}-${m[2]}-${String(last).padStart(2, '0')}`, precision: 'month' };
-  }
+  if (m) return monthValue(Number(m[1]), Number(m[2]));
   m = /^(\d{4})$/.exec(s);
-  if (m) return { date: `${s}-12-31`, precision: 'year' };
+  if (m) return { date: `${m[1]}-12-31`, precision: 'year' };
+
+  // 14 Mar 2031, 14 March 2031, 14th March 2031
+  m = /^(\d{1,2})(?:st|nd|rd|th)? ([a-z]+\.?),? (\d{4})$/i.exec(s);
+  if (m) {
+    const mo = monthNumber(m[2] as string);
+    return mo ? dayValue(Number(m[3]), mo, Number(m[1])) : null;
+  }
+  // March 14, 2031
+  m = /^([a-z]+\.?) (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})$/i.exec(s);
+  if (m) {
+    const mo = monthNumber(m[1] as string);
+    return mo ? dayValue(Number(m[3]), mo, Number(m[2])) : null;
+  }
+  // Mar 2031, March 2031
+  m = /^([a-z]+\.?),? (\d{4})$/i.exec(s);
+  if (m) {
+    const mo = monthNumber(m[1] as string);
+    return mo ? monthValue(Number(m[2]), mo) : null;
+  }
+  // 14/03/2031, 14.03.2031, 14-03-2031 — only in a known order.
+  m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s);
+  if (m && opts.order) {
+    const [a, b, y] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    return opts.order === 'dmy' ? dayValue(y, b, a) : dayValue(y, a, b);
+  }
+  // 03/2031 — a month and a year, whatever the order of days.
+  m = /^(\d{1,2})[/.-](\d{4})$/.exec(s);
+  if (m) return monthValue(Number(m[2]), Number(m[1]));
   return null;
 }
 

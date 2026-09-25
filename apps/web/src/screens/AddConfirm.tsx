@@ -1,78 +1,192 @@
 import {
+  autoTitle,
+  effectiveVisibility,
   parseDateInput,
+  reminderSentence,
+  type CaptureMetadata,
+  type DateOrder,
   type DocumentTypeView,
-  type DocumentView,
   type Visibility,
 } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, type DocumentInput, type Member } from '../api.js';
+import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, ErrorNote, Field, Select, TopBar } from '../ui.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /**
+ * The order a numeric date is read in, from the browser's locale: 14/03 or
+ * 03/14. Only a locale that writes the month first, then the day, then the
+ * year (the US) reads 03/04 as March; year-first locales write dates as
+ * 2031-03-14, and read a slashed date day first like most of the world.
+ */
+function dateOrder(): DateOrder {
+  const parts = new Intl.DateTimeFormat(undefined).formatToParts(new Date(2031, 2, 14));
+  const at = (type: string) => parts.findIndex((p) => p.type === type);
+  return at('month') >= 0 && at('month') < at('day') && at('day') < at('year') ? 'mdy' : 'dmy';
+}
+
+/** The card's details as a capture sends them: only what the card asks. */
+function captureDetails(d: DocumentInput): CaptureMetadata {
+  const out: CaptureMetadata = {};
+  if (d.type_key !== undefined) out.type_key = d.type_key;
+  if (d.title !== undefined) out.title = d.title;
+  if (d.owner_member_id !== undefined) out.owner_member_id = d.owner_member_id;
+  if (d.visibility !== undefined) out.visibility = d.visibility;
+  if (d.issued !== undefined) out.issued = d.issued;
+  if (d.expires !== undefined) out.expires = d.expires;
+  if (d.identifier !== undefined) out.identifier = d.identifier;
+  if (d.physical_location !== undefined) out.physical_location = d.physical_location;
+  return out;
+}
+
+/**
  * Add: the phone's camera or a file picker (CAP-01 arrives with the mobile
- * app; the web PWA uses the camera input). The file is stored first, as a
- * Needs-info document, then the confirm card opens (CAP-05).
+ * app; the web PWA uses the camera input). Choose the file, fill the card,
+ * then Save — or Skip, and fill it later. Nothing leaves the browser until
+ * then, and then one request carries the file and its details (0.4.9), so
+ * the document is filed complete, and for the right people, from the start.
  */
 export function AddScreen() {
   const { withToken } = useApp();
   const navigate = useNavigate();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
   const [keys] = useState(createUploadKeys);
   const input = useRef<HTMLInputElement>(null);
   // Arrived from a missing-document suggestion: it already knows what this
-  // is and whose it is, so the confirm card should not ask again.
+  // is and whose it is, so the card starts with both.
   const [params] = useSearchParams();
   const wanted = params.get('type');
   const forMember = params.get('member');
-  const { data: hint } = useLoad(
-    async (t) => {
-      if (!wanted) return null;
-      const [types, members] = await Promise.all([api.documentTypes(t), api.members(t)]);
-      return {
-        type: types.items.find((x) => x.key === wanted)?.label ?? null,
-        member: members.items.find((m) => m.id === forMember)?.display_name ?? null,
-      };
-    },
-    [wanted, forMember],
-  );
-  const carry = new URLSearchParams();
-  if (wanted) carry.set('type', wanted);
-  if (forMember) carry.set('member', forMember);
-  const suffix = carry.toString() ? `?${carry.toString()}` : '';
+  const { data, error: loadError } = useLoad(async (t) => {
+    const [types, members] = await Promise.all([api.documentTypes(t), api.members(t)]);
+    return { types: types.items, members: members.items };
+  }, []);
+  const hintType = data?.types.find((x) => x.key === wanted)?.label ?? null;
+  const hintMember = data?.members.find((m) => m.id === forMember)?.display_name ?? null;
 
-  const chosen = async (file: File | undefined) => {
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const key = keys.keyFor(file);
-      const r = await whileInProgress(() => withToken((t) => api.capture(t, file, key)));
-      keys.saved();
-      if (r) void navigate(`/documents/${r.document_id}/confirm${suffix}`, { replace: true });
-    } catch (err) {
-      setError(describeError(err));
-    } finally {
-      setBusy(false);
+  // The last try that failed: under which key, with what details, and —
+  // once the vault has said it landed — the document it made.
+  const lastTry = useRef<{ key: string; details: string; documentId?: string } | null>(null);
+
+  /**
+   * One capture, with the card's details or (Skip) without. A Save again
+   * with the same details is a retry with the same key, answered with what
+   * the first try made if it landed. A Save again after the card changed
+   * asks first what became of the earlier try: if it landed, the new
+   * details are put on that document (Only me included); if not, the file
+   * goes afresh under a new key.
+   */
+  const save = async (chosen: File, details: CaptureMetadata | undefined) => {
+    const sent = JSON.stringify(details ?? null);
+    let key = keys.keyFor(chosen);
+    const prior = lastTry.current?.key === key ? lastTry.current : null;
+    let landed = prior?.documentId;
+    if (prior && !landed && prior.details !== sent) {
+      const status = await withToken((t) => api.uploadStatus(t, key)).catch((err: unknown) => {
+        if (err instanceof ApiRequestError && err.status === 404) return null;
+        throw err;
+      });
+      if (status?.state === 'in_progress') {
+        throw new ApiRequestError(
+          409,
+          'upload_in_progress',
+          'This upload is already on its way. Try again in a moment.',
+          undefined,
+          { retriable: true },
+        );
+      }
+      if (status?.state === 'done') landed = status.document_id;
+      else {
+        // Nothing landed: the new details go with a new key.
+        keys.saved();
+        key = keys.keyFor(chosen);
+      }
     }
+    if (landed) {
+      lastTry.current = { key, details: sent, documentId: landed };
+      if (details) await putDetails(landed, details);
+      keys.saved();
+      lastTry.current = null;
+      void navigate(`/documents/${landed}`, { replace: true });
+      return;
+    }
+    lastTry.current = { key, details: sent };
+    const r = await whileInProgress(() => withToken((t) => api.capture(t, chosen, key, details)));
+    keys.saved();
+    lastTry.current = null;
+    if (r) void navigate(`/documents/${r.document_id}`, { replace: true });
   };
+
+  /**
+   * The card's details, put on a document an earlier try made. Who can see
+   * it and whose it is are changed in the order the vault allows: making
+   * it Only me needs it to be yours first; giving an Only me document to
+   * somebody else needs it un-private first.
+   */
+  const putDetails = async (id: string, details: CaptureMetadata) => {
+    const current = await withToken((t) => api.document(t, id));
+    if (!current) return;
+    const { visibility, ...rest } = details;
+    const type = data?.types.find((x) => x.key === rest.type_key);
+    const fields: DocumentInput = { ...rest };
+    // As a fresh capture would have: the type's category, and no expiry
+    // for a type that has none.
+    if (type) fields.category = type.category;
+    if (rest.type_key !== undefined && !type?.expiry_driver) fields.expires = null;
+    const move = visibility && visibility !== current.visibility ? visibility : null;
+    if (move && move !== 'private') {
+      await withToken((t) => api.setVisibility(t, id, move));
+    }
+    // No If-Match: a visibility change just now moved the etag on.
+    await withToken((t) => api.updateDocument(t, id, fields));
+    if (move === 'private') await withToken((t) => api.setVisibility(t, id, move));
+  };
+
+  if (file && data) {
+    const type = data.types.find((x) => x.key === wanted);
+    const me = data.members.find((m) => m.is_me);
+    const suggested = data.members.find((m) => m.id === forMember);
+    const owner = me?.role === 'teen' ? me : (suggested ?? me);
+    return (
+      <ConfirmForm
+        title="Is this right?"
+        back="/"
+        lede="Change anything that is wrong. Everything else can wait."
+        fileName={file.name}
+        types={data.types}
+        members={data.members}
+        initial={{
+          typeKey: type?.key ?? '',
+          title: type ? autoTitle(type, owner) : '',
+          owner: owner?.id ?? '',
+          issued: '',
+          expires: '',
+          identifier: '',
+          location: '',
+          visibility: effectiveVisibility({}, type, me?.role ?? 'owner'),
+        }}
+        submitLabel="Save to the vault"
+        onSubmit={(details) => save(file, captureDetails(details))}
+        onSkip={() => save(file, undefined)}
+        onChooseAgain={() => setFile(null)}
+      />
+    );
+  }
 
   return (
     <main className="page page-top">
       <TopBar title="Add a document" back="/" />
-      {hint?.type ? (
+      {hintType ? (
         <p className="lede">
-          Adding {aOrAn(hint.type.toLowerCase())}
-          {hint.member ? ` for ${hint.member}` : ''}. Take a photo or choose a file; the details are
+          Adding {aOrAn(hintType.toLowerCase())}
+          {hintMember ? ` for ${hintMember}` : ''}. Take a photo or choose a file; the details are
           filled in for you on the next screen.
         </p>
       ) : (
         <p className="lede">
-          Take a photo or choose a file. It is saved straight away; you can add the details next, or
-          later.
+          Take a photo or choose a file. Then say what it is, or skip that and fill it in later.
         </p>
       )}
       <input
@@ -83,16 +197,15 @@ export function AddScreen() {
         aria-label="Choose a file"
         style={{ display: 'none' }}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          // Cleared, so choosing the same file again (after an error) is a
-          // change the browser reports, and a retry with the same key.
+          const chosen = e.target.files?.[0];
+          // Cleared, so the same file can be chosen again.
           e.target.value = '';
-          void chosen(file);
+          if (chosen) setFile(chosen);
         }}
       />
-      <ErrorNote message={error} />
-      <Button onClick={() => input.current?.click()} disabled={busy}>
-        {busy ? 'Saving…' : 'Take a photo or choose a file'}
+      <ErrorNote message={loadError} />
+      <Button onClick={() => input.current?.click()} disabled={!data}>
+        Take a photo or choose a file
       </Button>
       <p className="muted">PDFs, photos and scans (JPEG, PNG, HEIC, TIFF), Word and Excel files.</p>
     </main>
@@ -103,7 +216,7 @@ function aOrAn(noun: string): string {
   return `${'aeiou'.includes(noun[0] ?? '') ? 'an' : 'a'} ${noun}`;
 }
 
-/** The confirm card: type, person, dates, number, visibility. Pre-filled by OCR in a later release. */
+/** The confirm card for a document already in the vault: its details, changed in place. */
 export function ConfirmScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken } = useApp();
@@ -133,75 +246,106 @@ export function ConfirmScreen() {
         <TopBar title="Is this right?" back="/" />
       </main>
     );
+  const { doc, types, members } = data;
+  const suggestedType = types.find((t) => t.key === params.get('type'));
+  const suggestedOwner = members.find((m) => m.id === params.get('member'));
+  const owner =
+    members.find((m) => m.id === doc.owner_member_id) ??
+    suggestedOwner ??
+    members.find((m) => m.is_me);
+  const typeKey = doc.type_key ?? suggestedType?.key ?? '';
   return (
     <ConfirmForm
-      doc={data.doc}
-      types={data.types}
-      members={data.members}
-      suggested={{ typeKey: params.get('type'), memberId: params.get('member') }}
-      onSaved={(d) => void navigate(`/documents/${d.id}`, { replace: true })}
-      withToken={withToken}
+      title="Is this right?"
+      back={`/documents/${doc.id}`}
+      lede="Change anything that is wrong. Everything else can wait."
+      types={types}
+      members={members}
+      initial={{
+        typeKey,
+        title: doc.title ?? '',
+        owner: owner?.id ?? '',
+        issued: doc.issued?.date ?? '',
+        expires: doc.expires?.date ?? '',
+        identifier: doc.identifier ?? '',
+        location: doc.physical_location ?? '',
+        visibility: doc.visibility,
+      }}
+      submitLabel="Save to the vault"
+      onSubmit={async (details) => {
+        // Only send visibility when it changed: the server rewraps keys for it.
+        if (details.visibility === doc.visibility) delete details.visibility;
+        const saved = await withToken((t) => api.updateDocument(t, doc.id, details, doc.etag));
+        if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
+      }}
     />
   );
 }
 
+/** Everything the card holds, as typed. */
+interface CardValues {
+  typeKey: string;
+  title: string;
+  owner: string;
+  issued: string;
+  expires: string;
+  identifier: string;
+  location: string;
+  visibility: Visibility;
+}
+
 export function ConfirmForm(props: {
-  doc: DocumentView;
+  title: string;
+  back: string;
+  lede: string;
+  /** The file this card is about, when it has not been sent yet. */
+  fileName?: string;
   types: DocumentTypeView[];
   members: Member[];
-  /** Chosen for the user when they came from a missing-document suggestion. */
-  suggested?: { typeKey: string | null; memberId: string | null };
-  withToken: <T>(fn: (t: string) => Promise<T>) => Promise<T | null>;
-  onSaved: (d: DocumentView) => void;
+  initial: CardValues;
+  submitLabel: string;
+  /** Throws to keep the card open with the vault's words. */
+  onSubmit: (details: DocumentInput) => Promise<void>;
+  /** Save without details: offered for a new document only. */
+  onSkip?: () => Promise<void>;
+  onChooseAgain?: () => void;
 }) {
-  const { doc, types, members } = props;
-  const [typeKey, setTypeKey] = useState(doc.type_key ?? props.suggested?.typeKey ?? '');
-  const [title, setTitle] = useState(doc.title ?? '');
-  const [owner, setOwner] = useState(
-    doc.owner_member_id ?? props.suggested?.memberId ?? members.find((m) => m.is_me)?.id ?? '',
-  );
-  const [issued, setIssued] = useState(doc.issued?.date ?? '');
-  const [expires, setExpires] = useState(doc.expires?.date ?? '');
-  const [identifier, setIdentifier] = useState(doc.identifier ?? '');
-  const [location, setLocation] = useState(doc.physical_location ?? '');
-  const [visibility, setVisibility] = useState<Visibility>(doc.visibility);
+  const { types, members, initial } = props;
+  const [typeKey, setTypeKey] = useState(initial.typeKey);
+  const [title, setTitle] = useState(initial.title);
+  // The name follows the type and the person until somebody types one.
+  const [titleTyped, setTitleTyped] = useState(initial.title !== '' && !props.fileName);
+  const [owner, setOwner] = useState(initial.owner);
+  const [issued, setIssued] = useState(initial.issued);
+  const [expires, setExpires] = useState(initial.expires);
+  const [identifier, setIdentifier] = useState(initial.identifier);
+  const [location, setLocation] = useState(initial.location);
+  const [visibility, setVisibility] = useState<Visibility>(initial.visibility);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const type = types.find((t) => t.key === typeKey);
   const me = members.find((m) => m.is_me);
+  const myRole = me?.role ?? 'owner';
+  const teen = myRole === 'teen';
+  // A teen cannot see Adults only documents, their own included.
+  const adultsOnlyAllowed = !teen;
+  // A teen files their own documents, and cannot change who can see one
+  // already in the vault.
+  const people = teen ? members.filter((m) => m.is_me) : members;
+  const visibilityLocked = teen && !props.fileName;
+  const person = members.find((m) => m.id === owner);
+  const expiresShown = Boolean(type?.expiry_driver) || (!props.fileName && expires !== '');
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  const retitle = (t: DocumentTypeView | undefined, who: Member | undefined) => {
+    if (!titleTyped) setTitle(t ? autoTitle(t, who) : '');
+  };
+
+  const run = async (act: () => Promise<void>) => {
     setBusy(true);
     setError(null);
-    const exp = expires ? parseDateInput(expires) : null;
-    const iss = issued ? parseDateInput(issued) : null;
-    if (expires && !exp) {
-      setError('Enter the expiry as a date (2031-03-14), a month (2031-03) or a year (2031).');
-      setBusy(false);
-      return;
-    }
-    if (issued && !iss) {
-      setError('Enter the issue date as a date (2021-03-14), a month (2021-03) or a year (2021).');
-      setBusy(false);
-      return;
-    }
-    const body: DocumentInput = {
-      type_key: typeKey || null,
-      title: title || null,
-      owner_member_id: owner || null,
-      identifier: identifier || null,
-      physical_location: location || null,
-      issued: iss,
-      expires: exp,
-    };
-    // Only send visibility when it changed: the server rewraps keys for it.
-    if (visibility !== doc.visibility) body.visibility = visibility;
-    if (type) body.category = type.category;
     try {
-      const saved = await props.withToken((t) => api.updateDocument(t, doc.id, body, doc.etag));
-      if (saved) props.onSaved(saved);
+      await act();
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -209,16 +353,55 @@ export function ConfirmForm(props: {
     }
   };
 
-  const reminderText = type?.reminder_leads.length
-    ? type.reminder_leads
-        .map((d) => (d >= 60 ? `${Math.round(d / 30)} months` : `${d} days`))
-        .join(' and ') + ' before'
-    : null;
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const order = dateOrder();
+    // A new document sends an expiry only for a type that expires; editing
+    // always sends it, so clearing the field clears the date.
+    const sendExpiry = expiresShown || !props.fileName;
+    const exp = sendExpiry && expires ? parseDateInput(expires, { order }) : null;
+    const iss = issued ? parseDateInput(issued, { order }) : null;
+    if (sendExpiry && expires && !exp) {
+      setError('The expiry date: try 14 Mar 2031, March 2031, or just 2031.');
+      return;
+    }
+    if (issued && !iss) {
+      setError('The issue date: try 14 Mar 2021, March 2021, or just 2021.');
+      return;
+    }
+    const details: DocumentInput = {
+      type_key: typeKey || null,
+      title: title.trim() || null,
+      owner_member_id: owner || null,
+      identifier: identifier.trim() || null,
+      physical_location: location.trim() || null,
+      issued: iss,
+      visibility,
+    };
+    if (sendExpiry) details.expires = exp;
+    if (type) details.category = type.category;
+    await run(() => props.onSubmit(details));
+  };
+
+  const reminder = reminderSentence(type);
 
   return (
     <main className="page page-top">
-      <TopBar title="Is this right?" back={`/documents/${doc.id}`} />
-      <p className="lede">Change anything that is wrong. Everything else can wait.</p>
+      <TopBar title={props.title} back={props.back} />
+      <p className="lede">{props.lede}</p>
+      {props.fileName ? (
+        <p className="muted">
+          {props.fileName}
+          {props.onChooseAgain ? (
+            <>
+              {' · '}
+              <Button kind="link" onClick={props.onChooseAgain} disabled={busy}>
+                Choose another file
+              </Button>
+            </>
+          ) : null}
+        </p>
+      ) : null}
       <form onSubmit={(e) => void submit(e)} className="stack">
         <Select
           id="f-type"
@@ -227,9 +410,13 @@ export function ConfirmForm(props: {
           onChange={(v) => {
             setTypeKey(v);
             const t = types.find((x) => x.key === v);
-            if (t && !title)
-              setTitle(`${me?.display_name.split(' ')[0] ?? ''}'s ${t.label.toLowerCase()}`.trim());
-            if (t) setVisibility(t.default_visibility);
+            retitle(t, person);
+            // A new document takes the type's default; an existing one keeps
+            // who can see it until somebody chooses otherwise.
+            if (t && props.fileName) {
+              const next = effectiveVisibility({}, t, myRole);
+              setVisibility(next === 'private' && owner !== me?.id ? 'household' : next);
+            }
           }}
           options={[
             { value: '', label: 'Not sure yet' },
@@ -240,18 +427,31 @@ export function ConfirmForm(props: {
           id="f-title"
           label="Name"
           value={title}
-          onChange={setTitle}
+          onChange={(v) => {
+            setTitle(v);
+            setTitleTyped(v !== '');
+          }}
           required={false}
-          placeholder="Mansoor's passport"
+          placeholder={type ? autoTitle(type, person) : "Aisha's passport"}
         />
         <Select
           id="f-who"
           label="Whose it is"
           value={owner}
-          onChange={setOwner}
+          onChange={(v) => {
+            setOwner(v);
+            retitle(
+              type,
+              members.find((m) => m.id === v),
+            );
+            // Only me is for your own documents.
+            if (visibility === 'private' && v !== me?.id) {
+              setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
+            }
+          }}
           options={[
             { value: '', label: 'Not sure yet' },
-            ...members.map((m) => ({ value: m.id, label: m.display_name })),
+            ...people.map((m) => ({ value: m.id, label: m.display_name })),
           ]}
         />
         <Field
@@ -260,18 +460,18 @@ export function ConfirmForm(props: {
           value={issued}
           onChange={setIssued}
           required={false}
-          placeholder="2021-03-14"
-          hint="A date, a month (2021-03) or a year"
+          placeholder="14 Mar 2021"
+          hint="A date, a month (March 2021) or a year"
         />
-        {(type?.expiry_driver || expires) && (
+        {expiresShown && (
           <Field
             id="f-expires"
             label="Expires"
             value={expires}
             onChange={setExpires}
             required={false}
-            placeholder="2031-03-14"
-            hint="A date, a month (2031-03) or a year"
+            placeholder="14 Mar 2031"
+            hint="A date, a month (March 2031) or a year"
           />
         )}
         <Field
@@ -289,11 +489,7 @@ export function ConfirmForm(props: {
           required={false}
           placeholder="Bedroom safe, top shelf"
         />
-        {reminderText && (
-          <p className="muted">
-            <strong>Remind me before it expires:</strong> {reminderText}
-          </p>
-        )}
+        {reminder && <p className="muted">{reminder}</p>}
         <div className="field" role="group" aria-label="Who can see this">
           <span className="field-label">Who can see this</span>
           <div className="pills">
@@ -309,7 +505,11 @@ export function ConfirmForm(props: {
                 type="button"
                 className={`pill${visibility === v ? ' pill-on' : ''}`}
                 aria-pressed={visibility === v}
-                disabled={v === 'private' && owner !== me?.id}
+                disabled={
+                  (v === 'private' && owner !== me?.id) ||
+                  (v === 'adults' && !adultsOnlyAllowed) ||
+                  (visibilityLocked && v !== visibility)
+                }
                 onClick={() => setVisibility(v)}
               >
                 {label}
@@ -324,8 +524,17 @@ export function ConfirmForm(props: {
         </div>
         <ErrorNote message={error} />
         <Button type="submit" disabled={busy}>
-          {busy ? 'Saving…' : 'Save to the vault'}
+          {busy ? 'Saving…' : props.submitLabel}
         </Button>
+        {props.onSkip ? (
+          <Button
+            kind="quiet"
+            disabled={busy}
+            onClick={() => void run(props.onSkip as () => Promise<void>)}
+          >
+            Skip for now
+          </Button>
+        ) : null}
       </form>
     </main>
   );

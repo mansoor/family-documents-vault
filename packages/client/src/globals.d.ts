@@ -19,3 +19,8 @@ declare class AbortController {
 declare class TextEncoder {
   encode(input?: string): Uint8Array;
 }
+
+/** UTF-8 only, which is all Hermes has and all the fake vault reads. */
+declare class TextDecoder {
+  decode(input?: Uint8Array): string;
+}

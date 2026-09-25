@@ -941,6 +941,35 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   }, 120_000);
   afterAll(() => h.close());
 
+  it('capture metadata cannot create a private document owned by another member', async () => {
+    // Filed by Sam, "Only me", as the owner's: nobody could open it but the
+    // owner, and Sam would have made it — so it is refused, and nothing is kept.
+    const form = new FormData();
+    form.append(
+      'metadata',
+      JSON.stringify({
+        type_key: 'passport',
+        owner_member_id: owner.member_id,
+        visibility: 'private',
+      }),
+    );
+    form.append('file', PDF, { filename: 'theirs.pdf', contentType: 'application/pdf' });
+    const key = randomUUID();
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/capture',
+      headers: { ...as(sam), ...form.getHeaders(), 'idempotency-key': key },
+      payload: form.getBuffer(),
+    });
+    expect(res.statusCode).toBe(422);
+    const status = await h.app.inject({
+      method: 'GET',
+      url: `/api/v1/uploads/${key}`,
+      headers: as(sam),
+    });
+    expect(status.statusCode).toBe(404);
+  });
+
   it('an Idempotency-Key replayed on another document is refused, not answered', async () => {
     // Sam somehow holds the key of the owner's private upload. Replaying it
     // used to return that version — its filename and hash included.

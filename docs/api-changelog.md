@@ -424,6 +424,42 @@ no_longer_owner` when the person has stopped being an owner since.
 too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     as a new version before the `413`.
 
+- A capture that knows what it is (0.4.9, `features.capture_metadata`).
+
+  - `POST /api/v1/capture` takes an optional `metadata` field, sent **before**
+    the file: JSON with any of `type_key`, `title`, `owner_member_id`,
+    `visibility`, `issued`, `expires`, `identifier`, `physical_location`,
+    `is_essential`, `tags` and `notes`, as `POST /api/v1/documents` takes
+    them. The document is made with them, and its file is wrapped for the
+    people they say from the first byte: an Only me capture is never, even
+    briefly, readable by anyone else. `category` and the type's other
+    defaults follow from `type_key`. Without `metadata` the document is
+    filed as Needs info, as before.
+  - The details are checked before the upload is claimed, so a refusal
+    stores nothing and the same key works again: `422 validation_failed`
+    with the same messages `POST /documents` gives; `403 forbidden` for a
+    teen filing a document for somebody else. Also refused: Only me for a
+    document that is not the caller's (whatever the type's default), an
+    expiry for a type that does not expire (or with no type), and a date
+    whose precision it does not agree with — a month is sent as its last
+    day and a year as 31 December, as `parseDateInput` makes them.
+  - A teen never files a document as Adults only (they could not see it):
+    asking for it answers `403 forbidden`, and a type whose default is
+    Adults only is filed for everyone instead. `POST /api/v1/documents`
+    keeps the same rule. A document filed Only me records that its owner
+    was told what that means, as a visibility change does.
+  - The details may also be sent as a file part (a Blob of JSON, up to
+    64 KB) or as a field typed `application/json`. Anything else answers
+    `422 validation_failed` and nothing is kept: a field or file after the
+    file ("Send the details before the file."), a file part not named
+    `file`, any field but one `metadata`, and details that are not JSON. A retry of a finished capture answers with what it
+    made, whatever details it carries.
+  - `@fdv/client`: `capture(token, { file, metadata? }, key)`; a body
+    already built is still accepted. `@fdv/shared`: `checkCaptureMetadata`,
+    `autoTitle`, `reminderSentence`, and `parseDateInput` now reads
+    "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
+    order, "14/03/2031".
+
 ## Deprecations in effect
 
 None.

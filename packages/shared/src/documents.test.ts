@@ -14,7 +14,8 @@ describe('parseDateInput', () => {
   it('rejects impossible dates', () => {
     expect(parseDateInput('2031-02-30')).toBeNull();
     expect(parseDateInput('2031-13')).toBeNull();
-    expect(parseDateInput('March 2031')).toBeNull();
+    // Words are read since 0.4.9 (capture.test.ts); a month that is not one is not.
+    expect(parseDateInput('Marchember 2031')).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
-import multipart from '@fastify/multipart';
+import multipart, { type MultipartFile } from '@fastify/multipart';
+import type { CaptureMetadata } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -37,6 +38,56 @@ const documentBody = z
   })
   .partial()
   .strict();
+
+/**
+ * A capture's details (the `metadata` field, 0.4.9): what the confirm card
+ * asks, with the same messages POST /documents gives. The category and the
+ * type's other defaults follow from the type, as they do there.
+ */
+const captureBody = documentBody
+  .pick({
+    type_key: true,
+    title: true,
+    owner_member_id: true,
+    visibility: true,
+    issued: true,
+    expires: true,
+    identifier: true,
+    physical_location: true,
+    is_essential: true,
+    tags: true,
+    notes: true,
+  })
+  .strict();
+
+/** A part's text, up to a limit: the rest is read to nowhere and refused. */
+async function smallText(stream: NodeJS.ReadableStream, limit: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += b.length;
+    if (size > limit) {
+      stream.resume();
+      throw new ApiError(422, 'validation_failed', 'The details are too long.');
+    }
+    chunks.push(b);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function captureMetadata(raw: unknown): CaptureMetadata {
+  let json: unknown = raw;
+  // A field sent as application/json arrives already parsed.
+  if (typeof raw === 'string') {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      throw new ApiError(422, 'validation_failed', 'The details must be sent as JSON.');
+    }
+  }
+  return parse(captureBody, json) as CaptureMetadata;
+}
 
 const listQuery = z.object({
   member_id: z.string().uuid().optional(),
@@ -260,27 +311,98 @@ export async function registerDocuments(
   );
 
   /**
-   * POST /capture: one file in, one Needs-info document out (CAP-05). The
-   * document exists and is downloadable before any enrichment runs, and a
-   * retry with the same key makes nothing new (CAP-13).
+   * POST /capture: one file in, one document out (CAP-05). The details from
+   * the card may come with it, as a `metadata` field (JSON) sent **before**
+   * the file, so the document is made complete and wrapped for the right
+   * people from its first byte (0.4.9). A retry with the same key makes
+   * nothing new (CAP-13).
    */
   app.post('/api/v1/capture', auth, async (req, reply) => {
-    const key = uploadKey(req);
-    const file = await fileOf(req);
+    // Room for more files than a capture takes: at its limit the parser
+    // destroys the stream it is reading, which, if that were the upload,
+    // would fail it as if storage had. Details sent as a file, the file,
+    // and one more that is refused (below) all fit.
+    const parts = req.parts({ limits: { files: 3 } })[Symbol.asyncIterator]();
+    /** A refusal before the upload: read the rest, to nowhere, and answer. */
+    const drainRest = async () => {
+      for (;;) {
+        const next = await parts.next().catch(() => ({ done: true as const, value: undefined }));
+        if (next.done) return;
+        if (next.value.type === 'file') next.value.file.resume();
+      }
+    };
+    let key: string;
+    let metadata: CaptureMetadata | undefined;
+    let file: MultipartFile | undefined;
+    try {
+      key = uploadKey(req);
+      for (;;) {
+        const next = await parts.next();
+        if (next.done) break;
+        const part = next.value;
+        if (part.type === 'file') {
+          if (part.fieldname === 'file') {
+            file = part;
+            break;
+          }
+          // The details sent as a file (a Blob of JSON) are still the
+          // details — read only as far as details could reach.
+          if (part.fieldname === 'metadata' && metadata === undefined) {
+            metadata = captureMetadata(await smallText(part.file, 64 * 1024));
+            continue;
+          }
+          part.file.resume();
+          throw new ApiError(
+            422,
+            'validation_failed',
+            'Send one field, metadata, and then the file, named file.',
+          );
+        }
+        if (part.fieldname !== 'metadata' || metadata !== undefined) {
+          throw new ApiError(
+            422,
+            'validation_failed',
+            'Send one field, metadata, and then the file.',
+          );
+        }
+        metadata = captureMetadata(part.value);
+      }
+      if (!file) throw new ApiError(422, 'validation_failed', 'Attach one file.');
+    } catch (err) {
+      await drainRest();
+      throw err;
+    }
+    const theFile = file;
     const done = await docs
       .capture(
         principal(req),
         {
-          filename: file.filename,
-          mime: file.mimetype,
-          stream: file.file,
+          filename: theFile.filename,
+          mime: theFile.mimetype,
+          stream: theFile.file,
           idempotencyKey: key,
-          truncated: () => file.file.truncated,
+          truncated: () => theFile.file.truncated,
+          // Nothing may follow the file: details sent after it would have
+          // been too late to decide who the file is wrapped for.
+          finished: async () => {
+            const after = await parts.next().catch(() => {
+              throw new ApiError(
+                422,
+                'validation_failed',
+                'Send one file, with the details before it as JSON.',
+              );
+            });
+            if (after.done) return;
+            if (after.value.type === 'file') after.value.file.resume();
+            await drainRest();
+            throw new ApiError(422, 'validation_failed', 'Send the details before the file.');
+          },
         },
         metaOf(req),
+        metadata,
       )
-      .catch(drained(file));
-    replayed(reply, file, done.replayed);
+      .catch(drained(theFile));
+    replayed(reply, theFile, done.replayed);
     return reply.status(201).send({
       document_id: done.document_id,
       version_id: done.version_id,
