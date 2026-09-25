@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "description": "Types and helpers shared by the API, worker and clients — the API contract made concrete.",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

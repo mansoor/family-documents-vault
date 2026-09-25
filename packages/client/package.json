@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "description": "The one API client for every Family Document Vault app: web today, the phone next. Platform-neutral: no DOM, no Node, no React.",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
