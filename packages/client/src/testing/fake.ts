@@ -1,4 +1,13 @@
-import type { Capabilities, DocumentView, ReminderView, Tokens } from '@fdv/shared';
+import {
+  checkCaptureMetadata,
+  effectiveVisibility,
+  type Capabilities,
+  type CaptureMetadata,
+  type DocumentTypeView,
+  type DocumentView,
+  type ReminderView,
+  type Tokens,
+} from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
 /**
@@ -25,7 +34,11 @@ export interface FakeVaultState {
   sessions: FakeSession[];
   /** access token → session id */
   access: Map<string, string>;
-  documents: Array<{ id: string; title: string | null }>;
+  documents: FakeDocument[];
+  /** What GET /document-types answers: a few real types, by default. */
+  types: DocumentTypeView[];
+  /** What GET /members answers: the one person the fake signs in as, by default. */
+  members: Array<{ id: string; display_name: string; role: string; is_me: boolean }>;
   /** Upload keys and what each made; a key is for one kind of request. */
   captures: Map<string, FakeUpload>;
   /** What GET /reminders answers, whatever the state asked for. */
@@ -34,6 +47,76 @@ export interface FakeVaultState {
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
   offline: boolean;
+}
+
+type FakeDocument = { id: string; title: string | null } & Omit<
+  CaptureMetadata,
+  'title' | 'issued' | 'expires' | 'tags'
+>;
+
+const FAKE_TYPES: DocumentTypeView[] = [
+  {
+    key: 'passport',
+    label: 'Passport',
+    category: 'identity',
+    fields: [],
+    expiry_driver: 'expires_on',
+    reminder_leads: [270, 180],
+    usually_essential: true,
+    default_visibility: 'household',
+  },
+  {
+    key: 'birth_certificate',
+    label: 'Birth certificate',
+    category: 'identity',
+    fields: [],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: true,
+    default_visibility: 'household',
+  },
+  {
+    key: 'utility_bill',
+    label: 'Utility / bill',
+    category: 'bills',
+    fields: [],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: false,
+    default_visibility: 'household',
+  },
+];
+
+/**
+ * The parts of a multipart body the fake cares about, in order: its fields
+ * and whether each came before the file. Bytes are read as text, which is
+ * enough for the details and a test's small PDF.
+ */
+function partsOf(body: unknown): Array<{ name: string; value: string | null }> | null {
+  if (body instanceof Uint8Array) {
+    const text = new TextDecoder().decode(body);
+    const out: Array<{ name: string; value: string | null }> = [];
+    const header =
+      /Content-Disposition: form-data; name="([^"]*)"(; filename="[^"]*")?[^]*?\r\n\r\n/g;
+    for (const m of text.matchAll(header)) {
+      if (m[2]) {
+        out.push({ name: m[1] as string, value: null });
+        continue;
+      }
+      const start = (m.index ?? 0) + m[0].length;
+      const end = text.indexOf('\r\n--', start);
+      out.push({ name: m[1] as string, value: text.slice(start, end) });
+    }
+    return out;
+  }
+  const entries = (body as { entries?: () => Iterable<[string, unknown]> } | null)?.entries;
+  if (typeof entries === 'function') {
+    return [...entries.call(body)].map(([name, value]) => ({
+      name,
+      value: typeof value === 'string' ? value : null,
+    }));
+  }
+  return null;
 }
 
 interface FakeUpload {
@@ -58,6 +141,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     documents: [],
     captures: new Map(),
     reminders: [],
+    types: FAKE_TYPES.map((t) => ({ ...t })),
+    members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
     offline: false,
   };
@@ -107,7 +192,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.8',
+        server_version: '0.4.9',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -122,6 +207,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           bulk_import: false,
           multi_household: false,
           idempotent_capture: true,
+          capture_metadata: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -223,7 +309,44 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       let documentId = target;
       if (documentId === undefined) {
-        const doc = { id: next('document'), title: null };
+        // The card's details come before the file, or not at all (0.4.9).
+        let metadata: CaptureMetadata = {};
+        const parts = partsOf(init.body) ?? [];
+        const file = parts.findIndex((p) => p.value === null);
+        const meta = parts.findIndex((p) => p.name === 'metadata');
+        if (meta > file && file >= 0) {
+          return fail(422, 'validation_failed', 'Send the details before the file.');
+        }
+        if (meta >= 0) {
+          try {
+            metadata = JSON.parse(parts[meta]?.value ?? '') as CaptureMetadata;
+          } catch {
+            return fail(422, 'validation_failed', 'The details must be sent as JSON.');
+          }
+          const problem = checkCaptureMetadata(metadata, {
+            me: { member_id: 'fake-member', role: 'owner' },
+            members: state.members,
+            types: state.types,
+          });
+          if (problem) {
+            return fail(
+              problem.status,
+              problem.status === 403 ? 'forbidden' : 'validation_failed',
+              problem.message,
+            );
+          }
+        }
+        const doc: FakeDocument = {
+          id: next('document'),
+          title: metadata.title ?? null,
+          type_key: metadata.type_key ?? null,
+          owner_member_id: metadata.owner_member_id ?? null,
+          visibility: effectiveVisibility(
+            metadata,
+            state.types.find((t) => t.key === metadata.type_key),
+            'owner',
+          ),
+        };
         state.documents.push(doc);
         documentId = doc.id;
       }
@@ -238,6 +361,16 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const made = state.captures.get(decodeURIComponent(uploadKey[1] as string).toLowerCase());
       if (!made) return fail(404, 'not_found', 'That upload is not known here.');
       return ok({ state: 'done', document_id: made.document_id, version_id: made.version_id });
+    }
+    if (path === '/api/v1/document-types' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return ok({ items: state.types });
+    }
+    if (path === '/api/v1/members' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return ok({ items: state.members });
     }
     if (path === '/api/v1/reminders' && init.method === 'GET') {
       const s = session();
@@ -257,8 +390,14 @@ function answer(made: FakeUpload) {
     : { id: made.version_id, document_id: made.document_id };
 }
 
-function viewOf(doc: { id: string; title: string | null }): DocumentView {
-  return { id: doc.id, title: doc.title } as DocumentView;
+function viewOf(doc: FakeDocument): DocumentView {
+  return {
+    id: doc.id,
+    title: doc.title,
+    type_key: doc.type_key ?? null,
+    owner_member_id: doc.owner_member_id ?? null,
+    visibility: doc.visibility ?? 'household',
+  } as DocumentView;
 }
 
 function respond(

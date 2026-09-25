@@ -31,6 +31,8 @@ const PDF = new TextEncoder().encode('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n
 const CAPTURE_KEY = '4f1c2b3a-9d8e-4c7b-8a6f-5e4d3c2b1a09';
 const RACE_KEY = '8e7d6c5b-4a39-4281-9f0e-1d2c3b4a5f6e';
 const NEVER_USED = 'c0ffee00-1234-4567-89ab-cdef01234567';
+const DETAILS_KEY = '5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a';
+const LATE_KEY = '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -179,6 +181,53 @@ export const contractScenarios: Scenario[] = [
       expect(err.code).toBe('idempotency_key_reused');
       // It does not say what the key made: that could be somebody else's.
       expect(JSON.stringify(err)).not.toContain(made.version_id);
+    },
+  },
+  {
+    name: 'a capture carries its details; details sent after the file are refused, and nothing is kept',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const me = await api.me(token);
+      const made = await api.capture(
+        token,
+        {
+          metadata: {
+            type_key: 'passport',
+            title: 'Contract passport',
+            owner_member_id: me.member_id,
+            visibility: 'private',
+          },
+          file: {
+            kind: 'bytes',
+            filename: 'passport.pdf',
+            contentType: 'application/pdf',
+            bytes: PDF,
+          },
+        },
+        DETAILS_KEY,
+      );
+      const listed = (await api.documents(token)).items.find((d) => d.id === made.document_id);
+      expect(listed).toMatchObject({
+        title: 'Contract passport',
+        type_key: 'passport',
+        owner_member_id: me.member_id,
+        visibility: 'private',
+      });
+
+      const late = multipartBody([
+        { name: 'file', filename: 'late.pdf', contentType: 'application/pdf', bytes: PDF },
+        { name: 'metadata', value: JSON.stringify({ title: 'Too late' }) },
+      ]);
+      const err = await refusal(
+        api.capture(
+          token,
+          { kind: 'bytes', bytes: late.bytes, contentType: late.contentType },
+          LATE_KEY,
+        ),
+      );
+      expect(err.status).toBe(422);
+      expect(err.message).toBe('Send the details before the file.');
+      expect((await refusal(api.uploadStatus(token, LATE_KEY))).status).toBe(404);
     },
   },
   {

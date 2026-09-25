@@ -12,6 +12,8 @@ All notable changes to Family Document Vault. The format follows
 
 ### Added
 
+- **Adding a document asks what it is before anything is sent.** Choose the file, fill in the card — what it is, whose it is, who can see it, the dates — and Save; the file and its details go to the vault together. A document marked Only me is locked to you from the moment it arrives, never briefly visible to the rest of the family. Skip saves it with no details, to fill in later. Dates can be typed the way people write them: "14 Mar 2031", "March 2031" or just "2031". The name fills itself in from the person you choose ("Aisha's passport"), not from whoever is filing it, and the card says when you'll be reminded.
+
 - **Adding a document can be retried safely.** If the connection drops or the answer is lost on the way back, trying again never makes a second copy: the vault recognises the same upload and answers with what the first try made. Choosing the same file again after an error in the web app counts as trying again. An upload that fails leaves nothing behind — no empty "Needs info" document — and one that overlaps an earlier try still arriving waits for it rather than doubling up. For apps: `GET /api/v1/uploads/{key}` says what became of an upload (see the API changelog).
 
 ### Fixed

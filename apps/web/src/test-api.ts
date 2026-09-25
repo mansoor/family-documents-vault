@@ -63,6 +63,12 @@ export interface FakeState {
   calls: Array<{ method: string; url: string; body?: unknown; headers?: Record<string, string> }>;
   /** Captures that fail as if the connection went, before the next succeeds. */
   captureFailures?: number;
+  /** Captures that are stored, and then their answer is lost on the way back. */
+  captureAnswersLost?: number;
+  /** Upload keys that made a document, for GET /uploads/{key}. */
+  uploads?: Record<string, string>;
+  /** Every capture that arrived: its form fields in order, and its details. */
+  captures?: Array<{ fields: string[]; metadata: Record<string, unknown> | null }>;
 }
 
 export const TOKENS = {
@@ -685,20 +691,43 @@ export function installFakeApi(state: FakeState) {
         state.captureFailures -= 1;
         return Promise.reject(new TypeError('Failed to fetch'));
       }
+      const form = init?.body as FormData;
+      const fields = [...form.keys()];
+      const raw = form.get('metadata');
+      const metadata =
+        typeof raw === 'string' ? (JSON.parse(raw) as Record<string, unknown>) : null;
+      (state.captures ??= []).push({ fields, metadata });
       const doc = {
         ...PASSPORT,
         id: 'doc-new',
-        type_key: null,
-        title: null,
+        type_key: (metadata?.type_key as string | undefined) ?? null,
+        title: (metadata?.title as string | undefined) ?? null,
+        owner_member_id: (metadata?.owner_member_id as string | undefined) ?? null,
+        visibility: (metadata?.visibility as string | undefined) ?? 'household',
         category: null,
-        status: { value: 'needs_info', label: 'Needs a name' },
+        status: metadata?.type_key
+          ? { value: 'valid', label: 'Valid' }
+          : { value: 'needs_info', label: 'Needs a name' },
         etag: '"new"',
       };
       state.documents.push(doc);
+      const key = (init?.headers as Record<string, string> | undefined)?.['idempotency-key'];
+      if (key) (state.uploads ??= {})[key] = doc.id;
+      if (state.captureAnswersLost) {
+        state.captureAnswersLost -= 1;
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
       return json(
         { document_id: 'doc-new', version_id: 'v-new', job_id: null, state: 'stored' },
         201,
       );
+    }
+    const uploadMatch = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
+    if (uploadMatch) {
+      const made = state.uploads?.[uploadMatch[1] as string];
+      return made
+        ? json({ state: 'done', document_id: made, version_id: 'v-new' })
+        : json({ error: { code: 'not_found', message: 'That upload is not known here.' } }, 404);
     }
     const docMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
     if (docMatch) {

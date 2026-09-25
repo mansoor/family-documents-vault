@@ -46,6 +46,8 @@ describe('buildCapabilities', () => {
       multi_household: false,
       // 0.4.8: uploads are reserve-then-commit on their key (4.3).
       idempotent_capture: true,
+      // 0.4.9: the card's details travel with the capture (4.3b).
+      capture_metadata: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

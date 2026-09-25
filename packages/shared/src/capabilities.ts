@@ -26,6 +26,12 @@ export interface CapabilityFeatures {
    * 409 upload_in_progress, and GET /uploads/{key} says what became of one.
    */
   idempotent_capture: boolean;
+  /**
+   * POST /capture takes the card's details as a `metadata` field sent before
+   * the file (0.4.9): the document is made complete, and wrapped for the
+   * right people, from its first byte.
+   */
+  capture_metadata: boolean;
 }
 
 export interface CapabilityLimits {

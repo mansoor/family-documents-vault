@@ -1,4 +1,10 @@
-import type { UploadStatus, SearchHit as WireSearchHit } from '@fdv/shared';
+import {
+  checkCaptureMetadata,
+  effectiveVisibility,
+  type CaptureMetadata,
+  type UploadStatus,
+  type SearchHit as WireSearchHit,
+} from '@fdv/shared';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PassThrough, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -81,10 +87,16 @@ export interface UploadInput {
   idempotencyKey: string;
   /** True when the multipart parser cut the file off at the size limit. */
   truncated?: () => boolean;
+  /**
+   * Called once the file has arrived, before anything is committed: the
+   * route's last chance to refuse the request (a field sent after the file).
+   */
+  finished?: () => Promise<void>;
 }
 
 /** What an upload is for: a new document (capture), or a new version of one. */
-export type UploadTarget = { kind: 'capture' } | { kind: 'version'; documentId: string };
+export type UploadTarget =
+  { kind: 'capture'; metadata?: CaptureMetadata } | { kind: 'version'; documentId: string };
 
 /** A try that holds its key: everything the stream and the commit need. */
 interface Claim {
@@ -179,8 +191,8 @@ export class DocumentService {
     }));
   }
 
-  private async typeOrThrow(key: string) {
-    const t = await this.db
+  private async typeOrThrow(key: string, db: Db = this.db) {
+    const t = await db
       .selectFrom('document_type')
       .selectAll()
       .where('key', '=', key)
@@ -377,7 +389,7 @@ export class DocumentService {
   async create(p: Principal, input: DocumentInput, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
-      const values = await this.columns(trx, p, input, null);
+      const values = await this.columns(trx, p, await this.ownVisibility(trx, p, input), null);
       // A teen's documents are their own, and only their own. Without
       // this, adding one without naming a person makes a family document
       // they are immediately unable to change — which is what the rule
@@ -401,6 +413,7 @@ export class DocumentService {
         .returningAll()
         .executeTakeFirstOrThrow();
       await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
+      await this.toldPrivate(trx, p, row);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -412,6 +425,40 @@ export class DocumentService {
       });
       return this.view(trx, row);
     });
+  }
+
+  /**
+   * A new document's visibility, for a role that cannot see Adults only
+   * documents (a teen): never Adults only, whether asked for or left to
+   * the type's default — their own document would vanish from them as they
+   * filed it. Asking is refused; the default becomes Everyone.
+   */
+  private async ownVisibility(trx: Db, p: Principal, input: DocumentInput): Promise<DocumentInput> {
+    if (allows(p, 'document.see_adults')) return input;
+    if (input.visibility === 'adults') {
+      throw new ApiError(403, 'forbidden', 'Only an adult can make a document adults-only.');
+    }
+    if (input.visibility !== undefined || !input.type_key) return input;
+    const t = await this.typeOrThrow(input.type_key, trx);
+    return t.default_visibility === 'adults' ? { ...input, visibility: 'household' } : input;
+  }
+
+  /**
+   * SEC-19: whoever makes a document Only me is told what that means, on
+   * the card, before they save — so a document made private from the start
+   * is recorded as told, as the visibility change records it.
+   */
+  private async toldPrivate(
+    trx: Db,
+    p: Principal,
+    row: { id: string; visibility: Visibility; owner_member_id: string | null },
+  ): Promise<void> {
+    if (row.visibility !== 'private' || row.owner_member_id !== p.memberId) return;
+    await trx
+      .insertInto('private_notice')
+      .values({ household_id: p.householdId, document_id: row.id, member_id: p.memberId })
+      .onConflict((oc) => oc.doNothing())
+      .execute();
   }
 
   async get(p: Principal, id: string): Promise<DocumentView> {
@@ -637,16 +684,20 @@ export class DocumentService {
   }
 
   /**
-   * CAP-05: one file in, one Needs-info document out. The document and its
-   * first version are made together, at the commit, so an upload that fails
-   * leaves no empty document behind (CAP-13).
+   * CAP-05: one file in, one document out, with the card's details if they
+   * were sent (0.4.9), or as Needs info if not. The document and its first
+   * version are made together, at the commit, so an upload that fails
+   * leaves no empty document behind (CAP-13), and the file is wrapped for
+   * the people the details say from its first byte.
    */
   async capture(
     p: Principal,
     input: UploadInput,
     meta: RequestMeta,
+    metadata?: CaptureMetadata,
   ): Promise<{ document_id: string; version_id: string; replayed: boolean }> {
-    const { version, replayed } = await this.accept(p, { kind: 'capture' }, input, meta);
+    const target: UploadTarget = metadata ? { kind: 'capture', metadata } : { kind: 'capture' };
+    const { version, replayed } = await this.accept(p, target, input, meta);
     return { document_id: version.document_id, version_id: version.id, replayed };
   }
 
@@ -710,6 +761,7 @@ export class DocumentService {
       ({ mime, ext } = detected);
       // Cut off at the size limit on the way in: what arrived is not the file.
       if (input.truncated?.()) throw tooLarge();
+      await input.finished?.();
     } catch (err) {
       // Stop the bytes and let the write finish failing before cleaning up:
       // a refusal that comes early (a type the vault does not take) would
@@ -762,6 +814,7 @@ export class DocumentService {
             .returningAll()
             .executeTakeFirstOrThrow();
           await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
+          await this.toldPrivate(trx, p, row);
           await appendAudit(trx, {
             householdId: p.householdId,
             actorAccountId: p.accountId,
@@ -925,7 +978,11 @@ export class DocumentService {
       } else {
         // The id is minted now, so the file key is wrapped for it.
         documentId = randomUUID();
-        values = await this.captureColumns(trx, p);
+        values = await this.captureColumns(
+          trx,
+          p,
+          target.kind === 'capture' ? (target.metadata ?? {}) : {},
+        );
         scope = scopeFor(
           {
             visibility: (values.visibility as Visibility | undefined) ?? 'household',
@@ -982,12 +1039,48 @@ export class DocumentService {
     return out;
   }
 
-  /** What a captured document starts as: untitled, and a teen's own. */
-  private async captureColumns(trx: Db, p: Principal): Promise<Record<string, never>> {
-    const values = await this.columns(trx, p, { title: null }, null);
-    return p.role === 'teen'
-      ? ({ ...values, owner_member_id: p.memberId } as unknown as Record<string, never>)
-      : values;
+  /**
+   * What a captured document starts as: the card's details, checked by the
+   * rules the phone checks before it queues a scan (checkCaptureMetadata),
+   * then as POST /documents checks them. Untitled when the card was
+   * skipped; a teen's own. Runs inside the claim, so a refusal claims
+   * nothing and the same key works again.
+   */
+  private async captureColumns(
+    trx: Db,
+    p: Principal,
+    metadata: CaptureMetadata,
+  ): Promise<Record<string, never>> {
+    // Through the claim's own transaction: a second connection taken while
+    // holding one could empty the pool under enough captures at once.
+    const members = await trx.selectFrom('member').select('id').execute();
+    const types = await trx
+      .selectFrom('document_type')
+      .select(['key', 'expiry_driver', 'default_visibility'])
+      .execute();
+    const problem = checkCaptureMetadata(metadata, {
+      me: { member_id: p.memberId, role: p.role },
+      members,
+      types,
+    });
+    if (problem) {
+      throw new ApiError(
+        problem.status,
+        problem.status === 403 ? 'forbidden' : 'validation_failed',
+        problem.message,
+        { detail: problem.field },
+      );
+    }
+    const input: DocumentInput = { title: null, ...metadata };
+    if (p.role === 'teen') input.owner_member_id = p.memberId;
+    // Decided here, so the file is wrapped for exactly the people the
+    // document will be for (never Adults only for a teen).
+    input.visibility = effectiveVisibility(
+      metadata,
+      types.find((t) => t.key === metadata.type_key),
+      p.role,
+    );
+    return this.columns(trx, p, input, null);
   }
 
   /**
@@ -1338,7 +1431,7 @@ export class DocumentService {
       if (input.type_key === null) {
         out.type_key = null;
       } else {
-        const t = await this.typeOrThrow(input.type_key);
+        const t = await this.typeOrThrow(input.type_key, trx);
         out.type_key = t.key;
         if (input.category === undefined && !current?.category) out.category = t.category;
         if (input.visibility === undefined && !current) out.visibility = t.default_visibility;

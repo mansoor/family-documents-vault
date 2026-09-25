@@ -9,8 +9,10 @@ import {
   ME,
   MISSING_BIRTH_CERTIFICATE,
   PASSKEY,
+  PASSPORT,
   SEALED_HIT,
   signedIn,
+  TYPES,
 } from './test-api.js';
 
 beforeEach(() => {
@@ -784,33 +786,292 @@ describe('App', () => {
     expect(screen.getByText(/Ask whoever invited you/)).toBeInTheDocument();
     await expectAccessible();
   });
-  it('the same file chosen again after a failure is sent again, with the same key', async () => {
+  it('a Save that fails is sent again with the same key, and the card stays filled', async () => {
     // A capture whose answer is lost may have been stored: sending it again
-    // with the same key is answered with what was stored, not a second
-    // copy. The file input is cleared after each choice, or choosing the
-    // same file again would not reach the app at all.
+    // with the same key is answered with what was stored, not a second copy.
     const state = fresh({ captureFailures: 100 });
     installFakeApi(state);
     signedIn();
     window.history.replaceState({}, '', '/add');
     render(<App />);
     const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
     const file = new File(['%PDF-1.4'], 'passport.pdf', {
       type: 'application/pdf',
       lastModified: 1,
     });
-
     fireEvent.change(input, { target: { files: [file] } });
-    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
     expect(input.value).toBe('');
 
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    expect(screen.getByLabelText<HTMLSelectElement>('What it is').value).toBe('passport');
+
     state.captureFailures = 0;
-    fireEvent.change(input, { target: { files: [file] } });
-    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new/confirm'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
     const keys = state.calls
       .filter((c) => c.url.startsWith('/api/v1/capture'))
       .map((c) => c.headers?.['idempotency-key']);
     expect(keys.length).toBeGreaterThan(1);
     expect(new Set(keys).size).toBe(1);
+  });
+
+  it('Add asks for the details before anything is uploaded, then sends them ahead of the file', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'passport.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    expect(screen.getByText(/passport\.pdf/)).toBeTruthy();
+    // Nothing has been sent yet.
+    expect(state.calls.filter((c) => c.url.startsWith('/api/v1/capture'))).toHaveLength(0);
+
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: 'March 2031' } });
+    expect(
+      screen.getByText("We'll remind you 9 months and 6 months before it expires."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+
+    expect(state.captures).toHaveLength(1);
+    const [sent] = state.captures ?? [];
+    expect(sent?.fields).toEqual(['metadata', 'file']);
+    expect(sent?.metadata).toMatchObject({
+      type_key: 'passport',
+      title: "Mansoor's passport",
+      owner_member_id: 'me',
+      visibility: 'household',
+      expires: { date: '2031-03-31', precision: 'month' },
+    });
+    expect(sent?.metadata).not.toHaveProperty('category');
+  });
+
+  it('the name uses the chosen person', async () => {
+    const state = fresh({ members: [ME, AISHA] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe("Mansoor's passport");
+    fireEvent.change(screen.getByLabelText('Whose it is'), { target: { value: AISHA.id } });
+    expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe("Aisha's passport");
+    // Only me is for your own documents.
+    expect(screen.getByRole('button', { name: 'Only me' })).toBeDisabled();
+    // A name somebody typed is theirs to keep.
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Old passport' } });
+    fireEvent.change(screen.getByLabelText('Whose it is'), { target: { value: ME.id } });
+    expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe('Old passport');
+  });
+
+  it('Skip still saves, with no details', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.click(screen.getByRole('button', { name: 'Skip for now' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    expect(state.captures).toEqual([{ fields: ['file'], metadata: null }]);
+  });
+
+  it('a date the card cannot read keeps the card open and says how to write it', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: 'next spring' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText('The expiry date: try 14 Mar 2031, March 2031, or just 2031.');
+    expect(state.captures ?? []).toHaveLength(0);
+  });
+
+  /** To the card, with a file chosen. */
+  const toCard = async () => {
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: {
+        files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf', lastModified: 7 })],
+      },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+  };
+  const keysOf = (state: ReturnType<typeof fresh>) =>
+    state.calls
+      .filter((c) => c.url.startsWith('/api/v1/capture'))
+      .map((c) => c.headers?.['idempotency-key']);
+
+  it('a Save whose answer was lost, sent again after the card changed, puts the new details on what it made', async () => {
+    const state = fresh({ captureAnswersLost: 1 });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    await toCard();
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+
+    // Changed before trying again: Only me.
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+
+    expect(keysOf(state)).toHaveLength(1);
+    const asked = state.calls.filter((c) => c.url.startsWith('/api/v1/uploads/'));
+    expect(asked).toHaveLength(1);
+    expect(
+      state.calls.some((c) => c.method === 'PATCH' && c.url === '/api/v1/documents/doc-new'),
+    ).toBe(true);
+    const moved = state.calls.find((c) => c.url === '/api/v1/documents/doc-new/visibility');
+    expect(moved?.body).toEqual({ visibility: 'private' });
+    expect(state.documents.find((d) => d.id === 'doc-new')?.visibility).toBe('private');
+  });
+
+  it('a Save that never landed, sent again after the card changed, goes with a new key', async () => {
+    const state = fresh({ captureFailures: 1 });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    await toCard();
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    fireEvent.change(screen.getByLabelText('What it is'), {
+      target: { value: 'birth_certificate' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    const keys = keysOf(state);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
+    expect(state.captures?.at(-1)?.metadata).toMatchObject({ type_key: 'birth_certificate' });
+  });
+
+  it('editing a document and changing its type keeps who can see it', async () => {
+    const state = fresh({ documents: [{ ...PASSPORT, visibility: 'private' }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', `/documents/${PASSPORT.id}/confirm`);
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('What it is'), {
+      target: { value: 'birth_certificate' },
+    });
+    expect(screen.getByRole('button', { name: 'Only me' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/documents/${PASSPORT.id}`));
+    const patch = state.calls.find((c) => c.method === 'PATCH');
+    expect(patch?.body).not.toHaveProperty('visibility');
+    expect(state.calls.some((c) => c.url.endsWith('/visibility'))).toBe(false);
+  });
+
+  it('a teen is never offered Adults only, and a type that defaults to it starts as Everyone', async () => {
+    const medical = {
+      ...TYPES[0],
+      key: 'medical_record',
+      label: 'Medical record',
+      expiry_driver: null,
+      reminder_leads: [],
+      default_visibility: 'adults' as const,
+    };
+    const state = fresh({ members: [{ ...ME, role: 'teen' }], types: [...TYPES, medical] });
+    installFakeApi(state);
+    signedIn('teen');
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    await toCard();
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'medical_record' } });
+    expect(screen.getByRole('button', { name: 'Adults only' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  it('a landed Only me document handed to somebody else is un-privated first, then given', async () => {
+    const state = fresh({ members: [ME, AISHA], captureAnswersLost: 1 });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    await toCard();
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    fireEvent.change(screen.getByLabelText('Whose it is'), { target: { value: AISHA.id } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    const writes = state.calls
+      .filter((c) => c.method !== 'GET' && c.url.startsWith('/api/v1/documents/doc-new'))
+      .map((c) => `${c.method} ${c.url}`);
+    expect(writes).toEqual([
+      'POST /api/v1/documents/doc-new/visibility',
+      'PATCH /api/v1/documents/doc-new',
+    ]);
+  });
+
+  it("a teen's retry after a lost answer changes only what changed, never who can see it", async () => {
+    const state = fresh({ members: [{ ...ME, role: 'teen' }, AISHA], captureAnswersLost: 1 });
+    installFakeApi(state);
+    signedIn('teen');
+    window.history.replaceState({}, '', `/add?member=${AISHA.id}`);
+    render(<App />);
+    await toCard();
+    // Their own documents only: nobody else is offered, whatever the link said.
+    const who = screen.getByLabelText<HTMLSelectElement>('Whose it is');
+    expect(who.value).toBe(ME.id);
+    expect([...who.options].map((o) => o.value)).not.toContain(AISHA.id);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'School letter' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    expect(state.calls.some((c) => c.url.endsWith('/visibility'))).toBe(false);
+    expect(state.calls.some((c) => c.method === 'PATCH')).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { createApi, createHttp, type ResponseLike, type UploadBody } from '@fdv/client';
+import type { CaptureMetadata } from '@fdv/shared';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
@@ -74,8 +75,16 @@ export const api = {
   ...client,
   upload: (token: string, documentId: string, file: File, idempotencyKey: string) =>
     client.upload(token, documentId, fileForm(file), idempotencyKey),
-  capture: (token: string, file: File, idempotencyKey: string) =>
-    client.capture(token, fileForm(file), idempotencyKey),
+  /** One file and, since 0.4.9, the card's details, sent ahead of it. */
+  capture: (token: string, file: File, idempotencyKey: string, metadata?: CaptureMetadata) =>
+    client.capture(
+      token,
+      {
+        file: { kind: 'blob', blob: file, filename: file.name },
+        ...(metadata ? { metadata } : {}),
+      },
+      idempotencyKey,
+    ),
   content: (token: string, versionId: string) => blobOf(client.content(token, versionId)),
   thumbnail: (token: string, versionId: string) => blobOf(client.thumbnail(token, versionId)),
   exportContent: (token: string, id: string) => blobOf(client.exportContent(token, id)),

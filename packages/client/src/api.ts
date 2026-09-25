@@ -46,6 +46,7 @@ import type {
   Visibility,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
+import { captureUpload, type CaptureBody } from './multipart.js';
 
 /**
  * Every endpoint, as one method each. Every authenticated call takes the
@@ -266,11 +267,16 @@ export function createApi(http: Http) {
         token,
         headers: { 'idempotency-key': idempotencyKey },
       }),
-    /** A new document from one file, filed as Needs info (CAP-05, CAP-13). */
-    capture: (token: string, body: UploadBody, idempotencyKey: string) =>
+    /**
+     * A new document from one file (CAP-05, CAP-13): `{ file, metadata }`,
+     * with the card's details sent ahead of the file (0.4.9, when the vault
+     * has `features.capture_metadata`); without details it is filed as Needs
+     * info. A body already built is sent as it is.
+     */
+    capture: (token: string, body: CaptureBody | UploadBody, idempotencyKey: string) =>
       request<CaptureResult>('/api/v1/capture', {
         method: 'POST',
-        upload: body,
+        upload: 'file' in body ? captureUpload(body) : body,
         token,
         headers: { 'idempotency-key': idempotencyKey },
       }),
