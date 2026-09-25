@@ -47,6 +47,13 @@ export interface FakeState {
   /** True until a credential has been presented again (SEC-17). */
   stepUpNeeded: boolean;
   /**
+   * The passport's pages as the vault drew them (0.4.12): how many, or a
+   * kind it cannot draw; and how many more times a page is still "being
+   * made" before it is ready.
+   */
+  pagesDrawn: number | 'unsupported';
+  pagesPending: number;
+  /**
    * Refresh tokens rotate, and a spent one presented again ends the
    * session — as the real server does. Until 0.4.3 this fake handed back
    * the same token for ever, which is why no test ever caught the web app
@@ -266,6 +273,8 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     sealed: [],
     passkeys: [],
     stepUpNeeded: false,
+    pagesDrawn: 2,
+    pagesPending: 0,
     invitationValid: true,
     calls: [],
     ...over,
@@ -840,12 +849,52 @@ export function installFakeApi(state: FakeState) {
             mime: 'application/pdf',
             byte_size: 2048,
             sha256: 'x',
-            page_count: 1,
+            page_count: 2,
             ocr_status: 'done',
             uploaded_at: '2026-09-20T09:14:00Z',
+            preview_pages:
+              state.pagesDrawn === 'unsupported'
+                ? 0
+                : state.pagesPending > 0
+                  ? null
+                  : state.pagesDrawn,
           },
         ],
       });
+    }
+    const pageOf = /^\/api\/v1\/versions\/[^/]+\/pages\/(\d+)$/.exec(path);
+    if (pageOf) {
+      const refuse = (code: string, message: string, headers: Record<string, string> = {}) =>
+        Promise.resolve(
+          Response.json(
+            { error: { code, message, retriable: code === 'preview_pending', request_id: 'r' } },
+            { status: 404, headers },
+          ),
+        );
+      if (state.pagesDrawn === 'unsupported') {
+        return refuse(
+          'no_preview',
+          "There's no preview for this kind of file. You can save a copy to open it.",
+        );
+      }
+      if (state.pagesPending > 0) {
+        state.pagesPending -= 1;
+        // No waiting in a test: "try again" means now.
+        return refuse('preview_pending', 'The preview is being made.', { 'retry-after': '0' });
+      }
+      const n = Number(pageOf[1]);
+      if (n > state.pagesDrawn) {
+        return refuse(
+          'no_preview',
+          "There's no preview of this page. You can save a copy to open it.",
+        );
+      }
+      return Promise.resolve(
+        new Response(`page ${n}`, {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' },
+        }),
+      );
     }
     if (/^\/api\/v1\/versions\/[^/]+\/thumbnail$/.test(path))
       return json({ error: { code: 'no_thumbnail', message: 'No preview yet.' } }, 404);

@@ -50,6 +50,8 @@ describe('buildCapabilities', () => {
       capture_metadata: true,
       // 0.4.10: who issued a document, first-class (4.3c).
       issued_by: true,
+      // 0.4.12: the vault draws each version's pages (4.7).
+      page_previews: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

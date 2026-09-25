@@ -147,6 +147,10 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
         h.app.inject({ url: `/api/v1/versions/${secretVersionId}/thumbnail`, headers: as(sam) }),
       ],
       [
+        'a page of it, as the vault draws it',
+        h.app.inject({ url: `/api/v1/versions/${secretVersionId}/pages/1`, headers: as(sam) }),
+      ],
+      [
         'a byte range of its file',
         h.app.inject({
           url: `/api/v1/versions/${secretVersionId}/content`,
@@ -205,6 +209,49 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       // as far as the document. Never 200, and never 403: being told you
       // are not allowed is being told it is there.
       expect([404, 422], `${what} → ${res.statusCode}`).toContain(res.statusCode);
+    }
+  });
+
+  it('Sam asking for the owner’s private version gets the same 404 as a version that does not exist, from /content, /pages and /thumbnail', async () => {
+    // Sam's step-up is six minutes old: past the window. A route that asked
+    // for a credential before looking would answer 403 for the one that is
+    // there and 404 for the one that is not — which is an answer.
+    const setSam = (at: Date) =>
+      withHousehold(h.db, sam.household_id, async (trx) => {
+        const a = await trx
+          .selectFrom('account_household')
+          .select('account_id')
+          .where('member_id', '=', sam.member_id)
+          .executeTakeFirstOrThrow();
+        await trx
+          .updateTable('session')
+          .set({ verified_at: at })
+          .where('account_id', '=', a.account_id)
+          .execute();
+      });
+    await setSam(new Date(Date.now() - 6 * 60 * 1000));
+    try {
+      const missing = randomUUID();
+      // Everything but the request id, which is every answer's own.
+      const body = (r: { json: () => unknown }) => ({
+        ...(r.json() as { error: Record<string, unknown> }).error,
+        request_id: null,
+      });
+      for (const path of ['content', 'pages/1', 'thumbnail']) {
+        const hidden = await h.app.inject({
+          url: `/api/v1/versions/${secretVersionId}/${path}`,
+          headers: as(sam),
+        });
+        const absent = await h.app.inject({
+          url: `/api/v1/versions/${missing}/${path}`,
+          headers: as(sam),
+        });
+        expect(hidden.statusCode, path).toBe(404);
+        expect(absent.statusCode, path).toBe(404);
+        expect(body(hidden), path).toEqual(body(absent));
+      }
+    } finally {
+      await setSam(new Date());
     }
   });
 

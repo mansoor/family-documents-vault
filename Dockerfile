@@ -69,10 +69,11 @@ FROM ${NODE_IMAGE} AS worker
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
 # OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages and
-# page counts), ImageMagick (thumbnails). All offline.
+# page counts), ImageMagick (thumbnails and page previews; HEIC for iPhone
+# photos). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
-RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick     fontconfig font-dejavu font-liberation postgresql16-client     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null     && pg_dump --version >/dev/null
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick imagemagick-heic     fontconfig font-dejavu font-liberation postgresql16-client     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null     && pg_dump --version >/dev/null
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules

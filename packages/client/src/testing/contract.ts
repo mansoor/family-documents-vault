@@ -34,6 +34,7 @@ const NEVER_USED = 'c0ffee00-1234-4567-89ab-cdef01234567';
 const DETAILS_KEY = '5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a';
 const LATE_KEY = '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d';
 const ISSUER_KEY = '2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091';
+const PAGES_KEY = '3c4d5e6f-7081-4923-8a4b-5c6d7e8f9012';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -271,6 +272,39 @@ export const contractScenarios: Scenario[] = [
       const offered = await api.issuerSuggestions(token, made.document_id);
       expect(['pending', 'unavailable']).toContain(offered.state);
       expect(offered.items).toEqual([]);
+    },
+  },
+  {
+    name: 'a page not yet drawn is on its way, and says to ask again in a moment (0.4.12)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.page_previews).toBe(true);
+      const made = await api.capture(
+        token,
+        {
+          file: {
+            kind: 'bytes',
+            filename: 'pages.pdf',
+            contentType: 'application/pdf',
+            bytes: PDF,
+          },
+        },
+        PAGES_KEY,
+      );
+      // Asked twice, it is still on its way: the same answer each time.
+      for (let i = 0; i < 2; i += 1) {
+        const pending = await refusal(api.page(token, made.version_id, 1));
+        expect(pending.status).toBe(404);
+        expect(pending.code).toBe('preview_pending');
+        expect(pending.retriable).toBe(true);
+        expect(pending.retryAfterSeconds).toBe(3);
+      }
+      // Past the pages the vault draws: those are opened by saving a copy.
+      const past = await refusal(api.page(token, made.version_id, 31));
+      expect(past.code).toBe('no_preview');
+      expect(past.retriable).toBe(false);
+      // A version that is not there is not there.
+      expect((await refusal(api.page(token, NEVER_USED, 1))).code).toBe('not_found');
     },
   },
   {

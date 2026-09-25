@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { AppProvider, useApp } from './app-context.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
+import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
 import { HomeScreen } from './screens/Home.js';
@@ -124,6 +125,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <DocumentScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/documents/:id/read"
+            element={
+              <Gate need="signed-in">
+                <ReaderScreen />
               </Gate>
             }
           />

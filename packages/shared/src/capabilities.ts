@@ -39,6 +39,12 @@ export interface CapabilityFeatures {
    * field, so send it only when this is on.
    */
   issued_by: boolean;
+  /**
+   * The vault draws each version's pages (0.4.12): GET
+   * /versions/{id}/pages/{n} serves them as JPEGs, `preview_pages` on a
+   * version says how many, and an Essential's are drawn ahead of time.
+   */
+  page_previews: boolean;
 }
 
 export interface CapabilityLimits {

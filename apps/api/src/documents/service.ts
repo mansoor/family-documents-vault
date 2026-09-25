@@ -38,7 +38,7 @@ import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { allows, requireCapability } from '../authz.js';
-import { canSee } from '@fdv/shared';
+import { canSee, PREVIEW_MAX_PAGES } from '@fdv/shared';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -497,7 +497,8 @@ export class DocumentService {
     meta: RequestMeta,
   ) {
     this.canWrite(p);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    let drawNow: string | null = null;
+    const view = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const current = await this.fetch(trx, p, id);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
@@ -529,8 +530,34 @@ export class DocumentService {
         detail: { fields: Object.keys(input) },
         ip: meta.ip,
       });
+      // Becoming Essential: its current version's pages are drawn now, so
+      // a phone can keep them for when there is no connection (0.4.12).
+      if (row.is_essential && !current.is_essential) {
+        const latest = await trx
+          .updateTable('document_version')
+          .set({ preview_state: 'queued', preview_requested_at: new Date() })
+          .where('id', '=', (eb) =>
+            eb
+              .selectFrom('document_version')
+              .select('id')
+              .where('document_id', '=', id)
+              .orderBy('version_no', 'desc')
+              .limit(1),
+          )
+          .where('preview_state', 'in', ['none', 'failed'])
+          .returning('id')
+          .executeTakeFirst();
+        drawNow = latest?.id ?? null;
+      }
       return this.view(trx, row);
     });
+    if (drawNow) {
+      await this.enqueue(PREVIEWS_JOB, {
+        household_id: p.householdId,
+        version_id: drawNow,
+      }).catch(() => undefined);
+    }
+    return view;
   }
 
   /** ORG-08: soft delete, recoverable for 30 days. */
@@ -1451,12 +1478,12 @@ export class DocumentService {
   }
 
   /**
-   * Is this version's document one the design asks for a fresh credential
-   * before opening — the Essentials, and anything marked "only me"
-   * (SEC-17)? One small query, so the answer costs a download nothing it
-   * would not have paid anyway.
+   * Which fresh credential, if any, opening this version asks for (SEC-17):
+   * anything marked "only me" asks to open a document only you can see,
+   * and an Essential asks to open an Essential (0.4.12). One small query,
+   * so the answer costs a download nothing it would not have paid anyway.
    */
-  async isSensitive(p: Principal, versionId: string): Promise<boolean> {
+  async stepUpFor(p: Principal, versionId: string): Promise<SensitiveAction | null> {
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const row = await trx
         .selectFrom('document_version')
@@ -1467,26 +1494,33 @@ export class DocumentService {
       // A missing version, and one the caller may not see, are both a 404
       // further down. Asking for a credential first would answer "it is
       // there, and it is private" to somebody who must not know.
-      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
-      return row.visibility === 'private' || row.is_essential;
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      return sensitiveAction(row);
     });
   }
 
   /** The same question for a whole document: before a link to it is made. */
-  async isSensitiveDocument(p: Principal, documentId: string): Promise<boolean> {
+  async stepUpForDocument(p: Principal, documentId: string): Promise<SensitiveAction | null> {
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const row = await trx
         .selectFrom('document')
         .select(['visibility', 'is_essential', 'owner_member_id'])
         .where('id', '=', documentId)
         .executeTakeFirst();
-      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return false;
-      return row.visibility === 'private' || row.is_essential;
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      return sensitiveAction(row);
     });
   }
 
-  /** The cached, encrypted thumbnail, decrypted on the way out. Null until the worker has run. */
-  async thumbnail(p: Principal, versionId: string): Promise<Buffer | null> {
+  /**
+   * The cached, encrypted thumbnail, decrypted on the way out. Null until
+   * the worker has run. `sensitive`: an Essential's or an "only me"
+   * document's, which no cache may keep (0.4.12).
+   */
+  async thumbnail(
+    p: Principal,
+    versionId: string,
+  ): Promise<{ bytes: Buffer; sensitive: boolean } | null> {
     const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
@@ -1494,10 +1528,11 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      await this.fetch(trx, p, v.document_id, true);
+      const doc = await this.fetch(trx, p, v.document_id, true);
       if (!v.thumbnail_key) return null;
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       return {
+        sensitive: sensitiveAction(doc) !== null,
         key: v.thumbnail_key,
         fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
         adapter: await this.vaults.adapterById(trx, v.vault_id),
@@ -1507,6 +1542,94 @@ export class DocumentService {
     const dec = new DecryptStream(ctx.fileKey);
     const [, plain] = await Promise.all([
       pipeline(await ctx.adapter.get(ctx.key), dec),
+      readAll(dec),
+    ]);
+    return { bytes: plain, sensitive: ctx.sensitive };
+  }
+
+  /**
+   * One page of a version, as the vault drew it (0.4.12): a JPEG,
+   * decrypted on the way out, and audited as `document.viewed`.
+   *
+   * Visibility comes first, and a version the caller may not see is the
+   * same 404 as one that does not exist; the route has asked for a fresh
+   * credential, where one is due, before this is reached. Pages not drawn
+   * yet are queued once and answered `preview_pending`; a file the vault
+   * cannot draw, or a page past what it drew, is `no_preview`.
+   */
+  async page(p: Principal, versionId: string, page: number, meta: RequestMeta): Promise<Buffer> {
+    const outcome = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const v = await trx
+        .selectFrom('document_version')
+        .selectAll()
+        .where('id', '=', versionId)
+        .executeTakeFirst();
+      if (!v) throw notFound();
+      await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      if (v.preview_state === 'unsupported') return { kind: 'none', why: 'kind' } as const;
+      if (v.preview_state === 'failed') return { kind: 'none', why: 'failed' } as const;
+      const known = v.preview_state === 'ready' ? v.preview_pages : v.page_count;
+      if (page > PREVIEW_MAX_PAGES || (known !== null && page > known)) {
+        return { kind: 'none', why: 'page' } as const;
+      }
+      if (v.preview_state !== 'ready') {
+        // Queued once; queued again only if that job seems to have been lost.
+        const lost =
+          v.preview_state === 'queued' &&
+          (!v.preview_requested_at ||
+            Date.now() - new Date(v.preview_requested_at).getTime() > PREVIEW_REQUEUE_MS);
+        if (v.preview_state === 'none' || lost) {
+          await trx
+            .updateTable('document_version')
+            .set({ preview_state: 'queued', preview_requested_at: new Date() })
+            .where('id', '=', v.id)
+            .execute();
+          return { kind: 'pending', queue: true } as const;
+        }
+        return { kind: 'pending', queue: false } as const;
+      }
+      const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+      const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+      const adapter = await this.vaults.adapterById(trx, v.vault_id);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'document.viewed',
+        objectType: 'document',
+        objectId: v.document_id,
+        detail: { version_id: v.id, page },
+        ip: meta.ip,
+      });
+      return { kind: 'ready', key: `${v.storage_key}.p${page}.enc`, fileKey, adapter } as const;
+    });
+    if (outcome.kind === 'pending') {
+      if (outcome.queue) {
+        await this.enqueue(PREVIEWS_JOB, {
+          household_id: p.householdId,
+          version_id: versionId,
+        }).catch(() => undefined);
+      }
+      throw new ApiError(
+        404,
+        'preview_pending',
+        'The preview is being made. Try again in a moment.',
+        { retriable: true, retryAfter: 3 },
+      );
+    }
+    if (outcome.kind === 'none') {
+      throw new ApiError(
+        404,
+        'no_preview',
+        outcome.why === 'kind'
+          ? "There's no preview for this kind of file. You can save a copy to open it."
+          : outcome.why === 'failed'
+            ? "The vault couldn't draw this file's pages. You can save a copy to open it."
+            : "There's no preview of this page. You can save a copy to open it.",
+      );
+    }
+    const dec = new DecryptStream(outcome.fileKey);
+    const [, plain] = await Promise.all([
+      pipeline(await outcome.adapter.get(outcome.key), dec),
       readAll(dec),
     ]);
     return plain;
@@ -1690,6 +1813,8 @@ function versionView(v: {
   page_count: number | null;
   ocr_status: string;
   uploaded_at: Date;
+  preview_state: string;
+  preview_pages: number | null;
 }): VersionView {
   return {
     id: v.id,
@@ -1702,8 +1827,27 @@ function versionView(v: {
     page_count: v.page_count,
     ocr_status: v.ocr_status,
     uploaded_at: v.uploaded_at.toISOString(),
+    // Known once drawn, or known that it never will be; null until then.
+    preview_pages:
+      v.preview_state === 'ready' ||
+      v.preview_state === 'unsupported' ||
+      v.preview_state === 'failed'
+        ? (v.preview_pages ?? 0)
+        : null,
   };
 }
+
+/** The step-up opening a document asks for: "only me" first, then Essentials. */
+export type SensitiveAction = 'open_private_document' | 'open_essential';
+function sensitiveAction(d: { visibility: string; is_essential: boolean }): SensitiveAction | null {
+  if (d.visibility === 'private') return 'open_private_document';
+  return d.is_essential ? 'open_essential' : null;
+}
+
+/** The worker's job for page previews (its JOBS.renderPreviews). */
+const PREVIEWS_JOB = 'version.previews';
+/** A page asked for this long after its job was queued queues it again: the job was lost. */
+const PREVIEW_REQUEUE_MS = 2 * 60 * 1000;
 
 const encodeCursor = (c: { k: string; id: string }) =>
   Buffer.from(JSON.stringify(c)).toString('base64url');

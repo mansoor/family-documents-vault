@@ -22,6 +22,8 @@ type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
 export type Visibility = 'household' | 'adults' | 'private';
 export type DatePrecision = 'day' | 'month' | 'year';
+/** Where a version's page previews are (0027). */
+export type PreviewState = 'none' | 'queued' | 'ready' | 'unsupported' | 'failed';
 type DateOnly = ColumnType<string, string | null, string | null>;
 
 export interface Schema {
@@ -312,6 +314,10 @@ export interface Schema {
     page_count: number | null;
     ocr_status: Generated<'pending' | 'done' | 'failed' | 'skipped'>;
     thumbnail_key: string | null;
+    /** Pages the vault has drawn (0027): how many, and where they are. */
+    preview_pages: number | null;
+    preview_state: Generated<PreviewState>;
+    preview_requested_at: Timestamp | null;
     processed_at: Timestamp | null;
     process_error: string | null;
     uploaded_by: string | null;

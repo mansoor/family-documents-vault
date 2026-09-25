@@ -7,8 +7,10 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withHousehold, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
+import { drawPreviews } from './previews.js';
 import {
   detectTools,
+  drawable,
   ocrImage,
   pdfPageCount,
   readIfExists,
@@ -19,7 +21,7 @@ import {
 /**
  * The ingest pipeline's background half (design, Ingest pipeline):
  *
- *   stored -> page count -> thumbnail -> OCR -> index
+ *   stored -> page count -> thumbnail -> OCR -> index -> pages (Essentials)
  *
  * The document is already visible and downloadable; everything here only
  * enriches it. A failed step is recorded on the version and never blocks
@@ -64,7 +66,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     if (!version) return null;
     const doc = await trx
       .selectFrom('document')
-      .select(['id', 'visibility', 'owner_member_id'])
+      .select(['id', 'visibility', 'owner_member_id', 'is_essential'])
       .where('id', '=', version.document_id)
       .executeTakeFirstOrThrow();
     const vault = await trx
@@ -102,6 +104,8 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       thumbnail_key?: string | null;
       ocr_status: 'done' | 'failed' | 'skipped';
       process_error?: string | null;
+      preview_state?: 'unsupported';
+      preview_pages?: number;
     } = { ocr_status: 'skipped' };
     const errors: string[] = [];
 
@@ -138,6 +142,20 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
         errors.push(`ocr: ${(err as Error).message}`);
         update.ocr_status = 'failed';
       }
+    }
+
+    // 5. Page previews (4.7): an Essential's are drawn now, from the
+    // plaintext already here, so a phone can keep them; everything else's
+    // the first time somebody asks. A kind the vault cannot draw says so.
+    if (doc.is_essential && drawable(version.mime) && version.preview_state !== 'ready') {
+      try {
+        await drawPreviews(deps, hh, { version, adapter, fileKey, dir, plainFile });
+      } catch (err) {
+        errors.push(`previews: ${(err as Error).message}`);
+      }
+    } else if (!drawable(version.mime)) {
+      update.preview_state = 'unsupported';
+      update.preview_pages = 0;
     }
 
     update.process_error = errors.length ? errors.join('; ') : null;

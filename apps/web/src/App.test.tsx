@@ -139,6 +139,67 @@ describe('App', () => {
     });
   });
 
+  describe('reading a document, full size (0.4.12)', () => {
+    beforeEach(() => {
+      // jsdom has no object URLs; a page's is its number.
+      let made = 0;
+      Object.assign(URL, {
+        createObjectURL: vi.fn(() => `blob:page-${++made}`),
+        revokeObjectURL: vi.fn(),
+      });
+    });
+    const pageCalls = (state: ReturnType<typeof fresh>) =>
+      state.calls.filter((c) => /\/pages\/\d+$/.test(c.url)).map((c) => c.url.split('/').pop());
+
+    it('tapping the preview opens the pages, and the arrows and keys turn them', async () => {
+      const state = fresh({ pagesPending: 1 });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-1');
+      render(<App />);
+
+      fireEvent.click(
+        await screen.findByRole('link', { name: "Read Mansoor's passport, full size" }),
+      );
+      // Being drawn the first time it is asked for; then there.
+      expect(
+        await screen.findByRole('img', { name: "Page 1 of Mansoor's passport" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled();
+      await expectAccessible();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+      await screen.findByRole('img', { name: "Page 2 of Mansoor's passport" });
+      expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
+
+      fireEvent.keyDown(window, { key: 'ArrowLeft' });
+      await screen.findByRole('img', { name: "Page 1 of Mansoor's passport" });
+      // Larger, and back to fit.
+      fireEvent.click(screen.getByRole('button', { name: 'Larger' }));
+      expect(screen.getByRole('img', { name: /^Page 1/ })).toHaveStyle({ width: '150%' });
+      fireEvent.keyDown(window, { key: '-' });
+      expect(screen.getByRole<HTMLImageElement>('img', { name: /^Page 1/ }).style.width).toBe('');
+
+      // Only the pages looked at were fetched: each one is in the activity log.
+      expect(pageCalls(state)).toEqual(['1', '1', '2', '1']);
+    });
+
+    it('a kind of file the vault cannot draw says so, and offers the file itself', async () => {
+      const state = fresh({ pagesDrawn: 'unsupported' });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-1/read');
+      render(<App />);
+      expect(
+        await screen.findByText(
+          "There's no preview for this kind of file. You can save a copy to open it.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+    });
+  });
+
   it('reloading Settings with an expired access token signs nobody out', async () => {
     // Settings loads four panels at once, and after a reload none of them
     // has an access token. Until 0.4.3 each refreshed on its own; the

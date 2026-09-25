@@ -4,6 +4,11 @@ import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
+import {
+  backfillPreviews,
+  renderVersionPreviews,
+  type RenderPreviewsJob,
+} from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
@@ -65,6 +70,22 @@ async function main(): Promise<void> {
   await boss.work<ProcessVersionJob>(JOBS.processVersion, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) await processVersion(processDeps, job.data);
   });
+
+  // Page previews, one version at a time: a vault full of Essentials is
+  // drawn in the background without crowding out anything else.
+  await boss.createQueue(JOBS.renderPreviews, { retryLimit: 2, retryDelay: 60 });
+  await boss.work<RenderPreviewsJob>(JOBS.renderPreviews, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) await renderVersionPreviews(processDeps, job.data);
+  });
+  void backfillPreviews({
+    admin: dbs.admin,
+    app: dbs.app,
+    send: (job) => boss.send(JOBS.renderPreviews, { ...job }),
+  })
+    .then((queued) => {
+      if (queued) log('info', 'page previews queued for Essentials', { queued });
+    })
+    .catch((err: unknown) => log('warn', 'page preview backfill failed', { err: String(err) }));
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

@@ -1,6 +1,7 @@
 import {
   checkCaptureMetadata,
   effectiveVisibility,
+  PREVIEW_MAX_PAGES,
   type Capabilities,
   type CaptureMetadata,
   type DocumentTypeView,
@@ -55,6 +56,12 @@ export interface FakeVaultState {
   reminders: ReminderView[];
   /** What GET /documents/{id}/issuer-suggestions answers, by document; "unavailable" if unset. */
   issuerSuggestions: Map<string, IssuerSuggestions>;
+  /**
+   * What GET /versions/{id}/pages/{n} answers, by version: how many pages
+   * are drawn, or a kind of file the vault cannot draw. A version the fake
+   * made and nobody set here is still being drawn (`preview_pending`).
+   */
+  pages: Map<string, number | 'unsupported'>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -167,6 +174,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     captures: new Map(),
     reminders: [],
     issuerSuggestions: new Map(),
+    pages: new Map(),
     types: FAKE_TYPES.map((t) => ({ ...t })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
@@ -221,7 +229,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.11',
+        server_version: '0.4.12',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -238,6 +246,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           idempotent_capture: true,
           capture_metadata: true,
           issued_by: true,
+          page_previews: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -476,6 +485,49 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (!made) return fail(404, 'not_found', 'That upload is not known here.');
       return ok({ state: 'done', document_id: made.document_id, version_id: made.version_id });
     }
+    // A page as the vault drew it (0.4.12): not found for a version it never
+    // made, still being drawn until a test says otherwise, then a JPEG.
+    const pageOf = /^\/api\/v1\/versions\/([^/]+)\/pages\/(\d+)$/.exec(path);
+    if (pageOf && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const version = pageOf[1] as string;
+      const n = Number(pageOf[2]);
+      const made = [...state.captures.values()].some((c) => c.version_id === version);
+      if (!made && !state.pages.has(version)) {
+        return fail(404, 'not_found', 'That page does not exist.');
+      }
+      const drawn = state.pages.get(version);
+      if (drawn === 'unsupported') {
+        return fail(
+          404,
+          'no_preview',
+          "There's no preview for this kind of file. You can save a copy to open it.",
+        );
+      }
+      if (n > PREVIEW_MAX_PAGES || (typeof drawn === 'number' && n > drawn)) {
+        return fail(
+          404,
+          'no_preview',
+          "There's no preview of this page. You can save a copy to open it.",
+        );
+      }
+      if (drawn === undefined) {
+        return respond(
+          404,
+          {
+            error: {
+              code: 'preview_pending',
+              message: 'The preview is being made. Try again in a moment.',
+              retriable: true,
+              request_id: 'fake',
+            },
+          },
+          { 'retry-after': '3' },
+        );
+      }
+      return picture(FAKE_PAGE);
+    }
     if (path === '/api/v1/document-types' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
@@ -544,6 +596,25 @@ function respond(
 }
 
 const ok = (body: unknown, status = 200) => respond(status, body);
+/** A JPEG's first and last markers: enough to be one, for a client under test. */
+const FAKE_PAGE = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x02, 0xff, 0xd9]);
+function picture(bytes: Uint8Array): ResponseLike {
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (name) =>
+        ({ 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' })[
+          name.toLowerCase()
+        ] ?? null,
+    },
+    json: async () => {
+      throw new SyntaxError('A picture is not JSON.');
+    },
+    text: async () => new TextDecoder('latin1').decode(bytes),
+    arrayBuffer: async () => bytes.slice().buffer,
+  };
+}
 const empty = () => respond(204, undefined);
 const fail = (status: number, code: string, message: string) =>
   respond(status, { error: { code, message, retriable: false, request_id: 'fake' } });

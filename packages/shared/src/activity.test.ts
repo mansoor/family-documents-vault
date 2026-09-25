@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeEvent, whenWords, type ActivityEvent } from './activity.js';
+import { describeEvent, describeEvents, whenWords, type ActivityEvent } from './activity.js';
 
 const base: ActivityEvent = {
   id: 1,
@@ -90,5 +90,45 @@ describe('when things happened, in words', () => {
   it('counts calendar days, so late last night is yesterday and not today', () => {
     const oneAm = new Date('2026-09-22T01:00:00');
     expect(whenWords('2026-09-21T23:30:00', oneAm)).toMatch(/^yesterday/);
+  });
+});
+
+describe('a sitting with a document is one line (0.4.12)', () => {
+  const at = (minutes: number) =>
+    new Date(Date.UTC(2026, 8, 25, 12, 0) - minutes * 60_000).toISOString();
+  const view = (id: number, minutesAgo: number, over: Partial<ActivityEvent> = {}) =>
+    ev({ id, at: at(minutesAgo), action: 'document.viewed', actor_id: 'acct-sarah', ...over });
+
+  it('pages looked through in one go are one line, the most recent', () => {
+    const lines = describeEvents([view(5, 0), view(4, 1), view(3, 2), view(2, 9), view(1, 18)]);
+    expect(lines.map((l) => [l.id, l.text])).toEqual([
+      [5, 'Sarah looked at “Home insurance policy”'],
+    ]);
+  });
+
+  it('a gap of more than ten minutes starts another sitting', () => {
+    const lines = describeEvents([view(3, 0), view(2, 5), view(1, 16)]);
+    expect(lines.map((l) => l.id)).toEqual([3, 1]);
+  });
+
+  it('another person, another document, or something shown in between is not the same sitting', () => {
+    const lines = describeEvents([
+      view(6, 0),
+      view(5, 1, { actor_id: 'acct-other-sarah' }),
+      view(4, 2, { object_id: 'doc-2', object_title: 'Passport' }),
+      view(3, 3),
+      ev({ id: 2, at: at(4), action: 'document.downloaded', actor_id: 'acct-sarah' }),
+      view(1, 5),
+    ]);
+    expect(lines.map((l) => l.id)).toEqual([6, 5, 4, 3, 2, 1]);
+  });
+
+  it('what is never shown does not break a sitting', () => {
+    const lines = describeEvents([
+      view(3, 0),
+      ev({ id: 2, at: at(1), action: 'auth.step_up' }),
+      view(1, 2),
+    ]);
+    expect(lines.map((l) => l.id)).toEqual([3]);
   });
 });
