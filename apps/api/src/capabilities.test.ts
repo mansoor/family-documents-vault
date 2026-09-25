@@ -97,11 +97,13 @@ describe.skipIf(!testAdminUrl())('the capability document, served', () => {
     b = await createHarness();
     c = await createHarness();
   }, 90_000);
+  // Three databases to drop, while the rest of the suite runs: more than
+  // the default 10 s under load, which failed CI-like runs now and then.
   afterAll(async () => {
     await a.close();
     await b.close();
     await c.close();
-  });
+  }, 60_000);
 
   it('carries the installation id: the same every time, different for another vault', async () => {
     const first = await caps(a);

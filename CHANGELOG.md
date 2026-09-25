@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `packages/shared` and `packages/client` are now MIT-licensed, so apps that talk to a vault can use them under any licence. The vault itself — server, worker and web app — stays AGPL-3.0. `pnpm lint` fails if either package starts using anything from the AGPL code.
+
 ### Added
 
 - **Adding a document can be retried safely.** If the connection drops or the answer is lost on the way back, trying again never makes a second copy: the vault recognises the same upload and answers with what the first try made. Choosing the same file again after an error in the web app counts as trying again. An upload that fails leaves nothing behind — no empty "Needs info" document — and one that overlaps an earlier try still arriving waits for it rather than doubling up. For apps: `GET /api/v1/uploads/{key}` says what became of an upload (see the API changelog).

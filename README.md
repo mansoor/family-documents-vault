@@ -392,8 +392,11 @@ Layout:
 apps/api           the API service (Fastify)
 apps/worker        background jobs (pg-boss)
 apps/web           the web app (React, Vite)
-packages/shared    types and helpers shared by API, worker and clients (the API contract)
+packages/shared    types and helpers shared by API, worker and clients (the API contract) — MIT
+packages/client    the API client every app uses, its fake vault and contract tests — MIT
 packages/db        connection, migration runner, SQL migrations
+packages/crypto    envelope encryption, scope keys, passwords
+packages/storage   where encrypted files are kept: local disk or S3
 docker/            nginx config and the Postgres init script
 docs/              public operational docs (API changelog)
 ```
@@ -404,4 +407,11 @@ Every change goes through a pull request with green CI. Commits follow [Conventi
 
 ## Licence
 
-[AGPL-3.0](LICENSE). Self-host it, modify it, run it for your family; if you run a modified version as a service, share your changes.
+The vault — the server, the worker and the web app — is [AGPL-3.0](LICENSE). Self-host it, modify it, run it for your family; if you run a modified version as a service, share your changes.
+
+Two packages are MIT instead, so that anyone can build an app that talks to a vault, under whatever licence they like:
+
+- [`packages/shared`](packages/shared/LICENSE) — the API's types and the helpers every client needs (dates, statuses, reminder wording, design tokens);
+- [`packages/client`](packages/client/LICENSE) — the API client, its fake vault for testing, and the contract both are held to.
+
+Each has its own `LICENSE` file; everything else in the repository is under the root [LICENSE](LICENSE). `pnpm lint` checks that neither MIT package depends on, or imports, anything else in the repository.
