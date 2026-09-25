@@ -611,7 +611,7 @@ function picture(bytes: Uint8Array): ResponseLike {
     json: async () => {
       throw new SyntaxError('A picture is not JSON.');
     },
-    text: async () => new TextDecoder('latin1').decode(bytes),
+    text: async () => String.fromCharCode(...bytes),
     arrayBuffer: async () => bytes.slice().buffer,
   };
 }

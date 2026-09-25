@@ -209,7 +209,7 @@ export function ReaderScreen() {
               <img
                 src={page.url}
                 alt={`Page ${pageNo} of ${title}`}
-                style={zoom ? { width: `${ZOOMS[zoom] * 100}%` } : undefined}
+                style={zoom ? { width: `${(ZOOMS[zoom] ?? 1) * 100}%` } : undefined}
               />
             ) : page.kind === 'loading' ? (
               <span className="muted">Opening the page…</span>
