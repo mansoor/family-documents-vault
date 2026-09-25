@@ -3,6 +3,7 @@ import https from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
 import { appendAudit, withHousehold, type Db } from '@fdv/db';
 import {
+  isLoopbackName,
   isPrivateAddress,
   PUSH_TTL_SECONDS,
   pushTopic,
@@ -153,8 +154,10 @@ export async function deliver(
     return 'refused';
   }
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  // Node makes no DNS lookup for an address written out: checked here.
-  if (url.protocol !== 'https:' || (!deps.allowPrivate && isIP(host) && isPrivateAddress(host))) {
+  // Node makes no DNS lookup for an address written out: checked here, as
+  // are the names that mean this machine whatever DNS says.
+  const inside = (isIP(host) && isPrivateAddress(host)) || isLoopbackName(host);
+  if (url.protocol !== 'https:' || (!deps.allowPrivate && inside)) {
     await mark(deps, device, 'failed', url.protocol !== 'https:' ? 'not https' : 'private address');
     deps.log('warn', 'push refused', { device_id: device.id, reason: 'address' });
     return 'refused';

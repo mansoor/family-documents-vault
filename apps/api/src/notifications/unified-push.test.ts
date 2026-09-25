@@ -121,6 +121,9 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
       'https://metadata.example.test/up2',
       'https://127.0.0.1/up3',
       'https://[::1]/up4',
+      // This machine by name, whatever DNS says (the test's DNS does not know them).
+      'https://localhost/up4a',
+      'https://vault.localhost/up4b',
       'https://10.0.0.5:8443/up5',
       // IPv4 inside IPv6: `new URL` writes these in hex.
       'https://[::ffff:127.0.0.1]/up6',
