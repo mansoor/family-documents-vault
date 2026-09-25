@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-25 — Phase 4 — Pocket
+
+The vault, ready for the family's phones: a scan filed exactly once however
+the connection behaves, with its details sent with it; sessions that last as
+long as they are used; pages the vault draws itself; the Essentials a phone
+may keep for when there is no signal, and a record of what was opened there;
+and notifications to phones through UnifiedPush that name nothing.
+
+### Security
+
+- Every phone route was attacked together for the release (`phase4-exit.test.ts`): a capture retried and overlapped a hundred ways makes one document; a second adult gets no title or id of the first adult's private documents from any phone route; signing out a phone ends its session, its permission to keep Essentials and its notifications at once, and tells it; a replayed refresh token loses the session; push addresses aimed inside the vault's network are refused however they are written.
+- `localhost` (and any name ending in `.localhost`) is refused as a push address by name, not only when DNS says it is this machine.
+
 ### Added
 
 - README: **Phones and other apps** — what a phone needs from the vault and what it checks: https and the certificate a vault makes itself, plain http on the home network and its limits, notifications, Essentials for no signal, and what signing out a lost phone does.

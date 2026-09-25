@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPrivateAddress, pushAddressProblem, pushTopic } from './push.js';
+import { isLoopbackName, isPrivateAddress, pushAddressProblem, pushTopic } from './push.js';
 
 describe('where a push may go', () => {
   it.each([
@@ -62,6 +62,21 @@ describe('where a push may go', () => {
     '2606:4700:4700:0:0:0:0:1111',
   ])('%s may be tried', (ip) => {
     expect(isPrivateAddress(ip)).toBe(false);
+  });
+
+  it('localhost is this machine, whatever DNS says', () => {
+    for (const name of [
+      'localhost',
+      'LOCALHOST',
+      'localhost.',
+      'vault.localhost',
+      'a.b.localhost',
+    ]) {
+      expect(isLoopbackName(name), name).toBe(true);
+    }
+    for (const name of ['ntfy.sh', 'localhost.example.com', 'notlocalhost', 'mylocalhost']) {
+      expect(isLoopbackName(name), name).toBe(false);
+    }
   });
 
   it('only https', () => {

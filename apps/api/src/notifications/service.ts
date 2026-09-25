@@ -2,7 +2,7 @@ import { createCipheriv, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { appendAudit, withScope, type Db } from '@fdv/db';
-import { isPrivateAddress, pushAddressProblem } from '@fdv/shared';
+import { isLoopbackName, isPrivateAddress, pushAddressProblem } from '@fdv/shared';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { z } from 'zod';
@@ -174,7 +174,11 @@ export class NotificationService {
     const host = new URL(endpoint).hostname.replace(/^\[|\]$/g, '');
     let addresses: string[];
     try {
-      addresses = isIP(host) ? [host] : await (this.opts.resolve ?? resolveHost)(host);
+      addresses = isLoopbackName(host)
+        ? ['127.0.0.1']
+        : isIP(host)
+          ? [host]
+          : await (this.opts.resolve ?? resolveHost)(host);
     } catch {
       return;
     }

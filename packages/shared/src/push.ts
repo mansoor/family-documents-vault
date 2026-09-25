@@ -123,6 +123,16 @@ export function isPrivateAddress(ip: string): boolean {
   );
 }
 
+/**
+ * A name that means this machine whatever DNS says (RFC 6761): refused as
+ * 127.0.0.1 is, without asking DNS — a resolver that does not know it must
+ * not make it look fine.
+ */
+export function isLoopbackName(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  return h === 'localhost' || h.endsWith('.localhost');
+}
+
 /** Why a push address is refused at registration, or null when it is fine to try. */
 export function pushAddressProblem(endpoint: string): 'not_https' | null {
   // An https address with a host: the vault sends nothing any other way.

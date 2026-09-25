@@ -126,10 +126,11 @@ describe('uploads you can retry', () => {
     });
     admin = createPool(h.adminUrl, 2);
   }, 120_000);
+  // Closing waits for every upload still in flight: under load, longer than the default 10 s.
   afterAll(async () => {
     await admin?.end();
     await h?.close();
-  });
+  }, 30_000);
 
   it('a capture retried with the same key returns the first document and makes nothing new', async () => {
     const key = randomUUID();
