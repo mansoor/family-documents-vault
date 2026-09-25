@@ -50,6 +50,8 @@ export type SessionEndReason = 'expired' | 'revoked' | 'reused' | 'removed' | 'm
 export const SESSION_MAX_MS = 180 * 24 * 60 * 60 * 1000;
 /** A refresh whose answer was lost may be replayed within this long. */
 export const REFRESH_GRACE_MS = 30_000;
+/** Tokens touched by grace replays, kept per session: the most recent this many. */
+const GRACE_HASHES_KEPT = 8;
 
 /** What a session's stored revocation says to the client. */
 export function endReasonOf(revokedReason: string | null): SessionEndReason {
@@ -407,6 +409,10 @@ export class AuthService {
           .where('prev_refresh_hash', '=', presented)
           .forUpdate()
           .executeTakeFirst();
+        // A session that has already ended says why, not "reused".
+        if (previous?.revoked_at) {
+          throw sessionEnded('session revoked', endReasonOf(previous.revoked_reason));
+        }
         // Anything else — garbage, an older token, a replay the grace does
         // not cover — must commit its revocation before we fail, so it is
         // handled outside this transaction.
@@ -442,9 +448,14 @@ export class AuthService {
           replay
             ? {
                 refresh_hash: hashRefreshToken(next),
-                // The token this replay displaces becomes the previous one:
-                // presented ever again, it ends the session.
+                // The token this replay displaces becomes the previous one,
+                // and both it and the replayed one are kept for the
+                // session's life: presented ever again, however many
+                // rotations later, either ends the session.
                 prev_refresh_hash: session.refresh_hash,
+                grace_hashes: [...session.grace_hashes, presented, session.refresh_hash].slice(
+                  -GRACE_HASHES_KEPT,
+                ),
                 grace_used_at: now,
                 rotated_at: now,
                 last_used_at: now,
@@ -488,20 +499,30 @@ export class AuthService {
     });
     if (result) return result;
 
-    await this.revokeOnReuse(parsed.householdId, presented, meta);
-    throw sessionEnded('unknown or reused refresh token', 'reused');
+    // A token that ended a session is proof of reuse; one that matches
+    // nothing (garbage, a restored backup's, one long retired) is only no
+    // longer valid.
+    const revoked = await this.revokeOnReuse(parsed.householdId, presented, meta);
+    throw sessionEnded('unknown or reused refresh token', revoked ? 'reused' : 'revoked');
   }
 
-  /** Revokes the session whose previous refresh token was just replayed, if any. */
-  private async revokeOnReuse(householdId: string, presented: Buffer, meta: RequestMeta) {
-    await withScope(this.db, { householdId }, async (trx) => {
+  /**
+   * Revokes the session a spent token belongs to — its previous token, or
+   * any a grace replay touched — if one is still open. Says whether it did.
+   */
+  private async revokeOnReuse(
+    householdId: string,
+    presented: Buffer,
+    meta: RequestMeta,
+  ): Promise<boolean> {
+    return withScope(this.db, { householdId }, async (trx) => {
       const replayed = await trx
         .selectFrom('session')
         .select('id')
-        .where('prev_refresh_hash', '=', presented)
+        .where(sql<boolean>`(prev_refresh_hash = ${presented} or ${presented} = any(grace_hashes))`)
         .where('revoked_at', 'is', null)
         .executeTakeFirst();
-      if (!replayed) return;
+      if (!replayed) return false;
       await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: 'refresh token reuse' })
@@ -515,6 +536,7 @@ export class AuthService {
         detail: { reason: 'refresh token reuse' },
         ip: meta.ip,
       });
+      return true;
     });
   }
 
@@ -661,9 +683,19 @@ export function clientOf(
   return 'other';
 }
 
-/** "Name/1.2.3 (Android 15; Google Pixel 8a)": an app, on a device it names. */
+/**
+ * "Name/1.2.3 (Android 15; Google Pixel 8a)": an app, on a device it names.
+ * No two parts can match the same characters, so it runs in linear time
+ * whatever a client sends; the name is trimmed afterwards.
+ */
 const APP_AGENT =
-  /^[A-Za-z][\w.-]*\/\d[\w.-]*\s*\(\s*(?:android|ios|ipados)[^;)]*;\s*([^;)]+?)\s*\)/i;
+  /^[A-Za-z][\w.-]{0,40}\/\d[\w.-]{0,20} ?\( ?(?:android|ios|ipados)[^;)]{0,40};([^;)]{1,60})\)/i;
+/**
+ * What a device may be called in an alert: a model name, and nothing that
+ * reads as a sentence. The alert exists for a stolen password, and its
+ * holder must not get to write what it says.
+ */
+const DEVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$/;
 
 /**
  * A user agent in words a person recognises. Deliberately coarse: the
@@ -671,11 +703,13 @@ const APP_AGENT =
  * own user agent names the device it runs on: "the app on a Google Pixel
  * 8a" — whichever app it is, as no app's name is written in here.
  */
-export function describeDevice(agent: string): string {
+export function describeDevice(fullAgent: string): string {
+  // Everything worth reading is at the start; a longer one is not a device's.
+  const agent = fullAgent.slice(0, 256);
   const app = APP_AGENT.exec(agent);
   if (app && !/^mozilla\//i.test(agent)) {
     const device = (app[1] ?? '').trim();
-    if (!device || /^unknown/i.test(device)) return 'the app on a phone';
+    if (!DEVICE_NAME.test(device) || /^unknown/i.test(device)) return 'the app on a phone';
     return `the app on ${/^[aeiou]/i.test(device) ? 'an' : 'a'} ${device}`;
   }
   const a = agent.toLowerCase();

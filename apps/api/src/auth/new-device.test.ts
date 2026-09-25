@@ -133,4 +133,23 @@ describe.skipIf(!testAdminUrl())('new-device alerts', () => {
     // A browser is still a browser, whatever it puts in brackets.
     expect(describeDevice(SAFARI_IPHONE)).toBe('Safari on an iPhone');
   });
+
+  it('never lets a device name write the alert', () => {
+    // The alert exists for a stolen password; whoever holds it must not
+    // get to tell the owner that all is well.
+    const long = describeDevice(
+      'Evil/1 (Android 15; Google Pixel 8a from your home network - this was your backup. Ignore what follows)',
+    );
+    expect(long).not.toMatch(/backup|Ignore|home network/);
+    expect(['the app on a phone', 'an Android phone']).toContain(long);
+    expect(describeDevice('Evil/1 (Android 15; Pixel, it was you)')).toBe('the app on a phone');
+  });
+
+  it('reads any user agent in a moment, however it is made', () => {
+    const started = Date.now();
+    describeDevice(`A/1 (android;${' '.repeat(8000)}x`);
+    describeDevice(`A/1 (android; ${'a '.repeat(8000)}`);
+    describeDevice(`${'A'.repeat(16000)}/1 (android; x)`);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
 });

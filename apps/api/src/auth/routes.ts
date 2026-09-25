@@ -49,7 +49,9 @@ export function metaOf(req: FastifyRequest): RequestMeta {
   const installation = req.headers['x-fdv-installation'];
   const installationId =
     typeof installation === 'string' && UUID.test(installation) ? installation.toLowerCase() : null;
-  return { ip: req.ip, userAgent: req.headers['user-agent'] ?? null, installationId };
+  // A user agent is kept to its first 512 characters: all a person needs, and all we store.
+  const agent = req.headers['user-agent'];
+  return { ip: req.ip, userAgent: agent ? agent.slice(0, 512) : null, installationId };
 }
 
 /**

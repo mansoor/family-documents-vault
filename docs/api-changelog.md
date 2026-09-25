@@ -474,16 +474,20 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     once more — within 30 s of its rotation, from the session's own
     installation — and gets a new rotation (audited as
     `auth.refresh_replayed`); the token it displaces becomes the previous
-    one, so presenting that ends the session. Every other replay ends the
-    session, as before. A browser never gets this.
+    one. Both the replayed token and the one it displaced are kept for the
+    session's life: presented again, however many rotations later, either
+    ends the session. Every other replay ends the session, as before. A
+    browser never gets this.
   - **Changed:** sessions slide. Each refresh sets the session's end to 30
     days from now, but never past 180 days from the sign-in, and
     `refresh_expires_in` says what is really left. Sessions open before
     the upgrade get their 180 days from when they began.
   - **New, additive:** `401 session_ended` carries `error.reason`:
     `expired`, `revoked`, `reused`, `removed` or `malformed` — on refresh,
-    and on any request with a token whose session has ended. `detail`
-    stays a free-text string.
+    and on any request with a token whose session has ended. `reused`
+    means a spent token was presented and that ended the session; a
+    refresh token the vault does not recognise at all is `revoked`.
+    `detail` stays a free-text string.
   - **New, additive:** `GET /api/v1/auth/sessions` items carry `client`
     (`app`, `browser` or `other`) and `label` ("the app on a Google Pixel
     8a", "Firefox on a Mac").

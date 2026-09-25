@@ -115,13 +115,43 @@ describe.skipIf(!testAdminUrl())('refresh grace, sliding expiry, and why a sessi
     expect((await refresh(t1.refresh_token)).statusCode).toBe(401);
   });
 
-  it('a second replay of the same token is refused', async () => {
+  it('a second replay of the same token ends the session: a lost answer twice leaves nothing behind', async () => {
     const t0 = await signIn();
-    await refreshed(t0.refresh_token);
-    await refreshed(t0.refresh_token); // the one replay
+    await refreshed(t0.refresh_token); // lost
+    const graced = await refreshed(t0.refresh_token); // the one replay — lost too
     const second = await refresh(t0.refresh_token);
     expect(second.statusCode).toBe(401);
     expect(reasonOf(second).reason).toBe('reused');
+    // Not an orphan still open on the vault: the session is over.
+    expect((await refresh(graced.refresh_token)).statusCode).toBe(401);
+    const row = await admin.query<{ revoked_at: Date | null }>(
+      'select revoked_at from session where id = $1',
+      [await sessionOf(t0)],
+    );
+    expect(row.rows[0]?.revoked_at).not.toBeNull();
+  });
+
+  it('a thief who replays and rotates at once still loses the session to the owner’s token', async () => {
+    const t0 = await signIn();
+    const owners = await refreshed(t0.refresh_token);
+    const thiefs = await refreshed(t0.refresh_token); // the grace, with the installation id
+    const rotated = await refreshed(thiefs.refresh_token); // and on at once
+    // Rotations later, the token the replay displaced still ends it.
+    const next = await refresh(owners.refresh_token);
+    expect(next.statusCode).toBe(401);
+    expect(reasonOf(next).reason).toBe('reused');
+    expect((await refresh(rotated.refresh_token)).statusCode).toBe(401);
+  });
+
+  it('the previous token of a session signed out elsewhere says it was signed out, not reused', async () => {
+    const t0 = await signIn();
+    const t1 = await refreshed(t0.refresh_token); // its answer is lost…
+    await h.app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: h.as(t1) }); // …and it is signed out
+    const retry = await refresh(t0.refresh_token);
+    expect(reasonOf(retry)).toMatchObject({ code: 'session_ended', reason: 'revoked' });
+    // A token that matches nothing at all is only no longer valid.
+    const unknown = await refresh(`${t0.refresh_token.slice(0, -4)}AAAA`);
+    expect(reasonOf(unknown).reason).toBe('revoked');
   });
 
   it("a thief who replays first loses the session at the owner's next refresh", async () => {

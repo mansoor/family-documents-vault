@@ -130,6 +130,8 @@ export interface Schema {
     grace_used_at: Timestamp | null;
     /** 180 days from the sign-in: no refresh goes past it. */
     absolute_expires_at: GeneratedTimestamp;
+    /** Tokens a grace replay touched: presented again, they end the session. */
+    grace_hashes: ColumnType<Buffer[], Buffer[] | undefined, Buffer[]>;
   };
 
   household_profile: {

@@ -31,6 +31,10 @@ interface FakeSession {
   /** When the refresh token was last replaced, and whether its one replay is spent. */
   rotatedAt?: number;
   graceUsed?: boolean;
+  /** Tokens a grace replay touched: presented again, they end the session. */
+  graceTokens?: string[];
+  /** Why it ended, as the real vault says it. */
+  endedBecause?: 'revoked' | 'reused';
 }
 
 export interface FakeVaultState {
@@ -210,7 +214,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const id = auth ? state.access.get(auth) : undefined;
       const s = state.sessions.find((x) => x.id === id);
       if (!s) return fail(401, 'unauthenticated', 'Sign in first.');
-      if (s.revoked) return ended('revoked');
+      if (s.revoked) return ended(s.endedBecause ?? 'revoked');
       return s;
     };
 
@@ -260,7 +264,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const current = state.sessions.find((s) => s.refresh === presented);
       const replayed = state.sessions.find((s) => s.previous === presented);
       const installation = init.headers['x-fdv-installation'] ?? null;
-      if (replayed && !replayed.revoked) {
+      // A session already ended says why.
+      if (replayed?.revoked) return ended(replayed.endedBecause ?? 'revoked');
+      const touched = state.sessions.find((s) => !s.revoked && s.graceTokens?.includes(presented));
+      if (touched) {
+        touched.revoked = true;
+        touched.endedBecause = 'reused';
+        return ended('reused');
+      }
+      if (replayed) {
         // As the real vault (0.4.11): the token just replaced, once, within
         // 30 s, from the session's own installation — an answer lost on the
         // way. The token it displaces becomes the previous one.
@@ -270,6 +282,11 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           replayed.installation === installation &&
           Date.now() - (replayed.rotatedAt ?? 0) <= 30_000;
         if (grace) {
+          replayed.graceTokens = [
+            ...(replayed.graceTokens ?? []),
+            presented,
+            replayed.refresh,
+          ].slice(-8);
           replayed.previous = replayed.refresh;
           replayed.refresh = next('refresh');
           replayed.graceUsed = true;
@@ -278,10 +295,11 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         }
         // A spent token, presented again, is theft: the whole session goes.
         replayed.revoked = true;
+        replayed.endedBecause = 'reused';
         return ended('reused');
       }
-      if (!current) return ended('reused');
-      if (current.revoked) return ended('revoked');
+      if (!current) return ended('revoked');
+      if (current.revoked) return ended(current.endedBecause ?? 'revoked');
       current.previous = current.refresh;
       current.refresh = next('refresh');
       current.rotatedAt = Date.now();
