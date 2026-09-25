@@ -52,6 +52,11 @@ export interface CapabilityFeatures {
    * reports afterwards (POST /offline/opens).
    */
   offline_essentials: boolean;
+  /**
+   * The phone app can have its notifications through its own UnifiedPush
+   * distributor (4.13). The same fact as `push`: the VAPID keys are set.
+   */
+  unified_push?: boolean;
 }
 
 export interface CapabilityLimits {

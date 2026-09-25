@@ -42,6 +42,7 @@ services:
       FDV_MASTER_KEY: ${FDV_MASTER_KEY:?run scripts/gen-env.mjs first}
       FDV_DISPLAY_NAME: ${FDV_DISPLAY_NAME:-Our family vault}
       FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
+      FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: ${FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS:-false}
       # Where the vault is published. The API needs it for the same reason
       # the worker does — links it puts in email — and for two things only
       # it does: checking the origin a passkey was signed for, and deciding
@@ -75,6 +76,7 @@ services:
       FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
       FDV_VAPID_PRIVATE_KEY: ${FDV_VAPID_PRIVATE_KEY:-}
       FDV_VAPID_SUBJECT: ${FDV_VAPID_SUBJECT:-mailto:vault@example.invalid}
+      FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: ${FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS:-false}
       FDV_WEEKLY_HOUR: ${FDV_WEEKLY_HOUR:-18}
       FDV_OCR_MAX_PAGES: ${FDV_OCR_MAX_PAGES:-20}
       FDV_BACKUP_CRON: ${FDV_BACKUP_CRON:-30 2 * * *}

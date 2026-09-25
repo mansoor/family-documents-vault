@@ -54,6 +54,8 @@ describe('buildCapabilities', () => {
       page_previews: true,
       // 0.4.13: a phone may keep the Essentials (4.9).
       offline_essentials: true,
+      // 0.4.14: the phone app's notifications through UnifiedPush — as push is (4.13).
+      unified_push: false,
     });
     expect(caps.deprecations).toEqual([]);
   });

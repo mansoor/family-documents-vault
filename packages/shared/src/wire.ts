@@ -315,12 +315,23 @@ export interface Page<T> {
 
 export interface DeviceRow {
   id: string;
+  /** A browser, or the phone app through its distributor (4.13). */
+  kind?: 'web_push' | 'unified_push' | 'apns' | 'fcm';
   endpoint: string;
   label: string | null;
   user_agent: string | null;
   created_at: string;
   last_used_at: string | null;
   working: boolean;
+  /** When it last failed, while it is not working (4.13). */
+  failed_at?: string | null;
+  /** Registered by the session asking (4.13). */
+  this_session?: boolean;
+  /**
+   * Its session expired or was ended: it hears nothing (and `working` is
+   * false) until that device signs in again (0.4.14).
+   */
+  signed_out?: boolean;
 }
 
 export interface PushKey {

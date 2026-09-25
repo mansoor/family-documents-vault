@@ -26,6 +26,7 @@ import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
+import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
 import { serverVersion } from './version.js';
 
@@ -98,6 +99,8 @@ async function main(): Promise<void> {
    * an SMTP handshake. The job name matches `JOBS.alertSend` in the worker.
    */
   const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
+  // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
+  const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
 
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
     (trx, householdId) => vaults.createDefaultLocal(trx, householdId),
     alert,
     totp,
+    push,
   );
   const passkeys = new PasskeyService(
     db,
@@ -145,10 +149,11 @@ async function main(): Promise<void> {
       deriveKey(masterSecret, 'smtp-credentials'),
       config.FDV_VAPID_PUBLIC_KEY ?? null,
       alert,
+      { push, allowPrivateEndpoints: config.FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS === 'true' },
     ),
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
-    coOwners: new CoOwnerService(db, alert),
+    coOwners: new CoOwnerService(db, alert, push),
     shares: new ShareService(db, keys, vaults),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
@@ -160,6 +165,7 @@ async function main(): Promise<void> {
       config.FDV_BASE_URL,
       alert,
       Boolean(config.FDV_SMTP_URL),
+      push,
     ),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });

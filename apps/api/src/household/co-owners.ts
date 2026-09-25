@@ -5,6 +5,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { AlertRequest } from '../alert-job.js';
+import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 
 /**
  * Co-owners (SHR-09, SHR-10).
@@ -58,6 +59,8 @@ export class CoOwnerService {
     private readonly db: Db,
     /** Tells a set of accounts something. Returns without waiting. */
     private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
+    /** Pushes the worker sends (4.13): "you were signed out" to a removed sign-in's phones. */
+    private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
   ) {}
 
   // ------------------------------------------------------------- changing
@@ -121,6 +124,7 @@ export class CoOwnerService {
         // new owner can change where the family's files are kept.
         const adults = await this.adultAccounts(trx, p.accountId);
         await this.alert({
+          pushType: 'owner_change',
           householdId: p.householdId,
           accountIds: adults,
           subject: `${target.display_name} is now an owner`,
@@ -183,6 +187,7 @@ export class CoOwnerService {
   /** Takes a person's sign-in away. The person and their documents stay. */
   async removeSignIn(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'member.remove');
+    let removedPhones: PushTarget[] = [];
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
@@ -221,6 +226,8 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .where('revoked_at', 'is', null)
         .execute();
+      // And every device of theirs here: nothing more is pushed to them (4.13).
+      removedPhones = await endDevices(trx, { accountId: target.account_id });
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -231,6 +238,13 @@ export class CoOwnerService {
         ip: meta.ip,
       });
     });
+    if (removedPhones.length > 0) {
+      await this.push({
+        householdId: p.householdId,
+        message: SESSION_ENDED,
+        targets: removedPhones,
+      });
+    }
   }
 
   /**
@@ -311,6 +325,7 @@ export class CoOwnerService {
         ip: meta.ip,
       });
       await this.alert({
+        pushType: 'owner_change',
         householdId: p.householdId,
         accountIds: [account],
         subject: 'You can sign in to your family vault again',
@@ -364,6 +379,7 @@ export class CoOwnerService {
         ip: meta.ip,
       });
       await this.alert({
+        pushType: 'owner_change',
         householdId: p.householdId,
         accountIds: [row.requested_by],
         subject: `${row.target_name} refused the change`,
@@ -473,6 +489,7 @@ export class CoOwnerService {
         ip: meta.ip,
       });
       await this.alert({
+        pushType: 'owner_change',
         householdId: p.householdId,
         accountIds: [row.target_account],
         subject: `You are no longer an owner of ${row.household_name}`,
@@ -593,6 +610,7 @@ export class CoOwnerService {
       .where('role', '=', 'owner')
       .execute();
     await this.alert({
+      pushType: 'owner_change',
       householdId: p.householdId,
       accountIds: [...new Set(owners.map((o) => o.account_id))],
       subject: `A request to take away ${target.display_name}'s owner role`,

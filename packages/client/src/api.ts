@@ -384,8 +384,20 @@ export function createApi(http: Http) {
     devices: (token: string) => request<{ items: DeviceRow[] }>('/api/v1/devices', { token }),
     registerDevice: (
       token: string,
-      body: { endpoint: string; keys: { p256dh: string; auth: string }; label?: string },
+      body: {
+        endpoint: string;
+        keys: { p256dh: string; auth: string };
+        label?: string;
+        /** 0.4.14: 'unified_push' for the phone app's distributor. */
+        kind?: 'web_push' | 'unified_push';
+      },
     ) => request<{ id: string }>('/api/v1/devices', { method: 'POST', body, token }),
+    /** A test push to one of your own devices (0.4.14). */
+    testDevice: (token: string, id: string) =>
+      request<{ queued: boolean }>(`/api/v1/devices/${encodeURIComponent(id)}/test`, {
+        method: 'POST',
+        token,
+      }),
     removeDevice: (token: string, endpoint: string) =>
       request<void>('/api/v1/devices', { method: 'DELETE', body: { endpoint }, token }),
     preferences: (token: string) =>

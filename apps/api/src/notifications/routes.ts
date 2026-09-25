@@ -39,6 +39,11 @@ export function registerNotifications(
       ),
   );
 
+  app.post<{ Params: { id: string } }>('/api/v1/devices/:id/test', auth, async (req, reply) => {
+    await notifications.testDevice(principal(req), parse(z.string().uuid(), req.params.id));
+    return reply.status(202).send({ queued: true });
+  });
+
   app.delete('/api/v1/devices', auth, async (req, reply) => {
     const body = parse(z.object({ endpoint: z.string().url().max(2048) }), req.body);
     await notifications.removeDevice(principal(req), body.endpoint);

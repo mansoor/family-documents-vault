@@ -15,6 +15,7 @@ import {
   verifyAccessToken,
   type AccessClaims,
 } from './tokens.js';
+import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 
 /**
  * Accounts, sessions and the first-run setup. Everything here runs inside
@@ -103,6 +104,7 @@ export class AuthService {
       accountIds: string[];
       subject: string;
       body: string;
+      pushType?: 'new_device' | 'owner_change';
     }) => Promise<void> = async () => undefined,
     private readonly mfa: {
       isEnabled: (accountId: string) => Promise<boolean>;
@@ -110,6 +112,8 @@ export class AuthService {
       accountFromMfaToken: (token: string) => Promise<string>;
       verify: (accountId: string, code: string) => Promise<boolean>;
     } | null = null,
+    /** Pushes the worker sends (4.13): "you were signed out" to a session's phones. */
+    private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
   ) {}
 
   async setupComplete(): Promise<boolean> {
@@ -348,6 +352,7 @@ export class AuthService {
       householdId: p.householdId,
       accountIds: [p.accountId],
       subject: 'A new device signed in to your vault',
+      pushType: 'new_device',
       body: `Somebody signed in ${device.startsWith('the app') ? 'with' : 'on'} ${device}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it wasn't, change your password and sign that device out under Settings.`,
     });
   }
@@ -515,19 +520,24 @@ export class AuthService {
     presented: Buffer,
     meta: RequestMeta,
   ): Promise<boolean> {
-    return withScope(this.db, { householdId }, async (trx) => {
+    const ended = await withScope(this.db, { householdId }, async (trx) => {
       const replayed = await trx
         .selectFrom('session')
-        .select('id')
+        .select(['id', 'account_id'])
         .where(sql<boolean>`(prev_refresh_hash = ${presented} or ${presented} = any(grace_hashes))`)
         .where('revoked_at', 'is', null)
         .executeTakeFirst();
-      if (!replayed) return false;
+      if (!replayed) return null;
       await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: 'refresh token reuse' })
         .where('id', '=', replayed.id)
         .execute();
+      // Its devices go with it; its phones are told once this commits.
+      const phones = await endDevices(trx, {
+        accountId: replayed.account_id,
+        sessionIds: [replayed.id],
+      });
       await appendAudit(trx, {
         householdId,
         action: 'auth.session_revoked',
@@ -536,8 +546,17 @@ export class AuthService {
         detail: { reason: 'refresh token reuse' },
         ip: meta.ip,
       });
-      return true;
+      return phones;
     });
+    if (ended === null) return false;
+    await this.tellEnded(householdId, ended);
+    return true;
+  }
+
+  /** "You were signed out", to the phones of sessions that just ended (4.13). */
+  private async tellEnded(householdId: string, phones: PushTarget[]): Promise<void> {
+    if (phones.length > 0)
+      await this.push({ householdId, message: SESSION_ENDED, targets: phones });
   }
 
   /** Verifies a bearer token and confirms its session is still open. */
@@ -635,7 +654,7 @@ export class AuthService {
   }
 
   async revokeSession(p: Principal, sessionId: string, meta: RequestMeta, reason: string) {
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const phones = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const r = await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: reason })
@@ -654,7 +673,10 @@ export class AuthService {
         objectId: sessionId,
         ip: meta.ip,
       });
+      // Signed out or revoked: nothing more is pushed to it (4.13).
+      return endDevices(trx, { accountId: p.accountId, sessionIds: [sessionId] });
     });
+    await this.tellEnded(p.householdId, phones);
   }
 }
 

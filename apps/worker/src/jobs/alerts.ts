@@ -1,7 +1,8 @@
+import type https from 'node:https';
 import { withHousehold, type Db } from '@fdv/db';
 import nodemailer from 'nodemailer';
-import webpush from 'web-push';
 import { liveDevice, openPassword, type VapidKeys } from './notify.js';
+import { deliver, pushDepsOf, unifiedPayload } from './push.js';
 
 /**
  * Alerts: one thing, to named people, now.
@@ -38,6 +39,11 @@ export interface Alert {
    * mail server is one an owner can point at themselves.
    */
   via?: 'operator';
+  /**
+   * What a phone is told (4.13), as a word and nothing more: a new device,
+   * a change of owner. An alert without one is not pushed to phones.
+   */
+  push_type?: 'new_device' | 'owner_change';
 }
 
 export interface AlertDeps {
@@ -48,6 +54,8 @@ export interface AlertDeps {
   /** The operator's mail server (FDV_SMTP_URL), if there is one. */
   operatorMail?: { url: string; from: string } | null;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  agent?: https.Agent;
+  allowPrivate?: boolean;
 }
 
 export function isAlert(data: unknown): data is Alert {
@@ -81,13 +89,12 @@ export async function sendAlert(deps: AlertDeps, alert: Alert): Promise<string[]
 
 async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
   if (!deps.vapid) return 0;
-  webpush.setVapidDetails(deps.vapid.subject, deps.vapid.publicKey, deps.vapid.privateKey);
   const devices = await withHousehold(deps.app, alert.household_id, (trx) =>
     trx
       .selectFrom('device')
-      .select(['id', 'endpoint', 'p256dh', 'auth'])
+      .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
       .where('failed_at', 'is', null)
-      .where('kind', '=', 'web_push')
+      .where('kind', 'in', ['web_push', 'unified_push'])
       .where('account_id', 'in', alert.account_ids)
       .where(liveDevice)
       .execute(),
@@ -99,22 +106,30 @@ async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
     // No tag: one alert must never replace another in the tray.
     count: 1,
   });
+  const pd = pushDepsOf(deps);
   let sent = 0;
   for (const d of devices) {
     if (!d.p256dh || !d.auth) continue;
-    try {
-      await webpush.sendNotification(
-        { endpoint: d.endpoint, keys: { p256dh: d.p256dh, auth: d.auth } },
-        payload,
-        { TTL: 24 * 3600, urgency: 'high' },
-      );
-      sent++;
-    } catch (err) {
-      deps.log('warn', 'alert push failed', {
-        device_id: d.id,
-        status: (err as { statusCode?: number }).statusCode,
-      });
-    }
+    // A phone is told only the word, and only for the alerts that have one.
+    if (d.kind === 'unified_push' && !alert.push_type) continue;
+    const body =
+      d.kind === 'unified_push' && alert.push_type
+        ? unifiedPayload({ v: 1, type: alert.push_type })
+        : payload;
+    const outcome = await deliver(
+      pd,
+      {
+        id: d.id,
+        household_id: alert.household_id,
+        endpoint: d.endpoint,
+        p256dh: d.p256dh,
+        auth: d.auth,
+      },
+      body,
+      alert.push_type ?? 'test',
+      { urgency: 'high', topic: false },
+    );
+    if (outcome === 'sent') sent++;
   }
   return sent;
 }

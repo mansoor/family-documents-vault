@@ -111,6 +111,29 @@ export async function enable(token: string): Promise<PushState> {
   return { kind: 'on' };
 }
 
+/**
+ * Signed in again (0.4.14): a browser that already has notifications on
+ * tells the vault once more, so its row follows the new sign-in — and ends
+ * with it, not with the one before. Quietly: nothing here asks anything.
+ */
+export async function repost(token: string): Promise<void> {
+  if (!supported() || Notification.permission !== 'granted') return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    const sub = await reg?.pushManager.getSubscription();
+    const json = sub?.toJSON() as
+      { endpoint?: string; keys?: { p256dh?: string; auth?: string } } | undefined;
+    if (!json?.endpoint || !json.keys?.p256dh || !json.keys.auth) return;
+    await api.registerDevice(token, {
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+      label: deviceLabel(),
+    });
+  } catch {
+    // Turning them on again in Notifications does the same.
+  }
+}
+
 export async function disable(token: string): Promise<PushState> {
   const reg = await registration();
   const sub = await reg?.pushManager.getSubscription();

@@ -430,7 +430,7 @@ export interface Schema {
     id: Generated<string>;
     household_id: string;
     account_id: string;
-    kind: Generated<'web_push' | 'apns' | 'fcm'>;
+    kind: Generated<'web_push' | 'unified_push' | 'apns' | 'fcm'>;
     endpoint: string;
     p256dh: string | null;
     auth: string | null;
@@ -442,6 +442,10 @@ export interface Schema {
     fail_reason: string | null;
     /** The sign-in that turned it on; pushes stop when it ends (0020). */
     session_id: Generated<string | null>;
+    /** The app installation that registered it (0029). */
+    installation_id: Generated<string | null>;
+    /** Transient failures in a row; the tenth marks it failed (0029). */
+    consecutive_failures: Generated<number>;
   };
 
   smtp_settings: {

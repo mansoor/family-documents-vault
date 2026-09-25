@@ -1,11 +1,16 @@
 import { createCipheriv, randomBytes } from 'node:crypto';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { appendAudit, withScope, type Db } from '@fdv/db';
+import { isPrivateAddress, pushAddressProblem } from '@fdv/shared';
+import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
 import type { AlertRequest } from '../alert-job.js';
+import type { PushRequest } from '../push-job.js';
 
 /**
  * Devices that want push, who wants email, and the household's own SMTP
@@ -14,10 +19,17 @@ import type { AlertRequest } from '../alert-job.js';
  */
 
 export const deviceBody = z.object({
+  /** A browser (Web Push), or the phone app through its distributor (UnifiedPush, 4.13). */
+  kind: z.enum(['web_push', 'unified_push']).default('web_push'),
   endpoint: z.string().url().max(2048),
   keys: z.object({ p256dh: z.string().min(1).max(200), auth: z.string().min(1).max(200) }),
   label: z.string().trim().max(80).optional(),
 });
+
+/** Where a push address's host is, as the vault would reach it. */
+export type Resolve = (host: string) => Promise<string[]>;
+const resolveHost: Resolve = async (host) =>
+  (await lookup(host, { all: true })).map((a) => a.address);
 
 export const preferenceBody = z
   .object({ daily_push: z.boolean(), daily_email: z.boolean(), weekly_email: z.boolean() })
@@ -123,13 +135,57 @@ export interface TestOutcome {
   detail?: string;
 }
 
+/**
+ * Whether a device's session is still going — the worker's `liveDevice`,
+ * seen from the person asking: a device from before 0.4.2 names no session
+ * and goes with the account, which is signed in to be asking.
+ */
+const live = sql<boolean>`(device.session_id is null or exists (
+  select 1 from session s
+   where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))`;
+
 export class NotificationService {
   constructor(
     private readonly db: Db,
     private readonly smtpKey: Buffer,
     private readonly vapidPublicKey: string | null,
     private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
+    private readonly opts: {
+      /** Pushes the worker sends (4.13): a device's test. */
+      push?: (input: PushRequest) => Promise<void>;
+      /** FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: a distributor on the operator's own network. */
+      allowPrivateEndpoints?: boolean;
+      /** Tests: DNS of their own. */
+      resolve?: Resolve;
+    } = {},
   ) {}
+
+  /**
+   * A push address the vault will send to: https, and not inside the
+   * vault's own network (the worker checks again when it connects, on the
+   * address DNS gives then). A name DNS cannot answer for now is left to
+   * that check.
+   */
+  private async checkAddress(endpoint: string): Promise<void> {
+    if (pushAddressProblem(endpoint)) {
+      throw new ApiError(422, 'validation_failed', 'Push addresses must start with https://.');
+    }
+    if (this.opts.allowPrivateEndpoints) return;
+    const host = new URL(endpoint).hostname.replace(/^\[|\]$/g, '');
+    let addresses: string[];
+    try {
+      addresses = isIP(host) ? [host] : await (this.opts.resolve ?? resolveHost)(host);
+    } catch {
+      return;
+    }
+    if (addresses.some((a) => isPrivateAddress(a))) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        "That push address points inside the vault's own network, which isn't allowed.",
+      );
+    }
+  }
 
   /** What the browser needs before it can subscribe. */
   pushKey(): { public_key: string | null; enabled: boolean } {
@@ -144,13 +200,26 @@ export class NotificationService {
         'This vault is not set up for notifications yet.',
       );
     }
+    await this.checkAddress(input.endpoint);
+    const installation = meta.installationId ?? null;
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      // A phone signing in again brings a new address: its old one goes.
+      if (installation && input.kind === 'unified_push') {
+        await trx
+          .deleteFrom('device')
+          .where('account_id', '=', p.accountId)
+          .where('installation_id', '=', installation)
+          .where('kind', '=', 'unified_push')
+          .where('endpoint', '!=', input.endpoint)
+          .execute();
+      }
       const row = await trx
         .insertInto('device')
         .values({
           household_id: p.householdId,
           account_id: p.accountId,
-          kind: 'web_push',
+          kind: input.kind,
+          installation_id: installation,
           endpoint: input.endpoint,
           p256dh: input.keys.p256dh,
           auth: input.keys.auth,
@@ -163,11 +232,15 @@ export class NotificationService {
           oc.column('endpoint').doUpdateSet({
             account_id: p.accountId,
             household_id: p.householdId,
+            // Signed in again: it follows the new session (and ends with it).
             session_id: p.sessionId,
+            kind: input.kind,
+            installation_id: installation,
             p256dh: input.keys.p256dh,
             auth: input.keys.auth,
             failed_at: null,
             fail_reason: null,
+            consecutive_failures: 0,
             user_agent: meta.userAgent ?? null,
           }),
         )
@@ -206,27 +279,76 @@ export class NotificationService {
         .selectFrom('device')
         .select([
           'id',
+          'kind',
           'endpoint',
           'label',
           'user_agent',
           'created_at',
           'last_used_at',
           'failed_at',
+          'session_id',
         ])
+        .select(live.as('live'))
         .where('account_id', '=', p.accountId)
         .orderBy('created_at', 'desc')
         .execute(),
     ).then((rows) =>
       rows.map((r) => ({
         id: r.id,
+        kind: r.kind,
         endpoint: r.endpoint,
         label: r.label,
         user_agent: r.user_agent,
         created_at: r.created_at.toISOString(),
         last_used_at: r.last_used_at?.toISOString() ?? null,
-        working: r.failed_at === null,
+        working: r.failed_at === null && r.live,
+        failed_at: r.failed_at?.toISOString() ?? null,
+        this_session: r.session_id === p.sessionId,
+        signed_out: !r.live,
       })),
     );
+  }
+
+  /** A test push, to one of your own devices only (4.13). */
+  async testDevice(p: Principal, id: string): Promise<void> {
+    const device = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+      trx
+        .selectFrom('device')
+        .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
+        .select(live.as('live'))
+        .where('id', '=', id)
+        .where('account_id', '=', p.accountId)
+        .executeTakeFirst(),
+    );
+    if (
+      !device ||
+      !device.p256dh ||
+      !device.auth ||
+      (device.kind !== 'web_push' && device.kind !== 'unified_push')
+    ) {
+      throw new ApiError(404, 'not_found', 'There is no such device of yours.');
+    }
+    // Digests and alerts skip it (the worker's liveDevice): a test must not say it works.
+    if (!device.live) {
+      throw new ApiError(
+        409,
+        'signed_out',
+        'That device is signed out. Sign in on it again and it will hear from the vault.',
+      );
+    }
+    await this.opts.push?.({
+      householdId: p.householdId,
+      message: { v: 1, type: 'test' },
+      targets: [
+        {
+          id: device.id,
+          kind: device.kind,
+          endpoint: device.endpoint,
+          p256dh: device.p256dh,
+          auth: device.auth,
+        },
+      ],
+    });
   }
 
   async preferences(p: Principal) {

@@ -460,8 +460,35 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
-- Essentials a phone may keep (0.4.13, `features.offline_essentials`).
+- UnifiedPush for the phone app (0.4.14, `features.unified_push`, the same
+  fact as `features.push`).
+  - `POST /api/v1/devices` takes `kind: 'web_push' | 'unified_push'`
+    (default `web_push`). The push address must be `https://` (`422`
+    otherwise) and must not point inside the vault's own network — by name
+    or written out, an IPv4 address inside an IPv6 one included — unless
+    the operator allows it (`422`). A device is bound to the session that
+    registered it (and the app installation); the same address registered
+    again moves it to the new session.
+  - `GET /api/v1/devices` items gain `kind`, `this_session`, `failed_at`
+    and `signed_out`: its session expired or was ended, so `working` is
+    false and it hears nothing until that device signs in again.
+  - **New:** `POST /api/v1/devices/{id}/test` (`202`) sends a test to one
+    of your own devices; anybody else's is a `404`, a signed-out one a
+    `409 signed_out`.
+  - Signing out, `DELETE /api/v1/auth/sessions/{id}`, refresh-token reuse,
+    a password change or reset and a removed sign-in now also remove that
+    session's push devices. Once that has committed, each UnifiedPush
+    device among them is sent `{"v":1,"type":"session_ended"}`, tried again
+    for about four hours if its push service does not take it.
+  - UnifiedPush messages carry no titles:
+    `{"v":1,"type":"digest","count":3,"date":"2026-10-03"}`, `new_device`,
+    `owner_change`, `session_ended` or `test`, encrypted per RFC 8291 with
+    the vault's VAPID keys. Digests, tests and `session_ended` carry one
+    Topic per type (a newer one replaces an older one still waiting);
+    alerts carry none, so one never replaces another. The Sunday summary
+    is email only.
 
+- Essentials a phone may keep (0.4.13, `features.offline_essentials`).
   - **New:** `POST /api/v1/offline/grant` `{password, include_private?}` →
     `{granted_at, expires_at, include_private}`: this session may fill its
     phone until `expires_at` — 30 days at most, never past the session's

@@ -38,6 +38,12 @@ export const JOBS = {
    * digest these are never batched and never wait for nine in the morning.
    */
   alertSend: 'alert.send',
+  /**
+   * A push the API asks for (4.13): a device's test, and "you were signed
+   * out" to the phones of a session that just ended (their rows already
+   * gone, so the job carries what sending needs).
+   */
+  pushSend: 'push.send',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

@@ -179,6 +179,18 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
           .values({ account_id: p.account, household_id: hh, daily_email: true })
           .execute();
       }
+      // And the teen's phone app, through its own push distributor (4.13).
+      await trx
+        .insertInto('device')
+        .values({
+          household_id: hh,
+          account_id: people.teen.account,
+          kind: 'unified_push',
+          endpoint: `https://push.example.test/${TAG}/teen-phone`,
+          p256dh: 'test-key',
+          auth: 'test-auth',
+        })
+        .execute();
       await trx
         .insertInto('smtp_settings')
         .values({
@@ -246,7 +258,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
   });
 
   it('no push carries a title to a phone whose owner may not see it', () => {
-    expect(daily.pushed).toHaveLength(4);
+    expect(daily.pushed).toHaveLength(5);
     for (const who of Object.keys(people) as Who[]) {
       const mine = daily.pushed.filter((x) => x.endpoint.endsWith(`/${who}`));
       expect(mine, who).toHaveLength(1);
@@ -257,6 +269,19 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
       // The count is theirs too: "3 things" would say something is hidden.
       expect((JSON.parse(payload) as { count: number }).count, who).toBe(allowed[who].length);
     }
+  });
+
+  it("a teen's phone is never told about an adults-only reminder", () => {
+    const phone = daily.pushed.filter((x) => x.endpoint.endsWith('/teen-phone'));
+    expect(phone).toHaveLength(1);
+    // A count and a date — theirs, and nothing else.
+    expect(JSON.parse(phone[0]?.payload ?? '')).toEqual({
+      v: 1,
+      type: 'digest',
+      count: allowed.teen.length,
+      date: '2026-09-22',
+    });
+    for (const title of Object.values(TITLES)) expect(phone[0]?.payload).not.toContain(title);
   });
 
   it('the ledger records a private reminder as reaching the one person who may read it', async () => {
