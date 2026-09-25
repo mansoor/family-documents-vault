@@ -488,12 +488,20 @@ export interface Schema {
     dismissed_by: string | null;
   };
 
-  /** Events a phone reported, each received once (0028). */
+  /** Events a phone reported, each received once per account (0028). */
   client_event_receipt: {
     household_id: string;
-    event_id: string;
     account_id: string;
+    event_id: string;
     received_at: GeneratedTimestamp;
+  };
+
+  /** A session's phone has kept this version (0028): the vault's own record. */
+  offline_fill: {
+    household_id: string;
+    session_id: string;
+    version_id: string;
+    filled_at: GeneratedTimestamp;
   };
 
   audit_event: {

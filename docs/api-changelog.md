@@ -469,13 +469,15 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     session with no installation id (only an app keeps documents), `401
 invalid_credentials` for a wrong password, `403` for viewers; 10 a
     minute. `DELETE /api/v1/offline/grant` ends it (`204`); so does
-    anything that ends the session. It never relaxes the step-up on
+    anything that ends the session, and a password change (on this device
+    or another). It never relaxes the step-up on
     `/content` or `/pages`.
   - **New:** `GET /api/v1/offline/essentials` → `{items: [{document,
 version: {id, mime, page_count, preview_pages, preview_state},
 private}], grant, max_offline_days, server_time, truncated}` — the
     complete set this person's phone may keep, at most 500: **what is not
-    in it is to be removed from the phone.** Essentials the person can see,
+    in it is to be removed from the phone.** With no grant in force (never
+    given, ended, or lapsed) it is empty: keep nothing. Essentials the person can see,
     not in the bin, with a file; teens only their own; viewers none; the
     person's own Only me ones only under a grant with `include_private`.
     `mayKeepOffline()` in `@fdv/shared` is the same rule.

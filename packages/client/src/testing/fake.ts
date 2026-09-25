@@ -38,6 +38,8 @@ interface FakeSession {
   graceTokens?: string[];
   /** Why it ended, as the real vault says it. */
   endedBecause?: 'revoked' | 'reused';
+  /** Its offline grant, as the real vault keeps it on the session (0.4.13). */
+  offlineGrant?: OfflineGrant | null;
 }
 
 export interface FakeVaultState {
@@ -69,7 +71,7 @@ export interface FakeVaultState {
    * answers (Only me items only under a grant that includes them), the
    * grant in force, and the ids of the opens already received.
    */
-  offlineEssentials: { items: OfflineItem[]; grant: OfflineGrant | null; received: Set<string> };
+  offlineEssentials: { items: OfflineItem[]; received: Set<string> };
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -183,7 +185,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     reminders: [],
     issuerSuggestions: new Map(),
     pages: new Map(),
-    offlineEssentials: { items: [], grant: null, received: new Set() },
+    offlineEssentials: { items: [], received: new Set() },
     types: FAKE_TYPES.map((t) => ({ ...t })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
@@ -547,30 +549,36 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const s = session();
       if (!('id' in s)) return s;
       const o = state.offlineEssentials;
-      const inSet = (i: OfflineItem) => !i.private || o.grant?.include_private === true;
+      // The grant is the session's, as the real vault keeps it; lapsed is none.
+      const grant =
+        s.offlineGrant && Date.parse(s.offlineGrant.expires_at) > Date.now()
+          ? s.offlineGrant
+          : null;
+      const visible = (i: OfflineItem) => !i.private || grant?.include_private === true;
       if (path === '/api/v1/offline/grant' && init.method === 'POST') {
-        // As the real vault: an app installation first, then the password.
-        if (!init.headers['x-fdv-installation']) {
+        // As the real vault: an app installation (the session's) first, then the password.
+        if (!s.installation) {
           return fail(422, 'validation_failed', 'Only the app keeps documents on a phone.');
         }
         if (body.password !== state.password)
           return fail(401, 'invalid_credentials', "That password isn't right.");
         const now = Date.now();
-        o.grant = {
+        s.offlineGrant = {
           granted_at: new Date(now).toISOString(),
           expires_at: new Date(now + 30 * 86_400_000).toISOString(),
           include_private: body.include_private === true,
         };
-        return ok(o.grant);
+        return ok(s.offlineGrant);
       }
       if (path === '/api/v1/offline/grant' && init.method === 'DELETE') {
-        o.grant = null;
+        s.offlineGrant = null;
         return empty();
       }
       if (path === '/api/v1/offline/essentials' && init.method === 'GET') {
+        // No grant in force: keep nothing.
         return ok({
-          items: o.items.filter(inSet),
-          grant: o.grant,
+          items: grant ? o.items.filter(visible) : [],
+          grant,
           max_offline_days: 90,
           server_time: new Date().toISOString(),
           truncated: false,
@@ -578,9 +586,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       const pageOf = /^\/api\/v1\/offline\/pages\/([^/]+)\/(\d+)$/.exec(path);
       if (pageOf && init.method === 'GET') {
-        const item = o.items.find((i) => i.version.id === pageOf[1] && inSet(i));
+        const item = o.items.find((i) => i.version.id === pageOf[1] && visible(i));
         if (!item) return fail(404, 'not_found', 'That page does not exist.');
-        if (!o.grant) {
+        if (!grant) {
           return fail(
             403,
             'offline_grant_required',
@@ -613,6 +621,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       if (path === '/api/v1/offline/opens' && init.method === 'POST') {
         const events = (body.events as Array<{ id: string; version_id: string }> | undefined) ?? [];
+        if (events.length > 200) return fail(422, 'validation_failed', 'At most 200 at a time.');
         const result = { accepted: 0, duplicates: 0, dropped: 0 };
         for (const e of events) {
           if (!o.items.some((i) => i.version.id === e.version_id)) result.dropped += 1;

@@ -285,7 +285,8 @@ Keeping them asks for the person's password again (not a code: the
 authenticator is usually on the same phone). That permission lasts 30 days at
 most, never longer than the phone's sign-in, and ends when the phone is
 signed out — from the phone, from **Settings → Signed-in devices**, which
-says which devices keep Essentials, or by a password change. It never
+says which devices keep Essentials, or by a password change on any device. When
+it ends, the phone removes what it kept the next time it checks in. It never
 skips the "confirm it's you" the vault asks before opening an Essential
 online.
 

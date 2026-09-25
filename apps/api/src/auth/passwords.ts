@@ -159,6 +159,13 @@ export class PasswordService {
         .where('id', '!=', p.sessionId)
         .where('revoked_at', 'is', null)
         .execute();
+      // This device stays signed in, but keeps no Essentials without the
+      // new password (0.4.13).
+      await trx
+        .updateTable('session')
+        .set({ offline_granted_at: null, offline_expires_at: null, offline_include_private: false })
+        .where('id', '=', p.sessionId)
+        .execute();
       // And they stop being told things there. Devices registered before
       // 0.4.2 name no session, so they go too.
       await trx

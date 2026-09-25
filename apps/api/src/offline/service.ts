@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import argon2 from 'argon2';
 import { appendAudit, withScope, type Db } from '@fdv/db';
 import {
@@ -44,12 +43,6 @@ const grantRequired = () =>
     'Please confirm it is you to keep Essentials on this phone.',
   );
 
-/** A UUID made from its parts: the same session and version always give the same one. */
-function derivedId(...parts: string[]): string {
-  const h = createHash('sha256').update(parts.join('|')).digest('hex');
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
-}
-
 export class OfflineService {
   constructor(
     private readonly db: Db,
@@ -70,7 +63,7 @@ export class OfflineService {
         "People outside the family can't keep documents on a phone.",
       );
     }
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const granted = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const session = await trx
         .selectFrom('session')
         .select(['installation_id', 'absolute_expires_at'])
@@ -93,15 +86,7 @@ export class OfflineService {
         !account?.password_hash ||
         !(await argon2.verify(account.password_hash, input.password))
       ) {
-        await appendAudit(trx, {
-          householdId: p.householdId,
-          actorAccountId: p.accountId,
-          action: 'auth.offline_grant_refused',
-          objectType: 'session',
-          objectId: p.sessionId,
-          ip: meta.ip,
-        });
-        throw refused();
+        return null;
       }
       const now = new Date();
       const expires = new Date(
@@ -135,6 +120,19 @@ export class OfflineService {
         include_private: includePrivate,
       };
     });
+    if (granted) return granted;
+    // Recorded in a transaction of its own: the refusal must not take it back.
+    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+      appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'auth.offline_grant_refused',
+        objectType: 'session',
+        objectId: p.sessionId,
+        ip: meta.ip,
+      }),
+    );
+    throw refused();
   }
 
   /** DELETE /offline/grant: this phone keeps nothing more. */
@@ -175,13 +173,16 @@ export class OfflineService {
     };
   }
 
-  /** GET /offline/essentials: everything this phone may keep, and nothing else. */
+  /**
+   * GET /offline/essentials: everything this phone may keep, and nothing
+   * else. With no grant in force — never given, ended, or lapsed — that is
+   * nothing: a phone that follows the set removes what it holds.
+   */
   async set(p: Principal): Promise<OfflineSet> {
     const grant = await this.current(p);
-    const { items, truncated } = await this.docs.offlineEssentials(
-      p,
-      grant?.include_private ?? false,
-    );
+    const { items, truncated } = grant
+      ? await this.docs.offlineEssentials(p, grant.include_private)
+      : { items: [], truncated: false };
     return {
       items,
       grant,
@@ -209,14 +210,10 @@ export class OfflineService {
     const bytes = await this.docs.page(p, versionId, n, meta, { audit: false });
     await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const first = await trx
-        .insertInto('client_event_receipt')
-        .values({
-          household_id: p.householdId,
-          event_id: derivedId('cached_offline', p.sessionId, versionId),
-          account_id: p.accountId,
-        })
+        .insertInto('offline_fill')
+        .values({ household_id: p.householdId, session_id: p.sessionId, version_id: versionId })
         .onConflict((oc) => oc.doNothing())
-        .returning('event_id')
+        .returning('version_id')
         .executeTakeFirst();
       if (!first) return;
       await appendAudit(trx, {

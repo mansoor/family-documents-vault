@@ -235,10 +235,38 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       }
     });
 
+    /** Each person's phone, with a grant where the vault gives one (never to a viewer). */
+    const emails: Record<Role, string> = {
+      owner: 'owner@example.test',
+      adult: 'parity-adult@example.test',
+      teen: 'parity-teen@example.test',
+      viewer: 'parity-viewer@example.test',
+    };
+    const phoneOf = async (role: Role) => {
+      const password = role === 'owner' ? 'correct horse battery' : 'another correct horse';
+      const signedIn = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        remoteAddress: `10.55.0.${roles.indexOf(role) + 1}`,
+        headers: { 'x-fdv-installation': randomUUID() },
+        payload: { email: emails[role], password },
+      });
+      expect(signedIn.statusCode, signedIn.body).toBe(200);
+      const t = signedIn.json<Tokens>();
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/offline/grant',
+        remoteAddress: `10.55.1.${roles.indexOf(role) + 1}`,
+        headers: h.as(t),
+        payload: { password },
+      });
+      return t;
+    };
+
     it.each(roles)('agrees with canSee and the role policy for a %s', async (role) => {
       const res = await h.app.inject({
         url: '/api/v1/offline/essentials',
-        headers: h.as(people[role]),
+        headers: h.as(await phoneOf(role)),
       });
       expect(res.statusCode, res.body).toBe(200);
       const ids = res

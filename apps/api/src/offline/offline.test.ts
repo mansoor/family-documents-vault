@@ -195,21 +195,34 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     );
   });
 
-  it('the set follows role: a teen gets only their own, a viewer nothing, an adult the adults-only ones', async () => {
-    expect(titles(await setOf(owner))).toEqual([
-      'Adults will',
-      'Household passport',
-      'Teen passport',
-    ]);
-    expect(titles(await setOf(adult))).toEqual([
-      'Adults will',
-      'Household passport',
-      'Teen passport',
-    ]);
-    expect(titles(await setOf(teen))).toEqual(['Teen passport']);
-    expect(titles(await setOf(viewer))).toEqual([]);
+  it('without a grant, the set is empty: keep nothing', async () => {
     const s = await setOf(owner);
-    expect(s).toMatchObject({ grant: null, max_offline_days: 90, truncated: false });
+    expect(s).toMatchObject({ items: [], grant: null, max_offline_days: 90, truncated: false });
+  });
+
+  it('the set follows role: a teen gets only their own, a viewer nothing, an adult the adults-only ones', async () => {
+    const phones = {
+      adult: await phoneOf('adult@example.test', 'adult horse battery'),
+      teen: await phoneOf('teen@example.test', 'teen horse battery'),
+    };
+    expect((await grant(phone, OWNER.password)).statusCode).toBe(200);
+    expect((await grant(phones.adult, 'adult horse battery')).statusCode).toBe(200);
+    expect((await grant(phones.teen, 'teen horse battery')).statusCode).toBe(200);
+    expect(titles(await setOf(phone))).toEqual([
+      'Adults will',
+      'Household passport',
+      'Teen passport',
+    ]);
+    expect(titles(await setOf(phones.adult))).toEqual([
+      'Adults will',
+      'Household passport',
+      'Teen passport',
+    ]);
+    expect(titles(await setOf(phones.teen))).toEqual(['Teen passport']);
+    expect(titles(await setOf(viewer))).toEqual([]);
+    const s = await setOf(phone);
+    expect(s).toMatchObject({ max_offline_days: 90, truncated: false });
+    expect(s.grant).not.toBeNull();
     const item = s.items.find((i) => i.document.title === 'Household passport');
     expect(item?.version).toMatchObject({
       id: version['Household passport'],
@@ -219,12 +232,15 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
   });
 
   it('the grant needs the password — and a member of the family, and the app', async () => {
+    const refusedBefore = (await audits(owner, 'auth.offline_grant_refused')).length;
     const wrong = await grant(phone, 'not my password');
     expect(wrong.statusCode).toBe(401);
     expect(codeOf(wrong)).toMatchObject({
       code: 'invalid_credentials',
       message: "That password isn't right.",
     });
+    // Recorded, though the answer was no.
+    expect(await audits(owner, 'auth.offline_grant_refused')).toHaveLength(refusedBefore + 1);
     const viewerPhone = await phoneOf('viewer@example.test', 'viewer horse battery');
     const refused = await grant(viewerPhone, 'viewer horse battery');
     expect(refused.statusCode).toBe(403);
@@ -450,7 +466,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
         .where('offline_expires_at', 'is not', null)
         .execute(),
     );
-    expect((await setOf(phone)).grant).toBeNull();
+    expect(await setOf(phone)).toMatchObject({ grant: null, items: [] });
     expect(codeOf(await page(phone, version['Household passport'] as string)).code).toBe(
       'offline_grant_required',
     );
@@ -466,6 +482,58 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     expect(Date.parse(g.expires_at)).toBeLessThanOrEqual(Date.now() + 5 * 86_400_000 + 1000);
   });
 
+  it('what a phone sends can never stand in for the vault’s own records', async () => {
+    await grant(phone, OWNER.password);
+    const v = version['Adults will'] as string;
+    await draw(owner, v);
+    const open = (id: string) => ({
+      events: [
+        { id, version_id: v, opened_at: new Date().toISOString(), mode: 'view', online: true },
+      ],
+    });
+    // Any id at all, sent first as an open…
+    const id = randomUUID();
+    await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/offline/opens',
+      headers: h.as(phone),
+      payload: open(id),
+    });
+    // …and filling the phone is still recorded, once.
+    expect((await page(phone, v)).statusCode).toBe(200);
+    expect((await page(phone, v)).statusCode).toBe(200);
+    const kept = (await audits(owner, 'document.cached_offline')).filter(
+      (a) => (a.detail as { version_id: string }).version_id === v,
+    );
+    expect(kept).toHaveLength(1);
+    // Another person's ids are their own: the same id from the adult is theirs to record.
+    const adultPhone = await phoneOf('adult@example.test', 'adult horse battery');
+    const same = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/offline/opens',
+      headers: h.as(adultPhone),
+      payload: open(id),
+    });
+    expect(same.json()).toEqual({ accepted: 1, duplicates: 0, dropped: 0 });
+  });
+
+  it('a password changed on the phone ends its own grant too', async () => {
+    const teenPhone = await phoneOf('teen@example.test', 'teen horse battery');
+    await grant(teenPhone, 'teen horse battery');
+    expect((await setOf(teenPhone)).grant).not.toBeNull();
+    const changed = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password/change',
+      headers: h.as(teenPhone),
+      payload: {
+        current_password: 'teen horse battery',
+        new_password: 'a newer teen horse battery',
+      },
+    });
+    expect(changed.statusCode, changed.body).toBe(204);
+    expect(await setOf(teenPhone)).toMatchObject({ grant: null, items: [] });
+  });
+
   it('ending the grant ends it; a revoked session’s grant opens nothing', async () => {
     await grant(phone, OWNER.password);
     const end = await h.app.inject({
@@ -474,6 +542,8 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
       headers: h.as(phone),
     });
     expect(end.statusCode).toBe(204);
+    // Ended: the phone is told to keep nothing, and fills nothing more.
+    expect((await setOf(phone)).items).toEqual([]);
     expect(codeOf(await page(phone, version['Household passport'] as string)).code).toBe(
       'offline_grant_required',
     );
