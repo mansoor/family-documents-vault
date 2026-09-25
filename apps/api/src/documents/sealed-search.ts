@@ -1,4 +1,5 @@
-import { openChunk, type ScopeKeys } from '@fdv/crypto';
+import type { ScopeKeys } from '@fdv/crypto';
+import { openSealedText } from './sealed-text.js';
 import { withScope, type Db } from '@fdv/db';
 import { deriveStatus, matchText, parseQuery, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -32,6 +33,9 @@ interface SealedRow {
   owner_member_id: string | null;
   expires_on: string | null;
   expires_precision: DateValue['precision'] | null;
+  issued_by: string | null;
+  issued_on: string | null;
+  issued_precision: DateValue['precision'] | null;
   content_cipher: Buffer;
   wrapped_by_scope: string;
   updated_at: Date;
@@ -59,6 +63,7 @@ export class SealedSearchService {
         select distinct on (d.id)
                d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.expires_on, d.expires_precision, d.updated_at,
+               d.issued_by, d.issued_on, d.issued_precision,
                s.content_cipher, v.wrapped_by_scope
           from document_text_sealed s
           join document d on d.id = s.document_id
@@ -68,6 +73,7 @@ export class SealedSearchService {
            and d.owner_member_id = ${p.memberId}::uuid
            ${claims.member_id ? sql`and d.owner_member_id = ${claims.member_id}::uuid` : sql``}
            ${claims.category ? sql`and d.category = ${claims.category}` : sql``}
+           ${claims.issued_by ? sql`and lower(d.issued_by) = lower(${claims.issued_by})` : sql``}
            -- Anything the first pass already returned on its title, number,
            -- tags or notes is not repeated here.
            and not (d.search_tsv @@ websearch_to_tsquery('simple', ${claims.q}))
@@ -84,7 +90,7 @@ export class SealedSearchService {
           key = await this.keys.unwrapById(trx, row.wrapped_by_scope);
           scopeKeys.set(row.wrapped_by_scope, key);
         }
-        const content = open(key, row.content_cipher);
+        const content = openSealedText(key, row.content_cipher);
         if (content === null) continue; // a blob we cannot open is not a match
         const m = matchText(content, query);
         if (!m) continue;
@@ -110,6 +116,13 @@ export class SealedSearchService {
             type_key: row.type_key,
             category: row.category,
             owner_member_id: row.owner_member_id,
+            issued_by: row.issued_by,
+            issued: row.issued_on
+              ? {
+                  date: String(row.issued_on).slice(0, 10),
+                  precision: row.issued_precision ?? 'day',
+                }
+              : null,
             status: deriveStatus(
               {
                 type: type
@@ -142,17 +155,5 @@ export class SealedSearchService {
         searched: rows.rows.length,
       };
     });
-  }
-}
-
-/** `prefix(8) || ciphertext || tag`, written by the worker when it OCRs. */
-function open(key: Buffer, blob: Buffer): string | null {
-  if (blob.length < 8 + 16) return null;
-  const prefix = blob.subarray(0, 8);
-  const body = blob.subarray(8);
-  try {
-    return openChunk(key, { prefix, chunkSize: body.length - 16 }, 0, true, body).toString('utf8');
-  } catch {
-    return null;
   }
 }

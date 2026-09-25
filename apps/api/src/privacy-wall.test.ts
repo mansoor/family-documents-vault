@@ -941,6 +941,31 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   }, 120_000);
   afterAll(() => h.close());
 
+  it("another member's list of issuers never names the owner's Only me issuer", async () => {
+    // Who issued a document is as telling as its title (0.4.10).
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: as(owner),
+      payload: {
+        title: 'Counselling letter',
+        issued_by: 'Harbour Counselling',
+        owner_member_id: owner.member_id,
+        visibility: 'private',
+      },
+    });
+    expect(made.statusCode).toBe(201);
+    const theirs = await h.app.inject({ method: 'GET', url: '/api/v1/issuers', headers: as(sam) });
+    expect(theirs.statusCode).toBe(200);
+    expect(theirs.body).not.toContain('Harbour');
+    const searched = await h.app.inject({
+      method: 'GET',
+      url: '/api/v1/search?q=harbour',
+      headers: as(sam),
+    });
+    expect(searched.body).not.toContain('Harbour');
+  });
+
   it('capture metadata cannot create a private document owned by another member', async () => {
     // Filed by Sam, "Only me", as the owner's: nobody could open it but the
     // owner, and Sam would have made it — so it is refused, and nothing is kept.

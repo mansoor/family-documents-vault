@@ -250,6 +250,8 @@ export interface DocumentInput {
   issued?: DateValue | null;
   expires?: DateValue | null;
   identifier?: string | null;
+  /** Who issued it (0.4.10): send only to a vault with `features.issued_by`. */
+  issued_by?: string | null;
   physical_location?: string | null;
   is_essential?: boolean;
   tags?: string[];
@@ -268,11 +270,30 @@ export interface SearchHit {
   category: string | null;
   owner_member_id: string | null;
   status: DocumentView['status'];
+  /** Who issued it, and when (0.4.10): "Bank statement · Barclays · Sep 2026". */
+  issued_by?: string | null;
+  issued?: DocumentView['issued'];
   /** Server-highlighted with `<em>`; clients escape everything else. */
   snippet: string;
   matched_in: 'title' | 'content';
   /** How well it matched; results arrive already ordered by it. */
   rank?: number;
+}
+
+/** GET /issuers: the household's issuers the caller can see, most used first (0.4.10). */
+export interface IssuerCount {
+  issued_by: string;
+  count: number;
+}
+
+/**
+ * GET /documents/{id}/issuer-suggestions (0.4.10): who issued it, going by
+ * the words on its pages and the household's own issuers. Offered, never
+ * filled in; 'pending' until the vault has read the pages.
+ */
+export interface IssuerSuggestions {
+  state: 'ready' | 'pending' | 'unavailable';
+  items: Array<{ value: string; source: 'known' | 'page' }>;
 }
 
 export interface SearchResult {

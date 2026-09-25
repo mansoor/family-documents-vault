@@ -33,6 +33,7 @@ const RACE_KEY = '8e7d6c5b-4a39-4281-9f0e-1d2c3b4a5f6e';
 const NEVER_USED = 'c0ffee00-1234-4567-89ab-cdef01234567';
 const DETAILS_KEY = '5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a';
 const LATE_KEY = '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d';
+const ISSUER_KEY = '2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -228,6 +229,48 @@ export const contractScenarios: Scenario[] = [
       expect(err.status).toBe(422);
       expect(err.message).toBe('Send the details before the file.');
       expect((await refusal(api.uploadStatus(token, LATE_KEY))).status).toBe(404);
+    },
+  },
+  {
+    name: "a document says who issued it, and the household's issuers are listed and filter the list",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.issued_by).toBe(true);
+      const made = await api.capture(
+        token,
+        {
+          metadata: { type_key: 'bank_statement', issued_by: '  Contract   Bank ' },
+          file: {
+            kind: 'bytes',
+            filename: 'statement.pdf',
+            contentType: 'application/pdf',
+            bytes: PDF,
+          },
+        },
+        ISSUER_KEY,
+      );
+      const listed = (await api.documents(token, { issued_by: 'contract bank' })).items;
+      expect(listed.map((d) => d.id)).toEqual([made.document_id]);
+      expect(listed[0]?.issued_by).toBe('Contract Bank');
+      const issuers = (await api.issuers(token)).items;
+      expect(issuers).toContainEqual({ issued_by: 'Contract Bank', count: 1 });
+      // Narrowed: a prefix, whatever the case; and only those used for a type.
+      const names = async (params: Record<string, string>) =>
+        (await api.issuers(token, params)).items.map((i) => i.issued_by);
+      expect(await names({ q: 'contr' })).toContain('Contract Bank');
+      expect(await names({ q: 'zz' })).not.toContain('Contract Bank');
+      expect(await names({ type_key: 'bank_statement' })).toContain('Contract Bank');
+      expect(await names({ type_key: 'passport' })).not.toContain('Contract Bank');
+      // Typed in, not captured: kept the same way.
+      const typed = await api.createDocument(token, {
+        title: 'Contract letter',
+        issued_by: ' Contract   Council ',
+      });
+      expect(typed.issued_by).toBe('Contract Council');
+      // Pages nobody has read yet are not guessed at.
+      const offered = await api.issuerSuggestions(token, made.document_id);
+      expect(['pending', 'unavailable']).toContain(offered.state);
+      expect(offered.items).toEqual([]);
     },
   },
   {

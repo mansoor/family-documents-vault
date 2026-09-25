@@ -1,4 +1,4 @@
-import { formatDate, type VersionView } from '@fdv/shared';
+import { formatDate, issuedByLabel, type VersionView } from '@fdv/shared';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
@@ -158,6 +158,13 @@ export function DocumentScreen() {
         <dd>{type?.label ?? 'Not set'}</dd>
         <dt>Person</dt>
         <dd>{owner?.display_name ?? 'Not set'}</dd>
+        {doc.issued_by && (
+          <>
+            {/* The type's own word for it: "Institution", "Insurer"… */}
+            <dt>{issuedByLabel(type)}</dt>
+            <dd>{doc.issued_by}</dd>
+          </>
+        )}
         {doc.identifier && (
           <>
             <dt>Number</dt>

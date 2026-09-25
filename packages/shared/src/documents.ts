@@ -32,6 +32,11 @@ export interface DocumentView {
   issued: DateValue | null;
   expires: DateValue | null;
   identifier: string | null;
+  /**
+   * Who issued it: the bank, the utility, the insurer, the country (0.4.10).
+   * Absent from older servers.
+   */
+  issued_by?: string | null;
   physical_location: string | null;
   is_essential: boolean;
   tags: string[];
@@ -68,6 +73,8 @@ export interface DocumentTypeView {
   reminder_leads: number[];
   usually_essential: boolean;
   default_visibility: Visibility;
+  /** This type's word for who issued it ("Bank", "Insurer"…); null reads "Issued by" (0.4.10). */
+  issued_by_label?: string | null;
 }
 
 /** Renders a date value the way a person wrote it: "14 Mar 2031", "March 2031", "2031". */

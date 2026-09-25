@@ -32,6 +32,13 @@ export interface CapabilityFeatures {
    * right people, from its first byte.
    */
   capture_metadata: boolean;
+  /**
+   * Documents carry `issued_by` (0.4.10): on views, edits and captures, in
+   * search (matched, and filtered by `issued_by`), GET /issuers and
+   * GET /documents/{id}/issuer-suggestions. An older vault refuses the
+   * field, so send it only when this is on.
+   */
+  issued_by: boolean;
 }
 
 export interface CapabilityLimits {

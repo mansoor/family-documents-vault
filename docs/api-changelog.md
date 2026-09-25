@@ -460,6 +460,40 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
+- Who issued it (0.4.10, `features.issued_by`).
+
+  - **New, additive:** `issued_by` (text, up to 200 characters) on document
+    views, `POST`/`PATCH /api/v1/documents` and capture metadata. It is kept
+    as typed, with spaces tidied; blank is `null`. A vault without
+    `features.issued_by` refuses the field (`422`), so send it only to one
+    that has it.
+  - **New, additive:** `issued_by_label` on document types: the type's own
+    word for it ("Institution", "Provider", "Insurer"…), `null` for "Issued
+    by". The types' own fields that held it (institution, provider, lender,
+    issuer, insurer, employer, vendor, vet, issuing country) are no longer
+    in their `fields`; values stored under them in `extra` moved to
+    `issued_by` (migration 0025, which leaves `updated_at` alone).
+  - **Changed:** every document's ETag is new in 0.4.10, so a `PATCH` made
+    with an `If-Match` from before the upgrade is refused (`412`) instead of
+    putting an old `extra` back — fetch the document again. A client that
+    syncs with `updated_since` should fetch everything once after upgrading:
+    the move above does not change `updated_at`.
+  - `GET /api/v1/documents?issued_by=` filters by it, regardless of case.
+    Search matches it (weighted with the tags, below the title), takes
+    `issued_by` as a filter too (the second, private pass keeps it), and
+    each hit carries `issued_by` and `issued`.
+  - **New:** `GET /api/v1/issuers?q=&type_key=&member_id=&category=` — the
+    household's issuers the caller can see, one spelling each (the one used
+    most), most used first; with `type_key`, only those who have issued
+    that type: `{ items: [{ issued_by, count }] }`. An issuer seen only on a
+    document the caller cannot see is not there.
+  - **New:** `GET /api/v1/documents/{id}/issuer-suggestions` — who probably
+    issued it, from its latest pages and the household's issuers:
+    `{ state, items: [{ value, source }] }`, where `state` is `ready`,
+    `pending` (the pages have not been read yet) or `unavailable`, and
+    `source` is `known` or `page`. Offered, never filled in;
+    `cache-control: no-store`. Needs the right to change the document.
+
 ## Deprecations in effect
 
 None.

@@ -24,6 +24,8 @@ export interface SealedClaims {
   q: string;
   member_id?: string | undefined;
   category?: string | undefined;
+  /** The issuer chip the first pass was filtered by (0.4.10). */
+  issued_by?: string | undefined;
   limit: number;
 }
 
@@ -39,6 +41,7 @@ export async function signSealedToken(key: Uint8Array, claims: SealedClaims): Pr
     q: claims.q,
     member_id: claims.member_id ?? null,
     category: claims.category ?? null,
+    issued_by: claims.issued_by ?? null,
     limit: claims.limit,
   })
     .setProtectedHeader({ alg: 'HS256' })
@@ -79,5 +82,6 @@ export async function verifySealedToken(key: Uint8Array, token: string): Promise
     limit,
     member_id: typeof payload.member_id === 'string' ? payload.member_id : undefined,
     category: typeof payload.category === 'string' ? payload.category : undefined,
+    issued_by: typeof payload.issued_by === 'string' ? payload.issued_by : undefined,
   };
 }

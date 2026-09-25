@@ -69,6 +69,17 @@ export interface FakeState {
   uploads?: Record<string, string>;
   /** Every capture that arrived: its form fields in order, and its details. */
   captures?: Array<{ fields: string[]; metadata: Record<string, unknown> | null }>;
+  /**
+   * GET /documents/{id}/issuer-suggestions, by document id: who its pages
+   * say issued it. A document not here answers 'unavailable'.
+   */
+  issuerSuggestions?: Record<
+    string,
+    {
+      state: 'ready' | 'pending' | 'unavailable';
+      items: Array<{ value: string; source: 'known' | 'page' }>;
+    }
+  >;
 }
 
 export const TOKENS = {
@@ -119,6 +130,19 @@ export const PASSPORT = {
   etag: '"abc"',
 };
 
+/** A type named for who issued it: "Barclays statement, September 2026" (0.4.10). */
+export const BANK_STATEMENT = {
+  key: 'bank_statement',
+  label: 'Bank / investment statement',
+  category: 'financial',
+  fields: [],
+  expiry_driver: null,
+  reminder_leads: [],
+  usually_essential: false,
+  default_visibility: 'adults',
+  issued_by_label: 'Institution',
+};
+
 export const TYPES = [
   {
     key: 'passport',
@@ -129,6 +153,7 @@ export const TYPES = [
     reminder_leads: [270, 180],
     usually_essential: true,
     default_visibility: 'household',
+    issued_by_label: 'Issuing country',
   },
   {
     key: 'birth_certificate',
@@ -139,8 +164,30 @@ export const TYPES = [
     reminder_leads: [],
     usually_essential: true,
     default_visibility: 'household',
+    issued_by_label: null,
   },
+  BANK_STATEMENT,
 ];
+
+/** A statement from Barclays, for September 2026. */
+export const STATEMENT = {
+  ...PASSPORT,
+  id: 'doc-2',
+  type_key: 'bank_statement',
+  title: 'Barclays statement, September 2026',
+  category: 'financial',
+  visibility: 'adults',
+  issued: { date: '2026-09-30', precision: 'month' },
+  expires: null,
+  identifier: null,
+  issued_by: 'Barclays',
+  physical_location: null,
+  is_essential: false,
+  tags: [],
+  status: { value: 'valid', label: 'Filed' },
+  latest_version_id: 'v-2',
+  etag: '"statement"',
+};
 
 /** A passkey already enrolled on some device. */
 export const PASSKEY = {
@@ -684,7 +731,36 @@ export function installFakeApi(state: FakeState) {
       let items = state.documents;
       const cat = query.get('category');
       if (cat) items = items.filter((d) => d.category === cat);
+      const from = query.get('issued_by');
+      if (from) items = items.filter((d) => sameIssuer(d.issued_by, from));
       return json({ items, next_cursor: null, has_more: false });
+    }
+    if (path === '/api/v1/issuers') {
+      // Distinct, most used first; those used for type_key before the rest.
+      const typeKey = query.get('type_key');
+      const q = (query.get('q') ?? '').trim().toLowerCase();
+      const rows = new Map<string, { issued_by: string; count: number; forType: boolean }>();
+      for (const d of state.documents) {
+        const name = typeof d.issued_by === 'string' ? d.issued_by.trim() : '';
+        if (!name || !name.toLowerCase().includes(q)) continue;
+        if (query.get('category') && d.category !== query.get('category')) continue;
+        if (query.get('member_id') && d.owner_member_id !== query.get('member_id')) continue;
+        const row = rows.get(name.toLowerCase()) ?? { issued_by: name, count: 0, forType: false };
+        row.count += 1;
+        if (typeKey && d.type_key === typeKey) row.forType = true;
+        rows.set(name.toLowerCase(), row);
+      }
+      const items = [...rows.values()]
+        // As the vault: for a type, only those who have issued that type.
+        .filter((r) => !typeKey || r.forType)
+        .sort(
+          (a, b) =>
+            Number(b.forType) - Number(a.forType) ||
+            b.count - a.count ||
+            a.issued_by.localeCompare(b.issued_by),
+        )
+        .map(({ issued_by, count }) => ({ issued_by, count }));
+      return json({ items });
     }
     if (path === '/api/v1/capture') {
       if (state.captureFailures) {
@@ -703,6 +779,7 @@ export function installFakeApi(state: FakeState) {
         type_key: (metadata?.type_key as string | undefined) ?? null,
         title: (metadata?.title as string | undefined) ?? null,
         owner_member_id: (metadata?.owner_member_id as string | undefined) ?? null,
+        issued_by: (metadata?.issued_by as string | undefined) ?? null,
         visibility: (metadata?.visibility as string | undefined) ?? 'household',
         category: null,
         status: metadata?.type_key
@@ -728,6 +805,15 @@ export function installFakeApi(state: FakeState) {
       return made
         ? json({ state: 'done', document_id: made, version_id: 'v-new' })
         : json({ error: { code: 'not_found', message: 'That upload is not known here.' } }, 404);
+    }
+    const suggestionsMatch = /^\/api\/v1\/documents\/([^/]+)\/issuer-suggestions$/.exec(path);
+    if (suggestionsMatch) {
+      return json(
+        state.issuerSuggestions?.[suggestionsMatch[1] as string] ?? {
+          state: 'unavailable',
+          items: [],
+        },
+      );
     }
     const docMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
     if (docMatch) {
@@ -766,8 +852,29 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/search') {
       const q = query.get('q') ?? '';
       state.lastQuery = q;
-      return json({
-        items: q.includes('4471')
+      const needle = q.trim().toLowerCase();
+      // Documents whose name or issuer has the words, as the index would.
+      const named = state.documents
+        .filter((d) =>
+          [d.title, d.issued_by].some(
+            (v) => typeof v === 'string' && needle !== '' && v.toLowerCase().includes(needle),
+          ),
+        )
+        .map((d) => ({
+          document_id: d.id,
+          title: d.title,
+          type_key: d.type_key,
+          category: d.category,
+          owner_member_id: d.owner_member_id,
+          status: d.status,
+          issued_by: d.issued_by ?? null,
+          issued: d.issued ?? null,
+          snippet: '',
+          matched_in: 'title',
+        }));
+      const from = query.get('issued_by');
+      const items = [
+        ...(q.includes('4471')
           ? [
               {
                 document_id: 'doc-1',
@@ -780,7 +887,11 @@ export function installFakeApi(state: FakeState) {
                 matched_in: 'content',
               },
             ]
-          : [],
+          : []),
+        ...named,
+      ].filter((h) => !from || sameIssuer((h as { issued_by?: unknown }).issued_by, from));
+      return json({
+        items,
         sealed_pending: state.sealed.length
           ? { count: state.sealed.length, token: 'sealed-handle' }
           : { count: 0 },
@@ -798,6 +909,11 @@ export function installFakeApi(state: FakeState) {
   });
   vi.stubGlobal('fetch', fn);
   return fn;
+}
+
+/** One issuer however it was written, as the server compares them. */
+function sameIssuer(value: unknown, wanted: string): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === wanted.trim().toLowerCase();
 }
 
 /** Whatever role `signedIn()` last stored, defaulting to owner. */

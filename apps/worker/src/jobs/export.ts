@@ -39,6 +39,7 @@ interface Entry {
   category: string | null;
   person: string | null;
   visibility: string;
+  issued_by: string | null;
   issued: string | null;
   expires: string | null;
   identifier: string | null;
@@ -164,6 +165,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         category: d.category,
         person: d.owner_member_id ? (memberName.get(d.owner_member_id) ?? null) : null,
         visibility: d.visibility,
+        issued_by: d.issued_by,
         issued: dateOf(d.issued_on, d.issued_precision),
         expires: dateOf(d.expires_on, d.expires_precision),
         identifier: d.identifier,
@@ -231,6 +233,7 @@ function csv(entries: Entry[]): string {
     'category',
     'person',
     'visibility',
+    'issued_by',
     'issued',
     'expires',
     'identifier',
@@ -242,13 +245,22 @@ function csv(entries: Entry[]): string {
     'sha256',
     'document_id',
   ];
-  const cell = (v: string | number | string[] | null) => {
-    const s = Array.isArray(v) ? v.join(' ') : v === null ? '' : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
   return (
-    [cols.join(','), ...entries.map((e) => cols.map((c) => cell(e[c])).join(','))].join('\n') + '\n'
+    [cols.join(','), ...entries.map((e) => cols.map((c) => csvCell(e[c])).join(','))].join('\n') +
+    '\n'
   );
+}
+
+/**
+ * One cell of index.csv. Text a spreadsheet would run as a formula — from
+ * =, +, -, @, a tab or a carriage return on — gets an apostrophe in front,
+ * so it is shown as the text it is: any member can write a title or an
+ * issuer, and the file is opened by whoever asked for the export.
+ */
+export function csvCell(v: string | number | string[] | null): string {
+  let s = Array.isArray(v) ? v.join(' ') : v === null ? '' : String(v);
+  if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 function html(entries: Entry[]): string {

@@ -48,6 +48,8 @@ describe('buildCapabilities', () => {
       idempotent_capture: true,
       // 0.4.9: the card's details travel with the capture (4.3b).
       capture_metadata: true,
+      // 0.4.10: who issued a document, first-class (4.3c).
+      issued_by: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

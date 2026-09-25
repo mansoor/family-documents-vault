@@ -47,6 +47,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       multi_household: false,
       idempotent_capture: true,
       capture_metadata: true,
+      issued_by: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

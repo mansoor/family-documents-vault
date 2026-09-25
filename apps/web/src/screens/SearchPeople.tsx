@@ -1,4 +1,11 @@
-import { can, roleLabel, type DocumentView, type Role, type SuggestionView } from '@fdv/shared';
+import {
+  can,
+  roleLabel,
+  type DocumentTypeView,
+  type DocumentView,
+  type Role,
+  type SuggestionView,
+} from '@fdv/shared';
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
@@ -14,14 +21,18 @@ import {
   StatusBadge,
   TopBar,
 } from '../ui.js';
-import { addLink, DocRow } from './Home.js';
+import { addLink, DocRow, rowLine } from './Home.js';
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices, RoleControls } from './Roles.js';
 
+/** How many of the household's issuers are offered as filter chips. */
+const ISSUER_CHIPS = 8;
+
 /**
- * Search: one field, live results, filter chips for person and category.
- * With no query it browses — by category (from the home tiles) or by
- * person — because non-technical users browse before they search.
+ * Search: one field, live results, filter chips for person and category,
+ * and for who issued it (0.4.10: "Barclays", "British Gas"). With no query
+ * it browses — by category (from the home tiles), by person or by issuer —
+ * because non-technical users browse before they search.
  */
 export function SearchScreen() {
   const { withToken, authVersion } = useApp();
@@ -30,6 +41,7 @@ export function SearchScreen() {
   const q = params.get('q') ?? '';
   const category = params.get('category') ?? '';
   const memberId = params.get('member') ?? '';
+  const issuer = params.get('issued_by') ?? '';
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   // The second pass over the caller's own sealed documents (FND-08). It
   // starts after the indexed results are already on screen, because it is
@@ -42,6 +54,21 @@ export function SearchScreen() {
   const [browse, setBrowse] = useState<DocumentView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
+  // Who issued what, among what is being looked at: the chips narrow it further.
+  const { data: issuers } = useLoad(
+    async (t) =>
+      (
+        await api.issuers(t, {
+          category: category || undefined,
+          member_id: memberId || undefined,
+        })
+      ).items,
+    [authVersion, category, memberId],
+  );
+  const issuerChips = (issuers ?? []).slice(0, ISSUER_CHIPS).map((i) => i.issued_by);
+  // The one chosen stays on screen, even when it is not among the most used.
+  if (issuer && !issuerChips.some((n) => sameIssuer(n, issuer))) issuerChips.push(issuer);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +80,7 @@ export function SearchScreen() {
             api.search(t, q.trim(), {
               ...(category ? { category } : {}),
               ...(memberId ? { member_id: memberId } : {}),
+              ...(issuer ? { issued_by: issuer } : {}),
             }),
           );
           if (!cancelled && r) {
@@ -77,6 +105,7 @@ export function SearchScreen() {
             api.documents(t, {
               category: category || undefined,
               member_id: memberId || undefined,
+              issued_by: issuer || undefined,
               limit: 100,
             }),
           );
@@ -95,7 +124,7 @@ export function SearchScreen() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [q, category, memberId, withToken]);
+  }, [q, category, memberId, issuer, withToken]);
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
@@ -121,10 +150,11 @@ export function SearchScreen() {
       <div className="pills" aria-label="Filters">
         <button
           type="button"
-          className={`pill${!memberId && !category ? ' pill-on' : ''}`}
+          className={`pill${!memberId && !category && !issuer ? ' pill-on' : ''}`}
           onClick={() => {
-            set('member', '');
-            set('category', '');
+            const next = new URLSearchParams(params);
+            for (const k of ['member', 'category', 'issued_by']) next.delete(k);
+            setParams(next, { replace: true });
           }}
         >
           All
@@ -151,6 +181,26 @@ export function SearchScreen() {
           </button>
         )}
       </div>
+      {issuerChips.length > 0 && (
+        <div className="pills" role="group" aria-label="Who it is from">
+          {issuerChips.map((name) => {
+            const on = sameIssuer(name, issuer);
+            return (
+              <button
+                key={name}
+                type="button"
+                className={`pill${on ? ' pill-on' : ''}`}
+                aria-pressed={on}
+                onClick={() => set('issued_by', on ? '' : name)}
+              >
+                {/* Chosen is said by more than the colour. */}
+                {on && <span aria-hidden="true">✓ </span>}
+                {name}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <ErrorNote message={error} />
       {hits && (
         <>
@@ -165,6 +215,7 @@ export function SearchScreen() {
               <HitRow
                 key={h.document_id}
                 hit={h}
+                types={types}
                 onOpen={() => void navigate(`/documents/${h.document_id}`)}
               />
             ))}
@@ -183,6 +234,7 @@ export function SearchScreen() {
                   <HitRow
                     key={h.document_id}
                     hit={h}
+                    types={types}
                     onOpen={() => void navigate(`/documents/${h.document_id}`)}
                   />
                 ))}
@@ -201,7 +253,12 @@ export function SearchScreen() {
         <ul className="list">
           {browse.length === 0 && <li className="muted">Nothing here yet.</li>}
           {browse.map((d) => (
-            <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={types}
+              onOpen={() => void navigate(`/documents/${d.id}`)}
+            />
           ))}
         </ul>
       )}
@@ -210,12 +267,25 @@ export function SearchScreen() {
   );
 }
 
-function HitRow({ hit, onOpen }: { hit: SearchHit; onOpen: () => void }) {
+/** One issuer however it was written: "barclays" is "Barclays". */
+function sameIssuer(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function HitRow({
+  hit,
+  types,
+  onOpen,
+}: {
+  hit: SearchHit;
+  types: DocumentTypeView[] | null;
+  onOpen: () => void;
+}) {
   return (
     <li>
       <button type="button" className="rowbtn" onClick={onOpen}>
         <span className="doc-title">{hit.title ?? 'Untitled'}</span>
-        <span className="muted">{categoryLabel(hit.category)}</span>
+        <span className="muted">{rowLine(hit, types)}</span>
         <span
           className="snippet"
           dangerouslySetInnerHTML={{ __html: sanitiseSnippet(hit.snippet) }}
@@ -345,11 +415,16 @@ export function PersonScreen() {
   const navigate = useNavigate();
   const { data, error, reload } = useLoad(
     async (t) => {
-      const [members, docs] = await Promise.all([
+      const [members, docs, types] = await Promise.all([
         api.members(t),
         api.documents(t, { member_id: id, limit: 100 }),
+        api.documentTypes(t),
       ]);
-      return { member: members.items.find((m) => m.id === id), docs: docs.items };
+      return {
+        member: members.items.find((m) => m.id === id),
+        docs: docs.items,
+        types: types.items,
+      };
     },
     [id, authVersion],
   );
@@ -359,7 +434,12 @@ export function PersonScreen() {
       <ErrorNote message={error} />
       <ul className="list">
         {(data?.docs ?? []).map((d) => (
-          <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
+          <DocRow
+            key={d.id}
+            doc={d}
+            types={data?.types}
+            onOpen={() => void navigate(`/documents/${d.id}`)}
+          />
         ))}
         {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
       </ul>
@@ -375,12 +455,13 @@ export function RemindersScreen() {
   const [error, setError] = useState<string | null>(null);
   const { data, reload } = useLoad(
     async (t) => {
-      const [due, upcoming, docs, suggestions, hidden] = await Promise.all([
+      const [due, upcoming, docs, suggestions, hidden, types] = await Promise.all([
         api.reminders(t, 'due'),
         api.reminders(t, 'upcoming'),
         api.documents(t, { sort: 'expiring', limit: 100 }),
         api.suggestions(t),
         api.suggestions(t, true),
+        api.documentTypes(t),
       ]);
       const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
       return {
@@ -393,6 +474,7 @@ export function RemindersScreen() {
         suggestions: suggestions.items,
         profileAnswered: suggestions.profile_answered,
         hidden: hidden.items,
+        types: types.items,
       };
     },
     [authVersion],
@@ -464,7 +546,12 @@ export function RemindersScreen() {
           </li>
         ))}
         {(data?.attention ?? []).map((d) => (
-          <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
+          <DocRow
+            key={d.id}
+            doc={d}
+            types={data?.types}
+            onOpen={() => void navigate(`/documents/${d.id}`)}
+          />
         ))}
       </ul>
       {data && data.upcoming.length > 0 && (

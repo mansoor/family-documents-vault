@@ -28,6 +28,7 @@ const documentBody = z
     issued: dateValue,
     expires: dateValue,
     identifier: z.string().max(200).nullable(),
+    issued_by: z.string().max(200).nullable(),
     physical_location: z.string().max(500).nullable(),
     is_essential: z.boolean(),
     tags: z.array(z.string().max(40)).max(50),
@@ -53,6 +54,7 @@ const captureBody = documentBody
     issued: true,
     expires: true,
     identifier: true,
+    issued_by: true,
     physical_location: true,
     is_essential: true,
     tags: true,
@@ -92,6 +94,7 @@ function captureMetadata(raw: unknown): CaptureMetadata {
 const listQuery = z.object({
   member_id: z.string().uuid().optional(),
   category: z.string().optional(),
+  issued_by: z.string().trim().min(1).max(200).optional(),
   type_key: z.string().optional(),
   tag: z.string().optional(),
   visibility: z.enum(['household', 'adults', 'private']).optional(),
@@ -145,10 +148,33 @@ export async function registerDocuments(
 
   app.get('/api/v1/documents/counts', auth, async (req) => docs.counts(principal(req)));
 
+  /** Who issued the household's documents, as far as the caller can see (0.4.10). */
+  const issuersQuery = z.object({
+    q: z.string().trim().max(200).optional(),
+    type_key: z.string().max(64).optional(),
+    member_id: z.string().uuid().optional(),
+    category: z.string().max(64).optional(),
+  });
+  app.get('/api/v1/issuers', auth, async (req) => ({
+    items: await docs.issuers(principal(req), parse(issuersQuery, req.query)),
+  }));
+
+  /** Who probably issued it, from its pages: offered, never filled in (0.4.10). */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/issuer-suggestions',
+    auth,
+    async (req, reply) => {
+      // Worked out from the page's words for this person, now: not for keeping.
+      void reply.header('cache-control', 'no-store');
+      return docs.issuerSuggestions(principal(req), req.params.id);
+    },
+  );
+
   const searchQuery = z.object({
     q: z.string().trim().min(1).max(200),
     member_id: z.string().uuid().optional(),
     category: z.string().optional(),
+    issued_by: z.string().trim().min(1).max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
   });
   app.get('/api/v1/search', auth, async (req) =>

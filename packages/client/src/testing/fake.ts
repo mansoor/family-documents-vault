@@ -5,6 +5,7 @@ import {
   type CaptureMetadata,
   type DocumentTypeView,
   type DocumentView,
+  type IssuerSuggestions,
   type ReminderView,
   type Tokens,
 } from '@fdv/shared';
@@ -43,6 +44,8 @@ export interface FakeVaultState {
   captures: Map<string, FakeUpload>;
   /** What GET /reminders answers, whatever the state asked for. */
   reminders: ReminderView[];
+  /** What GET /documents/{id}/issuer-suggestions answers, by document; "unavailable" if unset. */
+  issuerSuggestions: Map<string, IssuerSuggestions>;
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -64,6 +67,18 @@ const FAKE_TYPES: DocumentTypeView[] = [
     reminder_leads: [270, 180],
     usually_essential: true,
     default_visibility: 'household',
+    issued_by_label: 'Issuing country',
+  },
+  {
+    key: 'bank_statement',
+    label: 'Bank / investment statement',
+    category: 'financial',
+    fields: [],
+    expiry_driver: null,
+    reminder_leads: [],
+    usually_essential: false,
+    default_visibility: 'adults',
+    issued_by_label: 'Institution',
   },
   {
     key: 'birth_certificate',
@@ -84,6 +99,7 @@ const FAKE_TYPES: DocumentTypeView[] = [
     reminder_leads: [],
     usually_essential: false,
     default_visibility: 'household',
+    issued_by_label: 'Provider',
   },
 ];
 
@@ -141,6 +157,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     documents: [],
     captures: new Map(),
     reminders: [],
+    issuerSuggestions: new Map(),
     types: FAKE_TYPES.map((t) => ({ ...t })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
@@ -192,7 +209,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.9',
+        server_version: '0.4.10',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -208,6 +225,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           multi_household: false,
           idempotent_capture: true,
           capture_metadata: true,
+          issued_by: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -267,11 +285,21 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const s = session();
       if (!('id' in s)) return s;
       if (init.method === 'POST') {
-        const doc = { id: next('document'), title: (body.title as string | null) ?? null };
+        const doc: FakeDocument = {
+          id: next('document'),
+          title: (body.title as string | null) ?? null,
+          type_key: (body.type_key as string | null | undefined) ?? null,
+          issued_by: tidy(body.issued_by as string | null | undefined),
+        };
         state.documents.push(doc);
         return ok(viewOf(doc), 201);
       }
-      return ok({ items: state.documents.map(viewOf), next_cursor: null, has_more: false });
+      // As the real vault: ?issued_by= filters, whatever the case.
+      const by = param(url, 'issued_by');
+      const items = by
+        ? state.documents.filter((d) => d.issued_by?.toLowerCase() === by.trim().toLowerCase())
+        : state.documents;
+      return ok({ items: items.map(viewOf), next_cursor: null, has_more: false });
     }
     // Uploads, the way the real vault treats their keys: a retry is answered
     // with what the first try made, marked as a replay; a key used for one
@@ -341,6 +369,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           title: metadata.title ?? null,
           type_key: metadata.type_key ?? null,
           owner_member_id: metadata.owner_member_id ?? null,
+          issued_by: tidy(metadata.issued_by),
           visibility: effectiveVisibility(
             metadata,
             state.types.find((t) => t.key === metadata.type_key),
@@ -353,6 +382,48 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const made: FakeUpload = { kind, document_id: documentId, version_id: next('version') };
       state.captures.set(key.toLowerCase(), made);
       return ok(answer(made), 201);
+    }
+    if (path === '/api/v1/issuers' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      // As the real vault: one entry per issuer whatever the case, in its
+      // most used spelling; ?q= is a prefix; ?type_key= keeps only those
+      // used for that type; most used first, then alphabetically.
+      const q = param(url, 'q')?.trim().toLowerCase();
+      const type = param(url, 'type_key');
+      const byKey = new Map<
+        string,
+        { count: number; types: Set<string>; spellings: Map<string, number> }
+      >();
+      for (const d of state.documents) {
+        if (!d.issued_by) continue;
+        const k = d.issued_by.toLowerCase();
+        const c = byKey.get(k) ?? { count: 0, types: new Set(), spellings: new Map() };
+        c.count += 1;
+        if (d.type_key) c.types.add(d.type_key);
+        c.spellings.set(d.issued_by, (c.spellings.get(d.issued_by) ?? 0) + 1);
+        byKey.set(k, c);
+      }
+      const items = [...byKey.entries()]
+        .filter(([k, c]) => (!q || k.startsWith(q)) && (!type || c.types.has(type)))
+        .map(([, c]) => ({
+          issued_by: [...c.spellings.entries()].sort(
+            (a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1),
+          )[0]?.[0] as string,
+          count: c.count,
+        }))
+        .sort((a, b) => b.count - a.count || (a.issued_by < b.issued_by ? -1 : 1));
+      return ok({ items });
+    }
+    const suggestFor = /^\/api\/v1\/documents\/([^/]+)\/issuer-suggestions$/.exec(path);
+    if (suggestFor && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const id = decodeURIComponent(suggestFor[1] as string);
+      if (!state.documents.some((d) => d.id === id)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      return ok(state.issuerSuggestions.get(id) ?? { state: 'unavailable', items: [] });
     }
     const uploadKey = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
     if (uploadKey && init.method === 'GET') {
@@ -383,6 +454,17 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   return { fetch, state };
 }
 
+/** An issuer as the real vault keeps it: spaces tidied, and blank is nothing. */
+function tidy(value: string | null | undefined): string | null {
+  return value?.trim().split(/\s+/).join(' ') || null;
+}
+
+/** One query parameter, decoded; the client's library has no URLSearchParams. */
+function param(url: string, name: string): string | undefined {
+  const raw = new RegExp(`[?&]${name}=([^&]*)`).exec(url)?.[1];
+  return raw === undefined ? undefined : decodeURIComponent(raw.split('+').join(' '));
+}
+
 /** A capture's answer, or a new version's: the shape each endpoint returns. */
 function answer(made: FakeUpload) {
   return made.kind === 'capture'
@@ -396,6 +478,7 @@ function viewOf(doc: FakeDocument): DocumentView {
     title: doc.title,
     type_key: doc.type_key ?? null,
     owner_member_id: doc.owner_member_id ?? null,
+    issued_by: doc.issued_by ?? null,
     visibility: doc.visibility ?? 'household',
   } as DocumentView;
 }
