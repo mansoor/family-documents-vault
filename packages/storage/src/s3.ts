@@ -214,15 +214,18 @@ function wrap(err: unknown): StorageError {
   const status = e.$metadata?.httpStatusCode;
   const detail = `${name}${e.message ? `: ${e.message}` : ''}`;
   let code: StorageErrorCode = 'unknown';
-  if (name === 'NoSuchKey' || name === 'NotFound' || status === 404) code = 'not_found';
-  else if (name === 'NoSuchBucket') code = 'bucket_missing';
-  else if (
+  // By name first: some providers answer a key they do not know with a 404
+  // (VersityGW's XAdminUserNotFound), which is not a missing file.
+  if (
     name === 'InvalidAccessKeyId' ||
     name === 'SignatureDoesNotMatch' ||
     name === 'UnauthorizedAccess' ||
+    name === 'XAdminUserNotFound' ||
     status === 401
   )
     code = 'credentials_rejected';
+  else if (name === 'NoSuchBucket') code = 'bucket_missing';
+  else if (name === 'NoSuchKey' || name === 'NotFound' || status === 404) code = 'not_found';
   else if (name === 'AccessDenied' || status === 403) code = 'permission_denied';
   else if (
     ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(
