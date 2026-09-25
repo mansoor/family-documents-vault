@@ -532,7 +532,15 @@ export type Db = Kysely<Schema>;
 pg.types.setTypeParser(1082, (v: string) => v);
 
 export function createPool(connectionString: string, max = 10): pg.Pool {
-  return new pg.Pool({ connectionString, max });
+  const pool = new pg.Pool({ connectionString, max });
+  // An idle connection the server ends — a restart, a failover, a database
+  // dropped with force (a restore drill's) — is an 'error' on the pool.
+  // Unheard, it is an uncaught exception that takes the process down; the
+  // pool has already let the connection go and opens another when asked.
+  pool.on('error', (err) => {
+    console.warn(`[db] an idle connection was ended: ${err.message}`);
+  });
+  return pool;
 }
 
 export function createDb(pool: pg.Pool): Db {

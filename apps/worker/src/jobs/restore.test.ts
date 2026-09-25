@@ -103,10 +103,6 @@ async function installQueue(url: string): Promise<void> {
     supervise: false,
     schedule: false,
   });
-  // Its pool can outlive stop({ graceful: false }); when the test databases
-  // are dropped (with force) the idle connection is ended, and an 'error'
-  // nobody listens for fails the whole run (run 36184792082).
-  boss.on('error', () => undefined);
   await boss.start();
   await boss.createQueue('restore.test');
   await boss.send('restore.test', { hello: 'world' });
