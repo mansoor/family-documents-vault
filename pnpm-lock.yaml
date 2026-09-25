@@ -227,6 +227,9 @@ importers:
       '@types/web-push':
         specifier: ^3.6.4
         version: 3.6.4
+      http_ece:
+        specifier: 1.2.0
+        version: 1.2.0
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

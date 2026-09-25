@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { whenWords, type DeviceRow } from '@fdv/shared';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
@@ -83,6 +84,8 @@ export function NotificationsScreen() {
           <p className="status status-warn">{state.message}</p>
         )}
       </section>
+
+      <Devices />
 
       <section className="card stack" aria-labelledby="prefs-h">
         <h2 id="prefs-h" style={{ fontSize: 18 }}>
@@ -311,6 +314,63 @@ function SmtpSection() {
           </Button>
         </form>
       )}
+    </section>
+  );
+}
+
+/** A device as the list names it: the phone app says how it hears (0.4.14). */
+function deviceName(d: DeviceRow): string {
+  if (d.kind === 'unified_push') return 'Android app (through ntfy)';
+  return d.label ?? 'A browser';
+}
+
+/**
+ * Where you hear from the vault (0.4.14): every browser and phone that has
+ * notifications on for you, which one is this one, which have stopped
+ * working, and a test for each.
+ */
+function Devices() {
+  const { withToken, authVersion } = useApp();
+  const { data, reload } = useLoad(async (t) => (await api.devices(t)).items, [authVersion]);
+  const [sent, setSent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (!data || data.length === 0) return null;
+  const test = async (id: string) => {
+    setError(null);
+    try {
+      await withToken((t) => api.testDevice(t, id));
+      setSent(id);
+      await reload();
+    } catch (err) {
+      setError(describeError(err));
+    }
+  };
+  return (
+    <section className="card stack" aria-labelledby="devices-h">
+      <h2 id="devices-h" style={{ fontSize: 18 }}>
+        Where you hear from the vault
+      </h2>
+      <ErrorNote message={error} />
+      <ul className="list">
+        {data.map((d) => (
+          <li key={d.id}>
+            <span>
+              {deviceName(d)}
+              {d.this_session && <span className="muted"> · this one</span>}
+              {!d.working && (
+                <span className="status status-warn">
+                  {' '}
+                  Not working{d.failed_at ? ` — last tried ${whenWords(d.failed_at)}` : ''}
+                </span>
+              )}
+              {sent === d.id && <span className="muted"> · test sent</span>}
+            </span>
+            <Button kind="quiet" onClick={() => void test(d.id)}>
+              Send a test
+            </Button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

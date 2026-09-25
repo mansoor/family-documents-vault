@@ -30,6 +30,7 @@ import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
+import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
 import { serverVersion } from './version.js';
 
@@ -62,6 +63,12 @@ export interface Harness {
    * teen and a viewer to try things with.
    */
   join(owner: Tokens, who: JoinRequest): Promise<Tokens>;
+  /**
+   * DNS as the vault sees it when a push address is registered (4.13): a
+   * host here resolves to these addresses; any other fails to resolve,
+   * which leaves the check to the worker, as in production.
+   */
+  dns: Map<string, string[]>;
 }
 
 export interface JoinRequest {
@@ -91,11 +98,14 @@ export async function createHarness(): Promise<Harness> {
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
   const jobs: Harness['jobs'] = [];
+  const dns: Harness['dns'] = new Map();
   const enqueue: Enqueue = async (name, data, options) => {
     jobs.push({ name, data, ...(options ? { options } : {}) });
   };
   // The same mapping as production, not a copy of it: see alert-job.ts.
   const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
+  // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
+  const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
   const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
@@ -109,6 +119,7 @@ export async function createHarness(): Promise<Harness> {
     (trx, hh) => vaults.createDefaultLocal(trx, hh),
     alert,
     totp,
+    push,
   );
   const passkeys = new PasskeyService(
     db,
@@ -120,7 +131,15 @@ export async function createHarness(): Promise<Harness> {
   const stepUp = new StepUpService(db, passkeys, totp);
   // As if the operator had set FDV_SMTP_URL; passwords.test.ts builds one
   // without it to test the other route.
-  const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert, true);
+  const passwords = new PasswordService(
+    db,
+    keys,
+    stepUp,
+    'http://localhost:8080',
+    alert,
+    true,
+    push,
+  );
   const documents = new DocumentService(
     db,
     keys,
@@ -152,11 +171,19 @@ export async function createHarness(): Promise<Harness> {
       deriveKey(TEST_MASTER, 'smtp-credentials'),
       'test-vapid-public-key',
       alert,
+      {
+        push,
+        resolve: async (host) => {
+          const found = dns.get(host);
+          if (!found) throw new Error(`ENOTFOUND ${host}`);
+          return found;
+        },
+      },
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
     invitations,
-    coOwners: new CoOwnerService(db, alert),
+    coOwners: new CoOwnerService(db, alert, push),
     suggestions: new SuggestionService(db),
     logger: false,
   });
@@ -167,6 +194,7 @@ export async function createHarness(): Promise<Harness> {
     adminUrl: tdb.adminUrl,
     vaultDir,
     jobs,
+    dns,
     async close() {
       await app.close();
       await db.destroy();

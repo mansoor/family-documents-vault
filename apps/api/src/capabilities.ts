@@ -50,6 +50,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       issued_by: true,
       page_previews: true,
       offline_essentials: true,
+      unified_push: config.pushEnabled,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

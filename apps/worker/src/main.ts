@@ -13,6 +13,7 @@ import {
 } from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
+import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
@@ -135,12 +136,20 @@ async function main(): Promise<void> {
         }
       : null;
   if (!vapid) log('warn', 'no VAPID keys: push notifications are off (run scripts/gen-env.mjs)');
+  // Every push leaves through one agent that will not connect inside the
+  // vault's own network, unless the operator says so (4.13).
+  const allowPrivate = config.FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS === 'true';
+  if (allowPrivate)
+    log('warn', 'pushes may go to private addresses (FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS)');
+  const pushAgent = createPushAgent({ allowPrivate });
   const notifier = createNotifier({
     app: dbs.app,
     vapid,
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
     baseUrl: config.FDV_BASE_URL,
     log,
+    agent: pushAgent,
+    allowPrivate,
   });
   void logNotifier;
 
@@ -153,7 +162,23 @@ async function main(): Promise<void> {
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
     baseUrl: config.FDV_BASE_URL,
     log,
+    agent: pushAgent,
+    allowPrivate,
   };
+  await boss.createQueue(JOBS.pushSend);
+  await boss.work(JOBS.pushSend, async (jobs) => {
+    for (const job of jobs) {
+      if (!isPushJob(job.data)) {
+        log('warn', 'push job had the wrong shape', { id: job.id });
+        continue;
+      }
+      const counts = await sendPushJob(
+        { app: dbs.app, vapid, agent: pushAgent, allowPrivate, log },
+        job.data,
+      );
+      log('info', 'push sent', { type: job.data.message.type, ...counts });
+    }
+  });
   await boss.createQueue(JOBS.alertSend);
   await boss.work(JOBS.alertSend, async (jobs) => {
     for (const job of jobs) {

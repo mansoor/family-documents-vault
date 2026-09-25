@@ -24,6 +24,11 @@ export interface AlertRequest {
    * an owner can point the household's anywhere and read what goes through.
    */
   operatorMail?: boolean;
+  /**
+   * What a phone is told (4.13), as a word and nothing more. Without one,
+   * the alert is not pushed to phones at all.
+   */
+  pushType?: 'new_device' | 'owner_change';
 }
 
 export function alertJob(a: AlertRequest): Record<string, unknown> {
@@ -35,5 +40,6 @@ export function alertJob(a: AlertRequest): Record<string, unknown> {
     ...(a.url ? { url: a.url, url_label: a.urlLabel } : {}),
     ...(a.emailOnly ? { email_only: true } : {}),
     ...(a.operatorMail ? { via: 'operator' } : {}),
+    ...(a.pushType ? { push_type: a.pushType } : {}),
   };
 }

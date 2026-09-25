@@ -1,8 +1,9 @@
 import { createDecipheriv } from 'node:crypto';
+import type https from 'node:https';
 import { withHousehold, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
-import webpush from 'web-push';
+import { deliver, pushDepsOf, unifiedPayload } from './push.js';
 import type { Digest, Notifier } from './reminders.js';
 
 /**
@@ -37,6 +38,10 @@ export interface NotifyDeps {
   /** Where the app lives, for links in the message. */
   baseUrl: string;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  /** How pushes leave (4.13): the safe agent by default; tests bring their own. */
+  agent?: https.Agent;
+  /** FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: a push distributor on the operator's own network. */
+  allowPrivate?: boolean;
 }
 
 export function subject(d: Digest): string {
@@ -144,9 +149,6 @@ export function openPassword(key: Buffer, sealed: Buffer, householdId: string): 
  * ledger records.
  */
 export function createNotifier(deps: NotifyDeps): Notifier {
-  if (deps.vapid) {
-    webpush.setVapidDetails(deps.vapid.subject, deps.vapid.publicKey, deps.vapid.privateKey);
-  }
   return {
     async digest(d: Digest): Promise<string[]> {
       const channels: string[] = [];
@@ -178,6 +180,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       )
       .select([
         'device.id',
+        'device.kind',
         'device.endpoint',
         'device.p256dh',
         'device.auth',
@@ -185,13 +188,16 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       ])
       .where('device.account_id', '=', d.recipient.account_id)
       .where('device.failed_at', 'is', null)
-      .where('device.kind', '=', 'web_push')
+      .where('device.kind', 'in', ['web_push', 'unified_push'])
       .where(liveDevice)
       .execute(),
   );
   const wanted = devices.filter((x) => x.daily_push !== false && x.p256dh && x.auth);
   if (wanted.length === 0) return 0;
 
+  // A browser shows the first few; a phone is told how many, and asks the
+  // vault for the rest once it is unlocked (4.13): no title leaves in it.
+  const phone = unifiedPayload({ v: 1, type: 'digest', count: d.items.length, date: d.local_date });
   const payload = JSON.stringify({
     title: subject(d),
     body: d.items
@@ -203,44 +209,22 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
     count: d.items.length,
   });
 
+  const pd = pushDepsOf(deps);
   let sent = 0;
   for (const device of wanted) {
-    try {
-      await webpush.sendNotification(
-        {
-          endpoint: device.endpoint,
-          keys: { p256dh: device.p256dh as string, auth: device.auth as string },
-        },
-        payload,
-        { TTL: 24 * 3600, urgency: 'normal' },
-      );
-      sent++;
-      await withHousehold(deps.app, d.household_id, (trx) =>
-        trx
-          .updateTable('device')
-          .set({ last_used_at: new Date() })
-          .where('id', '=', device.id)
-          .execute(),
-      );
-    } catch (err) {
-      const status = (err as { statusCode?: number }).statusCode;
-      // 404/410 mean the browser threw the subscription away: stop trying.
-      const gone = status === 404 || status === 410;
-      await withHousehold(deps.app, d.household_id, (trx) =>
-        trx
-          .updateTable('device')
-          .set({
-            failed_at: new Date(),
-            fail_reason: `${status ?? 'error'}: ${(err as Error).message}`.slice(0, 200),
-          })
-          .where('id', '=', device.id)
-          .execute(),
-      );
-      deps.log(gone ? 'info' : 'warn', gone ? 'push subscription gone' : 'push failed', {
-        device_id: device.id,
-        status,
-      });
-    }
+    const outcome = await deliver(
+      pd,
+      {
+        id: device.id,
+        household_id: d.household_id,
+        endpoint: device.endpoint,
+        p256dh: device.p256dh as string,
+        auth: device.auth as string,
+      },
+      device.kind === 'unified_push' ? phone : payload,
+      'digest',
+    );
+    if (outcome === 'sent') sent++;
   }
   return sent;
 }

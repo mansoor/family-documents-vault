@@ -34,6 +34,14 @@ const schema = z.object({
   FDV_VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   FDV_VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   FDV_VAPID_SUBJECT: z.string().min(1).default('mailto:vault@localhost'),
+  FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .describe(
+      'Let pushes go to addresses inside your own network — a UnifiedPush distributor ' +
+        '(ntfy) on the LAN. Off by default: a push address is chosen by whoever registers ' +
+        'a device, and must not be able to point the vault at its own network.',
+    ),
   FDV_DIGEST_HOUR: z.coerce
     .number()
     .int()

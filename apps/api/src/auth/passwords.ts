@@ -7,6 +7,7 @@ import { ApiError } from '../errors.js';
 import type { Principal, RequestMeta } from './service.js';
 import type { StepUpService } from './step-up.js';
 import type { AlertRequest } from '../alert-job.js';
+import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 
 /**
  * Changing a password, and forgetting one.
@@ -97,6 +98,8 @@ export class PasswordService {
     private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
     /** Whether whoever runs the server has given it a mail server (FDV_SMTP_URL). */
     private readonly operatorMail = false,
+    /** Pushes the worker sends (4.13): "you were signed out" to the phones of ended sessions. */
+    private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
   ) {}
 
   // -------------------------------------------------------- changing one
@@ -110,6 +113,7 @@ export class PasswordService {
 
     const ref = { householdId: p.householdId, kind: 'member' as const, memberId: p.memberId };
     let method: string;
+    let phones: PushTarget[] = [];
 
     if (input.current_password) {
       if (
@@ -167,12 +171,8 @@ export class PasswordService {
         .where('id', '=', p.sessionId)
         .execute();
       // And they stop being told things there. Devices registered before
-      // 0.4.2 name no session, so they go too.
-      await trx
-        .deleteFrom('device')
-        .where('account_id', '=', p.accountId)
-        .where((eb) => eb.or([eb('session_id', 'is', null), eb('session_id', '!=', p.sessionId)]))
-        .execute();
+      // 0.4.2 name no session, so they go too; the phones hear once this commits.
+      phones = await endDevices(trx, { accountId: p.accountId, exceptSessionId: p.sessionId });
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -181,6 +181,9 @@ export class PasswordService {
         ip: meta.ip,
       });
     });
+    // The other devices' phones: "you were signed out" (4.13).
+    if (phones.length > 0)
+      await this.push({ householdId: p.householdId, message: SESSION_ENDED, targets: phones });
 
     await this.alert({
       householdId: p.householdId,
@@ -354,6 +357,7 @@ export class PasswordService {
       .executeTakeFirst();
     if (!claimed) throw gone();
 
+    let resetPhones: PushTarget[] = [];
     await withScope(this.db, { householdId: membership.household_id }, async (trx) => {
       await trx
         .updateTable('account')
@@ -375,7 +379,7 @@ export class PasswordService {
         .where('account_id', '=', account.id)
         .where('revoked_at', 'is', null)
         .execute();
-      await trx.deleteFrom('device').where('account_id', '=', account.id).execute();
+      resetPhones = await endDevices(trx, { accountId: account.id });
       // And every passkey. A reset is what somebody does when they cannot
       // get in, or fear somebody else can; a passkey added from a borrowed
       // session would otherwise outlast it. They are added again in a tap.
@@ -392,6 +396,13 @@ export class PasswordService {
         ip: meta.ip,
       });
     });
+    if (resetPhones.length > 0) {
+      await this.push({
+        householdId: membership.household_id,
+        message: SESSION_ENDED,
+        targets: resetPhones,
+      });
+    }
 
     await this.alert({
       householdId: membership.household_id,

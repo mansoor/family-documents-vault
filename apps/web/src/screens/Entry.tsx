@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import * as passkeys from '../passkeys.js';
+import * as push from '../push.js';
 import { api } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
@@ -68,6 +69,7 @@ export function SignInScreen() {
       }
       session.accept(r);
       markAuthChanged();
+      void push.repost(r.access_token);
       void navigate('/', { replace: true });
     } catch (err) {
       setError(describeError(err));
@@ -87,6 +89,7 @@ export function SignInScreen() {
       const tokens = await passkeys.signIn(email.trim() || undefined);
       session.accept(tokens);
       markAuthChanged();
+      void push.repost(tokens.access_token);
       void navigate('/', { replace: true });
     } catch (err) {
       setError(passkeys.describe(err));

@@ -4,6 +4,7 @@ export * from './capabilities.js';
 export * from './capture.js';
 export * from './issuers.js';
 export * from './offline.js';
+export * from './push.js';
 export * from './titles.js';
 export * from './documents.js';
 export * from './reminders.js';
