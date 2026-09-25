@@ -47,8 +47,13 @@ export function ReaderScreen() {
     : undefined;
   const versionId = version?.id;
   const pageNo = Math.max(1, Math.floor(Number(params.get('p'))) || 1);
-  const known = version ? (version.preview_pages ?? version.page_count) : null;
-  const total = known ? Math.min(known, PREVIEW_MAX_PAGES) : null;
+  // Pages drawn (null: not yet known; 0: none, it cannot be drawn) and the
+  // document's real length, which can be more than the 30 that are drawn.
+  const drawn = version?.preview_pages ?? null;
+  const length = version?.page_count ?? null;
+  const last =
+    drawn !== null ? drawn : length !== null ? Math.min(length, PREVIEW_MAX_PAGES) : null;
+  const total = length ?? drawn;
   const title = data?.doc.title ?? 'the document';
 
   const [zoom, setZoom] = useState(0);
@@ -61,11 +66,12 @@ export function ReaderScreen() {
   const recounted = useRef<string | null>(null);
 
   const go = useCallback(
-    (n: number) => {
-      if (!versionId || n < 1 || (total !== null && n > total)) return;
+    (n: number): boolean => {
+      if (!versionId || n < 1 || (last !== null && n > last)) return false;
       setParams({ v: versionId, p: String(n) }, { replace: true });
+      return true;
     },
-    [versionId, total, setParams],
+    [versionId, last, setParams],
   );
 
   // The page itself: asked for once, and again while it is being drawn.
@@ -78,7 +84,9 @@ export function ReaderScreen() {
     const tryOnce = async (tries: number) => {
       try {
         // An Essential or an "only me" document may ask who is asking first.
-        const blob = await guarded((t) => api.page(t, versionId, pageNo));
+        const blob = await guarded((t) => api.page(t, versionId, pageNo), {
+          cancelled: () => cancelled,
+        });
         if (cancelled) return;
         if (!blob) {
           setPage({ kind: 'not_confirmed' });
@@ -120,22 +128,35 @@ export function ReaderScreen() {
     void reload();
   }, [page.kind, version, reload]);
 
-  // The keys a reader reaches for.
+  // The keys a reader reaches for — and only those, only when nothing else
+  // wants them: not with a modifier (browser zoom, Back), not while a
+  // prompt is open, not in a field, and not the arrows while a page made
+  // larger needs them to scroll.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
       const target = e.target as HTMLElement | null;
-      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') go(pageNo + 1);
-      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(pageNo - 1);
-      else if (e.key === '+' || e.key === '=') setZoom((z) => Math.min(ZOOMS.length - 1, z + 1));
-      else if (e.key === '-') setZoom((z) => Math.max(0, z - 1));
-      else if (e.key === 'Escape') void navigate(`/documents/${id}`);
-      else return;
-      e.preventDefault();
+      if (target && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(target.tagName)) return;
+      const paging = zoom === 0;
+      let handled = false;
+      if (paging && (e.key === 'ArrowRight' || e.key === 'PageDown')) handled = go(pageNo + 1);
+      else if (paging && (e.key === 'ArrowLeft' || e.key === 'PageUp')) handled = go(pageNo - 1);
+      else if ((e.key === '+' || e.key === '=') && zoom < ZOOMS.length - 1) {
+        setZoom(zoom + 1);
+        handled = true;
+      } else if (e.key === '-' && zoom > 0) {
+        setZoom(zoom - 1);
+        handled = true;
+      } else if (e.key === 'Escape') {
+        void navigate(`/documents/${id}`);
+        handled = true;
+      }
+      if (handled) e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [go, pageNo, navigate, id]);
+  }, [go, pageNo, zoom, navigate, id]);
 
   const download = async () => {
     if (!version) return;
@@ -160,44 +181,48 @@ export function ReaderScreen() {
       <ErrorNote message={error} />
       {version && (
         <>
-          <div className="reader-tools" role="toolbar" aria-label="Pages">
-            <Button
-              kind="quiet"
-              ariaLabel="Previous page"
-              disabled={pageNo <= 1}
-              onClick={() => go(pageNo - 1)}
-            >
-              ‹
-            </Button>
-            <span className="reader-count" aria-live="polite">
-              {total ? `Page ${pageNo} of ${total}` : `Page ${pageNo}`}
-            </span>
-            <Button
-              kind="quiet"
-              ariaLabel="Next page"
-              disabled={total !== null && pageNo >= total}
-              onClick={() => go(pageNo + 1)}
-            >
-              ›
-            </Button>
-            <span className="reader-gap" />
-            <Button
-              kind="quiet"
-              ariaLabel="Smaller"
-              disabled={zoom === 0}
-              onClick={() => setZoom((z) => Math.max(0, z - 1))}
-            >
-              −
-            </Button>
-            <Button
-              kind="quiet"
-              ariaLabel="Larger"
-              disabled={zoom === ZOOMS.length - 1}
-              onClick={() => setZoom((z) => Math.min(ZOOMS.length - 1, z + 1))}
-            >
-              +
-            </Button>
-          </div>
+          {drawn !== 0 && (
+            <div className="reader-tools" role="toolbar" aria-label="Pages">
+              <Button
+                kind="quiet"
+                ariaLabel="Previous page"
+                disabled={pageNo <= 1}
+                onClick={() => go(pageNo - 1)}
+              >
+                ‹
+              </Button>
+              <span className="reader-count" aria-live="polite">
+                {total ? `Page ${pageNo} of ${total}` : `Page ${pageNo}`}
+              </span>
+              <Button
+                kind="quiet"
+                ariaLabel="Next page"
+                disabled={last !== null && pageNo >= last}
+                onClick={() => go(pageNo + 1)}
+              >
+                ›
+              </Button>
+              <span className="reader-gap" />
+              <span className="reader-zoom">
+                <Button
+                  kind="quiet"
+                  ariaLabel="Smaller"
+                  disabled={zoom === 0}
+                  onClick={() => setZoom((z) => Math.max(0, z - 1))}
+                >
+                  −
+                </Button>
+                <Button
+                  kind="quiet"
+                  ariaLabel="Larger"
+                  disabled={zoom === ZOOMS.length - 1}
+                  onClick={() => setZoom((z) => Math.min(ZOOMS.length - 1, z + 1))}
+                >
+                  +
+                </Button>
+              </span>
+            </div>
+          )}
           {/* Focusable, so the keyboard can scroll a page made larger. */}
           <div
             className={zoom ? 'reader-page zoomed' : 'reader-page'}
@@ -243,6 +268,20 @@ export function ReaderScreen() {
               </div>
             )}
           </div>
+          {page.kind === 'shown' &&
+            last !== null &&
+            pageNo >= last &&
+            length !== null &&
+            length > last && (
+              <div className="reader-note">
+                <p>
+                  Pages {last + 1}–{length} aren't shown here. Download the file to read them.
+                </p>
+                <Button kind="quiet" onClick={() => void download()}>
+                  Download
+                </Button>
+              </div>
+            )}
         </>
       )}
     </main>

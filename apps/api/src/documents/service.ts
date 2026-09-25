@@ -166,7 +166,16 @@ export function etagOf(id: string, updatedAt: Date): string {
 }
 
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
-export type Enqueue = (name: string, data: Record<string, unknown>) => Promise<void>;
+/**
+ * Puts a job on the worker's queue. `singletonKey` holds one job per key on
+ * a queue that asks for it (page previews: one per version); a higher
+ * `priority` is taken first.
+ */
+export type Enqueue = (
+  name: string,
+  data: Record<string, unknown>,
+  options?: { singletonKey?: string; priority?: number },
+) => Promise<void>;
 
 export interface SearchQuery {
   q: string;
@@ -552,10 +561,11 @@ export class DocumentService {
       return this.view(trx, row);
     });
     if (drawNow) {
-      await this.enqueue(PREVIEWS_JOB, {
-        household_id: p.householdId,
-        version_id: drawNow,
-      }).catch(() => undefined);
+      await this.enqueue(
+        PREVIEWS_JOB,
+        { household_id: p.householdId, version_id: drawNow },
+        { singletonKey: previewJobKey(drawNow), priority: 5 },
+      ).catch(() => undefined);
     }
     return view;
   }
@@ -1604,10 +1614,12 @@ export class DocumentService {
     });
     if (outcome.kind === 'pending') {
       if (outcome.queue) {
-        await this.enqueue(PREVIEWS_JOB, {
-          household_id: p.householdId,
-          version_id: versionId,
-        }).catch(() => undefined);
+        // Somebody is waiting for this one: ahead of drawing done in advance.
+        await this.enqueue(
+          PREVIEWS_JOB,
+          { household_id: p.householdId, version_id: versionId },
+          { singletonKey: previewJobKey(versionId), priority: 10 },
+        ).catch(() => undefined);
       }
       throw new ApiError(
         404,
@@ -1844,9 +1856,14 @@ function sensitiveAction(d: { visibility: string; is_essential: boolean }): Sens
   return d.is_essential ? 'open_essential' : null;
 }
 
-/** The worker's job for page previews (its JOBS.renderPreviews). */
+/** The worker's job for page previews (its JOBS.renderPreviews), one per version at a time. */
 const PREVIEWS_JOB = 'version.previews';
-/** A page asked for this long after its job was queued queues it again: the job was lost. */
+const previewJobKey = (versionId: string) => `previews:${versionId}`;
+/**
+ * A page asked for this long after its job was queued queues it again, in
+ * case the job was lost. The queue drops the new one while the first is
+ * still waiting or being drawn, so asking again never draws twice.
+ */
 const PREVIEW_REQUEUE_MS = 2 * 60 * 1000;
 
 const encodeCursor = (c: { k: string; id: string }) =>

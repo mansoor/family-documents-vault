@@ -303,8 +303,9 @@ export const contractScenarios: Scenario[] = [
       const past = await refusal(api.page(token, made.version_id, 31));
       expect(past.code).toBe('no_preview');
       expect(past.retriable).toBe(false);
-      // A version that is not there is not there.
+      // A version that is not there is not there; page 0 is not a page.
       expect((await refusal(api.page(token, NEVER_USED, 1))).code).toBe('not_found');
+      expect((await refusal(api.page(token, made.version_id, 0))).status).toBe(422);
     },
   },
   {

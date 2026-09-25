@@ -257,7 +257,14 @@ it, which takes a few seconds. The first 30 pages are drawn; for more than
 that, or for a Word or Excel file, **Download** opens the file itself.
 
 After upgrading to 0.4.12, the worker draws the Essentials already in the vault
-in the background, up to 200 each time it starts.
+in the background, up to 200 each time it starts. Somebody waiting to read a
+page is always drawn for first.
+
+A page the worker cannot draw — a damaged file, or a picture larger than
+16,000 pixels across or 128 megapixels, which the worker refuses rather than
+decode — is tried three times and then shows "no preview"; the file itself
+is unaffected and **Download** still opens it. An Essential's is tried again
+the next time the worker starts, a day later at the soonest.
 
 Opening an Essential, or anything marked Only me, asks you to confirm it is
 you if you have not done so in the last five minutes — for its pages as for

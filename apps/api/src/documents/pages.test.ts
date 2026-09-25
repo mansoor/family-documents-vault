@@ -146,6 +146,11 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
       household_id: owner.household_id,
       version_id: version['Water bill'],
     });
+    // One job per version on the queue; somebody waiting goes first.
+    expect(previewJobs('Water bill')[0]?.options).toEqual({
+      singletonKey: `previews:${version['Water bill']}`,
+      priority: 10,
+    });
     // A job that seems to have been lost is queued again.
     await withHousehold(h.db, owner.household_id, (trx) =>
       trx
@@ -298,6 +303,10 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
     });
     expect(made.statusCode, made.body).toBe(200);
     expect(previewJobs('Lease')).toHaveLength(1);
+    expect(previewJobs('Lease')[0]?.options).toEqual({
+      singletonKey: `previews:${version.Lease}`,
+      priority: 5,
+    });
     const state = await withHousehold(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_version')

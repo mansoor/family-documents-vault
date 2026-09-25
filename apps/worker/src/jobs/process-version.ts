@@ -7,7 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withHousehold, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
-import { drawPreviews } from './previews.js';
+import type { SendPreviews } from './previews.js';
 import {
   detectTools,
   drawable,
@@ -21,7 +21,7 @@ import {
 /**
  * The ingest pipeline's background half (design, Ingest pipeline):
  *
- *   stored -> page count -> thumbnail -> OCR -> index -> pages (Essentials)
+ *   stored -> page count -> thumbnail -> OCR -> index -> (Essentials) pages queued
  *
  * The document is already visible and downloadable; everything here only
  * enriches it. A failed step is recorded on the version and never blocks
@@ -42,6 +42,8 @@ export interface ProcessDeps {
   localRoot: string;
   maxOcrPages: number;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  /** Queues a version's page previews (4.7); an Essential's are queued after processing. */
+  sendPreviews?: SendPreviews;
 }
 
 const IMAGE_MIMES = new Set([
@@ -144,16 +146,10 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       }
     }
 
-    // 5. Page previews (4.7): an Essential's are drawn now, from the
-    // plaintext already here, so a phone can keep them; everything else's
-    // the first time somebody asks. A kind the vault cannot draw says so.
-    if (doc.is_essential && drawable(version.mime) && version.preview_state !== 'ready') {
-      try {
-        await drawPreviews(deps, hh, { version, adapter, fileKey, dir, plainFile });
-      } catch (err) {
-        errors.push(`previews: ${(err as Error).message}`);
-      }
-    } else if (!drawable(version.mime)) {
+    // 5. Page previews (4.7): a kind the vault cannot draw says so now.
+    // An Essential's are queued below, once this is recorded; everything
+    // else's the first time somebody asks for a page.
+    if (!drawable(version.mime)) {
       update.preview_state = 'unsupported';
       update.preview_pages = 0;
     }
@@ -166,6 +162,27 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
         .where('id', '=', version.id)
         .execute(),
     );
+    if (doc.is_essential && drawable(version.mime) && deps.sendPreviews) {
+      // Only one not yet asked for: the queue holds one job per version anyway.
+      const marked = await withHousehold(deps.db, hh, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ preview_state: 'queued', preview_requested_at: new Date() })
+          .where('id', '=', version.id)
+          .where('preview_state', '=', 'none')
+          .executeTakeFirst(),
+      );
+      if (Number(marked.numUpdatedRows) > 0) {
+        await deps
+          .sendPreviews({ household_id: hh, version_id: version.id }, { priority: 5 })
+          .catch((err: unknown) =>
+            deps.log('warn', 'could not queue page previews', {
+              version_id: version.id,
+              err: String(err),
+            }),
+          );
+      }
+    }
     deps.log(errors.length ? 'warn' : 'info', 'processed version', {
       version_id: version.id,
       pages: update.page_count ?? null,

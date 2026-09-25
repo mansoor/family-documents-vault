@@ -185,6 +185,39 @@ describe('App', () => {
       expect(pageCalls(state)).toEqual(['1', '1', '2', '1']);
     });
 
+    it('a long document says how long it is, and where the drawn pages end', async () => {
+      const state = fresh({ pagesDrawn: 30, pageCount: 50 });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-1/read?v=v-1&p=30');
+      render(<App />);
+      await screen.findByRole('img', { name: "Page 30 of Mansoor's passport" });
+      expect(screen.getByText('Page 30 of 50')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
+      expect(
+        screen.getByText("Pages 31–50 aren't shown here. Download the file to read them."),
+      ).toBeInTheDocument();
+    });
+
+    it('keys belong to the browser with a modifier, and to scrolling when a page is larger', async () => {
+      const state = fresh();
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-1/read');
+      render(<App />);
+      await screen.findByRole('img', { name: "Page 1 of Mansoor's passport" });
+      // Alt+Right is the browser's "forward": not a page turn.
+      fireEvent.keyDown(window, { key: 'ArrowRight', altKey: true });
+      expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+      // Made larger, the arrows scroll the page instead of turning it.
+      fireEvent.keyDown(window, { key: '+' });
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+      expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: '-' });
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+      await screen.findByRole('img', { name: "Page 2 of Mansoor's passport" });
+    });
+
     it('a kind of file the vault cannot draw says so, and offers the file itself', async () => {
       const state = fresh({ pagesDrawn: 'unsupported' });
       installFakeApi(state);
@@ -197,6 +230,8 @@ describe('App', () => {
         ),
       ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
+      // Nothing to turn or enlarge.
+      expect(screen.queryByRole('toolbar', { name: 'Pages' })).not.toBeInTheDocument();
     });
   });
 

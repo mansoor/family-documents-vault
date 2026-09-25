@@ -41,6 +41,36 @@ export async function detectTools(): Promise<Tools> {
 
 const MAGICK = async () => ((await has('magick', ['-version'])) ? 'magick' : 'convert');
 
+/**
+ * What one ImageMagick run may use. Uploads are untrusted: a small file can
+ * claim to be 60,000 pixels square, and ImageMagick's own defaults would
+ * decode it onto the disk the database lives on. Anything over these is
+ * refused, not decoded, and no run outlives a minute.
+ */
+export const MAGICK_LIMITS = [
+  '-limit',
+  'memory',
+  '256MiB',
+  '-limit',
+  'map',
+  '512MiB',
+  '-limit',
+  'disk',
+  '1GiB',
+  '-limit',
+  'area',
+  '128MP',
+  '-limit',
+  'width',
+  '16KP',
+  '-limit',
+  'height',
+  '16KP',
+  '-limit',
+  'time',
+  '60',
+];
+
 /** Page count of a PDF, from pdfinfo. */
 export async function pdfPageCount(file: string): Promise<number | null> {
   try {
@@ -80,14 +110,27 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
   let src = input;
   if (input.toLowerCase().endsWith('.pdf')) {
     const base = path.join(path.dirname(output), 'thumb-src');
-    await run('pdftoppm', ['-png', '-r', '72', '-f', '1', '-l', '1', '-singlefile', input, base], {
-      timeout: 60_000,
-    });
+    // A size, not a resolution: a page drawn 200 inches wide stays small.
+    await run(
+      'pdftoppm',
+      ['-png', '-scale-to', '960', '-f', '1', '-l', '1', '-singlefile', input, base],
+      { timeout: 60_000 },
+    );
     src = `${base}.png`;
   }
   await run(
     bin,
-    [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, '-quality', '82', '-strip', output],
+    [
+      ...MAGICK_LIMITS,
+      src,
+      '-auto-orient',
+      '-thumbnail',
+      `${size}x${size}>`,
+      '-quality',
+      '82',
+      '-strip',
+      output,
+    ],
     { timeout: 60_000 },
   );
   await access(output);
@@ -163,6 +206,7 @@ export async function renderPreviews(
     await run(
       bin,
       [
+        ...MAGICK_LIMITS,
         src,
         '-auto-orient',
         '-resize',

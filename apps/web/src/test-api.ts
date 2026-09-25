@@ -53,6 +53,8 @@ export interface FakeState {
    */
   pagesDrawn: number | 'unsupported';
   pagesPending: number;
+  /** The passport's real length, which can be more than is drawn. */
+  pageCount: number;
   /**
    * Refresh tokens rotate, and a spent one presented again ends the
    * session — as the real server does. Until 0.4.3 this fake handed back
@@ -275,6 +277,7 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     stepUpNeeded: false,
     pagesDrawn: 2,
     pagesPending: 0,
+    pageCount: 2,
     invitationValid: true,
     calls: [],
     ...over,
@@ -849,7 +852,7 @@ export function installFakeApi(state: FakeState) {
             mime: 'application/pdf',
             byte_size: 2048,
             sha256: 'x',
-            page_count: 2,
+            page_count: state.pageCount,
             ocr_status: 'done',
             uploaded_at: '2026-09-20T09:14:00Z',
             preview_pages:

@@ -487,12 +487,16 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     }
     // A page as the vault drew it (0.4.12): not found for a version it never
     // made, still being drawn until a test says otherwise, then a JPEG.
-    const pageOf = /^\/api\/v1\/versions\/([^/]+)\/pages\/(\d+)$/.exec(path);
+    const pageOf = /^\/api\/v1\/versions\/([^/]+)\/pages\/([^/]+)$/.exec(path);
     if (pageOf && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
       const version = pageOf[1] as string;
       const n = Number(pageOf[2]);
+      // As the real route: a page is a whole number from 1.
+      if (!/^\d+$/.test(pageOf[2] as string) || n < 1) {
+        return fail(422, 'validation_failed', 'That is not a page number.');
+      }
       const made = [...state.captures.values()].some((c) => c.version_id === version);
       if (!made && !state.pages.has(version)) {
         return fail(404, 'not_found', 'That page does not exist.');

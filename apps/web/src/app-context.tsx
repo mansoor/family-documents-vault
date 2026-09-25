@@ -35,9 +35,13 @@ interface AppState {
   withToken: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>;
   /**
    * Like `withToken`, but for the handful of actions that may ask for a
-   * credential again (SEC-17): it opens the prompt, waits, and retries.
+   * credential again (SEC-17): it opens the prompt, waits, and retries —
+   * unless `cancelled` says the screen that asked has moved on by then.
    */
-  guarded: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>;
+  guarded: <T>(
+    fn: (token: string) => Promise<T>,
+    opts?: { cancelled?: () => boolean },
+  ) => Promise<T | null>;
   /** Bumped when the session signs in or out, so screens can re-render. */
   authVersion: number;
   markAuthChanged: () => void;
@@ -134,13 +138,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const guarded = useCallback(
-    async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
+    async <T,>(
+      fn: (token: string) => Promise<T>,
+      opts: { cancelled?: () => boolean } = {},
+    ): Promise<T | null> => {
       try {
         return await withToken(fn);
       } catch (err) {
         if (!(err instanceof ApiRequestError) || err.code !== 'step_up_required') throw err;
         const confirmed = await stepUp.confirm({ action: err.action ?? '', message: err.message });
-        if (!confirmed) return null;
+        // Confirmed for something nobody is waiting for any more: not fetched.
+        if (!confirmed || opts.cancelled?.()) return null;
         return await withToken(fn);
       }
     },

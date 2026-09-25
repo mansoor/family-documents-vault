@@ -6,14 +6,17 @@ import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
 import {
   backfillPreviews,
+  previewJobKey,
   renderVersionPreviews,
   type RenderPreviewsJob,
+  type SendPreviews,
 } from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
+import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 
 const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
@@ -54,6 +57,17 @@ async function main(): Promise<void> {
   const masterSecret = config.FDV_MASTER_KEY_FILE
     ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
     : (config.FDV_MASTER_KEY as string);
+  await boss.createQueue(JOBS.renderPreviews, {
+    policy: 'exclusive',
+    retryLimit: 2,
+    retryDelay: 60,
+  });
+  const sendPreviews: SendPreviews = (job, opts = {}) =>
+    boss.send(
+      JOBS.renderPreviews,
+      { ...job },
+      { singletonKey: previewJobKey(job.version_id), ...opts },
+    );
   const processDeps = {
     db: dbs.app,
     keys: new ScopeKeys(new EnvKeyProvider(masterSecret)),
@@ -61,6 +75,7 @@ async function main(): Promise<void> {
     localRoot: config.FDV_LOCAL_VAULT_DIR,
     maxOcrPages: config.FDV_OCR_MAX_PAGES,
     log,
+    sendPreviews,
   };
   await boss.createQueue(JOBS.processVersion, {
     retryLimit: 3,
@@ -71,17 +86,23 @@ async function main(): Promise<void> {
     for (const job of jobs) await processVersion(processDeps, job.data);
   });
 
-  // Page previews, one version at a time: a vault full of Essentials is
-  // drawn in the background without crowding out anything else.
-  await boss.createQueue(JOBS.renderPreviews, { retryLimit: 2, retryDelay: 60 });
-  await boss.work<RenderPreviewsJob>(JOBS.renderPreviews, { batchSize: 1 }, async (jobs) => {
-    for (const job of jobs) await renderVersionPreviews(processDeps, job.data);
-  });
-  void backfillPreviews({
-    admin: dbs.admin,
-    app: dbs.app,
-    send: (job) => boss.send(JOBS.renderPreviews, { ...job }),
-  })
+  // Page previews: one job per version queued or running (exclusive on its
+  // key), drawn one at a time so a vault full of Essentials is drawn in the
+  // background without crowding out anything else. Somebody waiting for a
+  // page is served first (priority 10), then new Essentials (5), then the
+  // backfill.
+  await boss.work(
+    JOBS.renderPreviews,
+    { batchSize: 1, includeMetadata: true },
+    async (jobs: JobWithMetadata<RenderPreviewsJob>[]) => {
+      for (const job of jobs) {
+        await renderVersionPreviews(processDeps, job.data, {
+          final: job.retryCount >= job.retryLimit,
+        });
+      }
+    },
+  );
+  void backfillPreviews({ admin: dbs.admin, app: dbs.app, send: sendPreviews })
     .then((queued) => {
       if (queued) log('info', 'page previews queued for Essentials', { queued });
     })

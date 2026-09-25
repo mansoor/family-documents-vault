@@ -562,6 +562,15 @@ h3 {
 }
 
 /* Reading: the page fit to the window, or larger and scrolled around. */
+/* The reader is the one screen wider than a phone, and exactly as tall as the window. */
+.page.reader {
+  max-width: 960px;
+  height: 100dvh;
+  min-height: 0;
+  padding-bottom: 16px;
+  gap: 12px;
+}
+
 .reader-tools {
   display: flex;
   align-items: center;
@@ -571,7 +580,14 @@ h3 {
 
 .reader-tools .btn {
   min-width: 44px;
+  padding-left: 10px;
+  padding-right: 10px;
   font-size: 1.25rem;
+}
+
+.reader-zoom {
+  display: flex;
+  gap: 8px;
 }
 
 .reader-count {
@@ -586,28 +602,29 @@ h3 {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-m);
-  height: calc(100dvh - 200px);
-  min-height: 320px;
+  flex: 1 1 0;
+  min-height: 240px;
   display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   overflow: auto;
 }
 
+/* Fit: the whole page in the box, whatever the box's shape. */
 .reader-page img {
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
   display: block;
 }
 
 .reader-page.zoomed {
-  place-items: start;
+  display: block;
 }
 
 .reader-page.zoomed img {
-  max-width: none;
-  max-height: none;
   height: auto;
+  max-width: none;
 }
 
 .reader-note {

@@ -18,9 +18,11 @@ import { detectTools, drawable, renderPreviews } from './tools.js';
  * of rendering a PDF themselves: no PDF renderer on the phone, and no
  * plaintext file on it either.
  *
- * Essentials are drawn eagerly — after processing, when a document
- * becomes Essential, and by a backfill when the worker starts — so a
- * phone can keep them for offline use. Everything else is drawn the
+ * There is one way a version's pages are drawn: a `version.previews` job,
+ * at most one per version queued or running (the queue is `exclusive` on
+ * `previewJobKey`). Essentials are queued eagerly — after processing, when
+ * a document becomes Essential, and by a backfill when the worker starts —
+ * so a phone can keep them for offline use; everything else is queued the
  * first time somebody asks for a page.
  */
 
@@ -29,118 +31,120 @@ export interface RenderPreviewsJob {
   version_id: string;
 }
 
+/** Queues a version's drawing; the queue drops it while one is already on its way. */
+export type SendPreviews = (
+  job: RenderPreviewsJob,
+  opts?: { priority?: number },
+) => Promise<unknown>;
+
+/** The queue's singleton key: one job per version, queued or running. */
+export const previewJobKey = (versionId: string) => `previews:${versionId}`;
+
 /** Where a version's pages are stored: beside its object, in its vault. */
 export const previewKey = (storageKey: string, page: number) => `${storageKey}.p${page}.enc`;
 
+/**
+ * Draws one version's pages. `final` says whether this is the queue's last
+ * try: until then a failure leaves the version queued — a reader keeps
+ * hearing "being made" while the queue tries again — and on the last try it
+ * is recorded as failed. The file itself is never affected.
+ */
 export async function renderVersionPreviews(
   deps: ProcessDeps,
   job: RenderPreviewsJob,
+  attempt: { final: boolean } = { final: true },
 ): Promise<void> {
   const { household_id: hh, version_id } = job;
-  const ctx = await withHousehold(deps.db, hh, async (trx) => {
-    const v = await trx
+  const current = await withHousehold(deps.db, hh, (trx) =>
+    trx
       .selectFrom('document_version')
-      .select([
-        'id',
-        'document_id',
-        'storage_key',
-        'vault_id',
-        'mime',
-        'file_key_wrapped',
-        'wrapped_by_scope',
-        'preview_state',
-      ])
+      .select(['preview_state', 'mime'])
       .where('id', '=', version_id)
-      .executeTakeFirst();
-    if (!v) return null;
-    const vault = await trx
-      .selectFrom('vault')
-      .selectAll()
-      .where('id', '=', v.vault_id)
-      .executeTakeFirstOrThrow();
-    const scopeKey = await deps.keys.unwrapById(trx, v.wrapped_by_scope);
-    return {
-      version: v,
-      adapter: adapterFromRow(vault, deps.credentialsKey, deps.localRoot),
-      fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
-    };
-  });
-  if (!ctx) {
+      .executeTakeFirst(),
+  );
+  if (!current) {
     deps.log('warn', 'previews: version vanished', { version_id });
     return;
   }
-  // Twice asked is once drawn.
-  if (ctx.version.preview_state === 'ready' || ctx.version.preview_state === 'unsupported') return;
+  // Drawn, not drawable, or given up on (asking again queues it afresh).
+  if (current.preview_state !== 'none' && current.preview_state !== 'queued') return;
 
-  const dir = await mkdtemp(path.join(tmpdir(), 'fdv-pv-'));
-  try {
-    const plainFile = path.join(dir, 'source');
-    await writeFile(
-      plainFile,
-      await decryptToBuffer(ctx.adapter, ctx.version.storage_key, ctx.fileKey),
-    );
-    await drawPreviews(deps, hh, { ...ctx, dir, plainFile });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-/**
- * Draws, encrypts and stores the pages of a version whose plaintext is
- * already in `plainFile` (processing has one; the job decrypts its own),
- * and records the outcome. A failure is recorded and then thrown, so the
- * queue tries again; the file itself is never affected.
- */
-export async function drawPreviews(
-  deps: ProcessDeps,
-  hh: string,
-  ctx: {
-    version: { id: string; storage_key: string; mime: string };
-    adapter: StorageAdapter;
-    fileKey: Buffer;
-    dir: string;
-    plainFile: string;
-  },
-): Promise<number> {
-  const { version } = ctx;
+  // Only ever from waiting to an outcome: a result already recorded stays.
   const record = (preview_state: PreviewState, preview_pages: number | null) =>
     withHousehold(deps.db, hh, (trx) =>
       trx
         .updateTable('document_version')
         .set({ preview_state, preview_pages })
-        .where('id', '=', version.id)
+        .where('id', '=', version_id)
+        .where('preview_state', 'in', ['none', 'queued'])
         .execute(),
     );
-  if (!drawable(version.mime)) {
+  if (!drawable(current.mime)) {
     await record('unsupported', 0);
-    return 0;
+    return;
   }
+
+  const dir = await mkdtemp(path.join(tmpdir(), 'fdv-pv-'));
   try {
+    const ctx = await withHousehold(deps.db, hh, async (trx) => {
+      const v = await trx
+        .selectFrom('document_version')
+        .select(['document_id', 'storage_key', 'vault_id', 'file_key_wrapped', 'wrapped_by_scope'])
+        .where('id', '=', version_id)
+        .executeTakeFirstOrThrow();
+      const vault = await trx
+        .selectFrom('vault')
+        .selectAll()
+        .where('id', '=', v.vault_id)
+        .executeTakeFirstOrThrow();
+      const scopeKey = await deps.keys.unwrapById(trx, v.wrapped_by_scope);
+      return {
+        storageKey: v.storage_key,
+        adapter: adapterFromRow(vault, deps.credentialsKey, deps.localRoot),
+        fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
+      };
+    });
     const tools = await detectTools();
-    if (!tools.magick || (version.mime === 'application/pdf' && !tools.pdftoppm)) {
+    if (!tools.magick || (current.mime === 'application/pdf' && !tools.pdftoppm)) {
       throw new Error('the tools to draw pages are not installed');
     }
-    const out = await mkdtemp(path.join(ctx.dir, 'pages-'));
-    const pages = await renderPreviews(ctx.plainFile, version.mime, out, PREVIEW_MAX_PAGES);
+    const plainFile = path.join(dir, 'source');
+    await writeFile(plainFile, await decryptToBuffer(ctx.adapter, ctx.storageKey, ctx.fileKey));
+    const out = await mkdtemp(path.join(dir, 'pages-'));
+    const pages = await renderPreviews(plainFile, current.mime, out, PREVIEW_MAX_PAGES);
     if (!pages.length) throw new Error('no pages came out');
     for (const [i, file] of pages.entries()) {
       await putEncrypted(
         ctx.adapter,
-        previewKey(version.storage_key, i + 1),
+        previewKey(ctx.storageKey, i + 1),
         ctx.fileKey,
         await readFile(file),
       );
     }
     await record('ready', pages.length);
-    deps.log('info', 'drew page previews', { version_id: version.id, pages: pages.length });
-    return pages.length;
+    deps.log('info', 'drew page previews', { version_id, pages: pages.length });
   } catch (err) {
-    await record('failed', 0).catch(() => undefined);
+    if (attempt.final) {
+      await record('failed', 0).catch(() => undefined);
+    } else {
+      // Still on its way: the queue tries again, and nobody re-queues it meanwhile.
+      await withHousehold(deps.db, hh, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ preview_state: 'queued', preview_requested_at: new Date() })
+          .where('id', '=', version_id)
+          .where('preview_state', 'in', ['none', 'queued'])
+          .execute(),
+      ).catch(() => undefined);
+    }
     deps.log('warn', 'could not draw page previews', {
-      version_id: version.id,
+      version_id,
+      final: attempt.final,
       err: (err as Error).message,
     });
     throw err;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 
@@ -151,15 +155,15 @@ async function putEncrypted(adapter: StorageAdapter, key: string, fileKey: Buffe
 
 /**
  * When the worker starts: the current version of every Essential whose
- * pages were never drawn (or whose job was lost on the way) is queued, a
- * bounded number at a time. The queue draws them one by one, so a vault
- * full of Essentials is caught up over a few restarts' worth of quiet
- * work rather than all at once.
+ * pages were never drawn, whose job was lost on the way, or whose drawing
+ * failed more than a day ago, is queued — a bounded number at a time. The
+ * queue draws them one by one, so a vault full of Essentials is caught up
+ * over a few restarts' worth of quiet work rather than all at once.
  */
 export async function backfillPreviews(deps: {
   admin: pg.Pool;
   app: Db;
-  send: (job: RenderPreviewsJob) => Promise<unknown>;
+  send: SendPreviews;
   limit?: number;
 }): Promise<number> {
   // Which ones, across households (read only); each is then marked queued
@@ -174,6 +178,7 @@ export async function backfillPreviews(deps: {
      ) latest
       where preview_state = 'none'
          or (preview_state = 'queued' and preview_requested_at < now() - interval '1 hour')
+         or (preview_state = 'failed' and preview_requested_at < now() - interval '1 day')
       order by id
       limit $1`,
     [deps.limit ?? 200],
@@ -185,7 +190,7 @@ export async function backfillPreviews(deps: {
         .updateTable('document_version')
         .set({ preview_state: 'queued', preview_requested_at: new Date() })
         .where('id', '=', r.id)
-        .where('preview_state', 'in', ['none', 'queued'])
+        .where('preview_state', 'in', ['none', 'queued', 'failed'])
         .executeTakeFirst(),
     );
     if (Number(marked.numUpdatedRows) === 0) continue;

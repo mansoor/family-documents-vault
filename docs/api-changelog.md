@@ -474,9 +474,13 @@ step_up_required`; then the page. A page not drawn yet is queued and
     page served is audited as `document.viewed` (`detail: { version_id,
 page }`); fetch a page when it is looked at, not ahead of time.
   - **New, additive:** `preview_pages` on versions: how many pages are drawn
-    (at most 30); `null` until they are; `0` for a file the vault cannot
-    draw. Essentials are drawn as soon as they are processed or marked
-    Essential; others the first time a page is asked for.
+    (at most 30); `null` until they are, or while a drawing is still being
+    tried; `0` when there will be none — a file the vault cannot draw, or one
+    it gave up on after three tries (a page then answers `no_preview`). An
+    Essential given up on is tried again when the worker next starts, a day
+    later at the soonest. `page_count` is the document's real length, which
+    can be more than is drawn. Essentials are drawn as soon as they are
+    processed or marked Essential; others the first time a page is asked for.
   - **New:** the step-up action `open_essential` ("to open an Essential
     document"), asked when opening an Essential's file or pages, or making a
     link to it. `open_private_document` stays for "only me" documents, and
