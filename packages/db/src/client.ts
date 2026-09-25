@@ -122,6 +122,14 @@ export interface Schema {
     revoked_at: Timestamp | null;
     revoked_reason: string | null;
     verified_at: Timestamp | null;
+    /** The app installation that signed in (X-FDV-Installation); null for a browser. */
+    installation_id: string | null;
+    /** When the refresh token was last replaced. */
+    rotated_at: Timestamp | null;
+    /** When the one replay allowed since the last rotation was spent. */
+    grace_used_at: Timestamp | null;
+    /** 180 days from the sign-in: no refresh goes past it. */
+    absolute_expires_at: GeneratedTimestamp;
   };
 
   household_profile: {

@@ -460,6 +460,34 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
+- Sessions a phone can live with (0.4.11).
+
+  - **New, additive:** the `X-FDV-Installation` request header — a UUID an
+    app makes once and keeps — read on setup, password and MFA sign-in,
+    passkey sign-in, invitation acceptance and refresh. A session records
+    the installation that signed in. `@fdv/client` sends it when given
+    `installationId`. Browsers send none.
+  - **Changed:** new-device alerts key on the installation when there is
+    one: an app update is not a new device; a second phone is. Browsers
+    are recognised by their user agent, as before.
+  - **New:** a refresh token that has just been replaced may be presented
+    once more — within 30 s of its rotation, from the session's own
+    installation — and gets a new rotation (audited as
+    `auth.refresh_replayed`); the token it displaces becomes the previous
+    one, so presenting that ends the session. Every other replay ends the
+    session, as before. A browser never gets this.
+  - **Changed:** sessions slide. Each refresh sets the session's end to 30
+    days from now, but never past 180 days from the sign-in, and
+    `refresh_expires_in` says what is really left. Sessions open before
+    the upgrade get their 180 days from when they began.
+  - **New, additive:** `401 session_ended` carries `error.reason`:
+    `expired`, `revoked`, `reused`, `removed` or `malformed` — on refresh,
+    and on any request with a token whose session has ended. `detail`
+    stays a free-text string.
+  - **New, additive:** `GET /api/v1/auth/sessions` items carry `client`
+    (`app`, `browser` or `other`) and `label` ("the app on a Google Pixel
+    8a", "Firefox on a Mac").
+
 - Who issued it (0.4.10, `features.issued_by`).
 
   - **New, additive:** `issued_by` (text, up to 200 characters) on document

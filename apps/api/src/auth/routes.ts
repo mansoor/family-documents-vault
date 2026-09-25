@@ -42,8 +42,14 @@ export function parse<T>(schema: z.ZodType<T>, body: unknown): T {
   return r.data;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function metaOf(req: FastifyRequest): RequestMeta {
-  return { ip: req.ip, userAgent: req.headers['user-agent'] ?? null };
+  // The app's installation id (0.4.11): kept only if it is a UUID.
+  const installation = req.headers['x-fdv-installation'];
+  const installationId =
+    typeof installation === 'string' && UUID.test(installation) ? installation.toLowerCase() : null;
+  return { ip: req.ip, userAgent: req.headers['user-agent'] ?? null, installationId };
 }
 
 /**

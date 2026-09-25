@@ -26,6 +26,11 @@ interface FakeSession {
   refresh: string;
   previous: string | null;
   revoked: boolean;
+  /** The app installation that signed in (X-FDV-Installation), as the real vault keeps it. */
+  installation?: string | null;
+  /** When the refresh token was last replaced, and whether its one replay is spent. */
+  rotatedAt?: number;
+  graceUsed?: boolean;
 }
 
 export interface FakeVaultState {
@@ -180,12 +185,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       scopes_unlocked: ['household', 'adults', 'member'],
     };
   };
-  const open = (): Tokens => {
+  const open = (installation: string | null = null): Tokens => {
     const s: FakeSession = {
       id: next('session'),
       refresh: next('refresh'),
       previous: null,
       revoked: false,
+      installation,
+      rotatedAt: Date.now(),
+      graceUsed: false,
     };
     state.sessions.push(s);
     return tokensFor(s);
@@ -202,14 +210,14 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const id = auth ? state.access.get(auth) : undefined;
       const s = state.sessions.find((x) => x.id === id);
       if (!s) return fail(401, 'unauthenticated', 'Sign in first.');
-      if (s.revoked) return fail(401, 'session_ended', 'That session has ended. Sign in again.');
+      if (s.revoked) return ended('revoked');
       return s;
     };
 
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.10',
+        server_version: '0.4.11',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -239,28 +247,45 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       state.setupRequired = false;
       state.email = String(body.email).toLowerCase();
       state.password = String(body.password);
-      return ok(open(), 201);
+      return ok(open(init.headers['x-fdv-installation'] ?? null), 201);
     }
     if (path === '/api/v1/auth/password' && init.method === 'POST') {
       if (String(body.email).toLowerCase() !== state.email || body.password !== state.password) {
         return fail(401, 'invalid_credentials', "That email and password don't match.");
       }
-      return ok(open());
+      return ok(open(init.headers['x-fdv-installation'] ?? null));
     }
     if (path === '/api/v1/auth/refresh' && init.method === 'POST') {
       const presented = String(body.refresh_token);
       const current = state.sessions.find((s) => s.refresh === presented);
       const replayed = state.sessions.find((s) => s.previous === presented);
-      if (replayed) {
+      const installation = init.headers['x-fdv-installation'] ?? null;
+      if (replayed && !replayed.revoked) {
+        // As the real vault (0.4.11): the token just replaced, once, within
+        // 30 s, from the session's own installation — an answer lost on the
+        // way. The token it displaces becomes the previous one.
+        const grace =
+          !replayed.graceUsed &&
+          replayed.installation != null &&
+          replayed.installation === installation &&
+          Date.now() - (replayed.rotatedAt ?? 0) <= 30_000;
+        if (grace) {
+          replayed.previous = replayed.refresh;
+          replayed.refresh = next('refresh');
+          replayed.graceUsed = true;
+          replayed.rotatedAt = Date.now();
+          return ok(tokensFor(replayed));
+        }
         // A spent token, presented again, is theft: the whole session goes.
         replayed.revoked = true;
-        return fail(401, 'session_ended', 'That session has ended. Sign in again.');
+        return ended('reused');
       }
-      if (!current || current.revoked) {
-        return fail(401, 'session_ended', 'That session has ended. Sign in again.');
-      }
+      if (!current) return ended('reused');
+      if (current.revoked) return ended('revoked');
       current.previous = current.refresh;
       current.refresh = next('refresh');
+      current.rotatedAt = Date.now();
+      current.graceUsed = false;
       return ok(tokensFor(current));
     }
     if (path === '/api/v1/auth/logout' && init.method === 'POST') {
@@ -504,3 +529,14 @@ const ok = (body: unknown, status = 200) => respond(status, body);
 const empty = () => respond(204, undefined);
 const fail = (status: number, code: string, message: string) =>
   respond(status, { error: { code, message, retriable: false, request_id: 'fake' } });
+/** A session that has ended, and why, as the real vault says it (0.4.11). */
+const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed') =>
+  respond(401, {
+    error: {
+      code: 'session_ended',
+      message: 'Please sign in again.',
+      reason,
+      retriable: false,
+      request_id: 'fake',
+    },
+  });

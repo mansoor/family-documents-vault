@@ -280,6 +280,10 @@ export const contractScenarios: Scenario[] = [
       await api.logout(token);
       const err = await refusal(api.me(token));
       expect(isSessionOver(err)).toBe(true);
+      // And says why (0.4.11), to the access token and the refresh token alike.
+      expect(err.reason).toBe('revoked');
+      const refused = await refusal(api.refresh((ctx.tokens as Tokens).refresh_token));
+      expect(refused.reason).toBe('revoked');
     },
   },
 ];

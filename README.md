@@ -126,7 +126,10 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 ### Sign-in and sessions
 
 - **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
-- Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a 30-day refresh token that rotates on every use; a refresh token presented twice is treated as stolen and that device is signed out.
+- Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a refresh token that rotates on every use.
+- **A session lasts 30 days from when it was last used, and 180 days at most** from the sign-in: a device used every week stays signed in for half a year, then asks once for the password. This is the same for browsers and the phone app.
+- A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for phones on networks that lose answers: the phone app may present the token it has just replaced once more, within 30 seconds, from the same installation. Anyone else presenting it, or presenting it later, ends the session.
+- When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
@@ -256,10 +259,14 @@ shared straight away, without anyone having to remember the link exists.
 
 If somebody signs in on a device your account has not used before, you are
 told — by push, and by email if the household has a mail server set up. It
-cannot be switched off, because it is about who can get into your vault. The
-signal is the browser's own description of itself, so a browser update can
-make a familiar device look new: it errs towards telling you about a sign-in
-you already knew about rather than staying quiet about one you did not.
+cannot be switched off, because it is about who can get into your vault.
+
+The phone app says which installation it is, so each phone is recognised as
+itself: updating the app is not a new device, and a second phone is — one
+alert per new installation, naming the phone ("the app on a Google Pixel
+8a"). A browser only describes itself, so a browser update can make a
+familiar computer look new: it errs towards telling you about a sign-in you
+already knew about rather than staying quiet about one you did not.
 
 ## How your files are protected
 

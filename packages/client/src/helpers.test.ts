@@ -73,6 +73,38 @@ describe('the transport', () => {
     expect(err.kind).toBe('offline');
   });
 
+  it('says which installation it is, when it is one, on every request', async () => {
+    const seen: Record<string, string>[] = [];
+    const http = createHttp({
+      baseUrl: 'https://vault.example',
+      installationId: '0f5a1c2e-9b7d-4e61-8a33-5c2d7e9f1a40',
+      fetch: async (_url, init) => {
+        seen.push(init.headers);
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: () => null },
+          json: async () => ({
+            error: {
+              code: 'session_ended',
+              message: 'Please sign in again.',
+              reason: 'reused',
+              request_id: 'r2',
+            },
+          }),
+          text: async () => '',
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      },
+    });
+    const err = (await http
+      .request('/api/v1/auth/refresh', { method: 'POST', body: {} })
+      .catch((e: unknown) => e)) as ApiRequestError;
+    expect(seen[0]?.['x-fdv-installation']).toBe('0f5a1c2e-9b7d-4e61-8a33-5c2d7e9f1a40');
+    // And why a session ended, when the vault says (0.4.11).
+    expect(err.reason).toBe('reused');
+  });
+
   it('builds absolute addresses from the vault origin', () => {
     const http = createHttp({
       baseUrl: 'https://vault.local:8443/',

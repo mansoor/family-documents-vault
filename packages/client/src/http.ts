@@ -55,6 +55,13 @@ export interface HttpOptions {
   fetch: FetchLike;
   /** Sent with every request: the phone's installation id, for one. */
   headers?: () => Record<string, string>;
+  /**
+   * This installation of an app: a UUID it made once and keeps (0.4.11).
+   * Sent as X-FDV-Installation, so the vault can tell one phone from
+   * another — for its new-device alerts, and for the one replay of a
+   * refresh whose answer was lost. A browser has none to send.
+   */
+  installationId?: string;
   /** Give up waiting after this long. Unset: wait as long as fetch does. */
   timeoutMs?: number;
   now?: () => number;
@@ -91,6 +98,7 @@ export function createHttp(options: HttpOptions): Http {
   const send = async (path: string, opts: RequestOptions): Promise<ResponseLike> => {
     const headers: Record<string, string> = {
       accept: 'application/json',
+      ...(options.installationId ? { 'x-fdv-installation': options.installationId } : {}),
       ...options.headers?.(),
       ...opts.headers,
     };

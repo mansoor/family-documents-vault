@@ -96,7 +96,8 @@ describe('the session core', () => {
 
     const r = await session.token();
     expect(r.kind).toBe('ended');
-    expect(r.kind === 'ended' && r.reason).toBe('session_ended');
+    // The vault says why (0.4.11): this one was revoked.
+    expect(r.kind === 'ended' && r.reason).toBe('revoked');
     expect(session.signedIn).toBe(false);
     expect(mem.current()).toBeNull();
 

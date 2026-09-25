@@ -58,6 +58,10 @@ export interface SessionRow {
   ip: string | null;
   created_at: string;
   last_used_at: string;
+  /** What holds it: an app installation, a browser, or neither we can tell (0.4.11). */
+  client?: 'app' | 'browser' | 'other';
+  /** In words: "the app on a Google Pixel 8a", "Firefox on a Mac" (0.4.11). */
+  label?: string;
 }
 
 export interface VaultRow {
