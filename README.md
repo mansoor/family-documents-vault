@@ -25,7 +25,7 @@ Built for people whose whole skill floor is _scan, upload, download_. You should
 
 ## What it will run on
 
-One `docker compose up`. Four containers: the API, a background worker (OCR, thumbnails, reminders), the web app, and PostgreSQL. No Redis, no message broker, no Kubernetes.
+One `docker compose up`. Four containers: the API, a background worker (OCR, thumbnails, page previews, reminders), the web app, and PostgreSQL. No Redis, no message broker, no Kubernetes.
 
 |           | Minimum                                                                   |
 | --------- | ------------------------------------------------------------------------- |
@@ -238,6 +238,38 @@ out entirely rather than shown with the details removed, because "somebody did
 something to a document" between two adults is worse than silence. The full
 hash-chained record is separate, is verified nightly, and is in the export.
 
+Reading a document's pages is in the log too: every page is recorded in the
+hash-chained record, and the list shows one sitting with a document — the
+pages one person looked at, each within ten minutes of the next — as one line:
+_Sarah looked at "Passport"_.
+
+### Reading a document
+
+Tap a document's preview to read it full size: its pages one at a time, fit to
+the window, larger with **+**, turned with the arrows (or the arrow keys).
+
+The worker draws the pages — JPEGs, 1600 pixels on the long edge, with no
+EXIF or location data — encrypted with the document's own key and stored
+beside it (`<object>.p1.enc`, `.p2.enc`…). Essentials are drawn as soon as
+they are added, or marked Essential, so the phone app can keep them for when
+there is no connection; everything else is drawn the first time somebody opens
+it, which takes a few seconds. The first 30 pages are drawn; for more than
+that, or for a Word or Excel file, **Download** opens the file itself.
+
+After upgrading to 0.4.12, the worker draws the Essentials already in the vault
+in the background, up to 200 each time it starts. Somebody waiting to read a
+page is always drawn for first.
+
+A page the worker cannot draw — a damaged file, or a picture larger than
+16,000 pixels across or 128 megapixels, which the worker refuses rather than
+decode — is tried three times and then shows "no preview"; the file itself
+is unaffected and **Download** still opens it. An Essential's is tried again
+the next time the worker starts, a day later at the soonest.
+
+Opening an Essential, or anything marked Only me, asks you to confirm it is
+you if you have not done so in the last five minutes — for its pages as for
+its file.
+
 ### Sending one document to somebody outside the family
 
 The landlord wants the tenancy agreement; the accountant wants last year's tax
@@ -278,7 +310,7 @@ already knew about rather than staying quiet about one you did not.
 - **Row-level security in PostgreSQL** keeps each household's rows invisible to every other household, enforced by the database rather than by application code. The application connects as a role that owns no tables, which is what makes the policies apply.
 - **Backups of the database are encrypted** with the same master key.
 
-- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable; no page ever leaves the machine. Private documents' text is stored encrypted under the owner's key and is not indexed.
+- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable, and draws page previews with poppler and ImageMagick; no page ever leaves the machine. Private documents' text is stored encrypted under the owner's key and is not indexed. Page previews and thumbnails are encrypted under their document's own key, like the file, and are sent with `Cache-Control: no-store` wherever the file itself would ask who is opening it.
 
 The honest limit: someone who controls the whole server can read everything. For a self-hosted vault on the household's own machine, that is the right trade — it is what makes server-side search, thumbnails and automatic filing possible.
 
@@ -362,7 +394,7 @@ Each person chooses what they want: the day's reminders on their devices, the sa
 
 Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses it straight away. An owner can add an S3-compatible bucket under **Where your files are kept**: pick the provider (Amazon S3, Backblaze B2, Wasabi, Cloudflare R2, DigitalOcean Spaces, MinIO, or anything with an S3 address), paste the bucket name and two keys, and press **Test and save**. The test writes a small object, reads it back and deletes it, and tells you in plain words what happened. A place that has not passed its test cannot be chosen.
 
-Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
+Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, with a version's thumbnail and page previews beside it (`….thumb.enc`, `….p1.enc`), so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
 
 ### Rotating the master key
 

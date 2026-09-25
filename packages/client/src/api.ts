@@ -303,6 +303,15 @@ export function createApi(http: Http) {
       raw(`/api/v1/versions/${versionId}/content`, { token }),
     thumbnail: (token: string, versionId: string): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/thumbnail`, { token }),
+    /**
+     * One page of a version, as the vault drew it (0.4.12, when
+     * `features.page_previews`): a JPEG, 1600 px on its long edge. While it
+     * is being drawn the answer is `preview_pending` (retriable, with
+     * Retry-After); a file or page the vault does not draw is `no_preview`;
+     * an Essential or an "only me" document asks for a step-up first.
+     */
+    page: (token: string, versionId: string, n: number): Promise<ResponseLike> =>
+      raw(`/api/v1/versions/${versionId}/pages/${n}`, { token }),
 
     // ------------------------------------------------------------ finding
     search: (token: string, q: string, params: Params = {}) =>

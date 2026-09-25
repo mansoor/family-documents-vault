@@ -7,7 +7,7 @@ import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
 import { PgBoss } from 'pg-boss';
-import { DocumentService } from './documents/service.js';
+import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
@@ -88,8 +88,8 @@ async function main(): Promise<void> {
   });
   boss.on('error', (err) => console.error('[queue]', err));
   await boss.start();
-  const enqueue = async (name: string, data: Record<string, unknown>) => {
-    await boss.send(name, data);
+  const enqueue: Enqueue = async (name, data, options) => {
+    await boss.send(name, data, options ?? {});
   };
   /**
    * An alert goes on the queue rather than out of the API: the worker owns

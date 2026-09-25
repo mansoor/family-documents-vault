@@ -62,7 +62,17 @@ export interface VersionView {
   page_count: number | null;
   ocr_status: string;
   uploaded_at: string;
+  /**
+   * How many of its pages the vault has drawn (0.4.12, when
+   * `features.page_previews`): GET /versions/{id}/pages/{n} serves pages 1
+   * to this. Null until they are drawn — ask for page 1 and they will be;
+   * 0 for a file the vault cannot draw. At most `PREVIEW_MAX_PAGES`.
+   */
+  preview_pages?: number | null;
 }
+
+/** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */
+export const PREVIEW_MAX_PAGES = 30;
 
 export interface DocumentTypeView {
   key: string;

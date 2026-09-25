@@ -25,6 +25,7 @@ export const STEP_UP_WINDOW_MS = 5 * 60 * 1000;
 /** The actions that ask. The name travels to the client, which says why. */
 export type StepUpAction =
   | 'open_private_document'
+  | 'open_essential'
   | 'change_storage'
   | 'change_people'
   | 'export_everything'
@@ -33,6 +34,9 @@ export type StepUpAction =
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
+  // A household's Essentials are everybody's: the old message said "only
+  // you can see" about a passport the whole family can (0.4.12).
+  open_essential: 'to open an Essential document',
   change_storage: 'to change where your files are kept',
   change_people: 'to change who is in the family',
   export_everything: 'to export everything',

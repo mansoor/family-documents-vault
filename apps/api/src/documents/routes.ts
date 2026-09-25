@@ -192,12 +192,42 @@ export async function registerDocuments(
     '/api/v1/versions/:id/thumbnail',
     auth,
     async (req, reply) => {
-      const bytes = await docs.thumbnail(principal(req), req.params.id);
-      if (!bytes) {
+      const thumb = await docs.thumbnail(principal(req), req.params.id);
+      if (!thumb) {
         throw new ApiError(404, 'no_thumbnail', 'No preview yet.', { retriable: true });
       }
       reply.header('content-type', 'image/jpeg');
-      reply.header('cache-control', 'private, max-age=3600');
+      // An Essential's or an "only me" document's is kept by no cache (0.4.12).
+      reply.header(
+        'cache-control',
+        thumb.sensitive ? 'private, no-store' : 'private, max-age=3600',
+      );
+      return reply.send(thumb.bytes);
+    },
+  );
+
+  /**
+   * One page, as the vault drew it (0.4.12): visibility first (a 404 like
+   * a version that does not exist), then the step-up an Essential or an
+   * "only me" document asks for, then the JPEG — or `preview_pending`
+   * (queued; try again in 3 s) or `no_preview`. Every page served is
+   * audited.
+   */
+  const pageParams = z.object({
+    id: z.string().uuid(),
+    n: z.coerce.number().int().min(1).max(9999),
+  });
+  app.get<{ Params: { id: string; n: string } }>(
+    '/api/v1/versions/:id/pages/:n',
+    auth,
+    async (req, reply) => {
+      const p = principal(req);
+      const { id, n } = parse(pageParams, req.params);
+      const ask = stepUp ? await docs.stepUpFor(p, id) : null;
+      if (stepUp && ask) await stepUp.require(p, ask);
+      const bytes = await docs.page(p, id, n, metaOf(req));
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, no-store');
       return reply.send(bytes);
     },
   );
@@ -446,9 +476,9 @@ export async function registerDocuments(
     const p = principal(req);
     // An Essential or an "only me" document asks who is asking, once
     // every five minutes (SEC-17). Everything else opens straight away.
-    if (stepUp && (await docs.isSensitive(p, req.params.id))) {
-      await stepUp.require(p, 'open_private_document');
-    }
+    // Anything the caller may not see answers null here and 404 below.
+    const ask = stepUp ? await docs.stepUpFor(p, req.params.id) : null;
+    if (stepUp && ask) await stepUp.require(p, ask);
     const meta = await docs.versionMeta(p, req.params.id);
     const total = meta.byte_size;
     const range = parseRange(req.headers.range, total);
@@ -479,9 +509,8 @@ export async function registerDocuments(
     // A link is a way to open the document without signing in, so making
     // one asks what opening it asks (SEC-17).
     const id = parse(idParam, req.params).id;
-    if (stepUp && (await docs.isSensitiveDocument(principal(req), id))) {
-      await stepUp.require(principal(req), 'open_private_document');
-    }
+    const ask = stepUp ? await docs.stepUpForDocument(principal(req), id) : null;
+    if (stepUp && ask) await stepUp.require(principal(req), ask);
     const created = await shares.create(
       principal(req),
       id,

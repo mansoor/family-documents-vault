@@ -177,7 +177,14 @@ jobs:
           done
           # The README tells a self-hoster to export that CA and trust it;
           # this proves the path exists and the certificate it signs works.
-          curl -sf --cacert ./vault-ca.crt --resolve vault.test:443:127.0.0.1             https://vault.test/api/v1/capabilities > /dev/null
+          # The CA is written before the site's certificate is issued, so the
+          # first handshakes can fail (curl 35); give it half a minute.
+          ok=
+          for i in $(seq 1 30); do
+            curl -sf --cacert ./vault-ca.crt --resolve vault.test:443:127.0.0.1               https://vault.test/api/v1/capabilities > /dev/null && ok=1 && break
+            sleep 1
+          done
+          test -n "$ok" || { echo "https://vault.test never answered with the vault CA's certificate"; exit 1; }
           code=$(curl -s -o /dev/null -w '%{http_code}' --resolve vault.test:80:127.0.0.1             http://vault.test/)
           test "$code" = "308" || { echo "expected a redirect to https, got $code"; exit 1; }
       - name: Logs on failure

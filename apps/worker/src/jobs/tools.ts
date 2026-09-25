@@ -41,6 +41,36 @@ export async function detectTools(): Promise<Tools> {
 
 const MAGICK = async () => ((await has('magick', ['-version'])) ? 'magick' : 'convert');
 
+/**
+ * What one ImageMagick run may use. Uploads are untrusted: a small file can
+ * claim to be 60,000 pixels square, and ImageMagick's own defaults would
+ * decode it onto the disk the database lives on. Anything over these is
+ * refused, not decoded, and no run outlives a minute.
+ */
+export const MAGICK_LIMITS = [
+  '-limit',
+  'memory',
+  '256MiB',
+  '-limit',
+  'map',
+  '512MiB',
+  '-limit',
+  'disk',
+  '1GiB',
+  '-limit',
+  'area',
+  '128MP',
+  '-limit',
+  'width',
+  '16KP',
+  '-limit',
+  'height',
+  '16KP',
+  '-limit',
+  'time',
+  '60',
+];
+
 /** Page count of a PDF, from pdfinfo. */
 export async function pdfPageCount(file: string): Promise<number | null> {
   try {
@@ -80,17 +110,124 @@ export async function thumbnail(input: string, output: string, size = 480): Prom
   let src = input;
   if (input.toLowerCase().endsWith('.pdf')) {
     const base = path.join(path.dirname(output), 'thumb-src');
-    await run('pdftoppm', ['-png', '-r', '72', '-f', '1', '-l', '1', '-singlefile', input, base], {
-      timeout: 60_000,
-    });
+    // A size, not a resolution: a page drawn 200 inches wide stays small.
+    await run(
+      'pdftoppm',
+      ['-png', '-scale-to', '960', '-f', '1', '-l', '1', '-singlefile', input, base],
+      { timeout: 60_000 },
+    );
     src = `${base}.png`;
   }
   await run(
     bin,
-    [src, '-auto-orient', '-thumbnail', `${size}x${size}>`, '-quality', '82', '-strip', output],
+    [
+      ...MAGICK_LIMITS,
+      src,
+      '-auto-orient',
+      '-thumbnail',
+      `${size}x${size}>`,
+      '-quality',
+      '82',
+      '-strip',
+      output,
+    ],
     { timeout: 60_000 },
   );
   await access(output);
+}
+
+/** A page preview's size and quality (4.7): enough to read a passport's small print. */
+export const PREVIEW_EDGE = 1600;
+export const PREVIEW_QUALITY = 80;
+
+/**
+ * The ImageMagick coder for each kind of image the vault accepts. The
+ * input is always named with its coder, so a file is read as what it was
+ * accepted as and never as whatever its bytes claim to be.
+ */
+const IMAGE_CODERS: Record<string, string> = {
+  'image/jpeg': 'jpeg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/tiff': 'tiff',
+  'image/heic': 'heic',
+  'image/heif': 'heic',
+};
+
+/** Can the vault draw pages of this kind of file? */
+export function drawable(mime: string): boolean {
+  return mime === 'application/pdf' || mime in IMAGE_CODERS;
+}
+
+/**
+ * Page previews: JPEG, 1600 px on the long edge, quality 80, and nothing
+ * but the picture — `-strip` drops EXIF, GPS and every other tag. A PDF's
+ * first `maxPages` pages go through poppler; an image is one page, turned
+ * upright first. Returns the JPEGs in page order.
+ */
+export async function renderPreviews(
+  input: string,
+  mime: string,
+  outDir: string,
+  maxPages: number,
+): Promise<string[]> {
+  const bin = await MAGICK();
+  let sources: string[];
+  if (mime === 'application/pdf') {
+    await run(
+      'pdftoppm',
+      [
+        '-png',
+        '-scale-to',
+        String(PREVIEW_EDGE),
+        '-f',
+        '1',
+        '-l',
+        String(maxPages),
+        input,
+        path.join(outDir, 'pv'),
+      ],
+      { timeout: 300_000 },
+    );
+    const pageNo = (f: string) => Number(/(\d+)\.png$/.exec(f)?.[1] ?? 0);
+    sources = (await readdir(outDir))
+      .filter((f) => /^pv-\d+\.png$/.test(f))
+      .sort((a, b) => pageNo(a) - pageNo(b))
+      .map((f) => `png:${path.join(outDir, f)}`);
+  } else {
+    const coder = IMAGE_CODERS[mime];
+    if (!coder) return [];
+    // The first frame: a TIFF may hold several, and a phone's is one page.
+    sources = [`${coder}:${input}[0]`];
+  }
+  const out: string[] = [];
+  for (const [i, src] of sources.entries()) {
+    const file = path.join(outDir, `preview-${i + 1}.jpg`);
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        src,
+        '-auto-orient',
+        '-resize',
+        `${PREVIEW_EDGE}x${PREVIEW_EDGE}>`,
+        // A transparent screenshot on white, not on black.
+        '-background',
+        'white',
+        '-alpha',
+        'remove',
+        '-alpha',
+        'off',
+        '-quality',
+        String(PREVIEW_QUALITY),
+        '-strip',
+        `jpeg:${file}`,
+      ],
+      { timeout: 120_000 },
+    );
+    out.push(file);
+  }
+  return out;
 }
 
 /** OCR of one page image. Returns the text, possibly empty. */

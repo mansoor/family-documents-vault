@@ -87,6 +87,8 @@ export const api = {
     ),
   content: (token: string, versionId: string) => blobOf(client.content(token, versionId)),
   thumbnail: (token: string, versionId: string) => blobOf(client.thumbnail(token, versionId)),
+  /** One page as the vault drew it (0.4.12). */
+  page: (token: string, versionId: string, n: number) => blobOf(client.page(token, versionId, n)),
   exportContent: (token: string, id: string) => blobOf(client.exportContent(token, id)),
   passkeyRegisterChallenge: (token: string) =>
     client.passkeyRegisterChallenge(

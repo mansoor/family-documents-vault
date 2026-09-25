@@ -7,8 +7,10 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withHousehold, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
+import type { SendPreviews } from './previews.js';
 import {
   detectTools,
+  drawable,
   ocrImage,
   pdfPageCount,
   readIfExists,
@@ -19,7 +21,7 @@ import {
 /**
  * The ingest pipeline's background half (design, Ingest pipeline):
  *
- *   stored -> page count -> thumbnail -> OCR -> index
+ *   stored -> page count -> thumbnail -> OCR -> index -> (Essentials) pages queued
  *
  * The document is already visible and downloadable; everything here only
  * enriches it. A failed step is recorded on the version and never blocks
@@ -40,6 +42,8 @@ export interface ProcessDeps {
   localRoot: string;
   maxOcrPages: number;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  /** Queues a version's page previews (4.7); an Essential's are queued after processing. */
+  sendPreviews?: SendPreviews;
 }
 
 const IMAGE_MIMES = new Set([
@@ -64,7 +68,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     if (!version) return null;
     const doc = await trx
       .selectFrom('document')
-      .select(['id', 'visibility', 'owner_member_id'])
+      .select(['id', 'visibility', 'owner_member_id', 'is_essential'])
       .where('id', '=', version.document_id)
       .executeTakeFirstOrThrow();
     const vault = await trx
@@ -102,6 +106,8 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       thumbnail_key?: string | null;
       ocr_status: 'done' | 'failed' | 'skipped';
       process_error?: string | null;
+      preview_state?: 'unsupported';
+      preview_pages?: number;
     } = { ocr_status: 'skipped' };
     const errors: string[] = [];
 
@@ -140,6 +146,14 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       }
     }
 
+    // 5. Page previews (4.7): a kind the vault cannot draw says so now.
+    // An Essential's are queued below, once this is recorded; everything
+    // else's the first time somebody asks for a page.
+    if (!drawable(version.mime)) {
+      update.preview_state = 'unsupported';
+      update.preview_pages = 0;
+    }
+
     update.process_error = errors.length ? errors.join('; ') : null;
     await withHousehold(deps.db, hh, (trx) =>
       trx
@@ -148,6 +162,27 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
         .where('id', '=', version.id)
         .execute(),
     );
+    if (doc.is_essential && drawable(version.mime) && deps.sendPreviews) {
+      // Only one not yet asked for: the queue holds one job per version anyway.
+      const marked = await withHousehold(deps.db, hh, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ preview_state: 'queued', preview_requested_at: new Date() })
+          .where('id', '=', version.id)
+          .where('preview_state', '=', 'none')
+          .executeTakeFirst(),
+      );
+      if (Number(marked.numUpdatedRows) > 0) {
+        await deps
+          .sendPreviews({ household_id: hh, version_id: version.id }, { priority: 5 })
+          .catch((err: unknown) =>
+            deps.log('warn', 'could not queue page previews', {
+              version_id: version.id,
+              err: String(err),
+            }),
+          );
+      }
+    }
     deps.log(errors.length ? 'warn' : 'info', 'processed version', {
       version_id: version.id,
       pages: update.page_count ?? null,

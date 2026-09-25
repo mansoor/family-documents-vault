@@ -24,6 +24,8 @@ export interface ActivityEvent {
   action: string;
   /** The person, already resolved to a name. */
   actor: string | null;
+  /** Who, as an id: two people with the same name are still two (0.4.12). */
+  actor_id?: string | null;
   /** For things nobody signed in for: "shared link (the letting agent)". */
   actor_label: string | null;
   object_type: string | null;
@@ -73,6 +75,9 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} uploaded a new copy of ${doc}`);
     case 'document.downloaded':
       return line(`${who} downloaded ${doc}`);
+    // Every page fetched is audited; the log folds a sitting into one line.
+    case 'document.viewed':
+      return line(`${who} looked at ${doc}`);
     case 'document.deleted':
       return line(`${who} moved ${doc} to the bin`);
     case 'document.restored':
@@ -166,6 +171,40 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     default:
       return null;
   }
+}
+
+/** Page views this close together are one sitting with a document, and one line. */
+export const SITTING_MS = 10 * 60 * 1000;
+
+/**
+ * Events, newest first, as the lines a person reads (0.4.12). Every page
+ * fetched is audited, and paging through a passport is not five things
+ * that happened: the views of one document by one person, each within ten
+ * minutes of the next and with nothing shown in between, are one line —
+ * the most recent, since the list reads from now backwards.
+ */
+export function describeEvents(events: ActivityEvent[]): ActivityLine[] {
+  const lines: ActivityLine[] = [];
+  let sitting: { actor: string | null; doc: string | null; at: number } | null = null;
+  for (const e of events) {
+    const at = Date.parse(e.at);
+    if (
+      e.action === 'document.viewed' &&
+      sitting &&
+      sitting.actor === (e.actor_id ?? null) &&
+      sitting.doc === e.object_id &&
+      sitting.at - at <= SITTING_MS
+    ) {
+      sitting.at = at;
+      continue;
+    }
+    const line = describeEvent(e);
+    if (!line) continue;
+    lines.push(line);
+    sitting =
+      e.action === 'document.viewed' ? { actor: e.actor_id ?? null, doc: e.object_id, at } : null;
+  }
+  return lines;
 }
 
 function capitalise(s: string): string {

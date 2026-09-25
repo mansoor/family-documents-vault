@@ -460,6 +460,42 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
+- Pages the vault draws (0.4.12, `features.page_previews`).
+
+  - **New:** `GET /api/v1/versions/{id}/pages/{n}` — page `n` (from 1) of a
+    version, as a JPEG 1600 px on its long edge, with no metadata, sent
+    `Cache-Control: private, no-store`. Checks run in this order: a version
+    the caller may not see is `404 not_found`, exactly as one that does not
+    exist; then an Essential or an "only me" document may answer `403
+step_up_required`; then the page. A page not drawn yet is queued and
+    answered `404 preview_pending` (`retriable: true`, `Retry-After: 3`);
+    ask again. A file the vault cannot draw (Word, Excel…), a page past the
+    last, or past the 30th, is `404 no_preview`: open the file itself. Every
+    page served is audited as `document.viewed` (`detail: { version_id,
+page }`); fetch a page when it is looked at, not ahead of time.
+  - **New, additive:** `preview_pages` on versions: how many pages are drawn
+    (at most 30); `null` until they are, or while a drawing is still being
+    tried; `0` when there will be none — a file the vault cannot draw, or one
+    it gave up on after three tries (a page then answers `no_preview`). An
+    Essential given up on is tried again when the worker next starts, a day
+    later at the soonest. `page_count` is the document's real length, which
+    can be more than is drawn. Essentials are drawn as soon as they are
+    processed or marked Essential; others the first time a page is asked for.
+  - **New:** the step-up action `open_essential` ("to open an Essential
+    document"), asked when opening an Essential's file or pages, or making a
+    link to it. `open_private_document` stays for "only me" documents, and
+    wins when a document is both. Treat actions as opaque: show the message.
+  - **Changed:** the thumbnail of an Essential or an "only me" document is
+    sent `Cache-Control: private, no-store`; others stay `private,
+max-age=3600`.
+  - **New:** the activity log says "looked at" for page views, one line per
+    sitting (one person, one document, each view within ten minutes of the
+    next).
+  - `@fdv/client`: `page(token, versionId, n)`. The fake draws nothing: a
+    version it made is `preview_pending` until a test sets
+    `state.pages.set(versionId, count)`. `@fdv/shared`: `PREVIEW_MAX_PAGES`,
+    `describeEvents()`.
+
 - Sessions a phone can live with (0.4.11).
 
   - **New, additive:** the `X-FDV-Installation` request header — a UUID an

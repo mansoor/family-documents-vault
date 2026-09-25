@@ -48,6 +48,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       idempotent_capture: true,
       capture_metadata: true,
       issued_by: true,
+      page_previews: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

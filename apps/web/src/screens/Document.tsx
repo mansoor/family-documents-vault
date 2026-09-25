@@ -10,7 +10,8 @@ import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /**
  * Document detail: a preview, the facts in a plain two-column list, the
- * history of versions, and one primary action — Download.
+ * history of versions, and one primary action — Download. Tapping the
+ * preview opens the pages full size, to read (0.4.12).
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
@@ -133,13 +134,24 @@ export function DocumentScreen() {
           </Link>
         }
       />
-      <div className="preview" aria-label="Preview">
-        {thumb ? (
-          <img src={thumb} alt={`First page of ${doc.title ?? 'the document'}`} />
-        ) : (
-          <span className="muted">{latest ? 'Preview is being made…' : 'No file yet'}</span>
-        )}
-      </div>
+      {latest ? (
+        <Link
+          to={`/documents/${doc.id}/read`}
+          className="preview preview-link"
+          aria-label={`Read ${doc.title ?? 'the document'}, full size`}
+        >
+          {thumb ? (
+            <img src={thumb} alt="" />
+          ) : (
+            <span className="muted">Preview is being made…</span>
+          )}
+          <span className="preview-hint">Tap to read it full size</span>
+        </Link>
+      ) : (
+        <div className="preview" aria-label="Preview">
+          <span className="muted">No file yet</span>
+        </div>
+      )}
       <div className="row" style={{ alignItems: 'center', gap: 12 }}>
         <StatusBadge status={doc.status} />
         <span className="muted">{visibilityLabel}</span>

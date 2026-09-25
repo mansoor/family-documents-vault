@@ -126,7 +126,8 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
           }),
       ],
       [
-        'open_private_document',
+        // An Essential is the household's: it asks as one (0.4.12).
+        'open_essential',
         () =>
           h.app.inject({
             url: `/api/v1/versions/${essentialVersion}/content`,

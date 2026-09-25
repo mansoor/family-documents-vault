@@ -23,7 +23,13 @@ const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
 describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere', () => {
   let h: Harness;
   const people = {} as Record<Role, Tokens>;
-  const docs: Array<{ id: string; visibility: string; owner_member_id: string; tag: string }> = [];
+  const docs: Array<{
+    id: string;
+    visibility: string;
+    owner_member_id: string;
+    tag: string;
+    version_id: string;
+  }> = [];
 
   let n = 0;
   const make = async (
@@ -48,7 +54,6 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     });
     expect(created.statusCode, created.body).toBe(201);
     const doc = created.json<DocumentView>();
-    docs.push({ id: doc.id, visibility, owner_member_id: as.member_id, tag });
     const form = new FormData();
     form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
     const uploaded = await h.app.inject({
@@ -58,6 +63,13 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       payload: form.getBuffer(),
     });
     expect(uploaded.statusCode, uploaded.body).toBe(201);
+    docs.push({
+      id: doc.id,
+      visibility,
+      owner_member_id: as.member_id,
+      tag,
+      version_id: uploaded.json<{ id: string }>().id,
+    });
     // A link out of the house to every one of them, which names it.
     const shared = await h.app.inject({
       method: 'POST',
@@ -192,6 +204,20 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       .map((d) => d.id)
       .sort();
     expect(ids).toEqual(expected(role));
+  });
+
+  it.each(roles)('the pages endpoint agrees with canSee for a %s', async (role) => {
+    const seen: string[] = [];
+    for (const d of docs) {
+      const res = await h.app.inject({
+        url: `/api/v1/versions/${d.version_id}/pages/1`,
+        headers: h.as(people[role]),
+      });
+      // Seen: on its way, or asking who is there. Not seen: not there at all.
+      const code = res.json<{ error: { code: string } }>().error.code;
+      if (code !== 'not_found') seen.push(d.id);
+    }
+    expect(seen.sort()).toEqual(expected(role));
   });
 
   it('the rule is not vacuous: every role is refused something here', () => {

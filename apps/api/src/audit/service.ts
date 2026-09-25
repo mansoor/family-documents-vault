@@ -1,5 +1,5 @@
 import { withScope, type Db } from '@fdv/db';
-import { describeEvent, type ActivityEvent, type ActivityLine } from '@fdv/shared';
+import { describeEvents, type ActivityEvent, type ActivityLine } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
@@ -90,7 +90,7 @@ export class AuditService {
       `.execute(trx);
 
       const rows = result.rows.slice(0, limit);
-      const items: ActivityLine[] = [];
+      const events: ActivityEvent[] = [];
       for (const r of rows) {
         // The one rule that hides anything: a private document belongs to
         // one person, and so does every line about it.
@@ -98,20 +98,21 @@ export class AuditService {
         if (r.document_visibility === 'adults' && p.role !== 'owner' && p.role !== 'adult') {
           continue;
         }
-        const event: ActivityEvent = {
+        events.push({
           id: Number(r.id),
           at: r.at.toISOString(),
           action: r.action,
           actor: r.actor_name,
+          actor_id: r.actor_account_id,
           actor_label: r.actor_label,
           object_type: r.object_type,
           object_id: r.object_id,
           object_title: r.document_title ?? r.member_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
-        };
-        const line = describeEvent(event);
-        if (line) items.push(line);
+        });
       }
+      // One sitting with a document is one line, not one per page (0.4.12).
+      const items = describeEvents(events);
 
       const last = rows[rows.length - 1];
       return {

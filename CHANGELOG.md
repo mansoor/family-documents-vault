@@ -8,6 +8,8 @@ All notable changes to Family Document Vault. The format follows
 
 ### Changed
 
+- Opening an Essential asks you to confirm it is you "to open an Essential document". It used to say "a document only you can see" about a passport the whole family can see.
+- The thumbnail of an Essential or an Only me document is no longer kept in the browser's cache.
 - **Sessions last as long as they are used, up to six months.** A session now lasts 30 days from when it was last used, and 180 days at most from the sign-in — for browsers and the phone app alike. Before, it ended 30 days after the sign-in however much it was used. Sessions open before the upgrade count their 180 days from when they began, so one older than that asks for the password at its next refresh.
 - **Each phone is recognised as itself.** The app sends a random installation id (`X-FDV-Installation`), and new-device alerts go by it: updating the app no longer raises an alert, and a second phone on the same app version does. The alert and the list of signed-in devices name the phone: "the app on a Google Pixel 8a". A phone already signed in raises one alert the first time it signs in again after the upgrade, as the vault meets its installation id for the first time.
 
@@ -15,6 +17,8 @@ All notable changes to Family Document Vault. The format follows
 
 ### Added
 
+- **Read a document without downloading it.** Tap a document's preview and its pages open full size, one at a time: fit to the window, larger when you want to read the small print, turned with the arrows. The vault draws the pages itself, on your server, and keeps them encrypted like the file; Essentials are ready ahead of time, so the phone app can keep them for when there is no signal. The activity log says who looked at what — once per sitting, not once per page.
+- iPhone photos (HEIC) now get a thumbnail and page previews: the worker image includes ImageMagick's HEIC support.
 - **A phone that loses a refresh answer stays signed in.** On a network that drops answers, a phone could spend its refresh token without hearing back, and the next try looked like a stolen token — signed out. Now the token just replaced may be tried once more, within 30 seconds, from the same app installation; any other replay still signs the device out, for its owner and for a thief alike.
 - **A session that ends says why** — expired, signed out, its token used twice, or the person taken out of the household — so the app can say so plainly (`error.reason`).
 - **Documents say who issued them.** A family has a dozen bank statements, bills and letters from the same months; now each says whose it is — "Bank statement · Barclays · Sep 2026" — in lists and search results, without opening it. The card asks for it (with the household's own issuers to pick from, and, for a document already in the vault, a suggestion from its letterhead: "From Barclays?", filled in only if you say so). Search finds documents by who issued them and can narrow to one issuer. Statements, bills and policies are named for their issuer: "Barclays statement, September 2026". What a type used to call its issuer (its institution, provider, lender, insurer…) moves into this field; nothing is lost. Like a title, an Only me document's issuer is never shown to anyone else and never goes by email.

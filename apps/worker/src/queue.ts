@@ -12,6 +12,12 @@ export const JOBS = {
   verifyAudit: 'audit.verify',
   /** Page count, thumbnail and OCR for one uploaded version. */
   processVersion: 'version.process',
+  /**
+   * One version's page previews (4.7): queued by the API on the first
+   * request for a page, when a document becomes Essential, and by the
+   * worker's backfill at startup. The name matches the API's enqueue.
+   */
+  renderPreviews: 'version.previews',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
   /** Nightly encrypted pg_dump with 30-day retention. */

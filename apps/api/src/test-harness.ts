@@ -11,7 +11,7 @@ import { AuthService, type Tokens } from './auth/service.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
-import { DocumentService } from './documents/service.js';
+import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
@@ -45,7 +45,11 @@ export interface Harness {
   adminUrl: string;
   vaultDir: string;
   /** Jobs the API asked the worker to run. */
-  jobs: Array<{ name: string; data: Record<string, unknown> }>;
+  jobs: Array<{
+    name: string;
+    data: Record<string, unknown>;
+    options?: { singletonKey?: string; priority?: number };
+  }>;
   close(): Promise<void>;
   /** Runs first-run setup and returns the owner's tokens. */
   setup(overrides?: Partial<SetupBody>): Promise<Tokens>;
@@ -86,8 +90,8 @@ export async function createHarness(): Promise<Harness> {
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
   const jobs: Harness['jobs'] = [];
-  const enqueue = async (name: string, data: Record<string, unknown>) => {
-    jobs.push({ name, data });
+  const enqueue: Enqueue = async (name, data, options) => {
+    jobs.push({ name, data, ...(options ? { options } : {}) });
   };
   // The same mapping as production, not a copy of it: see alert-job.ts.
   const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
