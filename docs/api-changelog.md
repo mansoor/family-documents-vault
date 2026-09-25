@@ -460,33 +460,107 @@ too_large` and is not kept. Until 0.4.8 the part that arrived was stored
     "14 Mar 2031", "March 2031", "March 14, 2031" and, given the reader's
     order, "14/03/2031".
 
-- UnifiedPush for the phone app (0.4.14, `features.unified_push`, the same
-  fact as `features.push`).
-  - `POST /api/v1/devices` takes `kind: 'web_push' | 'unified_push'`
-    (default `web_push`). The push address must be `https://` (`422`
-    otherwise) and must not point inside the vault's own network — by name
-    or written out, an IPv4 address inside an IPv6 one included — unless
-    the operator allows it (`422`). A device is bound to the session that
-    registered it (and the app installation); the same address registered
-    again moves it to the new session.
-  - `GET /api/v1/devices` items gain `kind`, `this_session`, `failed_at`
-    and `signed_out`: its session expired or was ended, so `working` is
-    false and it hears nothing until that device signs in again.
-  - **New:** `POST /api/v1/devices/{id}/test` (`202`) sends a test to one
-    of your own devices; anybody else's is a `404`, a signed-out one a
-    `409 signed_out`.
-  - Signing out, `DELETE /api/v1/auth/sessions/{id}`, refresh-token reuse,
-    a password change or reset and a removed sign-in now also remove that
-    session's push devices. Once that has committed, each UnifiedPush
-    device among them is sent `{"v":1,"type":"session_ended"}`, tried again
-    for about four hours if its push service does not take it.
-  - UnifiedPush messages carry no titles:
-    `{"v":1,"type":"digest","count":3,"date":"2026-10-03"}`, `new_device`,
-    `owner_change`, `session_ended` or `test`, encrypted per RFC 8291 with
-    the vault's VAPID keys. Digests, tests and `session_ended` carry one
-    Topic per type (a newer one replaces an older one still waiting);
-    alerts carry none, so one never replaces another. The Sunday summary
-    is email only.
+- Who issued it (0.4.10, `features.issued_by`).
+
+  - **New, additive:** `issued_by` (text, up to 200 characters) on document
+    views, `POST`/`PATCH /api/v1/documents` and capture metadata. It is kept
+    as typed, with spaces tidied; blank is `null`. A vault without
+    `features.issued_by` refuses the field (`422`), so send it only to one
+    that has it.
+  - **New, additive:** `issued_by_label` on document types: the type's own
+    word for it ("Institution", "Provider", "Insurer"…), `null` for "Issued
+    by". The types' own fields that held it (institution, provider, lender,
+    issuer, insurer, employer, vendor, vet, issuing country) are no longer
+    in their `fields`; values stored under them in `extra` moved to
+    `issued_by` (migration 0025, which leaves `updated_at` alone).
+  - **Changed:** every document's ETag is new in 0.4.10, so a `PATCH` made
+    with an `If-Match` from before the upgrade is refused (`412`) instead of
+    putting an old `extra` back — fetch the document again. A client that
+    syncs with `updated_since` should fetch everything once after upgrading:
+    the move above does not change `updated_at`.
+  - `GET /api/v1/documents?issued_by=` filters by it, regardless of case.
+    Search matches it (weighted with the tags, below the title), takes
+    `issued_by` as a filter too (the second, private pass keeps it), and
+    each hit carries `issued_by` and `issued`.
+  - **New:** `GET /api/v1/issuers?q=&type_key=&member_id=&category=` — the
+    household's issuers the caller can see, one spelling each (the one used
+    most), most used first; with `type_key`, only those who have issued
+    that type: `{ items: [{ issued_by, count }] }`. An issuer seen only on a
+    document the caller cannot see is not there.
+  - **New:** `GET /api/v1/documents/{id}/issuer-suggestions` — who probably
+    issued it, from its latest pages and the household's issuers:
+    `{ state, items: [{ value, source }] }`, where `state` is `ready`,
+    `pending` (the pages have not been read yet) or `unavailable`, and
+    `source` is `known` or `page`. Offered, never filled in;
+    `cache-control: no-store`. Needs the right to change the document.
+
+- Sessions a phone can live with (0.4.11).
+
+  - **New, additive:** the `X-FDV-Installation` request header — a UUID an
+    app makes once and keeps — read on setup, password and MFA sign-in,
+    passkey sign-in, invitation acceptance and refresh. A session records
+    the installation that signed in. `@fdv/client` sends it when given
+    `installationId`. Browsers send none.
+  - **Changed:** new-device alerts key on the installation when there is
+    one: an app update is not a new device; a second phone is. Browsers
+    are recognised by their user agent, as before.
+  - **New:** a refresh token that has just been replaced may be presented
+    once more — within 30 s of its rotation, from the session's own
+    installation — and gets a new rotation (audited as
+    `auth.refresh_replayed`); the token it displaces becomes the previous
+    one. Both the replayed token and the one it displaced are kept for the
+    session's life: presented again, however many rotations later, either
+    ends the session. Every other replay ends the session, as before. A
+    browser never gets this.
+  - **Changed:** sessions slide. Each refresh sets the session's end to 30
+    days from now, but never past 180 days from the sign-in, and
+    `refresh_expires_in` says what is really left. Sessions open before
+    the upgrade get their 180 days from when they began.
+  - **New, additive:** `401 session_ended` carries `error.reason`:
+    `expired`, `revoked`, `reused`, `removed` or `malformed` — on refresh,
+    and on any request with a token whose session has ended. `reused`
+    means a spent token was presented and that ended the session; a
+    refresh token the vault does not recognise at all is `revoked`.
+    `detail` stays a free-text string.
+  - **New, additive:** `GET /api/v1/auth/sessions` items carry `client`
+    (`app`, `browser` or `other`) and `label` ("the app on a Google Pixel
+    8a", "Firefox on a Mac").
+
+- Pages the vault draws (0.4.12, `features.page_previews`).
+
+  - **New:** `GET /api/v1/versions/{id}/pages/{n}` — page `n` (from 1) of a
+    version, as a JPEG 1600 px on its long edge, with no metadata, sent
+    `Cache-Control: private, no-store`. Checks run in this order: a version
+    the caller may not see is `404 not_found`, exactly as one that does not
+    exist; then an Essential or an "only me" document may answer `403
+step_up_required`; then the page. A page not drawn yet is queued and
+    answered `404 preview_pending` (`retriable: true`, `Retry-After: 3`);
+    ask again. A file the vault cannot draw (Word, Excel…), a page past the
+    last, or past the 30th, is `404 no_preview`: open the file itself. Every
+    page served is audited as `document.viewed` (`detail: { version_id,
+page }`); fetch a page when it is looked at, not ahead of time.
+  - **New, additive:** `preview_pages` on versions: how many pages are drawn
+    (at most 30); `null` until they are, or while a drawing is still being
+    tried; `0` when there will be none — a file the vault cannot draw, or one
+    it gave up on after three tries (a page then answers `no_preview`). An
+    Essential given up on is tried again when the worker next starts, a day
+    later at the soonest. `page_count` is the document's real length, which
+    can be more than is drawn. Essentials are drawn as soon as they are
+    processed or marked Essential; others the first time a page is asked for.
+  - **New:** the step-up action `open_essential` ("to open an Essential
+    document"), asked when opening an Essential's file or pages, or making a
+    link to it. `open_private_document` stays for "only me" documents, and
+    wins when a document is both. Treat actions as opaque: show the message.
+  - **Changed:** the thumbnail of an Essential or an "only me" document is
+    sent `Cache-Control: private, no-store`; others stay `private,
+max-age=3600`.
+  - **New:** the activity log says "looked at" for page views, one line per
+    sitting (one person, one document, each view within ten minutes of the
+    next).
+  - `@fdv/client`: `page(token, versionId, n)`. The fake draws nothing: a
+    version it made is `preview_pending` until a test sets
+    `state.pages.set(versionId, count)`. `@fdv/shared`: `PREVIEW_MAX_PAGES`,
+    `describeEvents()`.
 
 - Essentials a phone may keep (0.4.13, `features.offline_essentials`).
   - **New:** `POST /api/v1/offline/grant` `{password, include_private?}` →
@@ -532,107 +606,33 @@ duplicates, dropped}`. Each event id is recorded once, however often
     `offlinePage`, `offlineOpens`; the fake answers them from
     `state.offlineEssentials`.
 
-- Pages the vault draws (0.4.12, `features.page_previews`).
-
-  - **New:** `GET /api/v1/versions/{id}/pages/{n}` — page `n` (from 1) of a
-    version, as a JPEG 1600 px on its long edge, with no metadata, sent
-    `Cache-Control: private, no-store`. Checks run in this order: a version
-    the caller may not see is `404 not_found`, exactly as one that does not
-    exist; then an Essential or an "only me" document may answer `403
-step_up_required`; then the page. A page not drawn yet is queued and
-    answered `404 preview_pending` (`retriable: true`, `Retry-After: 3`);
-    ask again. A file the vault cannot draw (Word, Excel…), a page past the
-    last, or past the 30th, is `404 no_preview`: open the file itself. Every
-    page served is audited as `document.viewed` (`detail: { version_id,
-page }`); fetch a page when it is looked at, not ahead of time.
-  - **New, additive:** `preview_pages` on versions: how many pages are drawn
-    (at most 30); `null` until they are, or while a drawing is still being
-    tried; `0` when there will be none — a file the vault cannot draw, or one
-    it gave up on after three tries (a page then answers `no_preview`). An
-    Essential given up on is tried again when the worker next starts, a day
-    later at the soonest. `page_count` is the document's real length, which
-    can be more than is drawn. Essentials are drawn as soon as they are
-    processed or marked Essential; others the first time a page is asked for.
-  - **New:** the step-up action `open_essential` ("to open an Essential
-    document"), asked when opening an Essential's file or pages, or making a
-    link to it. `open_private_document` stays for "only me" documents, and
-    wins when a document is both. Treat actions as opaque: show the message.
-  - **Changed:** the thumbnail of an Essential or an "only me" document is
-    sent `Cache-Control: private, no-store`; others stay `private,
-max-age=3600`.
-  - **New:** the activity log says "looked at" for page views, one line per
-    sitting (one person, one document, each view within ten minutes of the
-    next).
-  - `@fdv/client`: `page(token, versionId, n)`. The fake draws nothing: a
-    version it made is `preview_pending` until a test sets
-    `state.pages.set(versionId, count)`. `@fdv/shared`: `PREVIEW_MAX_PAGES`,
-    `describeEvents()`.
-
-- Sessions a phone can live with (0.4.11).
-
-  - **New, additive:** the `X-FDV-Installation` request header — a UUID an
-    app makes once and keeps — read on setup, password and MFA sign-in,
-    passkey sign-in, invitation acceptance and refresh. A session records
-    the installation that signed in. `@fdv/client` sends it when given
-    `installationId`. Browsers send none.
-  - **Changed:** new-device alerts key on the installation when there is
-    one: an app update is not a new device; a second phone is. Browsers
-    are recognised by their user agent, as before.
-  - **New:** a refresh token that has just been replaced may be presented
-    once more — within 30 s of its rotation, from the session's own
-    installation — and gets a new rotation (audited as
-    `auth.refresh_replayed`); the token it displaces becomes the previous
-    one. Both the replayed token and the one it displaced are kept for the
-    session's life: presented again, however many rotations later, either
-    ends the session. Every other replay ends the session, as before. A
-    browser never gets this.
-  - **Changed:** sessions slide. Each refresh sets the session's end to 30
-    days from now, but never past 180 days from the sign-in, and
-    `refresh_expires_in` says what is really left. Sessions open before
-    the upgrade get their 180 days from when they began.
-  - **New, additive:** `401 session_ended` carries `error.reason`:
-    `expired`, `revoked`, `reused`, `removed` or `malformed` — on refresh,
-    and on any request with a token whose session has ended. `reused`
-    means a spent token was presented and that ended the session; a
-    refresh token the vault does not recognise at all is `revoked`.
-    `detail` stays a free-text string.
-  - **New, additive:** `GET /api/v1/auth/sessions` items carry `client`
-    (`app`, `browser` or `other`) and `label` ("the app on a Google Pixel
-    8a", "Firefox on a Mac").
-
-- Who issued it (0.4.10, `features.issued_by`).
-
-  - **New, additive:** `issued_by` (text, up to 200 characters) on document
-    views, `POST`/`PATCH /api/v1/documents` and capture metadata. It is kept
-    as typed, with spaces tidied; blank is `null`. A vault without
-    `features.issued_by` refuses the field (`422`), so send it only to one
-    that has it.
-  - **New, additive:** `issued_by_label` on document types: the type's own
-    word for it ("Institution", "Provider", "Insurer"…), `null` for "Issued
-    by". The types' own fields that held it (institution, provider, lender,
-    issuer, insurer, employer, vendor, vet, issuing country) are no longer
-    in their `fields`; values stored under them in `extra` moved to
-    `issued_by` (migration 0025, which leaves `updated_at` alone).
-  - **Changed:** every document's ETag is new in 0.4.10, so a `PATCH` made
-    with an `If-Match` from before the upgrade is refused (`412`) instead of
-    putting an old `extra` back — fetch the document again. A client that
-    syncs with `updated_since` should fetch everything once after upgrading:
-    the move above does not change `updated_at`.
-  - `GET /api/v1/documents?issued_by=` filters by it, regardless of case.
-    Search matches it (weighted with the tags, below the title), takes
-    `issued_by` as a filter too (the second, private pass keeps it), and
-    each hit carries `issued_by` and `issued`.
-  - **New:** `GET /api/v1/issuers?q=&type_key=&member_id=&category=` — the
-    household's issuers the caller can see, one spelling each (the one used
-    most), most used first; with `type_key`, only those who have issued
-    that type: `{ items: [{ issued_by, count }] }`. An issuer seen only on a
-    document the caller cannot see is not there.
-  - **New:** `GET /api/v1/documents/{id}/issuer-suggestions` — who probably
-    issued it, from its latest pages and the household's issuers:
-    `{ state, items: [{ value, source }] }`, where `state` is `ready`,
-    `pending` (the pages have not been read yet) or `unavailable`, and
-    `source` is `known` or `page`. Offered, never filled in;
-    `cache-control: no-store`. Needs the right to change the document.
+- UnifiedPush for the phone app (0.4.14, `features.unified_push`, the same
+  fact as `features.push`).
+  - `POST /api/v1/devices` takes `kind: 'web_push' | 'unified_push'`
+    (default `web_push`). The push address must be `https://` (`422`
+    otherwise) and must not point inside the vault's own network — by name
+    or written out, an IPv4 address inside an IPv6 one included — unless
+    the operator allows it (`422`). A device is bound to the session that
+    registered it (and the app installation); the same address registered
+    again moves it to the new session.
+  - `GET /api/v1/devices` items gain `kind`, `this_session`, `failed_at`
+    and `signed_out`: its session expired or was ended, so `working` is
+    false and it hears nothing until that device signs in again.
+  - **New:** `POST /api/v1/devices/{id}/test` (`202`) sends a test to one
+    of your own devices; anybody else's is a `404`, a signed-out one a
+    `409 signed_out`.
+  - Signing out, `DELETE /api/v1/auth/sessions/{id}`, refresh-token reuse,
+    a password change or reset and a removed sign-in now also remove that
+    session's push devices. Once that has committed, each UnifiedPush
+    device among them is sent `{"v":1,"type":"session_ended"}`, tried again
+    for about four hours if its push service does not take it.
+  - UnifiedPush messages carry no titles:
+    `{"v":1,"type":"digest","count":3,"date":"2026-10-03"}`, `new_device`,
+    `owner_change`, `session_ended` or `test`, encrypted per RFC 8291 with
+    the vault's VAPID keys. Digests, tests and `session_ended` carry one
+    Topic per type (a newer one replaces an older one still waiting);
+    alerts carry none, so one never replaces another. The Sunday summary
+    is email only.
 
 ## Deprecations in effect
 
