@@ -49,6 +49,7 @@ async function make(
       shares: anyStub,
       audit: anyStub,
       passwords: anyStub,
+      offline: anyStub,
       visibility: anyStub,
       totp: anyStub,
       passkeys: anyStub,

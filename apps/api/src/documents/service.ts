@@ -24,9 +24,11 @@ import {
 import { appendAudit, withScope, type Db, type Visibility } from '@fdv/db';
 import {
   deriveStatus,
+  OFFLINE_SET_MAX,
   type DateValue,
   type DocumentTypeView,
   type DocumentView,
+  type OfflineItem,
   type VersionView,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
@@ -1558,6 +1560,106 @@ export class DocumentService {
   }
 
   /**
+   * The Essentials this person's phone may keep (0.4.13), complete: what is
+   * not here is to be removed from the phone. The same rule as
+   * `mayKeepOffline` in @fdv/shared, as SQL: Essentials the person can see,
+   * not in the bin, with a file; teens only their own; viewers none; the
+   * person's own Only me ones only with `includePrivate`.
+   */
+  async offlineEssentials(
+    p: Principal,
+    includePrivate: boolean,
+  ): Promise<{ items: OfflineItem[]; truncated: boolean }> {
+    if (p.role === 'viewer') return { items: [], truncated: false };
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      let q = trx
+        .selectFrom('document')
+        .selectAll('document')
+        .where(this.visibleTo(p) as never)
+        .where('document.is_essential', '=', true)
+        .where('document.deleted_at', 'is', null)
+        .where((eb) =>
+          eb.exists(
+            eb
+              .selectFrom('document_version')
+              .select('document_version.id')
+              .whereRef('document_version.document_id', '=', 'document.id'),
+          ),
+        );
+      if (p.role === 'teen') q = q.where('document.owner_member_id', '=', p.memberId);
+      if (!includePrivate) q = q.where('document.visibility', '<>', 'private');
+      const rows = await q
+        .orderBy('document.id')
+        .limit(OFFLINE_SET_MAX + 1)
+        .execute();
+      const kept = rows.slice(0, OFFLINE_SET_MAX);
+      const items: OfflineItem[] = [];
+      for (const row of kept) {
+        const v = await trx
+          .selectFrom('document_version')
+          .select(['id', 'mime', 'page_count', 'preview_pages', 'preview_state'])
+          .where('document_id', '=', row.id)
+          .orderBy('version_no', 'desc')
+          .limit(1)
+          .executeTakeFirstOrThrow();
+        items.push({
+          document: await this.view(trx, row),
+          version: {
+            id: v.id,
+            mime: v.mime,
+            page_count: v.page_count,
+            preview_pages:
+              v.preview_state === 'ready' ||
+              v.preview_state === 'unsupported' ||
+              v.preview_state === 'failed'
+                ? (v.preview_pages ?? 0)
+                : null,
+            preview_state: v.preview_state,
+          },
+          private: row.visibility === 'private',
+        });
+      }
+      return { items, truncated: rows.length > OFFLINE_SET_MAX };
+    });
+  }
+
+  /**
+   * Whether this version is one the person's phone may keep: visible to
+   * them (anything else is the same 404 as a version that does not exist),
+   * and the current version of an Essential in their set (an older version,
+   * or a document outside the set, is a 404 too).
+   */
+  async offlineVersion(
+    p: Principal,
+    versionId: string,
+    includePrivate: boolean,
+  ): Promise<{ documentId: string }> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const v = await trx
+        .selectFrom('document_version')
+        .select(['id', 'document_id'])
+        .where('id', '=', versionId)
+        .executeTakeFirst();
+      if (!v) throw notFound();
+      const doc = await this.fetch(trx, p, v.document_id); // visibility, and not in the bin
+      const latest = await trx
+        .selectFrom('document_version')
+        .select('id')
+        .where('document_id', '=', doc.id)
+        .orderBy('version_no', 'desc')
+        .limit(1)
+        .executeTakeFirstOrThrow();
+      const inSet =
+        p.role !== 'viewer' &&
+        doc.is_essential &&
+        (p.role !== 'teen' || doc.owner_member_id === p.memberId) &&
+        (doc.visibility !== 'private' || includePrivate);
+      if (!inSet || latest.id !== v.id) throw notFound();
+      return { documentId: doc.id };
+    });
+  }
+
+  /**
    * One page of a version, as the vault drew it (0.4.12): a JPEG,
    * decrypted on the way out, and audited as `document.viewed`.
    *
@@ -1567,7 +1669,15 @@ export class DocumentService {
    * yet are queued once and answered `preview_pending`; a file the vault
    * cannot draw, or a page past what it drew, is `no_preview`.
    */
-  async page(p: Principal, versionId: string, page: number, meta: RequestMeta): Promise<Buffer> {
+  async page(
+    p: Principal,
+    versionId: string,
+    page: number,
+    meta: RequestMeta,
+    // A phone filling its offline copies is not somebody reading: the
+    // offline route records that once per version itself (0.4.13).
+    opts: { audit?: boolean } = {},
+  ): Promise<Buffer> {
     const outcome = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
@@ -1601,15 +1711,16 @@ export class DocumentService {
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'document.viewed',
-        objectType: 'document',
-        objectId: v.document_id,
-        detail: { version_id: v.id, page },
-        ip: meta.ip,
-      });
+      if (opts.audit !== false)
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'document.viewed',
+          objectType: 'document',
+          objectId: v.document_id,
+          detail: { version_id: v.id, page },
+          ip: meta.ip,
+        });
       return { kind: 'ready', key: `${v.storage_key}.p${page}.enc`, fileKey, adapter } as const;
     });
     if (outcome.kind === 'pending') {

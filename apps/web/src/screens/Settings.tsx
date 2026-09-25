@@ -69,6 +69,8 @@ export function SettingsScreen() {
               <span>
                 {d.label ?? shortAgent(d.user_agent)}
                 {d.current && <span className="muted"> · this one</span>}
+                {/* Signing it out also ends what it keeps (0.4.13). */}
+                {d.offline && <span className="muted"> · Keeps Essentials for offline use</span>}
               </span>
               {!d.current && (
                 <Button kind="quiet" onClick={() => void revoke(d.id)}>

@@ -78,6 +78,16 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     // Every page fetched is audited; the log folds a sitting into one line.
     case 'document.viewed':
       return line(`${who} looked at ${doc}`);
+    // A phone keeping Essentials (0.4.13): filled once per version, and
+    // what was opened on it, reported when it next had a connection.
+    case 'document.cached_offline':
+      return line(`${possessive(who)} phone kept ${doc} for offline use`);
+    case 'document.opened_offline': {
+      const without = detail.online === true ? '' : ' without a connection';
+      return detail.mode === 'show'
+        ? line(`${who} showed ${doc} from their phone${without}`)
+        : line(`${who} opened ${doc} on their phone${without}`);
+    }
     case 'document.deleted':
       return line(`${who} moved ${doc} to the bin`);
     case 'document.restored':
@@ -205,6 +215,11 @@ export function describeEvents(events: ActivityEvent[]): ActivityLine[] {
       e.action === 'document.viewed' ? { actor: e.actor_id ?? null, doc: e.object_id, at } : null;
   }
   return lines;
+}
+
+/** "Sarah’s", "Chris’", "Somebody’s". */
+function possessive(who: string): string {
+  return /s$/i.test(who) ? `${who}’` : `${who}’s`;
 }
 
 function capitalise(s: string): string {

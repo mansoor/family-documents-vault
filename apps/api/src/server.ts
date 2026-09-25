@@ -23,6 +23,7 @@ import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { ShareService } from './documents/shares.js';
 import { AuditService } from './audit/service.js';
+import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
 import { alertJob, type AlertRequest } from './alert-job.js';
 import { instanceIdReader } from './instance.js';
@@ -115,6 +116,15 @@ async function main(): Promise<void> {
   );
 
   const stepUpService = new StepUpService(db, passkeys, totp);
+  const documents = new DocumentService(
+    db,
+    keys,
+    vaults,
+    config.FDV_MAX_UPLOAD_BYTES,
+    enqueue,
+    reminders,
+    deriveSealedKey(masterSecret),
+  );
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -127,15 +137,8 @@ async function main(): Promise<void> {
     visibility: new VisibilityService(db, keys),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
-    documents: new DocumentService(
-      db,
-      keys,
-      vaults,
-      config.FDV_MAX_UPLOAD_BYTES,
-      enqueue,
-      reminders,
-      deriveSealedKey(masterSecret),
-    ),
+    documents,
+    offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     reminders,
     notifications: new NotificationService(
       db,

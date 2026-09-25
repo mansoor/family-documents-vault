@@ -134,6 +134,10 @@ export interface Schema {
     absolute_expires_at: GeneratedTimestamp;
     /** Tokens a grace replay touched: presented again, they end the session. */
     grace_hashes: ColumnType<Buffer[], Buffer[] | undefined, Buffer[]>;
+    /** Essentials this phone may keep (0028): when granted, until when, and Only me too. */
+    offline_granted_at: Timestamp | null;
+    offline_expires_at: Timestamp | null;
+    offline_include_private: Generated<boolean>;
   };
 
   household_profile: {
@@ -482,6 +486,14 @@ export interface Schema {
     member_id: string | null;
     dismissed_at: Generated<Date>;
     dismissed_by: string | null;
+  };
+
+  /** Events a phone reported, each received once (0028). */
+  client_event_receipt: {
+    household_id: string;
+    event_id: string;
+    account_id: string;
+    received_at: GeneratedTimestamp;
   };
 
   audit_event: {

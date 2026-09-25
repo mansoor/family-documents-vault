@@ -18,6 +18,10 @@ import type {
   Me,
   Member,
   MfaChallenge,
+  OfflineGrant,
+  OfflineOpen,
+  OfflineOpensResult,
+  OfflineSet,
   NewVault,
   OwnerChange,
   Page,
@@ -312,6 +316,35 @@ export function createApi(http: Http) {
      */
     page: (token: string, versionId: string, n: number): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/pages/${n}`, { token }),
+
+    // ------------------------------------------------ offline (0.4.13)
+    /**
+     * Keeping Essentials on this phone (when `features.offline_essentials`):
+     * the password again, for at most 30 days. `401 invalid_credentials`
+     * for a wrong one; 403 for viewers; 422 from a session with no
+     * installation id (only an app keeps documents).
+     */
+    offlineGrant: (token: string, password: string, includePrivate = false) =>
+      request<OfflineGrant>('/api/v1/offline/grant', {
+        method: 'POST',
+        token,
+        body: { password, include_private: includePrivate },
+      }),
+    endOfflineGrant: (token: string) =>
+      request<void>('/api/v1/offline/grant', { method: 'DELETE', token }),
+    /** Everything this phone may keep, complete: what is not here is to be removed. */
+    offlineEssentials: (token: string) =>
+      request<OfflineSet>('/api/v1/offline/essentials', { token }),
+    /** A page for the phone's copy: 403 offline_grant_required without a grant. */
+    offlinePage: (token: string, versionId: string, n: number): Promise<ResponseLike> =>
+      raw(`/api/v1/offline/pages/${versionId}/${n}`, { token }),
+    /** What was opened while there was no connection; each event is recorded once. */
+    offlineOpens: (token: string, events: OfflineOpen[]) =>
+      request<OfflineOpensResult>('/api/v1/offline/opens', {
+        method: 'POST',
+        token,
+        body: { events },
+      }),
 
     // ------------------------------------------------------------ finding
     search: (token: string, q: string, params: Params = {}) =>

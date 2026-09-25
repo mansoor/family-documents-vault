@@ -21,6 +21,7 @@ import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { ShareService } from './documents/shares.js';
 import { AuditService } from './audit/service.js';
+import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
@@ -120,6 +121,15 @@ export async function createHarness(): Promise<Harness> {
   // As if the operator had set FDV_SMTP_URL; passwords.test.ts builds one
   // without it to test the other route.
   const passwords = new PasswordService(db, keys, stepUp, 'http://localhost:8080', alert, true);
+  const documents = new DocumentService(
+    db,
+    keys,
+    vaults,
+    5 * 1024 * 1024,
+    enqueue,
+    reminders,
+    deriveSealedKey(TEST_MASTER),
+  );
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -131,15 +141,8 @@ export async function createHarness(): Promise<Harness> {
     passwords,
     visibility: new VisibilityService(db, keys),
     vaults,
-    documents: new DocumentService(
-      db,
-      keys,
-      vaults,
-      5 * 1024 * 1024,
-      enqueue,
-      reminders,
-      deriveSealedKey(TEST_MASTER),
-    ),
+    documents,
+    offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
     shares: new ShareService(db, keys, vaults),
     audit: new AuditService(db),

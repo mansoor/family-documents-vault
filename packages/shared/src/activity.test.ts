@@ -132,3 +132,28 @@ describe('a sitting with a document is one line (0.4.12)', () => {
     expect(lines.map((l) => l.id)).toEqual([3]);
   });
 });
+
+describe('a phone keeping Essentials (0.4.13)', () => {
+  it('says the phone kept it', () => {
+    expect(describeEvent(ev({ action: 'document.cached_offline' }))?.text).toBe(
+      'Sarah’s phone kept “Home insurance policy” for offline use',
+    );
+    expect(describeEvent(ev({ action: 'document.cached_offline', actor: 'Chris' }))?.text).toBe(
+      'Chris’ phone kept “Home insurance policy” for offline use',
+    );
+  });
+
+  it('says what was opened on it, and whether there was a connection', () => {
+    const opened = (detail: Record<string, unknown>) =>
+      describeEvent(ev({ action: 'document.opened_offline', detail }))?.text;
+    expect(opened({ mode: 'view', online: false })).toBe(
+      'Sarah opened “Home insurance policy” on their phone without a connection',
+    );
+    expect(opened({ mode: 'view', online: true })).toBe(
+      'Sarah opened “Home insurance policy” on their phone',
+    );
+    expect(opened({ mode: 'show', online: false })).toBe(
+      'Sarah showed “Home insurance policy” from their phone without a connection',
+    );
+  });
+});

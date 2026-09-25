@@ -7,6 +7,8 @@ import {
   type DocumentTypeView,
   type DocumentView,
   type IssuerSuggestions,
+  type OfflineGrant,
+  type OfflineItem,
   type ReminderView,
   type Tokens,
 } from '@fdv/shared';
@@ -62,6 +64,12 @@ export interface FakeVaultState {
    * made and nobody set here is still being drawn (`preview_pending`).
    */
   pages: Map<string, number | 'unsupported'>;
+  /**
+   * Essentials a phone may keep (0.4.13): the set GET /offline/essentials
+   * answers (Only me items only under a grant that includes them), the
+   * grant in force, and the ids of the opens already received.
+   */
+  offlineEssentials: { items: OfflineItem[]; grant: OfflineGrant | null; received: Set<string> };
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -175,6 +183,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     reminders: [],
     issuerSuggestions: new Map(),
     pages: new Map(),
+    offlineEssentials: { items: [], grant: null, received: new Set() },
     types: FAKE_TYPES.map((t) => ({ ...t })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
@@ -229,7 +238,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/capabilities') {
       const caps: Capabilities = {
         product: 'family-document-vault',
-        server_version: '0.4.12',
+        server_version: '0.4.13',
         api_version: 1,
         min_client_version: '0.0.1',
         edition: 'self_hosted',
@@ -247,6 +256,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           capture_metadata: true,
           issued_by: true,
           page_previews: true,
+          offline_essentials: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -531,6 +541,89 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         );
       }
       return picture(FAKE_PAGE);
+    }
+    // Essentials a phone may keep (0.4.13), as the real vault answers them.
+    if (path.startsWith('/api/v1/offline/')) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const o = state.offlineEssentials;
+      const inSet = (i: OfflineItem) => !i.private || o.grant?.include_private === true;
+      if (path === '/api/v1/offline/grant' && init.method === 'POST') {
+        // As the real vault: an app installation first, then the password.
+        if (!init.headers['x-fdv-installation']) {
+          return fail(422, 'validation_failed', 'Only the app keeps documents on a phone.');
+        }
+        if (body.password !== state.password)
+          return fail(401, 'invalid_credentials', "That password isn't right.");
+        const now = Date.now();
+        o.grant = {
+          granted_at: new Date(now).toISOString(),
+          expires_at: new Date(now + 30 * 86_400_000).toISOString(),
+          include_private: body.include_private === true,
+        };
+        return ok(o.grant);
+      }
+      if (path === '/api/v1/offline/grant' && init.method === 'DELETE') {
+        o.grant = null;
+        return empty();
+      }
+      if (path === '/api/v1/offline/essentials' && init.method === 'GET') {
+        return ok({
+          items: o.items.filter(inSet),
+          grant: o.grant,
+          max_offline_days: 90,
+          server_time: new Date().toISOString(),
+          truncated: false,
+        });
+      }
+      const pageOf = /^\/api\/v1\/offline\/pages\/([^/]+)\/(\d+)$/.exec(path);
+      if (pageOf && init.method === 'GET') {
+        const item = o.items.find((i) => i.version.id === pageOf[1] && inSet(i));
+        if (!item) return fail(404, 'not_found', 'That page does not exist.');
+        if (!o.grant) {
+          return fail(
+            403,
+            'offline_grant_required',
+            'Please confirm it is you to keep Essentials on this phone.',
+          );
+        }
+        const drawn = item.version.preview_pages;
+        if (drawn === null) {
+          return respond(
+            404,
+            {
+              error: {
+                code: 'preview_pending',
+                message: 'The preview is being made. Try again in a moment.',
+                retriable: true,
+                request_id: 'fake',
+              },
+            },
+            { 'retry-after': '3' },
+          );
+        }
+        if (Number(pageOf[2]) > drawn) {
+          return fail(
+            404,
+            'no_preview',
+            "There's no preview of this page. You can save a copy to open it.",
+          );
+        }
+        return picture(FAKE_PAGE);
+      }
+      if (path === '/api/v1/offline/opens' && init.method === 'POST') {
+        const events = (body.events as Array<{ id: string; version_id: string }> | undefined) ?? [];
+        const result = { accepted: 0, duplicates: 0, dropped: 0 };
+        for (const e of events) {
+          if (!o.items.some((i) => i.version.id === e.version_id)) result.dropped += 1;
+          else if (o.received.has(e.id)) result.duplicates += 1;
+          else {
+            o.received.add(e.id);
+            result.accepted += 1;
+          }
+        }
+        return ok(result);
+      }
     }
     if (path === '/api/v1/document-types' && init.method === 'GET') {
       const s = session();

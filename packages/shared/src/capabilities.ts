@@ -45,6 +45,13 @@ export interface CapabilityFeatures {
    * version says how many, and an Essential's are drawn ahead of time.
    */
   page_previews: boolean;
+  /**
+   * A phone may keep the Essentials for offline use (0.4.13): an offline
+   * grant (POST /offline/grant, with the password), the complete set
+   * (GET /offline/essentials), the pages to fill it, and the opens it
+   * reports afterwards (POST /offline/opens).
+   */
+  offline_essentials: boolean;
 }
 
 export interface CapabilityLimits {

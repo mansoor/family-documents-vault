@@ -1,5 +1,7 @@
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerOffline } from './offline/routes.js';
+import type { OfflineService } from './offline/service.js';
 import { registerAudit } from './audit/routes.js';
 import type { AuditService } from './audit/service.js';
 import { registerAuth } from './auth/routes.js';
@@ -59,6 +61,8 @@ export interface AppDeps {
   shares: ShareService;
   audit: AuditService;
   passwords: PasswordService;
+  /** Essentials a phone may keep (0.4.13). */
+  offline: OfflineService;
   logger?: boolean | object;
 }
 
@@ -179,6 +183,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerSuggestions(app, deps.suggestions);
   registerNotifications(app, deps.notifications);
   registerAudit(app, deps.audit);
+  registerOffline(app, deps.offline);
   await registerDocuments(
     app,
     deps.documents,

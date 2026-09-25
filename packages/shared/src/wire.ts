@@ -62,6 +62,8 @@ export interface SessionRow {
   client?: 'app' | 'browser' | 'other';
   /** In words: "the app on a Google Pixel 8a", "Firefox on a Mac" (0.4.11). */
   label?: string;
+  /** It keeps Essentials for offline use: its offline grant is in force (0.4.13). */
+  offline?: boolean;
 }
 
 export interface VaultRow {

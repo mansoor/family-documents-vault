@@ -255,6 +255,129 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     }
   });
 
+  describe('offline (0.4.13)', () => {
+    /** The owner's private Essential, with a file; and each person's phone. */
+    let secretEssential: string;
+    let secretEssentialVersion: string;
+    let ownerPhone: Tokens;
+    let samPhone: Tokens;
+    let n = 0;
+    const phoneOf = async (email: string, password: string) => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        remoteAddress: `10.66.0.${++n}`,
+        headers: { 'x-fdv-installation': randomUUID() },
+        payload: { email, password },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return json<Tokens>(res);
+    };
+    const opened = (versionId: string) => ({
+      events: [
+        {
+          id: randomUUID(),
+          version_id: versionId,
+          opened_at: new Date().toISOString(),
+          mode: 'view',
+          online: false,
+        },
+      ],
+    });
+
+    beforeAll(async () => {
+      const made = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/documents',
+        headers: as(owner),
+        payload: {
+          title: 'Adoption papers',
+          type_key: 'passport',
+          owner_member_id: owner.member_id,
+          visibility: 'private',
+          is_essential: true,
+        },
+      });
+      expect(made.statusCode, made.body).toBe(201);
+      secretEssential = json<DocumentView>(made).id;
+      secretEssentialVersion = await upload(secretEssential);
+      ownerPhone = await phoneOf('owner@example.test', 'correct horse battery');
+      samPhone = await phoneOf('sam@example.test', 'another correct horse');
+    });
+
+    it("the second adult cannot pull the first adult's private Essential through any offline endpoint, with or without include_private", async () => {
+      for (const includePrivate of [false, true]) {
+        const granted = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/offline/grant',
+          remoteAddress: `10.66.1.${++n}`,
+          headers: as(samPhone),
+          payload: { password: 'another correct horse', include_private: includePrivate },
+        });
+        expect(granted.statusCode, granted.body).toBe(200);
+        const set = json<{ items: Array<{ document: { id: string; title: string | null } }> }>(
+          await h.app.inject({ url: '/api/v1/offline/essentials', headers: as(samPhone) }),
+        );
+        expect(set.items.map((i) => i.document.id)).not.toContain(secretEssential);
+        expect(JSON.stringify(set)).not.toContain('Adoption papers');
+        const hidden = await h.app.inject({
+          url: `/api/v1/offline/pages/${secretEssentialVersion}/1`,
+          headers: as(samPhone),
+        });
+        const missing = await h.app.inject({
+          url: `/api/v1/offline/pages/${randomUUID()}/1`,
+          headers: as(samPhone),
+        });
+        expect(hidden.statusCode).toBe(404);
+        const body = (r: { json: () => unknown }) => ({
+          ...(r.json() as { error: Record<string, unknown> }).error,
+          request_id: null,
+        });
+        expect(body(hidden)).toEqual(body(missing));
+      }
+    });
+
+    it("Sam cannot write lines about the owner's private document through offline opens", async () => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/offline/opens',
+        headers: as(samPhone),
+        payload: opened(secretEssentialVersion),
+      });
+      expect(json<{ dropped: number; accepted: number }>(res)).toMatchObject({
+        accepted: 0,
+        dropped: 1,
+      });
+      const lines = json<{ items: ActivityLine[] }>(
+        await h.app.inject({ url: '/api/v1/audit', headers: as(owner) }),
+      ).items;
+      expect(
+        lines.some((l) => l.text.startsWith('Sam') && l.text.includes('Adoption papers')),
+      ).toBe(false);
+    });
+
+    it("Sam's activity never shows the owner's offline line", async () => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/offline/opens',
+        headers: as(ownerPhone),
+        payload: opened(secretEssentialVersion),
+      });
+      expect(json<{ accepted: number }>(res).accepted).toBe(1);
+      const own = json<{ items: ActivityLine[] }>(
+        await h.app.inject({ url: '/api/v1/audit', headers: as(owner) }),
+      );
+      expect(own.items.map((l) => l.text)).toContain(
+        'Owner opened “Adoption papers” on their phone without a connection',
+      );
+      const sams = json<{ items: ActivityLine[] }>(
+        await h.app.inject({ url: '/api/v1/audit', headers: as(sam) }),
+      );
+      expect(JSON.stringify(sams)).not.toContain('Adoption papers');
+      expect(sams.items.some((l) => l.document_id === secretEssential)).toBe(false);
+    });
+  });
+
   it('changing its visibility back is not a way in, even for an owner', async () => {
     const asAdult = await h.app.inject({
       method: 'POST',

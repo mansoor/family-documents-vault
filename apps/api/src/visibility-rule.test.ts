@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { testAdminUrl } from '@fdv/db/testing';
-import { canSee, type DocumentView, type Role } from '@fdv/shared';
+import { canSee, mayKeepOffline, type DocumentView, type Role } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
@@ -218,6 +218,46 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       if (code !== 'not_found') seen.push(d.id);
     }
     expect(seen.sort()).toEqual(expected(role));
+  });
+
+  describe('the offline set (0.4.13)', () => {
+    beforeAll(async () => {
+      // Every parity document made Essential, by whoever made it.
+      for (const d of docs) {
+        const who = Object.values(people).find((t) => t.member_id === d.owner_member_id) as Tokens;
+        const res = await h.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/documents/${d.id}`,
+          headers: h.as(who),
+          payload: { is_essential: true },
+        });
+        expect(res.statusCode, res.body).toBe(200);
+      }
+    });
+
+    it.each(roles)('agrees with canSee and the role policy for a %s', async (role) => {
+      const res = await h.app.inject({
+        url: '/api/v1/offline/essentials',
+        headers: h.as(people[role]),
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const ids = res
+        .json<{ items: Array<{ document: { id: string } }> }>()
+        .items.map((i) => i.document.id)
+        .filter((id) => docs.some((d) => d.id === id))
+        .sort();
+      const expectedIds = docs
+        .filter((d) =>
+          mayKeepOffline(
+            { role, memberId: people[role].member_id },
+            { ...d, is_essential: true },
+            false,
+          ),
+        )
+        .map((d) => d.id)
+        .sort();
+      expect(ids).toEqual(expectedIds);
+    });
   });
 
   it('the rule is not vacuous: every role is refused something here', () => {

@@ -109,6 +109,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DB_PASSWORD`      | generated                                 | Password for the database owner role (`fdv`). Used for migrations and the job queue.                                                               |
 | `FDV_DB_APP_PASSWORD`  | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query. |
 | `FDV_MAX_UPLOAD_BYTES` | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                    |
+| `FDV_OFFLINE_MAX_DAYS` | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone). |
 | `FDV_LOCAL_VAULT_DIR`  | `/data/vault`                             | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                               |
 | `FDV_DISPLAY_NAME`     | `Our family vault`                        | What your family calls the vault. Shown on every screen.                                                                                           |
 | `FDV_PORT`             | `8080`                                    | The port the web app listens on.                                                                                                                   |
@@ -269,6 +270,31 @@ the next time the worker starts, a day later at the soonest.
 Opening an Essential, or anything marked Only me, asks you to confirm it is
 you if you have not done so in the last five minutes — for its pages as for
 its file.
+
+### Essentials on a phone
+
+The phone app can keep the household's Essentials — passports, policies, the
+will — for when there is no connection. Which ones is the vault's decision,
+and the phone keeps no others:
+
+- only Essentials, and only ones the person can see;
+- owners and adults: all of those; teens: only their own; viewers: none;
+- a person's own Only me Essentials only if they choose to keep those too.
+
+Keeping them asks for the person's password again (not a code: the
+authenticator is usually on the same phone). That permission lasts 30 days at
+most, never longer than the phone's sign-in, and ends when the phone is
+signed out — from the phone, from **Settings → Signed-in devices**, which
+says which devices keep Essentials, or by a password change. It never
+skips the "confirm it's you" the vault asks before opening an Essential
+online.
+
+A phone shows what it keeps for up to `FDV_OFFLINE_MAX_DAYS` (90 by default)
+without reaching the vault, then hides it until it has checked in. When it
+next connects it reports what was opened, and the activity log says so:
+_Sarah's phone kept "Passport" for offline use_; _Sarah opened "Passport" on
+their phone without a connection_ — dated when the report arrived, with the
+phone's own time kept in the record.
 
 ### Sending one document to somebody outside the family
 
