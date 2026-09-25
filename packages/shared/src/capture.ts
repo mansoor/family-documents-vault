@@ -1,5 +1,6 @@
 import type { DateValue, DocumentTypeView, Visibility } from './documents.js';
 import { can, type Role } from './roles.js';
+import { issuerNoun, monthYear } from './titles.js';
 
 /**
  * The details a capture can carry (POST /capture's `metadata` field, 0.4.9):
@@ -15,6 +16,8 @@ export interface CaptureMetadata {
   issued?: DateValue | null;
   expires?: DateValue | null;
   identifier?: string | null;
+  /** Who issued it (0.4.10): send only to a vault with `features.issued_by`. */
+  issued_by?: string | null;
   physical_location?: string | null;
   is_essential?: boolean;
   tags?: string[];
@@ -30,6 +33,7 @@ export const CAPTURE_FIELDS = [
   'issued',
   'expires',
   'identifier',
+  'issued_by',
   'physical_location',
   'is_essential',
   'tags',
@@ -155,6 +159,7 @@ export function checkCaptureMetadata(
 const LIMITS = [
   ['title', 200],
   ['identifier', 200],
+  ['issued_by', 200],
   ['physical_location', 500],
   ['notes', 10_000],
 ] as const;
@@ -175,14 +180,24 @@ export function effectiveVisibility(
 }
 
 /**
- * The name a document gets when nobody types one: "Aisha's passport" for
- * the person chosen on the card, not whoever is filing it; "Passport" when
- * nobody is chosen.
+ * The name a document gets when nobody types one. Statements, bills,
+ * policies and the like are named for who issued them and when: "Barclays
+ * statement, September 2026" — a family has a dozen statements, and this is
+ * what tells them apart (0.4.10). Everything else, and those whose issuer
+ * is not known yet, for the person chosen on the card (not whoever is
+ * filing it): "Aisha's passport"; "Passport" when nobody is chosen.
  */
 export function autoTitle(
-  type: Pick<DocumentTypeView, 'label'>,
+  type: Pick<DocumentTypeView, 'key' | 'label'>,
   member: { display_name: string } | null | undefined,
+  details: { issued_by?: string | null; issued?: DateValue | null } = {},
 ): string {
+  const noun = issuerNoun(type);
+  const issuer = details.issued_by?.trim();
+  if (noun && issuer) {
+    const when = monthYear(details.issued);
+    return when ? `${issuer} ${noun}, ${when}` : `${issuer} ${noun}`;
+  }
   const first = member?.display_name.trim().split(/\s+/)[0];
   if (!first) return type.label;
   return `${first}'s ${type.label.toLowerCase()}`;

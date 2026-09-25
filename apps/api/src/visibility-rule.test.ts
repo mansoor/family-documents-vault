@@ -11,8 +11,8 @@ import { createHarness, type Harness } from './test-harness.js';
  *
  * Who may see a document is written once in words — everyone, the adults,
  * or only its owner — and several times in code: the SQL in the document
- * list, in search, in the reminder list, the share-link list and the tag
- * list, and `canSee` in `@fdv/shared`,
+ * list, in search, in the reminder list, the share-link list, the tag list
+ * and the issuer list, and `canSee` in `@fdv/shared`,
  * which the worker uses to cut each person's digest. The digest leak fixed
  * in 0.4.2 was a copy that forgot the rule entirely, so this holds every
  * copy the API serves to the same answers as the shared one, for every
@@ -42,6 +42,8 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
         owner_member_id: as.member_id,
         visibility,
         tags: [tag],
+        // One issuer per document, as telling as its title (0.4.10).
+        issued_by: `Parity issuer ${tag}`,
       },
     });
     expect(created.statusCode, created.body).toBe(201);
@@ -171,6 +173,22 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     const tags = res.json<{ items: Array<{ tag: string }> }>().items.map((t) => t.tag);
     const ids = docs
       .filter((d) => tags.includes(d.tag))
+      .map((d) => d.id)
+      .sort();
+    expect(ids).toEqual(expected(role));
+  });
+
+  it.each(roles)('the issuer list agrees with canSee for a %s', async (role) => {
+    const res = await h.app.inject({
+      url: '/api/v1/issuers?q=Parity%20issuer',
+      headers: h.as(people[role]),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const issuers = res
+      .json<{ items: Array<{ issued_by: string }> }>()
+      .items.map((i) => i.issued_by);
+    const ids = docs
+      .filter((d) => issuers.includes(`Parity issuer ${d.tag}`))
       .map((d) => d.id)
       .sort();
     expect(ids).toEqual(expected(role));

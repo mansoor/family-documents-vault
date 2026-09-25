@@ -1,14 +1,19 @@
 import {
   autoTitle,
   effectiveVisibility,
+  issuedByLabel,
+  issuerFromFilename,
+  issuerKey,
   parseDateInput,
   reminderSentence,
   type CaptureMetadata,
   type DateOrder,
   type DocumentTypeView,
+  type IssuerSuggestions,
+  type KnownIssuer,
   type Visibility,
 } from '@fdv/shared';
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -37,6 +42,7 @@ function captureDetails(d: DocumentInput): CaptureMetadata {
   if (d.issued !== undefined) out.issued = d.issued;
   if (d.expires !== undefined) out.expires = d.expires;
   if (d.identifier !== undefined) out.identifier = d.identifier;
+  if (d.issued_by !== undefined) out.issued_by = d.issued_by;
   if (d.physical_location !== undefined) out.physical_location = d.physical_location;
   return out;
 }
@@ -161,6 +167,7 @@ export function AddScreen() {
           typeKey: type?.key ?? '',
           title: type ? autoTitle(type, owner) : '',
           owner: owner?.id ?? '',
+          issuer: '',
           issued: '',
           expires: '',
           identifier: '',
@@ -259,12 +266,14 @@ export function ConfirmScreen() {
       title="Is this right?"
       back={`/documents/${doc.id}`}
       lede="Change anything that is wrong. Everything else can wait."
+      documentId={doc.id}
       types={types}
       members={members}
       initial={{
         typeKey,
         title: doc.title ?? '',
         owner: owner?.id ?? '',
+        issuer: doc.issued_by ?? '',
         issued: doc.issued?.date ?? '',
         expires: doc.expires?.date ?? '',
         identifier: doc.identifier ?? '',
@@ -287,11 +296,101 @@ interface CardValues {
   typeKey: string;
   title: string;
   owner: string;
+  /** Who issued it: the bank, the utility, the insurer, the country. */
+  issuer: string;
   issued: string;
   expires: string;
   identifier: string;
   location: string;
   visibility: Visibility;
+}
+
+/** How many issuers the card offers at once. */
+const ISSUER_OFFERS = 5;
+/** While the vault is still reading the pages, it is asked again this often… */
+const PAGES_PENDING_EVERY_MS = 5_000;
+/** …this many times: for up to a minute. */
+const PAGES_PENDING_TRIES = 12;
+
+/**
+ * Who the card offers as the issuer (0.4.10), each as a question the person
+ * answers with a tap — never filled in for them. For a document already in
+ * the vault, who its pages say issued it first (asked again while the
+ * vault is still reading them, as long as the field is empty); for a new
+ * file, the household's issuers whose names are in the file's name; then
+ * the household's issuers, those used for this type first.
+ */
+function useIssuerOffers(opts: {
+  fileName: string | undefined;
+  documentId: string | undefined;
+  typeKey: string;
+  /** False once the field has a value: nothing more is asked for. */
+  wanted: boolean;
+}): string[] {
+  const { fileName, documentId, typeKey, wanted } = opts;
+  const { withToken } = useApp();
+  const [household, setHousehold] = useState<KnownIssuer[]>([]);
+  const [fromPages, setFromPages] = useState<IssuerSuggestions['items']>([]);
+  const pagesSettled = useRef(false);
+  const pagesTries = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    withToken((t) => api.issuers(t, typeKey ? { type_key: typeKey } : {}))
+      .then((r) => {
+        if (!cancelled && r) {
+          setHousehold(r.items.map((i) => ({ value: i.issued_by, count: i.count })));
+        }
+      })
+      // An offer, not a need: the card works without it.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [typeKey, withToken]);
+
+  useEffect(() => {
+    if (!documentId || !wanted || pagesSettled.current) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = async () => {
+      try {
+        const r = await withToken((t) => api.issuerSuggestions(t, documentId));
+        if (stopped || !r) return;
+        if (r.state === 'ready') {
+          pagesSettled.current = true;
+          setFromPages(r.items);
+        } else if (r.state === 'unavailable') {
+          pagesSettled.current = true;
+        } else if (pagesTries.current < PAGES_PENDING_TRIES) {
+          pagesTries.current += 1;
+          timer = setTimeout(() => void ask(), PAGES_PENDING_EVERY_MS);
+        }
+      } catch {
+        // Likewise: without its pages, the household's issuers are offered.
+      }
+    };
+    void ask();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [documentId, wanted, withToken]);
+
+  const inName = fileName ? issuerFromFilename(fileName, household).map((c) => c.value) : [];
+  const seen = new Set<string>();
+  const offers: string[] = [];
+  for (const value of [
+    ...fromPages.map((s) => s.value),
+    ...inName,
+    ...household.map((k) => k.value),
+  ]) {
+    const key = issuerKey(value);
+    if (!value.trim() || seen.has(key)) continue;
+    seen.add(key);
+    offers.push(value);
+  }
+  return offers.slice(0, ISSUER_OFFERS);
 }
 
 export function ConfirmForm(props: {
@@ -300,6 +399,8 @@ export function ConfirmForm(props: {
   lede: string;
   /** The file this card is about, when it has not been sent yet. */
   fileName?: string;
+  /** The document this card is about, when it is already in the vault. */
+  documentId?: string;
   types: DocumentTypeView[];
   members: Member[];
   initial: CardValues;
@@ -313,9 +414,11 @@ export function ConfirmForm(props: {
   const { types, members, initial } = props;
   const [typeKey, setTypeKey] = useState(initial.typeKey);
   const [title, setTitle] = useState(initial.title);
-  // The name follows the type and the person until somebody types one.
+  // The name follows the type, the person, the issuer and the month until
+  // somebody types one.
   const [titleTyped, setTitleTyped] = useState(initial.title !== '' && !props.fileName);
   const [owner, setOwner] = useState(initial.owner);
+  const [issuer, setIssuer] = useState(initial.issuer);
   const [issued, setIssued] = useState(initial.issued);
   const [expires, setExpires] = useState(initial.expires);
   const [identifier, setIdentifier] = useState(initial.identifier);
@@ -336,9 +439,37 @@ export function ConfirmForm(props: {
   const visibilityLocked = teen && !props.fileName;
   const person = members.find((m) => m.id === owner);
   const expiresShown = Boolean(type?.expiry_driver) || (!props.fileName && expires !== '');
+  const issuerLabel = issuedByLabel(type);
+  const offers = useIssuerOffers({
+    fileName: props.fileName,
+    documentId: props.documentId,
+    typeKey,
+    wanted: issuer.trim() === '',
+  });
 
-  const retitle = (t: DocumentTypeView | undefined, who: Member | undefined) => {
-    if (!titleTyped) setTitle(t ? autoTitle(t, who) : '');
+  /** The name nobody typed, from what the card says now and what just changed. */
+  const nameFor = (
+    next: {
+      type?: DocumentTypeView | null;
+      who?: Member | null;
+      issuer?: string;
+      issued?: string;
+    } = {},
+  ): string => {
+    const t = next.type !== undefined ? next.type : type;
+    if (!t) return '';
+    const when = next.issued ?? issued;
+    return autoTitle(t, next.who !== undefined ? next.who : person, {
+      issued_by: next.issuer ?? issuer,
+      issued: when.trim() ? parseDateInput(when, { order: dateOrder() }) : null,
+    });
+  };
+  const retitle = (next: Parameters<typeof nameFor>[0]) => {
+    if (!titleTyped) setTitle(nameFor(next));
+  };
+  const chooseIssuer = (v: string) => {
+    setIssuer(v);
+    retitle({ issuer: v });
   };
 
   const run = async (act: () => Promise<void>) => {
@@ -373,6 +504,7 @@ export function ConfirmForm(props: {
       type_key: typeKey || null,
       title: title.trim() || null,
       owner_member_id: owner || null,
+      issued_by: issuer.trim() || null,
       identifier: identifier.trim() || null,
       physical_location: location.trim() || null,
       issued: iss,
@@ -410,7 +542,7 @@ export function ConfirmForm(props: {
           onChange={(v) => {
             setTypeKey(v);
             const t = types.find((x) => x.key === v);
-            retitle(t, person);
+            retitle({ type: t ?? null });
             // A new document takes the type's default; an existing one keeps
             // who can see it until somebody chooses otherwise.
             if (t && props.fileName) {
@@ -432,7 +564,7 @@ export function ConfirmForm(props: {
             setTitleTyped(v !== '');
           }}
           required={false}
-          placeholder={type ? autoTitle(type, person) : "Aisha's passport"}
+          placeholder={type ? nameFor() : "Aisha's passport"}
         />
         <Select
           id="f-who"
@@ -440,10 +572,7 @@ export function ConfirmForm(props: {
           value={owner}
           onChange={(v) => {
             setOwner(v);
-            retitle(
-              type,
-              members.find((m) => m.id === v),
-            );
+            retitle({ who: members.find((m) => m.id === v) ?? null });
             // Only me is for your own documents.
             if (visibility === 'private' && v !== me?.id) {
               setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
@@ -455,10 +584,38 @@ export function ConfirmForm(props: {
           ]}
         />
         <Field
+          id="f-issuer"
+          label={issuerLabel}
+          value={issuer}
+          onChange={chooseIssuer}
+          required={false}
+        />
+        {issuer.trim() === '' && offers.length > 0 && (
+          <div className="pills" role="group" aria-label="Who it might be from">
+            {offers.map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="pill"
+                onClick={() => {
+                  chooseIssuer(name);
+                  // The chips go once the field is filled: keep the place on the field.
+                  document.getElementById('f-issuer')?.focus();
+                }}
+              >
+                {`From ${name}?`}
+              </button>
+            ))}
+          </div>
+        )}
+        <Field
           id="f-issued"
           label="Issued"
           value={issued}
-          onChange={setIssued}
+          onChange={(v) => {
+            setIssued(v);
+            retitle({ issued: v });
+          }}
           required={false}
           placeholder="14 Mar 2021"
           hint="A date, a month (March 2021) or a year"

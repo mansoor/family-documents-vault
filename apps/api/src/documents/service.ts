@@ -1,6 +1,10 @@
 import {
   checkCaptureMetadata,
   effectiveVisibility,
+  issuerCandidates,
+  type IssuerCount,
+  type IssuerSuggestions,
+  type KnownIssuer,
   type CaptureMetadata,
   type UploadStatus,
   type SearchHit as WireSearchHit,
@@ -32,6 +36,7 @@ import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
+import { openSealedText } from './sealed-text.js';
 import { allows, requireCapability } from '../authz.js';
 import { canSee } from '@fdv/shared';
 
@@ -58,6 +63,7 @@ export interface DocumentInput {
   issued?: DateValue | null | undefined;
   expires?: DateValue | null | undefined;
   identifier?: string | null | undefined;
+  issued_by?: string | null | undefined;
   physical_location?: string | null | undefined;
   is_essential?: boolean | undefined;
   tags?: string[] | undefined;
@@ -68,6 +74,8 @@ export interface DocumentInput {
 export interface ListQuery {
   member_id?: string | undefined;
   category?: string | undefined;
+  /** Who issued it: the filter chips (0.4.10), matched regardless of case. */
+  issued_by?: string | undefined;
   type_key?: string | undefined;
   tag?: string | undefined;
   visibility?: Visibility | undefined;
@@ -126,6 +134,7 @@ type DocRow = {
   expires_on: string | null;
   expires_precision: 'day' | 'month' | 'year' | null;
   identifier: string | null;
+  issued_by: string | null;
   physical_location: string | null;
   is_essential: boolean;
   tags: string[];
@@ -142,8 +151,18 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 const notFound = () => new ApiError(404, 'not_found', 'That document is not in the vault.');
 
+/**
+ * Changed when a migration changes what documents say without anyone
+ * editing them, and so without touching updated_at: every ETag handed out
+ * before goes stale, and a write made from an older view is refused (412)
+ * instead of putting back what the migration moved. 2: 0025 moved issuers
+ * out of extra.
+ */
+const ETAG_EPOCH = 2;
+
 export function etagOf(id: string, updatedAt: Date): string {
-  return `"${createHash('sha256').update(`${id}:${updatedAt.toISOString()}`).digest('hex').slice(0, 16)}"`;
+  const seed = `${id}:${updatedAt.toISOString()}:${ETAG_EPOCH}`;
+  return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
 }
 
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
@@ -153,6 +172,7 @@ export interface SearchQuery {
   q: string;
   member_id?: string | undefined;
   category?: string | undefined;
+  issued_by?: string | undefined;
   limit?: number | undefined;
 }
 
@@ -188,6 +208,7 @@ export class DocumentService {
       reminder_leads: r.reminder_leads,
       usually_essential: r.usually_essential,
       default_visibility: r.default_visibility,
+      issued_by_label: r.issued_by_label,
     }));
   }
 
@@ -326,6 +347,7 @@ export class DocumentService {
       issued,
       expires,
       identifier: row.identifier,
+      issued_by: row.issued_by,
       physical_location: row.physical_location,
       is_essential: row.is_essential,
       tags: row.tags,
@@ -577,6 +599,9 @@ export class DocumentService {
       if (q.visibility) query = query.where('visibility', '=', q.visibility);
       if (q.essential !== undefined) query = query.where('is_essential', '=', q.essential);
       if (q.tag) query = query.where(sql<boolean>`${sql.ref('tags')} @> array[${q.tag}]::text[]`);
+      if (q.issued_by) {
+        query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
+      }
       if (q.updated_since) query = query.where('updated_at', '>', new Date(q.updated_since));
 
       const sort = q.sort ?? 'recent';
@@ -629,6 +654,134 @@ export class DocumentService {
           ${q ? sql`and t ilike ${`${q}%`}` : sql``}
         group by t order by count desc, t limit 50`.execute(trx);
       return r.rows;
+    });
+  }
+
+  /**
+   * GET /issuers: who issued the household's documents, as far as the
+   * caller can see them — the filter chips, and the card's "the household's
+   * previous issuers first" (0.4.10). An issuer is as telling as a title, so
+   * the rule is exactly the one tags() keeps: an issuer seen only on
+   * somebody else's Only me or Adults only document is not there, and does
+   * not count. One spelling per issuer, the one used most.
+   */
+  async issuers(
+    p: Principal,
+    f: {
+      q?: string | undefined;
+      type_key?: string | undefined;
+      member_id?: string | undefined;
+      category?: string | undefined;
+    },
+  ): Promise<IssuerCount[]> {
+    return withScope(this.db, { householdId: p.householdId }, async (trx) =>
+      (await this.knownIssuers(trx, p, f))
+        // For a type, only who has issued that type before: a passport card
+        // offering "From Barclays?" helps nobody.
+        .filter((k) => !f.type_key || (k.typeKeys ?? []).includes(f.type_key))
+        .map((k) => ({ issued_by: k.value, count: k.count })),
+    );
+  }
+
+  private async knownIssuers(
+    trx: Db,
+    p: Principal,
+    f: {
+      q?: string | undefined;
+      type_key?: string | undefined;
+      member_id?: string | undefined;
+      category?: string | undefined;
+    },
+  ): Promise<KnownIssuer[]> {
+    const prefix = f.q?.trim().replace(/[\\%_]/g, (c) => `\\${c}`);
+    const r = await sql<{ value: string; count: number; type_keys: string[]; for_type: number }>`
+      select mode() within group (order by d.issued_by) as value,
+             count(*)::int as count,
+             array_remove(array_agg(distinct d.type_key), null) as type_keys,
+             count(*) filter (where d.type_key = ${f.type_key ?? null})::int as for_type
+        from document d
+       where d.deleted_at is null
+         and d.issued_by is not null
+         and (d.visibility = 'household'
+           or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+           or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
+         ${f.member_id ? sql`and d.owner_member_id = ${f.member_id}::uuid` : sql``}
+         ${f.category ? sql`and d.category = ${f.category}` : sql``}
+         ${prefix ? sql`and d.issued_by ilike ${`${prefix}%`}` : sql``}
+       group by lower(btrim(d.issued_by))
+       order by for_type desc, count desc, value
+       limit 50`.execute(trx);
+    return r.rows.map((row) => ({ value: row.value, count: row.count, typeKeys: row.type_keys }));
+  }
+
+  /**
+   * GET /documents/{id}/issuer-suggestions: who probably issued it, going
+   * by the words on its latest pages and the household's own issuers —
+   * offered as a question ("From Barclays?"), never filled in (0.4.10).
+   * Worked out now, in memory, and never kept: a private document's text is
+   * opened only here, in its owner's own request, as the second search pass
+   * opens it. 'pending' while the pages have not been read yet.
+   */
+  async issuerSuggestions(p: Principal, id: string): Promise<IssuerSuggestions> {
+    this.canWrite(p);
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const doc = await this.fetch(trx, p, id);
+      this.mustOwnIfTeen(p, doc);
+      const version = await trx
+        .selectFrom('document_version')
+        .select(['id', 'ocr_status', 'wrapped_by_scope'])
+        .where('document_id', '=', id)
+        .orderBy('version_no', 'desc')
+        .executeTakeFirst();
+      if (!version) return { state: 'unavailable', items: [] };
+
+      let text: string | null = null;
+      if (doc.visibility === 'private') {
+        const sealed = await trx
+          .selectFrom('document_text_sealed')
+          .select('content_cipher')
+          .where('version_id', '=', version.id)
+          .executeTakeFirst();
+        if (sealed) {
+          const key = await this.keys.unwrapById(trx, version.wrapped_by_scope);
+          text = openSealedText(key, sealed.content_cipher);
+        }
+      } else {
+        const plain = await trx
+          .selectFrom('document_text')
+          .select('content')
+          .where('version_id', '=', version.id)
+          .executeTakeFirst();
+        text = plain?.content ?? null;
+      }
+      if (text === null) {
+        return { state: version.ocr_status === 'pending' ? 'pending' : 'unavailable', items: [] };
+      }
+
+      const known = await this.knownIssuers(trx, p, { type_key: doc.type_key ?? undefined });
+      // Whose name is on the letter is never who sent it.
+      const members = await trx.selectFrom('member').select('display_name').execute();
+      const household = await trx
+        .selectFrom('household')
+        .select('name')
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
+      const people = [
+        ...members.map((m) => m.display_name),
+        ...(household ? [household.name] : []),
+      ];
+      const found = issuerCandidates(text.slice(0, 60_000), {
+        known,
+        typeKey: doc.type_key,
+        people,
+      });
+      return {
+        state: 'ready',
+        items: found.map((c) => ({
+          value: c.value,
+          source: c.source === 'page' ? 'page' : 'known',
+        })),
+      };
     });
   }
 
@@ -1175,6 +1328,9 @@ export class DocumentService {
         owner_member_id: string | null;
         expires_on: string | null;
         expires_precision: DateValue['precision'] | null;
+        issued_by: string | null;
+        issued_on: string | null;
+        issued_precision: DateValue['precision'] | null;
         rank: number;
         snippet: string;
         matched_in: 'title' | 'content';
@@ -1183,7 +1339,8 @@ export class DocumentService {
         doc_hits as (
           select d.id, ts_rank(d.search_tsv, query.tsq) * 2 as rank,
                  ts_headline('simple',
-                   coalesce(d.title, '') || ' ' || coalesce(d.identifier, '') || ' ' || coalesce(d.notes, ''),
+                   coalesce(d.title, '') || ' ' || coalesce(d.issued_by, '') || ' ' ||
+                   coalesce(d.identifier, '') || ' ' || coalesce(d.notes, ''),
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
                  'title'::text as matched_in
           from document d, query
@@ -1207,7 +1364,8 @@ export class DocumentService {
           group by id
         )
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
-               d.expires_on, d.expires_precision, h.rank, h.snippet, h.matched_in
+               d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
+               h.rank, h.snippet, h.matched_in
         from hits h join document d on d.id = h.id
         where d.deleted_at is null
           and (d.visibility = 'household'
@@ -1215,6 +1373,7 @@ export class DocumentService {
                or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
           ${q.member_id ? sql`and d.owner_member_id = ${q.member_id}::uuid` : sql``}
           ${q.category ? sql`and d.category = ${q.category}` : sql``}
+          ${q.issued_by ? sql`and lower(d.issued_by) = lower(${q.issued_by.trim()})` : sql``}
         order by h.rank desc, d.updated_at desc
         limit ${limit}`.execute(trx);
 
@@ -1233,6 +1392,13 @@ export class DocumentService {
           type_key: r.type_key,
           category: r.category,
           owner_member_id: r.owner_member_id,
+          issued_by: r.issued_by,
+          issued: r.issued_on
+            ? {
+                date: isoDate(r.issued_on) as string,
+                precision: r.issued_precision as DateValue['precision'],
+              }
+            : null,
           status: deriveStatus(
             {
               type: type
@@ -1276,6 +1442,7 @@ export class DocumentService {
             q: q.q,
             member_id: q.member_id,
             category: q.category,
+            issued_by: q.issued_by?.trim(),
             limit,
           }),
         },
@@ -1482,6 +1649,10 @@ export class DocumentService {
       out.expires_precision = input.expires?.precision ?? null;
     }
     if (input.identifier !== undefined) out.identifier = input.identifier?.trim() || null;
+    // As typed, spaces tidied: "Barclays", not "barclays" — it is shown.
+    if (input.issued_by !== undefined) {
+      out.issued_by = input.issued_by?.trim().replace(/\s+/g, ' ') || null;
+    }
     if (input.physical_location !== undefined)
       out.physical_location = input.physical_location?.trim() || null;
     if (input.is_essential !== undefined) out.is_essential = input.is_essential;

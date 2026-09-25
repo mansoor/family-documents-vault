@@ -52,15 +52,22 @@ export function subject(d: Digest): string {
  * mail server, which an owner can point anywhere, so a private document is
  * named only as that — its title and note stay for push and the app.
  */
-export function forEmail(i: Digest['items'][number]): { title: string; note: string | null } {
+export function forEmail(i: Digest['items'][number]): {
+  title: string;
+  label: string;
+  note: string | null;
+  overdue: boolean;
+} {
+  // Field by field, never the whole item: a field added to digest items
+  // later stays out of email until somebody decides it may go.
   return i.private
-    ? { title: 'One of your private documents', note: null }
-    : { title: i.title, note: i.note };
+    ? { title: 'One of your private documents', label: i.label, note: null, overdue: i.overdue }
+    : { title: i.title, label: i.label, note: i.note, overdue: i.overdue };
 }
 
 export function textBody(d: Digest, baseUrl: string): string {
   const lines = d.items.map((item) => {
-    const i = { ...item, ...forEmail(item) };
+    const i = forEmail(item);
     return `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`;
   });
   const intro =
@@ -79,7 +86,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
     );
   const rows = d.items
-    .map((item) => ({ ...item, ...forEmail(item) }))
+    .map((item) => forEmail(item))
     .map(
       (i) =>
         `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(i.label)}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,

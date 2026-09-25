@@ -251,6 +251,8 @@ export interface Schema {
     default_visibility: Visibility;
     sort_order: number;
     pack_version: number;
+    /** This type's word for who issued it; null reads "Issued by" (0025). */
+    issued_by_label: string | null;
   };
 
   document: {
@@ -266,6 +268,8 @@ export interface Schema {
     expires_on: DateOnly | null;
     expires_precision: DatePrecision | null;
     identifier: string | null;
+    /** Who issued it (0025). */
+    issued_by: string | null;
     physical_location: string | null;
     is_essential: Generated<boolean>;
     tags: Generated<string[]>;

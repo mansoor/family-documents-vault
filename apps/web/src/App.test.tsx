@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
@@ -12,6 +12,7 @@ import {
   PASSPORT,
   SEALED_HIT,
   signedIn,
+  STATEMENT,
   TYPES,
 } from './test-api.js';
 
@@ -1073,5 +1074,270 @@ describe('App', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
     expect(state.calls.some((c) => c.url.endsWith('/visibility'))).toBe(false);
     expect(state.calls.some((c) => c.method === 'PATCH')).toBe(true);
+  });
+
+  describe('who issued it (0.4.10)', () => {
+    /** Another statement, from another bank, the month before. */
+    const HSBC = {
+      ...STATEMENT,
+      id: 'doc-3',
+      title: 'HSBC statement, August 2026',
+      issued_by: 'HSBC',
+      issued: { date: '2026-08-31', precision: 'month' },
+    };
+    const BILL = {
+      ...STATEMENT,
+      id: 'doc-5',
+      type_key: 'utility_bill',
+      category: 'household',
+      title: 'British Gas bill',
+      issued_by: 'British Gas',
+    };
+
+    it('a list row says what it is, who issued it and when', async () => {
+      const state = fresh({ documents: [PASSPORT, STATEMENT] });
+      installFakeApi(state);
+      signedIn();
+      render(<App />);
+      await screen.findByText('Barclays statement, September 2026');
+      expect(await screen.findByText('Bank statement · Barclays · Sep 2026')).toBeInTheDocument();
+      // Who can see it is still said, beside the line rather than in it.
+      expect(screen.getByText('· Adults only', { exact: false })).toBeInTheDocument();
+      expect(screen.getByText('Passport · Mar 2021')).toBeInTheDocument();
+    });
+
+    it('the card asks for the issuer in the type’s own word, and offers the household’s only as a tap', async () => {
+      const state = fresh({ documents: [PASSPORT, STATEMENT, HSBC] });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/add');
+      render(<App />);
+      await toCard();
+      // No type yet: the plain words.
+      expect(screen.getByLabelText('Issued by')).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('What it is'), {
+        target: { value: 'bank_statement' },
+      });
+      const field = screen.getByLabelText<HTMLInputElement>('Institution');
+      await waitFor(() =>
+        expect(state.calls.some((c) => c.url === '/api/v1/issuers?type_key=bank_statement')).toBe(
+          true,
+        ),
+      );
+      const chip = await screen.findByRole('button', { name: 'From Barclays?' });
+      expect(screen.getByRole('button', { name: 'From HSBC?' })).toBeInTheDocument();
+      // Offered, not filled in.
+      expect(field.value).toBe('');
+      await expectAccessible();
+
+      fireEvent.change(screen.getByLabelText('Issued'), { target: { value: 'September 2026' } });
+      chip.focus();
+      fireEvent.click(chip);
+      expect(field.value).toBe('Barclays');
+      // The chip has gone; the keyboard's place is on the field it filled.
+      expect(document.activeElement).toBe(field);
+      // Nobody typed a name, so it follows the issuer and the month.
+      expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe(
+        'Barclays statement, September 2026',
+      );
+      // Answered: the questions go.
+      expect(screen.queryByRole('button', { name: /^From / })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+      await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+      expect(state.captures?.[0]?.metadata).toMatchObject({
+        type_key: 'bank_statement',
+        title: 'Barclays statement, September 2026',
+        issued_by: 'Barclays',
+        issued: { date: '2026-09-30', precision: 'month' },
+      });
+    });
+
+    it('a name somebody typed is kept when the issuer is chosen', async () => {
+      const state = fresh({ documents: [STATEMENT] });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/add');
+      render(<App />);
+      await toCard();
+      fireEvent.change(screen.getByLabelText('What it is'), {
+        target: { value: 'bank_statement' },
+      });
+      fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Joint account' } });
+      fireEvent.click(await screen.findByRole('button', { name: 'From Barclays?' }));
+      expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe('Joint account');
+    });
+
+    it('a file named for its issuer offers that issuer first', async () => {
+      // British Gas is used more, but the file's name says Barclays.
+      const state = fresh({
+        documents: [STATEMENT, BILL, { ...BILL, id: 'doc-4' }],
+      });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/add');
+      render(<App />);
+      const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+      );
+      fireEvent.change(input, {
+        target: {
+          files: [new File(['%PDF-1.4'], 'barclays_statement.pdf', { type: 'application/pdf' })],
+        },
+      });
+      await screen.findByRole('heading', { name: 'Is this right?' });
+      await screen.findByRole('button', { name: 'From British Gas?' });
+      const offered = within(screen.getByRole('group', { name: 'Who it might be from' }))
+        .getAllByRole('button')
+        .map((b) => b.textContent);
+      expect(offered).toEqual(['From Barclays?', 'From British Gas?']);
+      expect(screen.getByLabelText<HTMLInputElement>('Issued by').value).toBe('');
+    });
+
+    it('editing a document offers who its pages say issued it, asking again while they are read', async () => {
+      vi.useFakeTimers({
+        shouldAdvanceTime: true,
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+      });
+      try {
+        const state = fresh({
+          documents: [{ ...STATEMENT, title: null, issued_by: null }],
+          issuerSuggestions: { 'doc-2': { state: 'pending', items: [] } },
+        });
+        installFakeApi(state);
+        signedIn();
+        window.history.replaceState({}, '', '/documents/doc-2/confirm');
+        render(<App />);
+        const asked = () => state.calls.filter((c) => c.url.endsWith('/issuer-suggestions')).length;
+        const field = await screen.findByLabelText<HTMLInputElement>('Institution');
+        await waitFor(() => expect(asked()).toBe(1));
+        expect(screen.queryByRole('button', { name: /^From / })).not.toBeInTheDocument();
+
+        // Still being read: asked again five seconds later.
+        await act(() => vi.advanceTimersByTimeAsync(5_000));
+        await waitFor(() => expect(asked()).toBe(2));
+
+        // Read now: the page's answer is offered, and not filled in.
+        state.issuerSuggestions = {
+          'doc-2': { state: 'ready', items: [{ value: 'Barclays', source: 'page' }] },
+        };
+        await act(() => vi.advanceTimersByTimeAsync(5_000));
+        const chip = await screen.findByRole('button', { name: 'From Barclays?' });
+        expect(field.value).toBe('');
+        const settled = asked();
+
+        fireEvent.click(chip);
+        expect(field.value).toBe('Barclays');
+        // Answered: nobody is asked again.
+        await act(() => vi.advanceTimersByTimeAsync(10_000));
+        expect(asked()).toBe(settled);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+        await waitFor(() => {
+          const patch = state.calls.find((c) => c.method === 'PATCH');
+          expect(patch?.body).toMatchObject({
+            issued_by: 'Barclays',
+            title: 'Barclays statement, September 2026',
+          });
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('editing asks no more after a minute of pages still being read', async () => {
+      vi.useFakeTimers({
+        shouldAdvanceTime: true,
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+      });
+      try {
+        const state = fresh({
+          documents: [{ ...STATEMENT, issued_by: null }],
+          issuerSuggestions: { 'doc-2': { state: 'pending', items: [] } },
+        });
+        installFakeApi(state);
+        signedIn();
+        window.history.replaceState({}, '', '/documents/doc-2/confirm');
+        render(<App />);
+        const asked = () => state.calls.filter((c) => c.url.endsWith('/issuer-suggestions')).length;
+        await screen.findByLabelText('Institution');
+        await waitFor(() => expect(asked()).toBe(1));
+        for (let i = 0; i < 15; i++) await act(() => vi.advanceTimersByTimeAsync(5_000));
+        // Once, then every five seconds for a minute.
+        expect(asked()).toBe(13);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('search offers who issued things as chips, and they narrow the results', async () => {
+      const state = fresh({ documents: [PASSPORT, STATEMENT, HSBC] });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/search');
+      render(<App />);
+      const barclays = await screen.findByRole('button', { name: 'Barclays' });
+      expect(barclays).toHaveAttribute('aria-pressed', 'false');
+      expect(screen.getByRole('group', { name: 'Who it is from' })).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Search everything'), {
+        target: { value: 'statement' },
+      });
+      await screen.findByText('HSBC statement, August 2026');
+      expect(screen.getByText('Barclays statement, September 2026')).toBeInTheDocument();
+      expect(screen.getByText('Bank statement · HSBC · Aug 2026')).toBeInTheDocument();
+
+      fireEvent.click(barclays);
+      await waitFor(() =>
+        expect(screen.queryByText('HSBC statement, August 2026')).not.toBeInTheDocument(),
+      );
+      expect(screen.getByText('Barclays statement, September 2026')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Barclays' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+      expect(
+        state.calls.some((c) => c.url === '/api/v1/search?q=statement&issued_by=Barclays'),
+      ).toBe(true);
+      await expectAccessible();
+
+      // With nothing typed, the chip browses.
+      fireEvent.change(screen.getByLabelText('Search everything'), { target: { value: '' } });
+      await waitFor(() =>
+        expect(
+          state.calls.some(
+            (c) => c.url.startsWith('/api/v1/documents?') && c.url.includes('issued_by=Barclays'),
+          ),
+        ).toBe(true),
+      );
+      await screen.findByText('Bank statement · Barclays · Sep 2026');
+      expect(screen.queryByText("Mansoor's passport")).not.toBeInTheDocument();
+    });
+
+    it('search shows no issuer chips when nothing has an issuer', async () => {
+      const state = fresh();
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/search');
+      render(<App />);
+      await screen.findByText("Mansoor's passport");
+      await waitFor(() =>
+        expect(state.calls.some((c) => c.url.startsWith('/api/v1/issuers'))).toBe(true),
+      );
+      expect(screen.queryByRole('group', { name: 'Who it is from' })).not.toBeInTheDocument();
+    });
+
+    it('the document page names the issuer in the type’s own word', async () => {
+      const state = fresh({ documents: [STATEMENT] });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-2');
+      render(<App />);
+      await screen.findByRole('heading', { name: 'Barclays statement, September 2026' });
+      const label = await screen.findByText('Institution');
+      expect(label.tagName).toBe('DT');
+      expect(label.nextElementSibling?.textContent).toBe('Barclays');
+    });
   });
 });

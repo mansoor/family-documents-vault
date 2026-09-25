@@ -1,4 +1,11 @@
-import { can, type DocumentView, type SuggestionView } from '@fdv/shared';
+import {
+  can,
+  documentLine,
+  type DateValue,
+  type DocumentTypeView,
+  type DocumentView,
+  type SuggestionView,
+} from '@fdv/shared';
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
@@ -15,7 +22,7 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const { data, error } = useLoad(
     async (t) => {
-      const [members, counts, recent, docs, me, due, suggestions] = await Promise.all([
+      const [members, counts, recent, docs, me, due, suggestions, types] = await Promise.all([
         api.members(t),
         api.counts(t),
         api.documents(t, { limit: 5, sort: 'recent' }),
@@ -23,6 +30,7 @@ export function HomeScreen() {
         api.me(t),
         api.reminders(t, 'due'),
         api.suggestions(t),
+        api.documentTypes(t),
       ]);
       const reminded = new Set(due.items.map((r) => r.document_id));
       const attention = [
@@ -48,6 +56,7 @@ export function HomeScreen() {
         recent: recent.items,
         attention,
         suggestions: suggestions.items,
+        types: types.items,
       };
     },
     [authVersion],
@@ -131,7 +140,12 @@ export function HomeScreen() {
         </h2>
         <ul className="list">
           {(data?.recent ?? []).map((d) => (
-            <DocRow key={d.id} doc={d} onOpen={() => void navigate(`/documents/${d.id}`)} />
+            <DocRow
+              key={d.id}
+              doc={d}
+              types={data?.types}
+              onOpen={() => void navigate(`/documents/${d.id}`)}
+            />
           ))}
         </ul>
       </section>
@@ -210,18 +224,45 @@ function AttentionStrip({
   );
 }
 
-export function DocRow({ doc, onOpen }: { doc: DocumentView; onOpen: () => void }) {
+/**
+ * The line under a document's name: what it is, who issued it and when —
+ * "Bank statement · Barclays · Sep 2026" — so a dozen statements are told
+ * apart at a glance. Without a type, its category says what kind of thing
+ * it is.
+ */
+export function rowLine(
+  doc: {
+    type_key: string | null;
+    category: string | null;
+    issued_by?: string | null;
+    issued?: DateValue | null;
+  },
+  types: ReadonlyArray<DocumentTypeView> | null | undefined,
+): string {
+  const type = types?.find((t) => t.key === doc.type_key) ?? null;
+  const line = documentLine({ type, issued_by: doc.issued_by ?? null, issued: doc.issued ?? null });
+  return type ? line : [categoryLabel(doc.category), line].filter(Boolean).join(' · ');
+}
+
+export function DocRow({
+  doc,
+  types,
+  onOpen,
+}: {
+  doc: DocumentView;
+  /** The vault's types, for the type's short name; the category until they arrive. */
+  types?: ReadonlyArray<DocumentTypeView> | null | undefined;
+  onOpen: () => void;
+}) {
+  const who =
+    doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
   return (
     <li>
       <button type="button" className="rowbtn" onClick={onOpen}>
         <span className="doc-title">{doc.title ?? 'Scan · needs a name'}</span>
         <span className="muted">
-          {categoryLabel(doc.category)}
-          {doc.visibility === 'adults'
-            ? ' · Adults only'
-            : doc.visibility === 'private'
-              ? ' · Only me'
-              : ''}
+          <span>{rowLine(doc, types)}</span>
+          {who && <span>{` · ${who}`}</span>}
         </span>
         <StatusBadge status={doc.status} />
       </button>

@@ -3,6 +3,8 @@ import type {
   Capabilities,
   CaptureResult,
   UploadStatus,
+  IssuerCount,
+  IssuerSuggestions,
   Counts,
   CreatedInvitation,
   CreatedShare,
@@ -238,6 +240,16 @@ export function createApi(http: Http) {
       request<{ items: DocumentTypeView[] }>('/api/v1/document-types', { token }),
     documents: (token: string, params: Params = {}) =>
       request<Page<DocumentView>>(`/api/v1/documents${qs(params)}`, { token }),
+    /**
+     * Who issued the household's documents, as far as this person can see
+     * (0.4.10, `features.issued_by`): the filter chips, and with `type_key`
+     * the card's suggestions, those used for that type first.
+     */
+    issuers: (token: string, params: Params = {}) =>
+      request<{ items: IssuerCount[] }>(`/api/v1/issuers${qs(params)}`, { token }),
+    /** Who probably issued it, from its pages: offered, never filled in (0.4.10). */
+    issuerSuggestions: (token: string, documentId: string) =>
+      request<IssuerSuggestions>(`/api/v1/documents/${documentId}/issuer-suggestions`, { token }),
     counts: (token: string) => request<Counts>('/api/v1/documents/counts', { token }),
     document: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, { token }),

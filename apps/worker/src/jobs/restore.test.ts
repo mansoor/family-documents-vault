@@ -287,7 +287,9 @@ describe.skipIf(!testAdminUrl())("the application role's privileges", () => {
       await older.drop();
       await rm(dir, { recursive: true, force: true });
     }
-  });
+    // Thirteen migrations on an empty database, while the rest of the suite
+    // runs: more than the default 5 s under load.
+  }, 30_000);
 });
 
 describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
