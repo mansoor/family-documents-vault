@@ -99,6 +99,68 @@ the server and on the family's devices, use the internal Caddyfile with the Tail
 as `FDV_HOSTNAME`, and nothing is exposed to the internet at all — every device reaches
 the vault over the private network, with a name and a certificate that just work.
 
+## Phones and other apps
+
+The phone app talks to the same API as the web app, at the same address. Nothing needs
+turning on for it; what follows is what the vault offers a phone, and what the phone
+checks before it trusts the vault.
+
+**The address.** Give the phone the address you open in the browser. With `https://` —
+the Caddy overlay, or Tailscale, above — nothing more is needed. If Caddy made its own
+certificate authority, install `vault-ca.crt` on the phone once: on Android, _Settings →
+Security → Encryption & credentials → Install a certificate → CA certificate_ (the app
+trusts certificates you install yourself); on iPhone, install the profile, then turn on
+full trust for it under _Settings → General → About → Certificate Trust Settings_. Until
+then the app says the phone doesn't trust the vault's certificate yet, and shows these
+steps, rather than "can't reach". A certificate for another name, or one that has run
+out, gets its own words.
+
+**Plain `http://` on the home network** works too, within limits the app keeps to:
+
+- only to a private address — `192.168.x.x`, `10.x.x.x`, `172.16.x.x`–`172.31.x.x`, a
+  Tailscale `100.64.x.x`–`100.127.x.x` address, or a name ending in `.local`, `.lan` or
+  `.home.arpa` — never to anything on the internet;
+- only over Wi-Fi or Ethernet, never on mobile data, where "private" addresses belong to
+  the carrier;
+- only after the person has been told, once per vault, what it means;
+- and never a password or a token until the vault answering has shown it is the one that
+  was approved — it checks the vault's installation id before sending anything, and again
+  whenever the phone changes network. The same address on a café's Wi-Fi is somebody else.
+
+A pasted invitation, password-reset or share link is fine as an address: the app keeps
+only the vault's address from it, never the secret in it, and offers to open the link in
+the browser, where those are finished.
+
+**Notifications** come through UnifiedPush: see
+[Notifications on the phone app](#notifications-on-the-phone-app). A distributor on your
+own network needs `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS=true`.
+
+**Essentials for when there is no signal**: see
+[Essentials on a phone](#essentials-on-a-phone). `FDV_OFFLINE_MAX_DAYS` (90 by default)
+is how long a phone may show them without checking in.
+
+**A lost phone.** Sign it out from any other device — _Settings → Signed-in devices_ in
+the browser, or in the app on another phone. At once, the vault:
+
+- ends that phone's session, so its tokens stop working, and its permission to keep
+  Essentials;
+- removes its notification devices and, if it hears through UnifiedPush, tells it "you
+  were signed out": the phone deletes the Essentials it kept as that message arrives, with
+  the app closed;
+- if the phone never hears (it is off, or has no distributor), it hides what it kept after
+  `FDV_OFFLINE_MAX_DAYS` without checking in, and deletes it the next time it reaches the
+  vault.
+
+What the phone keeps is encrypted, and opens only after the phone's own lock — its
+fingerprint, face or screen lock. Changing your password signs out every other device of
+yours the same way.
+
+**How long a phone stays signed in** is the same as a browser: 30 days from when it was
+last used, 180 days at most (see [Sign-in and sessions](#sign-in-and-sessions)).
+
+**An older vault.** The app says which version of the vault it needs; an older one is
+told so in both version numbers, with the way to [upgrade](#upgrading).
+
 ## Configuration
 
 All configuration is through environment variables in `.env` (see [`.env.example`](.env.example)).

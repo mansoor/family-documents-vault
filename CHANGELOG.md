@@ -8,6 +8,7 @@ All notable changes to Family Document Vault. The format follows
 
 ### Added
 
+- README: **Phones and other apps** — what a phone needs from the vault and what it checks: https and the certificate a vault makes itself, plain http on the home network and its limits, notifications, Essentials for no signal, and what signing out a lost phone does.
 - **Notifications on the phone app, through UnifiedPush** (ntfy or another distributor): the day's reminders, a new device signing in, a change of owner, and "this phone was signed out". What a phone is sent carries no titles and no names — a count and a date, or a word for what happened — encrypted to the phone; the app asks the vault for the rest once it is unlocked. `features.unified_push`.
 - _Settings → How you hear about things_ lists every browser and phone that hears from the vault, says which have stopped working and when they were last tried, and which are signed out, and sends a test to any of yours.
 - `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` for a push distributor on your own network.
