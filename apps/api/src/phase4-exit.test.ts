@@ -147,10 +147,11 @@ describe.skipIf(!testAdminUrl())('the Phase 4 exit', () => {
     h.dns.set('metadata.example.test', ['169.254.169.254']);
     h.dns.set('rebind.example.test', ['93.184.216.34', '127.0.0.1']);
   }, 120_000);
+  // Closing waits for every upload still in flight: under load, longer than the default 10 s.
   afterAll(async () => {
     await admin?.end();
     await h?.close();
-  });
+  }, 30_000);
 
   it('100 randomised retries and overlaps of one capture make one document', async () => {
     const seed = Number(process.env.FDV_EXIT_SEED ?? Date.now() % 1_000_000);

@@ -634,6 +634,10 @@ duplicates, dropped}`. Each event id is recorded once, however often
     alerts carry none, so one never replaces another. The Sunday summary
     is email only.
 
+- The Phase 4 release (0.5.0). One change: a push address whose host is
+  `localhost`, or ends in `.localhost`, is refused (`422`) by its name, as
+  `127.0.0.1` is — whatever DNS answers for it.
+
 ## Deprecations in effect
 
 None.
