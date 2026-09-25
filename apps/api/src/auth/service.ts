@@ -39,6 +39,25 @@ export type { Tokens } from '@fdv/shared';
 export interface RequestMeta {
   ip?: string | null;
   userAgent?: string | null;
+  /** The app installation making the request (X-FDV-Installation); browsers send none. */
+  installationId?: string | null;
+}
+
+/** Why a session ended, as clients are told it (0.4.11). */
+export type SessionEndReason = 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed';
+
+/** Sign in once, and a session lasts at most this long however much it is used. */
+export const SESSION_MAX_MS = 180 * 24 * 60 * 60 * 1000;
+/** A refresh whose answer was lost may be replayed within this long. */
+export const REFRESH_GRACE_MS = 30_000;
+/** Tokens touched by grace replays, kept per session: the most recent this many. */
+const GRACE_HASHES_KEPT = 8;
+
+/** What a session's stored revocation says to the client. */
+export function endReasonOf(revokedReason: string | null): SessionEndReason {
+  if (revokedReason === 'refresh token reuse') return 'reused';
+  if (revokedReason === 'membership removed') return 'removed';
+  return 'revoked';
 }
 
 export interface Principal {
@@ -59,8 +78,8 @@ export interface SetupInput {
 const invalidCredentials = () =>
   new ApiError(401, 'invalid_credentials', "That email and password don't match.");
 
-const sessionEnded = (why: string) =>
-  new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why });
+const sessionEnded = (why: string, reason: SessionEndReason) =>
+  new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why, reason });
 
 export function scopesFor(role: Role): Tokens['scopes_unlocked'] {
   // Until member scope keys exist (1.1), this reflects role alone.
@@ -251,6 +270,8 @@ export class AuthService {
     meta: RequestMeta,
   ): Promise<Tokens> {
     const refresh = newRefreshToken(p.householdId);
+    const now = Date.now();
+    const expiresAt = new Date(now + REFRESH_TTL_SECONDS * 1000);
     const session = await trx
       .insertInto('session')
       .values({
@@ -259,26 +280,32 @@ export class AuthService {
         refresh_hash: hashRefreshToken(refresh),
         user_agent: meta.userAgent ?? null,
         ip: meta.ip ?? null,
-        expires_at: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+        installation_id: meta.installationId ?? null,
+        rotated_at: new Date(now),
+        expires_at: expiresAt,
+        absolute_expires_at: new Date(now + SESSION_MAX_MS),
         // A credential was just presented, so the session starts fresh for
         // the purposes of step-up (SEC-17).
-        verified_at: new Date(),
+        verified_at: new Date(now),
       })
       .returning('id')
       .executeTakeFirstOrThrow();
     await this.noteDevice(trx, p, meta);
-    return this.tokens({ ...p, sessionId: session.id }, refresh);
+    return this.tokens({ ...p, sessionId: session.id }, refresh, expiresAt);
   }
 
   /**
    * New-device alerts (SEC-11).
    *
-   * A browser tells us its user agent and nothing else, so this is a weak
-   * signal, and it is built to fail in the safe direction: two laptops
-   * running the same browser version look alike and the second one is
-   * quiet, while a browser update makes a device look new and you are
-   * told about a sign-in you already knew about. Being told twice is a
-   * nuisance; not being told is the thing this exists to prevent.
+   * The app says which installation it is (0.4.11), and that is what is
+   * remembered: an app update is not a new device, and a second phone on
+   * the same version is. A browser tells us its user agent and nothing
+   * else, so for a browser this is a weak signal, built to fail in the
+   * safe direction: two laptops running the same browser version look
+   * alike and the second one is quiet, while a browser update makes a
+   * device look new and you are told about a sign-in you already knew
+   * about. Being told twice is a nuisance; not being told is the thing
+   * this exists to prevent.
    *
    * The first device an account ever uses is never an alert — there is
    * nobody to tell and nothing surprising about it.
@@ -289,7 +316,9 @@ export class AuthService {
     meta: RequestMeta,
   ): Promise<void> {
     const agent = meta.userAgent ?? 'unknown';
-    const fingerprint = createHash('sha256').update(agent, 'utf8').digest();
+    const fingerprint = createHash('sha256')
+      .update(meta.installationId ? `installation:${meta.installationId}` : agent, 'utf8')
+      .digest();
     const seen = await trx
       .selectFrom('known_device')
       .select(['id', 'fingerprint'])
@@ -314,15 +343,16 @@ export class AuthService {
       })
       .execute();
     if (seen.length === 0) return;
+    const device = describeDevice(agent);
     await this.alert({
       householdId: p.householdId,
       accountIds: [p.accountId],
       subject: 'A new device signed in to your vault',
-      body: `Somebody signed in on ${describeDevice(agent)}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it was not, change your password and sign that device out under Settings.`,
+      body: `Somebody signed in ${device.startsWith('the app') ? 'with' : 'on'} ${device}${meta.ip ? ` from ${meta.ip}` : ''}. If that was you, nothing to do. If it wasn't, change your password and sign that device out under Settings.`,
     });
   }
 
-  private async tokens(p: Principal, refresh: string): Promise<Tokens> {
+  private async tokens(p: Principal, refresh: string, refreshExpiresAt: Date): Promise<Tokens> {
     const claims: AccessClaims = {
       sub: p.accountId,
       sid: p.sessionId,
@@ -334,7 +364,8 @@ export class AuthService {
       access_token: await signAccessToken(this.signingKey, claims),
       expires_in: ACCESS_TTL_SECONDS,
       refresh_token: refresh,
-      refresh_expires_in: REFRESH_TTL_SECONDS,
+      // The real remainder: 30 days from now, or less near the 180-day end.
+      refresh_expires_in: Math.max(0, Math.floor((refreshExpiresAt.getTime() - Date.now()) / 1000)),
       household_id: p.householdId,
       member_id: p.memberId,
       role: p.role,
@@ -343,29 +374,61 @@ export class AuthService {
   }
 
   /**
-   * Rotates the refresh token. A token that was already rotated is proof of
-   * theft (either the thief or the owner is replaying): the whole session
-   * is revoked and both parties must sign in again.
+   * Rotates the refresh token, and slides the session: 30 more days from
+   * now, never past 180 days from the sign-in.
+   *
+   * A token that was already rotated is proof of theft (either the thief or
+   * the owner is replaying): the whole session is revoked and both must
+   * sign in again. With one exception, for phones on networks that drop
+   * answers: the token just replaced may be presented once more, within 30
+   * seconds of its rotation, from the session's own app installation — a
+   * refresh whose answer never arrived, tried again. It gets a new
+   * rotation, and the token it displaces becomes the previous one, so that
+   * whoever holds that one ends the session if they ever use it.
    */
   async refresh(refreshToken: string, meta: RequestMeta): Promise<Tokens> {
     const parsed = parseRefreshToken(refreshToken);
-    if (!parsed) throw sessionEnded('malformed refresh token');
+    if (!parsed) throw sessionEnded('malformed refresh token', 'malformed');
     const presented = hashRefreshToken(refreshToken);
 
     const result = await withScope(this.db, { householdId: parsed.householdId }, async (trx) => {
-      const session = await trx
+      const now = new Date();
+      let session = await trx
         .selectFrom('session')
         .selectAll()
         .where('refresh_hash', '=', presented)
+        .forUpdate()
         .executeTakeFirst();
+      let replay = false;
+      if (!session) {
+        // Not the current token. The one just before it, replayed because
+        // the answer to its refresh was lost, may get one more rotation.
+        const previous = await trx
+          .selectFrom('session')
+          .selectAll()
+          .where('prev_refresh_hash', '=', presented)
+          .forUpdate()
+          .executeTakeFirst();
+        // A session that has already ended says why, not "reused".
+        if (previous?.revoked_at) {
+          throw sessionEnded('session revoked', endReasonOf(previous.revoked_reason));
+        }
+        // Anything else — garbage, an older token, a replay the grace does
+        // not cover — must commit its revocation before we fail, so it is
+        // handled outside this transaction.
+        if (!previous || !graceAllows(previous, meta, now)) return null;
+        session = previous;
+        replay = true;
+      }
 
-      // A missing session is either garbage or a replayed, already-rotated
-      // token. The replay case must commit its revocation before we fail,
-      // so it is handled outside this transaction.
-      if (!session) return null;
-
-      if (session.revoked_at) throw sessionEnded('session revoked');
-      if (session.expires_at.getTime() < Date.now()) throw sessionEnded('session expired');
+      if (session.revoked_at)
+        throw sessionEnded('session revoked', endReasonOf(session.revoked_reason));
+      if (
+        session.expires_at.getTime() < now.getTime() ||
+        session.absolute_expires_at.getTime() < now.getTime()
+      ) {
+        throw sessionEnded('session expired', 'expired');
+      }
 
       const membership = await trx
         .selectFrom('account_household')
@@ -373,19 +436,54 @@ export class AuthService {
         .where('account_id', '=', session.account_id)
         .where('household_id', '=', session.household_id)
         .executeTakeFirst();
-      if (!membership) throw sessionEnded('membership removed');
+      if (!membership) throw sessionEnded('membership removed', 'removed');
 
       const next = newRefreshToken(session.household_id);
+      const expiresAt = new Date(
+        Math.min(now.getTime() + REFRESH_TTL_SECONDS * 1000, session.absolute_expires_at.getTime()),
+      );
       await trx
         .updateTable('session')
-        .set({
-          refresh_hash: hashRefreshToken(next),
-          prev_refresh_hash: presented,
-          last_used_at: new Date(),
-          ip: meta.ip ?? null,
-        })
+        .set(
+          replay
+            ? {
+                refresh_hash: hashRefreshToken(next),
+                // The token this replay displaces becomes the previous one,
+                // and both it and the replayed one are kept for the
+                // session's life: presented ever again, however many
+                // rotations later, either ends the session.
+                prev_refresh_hash: session.refresh_hash,
+                grace_hashes: [...session.grace_hashes, presented, session.refresh_hash].slice(
+                  -GRACE_HASHES_KEPT,
+                ),
+                grace_used_at: now,
+                rotated_at: now,
+                last_used_at: now,
+                expires_at: expiresAt,
+                ip: meta.ip ?? null,
+              }
+            : {
+                refresh_hash: hashRefreshToken(next),
+                prev_refresh_hash: presented,
+                grace_used_at: null,
+                rotated_at: now,
+                last_used_at: now,
+                expires_at: expiresAt,
+                ip: meta.ip ?? null,
+              },
+        )
         .where('id', '=', session.id)
         .execute();
+      if (replay) {
+        await appendAudit(trx, {
+          householdId: session.household_id,
+          actorAccountId: session.account_id,
+          action: 'auth.refresh_replayed',
+          objectType: 'session',
+          objectId: session.id,
+          ip: meta.ip,
+        });
+      }
 
       return this.tokens(
         {
@@ -396,24 +494,35 @@ export class AuthService {
           role: membership.role,
         },
         next,
+        expiresAt,
       );
     });
     if (result) return result;
 
-    await this.revokeOnReuse(parsed.householdId, presented, meta);
-    throw sessionEnded('unknown or reused refresh token');
+    // A token that ended a session is proof of reuse; one that matches
+    // nothing (garbage, a restored backup's, one long retired) is only no
+    // longer valid.
+    const revoked = await this.revokeOnReuse(parsed.householdId, presented, meta);
+    throw sessionEnded('unknown or reused refresh token', revoked ? 'reused' : 'revoked');
   }
 
-  /** Revokes the session whose previous refresh token was just replayed, if any. */
-  private async revokeOnReuse(householdId: string, presented: Buffer, meta: RequestMeta) {
-    await withScope(this.db, { householdId }, async (trx) => {
+  /**
+   * Revokes the session a spent token belongs to — its previous token, or
+   * any a grace replay touched — if one is still open. Says whether it did.
+   */
+  private async revokeOnReuse(
+    householdId: string,
+    presented: Buffer,
+    meta: RequestMeta,
+  ): Promise<boolean> {
+    return withScope(this.db, { householdId }, async (trx) => {
       const replayed = await trx
         .selectFrom('session')
         .select('id')
-        .where('prev_refresh_hash', '=', presented)
+        .where(sql<boolean>`(prev_refresh_hash = ${presented} or ${presented} = any(grace_hashes))`)
         .where('revoked_at', 'is', null)
         .executeTakeFirst();
-      if (!replayed) return;
+      if (!replayed) return false;
       await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: 'refresh token reuse' })
@@ -427,6 +536,7 @@ export class AuthService {
         detail: { reason: 'refresh token reuse' },
         ip: meta.ip,
       });
+      return true;
     });
   }
 
@@ -456,7 +566,7 @@ export class AuthService {
         .where('session.revoked_at', 'is', null)
         .executeTakeFirst(),
     );
-    if (!open) throw sessionEnded('session revoked');
+    if (!open) throw await this.whyEnded(claims.hid, claims.sid);
     return {
       accountId: claims.sub,
       sessionId: claims.sid,
@@ -464,6 +574,21 @@ export class AuthService {
       memberId: open.member_id,
       role: open.role,
     };
+  }
+
+  /** Why a session that no longer authenticates ended, for the 401. */
+  private async whyEnded(householdId: string, sessionId: string): Promise<ApiError> {
+    const row = await withScope(this.db, { householdId }, (trx) =>
+      trx
+        .selectFrom('session')
+        .select(['revoked_at', 'revoked_reason'])
+        .where('id', '=', sessionId)
+        .executeTakeFirst(),
+    );
+    if (!row) return sessionEnded('session revoked', 'revoked');
+    // Not revoked, yet no membership joins it: the person left the household.
+    if (!row.revoked_at) return sessionEnded('membership removed', 'removed');
+    return sessionEnded('session revoked', endReasonOf(row.revoked_reason));
   }
 
   async emailOf(accountId: string): Promise<string> {
@@ -479,7 +604,7 @@ export class AuthService {
     return withScope(this.db, { householdId: p.householdId }, (trx) =>
       trx
         .selectFrom('session')
-        .select(['id', 'user_agent', 'ip', 'created_at', 'last_used_at'])
+        .select(['id', 'user_agent', 'ip', 'created_at', 'last_used_at', 'installation_id'])
         .where('account_id', '=', p.accountId)
         .where('revoked_at', 'is', null)
         .orderBy('last_used_at', 'desc')
@@ -492,6 +617,8 @@ export class AuthService {
         ip: r.ip,
         created_at: r.created_at,
         last_used_at: r.last_used_at,
+        client: clientOf(r.installation_id, r.user_agent),
+        label: describeDevice(r.user_agent ?? 'unknown'),
       })),
     );
   }
@@ -521,10 +648,70 @@ export class AuthService {
 }
 
 /**
- * A user agent in words a person recognises. Deliberately coarse: the
- * point is "a phone" or "this computer", not a version number.
+ * Whether the one-time replay of a refresh token is allowed (0.4.11): the
+ * token just replaced, within 30 seconds of that, the first replay since,
+ * and from the app installation that holds the session. A browser has no
+ * installation id, so a browser never gets it.
  */
-export function describeDevice(agent: string): string {
+export function graceAllows(
+  s: {
+    rotated_at: Date | null;
+    grace_used_at: Date | null;
+    installation_id: string | null;
+    revoked_at: Date | null;
+  },
+  meta: RequestMeta,
+  now: Date,
+): boolean {
+  return (
+    s.revoked_at === null &&
+    s.rotated_at !== null &&
+    now.getTime() - s.rotated_at.getTime() <= REFRESH_GRACE_MS &&
+    s.grace_used_at === null &&
+    s.installation_id !== null &&
+    meta.installationId === s.installation_id
+  );
+}
+
+/** What kind of thing holds a session: an app installation, a browser, or neither that we can tell. */
+export function clientOf(
+  installationId: string | null,
+  agent: string | null,
+): 'app' | 'browser' | 'other' {
+  if (installationId) return 'app';
+  if (agent && /^mozilla\//i.test(agent)) return 'browser';
+  return 'other';
+}
+
+/**
+ * "Name/1.2.3 (Android 15; Google Pixel 8a)": an app, on a device it names.
+ * No two parts can match the same characters, so it runs in linear time
+ * whatever a client sends; the name is trimmed afterwards.
+ */
+const APP_AGENT =
+  /^[A-Za-z][\w.-]{0,40}\/\d[\w.-]{0,20} ?\( ?(?:android|ios|ipados)[^;)]{0,40};([^;)]{1,60})\)/i;
+/**
+ * What a device may be called in an alert: a model name, and nothing that
+ * reads as a sentence. The alert exists for a stolen password, and its
+ * holder must not get to write what it says.
+ */
+const DEVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._+-]{0,39}$/;
+
+/**
+ * A user agent in words a person recognises. Deliberately coarse: the
+ * point is "a phone" or "this computer", not a version number. An app's
+ * own user agent names the device it runs on: "the app on a Google Pixel
+ * 8a" — whichever app it is, as no app's name is written in here.
+ */
+export function describeDevice(fullAgent: string): string {
+  // Everything worth reading is at the start; a longer one is not a device's.
+  const agent = fullAgent.slice(0, 256);
+  const app = APP_AGENT.exec(agent);
+  if (app && !/^mozilla\//i.test(agent)) {
+    const device = (app[1] ?? '').trim();
+    if (!DEVICE_NAME.test(device) || /^unknown/i.test(device)) return 'the app on a phone';
+    return `the app on ${/^[aeiou]/i.test(device) ? 'an' : 'a'} ${device}`;
+  }
   const a = agent.toLowerCase();
   const browser = a.includes('firefox')
     ? 'Firefox'

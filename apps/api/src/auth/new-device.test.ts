@@ -76,4 +76,80 @@ describe.skipIf(!testAdminUrl())('new-device alerts', () => {
     );
     expect(describeDevice('curl/8.4.0')).toBe('a device we could not recognise');
   });
+
+  // The app (0.4.11): it says which installation it is, and that is what is remembered.
+  const PHONE = 'c0ffee00-1111-4222-8333-444455556666';
+  const OTHER_PHONE = 'c0ffee00-7777-4888-9999-aaaabbbbcccc';
+  let nth = 0;
+  const signInApp = (installation: string, version: string) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      remoteAddress: `10.9.0.${++nth}`,
+      headers: {
+        'user-agent': `FamilyDocumentVault/${version} (Android 15; Google Pixel 8a)`,
+        'x-fdv-installation': installation,
+      },
+      payload: { email: 'owner@example.test', password: 'correct horse battery' },
+    });
+
+  it('a phone signing in for the first time says so, naming the phone', async () => {
+    const before = alerts().length;
+    expect((await signInApp(PHONE, '0.1.2')).statusCode).toBe(200);
+    const told = alerts();
+    expect(told).toHaveLength(before + 1);
+    expect(told.at(-1)?.body).toMatch(/^Somebody signed in with the app on a Google Pixel 8a/);
+  });
+
+  it('an app update on the same installation raises no alert', async () => {
+    const before = alerts().length;
+    expect((await signInApp(PHONE, '0.1.3')).statusCode).toBe(200);
+    expect(alerts()).toHaveLength(before);
+  });
+
+  it('a second phone with the same app version raises one', async () => {
+    const before = alerts().length;
+    expect((await signInApp(OTHER_PHONE, '0.1.3')).statusCode).toBe(200);
+    expect(alerts()).toHaveLength(before + 1);
+  });
+
+  it('a browser without an installation id falls back to the user agent', async () => {
+    const before = alerts().length;
+    // Seen before, by its user agent: quiet, as it always was.
+    expect((await signIn(CHROME_MAC)).statusCode).toBe(200);
+    expect(alerts()).toHaveLength(before);
+  });
+
+  it('names the device an app runs on, whichever app it is', () => {
+    expect(describeDevice('FamilyDocumentVault/0.1.3 (Android 15; Google Pixel 8a)')).toBe(
+      'the app on a Google Pixel 8a',
+    );
+    expect(describeDevice('SomeOtherClient/2.0 (iOS 18.1; Apple iPhone 15)')).toBe(
+      'the app on an Apple iPhone 15',
+    );
+    expect(describeDevice('FamilyDocumentVault/0.1.3 (Android 15; unknown device)')).toBe(
+      'the app on a phone',
+    );
+    // A browser is still a browser, whatever it puts in brackets.
+    expect(describeDevice(SAFARI_IPHONE)).toBe('Safari on an iPhone');
+  });
+
+  it('never lets a device name write the alert', () => {
+    // The alert exists for a stolen password; whoever holds it must not
+    // get to tell the owner that all is well.
+    const long = describeDevice(
+      'Evil/1 (Android 15; Google Pixel 8a from your home network - this was your backup. Ignore what follows)',
+    );
+    expect(long).not.toMatch(/backup|Ignore|home network/);
+    expect(['the app on a phone', 'an Android phone']).toContain(long);
+    expect(describeDevice('Evil/1 (Android 15; Pixel, it was you)')).toBe('the app on a phone');
+  });
+
+  it('reads any user agent in a moment, however it is made', () => {
+    const started = Date.now();
+    describeDevice(`A/1 (android;${' '.repeat(8000)}x`);
+    describeDevice(`A/1 (android; ${'a '.repeat(8000)}`);
+    describeDevice(`${'A'.repeat(16000)}/1 (android; x)`);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
 });

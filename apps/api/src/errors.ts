@@ -12,6 +12,8 @@ export interface ErrorBody {
     request_id: string;
     /** Which consequential action asked for a fresh credential (SEC-17). */
     action?: string;
+    /** Why a session ended (session_ended, 0.4.11). */
+    reason?: string;
   };
 }
 
@@ -26,6 +28,8 @@ export class ApiError extends Error {
       action?: string;
       /** Seconds to wait before trying again; sent as Retry-After. */
       retryAfter?: number;
+      /** Why a session ended (0.4.11): expired, revoked, reused, removed or malformed. */
+      reason?: string;
     } = {},
   ) {
     super(message);
@@ -41,6 +45,7 @@ export class ApiError extends Error {
     };
     if (this.options.detail !== undefined) error.detail = this.options.detail;
     if (this.options.action !== undefined) error.action = this.options.action;
+    if (this.options.reason !== undefined) error.reason = this.options.reason;
     return { error };
   }
 }

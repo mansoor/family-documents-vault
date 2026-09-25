@@ -67,7 +67,7 @@ export function SettingsScreen() {
           {(sessions ?? []).map((d) => (
             <li key={d.id}>
               <span>
-                {shortAgent(d.user_agent)}
+                {d.label ?? shortAgent(d.user_agent)}
                 {d.current && <span className="muted"> · this one</span>}
               </span>
               {!d.current && (
