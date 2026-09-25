@@ -141,7 +141,7 @@ describe.skipIf(!S3_ENDPOINT)('S3Adapter', () => {
     await c.send(new CreateBucketCommand({ Bucket: bucket }));
   });
 
-  adapterSuite('against MinIO', async () => ({
+  adapterSuite('against an S3-compatible server (VersityGW in CI)', async () => ({
     adapter: new S3Adapter({
       endpoint: S3_ENDPOINT,
       bucket,

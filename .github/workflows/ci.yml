@@ -70,11 +70,15 @@ jobs:
             curl -sf http://localhost:8025/api/v1/messages?limit=1 >/dev/null && break
             sleep 1
           done
-      - name: Start MinIO (S3-compatible storage for the adapter tests)
+      # MinIO no longer publishes its images (quay.io and Docker Hub both
+      # refuse them, as of September 2026). VersityGW (Apache-2.0) speaks the
+      # same S3 API over a plain directory, which is all these tests need.
+      - name: Start an S3-compatible server (VersityGW) for the adapter tests
         run: |
-          docker run -d --name minio -p 9000:9000             -e MINIO_ROOT_USER=fdv -e MINIO_ROOT_PASSWORD=fdv-minio-test             quay.io/minio/minio:latest server /data
+          docker run -d --name s3 -p 9000:7070             -e ROOT_ACCESS_KEY=fdv -e ROOT_SECRET_KEY=fdv-minio-test             versity/versitygw:v1.8.0 posix /tmp
           for i in $(seq 1 30); do
-            curl -sf http://localhost:9000/minio/health/live && break
+            # Any answer will do: without credentials it is a 403.
+            curl -s -o /dev/null http://localhost:9000/ && break
             sleep 1
           done
       - uses: pnpm/action-setup@v4
