@@ -9,18 +9,17 @@ All notable changes to Family Document Vault. The format follows
 ### Added
 
 - **Notifications on the phone app, through UnifiedPush** (ntfy or another distributor): the day's reminders, a new device signing in, a change of owner, and "this phone was signed out". What a phone is sent carries no titles and no names — a count and a date, or a word for what happened — encrypted to the phone; the app asks the vault for the rest once it is unlocked. `features.unified_push`.
-- _Settings → How you hear about things_ lists every browser and phone that hears from the vault, says which have stopped working and when they were last tried, and sends a test to any of yours.
+- _Settings → How you hear about things_ lists every browser and phone that hears from the vault, says which have stopped working and when they were last tried, and which are signed out, and sends a test to any of yours.
 - `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` for a push distributor on your own network.
 
 ### Changed
 
-- Push addresses must start with `https://`, and the vault will not send a notification to an address inside its own network (loopback, private, link-local, cloud metadata) unless you allow it — checked when a device registers and again, on the address DNS gives then, every time one is sent.
+- Push addresses must start with `https://`, and the vault will not send a notification to an address inside its own network (loopback, private, link-local, cloud metadata) unless you allow it — however the address is written, an IPv4 address inside an IPv6 one included — checked when a device registers and again, on the address DNS gives then, every time one is sent.
+- A push service gets ten seconds to answer, so one that never does cannot hold up everybody's reminders. A "this phone was signed out" message its push service would not take is tried again for about four hours.
+- The Sunday summary stays an email: the phone app hears of the day's reminders.
 - Every way a session ends — signing out, signing it out from another device, refresh-token reuse, a password change or reset, a removed sign-in — now removes that session's notification devices at once.
 - A browser that already has notifications on tells the vault again when you sign in, so its notifications follow the new sign-in.
 - A device the push service says is gone (404 or 410) is removed and the removal recorded in the activity log; one refused outright (400, 401, 403, 413) is marked not working; one that fails for a while (429, 5xx, no answer) is marked only after ten failures in a row, and one success resets that.
-
-### Changed
-
 - Opening an Essential asks you to confirm it is you "to open an Essential document". It used to say "a document only you can see" about a passport the whole family can see.
 - The thumbnail of an Essential or an Only me document is no longer kept in the browser's cache.
 - **Sessions last as long as they are used, up to six months.** A session now lasts 30 days from when it was last used, and 180 days at most from the sign-in — for browsers and the phone app alike. Before, it ended 30 days after the sign-in however much it was used. Sessions open before the upgrade count their 180 days from when they began, so one older than that asks for the password at its next refresh.

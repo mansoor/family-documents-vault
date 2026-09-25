@@ -3,6 +3,7 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { appendAudit, withScope, type Db } from '@fdv/db';
 import { isPrivateAddress, pushAddressProblem } from '@fdv/shared';
+import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -133,6 +134,15 @@ export interface TestOutcome {
   message: string;
   detail?: string;
 }
+
+/**
+ * Whether a device's session is still going — the worker's `liveDevice`,
+ * seen from the person asking: a device from before 0.4.2 names no session
+ * and goes with the account, which is signed in to be asking.
+ */
+const live = sql<boolean>`(device.session_id is null or exists (
+  select 1 from session s
+   where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))`;
 
 export class NotificationService {
   constructor(
@@ -278,6 +288,7 @@ export class NotificationService {
           'failed_at',
           'session_id',
         ])
+        .select(live.as('live'))
         .where('account_id', '=', p.accountId)
         .orderBy('created_at', 'desc')
         .execute(),
@@ -290,9 +301,10 @@ export class NotificationService {
         user_agent: r.user_agent,
         created_at: r.created_at.toISOString(),
         last_used_at: r.last_used_at?.toISOString() ?? null,
-        working: r.failed_at === null,
+        working: r.failed_at === null && r.live,
         failed_at: r.failed_at?.toISOString() ?? null,
         this_session: r.session_id === p.sessionId,
+        signed_out: !r.live,
       })),
     );
   }
@@ -303,6 +315,7 @@ export class NotificationService {
       trx
         .selectFrom('device')
         .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
+        .select(live.as('live'))
         .where('id', '=', id)
         .where('account_id', '=', p.accountId)
         .executeTakeFirst(),
@@ -314,6 +327,14 @@ export class NotificationService {
       (device.kind !== 'web_push' && device.kind !== 'unified_push')
     ) {
       throw new ApiError(404, 'not_found', 'There is no such device of yours.');
+    }
+    // Digests and alerts skip it (the worker's liveDevice): a test must not say it works.
+    if (!device.live) {
+      throw new ApiError(
+        409,
+        'signed_out',
+        'That device is signed out. Sign in on it again and it will hear from the vault.',
+      );
     }
     await this.opts.push?.({
       householdId: p.householdId,

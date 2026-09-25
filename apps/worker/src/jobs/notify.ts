@@ -192,7 +192,14 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
       .where(liveDevice)
       .execute(),
   );
-  const wanted = devices.filter((x) => x.daily_push !== false && x.p256dh && x.auth);
+  // The Sunday summary is an email; a phone hears of the day's reminders (4.13).
+  const wanted = devices.filter(
+    (x) =>
+      x.daily_push !== false &&
+      x.p256dh &&
+      x.auth &&
+      !(d.kind === 'weekly' && x.kind === 'unified_push'),
+  );
   if (wanted.length === 0) return 0;
 
   // A browser shows the first few; a phone is told how many, and asks the

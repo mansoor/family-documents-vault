@@ -26,8 +26,9 @@ import type { VapidKeys } from './notify.js';
  * What an answer means for the device:
  *  - 404 or 410: the subscription is gone — the row is deleted and audited.
  *  - 400, 401, 403 or 413: it will never work as it is — marked failed.
- *  - 429, 5xx, no answer: maybe later — counted; the tenth in a row marks it
- *    failed, and one success resets the count.
+ *  - 429, 5xx, no answer (none within ten seconds counts): maybe later —
+ *    counted; the tenth in a row marks it failed, and one success resets
+ *    the count.
  */
 
 export class PrivateAddressError extends Error {
@@ -36,6 +37,15 @@ export class PrivateAddressError extends Error {
 
 /** How many transient failures in a row mark a device failed. */
 export const FAILURES_BEFORE_FAILED = 10;
+
+/**
+ * How long a push service has to answer. A distributor that never does
+ * must not hold up the digest for every household behind it.
+ */
+export const PUSH_TIMEOUT_MS = 10_000;
+
+/** How many more times a push to a device already removed is tried: about four hours in all. */
+export const PUSH_RETRIES = 8;
 
 /** DNS as usual, but no address inside the vault's own network (unless allowed). */
 export function safeLookup(
@@ -105,6 +115,8 @@ export interface PushDeps {
   agent: https.Agent;
   allowPrivate: boolean;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  /** Tests: a shorter wait than PUSH_TIMEOUT_MS. */
+  timeoutMs?: number;
 }
 
 export interface PushDevice {
@@ -159,6 +171,7 @@ export async function deliver(
         ...(opts.topic === false ? {} : { topic: pushTopic(type) }),
         vapidDetails: deps.vapid,
         agent: deps.agent,
+        timeout: deps.timeoutMs ?? PUSH_TIMEOUT_MS,
       },
     );
     await mark(deps, device, 'sent');
@@ -262,6 +275,8 @@ async function mark(
 export interface PushJob {
   household_id: string;
   message: PushMessage;
+  /** How many times it has been tried again (see PUSH_RETRIES); absent the first time. */
+  attempt?: number;
   targets: {
     id: string | null;
     kind: 'web_push' | 'unified_push';
@@ -278,6 +293,7 @@ export function isPushJob(v: unknown): v is PushJob {
     typeof j.household_id === 'string' &&
     !!j.message &&
     typeof j.message.type === 'string' &&
+    (j.attempt === undefined || typeof j.attempt === 'number') &&
     Array.isArray(j.targets) &&
     j.targets.every(
       (t) =>
@@ -305,8 +321,21 @@ export function payloadFor(kind: 'web_push' | 'unified_push', m: PushMessage): s
   });
 }
 
-export async function sendPushJob(deps: PushDeps, job: PushJob): Promise<Record<Delivery, number>> {
+export interface PushOutcome {
+  counts: Record<Delivery, number>;
+  /**
+   * The same message again, later, to the targets whose rows are already
+   * gone and whose push service did not take it (429, 5xx, no answer):
+   * nothing else would ever tell those phones — a session_ended above all.
+   * A device with a row counts its own failures and hears the next push.
+   * Null when there is nothing to try again, or it has been tried enough.
+   */
+  next: { job: PushJob; delaySeconds: number } | null;
+}
+
+export async function sendPushJob(deps: PushDeps, job: PushJob): Promise<PushOutcome> {
   const counts: Record<Delivery, number> = { sent: 0, gone: 0, failed: 0, counted: 0, refused: 0 };
+  const again: PushJob['targets'] = [];
   for (const t of job.targets) {
     const outcome = await deliver(
       deps,
@@ -321,6 +350,12 @@ export async function sendPushJob(deps: PushDeps, job: PushJob): Promise<Record<
       job.message.type,
     );
     counts[outcome] += 1;
+    if (outcome === 'counted' && t.id === null) again.push(t);
   }
-  return counts;
+  const attempt = job.attempt ?? 0;
+  const next =
+    again.length > 0 && attempt < PUSH_RETRIES
+      ? { job: { ...job, targets: again, attempt: attempt + 1 }, delaySeconds: 60 * 2 ** attempt }
+      : null;
+  return { counts, next };
 }

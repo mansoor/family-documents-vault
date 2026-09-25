@@ -19,6 +19,30 @@ describe('where a push may go', () => {
     'fe80::1',
     '::ffff:127.0.0.1',
     '::ffff:10.1.2.3',
+    // IPv4 inside IPv6, as `new URL` and DNS write it (hex), and every other way.
+    '::ffff:7f00:1',
+    '[::ffff:a9fe:a9fe]',
+    '0:0:0:0:0:ffff:0a01:0203',
+    '::ffff:0:7f00:1',
+    '::7f00:1',
+    '::127.0.0.1',
+    '64:ff9b::7f00:1',
+    '64:ff9b::a9fe:a9fe',
+    '64:ff9b::10.0.0.5',
+    '64:ff9b:1::808:808',
+    '2002:7f00:1::1',
+    '2002:c0a8:0101::1',
+    '2001:0db8::1',
+    '2001:db8::1',
+    'fec0::1',
+    '100::1',
+    'fe80::1%eth0',
+    // Not addresses at all.
+    '1::2::3',
+    '1:2:3:4:5:6:7:8:9',
+    '12345::1',
+    ':1::2',
+    '1:2:3:4:5:6:7:8::',
     'not an address',
   ])('%s is refused', (ip) => {
     expect(isPrivateAddress(ip)).toBe(true);
@@ -31,6 +55,11 @@ describe('where a push may go', () => {
     '192.169.0.1',
     '2606:4700:4700::1111',
     '::ffff:1.1.1.1',
+    '::ffff:808:808',
+    '64:ff9b::808:808',
+    '2002:808:808::1',
+    '2a00:1450:4001:80b::200e',
+    '2606:4700:4700:0:0:0:0:1111',
   ])('%s may be tried', (ip) => {
     expect(isPrivateAddress(ip)).toBe(false);
   });

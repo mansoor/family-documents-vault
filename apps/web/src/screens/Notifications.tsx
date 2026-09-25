@@ -320,7 +320,7 @@ function SmtpSection() {
 
 /** A device as the list names it: the phone app says how it hears (0.4.14). */
 function deviceName(d: DeviceRow): string {
-  if (d.kind === 'unified_push') return 'Android app (through ntfy)';
+  if (d.kind === 'unified_push') return 'The Android app';
   return d.label ?? 'A browser';
 }
 
@@ -357,17 +357,26 @@ function Devices() {
             <span>
               {deviceName(d)}
               {d.this_session && <span className="muted"> · this one</span>}
-              {!d.working && (
+              {d.signed_out ? (
                 <span className="status status-warn">
                   {' '}
-                  Not working{d.failed_at ? ` — last tried ${whenWords(d.failed_at)}` : ''}
+                  Signed out — it hears nothing until you sign in there again
                 </span>
+              ) : (
+                !d.working && (
+                  <span className="status status-warn">
+                    {' '}
+                    Not working{d.failed_at ? ` — last tried ${whenWords(d.failed_at)}` : ''}
+                  </span>
+                )
               )}
               {sent === d.id && <span className="muted"> · test sent</span>}
             </span>
-            <Button kind="quiet" onClick={() => void test(d.id)}>
-              Send a test
-            </Button>
+            {!d.signed_out && (
+              <Button kind="quiet" onClick={() => void test(d.id)}>
+                Send a test
+              </Button>
+            )}
           </li>
         ))}
       </ul>

@@ -122,6 +122,10 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
       'https://127.0.0.1/up3',
       'https://[::1]/up4',
       'https://10.0.0.5:8443/up5',
+      // IPv4 inside IPv6: `new URL` writes these in hex.
+      'https://[::ffff:127.0.0.1]/up6',
+      'https://[::ffff:a9fe:a9fe]/up7',
+      'https://[64:ff9b::10.0.0.5]/up8',
     ]) {
       const res = await register(owner, endpoint);
       expect(res.statusCode, endpoint).toBe(422);
@@ -288,6 +292,31 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
     });
     expect(theirs.statusCode).toBe(404);
     expect(pushesTo(phone.endpoint)).toHaveLength(1);
+  });
+
+  it('a device whose session expired says so, and is not sent a test', async () => {
+    const phone = await phoneWith();
+    await admin
+      .updateTable('session')
+      .set({ expires_at: new Date(Date.now() - 60_000) })
+      .where('id', '=', (await rows(phone.endpoint))[0]?.session_id as string)
+      .execute();
+    const list = await h.app.inject({ url: '/api/v1/devices', headers: h.as(owner) });
+    expect(
+      list
+        .json<{ items: { id: string; working: boolean; signed_out: boolean }[] }>()
+        .items.find((d) => d.id === phone.id),
+    ).toMatchObject({ working: false, signed_out: true });
+    const test = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/devices/${phone.id}/test`,
+      headers: h.as(owner),
+    });
+    expect(test.statusCode).toBe(409);
+    expect(errorOf(test)).toBe(
+      'That device is signed out. Sign in on it again and it will hear from the vault.',
+    );
+    expect(pushesTo(phone.endpoint)).toHaveLength(0);
   });
 
   it('the capability says so, exactly when push is set up', async () => {

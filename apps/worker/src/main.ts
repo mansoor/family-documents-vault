@@ -172,11 +172,20 @@ async function main(): Promise<void> {
         log('warn', 'push job had the wrong shape', { id: job.id });
         continue;
       }
-      const counts = await sendPushJob(
+      const { counts, next } = await sendPushJob(
         { app: dbs.app, vapid, agent: pushAgent, allowPrivate, log },
         job.data,
       );
       log('info', 'push sent', { type: job.data.message.type, ...counts });
+      if (next) {
+        await boss.send(JOBS.pushSend, { ...next.job }, { startAfter: next.delaySeconds });
+        log('info', 'push to be tried again', {
+          type: next.job.message.type,
+          attempt: next.job.attempt,
+          targets: next.job.targets.length,
+          in_seconds: next.delaySeconds,
+        });
+      }
     }
   });
   await boss.createQueue(JOBS.alertSend);

@@ -327,6 +327,11 @@ export interface DeviceRow {
   failed_at?: string | null;
   /** Registered by the session asking (4.13). */
   this_session?: boolean;
+  /**
+   * Its session expired or was ended: it hears nothing (and `working` is
+   * false) until that device signs in again (0.4.14).
+   */
+  signed_out?: boolean;
 }
 
 export interface PushKey {

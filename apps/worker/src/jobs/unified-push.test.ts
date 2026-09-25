@@ -14,8 +14,10 @@ import {
   createPushAgent,
   deliver,
   FAILURES_BEFORE_FAILED,
+  PUSH_RETRIES,
   sendPushJob,
   type PushDeps,
+  type PushJob,
 } from './push.js';
 import type { Digest } from './reminders.js';
 
@@ -104,7 +106,9 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
         received.push({ path: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks) });
-        res.statusCode = answers.shift() ?? 201;
+        const status = answers.shift() ?? 201;
+        if (status === 0) return; // a push service that never answers
+        res.statusCode = status;
         res.end();
       });
     });
@@ -144,32 +148,32 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
   });
 
   afterAll(async () => {
+    server.closeAllConnections();
     await new Promise((done) => server.close(done));
     await db.destroy();
     await admin.end();
     await tdb.drop();
   });
 
-  it('a digest to a phone carries a count and no title bytes', async () => {
-    await device('phone');
-    const digest: Digest = {
-      household_id: hh,
-      household_name: 'Push',
-      timezone: 'UTC',
-      local_date: '2026-10-03',
-      kind: 'daily',
-      recipient: { account_id: account, email: 'up@example.test' },
-      items: [1, 2, 3].map((n) => ({
-        reminder_id: randomUUID(),
-        document_id: randomUUID(),
-        title: `Anna Example passport ${n}`,
-        label: 'Due today',
-        note: null,
-        overdue: false,
-        private: false,
-      })),
-    };
-    const notifier = createNotifier({
+  const digestOf = (kind: Digest['kind']): Digest => ({
+    household_id: hh,
+    household_name: 'Push',
+    timezone: 'UTC',
+    local_date: '2026-10-03',
+    kind,
+    recipient: { account_id: account, email: 'up@example.test' },
+    items: [1, 2, 3].map((n) => ({
+      reminder_id: randomUUID(),
+      document_id: randomUUID(),
+      title: `Anna Example passport ${n}`,
+      label: 'Due today',
+      note: null,
+      overdue: false,
+      private: false,
+    })),
+  });
+  const notifier = () =>
+    createNotifier({
       app: db,
       vapid,
       smtpKey,
@@ -178,7 +182,10 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       agent: createPushAgent({ allowPrivate: true, ca: cert }),
       allowPrivate: true,
     });
-    expect(await notifier.digest(digest)).toContain('push');
+
+  it('a digest to a phone carries a count and no title bytes', async () => {
+    await device('phone');
+    expect(await notifier().digest(digestOf('daily'))).toContain('push');
     expect(received).toHaveLength(1);
     const got = received[0] as Received;
     expect(open(got.body)).toEqual({ v: 1, type: 'digest', count: 3, date: '2026-10-03' });
@@ -189,8 +196,14 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     expect(got.headers['content-encoding']).toBe('aes128gcm');
   });
 
+  it('the Sunday summary is not pushed to a phone: it is an email', async () => {
+    await device('weekly-phone');
+    expect(await notifier().digest(digestOf('weekly'))).not.toContain('push');
+    expect(received).toHaveLength(0);
+  });
+
   it('a session that ended is told so, for a week, even with its row already gone', async () => {
-    const counts = await sendPushJob(pushDeps(), {
+    const { counts, next } = await sendPushJob(pushDeps(), {
       household_id: hh,
       message: { v: 1, type: 'session_ended' },
       targets: [
@@ -204,9 +217,74 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       ],
     });
     expect(counts.sent).toBe(1);
+    expect(next).toBeNull();
     const got = received[0] as Received;
     expect(open(got.body)).toEqual({ v: 1, type: 'session_ended' });
     expect(got.headers.ttl).toBe(String(7 * 24 * 3600));
+  });
+
+  it('a session_ended the push service did not take is tried again, later each time, then no more', async () => {
+    const target = (name: string) => ({
+      id: null,
+      kind: 'unified_push' as const,
+      endpoint: `https://localhost:${port}/up/${name}`,
+      p256dh: phone.p256dh,
+      auth: phone.auth,
+    });
+    const job: PushJob = {
+      household_id: hh,
+      message: { v: 1, type: 'session_ended' },
+      targets: [target('ended-busy'), target('ended-fine')],
+    };
+    answers.push(503);
+    const first = await sendPushJob(pushDeps(), job);
+    expect(first.counts).toMatchObject({ counted: 1, sent: 1 });
+    // Only the one that did not go, a minute later.
+    expect(first.next).toEqual({
+      job: { ...job, targets: [target('ended-busy')], attempt: 1 },
+      delaySeconds: 60,
+    });
+    answers.push(503);
+    const third = await sendPushJob(pushDeps(), {
+      ...job,
+      targets: [target('ended-busy')],
+      attempt: 2,
+    });
+    expect(third.next?.delaySeconds).toBe(240);
+    answers.push(503);
+    const last = await sendPushJob(pushDeps(), {
+      ...job,
+      targets: [target('ended-busy')],
+      attempt: PUSH_RETRIES,
+    });
+    expect(last.counts.counted).toBe(1);
+    expect(last.next).toBeNull();
+    // Refused for good (a 403): not tried again either.
+    answers.push(403);
+    expect(
+      (await sendPushJob(pushDeps(), { ...job, targets: [target('ended-no')] })).next,
+    ).toBeNull();
+  });
+
+  it('a push service that never answers is given up on, and counted', async () => {
+    const id = await device('silent');
+    answers.push(0);
+    const started = Date.now();
+    const outcome = await deliver(
+      pushDeps({ timeoutMs: 300 }),
+      {
+        id,
+        household_id: hh,
+        endpoint: `https://localhost:${port}/up/silent`,
+        p256dh: phone.p256dh,
+        auth: phone.auth,
+      },
+      '{"v":1,"type":"test"}',
+      'test',
+    );
+    expect(outcome).toBe('counted');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(await row(id)).toEqual({ failed_at: null, consecutive_failures: 1 });
   });
 
   it('an endpoint that resolves to 127.0.0.1, 169.254.169.254 or 10.0.0.5 is refused unless allowed', async () => {
@@ -295,7 +373,7 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
         },
       ],
     });
-    expect(outcome.gone).toBe(1);
+    expect(outcome.counts.gone).toBe(1);
     expect(await row(id)).toBeNull();
     const audit = await withHousehold(db, hh, (trx) =>
       trx
@@ -322,7 +400,9 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       message: { v: 1, type: 'test' },
       targets: [target],
     });
-    expect(outcome.counted).toBe(1);
+    expect(outcome.counts.counted).toBe(1);
+    // It has a row: it counts, and hears the next push rather than this one again.
+    expect(outcome.next).toBeNull();
     expect(await row(id)).toEqual({ failed_at: null, consecutive_failures: 1 });
   });
 
