@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { deriveStatus, formatDate, missingFields, parseDateInput } from './documents.js';
+import {
+  deriveStatus,
+  formatDate,
+  missingFields,
+  parseDateInput,
+  withSealed,
+} from './documents.js';
 
 const passport = { key: 'passport', expiry_driver: 'expires_on', reminder_leads: [270, 180] };
 const birth = { key: 'birth_certificate', expiry_driver: null, reminder_leads: [] };
@@ -175,5 +181,33 @@ describe('what a document needs (0.5.7)', () => {
     expect(one('NHS number')).toBe('Needs an NHS number');
     expect(one('Unique reference')).toBe('Needs a unique reference');
     expect(one('Umbrella policy')).toBe('Needs an umbrella policy');
+  });
+});
+
+describe('what an Only me document needs, its notes and details sealed (0.5.8)', () => {
+  const car = {
+    expiry_driver: null,
+    core: { notes: { shown: true, required: true, label: 'Where the keys are' } },
+    fields: [
+      { key: 'plate', label: 'Registration plate', required: true },
+      { key: 'vin', label: 'VIN', required: false },
+    ],
+  };
+
+  it('a sealed value counts as given, and one never written is still asked for', () => {
+    // Sealed, the columns a list reads are empty: every one looks missing.
+    expect(missingFields(car, { notes: null, extra: {} }).map((m) => m.key)).toEqual([
+      'notes',
+      'plate',
+    ]);
+    const sealed = withSealed({ notes: null, extra: {} }, { notes: true, details: ['plate'] });
+    expect(missingFields(car, sealed)).toEqual([]);
+    // What its owner never wrote is not made up.
+    const noPlate = withSealed({ notes: null, extra: {} }, { notes: true, details: ['vin'] });
+    expect(missingFields(car, noPlate)).toEqual([{ key: 'plate', label: 'Registration plate' }]);
+    // A document with nothing sealed is left as it is.
+    const plain = { notes: 'In the drawer', extra: { plate: 'KX19 ZLT' } };
+    expect(withSealed(plain, { notes: false, details: [] })).toBe(plain);
+    expect(withSealed(plain, null)).toBe(plain);
   });
 });

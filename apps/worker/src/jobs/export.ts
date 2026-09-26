@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
-import { EncryptStream, newKey, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
+import {
+  EncryptStream,
+  newKey,
+  openPrivate,
+  unwrapKey,
+  wrapKey,
+  type PrivateValues,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import { formatDate, wellFormedDate, type DateValue, type TypeField } from '@fdv/shared';
 import { adapterFromRow } from '@fdv/storage';
@@ -14,9 +22,15 @@ import { sql } from 'kysely';
 /**
  * Full export (STO-07, design principle 7): a ZIP with every original the
  * requester can see, plus `index.csv`, `index.json` and a browsable
- * `index.html`. The ZIP is stored encrypted in the vault under the
- * household key and served decrypted like any version; it expires after a
- * week. The export format is also the future import format.
+ * `index.html`. The export format is also the future import format.
+ *
+ * It is the requester's alone, and may hold their Only me documents — their
+ * notes and details opened for them (0.5.8). So the ZIP is stored encrypted
+ * in the vault under the requester's own member key, since 0.5.8, and not
+ * the household's: the key every household document is under, which a
+ * future escrow of the household's documents would open, is not the key to
+ * somebody's Only me ones. It is served decrypted, to them alone, like any
+ * version, and expires after a week.
  */
 
 export interface ExportJob {
@@ -132,7 +146,13 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .orderBy('version_no', 'desc')
         .execute();
       const vaults = await trx.selectFrom('vault').selectAll().execute();
-      const hhKey = await deps.keys.unwrap(trx, { householdId: hh, kind: 'household' });
+      // The requester's own key: what the export is wrapped under, and what
+      // their Only me documents' notes and details are sealed under.
+      const memberKey = await deps.keys.unwrap(trx, {
+        householdId: hh,
+        kind: 'member',
+        memberId: requester.member_id,
+      });
       const active = await trx
         .selectFrom('household')
         .select('active_vault_id')
@@ -145,13 +165,34 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         attributes,
         versions,
         vaults,
-        hhKey,
+        memberKey,
+        requesterMember: requester.member_id,
         activeVaultId: active.active_vault_id,
         exp,
       };
     });
+    // Each document's notes and details: an Only me one's opened for the
+    // requester, whose own it is — nobody else's is in the export at all.
+    const values = new Map<string, PrivateValues>(
+      ctx.docs.map((d) => {
+        const plain = { notes: d.notes, extra: extraOf(d.extra) };
+        if (d.visibility !== 'private' || d.owner_member_id !== ctx.requesterMember) {
+          return [d.id, plain];
+        }
+        const sealed = openPrivate(ctx.memberKey.key, d.id, d);
+        // Anything the private.seal job had not reached yet, as it is.
+        return [
+          d.id,
+          {
+            notes: plain.notes ?? sealed.notes,
+            extra: Object.assign(extraOf(sealed.extra), plain.extra),
+          },
+        ];
+      }),
+    );
+    const valuesOf = (id: string) => values.get(id) ?? { notes: null, extra: extraOf(null) };
     const columns = detailColumns(
-      ctx.docs.map((d) => ({ type_key: d.type_key, extra: extraOf(d.extra) })),
+      ctx.docs.map((d) => ({ type_key: d.type_key, extra: valuesOf(d.id).extra })),
       ctx.types.map((t) => ({ key: t.key, fields: (t.fields ?? []) as TypeField[] })),
       ctx.attributes,
     );
@@ -204,8 +245,8 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         identifier: d.identifier,
         physical_location: d.physical_location,
         tags: d.tags,
-        notes: d.notes,
-        extra: extraOf(d.extra),
+        notes: valuesOf(d.id).notes,
+        extra: valuesOf(d.id).extra,
         file,
         version_no: v?.version_no ?? null,
         sha256: v ? v.sha256.toString('hex') : null,
@@ -246,8 +287,8 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       byte_size: size,
       storage_key: key,
       vault_id: vaultId,
-      file_key_wrapped: wrapKey(fileKey, ctx.hhKey.key, `export:${export_id}`),
-      wrapped_by_scope: ctx.hhKey.id,
+      file_key_wrapped: wrapKey(fileKey, ctx.memberKey.key, `export:${export_id}`),
+      wrapped_by_scope: ctx.memberKey.id,
       finished_at: new Date(),
       // Seven days — unless the requester was demoted, or lost their
       // sign-in, while this was being built, which already set it to now.

@@ -7,6 +7,7 @@ import {
   localToday,
   missingFields,
   reminderLabel,
+  withSealed,
   type DateValue,
   type RequiredRules,
 } from '@fdv/shared';
@@ -409,6 +410,10 @@ export async function refreshStatus(
           'document.tags',
           'document.notes',
           'document.extra',
+          // An Only me document's are sealed (0.5.8): what was written down
+          // of them, while they were open, is what counts.
+          sql<boolean>`document.notes_sealed is not null`.as('notes_sealed_present'),
+          'document.sealed_details',
           't.key as type_key',
           't.expiry_driver',
           't.reminder_leads',
@@ -439,12 +444,15 @@ export async function refreshStatus(
                 core: d.core as RequiredRules['core'],
                 fields: d.fields as RequiredRules['fields'],
               },
-              {
-                ...d,
-                issued: dateOf(d.issued_on, d.issued_precision),
-                expires,
-                extra: d.extra as Record<string, unknown> | null,
-              },
+              withSealed(
+                {
+                  ...d,
+                  issued: dateOf(d.issued_on, d.issued_precision),
+                  expires,
+                  extra: d.extra as Record<string, unknown> | null,
+                },
+                { notes: d.notes_sealed_present, details: d.sealed_details },
+              ),
             ),
           },
           today,

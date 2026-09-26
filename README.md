@@ -400,7 +400,7 @@ already knew about rather than staying quiet about one you did not.
 - **Row-level security in PostgreSQL** keeps each household's rows invisible to every other household, enforced by the database rather than by application code. The application connects as a role that owns no tables, which is what makes the policies apply.
 - **Backups of the database are encrypted** with the same master key.
 
-- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable, and draws page previews with poppler and ImageMagick; no page ever leaves the machine. Private documents' text is stored encrypted under the owner's key and is not indexed. Page previews and thumbnails are encrypted under their document's own key, like the file, and, like every answer the vault gives, are sent with `Cache-Control: no-store`: no browser or phone keeps them.
+- **Reading happens on your server.** The worker runs Tesseract locally to make documents searchable, and draws page previews with poppler and ImageMagick; no page ever leaves the machine. Private documents' text, notes and details are stored encrypted under the owner's key and are not indexed. Page previews and thumbnails are encrypted under their document's own key, like the file, and, like every answer the vault gives, are sent with `Cache-Control: no-store`: no browser or phone keeps them.
 
 The honest limit: someone who controls the whole server can read everything. For a self-hosted vault on the household's own machine, that is the right trade — it is what makes server-side search, thumbnails and automatic filing possible.
 
@@ -409,7 +409,7 @@ The honest limit: someone who controls the whole server can read everything. For
 Three things make up a complete backup:
 
 1. **Your `.env`** — it holds the master key. Keep a copy off the server. Without it, nothing else below is readable.
-2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own.
+2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own. From 0.5.8 an Only me document's notes and details are sealed under their owner's key, as its pages always were; backups made before then keep them unsealed until they rotate out.
 3. **The files** — the `fdv_vault-data` volume (`/data/vault`) for the local vault, or your bucket. They are ciphertext; the master key and the database together open them.
 
 Useful commands (run inside the worker container):

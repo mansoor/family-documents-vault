@@ -20,6 +20,7 @@ import { backfillPreviews, renderVersionPreviews } from './jobs/previews.js';
 import { processVersion } from './jobs/process-version.js';
 import { pushDepsOf, sendPushJob } from './jobs/push.js';
 import { deliver, refreshStatus, tick, weekly } from './jobs/reminders.js';
+import { sealPrivateValues } from './jobs/seal.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { verifyAllAuditChains } from './jobs/verify-audit.js';
 
@@ -452,6 +453,34 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
           expect(
             await pruneUploads({ admin, app, credentialsKey, localRoot: vaultDir, now: () => now }),
           ).toEqual({ done: 0, abandoned: 1 });
+        },
+      ],
+      [
+        'private.seal',
+        async () => {
+          // An Only me document as 0.5.7 left it: its notes plain.
+          const diary = await withSystem(seed, hh, (trx) =>
+            trx
+              .insertInto('document')
+              .values({
+                household_id: hh,
+                title: 'Diary',
+                owner_member_id: ids.member,
+                visibility: 'private',
+                notes: 'Plain until sealed',
+              })
+              .returning('id')
+              .executeTakeFirstOrThrow(),
+          );
+          expect(await sealPrivateValues({ admin, app, keys, log })).toEqual({
+            sealed: 1,
+            failed: 0,
+          });
+          const row = await admin.query<{ notes: string | null; sealed: boolean }>(
+            'select notes, notes_sealed is not null as sealed from document where id = $1',
+            [diary.id],
+          );
+          expect(row.rows[0]).toEqual({ notes: null, sealed: true });
         },
       ],
     ];

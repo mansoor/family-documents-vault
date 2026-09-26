@@ -19,6 +19,7 @@ import {
   type OfflineItem,
   type ReminderView,
   type Tokens,
+  type Visibility,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
@@ -106,6 +107,7 @@ const FAKE_EDITABLE = [
   'identifier',
   'issued_by',
   'expires',
+  'notes',
 ];
 
 /** A document's version, as an If-Match names it: changed by every edit. */
@@ -438,6 +440,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     }
     /** A document as the real vault answers it, with its status in words (0.5.7). */
     const viewOf = (doc: FakeDocument) => documentView(doc, state.types);
+    /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
+    const listedOf = (doc: FakeDocument) => documentView(doc, state.types, { listed: true });
     /**
      * The details sent for a document, checked as the real vault checks
      * them (0.5.7): against the type it will have, merged into what it
@@ -471,6 +475,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
           expires: (body.expires as DateValue | null | undefined) ?? null,
+          notes: note(body.notes as string | null | undefined),
+          ...(body.visibility !== undefined ? { visibility: body.visibility as Visibility } : {}),
           extra,
         };
         state.documents.push(doc);
@@ -481,7 +487,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const items = by
         ? state.documents.filter((d) => d.issued_by?.toLowerCase() === by.trim().toLowerCase())
         : state.documents;
-      return ok({ items: items.map(viewOf), next_cursor: null, has_more: false });
+      return ok({ items: items.map(listedOf), next_cursor: null, has_more: false });
     }
     // One document, and an edit to it: the details merged, as the real
     // vault merges them (0.5.7), so a client never wipes what it did not show.
@@ -530,6 +536,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       if (body.issued_by !== undefined) doc.issued_by = tidy(body.issued_by as string | null);
       if (body.expires !== undefined) doc.expires = body.expires as DateValue | null;
+      if (body.notes !== undefined) doc.notes = note(body.notes as string | null);
       doc.revision = (doc.revision ?? 1) + 1;
       return ok(viewOf(doc));
     }
@@ -613,6 +620,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
           expires: metadata.expires ?? null,
+          notes: note(metadata.notes),
           extra,
           visibility: effectiveVisibility(
             metadata,
@@ -850,6 +858,11 @@ function tidy(value: string | null | undefined): string | null {
   return value?.trim().split(/\s+/).join(' ') || null;
 }
 
+/** Notes as the real vault keeps them: trimmed, and blank is nothing. */
+function note(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
 /** One query parameter, decoded; the client's library has no URLSearchParams. */
 function param(url: string, name: string): string | undefined {
   const raw = new RegExp(`[?&]${name}=([^&]*)`).exec(url)?.[1];
@@ -865,12 +878,19 @@ function answer(made: FakeUpload) {
 
 /**
  * A document as the real vault answers it: the fields the fake keeps, its
- * details, and its status — worked out as the vault works it out, so a
- * type's missing required field reads "Needs a passport number" (0.5.7).
+ * notes and details, and its status — worked out as the vault works it
+ * out, so a type's missing required field reads "Needs a passport number"
+ * (0.5.7). In a list, an Only me document's notes and details stay sealed:
+ * null and empty, with `has_notes` (0.5.8).
  */
-function documentView(doc: FakeDocument, types: ReadonlyArray<DocumentTypeView>): DocumentView {
+function documentView(
+  doc: FakeDocument,
+  types: ReadonlyArray<DocumentTypeView>,
+  opts: { listed?: boolean } = {},
+): DocumentView {
   const type = types.find((t) => t.key === doc.type_key);
   const expires = doc.expires ?? null;
+  const sealed = opts.listed === true && doc.visibility === 'private';
   return {
     id: doc.id,
     title: doc.title,
@@ -880,7 +900,9 @@ function documentView(doc: FakeDocument, types: ReadonlyArray<DocumentTypeView>)
     issued_by: doc.issued_by ?? null,
     expires,
     visibility: doc.visibility ?? 'household',
-    extra: doc.extra ?? {},
+    notes: sealed ? null : (doc.notes ?? null),
+    has_notes: (doc.notes ?? null) !== null,
+    extra: sealed ? {} : (doc.extra ?? {}),
     etag: etagOf(doc),
     status: deriveStatus(
       {

@@ -20,6 +20,11 @@ export const JOBS = {
   renderPreviews: 'version.previews',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
+  /**
+   * Seals the notes and details of documents that are Only me already
+   * (0.5.8), one document per transaction; on every start of the worker.
+   */
+  sealPrivate: 'private.seal',
   /** Nightly encrypted pg_dump with 30-day retention. */
   backupDatabase: 'backup.database',
   /** Every 15 minutes: scheduled/snoozed reminders become due on the local date. */

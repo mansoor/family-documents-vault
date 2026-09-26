@@ -16,6 +16,7 @@ import { createNotifier } from './jobs/notify.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
+import { sealPrivateValues } from './jobs/seal.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import type { JobWithMetadata } from 'pg-boss';
@@ -123,6 +124,22 @@ async function main(): Promise<void> {
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) await buildExport(processDeps, job.data);
   });
+
+  // Only me notes and details written before 0.5.8, sealed: on every
+  // start, which after the upgrade is the one that seals them. A document
+  // that could not be is tried again, and the rest stay done.
+  await boss.createQueue(JOBS.sealPrivate, { retryLimit: 3, retryDelay: 60 });
+  await boss.work(JOBS.sealPrivate, async () => {
+    const r = await sealPrivateValues({
+      admin: dbs.admin,
+      app: dbs.app,
+      keys: processDeps.keys,
+      log,
+    });
+    if (r.sealed) log('info', 'Only me notes and details sealed', r);
+    if (r.failed) throw new Error(`${r.failed} Only me documents could not be sealed`);
+  });
+  await boss.send(JOBS.sealPrivate, {});
 
   const backupDeps = {
     adminUrl: config.DATABASE_ADMIN_URL ?? config.DATABASE_URL,
