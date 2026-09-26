@@ -1,13 +1,21 @@
-import { formatDate, issuedByLabel, whenExactly, type VersionView } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import {
+  formatDate,
+  issuedByLabel,
+  whenExactly,
+  type CoreField,
+  type VersionView,
+} from '@fdv/shared';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { api } from '../api.js';
+import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { mayChange } from '../DocActions.js';
+import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import {
   BottomNav,
   Button,
   categoryLabel,
+  ConfirmDialog,
   ErrorNote,
   MoveToTrashDialog,
   StatusBadge,
@@ -109,6 +117,51 @@ export function DocumentScreen() {
     }
   };
 
+  // The type's own details, and those its type no longer asks for (A11):
+  // kept under "Other details" until somebody removes them. An Only me
+  // document's are here only because this is its owner's own request for
+  // it (0.5.8); a list never carries them.
+  const docType = data?.types.find((t) => t.key === data.doc.type_key);
+  const typeFields = (docType?.fields ?? []).filter(asksFor);
+  const others = Object.entries(data?.doc.extra ?? {}).filter(
+    ([key, value]) => value !== null && !typeFields.some((f) => f.key === key),
+  );
+  const library = useAttributes(others.length > 0);
+  const [removing, setRemoving] = useState<{ key: string; label: string; text: string } | null>(
+    null,
+  );
+  const [removeBusy, setRemoveBusy] = useState(false);
+  // What became of a Remove that did not go through: said by the list.
+  const [removeNote, setRemoveNote] = useState<string | null>(null);
+  // Where focus lands once a detail has gone, with its button.
+  const facts = useRef<HTMLDListElement>(null);
+  const removeDetail = async () => {
+    if (!data || !removing) return;
+    setRemoveBusy(true);
+    setRemoveNote(null);
+    try {
+      // null takes a key away, whatever the type asks for now (0.5.7).
+      await withToken((t) =>
+        api.updateDocument(t, data.doc.id, { extra: { [removing.key]: null } }, data.doc.etag),
+      );
+      await reload();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 409) {
+        // Changed somewhere else since the page was loaded. It is loaded
+        // again, so the next try is made on what is there now.
+        setRemoveNote(
+          `This document was changed somewhere else, so it has been loaded again. Try again if “${removing.label}” still needs removing.`,
+        );
+        await reload();
+      } else {
+        setRemoveNote(describeError(err));
+      }
+    } finally {
+      setRemoveBusy(false);
+      setRemoving(null);
+    }
+  };
+
   if (error) {
     return (
       <main className="page page-top has-nav">
@@ -127,10 +180,17 @@ export function DocumentScreen() {
     );
 
   const { doc, versions, members, types } = data;
-  // Who may move it to the Trash: the same rule as its row's ⋯ (5.1, 5.4).
-  const mayTrash = mayChange(storedRole(), session.info?.member_id, doc);
+  // Who may change it — move it to the Trash, remove a detail: the same
+  // rule as its row's ⋯ (5.1, 5.4).
+  const mayChangeIt = mayChange(storedRole(), session.info?.member_id, doc);
   const owner = members.find((m) => m.id === doc.owner_member_id);
   const type = types.find((t) => t.key === doc.type_key);
+  // The fixed fields in the type's own words ('Passport number', 0.5.6).
+  const word = (key: CoreField, fallback: string) => coreRule(type, key).label ?? fallback;
+  const details = typeFields.flatMap((field) => {
+    const value = doc.extra[field.key];
+    return value === undefined || value === null || value === '' ? [] : [{ field, value }];
+  });
   const visibilityLabel =
     doc.visibility === 'household'
       ? 'Everyone in the family'
@@ -184,7 +244,7 @@ export function DocumentScreen() {
       <ErrorNote message={actionError} />
       {latest && <Button onClick={() => void download(latest)}>Download</Button>}
 
-      <dl className="facts">
+      <dl className="facts" ref={facts} tabIndex={-1}>
         <dt>Type</dt>
         <dd>{type?.label ?? 'Not set'}</dd>
         <dt>Person</dt>
@@ -198,27 +258,36 @@ export function DocumentScreen() {
         )}
         {doc.identifier && (
           <>
-            <dt>Number</dt>
+            <dt>{word('identifier', 'Number')}</dt>
             <dd>{doc.identifier}</dd>
           </>
         )}
         {doc.issued && (
           <>
-            <dt>Issued</dt>
+            <dt>{word('issued', 'Issued')}</dt>
             <dd>{formatDate(doc.issued)}</dd>
           </>
         )}
         {doc.expires && (
           <>
-            <dt>Expires</dt>
+            <dt>{word('expires', 'Expires')}</dt>
             <dd>{formatDate(doc.expires)}</dd>
           </>
         )}
+        {/* The type's own details, in its order (5.10). */}
+        {details.map(({ field, value }) => (
+          <Fragment key={field.key}>
+            <dt>{field.label}</dt>
+            <dd className={field.kind === 'long_text' ? 'keep-lines' : undefined}>
+              {detailText(field.kind, value)}
+            </dd>
+          </Fragment>
+        ))}
         <dt>Category</dt>
         <dd>{categoryLabel(doc.category)}</dd>
         {doc.physical_location && (
           <>
-            <dt>Original is kept</dt>
+            <dt>{word('physical_location', 'Original is kept')}</dt>
             <dd>{doc.physical_location}</dd>
           </>
         )}
@@ -229,6 +298,60 @@ export function DocumentScreen() {
           </>
         )}
       </dl>
+
+      {others.length > 0 && (
+        <section aria-labelledby="other-h">
+          <h2 id="other-h" className="section-h">
+            Other details
+          </h2>
+          <p className="muted">
+            This kind of document no longer asks for these. They are kept until somebody removes
+            them.
+          </p>
+          <ul className="list">
+            {others.map(([key, value]) => {
+              const known = library?.find((a) => a.key === key);
+              const label = known?.label ?? key;
+              const text = detailText(known?.kind, value);
+              return (
+                <li key={key}>
+                  <span>
+                    <strong>{label}</strong>
+                    <span className="muted keep-lines">{text}</span>
+                  </span>
+                  {mayChangeIt && (
+                    <Button
+                      kind="quiet"
+                      ariaLabel={`Remove ${label}`}
+                      onClick={() => setRemoving({ key, label, text })}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+      {/* By the list, where the person is: not at the top of the page. */}
+      <ErrorNote message={removeNote} />
+      {removing && (
+        <ConfirmDialog
+          title="Remove this detail?"
+          confirmLabel="Remove"
+          busyLabel="Removing…"
+          danger
+          busy={removeBusy}
+          returnFocus={facts}
+          onConfirm={() => void removeDetail()}
+          onCancel={() => setRemoving(null)}
+        >
+          <p>
+            “{removing.label}: {removing.text}” is taken off this document for good.
+          </p>
+        </ConfirmDialog>
+      )}
 
       <section aria-labelledby="history-h">
         <h2 id="history-h" className="section-h">
@@ -270,16 +393,19 @@ export function DocumentScreen() {
       </section>
 
       {doc.notes && (
-        <section>
-          <h2 className="section-h">Notes</h2>
-          <p>{doc.notes}</p>
+        <section aria-labelledby="notes-h">
+          <h2 id="notes-h" className="section-h">
+            {word('notes', 'Notes')}
+          </h2>
+          {/* Plain text, as it was written: its line breaks kept (5.10). */}
+          <p className="keep-lines">{doc.notes}</p>
         </section>
       )}
       {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
       {doc.latest_version_id !== null && (
         <SharePanel documentId={doc.id} documentTitle={doc.title} />
       )}
-      {mayTrash && (
+      {mayChangeIt && (
         <button
           ref={trashButton}
           type="button"

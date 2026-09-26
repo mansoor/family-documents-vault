@@ -130,7 +130,7 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('link', { name: 'Edit' }));
     await screen.findByRole('heading', { name: 'Is this right?' });
-    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: '2032-01' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: '2032-01' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
 
     await waitFor(() => {
@@ -910,6 +910,7 @@ describe('App', () => {
 
     await screen.findByRole('heading', { name: 'Is this right?' });
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: 'March 2031' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
     expect(screen.getByLabelText<HTMLSelectElement>('What it is').value).toBe('passport');
@@ -943,7 +944,7 @@ describe('App', () => {
     expect(state.calls.filter((c) => c.url.startsWith('/api/v1/capture'))).toHaveLength(0);
 
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
-    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: 'March 2031' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: 'March 2031' } });
     expect(
       screen.getByText("We'll remind you 9 months and 6 months before it expires."),
     ).toBeTruthy();
@@ -1023,7 +1024,7 @@ describe('App', () => {
     });
     await screen.findByRole('heading', { name: 'Is this right?' });
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
-    fireEvent.change(screen.getByLabelText('Expires'), { target: { value: 'next spring' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: 'next spring' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await screen.findByText('The expiry date: try 14 Mar 2031, March 2031, or just 2031.');
     expect(state.captures ?? []).toHaveLength(0);
@@ -1055,6 +1056,7 @@ describe('App', () => {
     render(<App />);
     await toCard();
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: 'March 2031' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
 
@@ -1082,6 +1084,7 @@ describe('App', () => {
     render(<App />);
     await toCard();
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.change(screen.getByLabelText(/^Expires/), { target: { value: 'March 2031' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
     fireEvent.change(screen.getByLabelText('What it is'), {

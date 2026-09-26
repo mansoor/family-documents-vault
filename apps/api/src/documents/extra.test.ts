@@ -424,9 +424,9 @@ describe.skipIf(!testAdminUrl())("a type's details", () => {
     const car = await needs(
       await create({ type_key: 'vehicle_registration', ...mine, expires: future }),
     );
-    // A car's plate is not asked for yet: it is one of the type's own
-    // details, and no screen can add one before 5.10.
-    expect(car.status.value).toBe('active');
+    // A car's plate, one of the type's own details, since the card can ask
+    // for it (0034, 5.10).
+    expect(car.status).toEqual({ value: 'needs_info', label: 'Needs a registration plate' });
 
     // Lists and search say the same.
     const listed = json<{ items: DocumentView[] }>(

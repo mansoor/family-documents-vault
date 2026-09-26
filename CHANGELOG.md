@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-09-26 — iteration 5.10
+
+### Added
+
+- Adding or editing a document now asks for its kind's own details — a passport's number, a car's VIN and registration plate, a will's executor — each in the kind's own words, with a date, a pick-list or a yes/no switch where that fits. Required ones are marked, and Save says which are still missing (or "Skip for now" when adding).
+- A notes box on the card, kept exactly as written, line breaks and all. An Only me document's notes are sealed as they are saved.
+- The document page lists its details, and any the kind no longer asks for under "Other details", where they can be removed.
+
+### Changed
+
+- A vehicle registration now asks for its registration plate: cars without one read "Needs a registration plate" until it is added.
+
+### Fixed
+
+- Editing a document no longer turns an expiry of a month or a year (such as "March 2031") into a day.
+- An edit refused because someone else changed the document at the same time keeps what you typed, shows their changes, and can be saved again.
+- An amount typed with a comma for the decimal point ("12,50") is refused with a word of explanation rather than kept as 1250.
+
 ## [0.5.8] - 2026-09-26 — iteration 5.9
 
 ### Security

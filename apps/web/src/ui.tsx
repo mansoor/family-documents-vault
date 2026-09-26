@@ -24,6 +24,22 @@ export function Logo() {
   );
 }
 
+/**
+ * What a field the card asks for before it saves says after its name (5.10):
+ * a '*' and the word, so it is never a symbol alone. Read out as "required".
+ */
+export function RequiredMark() {
+  return (
+    <>
+      {' '}
+      <span className="req-star" aria-hidden="true">
+        *
+      </span>{' '}
+      <span className="req-word">required</span>
+    </>
+  );
+}
+
 export function Field(props: {
   id: string;
   label: string;
@@ -33,21 +49,93 @@ export function Field(props: {
   hint?: string | undefined;
   required?: boolean;
   placeholder?: string;
+  /** Asked for before the card saves, which checks it itself (5.10). */
+  requiredMark?: boolean;
+  /** The card waited for it, or could not read it. */
+  invalid?: boolean;
+  inputMode?: 'text' | 'numeric' | 'decimal';
+  maxLength?: number;
   onChange: (v: string) => void;
 }) {
   return (
     <div className="field">
-      <label htmlFor={props.id}>{props.label}</label>
+      <label htmlFor={props.id}>
+        {props.label}
+        {props.requiredMark && <RequiredMark />}
+      </label>
       <input
         id={props.id}
         type={props.type ?? 'text'}
         value={props.value}
         autoComplete={props.autoComplete}
         placeholder={props.placeholder}
+        inputMode={props.inputMode}
+        maxLength={props.maxLength}
         onChange={(e) => props.onChange(e.target.value)}
         required={props.required ?? true}
+        aria-required={props.requiredMark || undefined}
+        aria-invalid={props.invalid || undefined}
       />
       {props.hint && <span className="muted">{props.hint}</span>}
+    </div>
+  );
+}
+
+/** Plain text over several lines (5.10): a note, a long detail. Line breaks are kept. */
+export function TextArea(props: {
+  id: string;
+  label: string;
+  value: string;
+  maxLength: number;
+  hint?: string | undefined;
+  requiredMark?: boolean;
+  invalid?: boolean;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>
+        {props.label}
+        {props.requiredMark && <RequiredMark />}
+      </label>
+      <textarea
+        id={props.id}
+        value={props.value}
+        rows={4}
+        maxLength={props.maxLength}
+        onChange={(e) => props.onChange(e.target.value)}
+        aria-required={props.requiredMark || undefined}
+        aria-invalid={props.invalid || undefined}
+      />
+      {props.hint && <span className="muted">{props.hint}</span>}
+    </div>
+  );
+}
+
+/** A yes or a no (5.10): a switch, which says which in words as well. */
+export function Switch(props: {
+  id: string;
+  label: string;
+  checked: boolean;
+  requiredMark?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={props.id}>
+        {props.label}
+        {props.requiredMark && <RequiredMark />}
+      </label>
+      <span className="switch">
+        <input
+          id={props.id}
+          type="checkbox"
+          role="switch"
+          checked={props.checked}
+          onChange={(e) => props.onChange(e.target.checked)}
+        />
+        <span aria-hidden="true">{props.checked ? 'Yes' : 'No'}</span>
+      </span>
     </div>
   );
 }
@@ -59,11 +147,22 @@ export function Select(props: {
   options: Array<{ value: string; label: string }>;
   onChange: (v: string) => void;
   hint?: string | undefined;
+  requiredMark?: boolean;
+  invalid?: boolean;
 }) {
   return (
     <div className="field">
-      <label htmlFor={props.id}>{props.label}</label>
-      <select id={props.id} value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+      <label htmlFor={props.id}>
+        {props.label}
+        {props.requiredMark && <RequiredMark />}
+      </label>
+      <select
+        id={props.id}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        aria-required={props.requiredMark || undefined}
+        aria-invalid={props.invalid || undefined}
+      >
         {props.options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
