@@ -277,7 +277,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
     expect((await page('Passport', 1)).statusCode).toBe(200);
   });
 
-  it('an Essential’s or an "only me" thumbnail is kept by no cache; an everyday one for an hour', async () => {
+  it('no thumbnail is kept by a cache: an Essential’s, an "only me" one or an everyday one (0.5.0)', async () => {
     await draw('Passport', 1, true);
     await draw('Therapy notes', 1, true);
     await draw('Water bill', 2, true);
@@ -290,7 +290,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
       ).headers['cache-control'];
     expect(await cacheOf('Passport')).toBe('private, no-store');
     expect(await cacheOf('Therapy notes')).toBe('private, no-store');
-    expect(await cacheOf('Water bill')).toBe('private, max-age=3600');
+    expect(await cacheOf('Water bill')).toBe('private, no-store');
   });
 
   it('making a document Essential queues its pages, once', async () => {

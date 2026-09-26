@@ -634,7 +634,7 @@ duplicates, dropped}`. Each event id is recorded once, however often
     alerts carry none, so one never replaces another. The Sunday summary
     is email only.
 
-- The Phase 4 release (0.5.0). Two changes:
+- The Phase 4 release (0.5.0). Three changes:
   - A push address whose host is `localhost`, or ends in `.localhost`, is
     refused (`422`) by its name, as `127.0.0.1` is — whatever DNS answers
     for it.
@@ -645,6 +645,8 @@ duplicates, dropped}`. Each event id is recorded once, however often
     not keep API answers in an HTTP cache; `@fdv/client` sends
     `Cache-Control: no-cache, no-store` (and `cache: 'no-store'`) with every
     request, and its `fresh` request option is gone.
+  - Every thumbnail is `private, no-store`. An everyday document's was
+    `private, max-age=3600`.
 
 ## Deprecations in effect
 

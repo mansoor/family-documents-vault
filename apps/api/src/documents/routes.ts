@@ -197,11 +197,9 @@ export async function registerDocuments(
         throw new ApiError(404, 'no_thumbnail', 'No preview yet.', { retriable: true });
       }
       reply.header('content-type', 'image/jpeg');
-      // An Essential's or an "only me" document's is kept by no cache (0.4.12).
-      reply.header(
-        'cache-control',
-        thumb.sensitive ? 'private, no-store' : 'private, max-age=3600',
-      );
+      // Kept by no cache (0.5.0). An everyday document's used to be kept
+      // for an hour (0.4.12) — on a shared computer, after its sign-out too.
+      reply.header('cache-control', 'private, no-store');
       return reply.send(thumb.bytes);
     },
   );
