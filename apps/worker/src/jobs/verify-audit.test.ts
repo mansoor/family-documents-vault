@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendAudit, withHousehold } from '@fdv/db';
+import { appendAudit, withSystem } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connections, verifyAllAuditChains } from './verify-audit.js';
@@ -15,7 +15,7 @@ describe.skipIf(!testAdminUrl())('audit.verify job', () => {
     dbs = connections(tdb.appUrl, tdb.adminUrl);
     for (const id of [A, B]) {
       await dbs.admin.query('insert into household (id, name) values ($1, $2)', [id, id]);
-      await withHousehold(dbs.app, id, async (trx) => {
+      await withSystem(dbs.app, id, async (trx) => {
         await appendAudit(trx, { householdId: id, action: 'household.created' });
         await appendAudit(trx, { householdId: id, action: 'auth.signed_in' });
       });

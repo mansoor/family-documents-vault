@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold, withScope } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import argon2 from 'argon2';
@@ -51,7 +51,7 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
     });
     const versionId = up.json<{ id: string }>().id;
     // Stand in for the worker's OCR.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document_text')
         .values({
@@ -96,7 +96,7 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
     expect(open.statusCode).toBe(201);
 
     // A second adult with a real account, as 3.2's invitation will make one.
-    const member = await withHousehold(h.db, owner.household_id, (trx) =>
+    const member = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('member')
         .values({ household_id: owner.household_id, display_name: 'Sana' })
@@ -111,7 +111,7 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    await withScope(h.db, { householdId: owner.household_id, accountId: account.id }, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('account_household')
         .values({
@@ -123,7 +123,7 @@ describe.skipIf(!testAdminUrl())('the second pass of search', () => {
         .execute(),
     );
     const { ScopeKeys, EnvKeyProvider } = await import('@fdv/crypto');
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       new ScopeKeys(new EnvKeyProvider(TEST_MASTER)).mintMemberKey(
         trx,
         owner.household_id,

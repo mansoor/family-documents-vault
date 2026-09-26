@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { deriveKey, EncryptStream, EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { ActivityLine, DocumentView, VersionView } from '@fdv/shared';
 import { adapterFromRow, type StorageAdapter } from '@fdv/storage';
@@ -67,7 +67,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
 
   /** What the worker leaves behind: `pages` drawn pages, and a thumbnail if asked. */
   const draw = (key: string, pages: number, thumbnail = false) =>
-    withHousehold(h.db, owner.household_id, async (trx) => {
+    withSystem(h.db, owner.household_id, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -102,7 +102,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
 
   /** The owner's sessions, made older than the step-up window, or fresh again. */
   const setFresh = (fresh: boolean) =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ verified_at: new Date(Date.now() - (fresh ? 0 : 6 * 60 * 1000)) })
@@ -152,7 +152,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
       priority: 10,
     });
     // A job that seems to have been lost is queued again.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('document_version')
         .set({ preview_requested_at: new Date(Date.now() - 3 * 60 * 1000) })
@@ -190,7 +190,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
   });
 
   it('a file the vault cannot draw says so, and queues nothing', async () => {
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('document_version')
         .set({ preview_state: 'unsupported', preview_pages: 0 })
@@ -206,7 +206,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
   });
 
   it('every page fetch is audited, and the log shows one line per sitting', async () => {
-    const viewed = await withHousehold(h.db, owner.household_id, (trx) =>
+    const viewed = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['detail', 'object_id'])
@@ -307,7 +307,7 @@ describe.skipIf(!testAdminUrl())('pages the vault draws', () => {
       singletonKey: `previews:${version.Lease}`,
       priority: 5,
     });
-    const state = await withHousehold(h.db, owner.household_id, (trx) =>
+    const state = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_version')
         .select('preview_state')

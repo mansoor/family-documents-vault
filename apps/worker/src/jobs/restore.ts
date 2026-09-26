@@ -433,11 +433,16 @@ export async function checkRestored(
     if (!r.queue) throw new Error('the application role cannot use the job queue');
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
 
+    // Outside withScope, so it says for itself what withSystem would: this
+    // household, asked by the vault itself.
     const asHousehold = async <T>(household: string, sql: string): Promise<T[]> => {
       const client = await app.connect();
       try {
         await client.query('begin');
-        await client.query(`select set_config('app.household_id', $1, true)`, [household]);
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'system', true)`,
+          [household],
+        );
         const { rows } = await client.query<T & object>(sql);
         await client.query('commit');
         return rows;

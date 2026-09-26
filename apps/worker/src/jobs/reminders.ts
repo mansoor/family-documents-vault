@@ -1,4 +1,4 @@
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import { addDays, canSee, deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
 import { sql } from 'kysely';
 import type pg from 'pg';
@@ -170,7 +170,7 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
   let total = 0;
   for (const hh of await households(deps.admin)) {
     const today = localToday(hh.timezone, now);
-    total += await withHousehold(deps.app, hh.id, async (trx) => {
+    total += await withSystem(deps.app, hh.id, async (trx) => {
       const a = await trx
         .updateTable('reminder')
         .set({ status: 'due' })
@@ -201,7 +201,7 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
     // one, not the clock.
     if (localHour(hh.timezone, now) < hour) continue;
     const today = localToday(hh.timezone, now);
-    const sent = await withHousehold(deps.app, hh.id, async (trx) => {
+    const sent = await withSystem(deps.app, hh.id, async (trx) => {
       const already = await trx
         .selectFrom('notification_digest')
         .select('local_date')
@@ -306,7 +306,7 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
     // Sunday on the household's own calendar.
     const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();
     if (weekday !== 0) continue;
-    const sent = await withHousehold(deps.app, hh.id, async (trx) => {
+    const sent = await withSystem(deps.app, hh.id, async (trx) => {
       const already = await trx
         .selectFrom('notification_digest')
         .select('local_date')
@@ -379,7 +379,7 @@ export async function refreshStatus(
   let n = 0;
   for (const hh of await households(deps.admin)) {
     const today = localToday(hh.timezone, now);
-    n += await withHousehold(deps.app, hh.id, async (trx) => {
+    n += await withSystem(deps.app, hh.id, async (trx) => {
       const docs = await trx
         .selectFrom('document')
         .leftJoin('document_type', 'document_type.key', 'document.type_key')

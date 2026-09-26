@@ -5,7 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
 import { EncryptStream, newKey, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import { formatDate, type DateValue } from '@fdv/shared';
 import { adapterFromRow } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
@@ -61,7 +61,7 @@ const safe = (s: string) =>
 export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<void> {
   const { household_id: hh, export_id } = job;
   const mark = (state: 'running' | 'done' | 'failed', extra: Record<string, unknown> = {}) =>
-    withHousehold(deps.db, hh, (trx) =>
+    withSystem(deps.db, hh, (trx) =>
       trx
         .updateTable('export')
         .set({ state, ...extra } as never)
@@ -72,7 +72,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
 
   const dir = await mkdtemp(path.join(tmpdir(), 'fdv-export-'));
   try {
-    const ctx = await withHousehold(deps.db, hh, async (trx) => {
+    const ctx = await withSystem(deps.db, hh, async (trx) => {
       const exp = await trx
         .selectFrom('export')
         .selectAll()
@@ -142,7 +142,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       const v = latestOf.get(d.id);
       let file: string | null = null;
       if (v) {
-        const scopeKey = await withHousehold(deps.db, hh, (trx) =>
+        const scopeKey = await withSystem(deps.db, hh, (trx) =>
           deps.keys.unwrapById(trx, v.wrapped_by_scope),
         );
         const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${d.id}`);

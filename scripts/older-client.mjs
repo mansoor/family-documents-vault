@@ -31,7 +31,12 @@ try {
 rmSync(into, { recursive: true, force: true });
 mkdirSync(into, { recursive: true });
 // git archive and tar ship with git on every platform CI and developers use.
-run(`git archive --format=tar ${ref} packages/client/src | tar -x -C "${into}"`);
+// Extracted from inside the folder, so no path with a drive letter reaches
+// tar: GNU tar (Git Bash's) reads "C:" as a remote host.
+execSync(`git -C "${root}" archive --format=tar ${ref} packages/client/src | tar -x`, {
+  cwd: into,
+  stdio: 'inherit',
+});
 console.log(
   `client contract with @fdv/client as at ${ref} (${git('rev-parse', '--short', `${ref}^{commit}`)})`,
 );

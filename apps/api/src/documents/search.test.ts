@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -112,7 +112,7 @@ describe.skipIf(!testAdminUrl())('search', () => {
       version_id: versionId,
     });
 
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document_text')
         .values({
@@ -131,7 +131,7 @@ describe.skipIf(!testAdminUrl())('search', () => {
   });
 
   it('honours member and category filters and returns nothing for gibberish', async () => {
-    const other = await withHousehold(h.db, owner.household_id, (trx) =>
+    const other = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('member')
         .values({ household_id: owner.household_id, display_name: 'Nobody' })

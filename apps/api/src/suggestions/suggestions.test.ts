@@ -1,4 +1,4 @@
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { SuggestionView } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -45,7 +45,7 @@ describe.skipIf(!testAdminUrl())('suggestions', () => {
 
   /** A filed document, without going through capture and OCR. */
   const file = async (typeKey: string, ownerMemberId: string, visibility = 'household') =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document')
         .values({

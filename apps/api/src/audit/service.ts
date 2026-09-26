@@ -1,4 +1,4 @@
-import { withScope, type Db } from '@fdv/db';
+import { withPrincipal, type Db } from '@fdv/db';
 import { describeEvents, type ActivityEvent, type ActivityLine } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
@@ -56,7 +56,7 @@ export class AuditService {
     requireCapability(p, 'audit.read');
     const limit = Math.min(Math.max(opts.limit ?? PAGE, 1), 100);
 
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       // Raw SQL because this joins the audit row to three different
       // things by `object_type`, which Kysely would make harder to read
       // rather than easier.

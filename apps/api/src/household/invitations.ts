@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { ANONYMOUS, appendAudit, withPrincipal, withScope, withSystem, type Db } from '@fdv/db';
 import { can, capabilityToInvite, refusalFor, roleLabel, ROLES, type Role } from '@fdv/shared';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
@@ -164,7 +164,7 @@ export class InvitationService {
       Date.now() + (input.expires_in_days ?? DEFAULT_TTL_DAYS) * 24 * 60 * 60 * 1000,
     );
 
-    const id = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const id = await withPrincipal(this.db, p, async (trx) => {
       const memberId = input.member_id
         ? await this.existingMember(trx, input.member_id)
         : await this.newMember(trx, p, input.display_name as string, meta);
@@ -317,7 +317,7 @@ export class InvitationService {
     if (!can(p.role, 'member.invite')) {
       throw new ApiError(403, 'forbidden', refusalFor('member.invite'));
     }
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('invitation')
         .innerJoin('member', 'member.id', 'invitation.member_id')
@@ -361,7 +361,7 @@ export class InvitationService {
     if (!can(p.role, 'member.invite')) {
       throw new ApiError(403, 'forbidden', refusalFor('member.invite'));
     }
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .updateTable('invitation')
         .set({ revoked_at: new Date(), revoked_by: p.accountId })
@@ -407,7 +407,7 @@ export class InvitationService {
    */
   async preview(token: string): Promise<InvitationPreview> {
     const householdId = await this.householdOf(token);
-    return withScope(this.db, { householdId }, async (trx) => {
+    return withScope(this.db, { householdId, actor: ANONYMOUS }, async (trx) => {
       const row = await this.live(trx, token);
       const household = await trx
         .selectFrom('household')
@@ -448,15 +448,18 @@ export class InvitationService {
     meta: RequestMeta,
   ): Promise<Tokens> {
     const householdId = await this.householdOf(token);
+    // The invitee is nobody the vault knows yet: the account this makes is
+    // not the one asking.
+    const scope = { householdId, actor: ANONYMOUS };
 
     // The attempt counter has to survive the failure it is counting, so a
     // wrong code is recorded in its own transaction and thrown afterwards.
     const invitationId = await withScope(
       this.db,
-      { householdId },
+      scope,
       async (trx) => (await this.live(trx, token)).id,
     );
-    const stored = await withScope(this.db, { householdId }, (trx) =>
+    const stored = await withScope(this.db, scope, (trx) =>
       trx
         .selectFrom('invitation')
         .select(['code_hash'])
@@ -464,7 +467,7 @@ export class InvitationService {
         .executeTakeFirstOrThrow(),
     );
     if (!(await argon2.verify(stored.code_hash, normaliseCode(input.code)))) {
-      const left = await withScope(this.db, { householdId }, async (trx) => {
+      const left = await withScope(this.db, scope, async (trx) => {
         const row = await trx
           .updateTable('invitation')
           .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
@@ -482,7 +485,10 @@ export class InvitationService {
       );
     }
 
-    const accountId = await withScope(this.db, { householdId }, async (trx) => {
+    // As the vault itself: whether this person owns private documents is
+    // asked of documents no anonymous caller may see, and a check that saw
+    // none would always pass.
+    const accountId = await withSystem(this.db, householdId, async (trx) => {
       // Read it again inside the writing transaction: between the check and
       // here, somebody may have revoked it.
       const row = await this.live(trx, token);

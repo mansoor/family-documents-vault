@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -60,7 +60,7 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
 
   /** Puts the session's last credential far enough in the past to matter. */
   const goStale = async () =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ verified_at: new Date(Date.now() - 10 * 60 * 1000) })
@@ -217,7 +217,7 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
   });
 
   it('every step-up is in the audit chain, with how it was done', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action', 'detail'])

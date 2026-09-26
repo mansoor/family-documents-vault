@@ -1,4 +1,4 @@
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import { adapterFromRow } from '@fdv/storage';
 import type pg from 'pg';
 
@@ -34,7 +34,7 @@ export async function pruneUploads(
   let abandoned = 0;
   const { rows } = await deps.admin.query<{ id: string }>('select id from household');
   for (const hh of rows) {
-    await withHousehold(deps.app, hh.id, async (trx) => {
+    await withSystem(deps.app, hh.id, async (trx) => {
       const gone = await trx
         .deleteFrom('upload_idempotency')
         .where('state', '=', 'done')

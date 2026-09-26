@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { ActivityLine, DocumentView, SuggestionView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -85,7 +85,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     secretVersionId = await upload(secretId);
     // The OCR text is written by the worker; put it where the worker
     // would, so the search paths have something real to fail to find.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document_text')
         .values({
@@ -217,7 +217,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     // for a credential before looking would answer 403 for the one that is
     // there and 404 for the one that is not — which is an answer.
     const setSam = (at: Date) =>
-      withHousehold(h.db, sam.household_id, async (trx) => {
+      withSystem(h.db, sam.household_id, async (trx) => {
         const a = await trx
           .selectFrom('account_household')
           .select('account_id')
@@ -547,7 +547,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
 
     // The worker builds the ZIP from the requester's own visibility, so
     // assert on the query it will run rather than on the file it writes.
-    const visible = await withHousehold(h.db, owner.household_id, (trx) =>
+    const visible = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('export')
         .innerJoin('account_household', (j) =>
@@ -557,7 +557,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
         .where('export.id', '=', exportId)
         .executeTakeFirstOrThrow(),
     );
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document')
         .select(['id', 'title'])
@@ -580,7 +580,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
   });
 
   it('the sealed text is in the database as ciphertext, and nowhere else', async () => {
-    const sealed = await withHousehold(h.db, owner.household_id, (trx) =>
+    const sealed = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_text_sealed')
         .select(['content_cipher'])
@@ -592,7 +592,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       expect(row.content_cipher.includes(Buffer.from(SECRET_TEXT))).toBe(false);
     }
     // And the searchable table no longer holds a copy of it.
-    const plain = await withHousehold(h.db, owner.household_id, (trx) =>
+    const plain = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_text')
         .select(['content'])
@@ -741,7 +741,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the owner’s side', ()
     const { link_token, code } = json<{ link_token: string; code: string }>(invited);
     // …who, before the invitation is used, turns out to have had one: the
     // state an invitation made under 0.4.1 can be left waiting in.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('scope_key')
         .set({ key_wrapped_cred: Buffer.alloc(60, 7) })
@@ -820,7 +820,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
 
   /** Every session of this person, made cold (older than the step-up window) or warm. */
   const setFresh = (t: Tokens, fresh: boolean) =>
-    withHousehold(h.db, t.household_id, async (trx) => {
+    withSystem(h.db, t.household_id, async (trx) => {
       const a = await trx
         .selectFrom('account_household')
         .select('account_id')
@@ -1052,7 +1052,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
     });
     expect(demoted.statusCode, demoted.body).toBe(200);
     expect(await opens(link.adults as string)).toBe(404);
-    const exp = await withHousehold(h.db, owner.household_id, (trx) =>
+    const exp = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('export')
         .select('expires_at')
@@ -1080,7 +1080,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   const peer = () => ({ remoteAddress: `10.78.${peers >> 8}.${peers++ & 0xff}` });
 
   const setFresh = (t: Tokens, fresh: boolean) =>
-    withHousehold(h.db, t.household_id, async (trx) => {
+    withSystem(h.db, t.household_id, async (trx) => {
       const a = await trx
         .selectFrom('account_household')
         .select('account_id')
@@ -1192,7 +1192,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
   });
 
   it('a stored file is named by chance, not by what is in it', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_version')
         .select(['storage_key', 'sha256'])
@@ -1257,7 +1257,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
     });
     expect(marked.statusCode).toBe(200);
     const expiry = (id: string) =>
-      withHousehold(h.db, owner.household_id, (trx) =>
+      withSystem(h.db, owner.household_id, (trx) =>
         trx
           .selectFrom('export')
           .select('expires_at')
@@ -1333,7 +1333,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
     const grandad = json<MemberView>(added).id;
     // How 0.4.1 could leave it: a private document handed to somebody with
     // no sign-in.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document')
         .values({
@@ -1378,7 +1378,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
     expect(swapped.statusCode).toBe(409);
     expect(json<{ error: { code: string } }>(swapped).error.code).toBe('already_invited');
     // The owner's invitation is still the live one.
-    const live = await withHousehold(h.db, owner.household_id, (trx) =>
+    const live = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('invitation')
         .select(['email', 'revoked_at'])

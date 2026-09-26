@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { deriveKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import ece from 'http_ece';
 import pg from 'pg';
@@ -375,7 +375,7 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     });
     expect(outcome.counts.gone).toBe(1);
     expect(await row(id)).toBeNull();
-    const audit = await withHousehold(db, hh, (trx) =>
+    const audit = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action', 'object_id'])

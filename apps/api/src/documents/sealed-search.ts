@@ -1,6 +1,6 @@
 import type { ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
-import { withScope, type Db } from '@fdv/db';
+import { withPrincipal, type Db } from '@fdv/db';
 import { deriveStatus, matchText, parseQuery, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
@@ -58,7 +58,7 @@ export class SealedSearchService {
     const query = parseQuery(claims.q);
     if (query.groups.length === 0) return { items: [], searched: 0 };
 
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await sql<SealedRow>`
         select distinct on (d.id)
                d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,

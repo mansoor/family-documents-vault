@@ -14,7 +14,7 @@ import {
   unwrapKey,
   wrapKey,
 } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
@@ -102,7 +102,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
       [ownerAccount, hh, ownerMember],
     );
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       await keys.mintHouseholdKeys(trx, hh);
       await keys.mintMemberKey(trx, hh, ownerMember, null);
       await keys.mintMemberKey(trx, hh, otherMember, null);
@@ -132,7 +132,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     content: string,
     category = 'identity',
   ) {
-    return withHousehold(db, hh, async (trx) => {
+    return withSystem(db, hh, async (trx) => {
       const doc = await trx
         .insertInto('document')
         .values({
@@ -189,7 +189,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     await addDoc('My private note', 'private', ownerMember, 'PRIVATE BYTES', 'legal');
     await addDoc("Sana's private note", 'private', otherMember, 'NOT FOR OWNER', 'legal');
 
-    const exportId = await withHousehold(db, hh, (trx) =>
+    const exportId = await withSystem(db, hh, (trx) =>
       trx
         .insertInto('export')
         .values({ household_id: hh, requested_by: ownerAccount })
@@ -208,7 +208,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       { household_id: hh, export_id: exportId },
     );
 
-    const row = await withHousehold(db, hh, (trx) =>
+    const row = await withSystem(db, hh, (trx) =>
       trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
     );
     expect(row.state).toBe('done');
@@ -216,7 +216,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(row.storage_key).toBe(`${hh}/exports/${exportId}.zip.enc`);
 
     // The stored object is ciphertext; decrypting it yields a real ZIP.
-    const hhKey = await withHousehold(db, hh, (trx) =>
+    const hhKey = await withSystem(db, hh, (trx) =>
       keys.unwrap(trx, { householdId: hh, kind: 'household' }),
     );
     const fileKey = unwrapKey(row.file_key_wrapped as Buffer, hhKey.key, `export:${exportId}`);

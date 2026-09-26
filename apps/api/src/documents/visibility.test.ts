@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold, withScope } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, VersionView } from '@fdv/shared';
 import argon2 from 'argon2';
@@ -29,7 +29,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
     owner = await h.setup();
 
     // A second adult, the way 3.2's invitation will create one.
-    const otherMember = await withHousehold(h.db, owner.household_id, (trx) =>
+    const otherMember = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('member')
         .values({ household_id: owner.household_id, display_name: 'Sana' })
@@ -44,7 +44,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    await withScope(h.db, { householdId: owner.household_id, accountId: account.id }, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('account_household')
         .values({
@@ -57,7 +57,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
     );
     const { ScopeKeys, EnvKeyProvider } = await import('@fdv/crypto');
     const { TEST_MASTER } = await import('../test-harness.js');
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       new ScopeKeys(new EnvKeyProvider(TEST_MASTER)).mintMemberKey(
         trx,
         owner.household_id,
@@ -95,7 +95,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
       payload: form.getBuffer(),
     });
     versionId = up.json<VersionView>().id;
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('document_text')
         .values({
@@ -137,7 +137,7 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
   });
 
   it('afterwards the file key is under the member scope and the text is sealed', async () => {
-    const v = await withHousehold(h.db, owner.household_id, (trx) =>
+    const v = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_version')
         .innerJoin('scope_key', 'scope_key.id', 'document_version.wrapped_by_scope')
@@ -146,11 +146,11 @@ describe.skipIf(!testAdminUrl())('visibility and the private boundary', () => {
         .executeTakeFirstOrThrow(),
     );
     expect(v).toEqual({ kind: 'member', member_id: owner.member_id });
-    const plain = await withHousehold(h.db, owner.household_id, (trx) =>
+    const plain = await withSystem(h.db, owner.household_id, (trx) =>
       trx.selectFrom('document_text').selectAll().where('document_id', '=', docId).execute(),
     );
     expect(plain).toEqual([]);
-    const sealed = await withHousehold(h.db, owner.household_id, (trx) =>
+    const sealed = await withSystem(h.db, owner.household_id, (trx) =>
       trx.selectFrom('document_text_sealed').selectAll().where('document_id', '=', docId).execute(),
     );
     expect(sealed).toHaveLength(1);

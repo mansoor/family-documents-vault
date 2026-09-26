@@ -172,8 +172,8 @@ describe.skipIf(!testAdminUrl())('notifications', () => {
   });
 
   it('the stored password is encrypted, not readable from the row', async () => {
-    const { withHousehold } = await import('@fdv/db');
-    const row = await withHousehold(h.db, owner.household_id, (trx) =>
+    const { withSystem } = await import('@fdv/db');
+    const row = await withSystem(h.db, owner.household_id, (trx) =>
       trx.selectFrom('smtp_settings').select('password_encrypted').executeTakeFirstOrThrow(),
     );
     expect(row.password_encrypted).not.toBeNull();

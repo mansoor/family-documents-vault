@@ -1,7 +1,7 @@
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, unwrapKey, type ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
@@ -38,7 +38,7 @@ export class ExportService {
 
   async request(p: Principal, meta: RequestMeta): Promise<ExportView> {
     requireCapability(p, 'export.request');
-    const row = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const row = await withPrincipal(this.db, p, async (trx) => {
       const r = await trx
         .insertInto('export')
         .values({ household_id: p.householdId, requested_by: p.accountId })
@@ -59,7 +59,7 @@ export class ExportService {
   }
 
   async list(p: Principal): Promise<ExportView[]> {
-    const rows = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const rows = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('export')
         .selectAll()
@@ -72,7 +72,7 @@ export class ExportService {
   }
 
   async get(p: Principal, id: string): Promise<ExportView> {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('export')
         .selectAll()
@@ -89,7 +89,7 @@ export class ExportService {
     id: string,
     meta: RequestMeta,
   ): Promise<{ stream: Readable; bytes: number }> {
-    const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const ctx = await withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('export')
         .selectAll()

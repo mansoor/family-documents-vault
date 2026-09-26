@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream, unwrapKey } from '@fdv/crypto';
-import { withHousehold, type Db, type PreviewState } from '@fdv/db';
+import { withSystem, type Db, type PreviewState } from '@fdv/db';
 import { PREVIEW_MAX_PAGES } from '@fdv/shared';
 import { adapterFromRow, type StorageAdapter } from '@fdv/storage';
 import type pg from 'pg';
@@ -55,7 +55,7 @@ export async function renderVersionPreviews(
   attempt: { final: boolean } = { final: true },
 ): Promise<void> {
   const { household_id: hh, version_id } = job;
-  const current = await withHousehold(deps.db, hh, (trx) =>
+  const current = await withSystem(deps.db, hh, (trx) =>
     trx
       .selectFrom('document_version')
       .select(['preview_state', 'mime'])
@@ -71,7 +71,7 @@ export async function renderVersionPreviews(
 
   // Only ever from waiting to an outcome: a result already recorded stays.
   const record = (preview_state: PreviewState, preview_pages: number | null) =>
-    withHousehold(deps.db, hh, (trx) =>
+    withSystem(deps.db, hh, (trx) =>
       trx
         .updateTable('document_version')
         .set({ preview_state, preview_pages })
@@ -86,7 +86,7 @@ export async function renderVersionPreviews(
 
   const dir = await mkdtemp(path.join(tmpdir(), 'fdv-pv-'));
   try {
-    const ctx = await withHousehold(deps.db, hh, async (trx) => {
+    const ctx = await withSystem(deps.db, hh, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .select(['document_id', 'storage_key', 'vault_id', 'file_key_wrapped', 'wrapped_by_scope'])
@@ -128,7 +128,7 @@ export async function renderVersionPreviews(
       await record('failed', 0).catch(() => undefined);
     } else {
       // Still on its way: the queue tries again, and nobody re-queues it meanwhile.
-      await withHousehold(deps.db, hh, (trx) =>
+      await withSystem(deps.db, hh, (trx) =>
         trx
           .updateTable('document_version')
           .set({ preview_state: 'queued', preview_requested_at: new Date() })
@@ -185,7 +185,7 @@ export async function backfillPreviews(deps: {
   );
   let queued = 0;
   for (const r of rows) {
-    const marked = await withHousehold(deps.app, r.household_id, (trx) =>
+    const marked = await withSystem(deps.app, r.household_id, (trx) =>
       trx
         .updateTable('document_version')
         .set({ preview_state: 'queued', preview_requested_at: new Date() })

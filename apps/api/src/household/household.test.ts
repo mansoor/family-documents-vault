@@ -78,8 +78,8 @@ describe.skipIf(!testAdminUrl())('household profile and members', () => {
     });
 
     // A private-scope key exists for the new member even without a sign-in.
-    const { withHousehold } = await import('@fdv/db');
-    const keys = await withHousehold(h.db, owner.household_id, (trx) =>
+    const { withSystem } = await import('@fdv/db');
+    const keys = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('scope_key')
         .select(['kind', 'member_id'])

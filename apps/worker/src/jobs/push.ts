@@ -1,7 +1,7 @@
 import { lookup as dnsLookup, type LookupAllOptions } from 'node:dns';
 import https from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
-import { appendAudit, withHousehold, type Db } from '@fdv/db';
+import { appendAudit, withSystem, type Db } from '@fdv/db';
 import {
   isLoopbackName,
   isPrivateAddress,
@@ -213,7 +213,7 @@ async function mark(
 ): Promise<void> {
   const id = device.id;
   if (!id) return;
-  await withHousehold(deps.app, device.household_id, async (trx) => {
+  await withSystem(deps.app, device.household_id, async (trx) => {
     if (outcome === 'sent') {
       await trx
         .updateTable('device')

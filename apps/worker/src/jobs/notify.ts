@@ -1,6 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import type https from 'node:https';
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
@@ -170,7 +170,7 @@ export function createNotifier(deps: NotifyDeps): Notifier {
 
 async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
   if (!deps.vapid) return 0;
-  const devices = await withHousehold(deps.app, d.household_id, (trx) =>
+  const devices = await withSystem(deps.app, d.household_id, (trx) =>
     trx
       .selectFrom('device')
       .leftJoin('notification_preference', (j) =>
@@ -237,7 +237,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
 }
 
 async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
-  const ctx = await withHousehold(deps.app, d.household_id, async (trx) => {
+  const ctx = await withSystem(deps.app, d.household_id, async (trx) => {
     const smtp = await trx
       .selectFrom('smtp_settings')
       .selectAll()
@@ -297,7 +297,7 @@ async function sendEmail(deps: NotifyDeps, d: Digest): Promise<number> {
       account_id: d.recipient.account_id,
       error: (err as Error).message,
     });
-    await withHousehold(deps.app, d.household_id, (trx) =>
+    await withSystem(deps.app, d.household_id, (trx) =>
       trx
         .updateTable('smtp_settings')
         .set({ status: 'failed', last_error: (err as Error).message.slice(0, 300) })

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -181,7 +181,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
 
   it('an expired link is refused, in the same words as every other dead one', async () => {
     const created = json<CreatedShare>(await share(lease, { expires_in_days: 1 }));
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('share_link')
         .set({ expires_at: new Date(Date.now() - 1000) })
@@ -280,7 +280,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
   });
 
   it('every open is in the audit chain, under a label and not a person', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action', 'actor_account_id', 'actor_label'])

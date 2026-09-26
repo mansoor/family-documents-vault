@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db } from '@fdv/db';
 import argon2 from 'argon2';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
@@ -141,7 +141,7 @@ export class PasswordService {
     }
 
     const hash = await argon2.hash(input.new_password, ARGON2);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       await trx
         .updateTable('account')
         .set({ password_hash: hash })
@@ -209,12 +209,16 @@ export class PasswordService {
       .executeTakeFirst();
     if (!account || account.disabled_at) return;
 
-    const membership = await withScope(this.db, { accountId: account.id }, (trx) =>
-      trx
-        .selectFrom('account_household')
-        .select(['household_id'])
-        .orderBy('joined_at', 'desc')
-        .executeTakeFirst(),
+    // Whoever typed the address is nobody the vault knows.
+    const membership = await withScope(
+      this.db,
+      { accountId: account.id, actor: ANONYMOUS },
+      (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select(['household_id'])
+          .orderBy('joined_at', 'desc')
+          .executeTakeFirst(),
     );
     if (!membership) return;
 
@@ -248,7 +252,7 @@ export class PasswordService {
 
   /** Is this the household's only owner — the one person who controls its mail? */
   private async onlyOwner(accountId: string, householdId: string): Promise<boolean> {
-    const owners = await withScope(this.db, { householdId }, (trx) =>
+    const owners = await withScope(this.db, { householdId, actor: ANONYMOUS }, (trx) =>
       trx
         .selectFrom('account_household')
         .select(['account_id'])
@@ -304,16 +308,21 @@ export class PasswordService {
       .select(['email'])
       .where('id', '=', row.account_id)
       .executeTakeFirstOrThrow();
-    const membership = await withScope(this.db, { accountId: row.account_id }, (trx) =>
-      trx
-        .selectFrom('account_household')
-        .select(['household_id'])
-        .orderBy('joined_at', 'desc')
-        .executeTakeFirst(),
+    const membership = await withScope(
+      this.db,
+      { accountId: row.account_id, actor: ANONYMOUS },
+      (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select(['household_id'])
+          .orderBy('joined_at', 'desc')
+          .executeTakeFirst(),
     );
     const household = membership
-      ? await withScope(this.db, { householdId: membership.household_id }, (trx) =>
-          trx.selectFrom('household').select(['name']).executeTakeFirst(),
+      ? await withScope(
+          this.db,
+          { householdId: membership.household_id, actor: ANONYMOUS },
+          (trx) => trx.selectFrom('household').select(['name']).executeTakeFirst(),
         )
       : null;
     return {
@@ -336,12 +345,15 @@ export class PasswordService {
       .select(['id', 'email'])
       .where('id', '=', row.account_id)
       .executeTakeFirstOrThrow();
-    const membership = await withScope(this.db, { accountId: account.id }, (trx) =>
-      trx
-        .selectFrom('account_household')
-        .select(['household_id', 'member_id'])
-        .orderBy('joined_at', 'desc')
-        .executeTakeFirst(),
+    const membership = await withScope(
+      this.db,
+      { accountId: account.id, actor: ANONYMOUS },
+      (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select(['household_id', 'member_id'])
+          .orderBy('joined_at', 'desc')
+          .executeTakeFirst(),
     );
     if (!membership) throw gone();
 
@@ -358,7 +370,9 @@ export class PasswordService {
     if (!claimed) throw gone();
 
     let resetPhones: PushTarget[] = [];
-    await withScope(this.db, { householdId: membership.household_id }, async (trx) => {
+    // A reset signs nobody in, so it is not the account asking even now.
+    const scope = { householdId: membership.household_id, actor: ANONYMOUS };
+    await withScope(this.db, scope, async (trx) => {
       await trx
         .updateTable('account')
         .set({ password_hash: hash })

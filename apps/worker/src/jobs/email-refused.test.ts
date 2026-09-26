@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { deriveKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -118,14 +118,14 @@ describe.skipIf(!testAdminUrl())('a refused address does not stop the family’s
          values ($1, $2, $3, $4, now() + ($5 || ' minutes')::interval)`,
         [a.rows[0]?.id, hh, m.rows[0]?.id, role, String(n)],
       );
-      await withHousehold(db, hh, (trx) =>
+      await withSystem(db, hh, (trx) =>
         trx
           .insertInto('notification_preference')
           .values({ account_id: a.rows[0]?.id as string, household_id: hh, daily_email: true })
           .execute(),
       );
     }
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       const d = await trx
         .insertInto('document')
         .values({ household_id: hh, title: 'Council tax', owner_member_id: owner })
@@ -179,7 +179,7 @@ describe.skipIf(!testAdminUrl())('a refused address does not stop the family’s
       digestHour: 9,
     });
     expect(smtp.delivered.sort()).toEqual(['first@example.test', 'third@example.test']);
-    const status = await withHousehold(db, hh, (trx) =>
+    const status = await withSystem(db, hh, (trx) =>
       trx.selectFrom('smtp_settings').select('status').executeTakeFirstOrThrow(),
     );
     expect(status.status).toBe('ok');
@@ -219,7 +219,7 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
       "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
       [account, hh, m.rows[0]?.id],
     );
-    await withHousehold(db, hh, (trx) =>
+    await withSystem(db, hh, (trx) =>
       trx
         .insertInto('smtp_settings')
         .values({

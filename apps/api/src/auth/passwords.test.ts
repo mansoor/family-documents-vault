@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import type { DocumentView } from '@fdv/shared';
@@ -45,7 +45,7 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
 
   /** The member key, opened with what the person knows and nothing else. */
   const unwrapWithPassword = (password: string) =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       new ScopeKeys(new EnvKeyProvider(TEST_MASTER)).unwrapWithCredential(
         trx,
         { householdId: owner.household_id, kind: 'member', memberId: owner.member_id },
@@ -180,7 +180,7 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
     // may set a password without the old one — the same five-minute
     // window as exporting everything or changing where files are kept.
     // The case that matters is the session left open on a desk.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ verified_at: new Date(Date.now() - 10 * 60 * 1000) })
@@ -198,7 +198,7 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
     // Adding a passkey asks for a fresh credential too (0.4.2), and the
     // test before this one left the session cold. Warm it, as a step-up
     // with the password would.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx.updateTable('session').set({ verified_at: new Date() }).execute(),
     );
     const options = await h.app.inject({
@@ -218,7 +218,7 @@ describe.skipIf(!testAdminUrl())('changing a password', () => {
     ).toBe(201);
 
     // Age the session past the step-up window, then present the passkey.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ verified_at: new Date(Date.now() - 10 * 60 * 1000) })
@@ -376,7 +376,7 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
         payload: { email: 'sam@example.test', password: 'sam has a new password' },
       }),
     );
-    const key = await withHousehold(h.db, owner.household_id, (trx) =>
+    const key = await withSystem(h.db, owner.household_id, (trx) =>
       new ScopeKeys(new EnvKeyProvider(TEST_MASTER)).unwrapWithCredential(
         trx,
         { householdId: fresh.household_id, kind: 'member', memberId: fresh.member_id },
@@ -484,7 +484,7 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
   });
 
   it('every one of these is in the audit chain', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action', 'detail'])

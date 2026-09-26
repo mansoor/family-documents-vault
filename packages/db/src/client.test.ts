@@ -1,9 +1,9 @@
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createDb, createPool, withHousehold, type Db } from './client.js';
+import { createDb, createPool, withSystem, type Db } from './client.js';
 import { createTestDatabase, TEST_APP_ROLE, testAdminUrl, type TestDatabase } from './testing.js';
 
-describe.skipIf(!testAdminUrl())('withHousehold', () => {
+describe.skipIf(!testAdminUrl())('withSystem', () => {
   let tdb: TestDatabase;
   let db: Db;
 
@@ -38,7 +38,7 @@ describe.skipIf(!testAdminUrl())('withHousehold', () => {
 
   it('sets app.household_id inside the transaction only', async () => {
     const id = '11111111-1111-1111-1111-111111111111';
-    const inside = await withHousehold(db, id, (trx) => current(trx));
+    const inside = await withSystem(db, id, (trx) => current(trx));
     expect(inside).toBe(id);
 
     // Same pool, next borrower: the setting must be gone.
