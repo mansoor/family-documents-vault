@@ -1021,6 +1021,77 @@ choices? }` → `201` with the field, for the library; a `choice` has at
       with each version's `uploaded_by_name` — null for a viewer, as the
       vault answers (its `state.role` says who is signed in) — and a
       contract scenario holds the vault and the fake to both.
+  - Lists of documents (5.14, `features.lists`). A list is a name, a few
+    words, who it is for, and the documents on it in the order they were
+    put there. It never widens who may see a document.
+    - **New:** `GET /api/v1/lists` → `{ items: [ListView] }`, by name.
+      `ListView` is `{ id, name, description, audience, owner_member_id,
+mine, item_count, created_at, updated_at, etag }`. `item_count` is how
+      many of its documents the caller can see, out of the Trash: never how
+      many they cannot, and nothing else says so either.
+    - **New:** `POST /api/v1/lists` `{ name, audience, description? }` →
+      `201` with the list (`ListDetail`: the view and its `items`) and its
+      `ETag`. `audience` is `everyone` (owners, adults and teens), `teens`
+      (the same, for now), `adults` (owners and adults) or `only_me` (its
+      maker alone). The name is tidied, 1–80 characters (`422
+validation_failed`, `detail: "name"`); what it is for, 1000 at most;
+      with no audience, `422` (`detail: "audience"`). Owners, adults and
+      teens (`list.manage`): a viewer is `403 forbidden`, "Viewers can open
+      and download documents, but not make lists of them." A list is for an
+      audience its maker is in: a teen's for the adults is `403`, "Only an
+      adult can make a list for the adults."
+    - **New:** `GET /api/v1/lists/{id}` → `ListDetail`, with `ETag`.
+      `items` is `[{ document, added_at, hint }]`: the documents on it the
+      caller can see, out of the Trash, in the order they were put there,
+      each as the document list gives it (an Only me one's notes and details
+      sealed). `hint` is for the list's maker only — "Teens in this list’s
+      audience can’t see this one.", "Only you can see this one. It is
+      private." — and null for everybody else.
+    - **New:** `PATCH /api/v1/lists/{id}` `{ name?, description?,
+audience? }`, made to the list as the caller saw it: a stale
+      `If-Match` is `409 conflict`, with the list as it now is in `detail`.
+      `DELETE /api/v1/lists/{id}` → `204`: gone for everybody; its
+      documents are untouched.
+    - **New:** `POST /api/v1/lists/{id}/items` `{ document_ids }` (1–200) →
+      the list: put on at the end, in the order given, each once; one
+      already on it stays where it is. Each must be one the caller can see,
+      out of the Trash: if any is not, none is put on, and the answer is
+      `404 not_found`, "That document is not in the vault.", as for one that
+      does not exist. `DELETE /api/v1/lists/{id}/items/{documentId}` →
+      `204`; one not on it is `404`.
+    - **New:** `GET /api/v1/documents/{id}/lists` → `{ items: [ListView] }`:
+      the lists it is on, of those the caller may see. One in the Trash is on
+      none until it is brought back; one the caller cannot see is `404`.
+    - Only a list's maker changes it: anybody else in its audience is
+      `403 forbidden`, "Only the person who made this list can change it.";
+      anybody outside it, `404`, exactly as for a list that does not exist. A
+      viewer sees no list at all, not even one for everyone, until a later
+      release lets one be granted to them: `GET /api/v1/lists` answers
+      `{ items: [] }`.
+    - A document taken to the Trash, or made somebody else's Only me, is
+      gone from every list at once for whoever can no longer see it; brought
+      back, it is where it was. A list's `updated_at` and ETag move with its
+      name, words and audience, never with what is on it.
+    - The activity log: "Sam made the list “Holiday”", "Sam renamed a list,
+      now “…”", "Sam changed the list “…”" (its words or audience) and "Sam
+      deleted the list “…”", to the list's audience as it is now; "Sam added
+      “Passport” to the list “Holiday”" and "Sam took “…” off the list “…”",
+      one line per document, to whoever may see both the document and the
+      list. The log keeps a list's id, never its name.
+    - `features.lists: true` in `GET /api/v1/capabilities`. Absent from
+      older vaults.
+    - A copy of everything (`POST /api/v1/exports`) is unchanged: it holds
+      documents, not lists.
+    - `@fdv/shared`: capability `list.manage`; `LIST_AUDIENCES`,
+      `canSeeList`, `inListAudience`, `listItemHint`, `LIST_HINT_TEENS`,
+      `LIST_HINT_PRIVATE`, `LIST_HINT_SOME`, `LIST_NAME_MAX`,
+      `LIST_DESCRIPTION_MAX`, `ListView`, `ListDetail`, `ListItemView`,
+      `ListInput`, `CapabilityFeatures.lists`. `@fdv/client`: `lists`,
+      `createList`, `getList`, `updateList(token, id, body, etag)`,
+      `deleteList`, `addToList`, `removeFromList`, `documentLists`. The fake
+      keeps lists and what is on them as the vault does, for each role
+      (`state.lists`), and a contract scenario holds the vault and the fake
+      to it.
 
 ## Deprecations in effect
 

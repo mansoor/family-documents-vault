@@ -296,6 +296,17 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         });
       },
     },
+    {
+      capability: 'list.manage',
+      what: 'make a list of documents',
+      call: (t) =>
+        h.app.inject({
+          method: 'POST',
+          url: '/api/v1/lists',
+          headers: h.as(t),
+          payload: { name: 'Papers for the move', audience: 'everyone' },
+        }),
+    },
   ];
 
   for (const probe of probes) {

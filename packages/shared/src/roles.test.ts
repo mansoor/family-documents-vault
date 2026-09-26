@@ -3,8 +3,15 @@ import {
   CAPABILITIES,
   can,
   canSee,
+  canSeeList,
   capabilitiesFor,
   capabilityToInvite,
+  inListAudience,
+  LIST_AUDIENCES,
+  LIST_HINT_PRIVATE,
+  LIST_HINT_SOME,
+  LIST_HINT_TEENS,
+  listItemHint,
   refusalFor,
   ROLES,
   rolesWith,
@@ -92,5 +99,56 @@ describe('the role matrix', () => {
     expect(canSee({ role: 'owner', memberId: null }, doc('private', null))).toBe(false);
     // A value this code has never heard of is closed, not open.
     expect(canSee({ role: 'owner', memberId: me }, doc('sealed'))).toBe(false);
+  });
+});
+
+describe('who sees a list (5.14)', () => {
+  const me = 'member-me';
+  const list = (audience: string, owner: string | null = 'someone-else') => ({
+    audience,
+    owner_member_id: owner,
+  });
+
+  it('everyone is the family that files; the adults are the adults; Only me is its maker', () => {
+    const who = (l: ReturnType<typeof list>) =>
+      ROLES.filter((role) => canSeeList({ role, memberId: me }, l));
+    expect(who(list('everyone'))).toEqual(['owner', 'adult', 'teen']);
+    expect(who(list('teens'))).toEqual(['owner', 'adult', 'teen']);
+    expect(who(list('adults'))).toEqual(['owner', 'adult']);
+    expect(who(list('only_me'))).toEqual([]);
+    expect(who(list('only_me', me))).toEqual(['owner', 'adult', 'teen']);
+  });
+
+  it('a viewer sees no list, not even one made for everyone (A17)', () => {
+    for (const audience of LIST_AUDIENCES) {
+      expect(canSeeList({ role: 'viewer', memberId: me }, list(audience, me)), audience).toBe(
+        false,
+      );
+    }
+  });
+
+  it('an audience never heard of, or nobody at all, is closed', () => {
+    for (const audience of ['public', 'constructor', '__proto__', '']) {
+      expect(canSeeList({ role: 'owner', memberId: me }, list(audience, me)), audience).toBe(false);
+      expect(inListAudience('owner', audience), audience).toBe(false);
+    }
+    // Nobody without a member matches an Only me list with no maker.
+    expect(canSeeList({ role: 'owner', memberId: null }, list('only_me', null))).toBe(false);
+  });
+
+  it("tells a list's maker who of its audience is not given a document on it", () => {
+    const doc = (visibility: string) => ({ visibility, owner_member_id: me });
+    expect(listItemHint('everyone', doc('household'))).toBeNull();
+    expect(listItemHint('everyone', doc('adults'))).toBe(LIST_HINT_TEENS);
+    expect(listItemHint('teens', doc('adults'))).toBe(LIST_HINT_TEENS);
+    expect(listItemHint('adults', doc('adults'))).toBeNull();
+    expect(listItemHint('everyone', doc('private'))).toBe(LIST_HINT_PRIVATE);
+    expect(listItemHint('adults', doc('private'))).toBe(LIST_HINT_PRIVATE);
+    // Only me is for its maker alone: there is nobody else to tell.
+    for (const visibility of ['household', 'adults', 'private']) {
+      expect(listItemHint('only_me', doc(visibility)), visibility).toBeNull();
+    }
+    // A visibility never heard of is shut to everybody.
+    expect(listItemHint('adults', doc('sealed'))).toBe(LIST_HINT_SOME);
   });
 });

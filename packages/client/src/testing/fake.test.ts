@@ -62,4 +62,41 @@ describe('the fake vault, for somebody who is not an owner', () => {
       .catch((e: unknown) => e);
     expect(refused).toMatchObject({ status: 404, code: 'not_found' });
   });
+
+  it('lists as the real vault keeps them for each role (0.5.12): a viewer sees none', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    const everyday = await api.createDocument(token, { title: 'Bill' });
+    const adults = await api.createDocument(token, { title: 'Will', visibility: 'adults' });
+    const family = await api.createList(token, { name: 'Family', audience: 'everyone' });
+    await api.addToList(token, family.id, [everyday.id, adults.id]);
+    const grown = await api.createList(token, { name: 'Grown-ups', audience: 'adults' });
+
+    // A teen is given the list for everyone, and on it only what a teen may see.
+    vault.state.role = 'teen';
+    expect((await api.lists(token)).items.map((l) => l.name)).toEqual(['Family']);
+    const seen = await api.getList(token, family.id);
+    expect(seen.items.map((i) => i.document.id)).toEqual([everyday.id]);
+    expect(seen.item_count).toBe(1);
+    expect(await refusal(api.getList(token, grown.id))).toMatchObject({ status: 404 });
+    expect(
+      await refusal(api.createList(token, { name: 'For the adults', audience: 'adults' })),
+    ).toMatchObject({ status: 403, code: 'forbidden' });
+
+    // A viewer, none at all, and makes none.
+    vault.state.role = 'viewer';
+    expect((await api.lists(token)).items).toEqual([]);
+    expect(await refusal(api.getList(token, family.id))).toMatchObject({ status: 404 });
+    expect((await api.documentLists(token, everyday.id)).items).toEqual([]);
+    expect(
+      await refusal(api.createList(token, { name: 'Mine', audience: 'everyone' })),
+    ).toMatchObject({ status: 403, code: 'forbidden' });
+  });
 });

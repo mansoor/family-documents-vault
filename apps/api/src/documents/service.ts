@@ -141,7 +141,7 @@ interface Claim {
   tempKey: string;
 }
 
-type DocRow = {
+export type DocRow = {
   id: string;
   type_key: string | null;
   title: string | null;
@@ -694,6 +694,16 @@ export class DocumentService {
       deleted_at: row.deleted_at?.toISOString() ?? null,
       etag: etagOf(row.id, row.updated_at),
     };
+  }
+
+  /**
+   * Documents as every list of them gives them, for rows the caller's own
+   * query has already found — the documents on a list (5.14). An Only me
+   * one's notes and details stay sealed, as in any list.
+   */
+  async listed(trx: Db, rows: DocRow[]): Promise<DocumentView[]> {
+    const typeOf = typeLookup(trx);
+    return Promise.all(rows.map((r) => this.view(trx, r, typeOf)));
   }
 
   // ---------------------------------------------------------------- CRUD

@@ -1,5 +1,7 @@
 import {
   can,
+  canSee,
+  canSeeList,
   CATEGORY_LABELS,
   checkCaptureMetadata,
   checkExtra,
@@ -7,10 +9,16 @@ import {
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
+  inListAudience,
+  LIST_AUDIENCES,
+  LIST_DESCRIPTION_MAX,
+  LIST_NAME_MAX,
+  listItemHint,
   missingFields,
   PREVIEW_MAX_PAGES,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
+  refusalFor,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
@@ -25,6 +33,9 @@ import {
   type TypeField,
   type DocumentView,
   type IssuerSuggestions,
+  type ListAudience,
+  type ListDetail,
+  type ListView,
   type OfflineGrant,
   type OfflineItem,
   type ReminderView,
@@ -104,6 +115,11 @@ export interface FakeVaultState {
    * grant in force, and the ids of the opens already received.
    */
   offlineEssentials: { items: OfflineItem[]; received: Set<string> };
+  /**
+   * Lists of documents (0.5.12), as the real vault keeps them: each made by
+   * the one member the fake signs in as, and marked deleted, never removed.
+   */
+  lists: FakeList[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -114,6 +130,22 @@ type FakeDocument = { id: string; title: string | null; revision?: number } & Om
   CaptureMetadata,
   'title'
 >;
+
+/** A list of documents, as the fake keeps one (0.5.12). */
+export interface FakeList {
+  id: string;
+  name: string;
+  description: string | null;
+  audience: ListAudience;
+  owner_member_id: string;
+  created_at: string;
+  updated_at: string;
+  /** Moved by a change to its name, words or audience — never its items — as its ETag says. */
+  revision: number;
+  deleted: boolean;
+  /** In the order they were put on it. */
+  items: Array<{ document_id: string; added_at: string }>;
+}
 
 /** What the fake keeps from an edit; anything else it refuses to pretend to keep. */
 const FAKE_EDITABLE = [
@@ -333,6 +365,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     role: 'owner',
+    lists: [],
     calls: [],
     offline: false,
   };
@@ -492,6 +525,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           offline_essentials: true,
           // As the real vault (0.5.11): the household's own kinds of document.
           custom_types: true,
+          // And lists of documents (0.5.12).
+          lists: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -1322,6 +1357,214 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           unseen: UNSEEN_DOCUMENTS,
         };
         return ok(impact);
+      }
+    }
+    // Lists of documents (0.5.12), as the real vault keeps them: a list
+    // exists only for whoever is in its audience (a viewer is in none);
+    // each reader is given the documents on it they can see, counted as
+    // they see them; only its maker changes it.
+    const me = { role: state.role, memberId: 'fake-member' };
+    const listAt = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+    const docLists = /^\/api\/v1\/documents\/([^/]+)\/lists$/.exec(path);
+    if (path === '/api/v1/lists' || listAt || docLists) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const shown = (l: FakeList) => !l.deleted && canSeeList(me, l);
+      const onIt = (l: FakeList) =>
+        l.items
+          .map((i) => ({ ...i, doc: state.documents.find((d) => d.id === i.document_id) }))
+          .filter(
+            (i): i is typeof i & { doc: FakeDocument } =>
+              i.doc !== undefined &&
+              canSee(me, {
+                visibility: i.doc.visibility ?? 'household',
+                owner_member_id: i.doc.owner_member_id ?? null,
+              }),
+          );
+      const listTag = (l: FakeList) => `"${l.id}.${l.revision}"`;
+      const listView = (l: FakeList): ListView => ({
+        id: l.id,
+        name: l.name,
+        description: l.description,
+        audience: l.audience,
+        owner_member_id: l.owner_member_id,
+        mine: l.owner_member_id === me.memberId,
+        item_count: onIt(l).length,
+        created_at: l.created_at,
+        updated_at: l.updated_at,
+        etag: listTag(l),
+      });
+      const detail = (l: FakeList): ListDetail => ({
+        ...listView(l),
+        items: onIt(l).map((i) => ({
+          document: listedOf(i.doc),
+          added_at: i.added_at,
+          hint:
+            l.owner_member_id === me.memberId
+              ? listItemHint(l.audience, {
+                  visibility: i.doc.visibility ?? 'household',
+                  owner_member_id: i.doc.owner_member_id ?? null,
+                })
+              : null,
+        })),
+      });
+      // By name, whatever the case; made first, first (a stable sort).
+      const byName = (a: FakeList, b: FakeList) => {
+        const [x, y] = [a.name.toLowerCase(), b.name.toLowerCase()];
+        return x < y ? -1 : x > y ? 1 : 0;
+      };
+      const manage = () =>
+        can(state.role, 'list.manage') ? null : fail(403, 'forbidden', refusalFor('list.manage'));
+      /** The name, words and audience asked for, as the real vault takes them; or a refusal. */
+      const fields = (
+        l: Pick<FakeList, 'name' | 'description' | 'audience'>,
+      ): ResponseLike | Pick<FakeList, 'name' | 'description' | 'audience'> => {
+        const out = { ...l };
+        if (body.name !== undefined) {
+          const name = tidy(body.name as string);
+          if (!name) return fail(422, 'validation_failed', 'Give the list a name.', 'name');
+          if (name.length > LIST_NAME_MAX) {
+            return fail(
+              422,
+              'validation_failed',
+              `A list’s name is too long: ${LIST_NAME_MAX} characters at most.`,
+              'name',
+            );
+          }
+          out.name = name;
+        }
+        if (body.description !== undefined) {
+          const words = (body.description as string | null)?.trim() || null;
+          if ((words?.length ?? 0) > LIST_DESCRIPTION_MAX) {
+            return fail(
+              422,
+              'validation_failed',
+              `What a list is for is too long: ${LIST_DESCRIPTION_MAX} characters at most.`,
+              'description',
+            );
+          }
+          out.description = words;
+        }
+        if (body.audience !== undefined) {
+          const audience = body.audience as ListAudience;
+          if (!LIST_AUDIENCES.includes(audience)) {
+            return fail(422, 'validation_failed', 'Say who the list is for.', 'audience');
+          }
+          if (!inListAudience(state.role, audience)) {
+            return fail(403, 'forbidden', 'Only an adult can make a list for the adults.');
+          }
+          out.audience = audience;
+        }
+        return out;
+      };
+
+      if (path === '/api/v1/lists' && init.method === 'GET') {
+        return ok({ items: state.lists.filter(shown).sort(byName).map(listView) });
+      }
+      if (path === '/api/v1/lists' && init.method === 'POST') {
+        const refused = manage();
+        if (refused) return refused;
+        if (body.name === undefined) {
+          return fail(422, 'validation_failed', 'Give the list a name.', 'name');
+        }
+        if (body.audience === undefined) {
+          return fail(422, 'validation_failed', 'Say who the list is for.', 'audience');
+        }
+        const asked = fields({ name: '', description: null, audience: 'only_me' });
+        if (isResponse(asked)) return asked;
+        const at = new Date().toISOString();
+        const l: FakeList = {
+          id: next('list'),
+          ...asked,
+          owner_member_id: me.memberId,
+          created_at: at,
+          updated_at: at,
+          revision: 1,
+          deleted: false,
+          items: [],
+        };
+        state.lists.push(l);
+        return respond(201, detail(l), { etag: listTag(l) });
+      }
+      if (docLists && init.method === 'GET') {
+        const doc = state.documents.find((d) => d.id === decodeURIComponent(docLists[1] as string));
+        if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+        const on = state.lists.filter(
+          (l) => shown(l) && l.items.some((i) => i.document_id === doc.id),
+        );
+        return ok({ items: on.sort(byName).map(listView) });
+      }
+      if (listAt) {
+        const changing = init.method !== 'GET';
+        const refused = changing ? manage() : null;
+        if (refused) return refused;
+        const l = state.lists.find((x) => x.id === decodeURIComponent(listAt[1] as string));
+        if (!l || !shown(l)) return fail(404, 'not_found', 'That list does not exist.');
+        if (!listAt[2] && init.method === 'GET') {
+          return respond(200, detail(l), { etag: listTag(l) });
+        }
+        if (changing && l.owner_member_id !== me.memberId) {
+          return fail(403, 'forbidden', 'Only the person who made this list can change it.');
+        }
+        if (!listAt[2] && init.method === 'PATCH') {
+          const ifMatch = init.headers['if-match'];
+          if (ifMatch && ifMatch !== listTag(l)) {
+            return fail(
+              409,
+              'conflict',
+              'This list was changed since you opened it. Reload and try again.',
+              JSON.stringify(detail(l)),
+            );
+          }
+          const asked = fields(l);
+          if (isResponse(asked)) return asked;
+          if (
+            asked.name !== l.name ||
+            asked.description !== l.description ||
+            asked.audience !== l.audience
+          ) {
+            Object.assign(l, asked, { updated_at: new Date().toISOString() });
+            l.revision += 1;
+          }
+          return respond(200, detail(l), { etag: listTag(l) });
+        }
+        if (!listAt[2] && init.method === 'DELETE') {
+          l.deleted = true;
+          return empty();
+        }
+        if (listAt[2] && !listAt[3] && init.method === 'POST') {
+          const ids = [...new Set((body.document_ids as string[] | undefined) ?? [])];
+          if (ids.length === 0) {
+            return fail(422, 'validation_failed', 'Choose a document to put on the list.');
+          }
+          // Each one the maker can see, or none is put on.
+          const seen = (id: string) => {
+            const d = state.documents.find((x) => x.id === id);
+            return (
+              d !== undefined &&
+              canSee(me, {
+                visibility: d.visibility ?? 'household',
+                owner_member_id: d.owner_member_id ?? null,
+              })
+            );
+          };
+          if (!ids.every(seen)) return fail(404, 'not_found', 'That document is not in the vault.');
+          for (const id of ids) {
+            if (l.items.some((i) => i.document_id === id)) continue;
+            l.items.push({ document_id: id, added_at: new Date().toISOString() });
+          }
+          return respond(200, detail(l), { etag: listTag(l) });
+        }
+        if (listAt[3] && init.method === 'DELETE') {
+          const id = decodeURIComponent(listAt[3]);
+          if (!state.documents.some((d) => d.id === id)) {
+            return fail(404, 'not_found', 'That document is not in the vault.');
+          }
+          const at = l.items.findIndex((i) => i.document_id === id);
+          if (at < 0) return fail(404, 'not_found', 'That document is not on this list.');
+          l.items.splice(at, 1);
+          return empty();
+        }
       }
     }
     if (path === '/api/v1/members' && init.method === 'GET') {

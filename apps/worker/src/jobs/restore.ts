@@ -420,7 +420,17 @@ const ACTOR_GUARDED = [
   'document_type',
   'document_type_setting',
   'document_attribute',
+  // Lists of documents, and what is on them (0036).
+  'doc_list',
+  'doc_list_item',
 ];
+
+/**
+ * The tables where a member's own is theirs alone, by a rule that asks who
+ * the member is: an Only me list is its maker's (0036). Each must have such
+ * a rule, and somebody signed in who made none is given none.
+ */
+const MAKER_ONLY = [{ table: 'doc_list', where: "audience = 'only_me'", what: 'an Only me list' }];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
 const HOUSEHOLD_ROWS: Record<string, string> = {
@@ -510,6 +520,22 @@ export async function checkRestored(
     if (unguarded.length) {
       throw new Error(
         `no rule for each kind of caller on ${unguarded.map((u) => u.name).join(', ')}`,
+      );
+    }
+    // And the rule that keeps a member's own theirs (0036): one that
+    // governs what is read, and asks which member is asking.
+    const { rows: unkept } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_member()%')`,
+      [MAKER_ONLY.map((m) => m.table)],
+    );
+    if (unkept.length) {
+      throw new Error(
+        `no rule keeps a member's own to them on ${unkept.map((u) => u.name).join(', ')}`,
       );
     }
 
@@ -627,6 +653,18 @@ export async function checkRestored(
         const where = given.filter((g) => g.n > 0).map((g) => g.t);
         if (where.length) {
           throw new Error(`household ${h.id}: ${who} is given its documents (${where.join(', ')})`);
+        }
+      }
+      // Somebody signed in who is no member of it — so the maker of none —
+      // is given no Only me list (0036).
+      for (const m of MAKER_ONLY) {
+        const [open] = await asHousehold<{ n: number }>(
+          h.id,
+          `select count(*)::int as n from ${m.table} where ${m.where}`,
+          'account',
+        );
+        if ((open?.n ?? 0) > 0) {
+          throw new Error(`household ${h.id}: ${m.what} is open to everybody in the family`);
         }
       }
     }

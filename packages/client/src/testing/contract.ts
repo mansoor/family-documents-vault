@@ -1,4 +1,4 @@
-import { CATEGORY_LABELS, CORE_FIELDS, type Tokens } from '@fdv/shared';
+import { CATEGORY_LABELS, CORE_FIELDS, LIST_HINT_TEENS, type Tokens } from '@fdv/shared';
 import { expect } from 'vitest';
 import type { Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
@@ -831,6 +831,87 @@ export const contractScenarios: Scenario[] = [
         filename: 'ticket.pdf',
         uploaded_by_name: mine?.display_name,
       });
+    },
+  },
+  {
+    name: 'a list holds what its maker puts on it, counted as they see it; a change is made to the list they saw; a document says which lists it is on (0.5.12)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.lists).toBe(true);
+      const me = await api.me(token);
+      const everyday = await api.createDocument(token, {
+        title: 'Contract council tax',
+        owner_member_id: me.member_id,
+      });
+      const adults = await api.createDocument(token, {
+        title: 'Contract mortgage offer',
+        owner_member_id: me.member_id,
+        visibility: 'adults',
+      });
+      const made = await api.createList(token, {
+        name: '  For the   broker ',
+        audience: 'everyone',
+      });
+      expect(made).toMatchObject({
+        name: 'For the broker',
+        description: null,
+        audience: 'everyone',
+        owner_member_id: me.member_id,
+        mine: true,
+        item_count: 0,
+        items: [],
+      });
+
+      // Put on in the order asked, each once; its maker is told who of its
+      // audience cannot see one.
+      const filled = await api.addToList(token, made.id, [everyday.id, adults.id, everyday.id]);
+      expect(filled.items.map((i) => i.document.id)).toEqual([everyday.id, adults.id]);
+      expect(filled.item_count).toBe(2);
+      expect(filled.items.map((i) => i.hint)).toEqual([null, LIST_HINT_TEENS]);
+      // A document that is not there is refused, and nothing is put on with it.
+      const missing = await refusal(api.addToList(token, made.id, [everyday.id, NEVER_USED]));
+      expect(missing).toMatchObject({ status: 404, code: 'not_found' });
+      expect((await api.getList(token, made.id)).item_count).toBe(2);
+
+      // The same count in the list of lists; each document says it is on it.
+      const listed = (await api.lists(token)).items.find((l) => l.id === made.id);
+      expect(listed).toMatchObject({ name: 'For the broker', item_count: 2, mine: true });
+      expect((await api.documentLists(token, adults.id)).items.map((l) => l.id)).toEqual([made.id]);
+
+      // Renamed, made to the list as it was seen: an older ETag is refused.
+      const renamed = await api.updateList(
+        token,
+        made.id,
+        { name: 'For the new broker' },
+        made.etag,
+      );
+      expect(renamed).toMatchObject({ name: 'For the new broker', item_count: 2 });
+      expect(renamed.etag).not.toBe(made.etag);
+      const stale = await refusal(
+        api.updateList(token, made.id, { audience: 'adults' }, made.etag),
+      );
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      // A list has a name, of 80 characters at most, and somebody it is for.
+      for (const name of ['   ', 'x'.repeat(81)]) {
+        const err = await refusal(api.createList(token, { name, audience: 'everyone' }));
+        expect(err).toMatchObject({ status: 422, code: 'validation_failed', detail: 'name' });
+      }
+
+      // Taken off, once; a second time it is not on it.
+      await api.removeFromList(token, made.id, adults.id);
+      expect((await api.getList(token, made.id)).items.map((i) => i.document.id)).toEqual([
+        everyday.id,
+      ]);
+      const twice = await refusal(api.removeFromList(token, made.id, adults.id));
+      expect(twice).toMatchObject({ status: 404, code: 'not_found' });
+
+      // Deleted, it is gone; its documents are not.
+      await api.deleteList(token, made.id);
+      const gone = await refusal(api.getList(token, made.id));
+      expect(gone).toMatchObject({ status: 404, code: 'not_found' });
+      expect((await api.lists(token)).items.map((l) => l.id)).not.toContain(made.id);
+      expect((await api.documentLists(token, everyday.id)).items).toEqual([]);
+      expect((await api.document(token, everyday.id)).title).toBe('Contract council tax');
     },
   },
   {

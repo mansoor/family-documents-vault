@@ -218,3 +218,42 @@ describe('kinds of document (0.5.10)', () => {
     expect(kind('document_type.updated', { label: 'Will' })?.text).toBe('Sarah changed “Will”');
   });
 });
+
+describe('lists of documents (0.5.12)', () => {
+  const about = (action: string, list_name: string | null, over: Partial<ActivityEvent> = {}) =>
+    describeEvent(ev({ action, list_name, ...over }));
+
+  it("names the list as it is called now, and a document on it by the document's title", () => {
+    const listLine = { object_type: 'list', object_id: 'list-1', object_title: null };
+    expect(about('list.created', 'Holiday', listLine)).toMatchObject({
+      text: 'Sarah made the list “Holiday”',
+      notable: false,
+      document_id: null,
+    });
+    expect(about('list.renamed', 'Holiday 2027', listLine)?.text).toBe(
+      'Sarah renamed a list, now “Holiday 2027”',
+    );
+    expect(about('list.updated', 'Holiday', listLine)?.text).toBe(
+      'Sarah changed the list “Holiday”',
+    );
+    expect(about('list.deleted', 'Holiday', listLine)?.text).toBe(
+      'Sarah deleted the list “Holiday”',
+    );
+    // A document put on one, or taken off, points at the document.
+    expect(about('list.item_added', 'Holiday')).toMatchObject({
+      text: 'Sarah added “Home insurance policy” to the list “Holiday”',
+      document_id: 'doc-1',
+    });
+    expect(about('list.item_removed', 'Holiday')?.text).toBe(
+      'Sarah took “Home insurance policy” off the list “Holiday”',
+    );
+  });
+
+  it('with no name to give, says "a list" rather than an id', () => {
+    for (const action of ['list.created', 'list.renamed', 'list.updated', 'list.deleted']) {
+      const line = about(action, null, { object_type: 'list', object_id: 'list-1' });
+      expect(line?.text, action).toMatch(/a list$/);
+      expect(line?.text, action).not.toContain('list-1');
+    }
+  });
+});

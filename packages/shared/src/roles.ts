@@ -65,7 +65,9 @@ export type Capability =
   /** Add and change the household's kinds of document, and hide the built-in ones (5.11). */
   | 'types.manage'
   /** Let more people see a kind of document by default: Adults only to Everyone (5.11). */
-  | 'types.widen_visibility';
+  | 'types.widen_visibility'
+  /** Make lists of documents, and change your own (5.14). Only a list's maker changes it (A18). */
+  | 'list.manage';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -169,6 +171,14 @@ const MATRIX: Record<Capability, Rule> = {
     roles: ['owner'],
     refusal: 'Only an owner can let more people see a kind of document from now on.',
   },
+  'list.manage': {
+    // Gathering papers for a purpose — for the mortgage broker, before a
+    // trip — is filing, which everybody who files does. A teen may make a
+    // list, and will never share one outside the family (A18, 5.19). A
+    // viewer is given documents, not the family's lists (A17).
+    roles: ['owner', 'adult', 'teen'],
+    refusal: 'Viewers can open and download documents, but not make lists of them.',
+  },
 };
 
 export const CAPABILITIES = Object.keys(MATRIX) as Capability[];
@@ -242,4 +252,72 @@ export function canSee(
     default:
       return false;
   }
+}
+
+/** Who a list of documents is for (5.14). */
+export const LIST_AUDIENCES = ['everyone', 'teens', 'adults', 'only_me'] as const;
+export type ListAudience = (typeof LIST_AUDIENCES)[number];
+
+/**
+ * The roles in each audience (A17). "Everyone" is the family that files:
+ * owners, adults and teens. A viewer — an accountant or an attorney with a
+ * sign-in — is in none of them, and sees a list only when it is granted to
+ * them (5.33): a list called "For the divorce lawyer" is not theirs to
+ * know about. Only me is its maker's alone, whatever their role.
+ */
+const LIST_READERS: ReadonlyMap<string, readonly Role[]> = new Map<string, readonly Role[]>([
+  ['everyone', ['owner', 'adult', 'teen']],
+  ['teens', ['owner', 'adult', 'teen']],
+  ['adults', ['owner', 'adult']],
+  ['only_me', ['owner', 'adult', 'teen']],
+]);
+
+/**
+ * Whether a role is in an audience. For Only me that is only half of it:
+ * the reader must also be the list's maker (`canSeeList`). An audience
+ * this code has never heard of is nobody's.
+ */
+export function inListAudience(role: Role, audience: string): boolean {
+  return LIST_READERS.get(audience)?.includes(role) ?? false;
+}
+
+/**
+ * Whether someone may see a list — that it exists, its name, and what of
+ * it they can see. The API asks this in SQL (lists/service.ts) and of each
+ * line in the activity log; the database itself keeps Only me (0036).
+ */
+export function canSeeList(
+  reader: { role: Role; memberId: string | null },
+  list: { audience: string; owner_member_id: string | null },
+): boolean {
+  if (!inListAudience(reader.role, list.audience)) return false;
+  return (
+    list.audience !== 'only_me' ||
+    (reader.memberId !== null && list.owner_member_id === reader.memberId)
+  );
+}
+
+/** A list's maker is told, beside a document on it, who of its audience is not given it (5.14). */
+export const LIST_HINT_TEENS = 'Teens in this list’s audience can’t see this one.';
+export const LIST_HINT_PRIVATE = 'Only you can see this one. It is private.';
+export const LIST_HINT_SOME = 'Some people in this list’s audience can’t see this one.';
+
+/**
+ * The hint beside a document on a list, for its maker alone: who in the
+ * list's audience the visibility rule keeps it from, or null when every one
+ * of them sees it. Nobody else is told — a hint would say that a document
+ * they are not given is there.
+ */
+export function listItemHint(
+  audience: string,
+  doc: { visibility: string; owner_member_id: string | null },
+): string | null {
+  if (audience === 'only_me') return null;
+  // Anybody of each role but the document's owner, whom a private one is for.
+  const shut = ROLES.filter(
+    (role) => inListAudience(role, audience) && !canSee({ role, memberId: null }, doc),
+  );
+  if (shut.length === 0) return null;
+  if (doc.visibility === 'private') return LIST_HINT_PRIVATE;
+  return shut.every((role) => role === 'teen') ? LIST_HINT_TEENS : LIST_HINT_SOME;
 }
