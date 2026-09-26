@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { testAdminUrl } from '@fdv/db/testing';
-import { canSee, mayKeepOffline, type DocumentView, type Role } from '@fdv/shared';
+import { can, canSee, mayKeepOffline, type DocumentView, type Role } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
@@ -165,7 +165,9 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     expect(ids).toEqual(expected(role));
   });
 
-  it.each(roles)('the share-link list agrees with canSee for a %s', async (role) => {
+  // Only those who may share see the links at all (0.5.0); for them, the
+  // list names only what they may see.
+  it.each(roles)('the share-link list agrees with canSee for a %s who may share', async (role) => {
     const res = await h.app.inject({ url: '/api/v1/shares', headers: h.as(people[role]) });
     expect(res.statusCode, res.body).toBe(200);
     const ids = [
@@ -176,7 +178,7 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
           .filter((id) => docs.some((d) => d.id === id)),
       ),
     ].sort();
-    expect(ids).toEqual(expected(role));
+    expect(ids).toEqual(can(role, 'document.share') ? expected(role) : []);
   });
 
   it.each(roles)('the tag list agrees with canSee for a %s', async (role) => {

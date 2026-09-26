@@ -1,5 +1,6 @@
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { requestForLog } from './log-redaction.js';
 import { registerOffline } from './offline/routes.js';
 import type { OfflineService } from './offline/service.js';
 import { registerAudit } from './audit/routes.js';
@@ -79,9 +80,22 @@ function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
   return ['127.0.0.1/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'];
 }
 
+/**
+ * The logger, as the caller asked for it, but never with a secret from a
+ * URL in it (0.5.0): share, reset and invitation tokens and query strings
+ * are cut from every request line (log-redaction.ts).
+ */
+function loggerOptions(config: ApiConfig, given: AppDeps['logger']): boolean | object {
+  const base = { level: config.LOG_LEVEL, serializers: { req: requestForLog } };
+  if (given === undefined) return base;
+  if (typeof given !== 'object' || given === null) return given;
+  const theirs = (given as { serializers?: object }).serializers ?? {};
+  return { ...base, ...given, serializers: { ...base.serializers, ...theirs, req: requestForLog } };
+}
+
 export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: deps.logger ?? { level: config.LOG_LEVEL },
+    logger: loggerOptions(config, deps.logger),
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
     trustProxy: trustProxy(config.FDV_TRUST_PROXY),
