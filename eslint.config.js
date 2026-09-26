@@ -13,6 +13,7 @@ export default tseslint.config(
       '**/coverage/**',
       'docs-private/**',
       'prototype/**',
+      '.older-client/**',
     ],
   },
   js.configs.recommended,
@@ -21,8 +22,14 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['*.ts', 'apps/*/vitest.config.ts', 'packages/*/vitest.config.ts'],
-          // One per package's vitest.config.ts, plus the root's.
+          allowDefaultProject: [
+            '*.ts',
+            'apps/*/vitest.config.ts',
+            'apps/*/vitest.*.config.ts',
+            'packages/*/vitest.config.ts',
+          ],
+          // One per package's vitest.config.ts, the root's, and the older
+          // client's (5.2).
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 16,
         },
         tsconfigRootDir: import.meta.dirname,

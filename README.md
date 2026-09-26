@@ -510,7 +510,7 @@ Then put the new value in `.env` as `FDV_MASTER_KEY`, run `docker compose up -d`
 
 ## Upgrading
 
-Images are version-tagged. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it. So take one first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
+Images are version-tagged, and `latest` is the newest release (a milestone or a fix to one — never a development build or a release candidate); set `FDV_VERSION` in your `.env` to stay on one version until you choose to move. Database migrations run automatically on start, and only forward: the way back from an upgrade is the image you had and the backup taken before it. So take one first — `docker compose exec worker node apps/worker/dist/cli.mjs backup-now` — and if you ever need it, restore it as [above](#restoring). Breaking API changes are announced in [`docs/api-changelog.md`](docs/api-changelog.md) with a deprecation window of four minor releases, so an older mobile app keeps working against a newer server and vice versa.
 
 ## Developing
 

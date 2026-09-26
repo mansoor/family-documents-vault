@@ -4,3 +4,4 @@ coverage
 pnpm-lock.yaml
 docs-private
 prototype
+.older-client
