@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-09-26 — iteration 5.11
+
+The family's own kinds of document, on the server: an owner or an adult can make a kind of document, change what the card asks for it, hide a built-in one the family never needs, archive their own, and delete one nobody uses. The screens come in the next release.
+
+### Added
+
+- Making, changing, hiding, archiving and deleting kinds of document, and adding fields to the library they share; every change is in the activity log. What a change would affect is shown first — counting only the documents you can see.
+- Letting more people see a kind's new documents by default (for example making wills visible to the whole family) is for an owner only, and asks to confirm it's them; making it narrower is for any adult.
+- When a kind's reminder times change, or its expiry is switched on or off, its documents' reminders follow — without reminding anyone of what has already passed.
+
+### Changed
+
+- A scan queued on a phone for a kind that has since been deleted is filed without a kind, and as privately as it can be, rather than refused.
+- A kind of document that defaults to Only me no longer files somebody else's document as Only me.
+- Someone who can only view reads the kinds of document the documents they can see are filed under, not every kind the family has made.
+
+### Fixed
+
+- The hourly reminder email is no longer sent twice when a kind's reminders change while it is being sent, and one household's trouble no longer stops the others'.
+
 ## [0.5.9] - 2026-09-26 — iteration 5.10
 
 ### Added
