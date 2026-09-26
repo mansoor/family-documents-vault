@@ -44,6 +44,8 @@ export interface FakeState {
   types: Array<Record<string, unknown>>;
   /** GET /document-attributes: the library a type's fields come from (0.5.6). */
   attributes?: Array<Record<string, unknown>>;
+  /** GET /document-types/{key}/impact, by key; a kind not here has no documents (5.12). */
+  impact?: Record<string, Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -301,14 +303,16 @@ export function installFakeApi(state: FakeState) {
   const refuse = (status: number, code: string, message: string, more: object = {}) =>
     json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
   /** SEC-17, as the vault asks it, saying what the credential is for. */
-  const stepUp = (action: 'open_private_document' | 'open_essential') =>
+  const stepUp = (action: 'open_private_document' | 'open_essential' | 'widen_type_visibility') =>
     refuse(
       403,
       'step_up_required',
       `Please confirm it is you ${
-        action === 'open_private_document'
-          ? 'to open a document only you can see'
-          : 'to open an Essential document'
+        {
+          open_private_document: 'to open a document only you can see',
+          open_essential: 'to open an Essential document',
+          widen_type_visibility: 'to let more people see a kind of document',
+        }[action]
       }.`,
       { action },
     );
@@ -366,7 +370,7 @@ export function installFakeApi(state: FakeState) {
         edition: 'self_hosted',
         protection_mode: 'standard',
         setup_required: state.setupRequired,
-        features: { passkeys: true },
+        features: { passkeys: true, custom_types: true },
         limits: {},
         deprecations: [],
         branding: { display_name: state.displayName },
@@ -812,8 +816,110 @@ export function installFakeApi(state: FakeState) {
       state.invitations = state.invitations.filter((i) => i.id !== id);
       return Promise.resolve(new Response(null, { status: 204 }));
     }
-    if (path === '/api/v1/document-types') return json({ items: state.types });
-    if (path === '/api/v1/document-attributes') return json({ items: state.attributes ?? [] });
+    // Kinds of document, managed (5.12), as the vault manages them (0.5.10).
+    if (path === '/api/v1/document-types' && method === 'GET') {
+      // A hidden kind is listed with ?all=true (the editor's list).
+      const all = query.get('all') === 'true';
+      return json({ items: state.types.filter((t) => all || !t.hidden) });
+    }
+    if (path === '/api/v1/document-attributes' && method === 'GET') {
+      return json({ items: state.attributes ?? [] });
+    }
+    if (path === '/api/v1/document-attributes' && method === 'POST') {
+      const b = body as { label: string; kind: string; choices?: string[] | null };
+      const made = {
+        key: `h_field${(state.attributes ?? []).length}`,
+        label: b.label,
+        kind: b.kind,
+        choices: b.kind === 'choice' ? (b.choices ?? []) : null,
+        builtin: false,
+      };
+      state.attributes = [...(state.attributes ?? []), made];
+      return json(made, 201);
+    }
+    if (path === '/api/v1/document-types' && method === 'POST') {
+      const made = changedKind(
+        {
+          key: `h_kind${state.types.length}`,
+          label: '',
+          category: 'other',
+          fields: [],
+          expiry_driver: null,
+          reminder_leads: [],
+          usually_essential: false,
+          default_visibility: 'household',
+          issued_by_label: null,
+          builtin: false,
+          hidden: false,
+          core: {},
+        },
+        body as Record<string, unknown>,
+        state.attributes ?? [],
+      );
+      // Never pushed: `types` may be the shared TYPES of another test.
+      state.types = [...state.types, { ...made, etag: `"${String(made.key)}.1"` }];
+      return json(state.types[state.types.length - 1], 201);
+    }
+    const kindAt = /^\/api\/v1\/document-types\/([^/]+)(\/archive|\/restore|\/impact)?$/.exec(path);
+    if (kindAt) {
+      const kind = state.types.find((t) => t.key === decodeURIComponent(kindAt[1] as string));
+      if (!kind) return refuse(404, 'not_found', 'That kind of document is not on the list.');
+      const keep = (next: Record<string, unknown>) => {
+        const saved = { ...next, etag: `"${String(kind.key)}.${state.calls.length}"` };
+        state.types = state.types.map((t) => (t === kind ? saved : t));
+        return json(saved);
+      };
+      if (kindAt[2] === '/impact') {
+        return json(
+          state.impact?.[String(kind.key)] ?? {
+            key: kind.key,
+            documents: 0,
+            in_trash: 0,
+            core: Object.fromEntries(
+              [
+                'identifier',
+                'issued_by',
+                'issued',
+                'expires',
+                'physical_location',
+                'tags',
+                'notes',
+              ].map((f) => [f, { with_value: 0, without_value: 0 }]),
+            ),
+            fields: [],
+            reminders: 0,
+            unseen: "Documents you can't see may also be affected.",
+          },
+        );
+      }
+      if (kindAt[2] && method === 'POST') {
+        return keep({ ...kind, hidden: kindAt[2] === '/archive' });
+      }
+      if (method === 'PATCH') {
+        const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+        if (ifMatch && ifMatch !== kind.etag) {
+          return refuse(
+            409,
+            'conflict',
+            'Someone else changed this kind of document. Reload and try again.',
+          );
+        }
+        // Letting more people see its next document: an owner's, confirmed.
+        const reach: Record<string, number> = { private: 1, adults: 2, household: 3 };
+        const to = (body as { default_visibility?: string }).default_visibility;
+        if (to && (reach[to] ?? 0) > (reach[String(kind.default_visibility)] ?? 0)) {
+          if (storedRole() !== 'owner') {
+            return refuse(
+              403,
+              'forbidden',
+              'Only an owner can let more people see a kind of document from now on.',
+            );
+          }
+          if (state.stepUpNeeded) return stepUp('widen_type_visibility');
+        }
+        return keep(changedKind(kind, body as Record<string, unknown>, state.attributes ?? []));
+      }
+    }
     if (path === '/api/v1/documents/counts') {
       return json({
         by_member: [{ member_id: 'me', count: state.documents.length }],
@@ -1149,6 +1255,58 @@ export function installFakeApi(state: FakeState) {
 function listed(d: Record<string, unknown>): Record<string, unknown> {
   if (d.visibility !== 'private') return d;
   return { ...d, notes: null, has_notes: d.notes != null, extra: {} };
+}
+
+/**
+ * A kind of document with a change made to it, as the vault makes it
+ * (0.5.10): each fixed field key by key (Expires shown is whether it
+ * expires), its own fields from the library by key.
+ */
+function changedKind(
+  kind: Record<string, unknown>,
+  change: Record<string, unknown>,
+  library: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...kind };
+  for (const k of [
+    'label',
+    'category',
+    'reminder_leads',
+    'default_visibility',
+    'usually_essential',
+    'hidden',
+  ]) {
+    if (change[k] !== undefined) next[k] = change[k];
+  }
+  type Rule = { shown?: boolean; required?: boolean; label?: string | null };
+  const core: Record<string, Rule> = { ...((kind.core ?? {}) as Record<string, Rule>) };
+  for (const [f, rule] of Object.entries((change.core ?? {}) as Record<string, Rule>)) {
+    core[f] = { shown: true, required: false, label: null, ...core[f], ...rule };
+  }
+  next.core = core;
+  if (core.expires?.shown !== undefined) {
+    // One that expires requires its expiry, and is reminded 30 days before
+    // unless it says otherwise (the 5.11 review).
+    core.expires = { ...core.expires, required: core.expires.shown };
+    next.expiry_driver = core.expires.shown ? (kind.expiry_driver ?? 'expires_on') : null;
+    const leads = (next.reminder_leads ?? []) as number[];
+    if (core.expires.shown && leads.length === 0) next.reminder_leads = [30];
+  }
+  if (core.issued_by?.label !== undefined) next.issued_by_label = core.issued_by.label;
+  if (Array.isArray(change.fields)) {
+    const had = (kind.fields ?? []) as Array<Record<string, unknown>>;
+    next.fields = (change.fields as Array<{ key: string; required?: boolean }>).map((f) => {
+      const was = had.find((x) => x.key === f.key);
+      const lib = library.find((a) => a.key === f.key);
+      return {
+        key: f.key,
+        label: was?.label ?? lib?.label ?? f.key,
+        kind: was?.kind ?? lib?.kind ?? 'text',
+        required: f.required ?? false,
+      };
+    });
+  }
+  return next;
 }
 
 /** One issuer however it was written, as the server compares them. */

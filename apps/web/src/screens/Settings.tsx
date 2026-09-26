@@ -43,6 +43,14 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {caps?.features.custom_types && can(storedRole(), 'types.manage') && (
+          <li>
+            <Link to="/settings/kinds" className="rowbtn">
+              <span className="doc-title">Kinds of document</span>
+              <span className="muted">What the family keeps, and what the card asks for each</span>
+            </Link>
+          </li>
+        )}
         {can(storedRole(), 'document.edit') && (
           <li>
             <Link to="/settings/trash" className="rowbtn">

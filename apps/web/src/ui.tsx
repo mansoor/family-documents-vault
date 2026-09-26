@@ -112,14 +112,37 @@ export function TextArea(props: {
   );
 }
 
-/** A yes or a no (5.10): a switch, which says which in words as well. */
+/**
+ * A yes or a no (5.10): a switch, which says which in words as well. Given
+ * a `word`, it stands alone in a row (5.12's Hide): that word beside it,
+ * and `label` its whole name for a screen reader ("Hide Passport").
+ */
 export function Switch(props: {
   id: string;
   label: string;
   checked: boolean;
   requiredMark?: boolean;
+  word?: string;
   onChange: (v: boolean) => void;
 }) {
+  const input = (
+    <input
+      id={props.id}
+      type="checkbox"
+      role="switch"
+      checked={props.checked}
+      aria-label={props.word === undefined ? undefined : props.label}
+      onChange={(e) => props.onChange(e.target.checked)}
+    />
+  );
+  if (props.word !== undefined) {
+    return (
+      <label className="switch">
+        {input}
+        <span aria-hidden="true">{props.word}</span>
+      </label>
+    );
+  }
   return (
     <div className="field">
       <label htmlFor={props.id}>
@@ -127,13 +150,7 @@ export function Switch(props: {
         {props.requiredMark && <RequiredMark />}
       </label>
       <span className="switch">
-        <input
-          id={props.id}
-          type="checkbox"
-          role="switch"
-          checked={props.checked}
-          onChange={(e) => props.onChange(e.target.checked)}
-        />
+        {input}
         <span aria-hidden="true">{props.checked ? 'Yes' : 'No'}</span>
       </span>
     </div>

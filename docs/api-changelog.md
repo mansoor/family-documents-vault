@@ -998,6 +998,22 @@ choices? }` → `201` with the field, for the library; a `choice` has at
       kind's reminders made again) no longer rolls the digest back to be
       sent a second time; and one household whose digest fails no longer
       stops the others'.
+  - Kinds of document: the editor (5.12). The web's Settings → Kinds of
+    document uses the endpoints of 5.11; nothing on the wire changes but
+    one flag.
+    - **New:** `features.custom_types: true` in `GET /api/v1/capabilities`:
+      the household keeps kinds of document of its own, each under one of
+      the twelve categories, and changes the built-ins. A client that
+      groups kinds by category, or files a document into one with no
+      details, needs nothing new; a document whose kind requires a field
+      it has no value for is Needs info, naming it. Absent from older
+      vaults.
+    - `@fdv/shared`: `CapabilityFeatures.custom_types`, `leadWords` (the
+      reminder sentence's words for a lead time). The fake answers
+      `features.custom_types`, and `GET /api/v1/documents/{id}/versions`
+      with each version's `uploaded_by_name` — null for a viewer, as the
+      vault answers (its `state.role` says who is signed in) — and a
+      contract scenario holds the vault and the fake to both.
 
 ## Deprecations in effect
 

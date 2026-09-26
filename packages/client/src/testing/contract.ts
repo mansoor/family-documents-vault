@@ -1,4 +1,4 @@
-import { CORE_FIELDS, type Tokens } from '@fdv/shared';
+import { CATEGORY_LABELS, CORE_FIELDS, type Tokens } from '@fdv/shared';
 import { expect } from 'vitest';
 import type { Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
@@ -45,6 +45,7 @@ const PAGES_KEY = '3c4d5e6f-7081-4923-8a4b-5c6d7e8f9012';
 const EXTRA_KEY = '4d5e6f70-8192-4a34-9b5c-6d7e8f901234';
 const REFUSED_EXTRA_KEY = '5e6f7081-92a3-4b45-8c6d-7e8f90123456';
 const GONE_KIND_KEY = '6f708192-a3b4-4c56-9d7e-8f9012345678';
+const OWN_KIND_KEY = '708192a3-b4c5-4d67-8e8f-90123456789a';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -762,6 +763,51 @@ export const contractScenarios: Scenario[] = [
         owner_member_id: me.member_id,
         identifier: 'P9',
         visibility: 'private',
+      });
+    },
+  },
+  {
+    name: "a phone files into a household's own kind with no details, which then says what it needs; its history says who added it (0.5.11)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.custom_types).toBe(true);
+      const kind = await api.createDocumentType(token, {
+        label: 'Season ticket',
+        category: 'bills',
+        core: { identifier: { label: 'Ticket number', required: true } },
+      });
+      // An older phone groups its list by category: one of the twelve it knows.
+      const listed = (await api.documentTypes(token)).items.find((t) => t.key === kind.key);
+      expect(Object.keys(CATEGORY_LABELS)).toContain(listed?.category);
+      // It files into the kind with no details at all, as app 0.2.0 does.
+      const me = await api.me(token);
+      const made = await api.capture(
+        token,
+        {
+          metadata: { type_key: kind.key, owner_member_id: me.member_id },
+          file: {
+            kind: 'bytes',
+            filename: 'ticket.pdf',
+            contentType: 'application/pdf',
+            bytes: PDF,
+          },
+        },
+        OWN_KIND_KEY,
+      );
+      expect((await api.document(token, made.document_id)).status).toEqual({
+        value: 'needs_info',
+        label: 'Needs a ticket number',
+      });
+      // Who added the version, by the name the household knows them by.
+      const mine = (await api.members(token)).items.find((m) => m.is_me);
+      const history = (await api.versions(token, made.document_id)).items;
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        id: made.version_id,
+        document_id: made.document_id,
+        version_no: 1,
+        filename: 'ticket.pdf',
+        uploaded_by_name: mine?.display_name,
       });
     },
   },

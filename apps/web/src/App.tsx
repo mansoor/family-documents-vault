@@ -9,6 +9,7 @@ import { ActivityScreen } from './screens/Activity.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
+import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { NotificationsScreen } from './screens/Notifications.js';
@@ -214,6 +215,30 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <StorageScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/kinds"
+            element={
+              <Gate need="signed-in">
+                <KindsScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/kinds/new"
+            element={
+              <Gate need="signed-in">
+                <KindScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/kinds/:key"
+            element={
+              <Gate need="signed-in">
+                <KindScreen />
               </Gate>
             }
           />

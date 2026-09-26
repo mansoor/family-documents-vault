@@ -51,6 +51,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       page_previews: true,
       offline_essentials: true,
       unified_push: config.pushEnabled,
+      // 0.5.11: the household's own kinds of document, and the web's editor for them.
+      custom_types: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

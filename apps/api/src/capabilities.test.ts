@@ -56,6 +56,8 @@ describe('buildCapabilities', () => {
       offline_essentials: true,
       // 0.4.14: the phone app's notifications through UnifiedPush — as push is (4.13).
       unified_push: false,
+      // 0.5.11: kinds of document of the household's own, and the editor (5.11, 5.12).
+      custom_types: true,
     });
     expect(caps.deprecations).toEqual([]);
   });
