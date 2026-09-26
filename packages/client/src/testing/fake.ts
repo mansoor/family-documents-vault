@@ -5,11 +5,13 @@ import {
   CORE_FIELDS,
   deriveStatus,
   effectiveVisibility,
+  EXPIRY_ALWAYS_REQUIRED,
   missingFields,
   PREVIEW_MAX_PAGES,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
   TYPE_IN_USE,
+  TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
   type Capabilities,
   type CaptureMetadata,
@@ -102,7 +104,7 @@ export interface FakeVaultState {
 
 type FakeDocument = { id: string; title: string | null; revision?: number } & Omit<
   CaptureMetadata,
-  'title' | 'issued' | 'tags'
+  'title'
 >;
 
 /** What the fake keeps from an edit; anything else it refuses to pretend to keep. */
@@ -299,23 +301,53 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   const revisions = new Map<string, number>();
   const typeTag = (t: DocumentTypeView) => `"${t.key}.${revisions.get(t.key) ?? 1}"`;
   const bump = (t: DocumentTypeView) => revisions.set(t.key, (revisions.get(t.key) ?? 1) + 1);
-  const typeAnswer = (t: DocumentTypeView): DocumentTypeView => ({ ...t, etag: typeTag(t) });
+  /**
+   * A kind as the real vault answers it: its ETag, and an expiry required
+   * exactly when it expires, whatever its rule once said (0.5.10).
+   */
+  const typeAnswer = (t: DocumentTypeView): DocumentTypeView => ({
+    ...t,
+    ...(t.core
+      ? { core: { ...t.core, expires: { ...t.core.expires, required: t.expiry_driver !== null } } }
+      : {}),
+    etag: typeTag(t),
+  });
   /**
    * A change to a kind's fixed fields and its own fields, as the real vault
    * makes it: each fixed field key by key (Expires on or off is whether it
-   * expires), its own fields from the library by key. A refusal, or null.
+   * expires, and an expiry is required exactly when it does), its own
+   * fields from the library by key, names 80 characters at most. A refusal,
+   * or null.
    */
   const changeType = (t: DocumentTypeView, change: TypeChange): ResponseLike | null => {
+    const asked = change.core?.expires;
+    if (asked?.required !== undefined) {
+      const expires = asked.shown ?? t.expiry_driver !== null;
+      if (asked.required !== expires) {
+        return fail(
+          422,
+          'validation_failed',
+          expires ? EXPIRY_ALWAYS_REQUIRED : 'A field has to be shown to be required.',
+          'expires',
+        );
+      }
+    }
+    const long = tooLong([
+      ...CORE_FIELDS.map((f) => [change.core?.[f]?.label, 'A field’s name'] as const),
+      ...(change.fields ?? []).map((f) => [f.label, 'A field’s name'] as const),
+    ]);
+    if (long) return long;
     const core = t.core ?? coreOf(t);
     for (const f of CORE_FIELDS) {
       const rule = change.core?.[f];
       if (!rule) continue;
       if (rule.shown !== undefined) core[f].shown = rule.shown;
-      if (rule.required !== undefined) core[f].required = rule.required;
+      if (rule.required !== undefined && f !== 'expires') core[f].required = rule.required;
       if (rule.label !== undefined) core[f].label = tidy(rule.label);
     }
     t.core = core;
     t.expiry_driver = core.expires.shown ? (t.expiry_driver ?? 'expires_on') : null;
+    core.expires.required = t.expiry_driver !== null;
     t.issued_by_label = core.issued_by.label;
     for (const f of CORE_FIELDS) {
       if (f !== 'expires' && core[f].required && !core[f].shown) {
@@ -517,6 +549,19 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       for (const key of checked.remove) delete merged[key];
       return Object.assign(merged, checked.set);
     };
+    /** A capture's details for a kind the fake no longer has: each by the library's field, or left out. */
+    const libraryDetails = (sent: Record<string, unknown>) => {
+      const kept: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(sent)) {
+        const lib = state.attributes.find((a) => a.key === key);
+        if (!lib) continue;
+        const checked = checkExtra({ [key]: value }, [
+          { key, label: lib.label, kind: lib.kind, choices: lib.choices ?? [] },
+        ]);
+        if ('set' in checked) Object.assign(kept, checked.set);
+      }
+      return kept;
+    };
     if (path === '/api/v1/documents') {
       const s = session();
       if (!('id' in s)) return s;
@@ -548,7 +593,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           owner_member_id: owner,
           identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
+          issued: (body.issued as DateValue | null | undefined) ?? null,
           expires: (body.expires as DateValue | null | undefined) ?? null,
+          physical_location: note(body.physical_location as string | null | undefined),
+          tags: tagsOf(body.tags as string[] | undefined),
           notes: note(body.notes as string | null | undefined),
           ...(visibility !== undefined ? { visibility } : {}),
           extra,
@@ -652,6 +700,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (documentId === undefined) {
         // The card's details come before the file, or not at all (0.4.9).
         let metadata: CaptureMetadata = {};
+        let loose: Record<string, unknown> | null = null;
         const parts = partsOf(init.body) ?? [];
         const file = parts.findIndex((p) => p.value === null);
         const meta = parts.findIndex((p) => p.name === 'metadata');
@@ -663,6 +712,21 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             metadata = JSON.parse(parts[meta]?.value ?? '') as CaptureMetadata;
           } catch {
             return fail(422, 'validation_failed', 'The details must be sent as JSON.');
+          }
+          // As the real vault (0.5.10): a kind it does not have — deleted
+          // while the phone was offline — is not a refusal. The scan is filed
+          // with no kind, for as few people as it could be, and its details
+          // kept where the library has the field.
+          if (metadata.type_key != null && !state.types.some((t) => t.key === metadata.type_key)) {
+            const { extra: sentExtra, ...rest } = metadata;
+            metadata = {
+              ...rest,
+              type_key: null,
+              visibility:
+                metadata.visibility ??
+                ((metadata.owner_member_id ?? null) === 'fake-member' ? 'private' : 'adults'),
+            };
+            loose = sentExtra ?? null;
           }
           // As the real vault: a type the household has hidden is still
           // taken, since a phone queues a scan against the list it had.
@@ -684,7 +748,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             );
           }
         }
-        const extra = detailsFor(metadata.type_key, metadata.extra);
+        const extra = loose ? libraryDetails(loose) : detailsFor(metadata.type_key, metadata.extra);
         if (isResponse(extra)) return extra;
         const doc: FakeDocument = {
           id: next('document'),
@@ -693,7 +757,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           owner_member_id: metadata.owner_member_id ?? null,
           identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
+          issued: metadata.issued ?? null,
           expires: metadata.expires ?? null,
+          physical_location: note(metadata.physical_location),
+          tags: tagsOf(metadata.tags),
           notes: note(metadata.notes),
           extra,
           visibility: effectiveVisibility(
@@ -918,6 +985,13 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/document-attributes' && init.method === 'POST') {
       const s = session();
       if (!('id' in s)) return s;
+      const long = tooLong([
+        [body.label, 'The name'],
+        ...((body.choices as string[] | null | undefined) ?? []).map(
+          (c) => [c, 'An answer'] as const,
+        ),
+      ]);
+      if (long) return long;
       const label = tidy(body.label as string | undefined);
       if (!label) return fail(422, 'validation_failed', 'Give the field a name.', 'label');
       const kind = body.kind as DocumentAttributeView['kind'];
@@ -948,6 +1022,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/document-types' && init.method === 'POST') {
       const s = session();
       if (!('id' in s)) return s;
+      const long = tooLong([
+        [body.label, 'The name'],
+        [body.short_label, 'The short name'],
+        [body.issuer_noun, 'The word after who issued it'],
+      ]);
+      if (long) return long;
       const label = tidy(body.label as string | undefined);
       if (!label) {
         return fail(422, 'validation_failed', 'Give the kind of document a name.', 'label');
@@ -959,6 +1039,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           'validation_failed',
           'Choose one of the categories the vault has.',
           'category',
+        );
+      }
+      // As the real vault: the household's own is archived, never hidden.
+      if (body.hidden !== undefined) {
+        return fail(
+          422,
+          'validation_failed',
+          'A kind of document of your own is archived, not hidden.',
+          'hidden',
         );
       }
       const sent = (body.core ?? {}) as TypeChange['core'];
@@ -999,10 +1088,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         // changed is refused, not laid over theirs.
         const ifMatch = init.headers['if-match'];
         if (ifMatch && ifMatch !== typeTag(t)) {
+          // The kind as it now is, to reload from.
           return fail(
             409,
             'conflict',
             'Someone else changed this kind of document. Reload and try again.',
+            JSON.stringify(typeAnswer(t)),
           );
         }
         const named = ['label', 'category', 'short_label', 'issuer_noun'].some(
@@ -1031,6 +1122,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             'category',
           );
         }
+        const long = tooLong([
+          [body.label, 'The name'],
+          [body.short_label, 'The short name'],
+          [body.issuer_noun, 'The word after who issued it'],
+        ]);
+        if (long) return long;
         const next: DocumentTypeView = JSON.parse(JSON.stringify(t)) as DocumentTypeView;
         if (body.label !== undefined) {
           const label = tidy(body.label as string);
@@ -1046,6 +1143,13 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           next.issuer_noun = tidy(body.issuer_noun as string | null);
         if (body.reminder_leads !== undefined) {
           next.reminder_leads = leadsOf(body.reminder_leads as number[]);
+        } else if (
+          t.expiry_driver === null &&
+          (body.core as TypeChange['core'])?.expires?.shown === true &&
+          t.reminder_leads.length === 0
+        ) {
+          // Expires switched on with no lead times: 30 days, as a new kind.
+          next.reminder_leads = [30];
         }
         if (body.default_visibility !== undefined) {
           next.default_visibility = body.default_visibility as Visibility;
@@ -1151,6 +1255,23 @@ function leadsOf(leads: number[]): number[] {
   return [...new Set(leads)].sort((a, b) => b - a);
 }
 
+/**
+ * The first name, of those sent, longer than the real vault keeps one
+ * (TYPE_LABEL_MAX, once tidied), refused in its words; or null.
+ */
+function tooLong(names: ReadonlyArray<readonly [unknown, string]>): ResponseLike | null {
+  for (const [value, what] of names) {
+    if (typeof value === 'string' && (tidy(value)?.length ?? 0) > TYPE_LABEL_MAX) {
+      return fail(
+        422,
+        'validation_failed',
+        `${what} is too long: ${TYPE_LABEL_MAX} characters at most.`,
+      );
+    }
+  }
+  return null;
+}
+
 /** An issuer as the real vault keeps it: spaces tidied, and blank is nothing. */
 function tidy(value: string | null | undefined): string | null {
   return value?.trim().split(/\s+/).join(' ') || null;
@@ -1159,6 +1280,11 @@ function tidy(value: string | null | undefined): string | null {
 /** Notes as the real vault keeps them: trimmed, and blank is nothing. */
 function note(value: string | null | undefined): string | null {
   return value?.trim() || null;
+}
+
+/** Tags as the real vault keeps them: trimmed, lower case, each once, fifty at most. */
+function tagsOf(tags: ReadonlyArray<string> | null | undefined): string[] {
+  return [...new Set((tags ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 50);
 }
 
 /** One query parameter, decoded; the client's library has no URLSearchParams. */
@@ -1196,7 +1322,10 @@ function documentView(
     owner_member_id: doc.owner_member_id ?? null,
     identifier: doc.identifier ?? null,
     issued_by: doc.issued_by ?? null,
+    issued: doc.issued ?? null,
     expires,
+    physical_location: doc.physical_location ?? null,
+    tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',
     notes: sealed ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,

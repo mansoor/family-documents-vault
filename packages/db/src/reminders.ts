@@ -1,6 +1,16 @@
 import { derivedFireDates, localToday } from '@fdv/shared';
 import type { Db } from './client.js';
 
+/** How a document's reminders are made again: see regenerateDerived. */
+export interface RegenerateOptions {
+  /**
+   * Only reminders whose day is still ahead are made: the type changed,
+   * not the document (types.regenerate). Left out, a lead whose day has
+   * passed is made `due`, as when the document itself is filed or edited.
+   */
+  aheadOnly?: boolean;
+}
+
 /**
  * A document's derived reminders, made again from its type and its expiry
  * date: one for each of the type's lead times, as the caller's household
@@ -10,7 +20,13 @@ import type { Db } from './client.js';
  * change (types.regenerate, 0.5.10), so both make them the same way.
  *
  * A lead whose date has passed is made `due`, so a passport added with two
- * months left is in the needs-attention strip straight away.
+ * months left is in the needs-attention strip straight away — when the
+ * document is filed or edited. When its type changed (`aheadOnly`, the 5.11
+ * review), only a reminder whose day is still ahead is made: a lead added
+ * to Passport, or Expires switched off and on again, is about what is
+ * coming, not a due reminder for every passport the family keeps for the
+ * record, long expired, nor one it has already dealt with and that the
+ * switch took away.
  *
  * A reminder that is to be exactly as it was — the same lead, the same day —
  * is left as it was (0.5.10): done, snoozed or settled by a new copy stays
@@ -25,6 +41,7 @@ export async function regenerateDerived(
   trx: Db,
   householdId: string,
   documentId: string,
+  opts: RegenerateOptions = {},
 ): Promise<void> {
   const doc = await trx
     .selectFrom('document')
@@ -69,6 +86,7 @@ export async function regenerateDerived(
     .executeTakeFirstOrThrow();
   const today = localToday(hh.timezone);
   for (const { lead, fire_at } of missing) {
+    if (opts.aheadOnly && fire_at <= today) continue;
     await trx
       .insertInto('reminder')
       .values({

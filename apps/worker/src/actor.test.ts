@@ -487,7 +487,13 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
       [
         'types.regenerate',
         async () => {
-          // The passport's reminders, made again from the type's lead times.
+          // The passport's reminders, made again from the type's lead times:
+          // those still ahead (the 5.11 review), so its expiry is put where
+          // both are, whatever day the test runs.
+          await admin.query(
+            'update document set expires_on = current_date + 400, updated_at = updated_at where id = $1',
+            [ids.document],
+          );
           expect(
             await regenerateTypeReminders(app, { household_id: hh, type_key: 'passport' }),
           ).toEqual({ documents: 1, failed: 0 });

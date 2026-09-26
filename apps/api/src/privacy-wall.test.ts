@@ -648,6 +648,100 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     expect(json<{ error: { code: string } }>(res).error.code).toBe('already_signed_in');
   });
 
+  it('deleting a kind answers the same whether or not the owner has Only me documents of it (5.11 review)', async () => {
+    const send = (
+      who: Tokens,
+      method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+      url: string,
+      payload?: object,
+    ) => h.app.inject({ method, url, headers: as(who), ...(payload ? { payload } : {}) });
+    const made = async (label: string) =>
+      json<{ key: string }>(
+        await send(owner, 'POST', '/api/v1/document-types', { label, category: 'legal' }),
+      ).key;
+    const immigration = await made('Immigration case');
+    const unused = await made('Unused kind');
+    const filed = await send(owner, 'POST', '/api/v1/documents', {
+      title: 'Appeal papers',
+      type_key: immigration,
+      owner_member_id: owner.member_id,
+      visibility: 'private',
+    });
+    expect(filed.statusCode, filed.body).toBe(201);
+    const appeal = json<DocumentView>(filed).id;
+    const kinds = async (who: Tokens, all: boolean) =>
+      json<{ items: Array<{ key: string; label: string; hidden: boolean }> }>(
+        await send(who, 'GET', `/api/v1/document-types${all ? '?all=true' : ''}`),
+      ).items;
+    const scan = (key: string) => {
+      const form = new FormData();
+      form.append('metadata', JSON.stringify({ type_key: key, title: 'Mine' }));
+      form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+      return h.app.inject({
+        method: 'POST',
+        url: '/api/v1/capture',
+        headers: { ...as(sam), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+        payload: form.getBuffer(),
+      });
+    };
+
+    // Everything Sam can ask of the two reads alike, before and after he
+    // deletes them — and his delete itself: the same answer, the same line.
+    const reads = async (key: string) => ({
+      impact: {
+        ...json<Record<string, unknown>>(
+          await send(sam, 'GET', `/api/v1/document-types/${key}/impact`),
+        ),
+        key: 'either',
+      },
+      listed: (await kinds(sam, true)).find((t) => t.key === key)?.hidden,
+    });
+    expect(await reads(immigration)).toEqual(await reads(unused));
+    const deleted = await send(sam, 'DELETE', `/api/v1/document-types/${immigration}`);
+    const control = await send(sam, 'DELETE', `/api/v1/document-types/${unused}`);
+    expect([deleted.statusCode, deleted.body]).toEqual([204, '']);
+    expect([control.statusCode, control.body]).toEqual([204, '']);
+    const log = json<{ items: ActivityLine[] }>(await send(owner, 'GET', '/api/v1/audit')).items;
+    const lines = log.map((l) => l.text);
+    expect(lines).toContain('Sam deleted “Immigration case”');
+    expect(lines).toContain('Sam deleted “Unused kind”');
+
+    for (const key of [immigration, unused]) {
+      for (const all of [false, true]) {
+        expect((await kinds(sam, all)).map((t) => t.key)).not.toContain(key);
+      }
+      for (const [method, url] of [
+        ['DELETE', `/api/v1/document-types/${key}`],
+        ['PATCH', `/api/v1/document-types/${key}`],
+        ['POST', `/api/v1/document-types/${key}/restore`],
+        ['GET', `/api/v1/document-types/${key}/impact`],
+      ] as const) {
+        const r = await send(sam, method, url, method === 'PATCH' ? { label: 'Back' } : undefined);
+        expect(r.statusCode, `${method} ${url}`).toBe(404);
+      }
+      const typed = await send(sam, 'POST', '/api/v1/documents', { type_key: key, title: 'Mine' });
+      expect(typed.statusCode).toBe(422);
+      const scanned = await scan(key);
+      expect(scanned.statusCode, scanned.body).toBe(201);
+      const kept = json<DocumentView>(
+        await send(
+          sam,
+          'GET',
+          `/api/v1/documents/${json<{ document_id: string }>(scanned).document_id}`,
+        ),
+      );
+      expect(kept.type_key).toBeNull();
+    }
+
+    // The owner's document still has its kind, and the owner still reads its name.
+    const theirs = json<DocumentView>(await send(owner, 'GET', `/api/v1/documents/${appeal}`));
+    expect(theirs.type_key).toBe(immigration);
+    expect((await kinds(owner, false)).find((t) => t.key === immigration)).toMatchObject({
+      label: 'Immigration case',
+      hidden: true,
+    });
+  });
+
   it('and after all of that, the owner can still open their own document', async () => {
     const res = await h.app.inject({
       url: `/api/v1/versions/${secretVersionId}/content`,

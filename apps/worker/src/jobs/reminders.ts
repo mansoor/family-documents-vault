@@ -200,6 +200,18 @@ export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> 
   return { became_due: total };
 }
 
+/**
+ * The digest is sent before its ledger is written, in one transaction: a
+ * failed send leaves nothing recorded, and is sent again next hour. So the
+ * reminders it reads are held (FOR KEY SHARE) until it commits: a reminder
+ * deleted meanwhile — a document edited, or every document of a type
+ * reminded anew (types.regenerate) — waits for the ledger, instead of
+ * failing it after the family was told, and telling them again (the 5.11
+ * review). The job holds one document at a time and deletes only its
+ * reminders, so the two cannot wait on each other.
+ *
+ * One household's failure is logged and the others still get theirs.
+ */
 export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> {
   const now = deps.now?.() ?? new Date();
   const hour = deps.digestHour ?? 9;
@@ -211,91 +223,108 @@ export async function deliver(deps: ReminderDeps): Promise<{ digests: number }> 
     // household its summary today — the ledger below is what keeps it to
     // one, not the clock.
     if (localHour(hh.timezone, now) < hour) continue;
-    const today = localToday(hh.timezone, now);
-    const sent = await withSystem(deps.app, hh.id, async (trx) => {
-      const already = await trx
-        .selectFrom('notification_digest')
-        .select('local_date')
-        .where('local_date', '=', today)
-        .where('kind', '=', 'daily')
-        .executeTakeFirst();
-      if (already) return false;
-
-      const due = await trx
-        .selectFrom('reminder')
-        .innerJoin('document', 'document.id', 'reminder.document_id')
-        // Delivered once per reminder: a still-open reminder is not nagged
-        // daily. Escalation to the other adults is REM-09, later.
-        .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
-        .select([
-          'reminder.id',
-          'reminder.document_id',
-          'reminder.fire_at',
-          'reminder.note',
-          'reminder.status',
-          'reminder.snoozed_until',
-          'document.title',
-          'document.visibility',
-          'document.owner_member_id',
-        ])
-        .where('reminder.status', '=', 'due')
-        .where('document.deleted_at', 'is', null)
-        .where('reminder_delivery.reminder_id', 'is', null)
-        .orderBy('reminder.fire_at')
-        .execute();
-      if (due.length === 0) return false;
-
-      const items: Due[] = due.map((r) => {
-        const fireAt = String(r.fire_at).slice(0, 10);
-        return {
-          reminder_id: r.id,
-          document_id: r.document_id,
-          title: r.title ?? 'Untitled',
-          label: reminderLabel(fireAt, today, 'due', null),
-          note: r.note,
-          overdue: fireAt < today,
-          fire_at: fireAt,
-          visibility: r.visibility,
-          owner_member_id: r.owner_member_id,
-        };
+    try {
+      if (await deliverTo(deps, hh, now)) digests++;
+    } catch (err) {
+      // Counts, not titles, as everywhere in the log.
+      deps.log('error', 'reminder digest failed', {
+        household: hh.id,
+        error: (err as Error).message,
       });
-      const reached = await sendToEach(
-        trx,
-        deps.notifier,
-        { household_id: hh.id, household_name: hh.name, timezone: hh.timezone, local_date: today },
-        items,
-        // Whether this person's copy is a catch-up depends on what is in
-        // *their* copy, not on the oldest thing in the household.
-        (mine) => {
-          const oldest = mine.reduce((m, r) => (r.fire_at < m ? r.fire_at : m), today);
-          return daysBetween(oldest, today) > 1 ? 'catch_up' : 'daily';
-        },
-      );
-      for (const r of due) {
-        const channels = [...(reached.get(r.id) ?? [])];
-        for (const channel of channels.length ? channels : ['none']) {
-          await trx
-            .insertInto('reminder_delivery')
-            .values({ reminder_id: r.id, household_id: hh.id, fire_date: today, channel })
-            .onConflict((oc) => oc.doNothing())
-            .execute();
-        }
-      }
-      await trx
-        .insertInto('notification_digest')
-        .values({
-          household_id: hh.id,
-          local_date: today,
-          kind: 'daily',
-          item_count: due.length,
-          channels: union(reached),
-        })
-        .execute();
-      return true;
-    });
-    if (sent) digests++;
+    }
   }
   return { digests };
+}
+
+async function deliverTo(
+  deps: ReminderDeps,
+  hh: { id: string; name: string; timezone: string },
+  now: Date,
+): Promise<boolean> {
+  const today = localToday(hh.timezone, now);
+  return withSystem(deps.app, hh.id, async (trx) => {
+    const already = await trx
+      .selectFrom('notification_digest')
+      .select('local_date')
+      .where('local_date', '=', today)
+      .where('kind', '=', 'daily')
+      .executeTakeFirst();
+    if (already) return false;
+
+    const due = await trx
+      .selectFrom('reminder')
+      .innerJoin('document', 'document.id', 'reminder.document_id')
+      // Delivered once per reminder: a still-open reminder is not nagged
+      // daily. Escalation to the other adults is REM-09, later.
+      .leftJoin('reminder_delivery', 'reminder_delivery.reminder_id', 'reminder.id')
+      .select([
+        'reminder.id',
+        'reminder.document_id',
+        'reminder.fire_at',
+        'reminder.note',
+        'reminder.status',
+        'reminder.snoozed_until',
+        'document.title',
+        'document.visibility',
+        'document.owner_member_id',
+      ])
+      .where('reminder.status', '=', 'due')
+      .where('document.deleted_at', 'is', null)
+      .where('reminder_delivery.reminder_id', 'is', null)
+      .orderBy('reminder.fire_at')
+      // Held until the ledger is written: see deliver.
+      .forKeyShare('reminder')
+      .execute();
+    if (due.length === 0) return false;
+
+    const items: Due[] = due.map((r) => {
+      const fireAt = String(r.fire_at).slice(0, 10);
+      return {
+        reminder_id: r.id,
+        document_id: r.document_id,
+        title: r.title ?? 'Untitled',
+        label: reminderLabel(fireAt, today, 'due', null),
+        note: r.note,
+        overdue: fireAt < today,
+        fire_at: fireAt,
+        visibility: r.visibility,
+        owner_member_id: r.owner_member_id,
+      };
+    });
+    const reached = await sendToEach(
+      trx,
+      deps.notifier,
+      { household_id: hh.id, household_name: hh.name, timezone: hh.timezone, local_date: today },
+      items,
+      // Whether this person's copy is a catch-up depends on what is in
+      // *their* copy, not on the oldest thing in the household.
+      (mine) => {
+        const oldest = mine.reduce((m, r) => (r.fire_at < m ? r.fire_at : m), today);
+        return daysBetween(oldest, today) > 1 ? 'catch_up' : 'daily';
+      },
+    );
+    for (const r of due) {
+      const channels = [...(reached.get(r.id) ?? [])];
+      for (const channel of channels.length ? channels : ['none']) {
+        await trx
+          .insertInto('reminder_delivery')
+          .values({ reminder_id: r.id, household_id: hh.id, fire_date: today, channel })
+          .onConflict((oc) => oc.doNothing())
+          .execute();
+      }
+    }
+    await trx
+      .insertInto('notification_digest')
+      .values({
+        household_id: hh.id,
+        local_date: today,
+        kind: 'daily',
+        item_count: due.length,
+        channels: union(reached),
+      })
+      .execute();
+    return true;
+  });
 }
 
 /**

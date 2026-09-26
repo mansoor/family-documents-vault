@@ -30,6 +30,8 @@ import { appendAudit, withPrincipal, type Db, type Schema, type Visibility } fro
 import {
   checkExtra,
   deriveStatus,
+  EXTRA_MAX_BYTES,
+  extraBytes,
   missingFields,
   OFFLINE_SET_MAX,
   type DateValue,
@@ -313,8 +315,16 @@ export const sealedOf = (row: {
 const invalidExtra = (problem: DetailProblem) =>
   new ApiError(422, 'invalid_extra', problem.message, { detail: problem.key });
 
-/** A type as GET /document-types answers it: the old shape, and what 0.5.6 and 0.5.10 added. */
+/**
+ * A type as GET /document-types answers it: the old shape, and what 0.5.6
+ * and 0.5.10 added. An expiry is required exactly when the type expires,
+ * as a document's status has always worked it out (missingFields): its
+ * rule says so, whatever a pack or a household once wrote in it (the 5.11
+ * review; a visa said not required, and was).
+ */
 export function typeView(t: EffectiveType): DocumentTypeView {
+  const core = { ...(t.core as NonNullable<DocumentTypeView['core']>) };
+  core.expires = { ...core.expires, required: t.expiry_driver !== null };
   return {
     key: t.key,
     label: t.label,
@@ -327,12 +337,21 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     issued_by_label: t.issued_by_label,
     builtin: t.builtin,
     hidden: t.hidden,
-    core: t.core as NonNullable<DocumentTypeView['core']>,
+    core,
     short_label: t.short_label,
     issuer_noun: t.issuer_noun,
     etag: typeEtag(t),
   };
 }
+
+/**
+ * "This caller may see document `d`", as SQL on a row called `d`: the rule
+ * every list keeps (`visibleTo`), for a subquery. The Trash is the
+ * caller's to add or leave out.
+ */
+export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'household'
+  or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+  or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
 /**
@@ -389,6 +408,10 @@ export class DocumentService {
    * adults name kinds ("Divorce proceedings"), the names say what the
    * family keeps, and a viewer is given documents, not the family. Everyone
    * who files documents is offered all of them, as the family always was.
+   *
+   * A kind deleted while others' documents still use it (0035) is there
+   * only for whoever can see one of them, in the Trash too with `all`
+   * (the 5.11 review): for anybody else it is gone, as their delete said.
    */
   async types(p: Principal, opts: { all?: boolean | undefined } = {}): Promise<DocumentTypeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
@@ -396,10 +419,11 @@ export class DocumentService {
       // A document of it the caller can see, out of the Trash.
       const seen = sql<boolean>`exists (
         select 1 from document d
-         where d.type_key = t.key and d.deleted_at is null
-           and (d.visibility = 'household'
-                or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
-                or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid)))`;
+         where d.type_key = t.key and d.deleted_at is null and ${seenDocument(p)})`;
+      // …or in it.
+      const seenAtAll = sql<boolean>`exists (
+        select 1 from document d where d.type_key = t.key and ${seenDocument(p)})`;
+      q = q.where((eb) => eb.or([eb('t.deleted_at', 'is', null), seenAtAll]));
       if (!allows(p, 'document.add')) {
         q = q.where((eb) => eb.or([eb('t.builtin', '=', true), seen]));
       }
@@ -415,14 +439,23 @@ export class DocumentService {
    * The attributes a type can ask for: the vault's own and the household's
    * (0031). The library is for making kinds of document: somebody who files
    * nothing is given the vault's own only (0.5.10) — the household's are
-   * named by the family, and a kind they can read carries its fields' names.
+   * named by the family — and of the household's, those a document they
+   * can see has a value for (the 5.11 review). A kind they can read carries
+   * its fields' names, but not a detail it has stopped asking for, which the
+   * document keeps: without this, that detail had no name but its key.
    */
   async attributes(p: Principal): Promise<DocumentAttributeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
       let q = trx
-        .selectFrom('document_attribute')
-        .select(['key', 'label', 'kind', 'choices', 'household_id']);
-      if (!allows(p, 'document.add')) q = q.where('household_id', 'is', null);
+        .selectFrom('document_attribute as a')
+        .select(['a.key', 'a.label', 'a.kind', 'a.choices', 'a.household_id']);
+      if (!allows(p, 'document.add')) {
+        const detailOf = sql<boolean>`exists (
+          select 1 from document d
+           where d.deleted_at is null and ${seenDocument(p)}
+             and (d.extra ? a.key or a.key = any(coalesce(d.sealed_details, '{}'))))`;
+        q = q.where((eb) => eb.or([eb('a.household_id', 'is', null), detailOf]));
+      }
       const rows = await q.orderBy('label').orderBy('key').execute();
       return rows.map((r) => ({
         key: r.key,
@@ -439,10 +472,14 @@ export class DocumentService {
    * not: a phone queues a scan against the list it had. The foreign key
    * from a document to its type is checked without row-level security, so
    * without this one household could file under another's `h_` key.
+   *
+   * A kind deleted while others' documents still use it (0035) is not on
+   * the list either, as for the adult whose delete it was — except for a
+   * document already filed under it (`held`, its type now), which keeps it.
    */
-  private async typeOrThrow(key: string, trx: Db) {
+  private async typeOrThrow(key: string, trx: Db, held?: string | null) {
     const t = await typeLookup(trx)(key);
-    if (!t)
+    if (!t || (t.deleted_at && t.key !== held))
       throw new ApiError(422, 'validation_failed', 'That kind of document is not on the list.');
     return t;
   }
@@ -825,6 +862,9 @@ export class DocumentService {
         .executeTakeFirstOrThrow();
       if (input.expires !== undefined || input.type_key !== undefined) {
         await this.reminders?.regenerateDerived(trx, p.householdId, id);
+      }
+      if (current.type_key && row.type_key !== current.type_key) {
+        await dropDeletedType(trx, current.type_key);
       }
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -1569,21 +1609,52 @@ export class DocumentService {
    * then as POST /documents checks them. Untitled when the card was
    * skipped; a teen's own. Runs inside the claim, so a refusal claims
    * nothing and the same key works again.
+   *
+   * A kind the household does not have is not a refusal (the 5.11 review):
+   * a phone queues a scan against the list it had, takes a 422 as final,
+   * and a kind can be deleted now while the phone is offline — the scan
+   * could never be filed. It is filed with no kind, everything else as
+   * sent, and its details kept where the library has the field (see
+   * `looseDetails`). The same for a key that was never the household's:
+   * another household's is not seen here, so nothing says it exists.
    */
   private async captureColumns(
     trx: Db,
     p: Principal,
-    metadata: CaptureMetadata,
+    sent: CaptureMetadata,
   ): Promise<Record<string, never>> {
     // Through the claim's own transaction: a second connection taken while
     // holding one could empty the pool under enough captures at once.
     const members = await trx.selectFrom('member').select('id').execute();
     // The household's own types and the built-ins, as it has them; hidden
-    // ones too, since a phone queues a scan against the list it had.
+    // ones too, since a phone queues a scan against the list it had. Not
+    // one deleted while others' documents still use it (0035): that is
+    // gone, as for the adult whose delete it was.
     const types = await trx
       .selectFrom('effective_document_type')
       .select(['key', 'expiry_driver', 'default_visibility', 'fields'])
+      .where('deleted_at', 'is', null)
       .execute();
+    let metadata = sent;
+    let loose: Record<string, unknown> | null = null;
+    if (sent.type_key != null && !types.some((t) => t.key === sent.type_key)) {
+      const { extra, ...rest } = sent;
+      const owner = sent.owner_member_id ?? (p.role === 'teen' ? p.memberId : null);
+      metadata = {
+        ...rest,
+        type_key: null,
+        // Its kind's default went with it, and may have been Only me: left
+        // unsaid, it is for as few people as its filer may choose.
+        visibility:
+          sent.visibility ??
+          (owner === p.memberId
+            ? 'private'
+            : allows(p, 'document.see_adults')
+              ? 'adults'
+              : 'household'),
+      };
+      loose = extra ?? null;
+    }
     // The details are checked against the type named, as the phone checks
     // them before it queues the scan (0.5.7).
     const named = types.find((t) => t.key === metadata.type_key);
@@ -1621,7 +1692,14 @@ export class DocumentService {
       types.find((t) => t.key === metadata.type_key),
       p.role,
     );
-    return this.columns(trx, p, input, null);
+    const out = await this.columns(trx, p, input, null);
+    if (loose) {
+      const kept = await looseDetails(trx, loose);
+      if (Object.keys(kept).length > 0) {
+        (out as Record<string, unknown>).extra = JSON.stringify(kept);
+      }
+    }
+    return out;
   }
 
   /**
@@ -2229,7 +2307,7 @@ export class DocumentService {
       if (input.type_key === null) {
         out.type_key = null;
       } else {
-        const t = await this.typeOrThrow(input.type_key, trx);
+        const t = await this.typeOrThrow(input.type_key, trx, current?.type_key);
         type = t;
         out.type_key = t.key;
         if (input.category === undefined && !current?.category) out.category = t.category;
@@ -2307,7 +2385,7 @@ export class DocumentService {
       // Checked against the type it will have — the one sent, or the one it
       // has — as the caller's household has it, hidden or not (0.5.7).
       const key = input.type_key !== undefined ? input.type_key : (current?.type_key ?? null);
-      if (key && !type) type = await this.typeOrThrow(key, trx);
+      if (key && !type) type = await this.typeOrThrow(key, trx, current?.type_key);
       const fields = type ? await this.withChoices(trx, (type.fields ?? []) as TypeField[]) : [];
       const held = (current?.extra ?? {}) as Record<string, unknown>;
       const checked = checkExtra(input.extra, fields, held);
@@ -2360,6 +2438,62 @@ function sealedColumns(key: Buffer, documentId: string, values: PrivateValues) {
 }
 
 /** The details as `columns()` hands them over: JSON text, or nothing sent. */
+/**
+ * A captured document's details, sent for a kind the household no longer
+ * has (captureColumns): each kept where the library has a field of its key
+ * — every field a kind asks for is one — and its value reads as that
+ * field's kind; any other is left out rather than the scan refused, since
+ * the phone checked them against the kind it had. Another household's
+ * fields are not seen here.
+ */
+async function looseDetails(
+  trx: Db,
+  sent: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const keys = Object.keys(sent);
+  if (keys.length === 0) return {};
+  const library = await trx
+    .selectFrom('document_attribute')
+    .select(['key', 'label', 'kind', 'choices'])
+    .where('key', 'in', keys)
+    .execute();
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(sent)) {
+    const field = library.find((a) => a.key === key);
+    if (!field) continue;
+    const checked = checkExtra({ [key]: value }, [
+      { key, label: field.label, kind: field.kind, choices: field.choices ?? [] },
+    ]);
+    if ('set' in checked) Object.assign(kept, checked.set);
+  }
+  return extraBytes(kept) <= EXTRA_MAX_BYTES ? kept : {};
+}
+
+/**
+ * A kind deleted while documents still used it (0035), gone for good once
+ * none does: when the last of them is filed under another kind — the only
+ * way one stops using it, since nothing purges a document from the Trash
+ * yet. Quietly: its delete was said in the log when it was made. The row
+ * is held first, so two documents leaving it at once cannot each see the
+ * other still there.
+ */
+async function dropDeletedType(trx: Db, key: string): Promise<void> {
+  const deleted = await trx
+    .selectFrom('document_type')
+    .select('key')
+    .where('key', '=', key)
+    .where('deleted_at', 'is not', null)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!deleted) return;
+  await trx
+    .deleteFrom('document_type')
+    .where('key', '=', key)
+    .where(sql<boolean>`not exists (select 1 from document d where d.type_key = ${key})`)
+    .execute();
+  forgetTypes(trx);
+}
+
 function extraOf(v: unknown): Record<string, unknown> {
   const parsed: unknown = typeof v === 'string' ? JSON.parse(v) : v;
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed)

@@ -3,6 +3,7 @@ import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
 import {
   CATEGORY_LABELS,
   CORE_FIELDS,
+  EXPIRY_ALWAYS_REQUIRED,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
@@ -20,11 +21,12 @@ import {
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { StepUpService } from '../auth/step-up.js';
-import { allows, requireCapability } from '../authz.js';
+import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import {
   forgetTypes,
   sealedOf,
+  seenDocument,
   typeEtag,
   typeLookup,
   typeView,
@@ -54,12 +56,14 @@ import {
  *  - **Archiving never touches a document.** A kind in use is archived, or
  *    hidden if it is a built-in, never deleted: every document filed under
  *    it keeps it, and its history keeps its lines.
- *  - **Nothing counts what the caller cannot see.** The impact of a change
- *    counts the documents the caller can see, and says in words, always,
- *    that others may be affected; a delete refused because the kind is in
- *    use reads the same whoever's documents they are. A count would tell an
- *    adult that another has Only me documents of a kind such as
- *    "Immigration case" — the gap the privacy wall forbids.
+ *  - **Nothing depends on what the caller cannot see.** The impact of a
+ *    change counts the documents the caller can see, and says in words,
+ *    always, that others may be affected. A delete is refused only for a
+ *    document the caller can see; one that only others' Only me documents
+ *    use is deleted for the caller like an unused one, and kept, deleted,
+ *    for those documents (0035). A count, or a refusal, would tell an adult
+ *    that another has Only me documents of a kind such as "Immigration
+ *    case" — the gap the privacy wall forbids (5.11 review).
  *
  * Each change is checked against the kind as it is, held: a lock per kind
  * and household, and the row itself where there is one. A transaction that
@@ -149,14 +153,6 @@ const lockType = (trx: Db, householdId: string, key: string) =>
     trx,
   );
 
-/**
- * The SQL for "this caller may see this document", on `d`: the rule every
- * list keeps (documents/service.ts visibleTo), as a fragment.
- */
-const seenBy = (p: Principal) => sql<boolean>`(d.visibility = 'household'
-  or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
-  or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
-
 export class TypeService {
   constructor(
     private readonly db: Db,
@@ -166,10 +162,16 @@ export class TypeService {
 
   // ------------------------------------------------------------- reading
 
-  /** The kind, as the household has it now — hidden, archived or not; 404 when it has none. */
+  /**
+   * The kind, as the household has it now — hidden, archived or not; 404
+   * when it has none. A kind deleted while others' documents still use it
+   * (0035) is gone here, for everybody, even whoever can see one of them:
+   * each change to it would be a line in the log, which the family reads,
+   * saying that it is still there.
+   */
   private async find(trx: Db, key: string): Promise<EffectiveType> {
     const t = await typeLookup(trx)(key);
-    if (!t) throw notOnTheList();
+    if (!t || t.deleted_at) throw notOnTheList();
     return t;
   }
 
@@ -225,7 +227,7 @@ export class TypeService {
           'd.deleted_at',
         ])
         .where('d.type_key', '=', t.key)
-        .where(seenBy(p))
+        .where(seenDocument(p))
         .execute();
       const live = docs.filter((d) => d.deleted_at === null);
       // An Only me document the caller can see is their own: its sealed
@@ -261,7 +263,7 @@ export class TypeService {
       const reminders = await sql<{ n: number }>`
         select count(*)::int as n
           from reminder r join document d on d.id = r.document_id
-         where d.type_key = ${t.key} and d.deleted_at is null and ${seenBy(p)}
+         where d.type_key = ${t.key} and d.deleted_at is null and ${seenDocument(p)}
            and r.kind = 'derived' and r.status in ('scheduled', 'due', 'snoozed')`.execute(trx);
       return {
         key: t.key,
@@ -287,6 +289,7 @@ export class TypeService {
       throw invalid('Choose one of the categories the vault has.', 'category');
     }
     if (input.hidden !== undefined) throw invalid(OWN_NOT_HIDDEN, 'hidden');
+    expiryRequired(input, false);
     return withPrincipal(this.db, p, async (trx) => {
       const own = await this.ownColumns(trx, input, null);
       const expires = input.core?.expires?.shown === true;
@@ -339,11 +342,15 @@ export class TypeService {
    * the caller last saw it (If-Match) or refused. Its lead times changed,
    * or its Expires switched on or off, every document of it is reminded
    * anew by the worker (types.regenerate) once the change is kept.
+   *
+   * Expires switched on for a kind with no lead times is reminded 30 days
+   * before, as a new kind that expires is (5.11 review): whether a family
+   * is reminded never depends on the order it made its changes in.
    */
   async update(
     p: Principal,
     key: string,
-    input: TypeInput,
+    sent: TypeInput,
     ifMatch: string | undefined,
     meta: RequestMeta,
   ): Promise<DocumentTypeView> {
@@ -359,6 +366,12 @@ export class TypeService {
           { detail: JSON.stringify(typeView(before)) },
         );
       }
+      expiryRequired(sent, before.expiry_driver !== null);
+      const switchedOn = before.expiry_driver === null && sent.core?.expires?.shown === true;
+      const input: TypeInput =
+        switchedOn && sent.reminder_leads === undefined && !before.reminder_leads?.length
+          ? { ...sent, reminder_leads: DEFAULT_LEADS }
+          : sent;
       await this.mayWiden(trx, p, before, input.default_visibility);
       if (before.builtin) {
         if (
@@ -458,34 +471,43 @@ export class TypeService {
   }
 
   /**
-   * DELETE /document-types/{key}: a kind of the household's own that no
-   * document uses — in the Trash included, whoever's — is gone. One in use
-   * is refused with the same words whether the caller can see its
-   * documents or not; a built-in is hidden instead.
+   * DELETE /document-types/{key}: a kind of the household's own is refused
+   * while a document the caller can see uses it, in the Trash included; a
+   * built-in is hidden instead. Otherwise it is deleted, and the answer is
+   * the same whatever else uses it (5.11 review): a kind no document uses
+   * is gone; one that only documents the caller cannot see use — another
+   * member's Only me — is kept for them, marked deleted (0035), and gone
+   * for everybody else. A refusal there would say that such a document
+   * exists.
    */
   async remove(p: Principal, key: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'types.manage');
     await withPrincipal(this.db, p, async (trx) => {
+      // Held: a document filed under it meanwhile waits for this to end,
+      // and one filed before is seen by what follows.
       const t = await this.hold(trx, p, key);
       if (t.builtin) {
         throw invalid("A built-in kind of document can't be deleted. Hide it instead.");
       }
-      // Any document at all, not only those the caller can see: the answer
-      // must not depend on whose they are.
-      const used = await trx
-        .selectFrom('document')
-        .select('id')
-        .where('type_key', '=', t.key)
+      const seen = await trx
+        .selectFrom('document as d')
+        .select('d.id')
+        .where('d.type_key', '=', t.key)
+        .where(seenDocument(p))
         .limit(1)
         .executeTakeFirst();
-      if (used) throw inUse();
-      try {
-        await trx.deleteFrom('document_type').where('key', '=', t.key).execute();
-      } catch (err) {
-        // Filed under it a moment ago, or by somebody this transaction is
-        // not shown: the database's own check says so, in the same words.
-        if ((err as { code?: string }).code === '23503') throw inUse();
-        throw err;
+      if (seen) throw inUse();
+      const gone = await trx
+        .deleteFrom('document_type')
+        .where('key', '=', t.key)
+        .where(sql<boolean>`not exists (select 1 from document d where d.type_key = ${t.key})`)
+        .executeTakeFirst();
+      if (Number(gone.numDeletedRows) === 0) {
+        await trx
+          .updateTable('document_type')
+          .set({ deleted_at: new Date(), updated_at: new Date() })
+          .where('key', '=', t.key)
+          .execute();
       }
       forgetTypes(trx);
       await appendAudit(trx, {
@@ -586,7 +608,12 @@ export class TypeService {
         if (f === 'issued_by') issued_by_label = label;
         else next.label = label;
       }
-      if (f === 'expires') delete next.shown;
+      // Whether it expires is its own column; that an expiry is then
+      // required goes without saying (expiryRequired).
+      if (f === 'expires') {
+        delete next.shown;
+        delete next.required;
+      }
       core[f] = next;
     }
     const fields = input.fields
@@ -663,7 +690,7 @@ export class TypeService {
       if (!rule) continue;
       const next: Partial<CoreFieldRule> = { ...(core[f] ?? {}) };
       if (rule.shown !== undefined) next.shown = rule.shown;
-      if (rule.required !== undefined) next.required = rule.required;
+      if (rule.required !== undefined && f !== 'expires') next.required = rule.required;
       if (rule.label !== undefined) next.label = nameOf(rule.label, 'A field’s name');
       core[f] = next;
     }
@@ -768,6 +795,26 @@ export class TypeService {
 const OWN_NOT_HIDDEN = 'A kind of document of your own is archived, not hidden.';
 
 const inUse = () => new ApiError(409, 'type_in_use', TYPE_IN_USE);
+
+/**
+ * An expiry is required of every kind that expires, and of no other (5.11
+ * review): a document of a kind that expires reads "Needs an expiry date"
+ * without one, whatever its rule says, and has since 0.5.6. So
+ * `core.expires.required` is answered as whether the kind expires
+ * (typeView), and a change that asks for anything else is refused with a
+ * sentence rather than kept and ignored. `expiresBefore`: whether the kind
+ * expires now; `shown`, sent with it, is what it will be.
+ */
+function expiryRequired(input: TypeInput, expiresBefore: boolean): void {
+  const rule = input.core?.expires;
+  if (rule?.required === undefined) return;
+  const expires = rule.shown ?? expiresBefore;
+  if (rule.required === expires) return;
+  throw invalid(
+    expires ? EXPIRY_ALWAYS_REQUIRED : 'A field has to be shown to be required.',
+    'expires',
+  );
+}
 
 /**
  * A field is required only where the card shows it: a required field

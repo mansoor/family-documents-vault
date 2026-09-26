@@ -20,6 +20,12 @@ export interface RegenerateTypeJob {
  * expiry date, which is never sealed: nothing sealed needs opening, and
  * nothing is. In the Trash too, so a document restored later has none left
  * over from the old lead times.
+ *
+ * Only reminders still ahead are made (`aheadOnly`, the 5.11 review): a
+ * lead added, or Expires switched off and on again, made one due for every
+ * document of the type whose lead day had passed — each passport kept for
+ * the record, expired years ago, and each one the family had already
+ * acknowledged — and the next digest listed them all.
  */
 export async function regenerateTypeReminders(
   app: Db,
@@ -39,7 +45,7 @@ export async function regenerateTypeReminders(
   for (const { id } of ids) {
     try {
       await withSystem(app, job.household_id, (trx) =>
-        regenerateDerived(trx, job.household_id, id),
+        regenerateDerived(trx, job.household_id, id, { aheadOnly: true }),
       );
       documents += 1;
     } catch (err) {

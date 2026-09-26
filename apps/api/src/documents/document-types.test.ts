@@ -10,6 +10,7 @@ import {
 } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
+  EXPIRY_ALWAYS_REQUIRED,
   PRIVATE_BY_DEFAULT,
   TYPE_IN_USE,
   UNSEEN_DOCUMENTS,
@@ -136,7 +137,9 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
         trx.selectFrom('document').select('id').where('type_key', '=', type_key).execute(),
       );
       for (const d of docs) {
-        await withSystem(app, household_id, (trx) => regenerateDerived(trx, household_id, d.id));
+        await withSystem(app, household_id, (trx) =>
+          regenerateDerived(trx, household_id, d.id, { aheadOnly: true }),
+        );
       }
     }
     return asked;
@@ -384,10 +387,18 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
       { lead_days: 150, status: 'scheduled' },
       { lead_days: 30, status: 'scheduled' },
     ]);
-    // 150 days before a date 100 days off has passed: due now.
+    // 150 days before a date 100 days off has passed: a change to the kind
+    // reminds of what is ahead, not of a day gone by (the 5.11 review).
+    expect(await reminders(sams.id)).toEqual([{ lead_days: 30, status: 'acknowledged' }]);
+    // Its own edit still does, as when it was filed: due now.
+    await ok(
+      call(sam, 'PATCH', `/api/v1/documents/${sams.id}`, {
+        expires: { date: inDays(101), precision: 'day' },
+      }),
+    );
     expect(await reminders(sams.id)).toEqual([
       { lead_days: 150, status: 'due' },
-      { lead_days: 30, status: 'acknowledged' },
+      { lead_days: 30, status: 'scheduled' },
     ]);
 
     // Expires switched off: nothing to remind of, and its date kept.
@@ -621,10 +632,10 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     });
   });
 
-  it('a refused delete reads the same whether or not the caller can see the documents', async () => {
-    // One kind only Sam's Only me document uses; one the family's does.
+  it('a delete depends only on the documents the caller can see (5.11 review)', async () => {
+    // One kind only Sam's Only me document uses; one the family's does; one nobody's.
     const hidden = await kind({ label: 'Divorce proceedings', category: 'legal' });
-    await file(sam, {
+    const petition = await file(sam, {
       type_key: hidden.key,
       title: 'Petition',
       owner_member_id: sam.member_id,
@@ -633,38 +644,87 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     const seen = await kind({ label: 'Club membership' });
     await file(owner, { type_key: seen.key, title: 'Tennis club' });
     const unused = await kind({ label: 'Not used' });
-
-    const ofHidden = await call(owner, 'DELETE', `/api/v1/document-types/${hidden.key}`);
-    const ofSeen = await call(owner, 'DELETE', `/api/v1/document-types/${seen.key}`);
-    // Everything but the request's own id.
-    const shape = (r: typeof ofHidden) => {
-      const body = json<{ error: Record<string, unknown> }>(r).error;
-      return {
-        status: r.statusCode,
-        error: Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'request_id')),
-      };
-    };
-    expect(shape(ofHidden)).toEqual(shape(ofSeen));
-    expect(shape(ofHidden)).toEqual({
-      status: 409,
-      error: { code: 'type_in_use', message: TYPE_IN_USE, retriable: false },
-    });
-    // Nor does its impact leave a hole: the owner's reads as a kind nobody uses.
+    // Before: its impact reads to the owner as a kind nobody uses.
     const impact = async (key: string) => ({
       ...(await ok<DocumentTypeImpact>(call(owner, 'GET', `/api/v1/document-types/${key}/impact`))),
       key: 'either',
     });
     expect(await impact(hidden.key)).toEqual(await impact(unused.key));
-    // Its owner sees it, as Sam's own.
+
+    // Refused only for a document the owner can see…
+    const ofSeen = await call(owner, 'DELETE', `/api/v1/document-types/${seen.key}`);
+    expect(ofSeen.statusCode).toBe(409);
+    expect(error(ofSeen)).toMatchObject({ code: 'type_in_use', message: TYPE_IN_USE });
+    // …and the other two answer alike: deleted, and said so in the log.
+    const ofHidden = await call(owner, 'DELETE', `/api/v1/document-types/${hidden.key}`);
+    const ofUnused = await call(owner, 'DELETE', `/api/v1/document-types/${unused.key}`);
+    expect([ofHidden.statusCode, ofHidden.body]).toEqual([204, '']);
+    expect([ofUnused.statusCode, ofUnused.body]).toEqual([204, '']);
+    const said = (await activity(owner)).map((l) => l.text);
+    expect(said).toContain('Owner deleted “Divorce proceedings”');
+    expect(said).toContain('Owner deleted “Not used”');
+
+    // For the owner both are gone: from the lists, and from every change.
+    for (const key of [hidden.key, unused.key]) {
+      for (const all of [false, true]) {
+        expect((await types(owner, all)).map((t) => t.key)).not.toContain(key);
+      }
+      for (const [method, url, body] of [
+        ['PATCH', `/api/v1/document-types/${key}`, { label: 'Back' }],
+        ['POST', `/api/v1/document-types/${key}/archive`, undefined],
+        ['POST', `/api/v1/document-types/${key}/restore`, undefined],
+        ['GET', `/api/v1/document-types/${key}/impact`, undefined],
+        ['DELETE', `/api/v1/document-types/${key}`, undefined],
+      ] as const) {
+        const r = await call(owner, method, url, body);
+        expect(r.statusCode, `${method} ${url}`).toBe(404);
+        expect(error(r).message).toBe('That kind of document is not on the list.');
+      }
+      const filed = await call(owner, 'POST', '/api/v1/documents', { type_key: key, title: 'X' });
+      expect(filed.statusCode).toBe(422);
+      expect(error(filed).message).toBe('That kind of document is not on the list.');
+    }
+    // Sam's petition keeps its kind: he still finds it in his list, hidden,
+    // and his document still reads by it.
+    const bySam = (await types(sam)).find((t) => t.key === hidden.key);
+    expect(bySam).toMatchObject({ label: 'Divorce proceedings', hidden: true });
+    const his = await ok<DocumentView>(call(sam, 'GET', `/api/v1/documents/${petition.id}`));
+    expect(his.type_key).toBe(hidden.key);
+    // He may edit his document, naming its kind again, but not file a new one
+    // under it, nor change the kind: it is deleted, for everybody.
+    await ok(
+      call(sam, 'PATCH', `/api/v1/documents/${petition.id}`, {
+        type_key: hidden.key,
+        title: 'Petition (filed)',
+      }),
+    );
     expect(
       (
-        await ok<DocumentTypeImpact>(
-          call(sam, 'GET', `/api/v1/document-types/${hidden.key}/impact`),
-        )
-      ).documents,
-    ).toBe(1);
-    // And the kind is there still, for the document that uses it.
-    expect(await typeOf(hidden.key)).toBeDefined();
+        await call(sam, 'POST', '/api/v1/documents', {
+          type_key: hidden.key,
+          title: 'Another',
+          owner_member_id: sam.member_id,
+          visibility: 'private',
+        })
+      ).statusCode,
+    ).toBe(422);
+    expect(
+      (await call(sam, 'PATCH', `/api/v1/document-types/${hidden.key}`, { label: 'Divorce' }))
+        .statusCode,
+    ).toBe(404);
+    expect(
+      (await call(sam, 'POST', `/api/v1/document-types/${hidden.key}/restore`)).statusCode,
+    ).toBe(404);
+    expect((await types(owner, true)).map((t) => t.key)).not.toContain(hidden.key);
+
+    // Once no document uses it, it is gone for good.
+    const kept = () =>
+      admin
+        .query('select key from document_type where key = $1', [hidden.key])
+        .then((r) => r.rowCount);
+    expect(await kept()).toBe(1);
+    await ok(call(sam, 'PATCH', `/api/v1/documents/${petition.id}`, { type_key: null }));
+    expect(await kept()).toBe(0);
   });
 
   it("a type private by default never files somebody else's document as their Only me (5.7 review)", async () => {
@@ -945,5 +1005,227 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     expect((await activity(teen)).map((l) => l.text)).toContain(
       'Sam added “Plot size” to the fields a kind of document can ask for',
     );
+  });
+
+  it('Expires switched on by an edit is reminded 30 days before, as a new kind that expires is (5.11 review)', async () => {
+    const gym = await kind({ label: 'Gym membership' });
+    expect(gym).toMatchObject({ expiry_driver: null, reminder_leads: [] });
+    const soon = await file(owner, {
+      type_key: gym.key,
+      title: 'Gym, this year',
+      owner_member_id: owner.member_id,
+      expires: { date: inDays(20), precision: 'day' },
+    });
+    const later = await file(owner, {
+      type_key: gym.key,
+      title: 'Gym, next year',
+      owner_member_id: owner.member_id,
+      expires: { date: inDays(90), precision: 'day' },
+    });
+    const on = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', `/api/v1/document-types/${gym.key}`, {
+        core: { expires: { shown: true } },
+      }),
+    );
+    expect(on).toMatchObject({ expiry_driver: 'expires_on', reminder_leads: [30] });
+    await runRegenerate();
+    expect(await reminders(later.id)).toEqual([{ lead_days: 30, status: 'scheduled' }]);
+    expect(
+      (await ok<DocumentView>(call(owner, 'GET', `/api/v1/documents/${soon.id}`))).status.value,
+    ).toBe('expiring_soon');
+    // A built-in the same.
+    const birth = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', '/api/v1/document-types/birth_certificate', {
+        core: { expires: { shown: true } },
+      }),
+    );
+    expect(birth).toMatchObject({ expiry_driver: 'expires_on', reminder_leads: [30] });
+    await ok(
+      call(owner, 'PATCH', '/api/v1/document-types/birth_certificate', {
+        core: { expires: { shown: false } },
+      }),
+    );
+    // Lead times sent with it are the ones kept; switched off, it keeps its own.
+    const off = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', `/api/v1/document-types/${gym.key}`, {
+        core: { expires: { shown: false } },
+      }),
+    );
+    expect(off).toMatchObject({ expiry_driver: null, reminder_leads: [30] });
+    const sent = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', `/api/v1/document-types/${gym.key}`, {
+        core: { expires: { shown: true } },
+        reminder_leads: [7],
+      }),
+    );
+    expect(sent.reminder_leads).toEqual([7]);
+    await runRegenerate();
+  });
+
+  it('an expiry is required of every kind that expires, and the kind says so (5.11 review)', async () => {
+    const refused = await call(owner, 'POST', '/api/v1/document-types', {
+      label: 'Loyalty card',
+      category: 'other',
+      core: { expires: { shown: true, required: false } },
+    });
+    expect(refused.statusCode).toBe(422);
+    expect(error(refused)).toMatchObject({
+      code: 'validation_failed',
+      message: EXPIRY_ALWAYS_REQUIRED,
+      detail: 'expires',
+    });
+    const card = await kind({ label: 'Loyalty card', core: { expires: { shown: true } } });
+    expect(card.core?.expires).toMatchObject({ shown: true, required: true });
+    const doc = await file(owner, {
+      type_key: card.key,
+      title: 'Coffee card',
+      owner_member_id: owner.member_id,
+    });
+    expect(doc.status).toEqual({ value: 'needs_info', label: 'Needs an expiry date' });
+    // A built-in whose rule said otherwise — a visa's — was required all the same, and says so.
+    expect((await typeOf('visa'))?.core?.expires).toMatchObject({ shown: true, required: true });
+    const visa = await call(owner, 'PATCH', '/api/v1/document-types/visa', {
+      core: { expires: { required: false } },
+    });
+    expect(visa.statusCode).toBe(422);
+    expect(error(visa)).toMatchObject({ message: EXPIRY_ALWAYS_REQUIRED, detail: 'expires' });
+    // One that does not expire requires none, and cannot be made to.
+    const off = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', `/api/v1/document-types/${card.key}`, {
+        core: { expires: { shown: false } },
+      }),
+    );
+    expect(off.core?.expires).toMatchObject({ shown: false, required: false });
+    const odd = await call(owner, 'PATCH', `/api/v1/document-types/${card.key}`, {
+      core: { expires: { required: true } },
+    });
+    expect(odd.statusCode).toBe(422);
+    expect(error(odd)).toMatchObject({
+      message: 'A field has to be shown to be required.',
+      detail: 'expires',
+    });
+    // Sent with Expires switched on, `required: true` is what it is anyway.
+    const both = await ok<DocumentTypeView>(
+      call(owner, 'PATCH', `/api/v1/document-types/${card.key}`, {
+        core: { expires: { shown: true, required: true } },
+      }),
+    );
+    expect(both.core?.expires).toMatchObject({ shown: true, required: true });
+    for (const t of await types(owner, true)) {
+      expect(t.core?.expires.required, t.key).toBe(t.expiry_driver !== null);
+    }
+    await runRegenerate();
+  });
+
+  it('a viewer can name a household detail its kind no longer asks for, and no other (5.11 review)', async () => {
+    const officer = await ok<DocumentAttributeView>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Case officer', kind: 'text' }),
+    );
+    const unused = await ok<DocumentAttributeView>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Solicitor', kind: 'text' }),
+    );
+    const adultsOnly = await ok<DocumentAttributeView>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Debt amount', kind: 'money' }),
+    );
+    const tenancy = await kind({
+      label: 'Tenancy case',
+      category: 'legal',
+      fields: [{ key: officer.key }, { key: adultsOnly.key }],
+    });
+    const doc = await file(owner, {
+      type_key: tenancy.key,
+      title: 'Flat dispute',
+      visibility: 'household',
+      extra: { [officer.key]: 'Ms Khan' },
+    });
+    await file(owner, {
+      type_key: tenancy.key,
+      title: 'Arrears',
+      visibility: 'adults',
+      extra: { [adultsOnly.key]: 1200 },
+    });
+    await ok(call(owner, 'PATCH', `/api/v1/document-types/${tenancy.key}`, { fields: [] }));
+
+    // The viewer's document still has the detail; the kind no longer names it.
+    const seen = await ok<DocumentView>(call(viewer, 'GET', `/api/v1/documents/${doc.id}`));
+    expect(seen.extra).toEqual({ [officer.key]: 'Ms Khan' });
+    expect((await types(viewer)).find((t) => t.key === tenancy.key)?.fields).toEqual([]);
+    // The library names it — and not a field on no document the viewer can see.
+    const library = (
+      await ok<{ items: DocumentAttributeView[] }>(
+        call(viewer, 'GET', '/api/v1/document-attributes'),
+      )
+    ).items;
+    expect(library.find((a) => a.key === officer.key)).toMatchObject({
+      label: 'Case officer',
+      kind: 'text',
+      builtin: false,
+    });
+    expect(library.map((a) => a.key)).not.toContain(unused.key);
+    expect(library.map((a) => a.key)).not.toContain(adultsOnly.key);
+    // An adult, who files documents, is offered them all.
+    const bySam = (
+      await ok<{ items: DocumentAttributeView[] }>(call(sam, 'GET', '/api/v1/document-attributes'))
+    ).items.map((a) => a.key);
+    expect(bySam).toEqual(expect.arrayContaining([officer.key, unused.key, adultsOnly.key]));
+  });
+
+  it('a scan queued for a kind deleted since is filed with no kind, not refused for good (5.11 review)', async () => {
+    const plot = await ok<DocumentAttributeView>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Plot number', kind: 'text' }),
+    );
+    const allotment = await kind({
+      label: 'Allotment',
+      category: 'property',
+      fields: [{ key: plot.key }],
+    });
+    expect(
+      (await call(owner, 'DELETE', `/api/v1/document-types/${allotment.key}`)).statusCode,
+    ).toBe(204);
+    // The phone had it on its list, and queued a scan with its details.
+    const queued = await capture(owner, {
+      type_key: allotment.key,
+      title: 'Plot 9 lease',
+      owner_member_id: owner.member_id,
+      identifier: 'L-9',
+      extra: { [plot.key]: '9', no_such_field: 'x' },
+    });
+    expect(queued.statusCode, queued.body).toBe(201);
+    const made = await ok<DocumentView>(
+      call(owner, 'GET', `/api/v1/documents/${json<{ document_id: string }>(queued).document_id}`),
+    );
+    // Everything as sent but its kind; its details as the library has them;
+    // and, its kind's default gone with it, for as few people as it can be.
+    expect(made).toMatchObject({
+      type_key: null,
+      title: 'Plot 9 lease',
+      owner_member_id: owner.member_id,
+      identifier: 'L-9',
+      extra: { [plot.key]: '9' },
+      visibility: 'private',
+    });
+    // For Aisha, whose it cannot be Only me: Adults only, unless it says.
+    const hers = await capture(owner, {
+      type_key: allotment.key,
+      title: "Aisha's plot",
+      owner_member_id: aisha,
+    });
+    expect(hers.statusCode, hers.body).toBe(201);
+    const filed = await ok<DocumentView>(
+      call(owner, 'GET', `/api/v1/documents/${json<{ document_id: string }>(hers).document_id}`),
+    );
+    expect(filed).toMatchObject({ type_key: null, visibility: 'adults' });
+    const said = await capture(owner, {
+      type_key: allotment.key,
+      title: 'Shared plot',
+      visibility: 'household',
+    });
+    expect(said.statusCode).toBe(201);
+    // Typed in, a kind that is not on the list is still refused: the person is there to choose.
+    const typed = await call(owner, 'POST', '/api/v1/documents', {
+      type_key: allotment.key,
+      title: 'Plot 10',
+    });
+    expect(typed.statusCode).toBe(422);
   });
 });

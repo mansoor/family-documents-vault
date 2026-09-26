@@ -241,12 +241,20 @@ export interface DocumentTypeImpact {
 export const UNSEEN_DOCUMENTS = "Documents you can't see may also be affected.";
 
 /**
- * A kind of document's delete refused (`409 type_in_use`, 0.5.10), in the
- * same words whoever's documents use it, the caller's own or somebody's
- * Only me.
+ * A kind of document's delete refused (`409 type_in_use`, 0.5.10): only
+ * for a document the caller can see (the 5.11 review). One that only
+ * documents they cannot see use is deleted for them, as an unused one is.
  */
 export const TYPE_IN_USE =
-  "This kind of document is still in use, perhaps by documents you can't see, so it can't be deleted. Archive it instead: every document filed under it stays as it is.";
+  "This kind of document is still in use, so it can't be deleted. Archive it instead: every document filed under it stays as it is.";
+
+/**
+ * A change asking a kind that expires not to require its expiry (`422`,
+ * `detail: "expires"`, the 5.11 review): every kind that expires requires
+ * one, and `core.expires.required` always says whether the kind expires.
+ */
+export const EXPIRY_ALWAYS_REQUIRED =
+  'A kind of document that expires always needs its expiry date. Switch Expires off instead.';
 
 /** Who a visibility reaches, fewest first. An unknown one reaches nobody. */
 const REACH: Record<string, number> = { private: 1, adults: 2, household: 3 };
