@@ -7,18 +7,34 @@ import {
   parseDateInput,
   reminderSentence,
   type CaptureMetadata,
+  type CoreField,
   type DateOrder,
   type DocumentTypeView,
   type IssuerSuggestions,
   type KnownIssuer,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, ErrorNote, Field, Select, TopBar } from '../ui.js';
+import {
+  andList,
+  asksFor,
+  blankInput,
+  choicesOf,
+  coreRule,
+  DetailField,
+  detailInputs,
+  readDetail,
+  useAttributes,
+  type DetailInput,
+} from '../details.js';
+import { Button, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
+
+/** The longest a note may be (POST /documents' limit). */
+const NOTES_MAX = 10_000;
 
 /**
  * The order a numeric date is read in, from the browser's locale: 14/03 or
@@ -44,6 +60,8 @@ function captureDetails(d: DocumentInput): CaptureMetadata {
   if (d.identifier !== undefined) out.identifier = d.identifier;
   if (d.issued_by !== undefined) out.issued_by = d.issued_by;
   if (d.physical_location !== undefined) out.physical_location = d.physical_location;
+  if (d.notes !== undefined) out.notes = d.notes;
+  if (d.extra !== undefined) out.extra = d.extra;
   return out;
 }
 
@@ -176,6 +194,8 @@ export function AddScreen() {
           identifier: '',
           location: '',
           visibility: effectiveVisibility({}, type, me?.role ?? 'owner'),
+          notes: '',
+          details: {},
         }}
         submitLabel="Save to the vault"
         onSubmit={(details) => save(file, captureDetails(details))}
@@ -264,6 +284,7 @@ export function ConfirmScreen() {
     suggestedOwner ??
     members.find((m) => m.is_me);
   const typeKey = doc.type_key ?? suggestedType?.key ?? '';
+  const type = types.find((t) => t.key === typeKey);
   return (
     <ConfirmForm
       title="Is this right?"
@@ -282,6 +303,11 @@ export function ConfirmScreen() {
         identifier: doc.identifier ?? '',
         location: doc.physical_location ?? '',
         visibility: doc.visibility,
+        // Its own request, so an Only me document's are open here (0.5.8).
+        // Notes that are there but could not be opened are not offered to
+        // be typed over.
+        notes: doc.notes ?? (doc.has_notes ? null : ''),
+        details: detailInputs(doc.extra, type?.fields ?? []),
       }}
       submitLabel="Save to the vault"
       onSubmit={async (details) => {
@@ -308,6 +334,10 @@ interface CardValues {
   identifier: string;
   location: string;
   visibility: Visibility;
+  /** Plain text, line breaks kept. Null: it has notes this card cannot open. */
+  notes: string | null;
+  /** The type's own details as the card holds them, by field key (5.10). */
+  details: Record<string, DetailInput>;
 }
 
 /** How many issuers the card offers at once. */
@@ -429,6 +459,12 @@ export function ConfirmForm(props: {
   const [identifier, setIdentifier] = useState(initial.identifier);
   const [location, setLocation] = useState(initial.location);
   const [visibility, setVisibility] = useState<Visibility>(initial.visibility);
+  const [notes, setNotes] = useState(initial.notes ?? '');
+  // The type's own details, by field key. A key stays when the type
+  // changes, so a field the next type shares keeps what was typed.
+  const [detailValues, setDetailValues] = useState<Record<string, DetailInput>>(initial.details);
+  // Once Save has waited for them, the fields it waited for say so.
+  const [waited, setWaited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -443,8 +479,57 @@ export function ConfirmForm(props: {
   const people = teen ? members.filter((m) => m.is_me) : members;
   const visibilityLocked = teen && !props.fileName;
   const person = members.find((m) => m.id === owner);
-  const expiresShown = Boolean(type?.expiry_driver) || (!props.fileName && expires !== '');
+  const editing = !props.fileName;
+  const expiresShown = Boolean(type?.expiry_driver) || (editing && expires !== '');
   const issuerLabel = issuedByLabel(type);
+
+  // The fixed fields as the type asks for them (0.5.6): its own label
+  // ('Passport number', not 'Number'), whether it is shown, whether Save
+  // waits for it. One a document already has a value for is shown for
+  // editing whatever the type says now, so nothing is kept out of reach.
+  const shows = (key: CoreField, had: string | null) =>
+    coreRule(type, key).shown || (editing && Boolean(had?.trim()));
+  const asks = (key: CoreField) => coreRule(type, key).required;
+  const word = (key: CoreField, fallback: string) => coreRule(type, key).label ?? fallback;
+  const issuerShown = shows('issued_by', initial.issuer);
+  const issuedShown = shows('issued', initial.issued);
+  const identifierShown = shows('identifier', initial.identifier);
+  const locationShown = shows('physical_location', initial.location);
+  // Notes that are there but could not be opened are never typed over.
+  const notesShown = initial.notes !== null && shows('notes', initial.notes);
+  const issuedLabel = word('issued', 'Issued');
+  const expiresLabel = word('expires', 'Expires');
+  const identifierLabel = word('identifier', 'Number');
+  const locationLabel = word('physical_location', 'Where the original is kept');
+  const notesLabel = word('notes', 'Notes');
+
+  // Then the type's own fields, each with the input its kind asks for.
+  const ownFields = (type?.fields ?? []).filter(asksFor);
+  const library = useAttributes(ownFields.some((f) => f.kind === 'choice' && !f.choices?.length));
+  const detailId = (key: string) => `f-x-${key}`;
+
+  /**
+   * What Save waits for, in the card's order: each required field with
+   * nothing in it (A7). A switch always says yes or no, so it never waits.
+   */
+  const missing: Array<{ id: string; label: string }> = [];
+  const need = (shown: boolean, key: CoreField, id: string, label: string, value: string) => {
+    if (shown && asks(key) && value.trim() === '') missing.push({ id, label });
+  };
+  need(issuerShown, 'issued_by', 'f-issuer', issuerLabel, issuer);
+  need(issuedShown, 'issued', 'f-issued', issuedLabel, issued);
+  need(expiresShown, 'expires', 'f-expires', expiresLabel, expires);
+  need(identifierShown, 'identifier', 'f-number', identifierLabel, identifier);
+  need(locationShown, 'physical_location', 'f-location', locationLabel, location);
+  for (const f of ownFields) {
+    if (f.required === true && f.kind !== 'yes_no' && blankInput(detailValues[f.key])) {
+      missing.push({ id: detailId(f.key), label: f.label });
+    }
+  }
+  need(notesShown, 'notes', 'f-notes', notesLabel, notes);
+  /** Marked as needed once Save has waited for it, until it is filled. */
+  const wanting = (id: string) => waited && missing.some((m) => m.id === id);
+
   const offers = useIssuerOffers({
     fileName: props.fileName,
     documentId: props.documentId,
@@ -489,33 +574,83 @@ export function ConfirmForm(props: {
     }
   };
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  /** The card's words for what went wrong, with the place on the field it is about. */
+  const refuse = (message: string, id: string) => {
+    setError(message);
+    document.getElementById(id)?.focus();
+  };
+
+  /**
+   * Save: the dates and details read as the vault keeps them, then — unless
+   * `anyway` — every required field given (Save waits, and says which are
+   * missing; A7). Skip for now never waits.
+   */
+  const submit = async (anyway: boolean) => {
     const order = dateOrder();
     // A new document sends an expiry only for a type that expires; editing
     // always sends it, so clearing the field clears the date.
-    const sendExpiry = expiresShown || !props.fileName;
+    const sendExpiry = expiresShown || editing;
     const exp = sendExpiry && expires ? parseDateInput(expires, { order }) : null;
     const iss = issued ? parseDateInput(issued, { order }) : null;
     if (sendExpiry && expires && !exp) {
-      setError('The expiry date: try 14 Mar 2031, March 2031, or just 2031.');
+      refuse('The expiry date: try 14 Mar 2031, March 2031, or just 2031.', 'f-expires');
       return;
     }
-    if (issued && !iss) {
-      setError('The issue date: try 14 Mar 2021, March 2021, or just 2021.');
+    if (issuedShown && issued && !iss) {
+      refuse('The issue date: try 14 Mar 2021, March 2021, or just 2021.', 'f-issued');
+      return;
+    }
+    // Only the details that changed are sent: an edit merges them (0.5.7),
+    // so one the card did not change — an Only me document's included — is
+    // left exactly as it is kept.
+    const extra: Record<string, unknown> = {};
+    for (const f of ownFields) {
+      const now = detailValues[f.key];
+      const was = initial.details[f.key];
+      if (f.kind === 'yes_no') {
+        // A required switch left alone says no, as it shows.
+        const answer = now ?? (f.required === true ? false : null);
+        if (answer !== null && answer !== (was ?? null)) extra[f.key] = answer;
+        continue;
+      }
+      if ((now ?? '') === (was ?? '')) continue;
+      const read = readDetail({ ...f, choices: choicesOf(f, library) }, now, order);
+      if ('message' in read) {
+        refuse(read.message, detailId(f.key));
+        return;
+      }
+      if (read.value !== null) extra[f.key] = read.value;
+      else if (editing && !blankInput(was)) extra[f.key] = null;
+    }
+    const [first] = missing;
+    if (!anyway && first) {
+      setWaited(true);
+      const them = missing.length === 1 ? 'it' : 'them';
+      refuse(
+        `Still needed: ${andList(missing.map((m) => m.label))}. ${
+          props.onSkip
+            ? `Fill ${them} in, or skip for now.`
+            : `Fill ${them} in, or save without ${them}.`
+        }`,
+        first.id,
+      );
       return;
     }
     const details: DocumentInput = {
       type_key: typeKey || null,
       title: title.trim() || null,
       owner_member_id: owner || null,
-      issued_by: issuer.trim() || null,
-      identifier: identifier.trim() || null,
-      physical_location: location.trim() || null,
-      issued: iss,
       visibility,
     };
+    // A field the card does not show is left as it is.
+    if (issuerShown) details.issued_by = issuer.trim() || null;
+    if (identifierShown) details.identifier = identifier.trim() || null;
+    if (locationShown) details.physical_location = location.trim() || null;
+    if (issuedShown) details.issued = iss;
     if (sendExpiry) details.expires = exp;
+    // Sealed as it is written on an Only me document (0.5.8).
+    if (notesShown && notes !== (initial.notes ?? '')) details.notes = notes.trim() || null;
+    if (Object.keys(extra).length > 0) details.extra = extra;
     if (type) details.category = type.category;
     await run(() => props.onSubmit(details));
   };
@@ -539,13 +674,23 @@ export function ConfirmForm(props: {
           ) : null}
         </p>
       ) : null}
-      <form onSubmit={(e) => void submit(e)} className="stack">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(false);
+        }}
+        className="stack"
+        noValidate
+      >
         <Select
           id="f-type"
           label="What it is"
           value={typeKey}
           onChange={(v) => {
             setTypeKey(v);
+            // Another type asks for other things: nothing is marked until
+            // Save has waited for them.
+            setWaited(false);
             const t = types.find((x) => x.key === v);
             retitle({ type: t ?? null });
             // A new document takes the type's default; an existing one keeps
@@ -588,14 +733,18 @@ export function ConfirmForm(props: {
             ...people.map((m) => ({ value: m.id, label: m.display_name })),
           ]}
         />
-        <Field
-          id="f-issuer"
-          label={issuerLabel}
-          value={issuer}
-          onChange={chooseIssuer}
-          required={false}
-        />
-        {issuer.trim() === '' && offers.length > 0 && (
+        {issuerShown && (
+          <Field
+            id="f-issuer"
+            label={issuerLabel}
+            value={issuer}
+            onChange={chooseIssuer}
+            required={false}
+            requiredMark={asks('issued_by')}
+            invalid={wanting('f-issuer')}
+          />
+        )}
+        {issuerShown && issuer.trim() === '' && offers.length > 0 && (
           <div className="pills" role="group" aria-label="Who it might be from">
             {offers.map((name) => (
               <button
@@ -613,45 +762,86 @@ export function ConfirmForm(props: {
             ))}
           </div>
         )}
-        <Field
-          id="f-issued"
-          label="Issued"
-          value={issued}
-          onChange={(v) => {
-            setIssued(v);
-            retitle({ issued: v });
-          }}
-          required={false}
-          placeholder="14 Mar 2021"
-          hint="A date, a month (March 2021) or a year"
-        />
+        {issuedShown && (
+          <Field
+            id="f-issued"
+            label={issuedLabel}
+            value={issued}
+            onChange={(v) => {
+              setIssued(v);
+              retitle({ issued: v });
+            }}
+            required={false}
+            requiredMark={asks('issued')}
+            invalid={wanting('f-issued')}
+            placeholder="14 Mar 2021"
+            hint="A date, a month (March 2021) or a year"
+          />
+        )}
         {expiresShown && (
           <Field
             id="f-expires"
-            label="Expires"
+            label={expiresLabel}
             value={expires}
             onChange={setExpires}
             required={false}
+            requiredMark={asks('expires')}
+            invalid={wanting('f-expires')}
             placeholder="14 Mar 2031"
             hint="A date, a month (March 2031) or a year"
           />
         )}
-        <Field
-          id="f-number"
-          label="Number"
-          value={identifier}
-          onChange={setIdentifier}
-          required={false}
-        />
-        <Field
-          id="f-location"
-          label="Where the original is kept"
-          value={location}
-          onChange={setLocation}
-          required={false}
-          placeholder="Bedroom safe, top shelf"
-        />
+        {identifierShown && (
+          <Field
+            id="f-number"
+            label={identifierLabel}
+            value={identifier}
+            onChange={setIdentifier}
+            required={false}
+            requiredMark={asks('identifier')}
+            invalid={wanting('f-number')}
+          />
+        )}
+        {locationShown && (
+          <Field
+            id="f-location"
+            label={locationLabel}
+            value={location}
+            onChange={setLocation}
+            required={false}
+            requiredMark={asks('physical_location')}
+            invalid={wanting('f-location')}
+            placeholder="Bedroom safe, top shelf"
+          />
+        )}
         {reminder && <p className="muted">{reminder}</p>}
+        {ownFields.map((f) => (
+          <DetailField
+            key={f.key}
+            id={detailId(f.key)}
+            field={f}
+            choices={choicesOf(f, library)}
+            value={detailValues[f.key]}
+            invalid={wanting(detailId(f.key))}
+            onChange={(v) => setDetailValues((was) => ({ ...was, [f.key]: v }))}
+          />
+        ))}
+        {notesShown && (
+          <TextArea
+            id="f-notes"
+            label={notesLabel}
+            value={notes}
+            maxLength={NOTES_MAX}
+            onChange={setNotes}
+            requiredMark={asks('notes')}
+            invalid={wanting('f-notes')}
+            hint={
+              visibility === 'private'
+                ? 'Sealed with the document, so only you can read them.'
+                : undefined
+            }
+          />
+        )}
         <div className="field" role="group" aria-label="Who can see this">
           <span className="field-label">Who can see this</span>
           <div className="pills">
@@ -696,7 +886,17 @@ export function ConfirmForm(props: {
           >
             Skip for now
           </Button>
-        ) : null}
+        ) : (
+          // A document already in the vault has no Skip: once Save has
+          // waited, what was changed can still be kept, and the document
+          // says what it needs (A7).
+          waited &&
+          missing.length > 0 && (
+            <Button kind="quiet" disabled={busy} onClick={() => void submit(true)}>
+              {missing.length === 1 ? 'Save without it' : 'Save without them'}
+            </Button>
+          )
+        )}
       </form>
     </main>
   );

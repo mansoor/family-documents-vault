@@ -42,6 +42,8 @@ export interface FakeState {
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
   types: Array<Record<string, unknown>>;
+  /** GET /document-attributes: the library a type's fields come from (0.5.6). */
+  attributes?: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -811,6 +813,7 @@ export function installFakeApi(state: FakeState) {
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path === '/api/v1/document-types') return json({ items: state.types });
+    if (path === '/api/v1/document-attributes') return json({ items: state.attributes ?? [] });
     if (path === '/api/v1/documents/counts') {
       return json({
         by_member: [{ member_id: 'me', count: state.documents.length }],
@@ -825,7 +828,7 @@ export function installFakeApi(state: FakeState) {
         const start = Number(query.get('cursor') ?? 0);
         const more = start + state.pageSize < items.length;
         return json({
-          items: items.slice(start, start + state.pageSize),
+          items: items.slice(start, start + state.pageSize).map(listed),
           next_cursor: more ? String(start + state.pageSize) : null,
           has_more: more,
         });
@@ -834,7 +837,7 @@ export function installFakeApi(state: FakeState) {
       if (cat) items = items.filter((d) => d.category === cat);
       const from = query.get('issued_by');
       if (from) items = items.filter((d) => sameIssuer(d.issued_by, from));
-      return json({ items, next_cursor: null, has_more: false });
+      return json({ items: items.map(listed), next_cursor: null, has_more: false });
     }
     if (path === '/api/v1/issuers') {
       // Distinct, most used first; those used for type_key before the rest.
@@ -882,6 +885,8 @@ export function installFakeApi(state: FakeState) {
         owner_member_id: (metadata?.owner_member_id as string | undefined) ?? null,
         issued_by: (metadata?.issued_by as string | undefined) ?? null,
         visibility: (metadata?.visibility as string | undefined) ?? 'household',
+        notes: (metadata?.notes as string | undefined) ?? null,
+        extra: (metadata?.extra as Record<string, unknown> | undefined) ?? {},
         category: null,
         status: metadata?.type_key
           ? { value: 'valid', label: 'Valid' }
@@ -956,8 +961,18 @@ export function installFakeApi(state: FakeState) {
             409,
           );
         }
+        // Details merge, and null takes one away (0.5.7).
+        const change = { ...(body as Record<string, unknown>) };
+        if (change.extra && typeof change.extra === 'object') {
+          const merged = { ...((doc.extra as Record<string, unknown> | undefined) ?? {}) };
+          for (const [k, v] of Object.entries(change.extra)) {
+            if (v === null) delete merged[k];
+            else merged[k] = v;
+          }
+          change.extra = merged;
+        }
         // A new ETag for every change, as the vault's comes from when it was made.
-        Object.assign(doc, body as object, { etag: `"edit-${state.calls.length}"` });
+        Object.assign(doc, change, { etag: `"edit-${state.calls.length}"` });
         return json(doc);
       }
       return json(doc);
@@ -1123,6 +1138,15 @@ export function installFakeApi(state: FakeState) {
   };
   vi.stubGlobal('fetch', fn);
   return fn;
+}
+
+/**
+ * A document as a list gives it: an Only me document's notes and details
+ * are sealed, opened only in its owner's own request for it (0.5.8).
+ */
+function listed(d: Record<string, unknown>): Record<string, unknown> {
+  if (d.visibility !== 'private') return d;
+  return { ...d, notes: null, has_notes: d.notes != null, extra: {} };
 }
 
 /** One issuer however it was written, as the server compares them. */

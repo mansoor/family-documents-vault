@@ -830,6 +830,15 @@ duplicates, dropped}`. Each event id is recorded once, however often
       `sealPrivate`, `openPrivate`. The fake keeps `notes`, answers
       `has_notes`, and seals an Only me document's notes and details in a
       list; a contract scenario holds the vault and the fake to it.
+  - The card asks for a type's details (5.10). No endpoint changes.
+    - **Changed:** a vehicle registration's `plate` ("Registration plate")
+      is required (`fields[].required: true` in `GET /api/v1/document-types`),
+      as 5.8 said it would be once the web's card could ask for it. Nothing
+      is refused for want of it: a car without one reads "Needs a
+      registration plate", so `?status=needs_info` lists existing cars that
+      have none and `?status=active` fewer. An Only me car whose plate is
+      sealed counts it as given. A household that has changed the type's
+      own fields keeps its own list.
 
 ## Deprecations in effect
 
