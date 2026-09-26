@@ -145,6 +145,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}/${{ matrix.target }}
+          # The action adds `latest` by itself for any stable version tag
+          # (flavor latest=auto): that, not the rule below, moved `latest`
+          # to v0.5.1, a development build. Only the rule decides now.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ steps.release.outputs.latest == 'true' }}
