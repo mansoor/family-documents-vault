@@ -10,7 +10,7 @@ import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { DecryptStream } from '@fdv/crypto';
-import { canSee } from '@fdv/shared';
+import { can, canSee } from '@fdv/shared';
 
 /**
  * Share links (SHR-05).
@@ -183,6 +183,11 @@ export class ShareService {
   }
 
   async list(p: Principal): Promise<ShareView[]> {
+    // Who a document went to outside the family ("the divorce lawyer"),
+    // who sent it and how often it was opened is for those who may share
+    // (0.5.0). A teen or a viewer — an accountant with a sign-in, say —
+    // read every link to every document they could see.
+    if (!can(p.role, 'document.share')) return [];
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const rows = await trx
         .selectFrom('share_link')

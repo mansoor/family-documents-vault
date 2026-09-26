@@ -33,6 +33,7 @@ afterEach(async () => {
 async function make(
   pingDatabase: () => Promise<void> = async () => undefined,
   over: Partial<ApiConfig> = {},
+  logger?: object,
 ) {
   app = await buildApp(
     { ...config, ...over },
@@ -58,7 +59,7 @@ async function make(
       reminders: anyStub,
       suggestions: anyStub,
       notifications: anyStub,
-      logger: false,
+      logger: logger ?? false,
     },
   );
   return app;
@@ -109,6 +110,32 @@ describe('what a device may keep', () => {
       version,
     );
     expect((await app.inject('/api/v1/me')).headers['x-fdv-server-version']).toBe(version);
+  });
+});
+
+describe('the log (0.5.0)', () => {
+  it('never keeps a secret from a URL: a link token, a PIN, or what somebody searched for', async () => {
+    const lines: string[] = [];
+    const app = await make(
+      undefined,
+      {},
+      { level: 'info', stream: { write: (s: string) => void lines.push(s) } },
+    );
+    await app.inject('/api/v1/shared/tokensecret123/content?pin=4242');
+    await app.inject('/api/v1/password-resets/resetsecret123');
+    await app.inject('/api/v1/invitations/invitesecret123');
+    await app.inject('/api/v1/documents?q=divorce');
+    const log = lines.join('');
+    expect(log).toContain('/api/v1/shared/[redacted]/content?[redacted]');
+    for (const secret of [
+      'tokensecret123',
+      '4242',
+      'resetsecret123',
+      'invitesecret123',
+      'divorce',
+    ]) {
+      expect(log).not.toContain(secret);
+    }
   });
 });
 
