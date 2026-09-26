@@ -358,6 +358,14 @@ export interface Schema {
     tags: Generated<string[]>;
     notes: string | null;
     extra: GeneratedJson;
+    /**
+     * An Only me document's notes and details, sealed under its owner's
+     * member key (0033); its plain `notes` and `extra` are then empty.
+     */
+    notes_sealed: Buffer | null;
+    extra_sealed: Buffer | null;
+    /** Which of those details have a value, by key: what its status needs. */
+    sealed_details: Generated<string[]>;
     status_cache: string | null;
     search_tsv: GeneratedAlways<string>;
     created_at: GeneratedTimestamp;

@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { openChunk, sealChunk, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
+import {
+  openChunk,
+  openPrivate,
+  sealChunk,
+  sealPrivate,
+  unwrapKey,
+  wrapKey,
+  type ScopeKeys,
+} from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -13,7 +21,9 @@ import { canSee } from '@fdv/shared';
  * with the old scope key and rewrapped with the new one, 32 bytes at a
  * time. OCR text moves between the plain table (household, adults) and the
  * sealed table (private), so a private document's words leave the index
- * in the same transaction that hides the document.
+ * in the same transaction that hides the document. Its notes and details
+ * move with it (0.5.8): sealed under its owner's member key on the way in,
+ * the plain columns emptied; opened and put back on the way out.
  */
 export class VisibilityService {
   constructor(
@@ -44,7 +54,15 @@ export class VisibilityService {
       // one included (documents/service.ts accept()).
       const doc = await trx
         .selectFrom('document')
-        .select(['id', 'visibility', 'owner_member_id'])
+        .select([
+          'id',
+          'visibility',
+          'owner_member_id',
+          'notes',
+          'extra',
+          'notes_sealed',
+          'extra_sealed',
+        ])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .forUpdate()
@@ -54,6 +72,10 @@ export class VisibilityService {
       if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
         throw new ApiError(404, 'not_found', 'That document is not in the vault.');
       }
+      // Sealed and wrapped for the id as the database writes it: the one in
+      // the address may be in capitals, or without its hyphens, and every
+      // reader opens by the row's own (5.9 review).
+      documentId = doc.id;
       // Only the owning member may see a private document, so only they may
       // move one in or out of private.
       if (
@@ -161,9 +183,37 @@ export class VisibilityService {
           .execute();
       }
 
+      // Move the notes and details, in the same statement that hides or
+      // shows the document: sealed under the owner's key on the way in (the
+      // plain columns emptied, and which details have a value written down
+      // for its status), opened and put back on the way out.
+      let moved = {};
+      if (to === 'private' || doc.visibility === 'private') {
+        const plain = { notes: doc.notes, extra: extraOf(doc.extra) };
+        const sealed =
+          doc.notes_sealed || doc.extra_sealed
+            ? openPrivate(from.key, documentId, doc)
+            : { notes: null, extra: {} };
+        // Anything the private.seal job had not reached yet, as it is.
+        const values = {
+          notes: plain.notes ?? sealed.notes,
+          extra: { ...sealed.extra, ...plain.extra },
+        };
+        moved =
+          to === 'private'
+            ? { ...sealPrivate(target.key, documentId, values), notes: null, extra: '{}' }
+            : {
+                notes: values.notes,
+                extra: JSON.stringify(values.extra),
+                notes_sealed: null,
+                extra_sealed: null,
+                sealed_details: [],
+              };
+      }
+
       await trx
         .updateTable('document')
-        .set({ visibility: to, updated_at: new Date(), updated_by: p.accountId })
+        .set({ visibility: to, updated_at: new Date(), updated_by: p.accountId, ...moved })
         .where('id', '=', documentId)
         .execute();
       await appendAudit(trx, {
@@ -197,6 +247,11 @@ export class VisibilityService {
       return { notice: VisibilityService.PRIVATE_NOTICE };
     });
   }
+}
+
+/** The details as the database hands them over: an object, or nothing. */
+function extraOf(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 function scopeRef(householdId: string, visibility: Visibility, ownerMemberId: string | null) {

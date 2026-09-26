@@ -40,10 +40,18 @@ export interface DocumentView {
   physical_location: string | null;
   is_essential: boolean;
   tags: string[];
+  /**
+   * An Only me document's notes are sealed under its owner's key (0.5.8):
+   * they are here when its owner asks for the document itself, and null in
+   * a list — `has_notes` says whether it has any.
+   */
   notes: string | null;
+  /** Whether it has notes, wherever `notes` is null for being sealed (0.5.8). Absent from older vaults. */
+  has_notes?: boolean;
   /**
    * The type's own details, by field key: each of its field's kind since
    * 0.5.7 (details.ts). A key its type no longer asks for may still be here.
+   * Sealed like the notes on an Only me document (0.5.8): empty in a list.
    */
   extra: Record<string, unknown>;
   status: Status;
@@ -347,6 +355,39 @@ export function missingFields(
     if (f.required === true && blank(doc.extra?.[f.key])) out.push({ key: f.key, label: f.label });
   }
   return out;
+}
+
+/**
+ * What is known of an Only me document's sealed notes and details without
+ * opening them (0.5.8): whether it has notes, and which details have a
+ * value, as its owner last wrote them.
+ */
+export interface SealedPresence {
+  notes: boolean;
+  details: ReadonlyArray<string>;
+}
+
+/** Stands in for a sealed value: given, and never shown. */
+const SEALED = '(sealed)';
+
+/**
+ * A document as `missingFields` needs it when its notes and details are
+ * sealed under its owner's key (0.5.8), where a list, a search or the
+ * nightly refresh cannot read them: each that has a value counts as given,
+ * and nothing else changes. So an Only me car with its plate sealed is not
+ * "Needs a registration plate" — and one without is, whatever the type
+ * requires by then.
+ */
+export function withSealed<T extends RequiredValues>(
+  doc: T,
+  sealed: SealedPresence | null | undefined,
+): T {
+  if (!sealed || (!sealed.notes && sealed.details.length === 0)) return doc;
+  return {
+    ...doc,
+    notes: sealed.notes && blank(doc.notes) ? SEALED : doc.notes,
+    extra: { ...(doc.extra ?? {}), ...Object.fromEntries(sealed.details.map((k) => [k, SEALED])) },
+  };
 }
 
 /** The app's own words for a fixed field a document needs, when its type has none. */

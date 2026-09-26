@@ -17,8 +17,11 @@ import {
   decryptRange,
   EncryptStream,
   newKey,
+  openPrivate,
+  sealPrivate,
   unwrapKey,
   wrapKey,
+  type PrivateValues,
   type ScopeKeys,
 } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db, type Schema, type Visibility } from '@fdv/db';
@@ -35,9 +38,11 @@ import {
   type OfflineItem,
   type RequiredRules,
   type RequiredValues,
+  type SealedPresence,
   type Status,
   type TypeField,
   type VersionView,
+  withSealed,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
 import { sql, type Expression, type Selectable, type SqlBool } from 'kysely';
@@ -150,6 +155,10 @@ type DocRow = {
   tags: string[];
   notes: string | null;
   extra: unknown;
+  /** An Only me document's notes and details, sealed under its owner's key (0.5.8). */
+  notes_sealed: Buffer | null;
+  extra_sealed: Buffer | null;
+  sealed_details: string[];
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
@@ -211,14 +220,20 @@ function typeLookup(trx: Db): TypeLookup {
  * A document's status, as its type in the household has it: the required
  * fields it has no value for make it Needs info, "Needs a passport number"
  * (0.5.7). Never a refusal: a document is saved without them (A7).
+ *
+ * An Only me document's notes and details are sealed (0.5.8), so what is
+ * worked out from them is what was written down when its owner last wrote
+ * them, while they were open: `sealed`.
  */
 export function statusOf(
   type:
     | Pick<EffectiveType, 'key' | 'expiry_driver' | 'reminder_leads' | 'core' | 'fields'>
     | null
     | undefined,
-  doc: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
+  plain: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
+  sealed?: SealedPresence | null,
 ): Status {
+  const doc = withSealed(plain, sealed);
   return deriveStatus(
     {
       type: type
@@ -240,6 +255,22 @@ export function statusOf(
     today(),
   );
 }
+
+/**
+ * An Only me document `d` with words the index does not have: its pages'
+ * text, its notes, its details (0.5.8) — sealed, or not reached yet by the
+ * private.seal job (0033 keeps those out of the index as well). What the
+ * second pass of search opens. A constant: never built from a request.
+ */
+export const HAS_PRIVATE_WORDS = `d.notes_sealed is not null or d.extra_sealed is not null
+  or d.notes is not null or d.extra <> '{}'::jsonb
+  or exists (select 1 from document_text_sealed s where s.document_id = d.id)`;
+
+/** What a row says of its sealed notes and details, without opening them (0.5.8). */
+export const sealedOf = (row: {
+  notes_sealed: Buffer | null;
+  sealed_details: string[] | null;
+}): SealedPresence => ({ notes: row.notes_sealed !== null, details: row.sealed_details ?? [] });
 
 /** A detail refused: 422 invalid_extra, naming its key (0.5.7). */
 const invalidExtra = (problem: DetailProblem) =>
@@ -469,12 +500,66 @@ export class DocumentService {
     return row;
   }
 
+  // ------------------------------------------------------ sealed (0.5.8)
+
+  /**
+   * An Only me document's notes and details, opened for its owner: only in
+   * their own request for the document itself (and its edits), never in a
+   * list. Null for anybody else, and for any other document.
+   */
+  private async opened(trx: Db, p: Principal, row: DocRow): Promise<PrivateValues | null> {
+    if (row.visibility !== 'private' || row.owner_member_id !== p.memberId) return null;
+    return this.openRow(trx, p.householdId, row);
+  }
+
+  /**
+   * What an Only me document's notes and details are: the sealed ones
+   * opened, and any the private.seal job has not reached yet as they are.
+   */
+  private async openRow(trx: Db, householdId: string, row: DocRow): Promise<PrivateValues> {
+    const plain = { notes: row.notes, extra: (row.extra ?? {}) as Record<string, unknown> };
+    if (!row.notes_sealed && !row.extra_sealed) return plain;
+    const key = await this.keys.unwrap(trx, {
+      householdId,
+      kind: 'member',
+      memberId: row.owner_member_id,
+    });
+    const sealed = openPrivate(key.key, row.id, row);
+    return { notes: plain.notes ?? sealed.notes, extra: { ...sealed.extra, ...plain.extra } };
+  }
+
+  /**
+   * The columns that keep an Only me document's notes and details: sealed
+   * under its owner's member key, the plain ones emptied, and which details
+   * have a value written down while they are open (its Needs info).
+   */
+  private async sealFor(
+    trx: Db,
+    householdId: string,
+    documentId: string,
+    ownerMemberId: string | null,
+    values: PrivateValues,
+  ): Promise<Record<string, unknown>> {
+    const key = await this.keys.unwrap(trx, {
+      householdId,
+      kind: 'member',
+      memberId: ownerMemberId,
+    });
+    return sealedColumns(key.key, documentId, values);
+  }
+
   // ---------------------------------------------------------------- views
 
+  /**
+   * A document as the API answers it. An Only me document's notes and
+   * details are given only as `opened` (its owner's own request): in a list
+   * they are null and empty, and `has_notes` says whether it has notes.
+   */
   private async view(
     trx: Db,
     row: DocRow,
     typeOf: TypeLookup = typeLookup(trx),
+    opened: PrivateValues | null = null,
   ): Promise<DocumentView> {
     const type = row.type_key ? await typeOf(row.type_key) : null;
     const versions = await trx
@@ -495,6 +580,9 @@ export class DocumentService {
           precision: row.expires_precision as DateValue['precision'],
         }
       : null;
+    const plainExtra = (row.extra ?? {}) as Record<string, unknown>;
+    // Only me: given only as opened, sealed or not yet.
+    const onlyMe = row.visibility === 'private';
     return {
       id: row.id,
       type_key: row.type_key,
@@ -509,14 +597,12 @@ export class DocumentService {
       physical_location: row.physical_location,
       is_essential: row.is_essential,
       tags: row.tags,
-      notes: row.notes,
-      extra: (row.extra ?? {}) as Record<string, unknown>,
-      status: statusOf(type, {
-        ...row,
-        issued,
-        expires,
-        extra: (row.extra ?? {}) as Record<string, unknown>,
-      }),
+      notes: onlyMe ? (opened?.notes ?? null) : row.notes,
+      has_notes: row.notes !== null || row.notes_sealed !== null,
+      extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
+      // Worked out the same way whoever asks, and however it is asked:
+      // from what is plain, and what was written down of what is sealed.
+      status: statusOf(type, { ...row, issued, expires, extra: plainExtra }, sealedOf(row)),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -543,14 +629,31 @@ export class DocumentService {
         throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
       }
       const mine = p.role === 'teen' ? { owner_member_id: p.memberId } : {};
+      const made: Record<string, unknown> = { ...values, ...mine };
+      // Only me from the start: its notes and details are sealed as they
+      // are written, and never kept plain (0.5.8). The id is minted here,
+      // so they are sealed for this document and no other.
+      const id = randomUUID();
+      if (made.visibility === 'private') {
+        Object.assign(
+          made,
+          await this.sealFor(
+            trx,
+            p.householdId,
+            id,
+            (made.owner_member_id ?? null) as string | null,
+            { notes: (made.notes ?? null) as string | null, extra: extraOf(made.extra) },
+          ),
+        );
+      }
       const row = await trx
         .insertInto('document')
         .values({
+          id,
           household_id: p.householdId,
           created_by: p.accountId,
           updated_by: p.accountId,
-          ...values,
-          ...mine,
+          ...(made as Record<string, never>),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -565,7 +668,7 @@ export class DocumentService {
         detail: { title: row.title, type_key: row.type_key },
         ip: meta.ip,
       });
-      return this.view(trx, row);
+      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
     });
   }
 
@@ -604,9 +707,10 @@ export class DocumentService {
   }
 
   async get(p: Principal, id: string): Promise<DocumentView> {
-    return withPrincipal(this.db, p, async (trx) =>
-      this.view(trx, await this.fetch(trx, p, id, true)),
-    );
+    return withPrincipal(this.db, p, async (trx) => {
+      const row = await this.fetch(trx, p, id, true);
+      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+    });
   }
 
   async update(
@@ -619,25 +723,51 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
-      // Details are checked against what the document holds (16 KB at
-      // most): two edits at once must not each pass against the same old
-      // copy and add up past it, so the row is held while this one runs.
-      const current = await this.fetch(trx, p, id, false, input.extra !== undefined);
+      // The row is held for every edit, and read as it is once held (5.9
+      // review): details are checked against what it holds (16 KB at most);
+      // an Only me document's notes and details are opened, merged and
+      // sealed again here; and an edit that raced a move to Only me sees
+      // the move — and seals — instead of writing plain text into it.
+      const current = await this.fetch(trx, p, id, false, true);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
           409,
           'conflict',
           'Someone else changed this document. Reload and try again.',
           {
-            detail: JSON.stringify(await this.view(trx, current)),
+            detail: JSON.stringify(
+              await this.view(trx, current, typeLookup(trx), await this.opened(trx, p, current)),
+            ),
           },
         );
       }
       this.mustOwnIfTeen(p, current);
-      const values = await this.columns(trx, p, input, current);
+      const open =
+        current.visibility === 'private' ? await this.openRow(trx, p.householdId, current) : null;
+      const values: Record<string, unknown> = await this.columns(
+        trx,
+        p,
+        input,
+        open ? { ...current, ...open } : current,
+      );
+      if (open) {
+        // Sealed on every write of its owner, while they are open — with
+        // anything the private.seal job has not reached yet.
+        Object.assign(
+          values,
+          await this.sealFor(trx, p.householdId, current.id, current.owner_member_id, {
+            notes: 'notes' in values ? (values.notes as string | null) : open.notes,
+            extra: 'extra' in values ? extraOf(values.extra) : open.extra,
+          }),
+        );
+      }
       const row = await trx
         .updateTable('document')
-        .set({ ...values, updated_at: new Date(), updated_by: p.accountId })
+        .set({
+          ...(values as Record<string, never>),
+          updated_at: new Date(),
+          updated_by: p.accountId,
+        })
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -672,7 +802,7 @@ export class DocumentService {
           .executeTakeFirst();
         drawNow = latest?.id ?? null;
       }
-      return this.view(trx, row);
+      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
     });
     if (drawNow) {
       await this.enqueue(
@@ -711,7 +841,9 @@ export class DocumentService {
     return withPrincipal(this.db, p, async (trx) => {
       const row = await this.fetch(trx, p, id, true);
       this.mustOwnIfTeen(p, row);
-      if (!row.deleted_at) return this.view(trx, row);
+      if (!row.deleted_at) {
+        return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+      }
       const restored = await trx
         .updateTable('document')
         .set({ deleted_at: null, updated_at: new Date(), updated_by: p.accountId })
@@ -727,7 +859,7 @@ export class DocumentService {
         objectId: id,
         ip: meta.ip,
       });
-      return this.view(trx, restored);
+      return this.view(trx, restored, typeLookup(trx), await this.opened(trx, p, restored));
     });
   }
 
@@ -775,6 +907,9 @@ export class DocumentService {
       const rows = (await query.limit(limit + 1).execute()) as unknown as DocRow[];
       const page = rows.slice(0, limit);
       const typeOf = typeLookup(trx);
+      // An Only me document's notes and details stay sealed in a list
+      // (0.5.8): `has_notes` says whether it has notes, and its status was
+      // worked out when its owner last wrote them.
       const items = await Promise.all(page.map((r) => this.view(trx, r, typeOf)));
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
@@ -1319,6 +1454,17 @@ export class DocumentService {
       }
       const active = await this.vaults.activeAdapter(trx, p.householdId);
       const scopeKey = await this.keys.unwrap(trx, scope);
+      if (!doc && scope.kind === 'member') {
+        // Only me from its first byte, its notes and details too (0.5.8):
+        // sealed under the key its file is wrapped with, its owner's.
+        values = {
+          ...values,
+          ...sealedColumns(scopeKey.key, documentId, {
+            notes: (values.notes as string | null | undefined) ?? null,
+            extra: extraOf(values.extra),
+          }),
+        } as Record<string, unknown> as Record<string, never>;
+      }
       const fileKey = newKey();
       const tempKey = `${p.householdId}/${documentId}/incoming/${key.toLowerCase()}.${nonce}.enc`;
       const claimRow = {
@@ -1495,10 +1641,10 @@ export class DocumentService {
    * FND-01: one query over titles, identifiers, tags, notes and the OCR text
    * of every version, ranked, with a highlighted snippet.
    *
-   * Private documents' text is sealed and has no index, so it is not
-   * searched here. `sealed_pending` says how many of the caller's own
-   * documents were left unopened and hands out a token for the second
-   * pass (FND-08); a client that ignores it still works.
+   * Private documents' text, notes and details are sealed and have no
+   * index, so they are not searched here. `sealed_pending` says how many
+   * of the caller's own documents were left unopened and hands out a token
+   * for the second pass (FND-08); a client that ignores it still works.
    */
   async search(
     p: Principal,
@@ -1526,6 +1672,8 @@ export class DocumentService {
         tags: string[];
         notes: string | null;
         extra: Record<string, unknown> | null;
+        notes_sealed_present: boolean;
+        sealed_details: string[];
         rank: number;
         snippet: string;
         matched_in: 'title' | 'content';
@@ -1533,14 +1681,14 @@ export class DocumentService {
         with query as (select websearch_to_tsquery('simple', ${q.q}) as tsq),
         doc_hits as (
           select d.id, ts_rank(d.search_tsv, query.tsq) * 2 as rank,
-                 -- The details' words are shown where the index has them (0032).
+                 -- The details' words, and the notes, are shown where the
+                 -- index has them (0032, 0033): never an Only me document's.
                  ts_headline('simple',
                    coalesce(d.title, '') || ' ' || coalesce(d.issued_by, '') || ' ' ||
                    coalesce(d.identifier, '') || ' ' ||
                    case when d.visibility in ('household', 'adults')
-                        then fdv_details_text(d.extra) || ' '
-                        else '' end ||
-                   coalesce(d.notes, ''),
+                        then fdv_details_text(d.extra) || ' ' || coalesce(d.notes, '')
+                        else '' end,
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
                  'title'::text as matched_in
           from document d, query
@@ -1566,6 +1714,7 @@ export class DocumentService {
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
+               d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
                h.rank, h.snippet, h.matched_in
         from hits h join document d on d.id = h.id
         where d.deleted_at is null
@@ -1602,24 +1751,28 @@ export class DocumentService {
           owner_member_id: r.owner_member_id,
           issued_by: r.issued_by,
           issued,
-          status: statusOf(type, { ...r, issued, expires }),
+          status: statusOf(
+            type,
+            { ...r, issued, expires },
+            { notes: r.notes_sealed_present, details: r.sealed_details },
+          ),
           snippet: r.snippet,
           matched_in: r.matched_in,
           rank: Number(r.rank),
         });
       }
-      // How much of the caller's own text this pass could not look inside.
-      // Counted by document, not by version: it is documents the person
-      // thinks in, and it is what the second pass will search.
-      const sealed = await trx
-        .selectFrom('document_text_sealed')
-        .innerJoin('document', 'document.id', 'document_text_sealed.document_id')
-        .select(sql<number>`count(distinct document.id)::int`.as('n'))
-        .where('document.owner_member_id', '=', p.memberId)
-        .where('document.visibility', '=', 'private')
-        .where('document.deleted_at', 'is', null)
-        .executeTakeFirst();
-      const count = sealed?.n ?? 0;
+      // How much of the caller's own words this pass could not look inside:
+      // their Only me documents' pages, notes and details (0.5.8). Counted
+      // by document, not by version: it is documents the person thinks in,
+      // and it is what the second pass will search.
+      const sealed = await sql<{ n: number }>`
+        select count(*)::int as n
+          from document d
+         where d.owner_member_id = ${p.memberId}::uuid
+           and d.visibility = 'private'
+           and d.deleted_at is null
+           and (${sql.raw(HAS_PRIVATE_WORDS)})`.execute(trx);
+      const count = sealed.rows[0]?.n ?? 0;
       if (count === 0 || !this.sealedKey) return { items, sealed_pending: { count } };
       return {
         items,
@@ -2101,6 +2254,12 @@ export class DocumentService {
       if ('problem' in checked) throw invalidExtra(checked.problem);
       if (!current) {
         out.extra = JSON.stringify(checked.set);
+      } else if (current.visibility === 'private') {
+        // Sealed (0.5.8): merged here, into what its owner's edit opened,
+        // under the lock update() holds, and sealed again there.
+        const merged: Record<string, unknown> = { ...held, ...checked.set };
+        for (const k of checked.remove) delete merged[k];
+        out.extra = JSON.stringify(merged);
       } else if (Object.keys(checked.set).length > 0 || checked.remove.length > 0) {
         // A merge, in one statement: a key this edit did not send is left
         // as it is, even if another edit changed it a moment ago.
@@ -2129,6 +2288,23 @@ export class DocumentService {
         : f,
     );
   }
+}
+
+/**
+ * An Only me document's notes and details as their columns keep them
+ * (0.5.8): sealed under its owner's member key, which details have a value,
+ * and the plain columns empty.
+ */
+function sealedColumns(key: Buffer, documentId: string, values: PrivateValues) {
+  return { ...sealPrivate(key, documentId, values), notes: null, extra: '{}' };
+}
+
+/** The details as `columns()` hands them over: JSON text, or nothing sent. */
+function extraOf(v: unknown): Record<string, unknown> {
+  const parsed: unknown = typeof v === 'string' ? JSON.parse(v) : v;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
 }
 
 function scopeFor(doc: Pick<DocRow, 'visibility' | 'owner_member_id'>, householdId: string) {

@@ -6,8 +6,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { CHUNK_SIZE, DecryptStream, deriveKey, EncryptStream, HEADER_BYTES } from '@fdv/crypto';
-import { applyPrivileges, listMigrations, migrateUp } from '@fdv/db';
+import {
+  CHUNK_SIZE,
+  DecryptStream,
+  deriveKey,
+  EncryptStream,
+  EnvKeyProvider,
+  HEADER_BYTES,
+  openPrivate,
+  ScopeKeys,
+} from '@fdv/crypto';
+import {
+  applyPrivileges,
+  createDb,
+  createPool,
+  listMigrations,
+  migrateUp,
+  withSystem,
+} from '@fdv/db';
 import {
   createEmptyDatabase,
   createTestDatabase,
@@ -39,7 +55,10 @@ import {
  * counting rows as the owner — said all was well.
  */
 
-const KEY = deriveKey('restore-test-master-secret-at-least-32-bytes', 'database-backup');
+const MASTER = 'restore-test-master-secret-at-least-32-bytes';
+const KEY = deriveKey(MASTER, 'database-backup');
+/** The vault's scope keys, under the same master key: what a restore seals with (0.5.8). */
+const KEYS = new ScopeKeys(new EnvKeyProvider(MASTER));
 const quiet = () => undefined;
 const TAG = 16; // AES-GCM tag after each sealed chunk
 
@@ -628,11 +647,18 @@ describe.skipIf(!testAdminUrl())('a restore without psql', () => {
       await writeFile(file, 'not reached');
       process.env.PATH = dir; // nothing called psql in it
       const into = { adminUrl: t.adminUrl, appUrl: t.appUrl };
-      await expect(restoreBackup(file, KEY, into, quiet)).rejects.toThrow(
+      await expect(restoreBackup(file, KEY, into, quiet, KEYS)).rejects.toThrow(
         /psql could not be started/,
       );
       await expect(
-        restoreDrill({ file, backupKey: KEY, adminUrl: t.adminUrl, appUrl: t.appUrl, log: quiet }),
+        restoreDrill({
+          file,
+          backupKey: KEY,
+          keys: KEYS,
+          adminUrl: t.adminUrl,
+          appUrl: t.appUrl,
+          log: quiet,
+        }),
       ).rejects.toThrow(/psql could not be started/);
       process.env.PATH = saved;
       expect(await tablesIn(t.adminUrl)).toBe(0);
@@ -646,7 +672,9 @@ describe.skipIf(!testAdminUrl())('a restore without psql', () => {
       await t.drop();
       await rm(dir, { recursive: true, force: true });
     }
-  });
+    // Three databases made and dropped while the rest of the suite runs:
+    // more than the default 5 s under load (it timed out so in a container).
+  }, 30_000);
 });
 
 // pg_dump and psql are in the worker image and on CI; not on every desk.
@@ -693,7 +721,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
 
   it('comes back exactly as the vault had it, and nothing ended since is live again', async () => {
     const t = await empty();
-    const report = await restoreBackup(file, KEY, into(t), quiet);
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
     expect(report).toMatchObject({
       schema: known,
       households: 1,
@@ -738,7 +766,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
   }, 60_000);
 
   it('refuses a database that is not empty, and leaves it as it was', async () => {
-    await expect(restoreBackup(file, KEY, into(vault), quiet)).rejects.toBeInstanceOf(
+    await expect(restoreBackup(file, KEY, into(vault), quiet, KEYS)).rejects.toBeInstanceOf(
       RestoreRefused,
     );
     expect(await checkRestored(into(vault))).toMatchObject({ households: 1, documents: 3 });
@@ -758,7 +786,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       (await readFile(padded)).subarray(0, HEADER_BYTES + 2 * (CHUNK_SIZE + TAG)),
     );
     const t = await empty();
-    await expect(restoreBackup(cut, KEY, into(t), quiet)).rejects.toThrow(/could not be read/);
+    await expect(restoreBackup(cut, KEY, into(t), quiet, KEYS)).rejects.toThrow(
+      /could not be read/,
+    );
     expect(await tablesIn(t.adminUrl)).toBe(0);
   }, 60_000);
 
@@ -769,7 +799,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         `${plain}\ninsert into public.schema_migration (version, name) values (${known + 1}, 'later');\n`,
     );
     const t = await empty();
-    await expect(restoreBackup(newer, KEY, into(t), quiet)).rejects.toThrow(
+    await expect(restoreBackup(newer, KEY, into(t), quiet, KEYS)).rejects.toThrow(
       new RegExp(`newer release .*schema ${known + 1}\\), and this one only knows schema ${known}`),
     );
     expect(await tablesIn(t.adminUrl)).toBe(0);
@@ -778,7 +808,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
   it('refuses, whole, a file that is not a backup of a vault', async () => {
     const other = await reseal(file, () => 'create table public.stray (x int);\n');
     const t = await empty();
-    await expect(restoreBackup(other, KEY, into(t), quiet)).rejects.toThrow(/not a backup/);
+    await expect(restoreBackup(other, KEY, into(t), quiet, KEYS)).rejects.toThrow(/not a backup/);
     expect(await tablesIn(t.adminUrl)).toBe(0);
   }, 60_000);
 
@@ -800,7 +830,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         })
       ).file;
       const t = await empty();
-      const report = await restoreBackup(olderFile, KEY, into(t), quiet);
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
       expect(report).toMatchObject({ schema: known, households: 1, documents: 3 });
       const id = await sql(t.appUrl, 'select instance_id from instance');
       expect(id.rows).toHaveLength(1);
@@ -841,7 +871,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       // The restore brings it up to date, 0030's rules included, and its
       // check — asking as the vault itself — passes.
       const t = await empty();
-      const report = await restoreBackup(olderFile, KEY, into(t), quiet);
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
       expect(report).toMatchObject({ schema: known, households: 2, members: 4, documents: 6 });
       const rules = await sql(
         t.adminUrl,
@@ -876,10 +906,101 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     }
   }, 120_000);
 
+  it('a restore from before a sealing seals again before the vault opens', async () => {
+    // 0.5.7: an Only me document's notes and details were kept plain.
+    const older = await empty();
+    const migrations = await migrationsUpTo(32);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0032-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const hh = await seed(older.adminUrl);
+      const { rows: people } = await sql(
+        older.adminUrl,
+        `select id from member where household_id = '${hh}' order by display_name limit 1`,
+      );
+      const member = people[0]?.id as string;
+      // Its owner's key, under the vault's master key, as the vault mints it.
+      const seeding = createDb(createPool(older.appUrl, 1));
+      try {
+        await withSystem(seeding, hh, (trx) => KEYS.mintMemberKey(trx, hh, member, null));
+      } finally {
+        await seeding.destroy();
+      }
+      const { rows: made } = await sql(
+        older.adminUrl,
+        `insert into document (household_id, title, owner_member_id, visibility, notes, extra)
+         values ('${hh}', 'Old diary', '${member}', 'private', 'The combination is 4471',
+                 '{"vin": "OLDVIN0000000001"}')
+         returning id`,
+      );
+      const doc = made[0]?.id as string;
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      // Restored with another vault's master key, nothing can be sealed, and
+      // the restore says so rather than open a vault with them plain.
+      const wrongKeys = new ScopeKeys(
+        new EnvKeyProvider('another-vaults-master-secret-32-bytes!!'),
+      );
+      await expect(
+        restoreBackup(olderFile, KEY, into(await empty()), quiet, wrongKeys),
+      ).rejects.toThrow(/could not be sealed \(.+\); each is in the log/);
+
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, households: 1, documents: 4 });
+      const { rows } = await sql(
+        t.adminUrl,
+        `select notes, extra, notes_sealed, extra_sealed, sealed_details, search_tsv::text as terms
+           from document where id = '${doc}'`,
+      );
+      const row = rows[0] as {
+        notes: string | null;
+        extra: Record<string, unknown>;
+        notes_sealed: Buffer | null;
+        extra_sealed: Buffer | null;
+        sealed_details: string[];
+        terms: string;
+      };
+      // Sealed before the vault opened: nothing plain, nothing in the index.
+      expect(row).toMatchObject({ notes: null, extra: {}, sealed_details: ['vin'] });
+      expect(row.terms).not.toMatch(/combination|4471|oldvin/);
+      // Under its owner's key, as the vault will open it.
+      const app = createDb(createPool(t.appUrl, 1));
+      try {
+        const opened = await withSystem(app, hh, async (trx) =>
+          openPrivate(
+            (await KEYS.unwrap(trx, { householdId: hh, kind: 'member', memberId: member })).key,
+            doc,
+            row,
+          ),
+        );
+        expect(opened).toEqual({
+          notes: 'The combination is 4471',
+          extra: { vin: 'OLDVIN0000000001' },
+        });
+      } finally {
+        await app.destroy();
+      }
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('the drill restores into a scratch database and leaves nothing behind', async () => {
     const report = await restoreDrill({
       file,
       backupKey: KEY,
+      keys: KEYS,
       adminUrl: vault.adminUrl,
       appUrl: vault.appUrl,
       log: quiet,
@@ -900,7 +1021,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       adminUrl: t.adminUrl,
       appUrl: t.appUrl.replace(/:[^:@/]+@/, ':not-the-password@'),
     };
-    await expect(restoreBackup(file, KEY, wrong, quiet)).rejects.toBeInstanceOf(RestoreIncomplete);
+    await expect(restoreBackup(file, KEY, wrong, quiet, KEYS)).rejects.toBeInstanceOf(
+      RestoreIncomplete,
+    );
     expect(await tablesIn(t.adminUrl)).toBeGreaterThan(0);
   }, 60_000);
 });

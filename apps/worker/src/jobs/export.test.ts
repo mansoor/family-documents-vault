@@ -11,6 +11,7 @@ import {
   EnvKeyProvider,
   newKey,
   ScopeKeys,
+  sealPrivate,
   unwrapKey,
   wrapKey,
 } from '@fdv/crypto';
@@ -131,7 +132,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     owner: string,
     content: string,
     category = 'identity',
-    details: { type_key?: string; extra?: Record<string, unknown> } = {},
+    details: { type_key?: string; extra?: Record<string, unknown>; notes?: string } = {},
   ) {
     return withSystem(db, hh, async (trx) => {
       const doc = await trx
@@ -147,6 +148,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
           identifier: 'ID-1',
           ...(details.type_key ? { type_key: details.type_key } : {}),
           ...(details.extra ? { extra: JSON.stringify(details.extra) } : {}),
+          ...(details.notes ? { notes: details.notes } : {}),
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -156,6 +158,21 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
           ? { householdId: hh, kind: 'member', memberId: owner }
           : { householdId: hh, kind: visibility },
       );
+      // An Only me document's notes and details, sealed as 0.5.8 keeps them.
+      if (visibility === 'private' && (details.notes || details.extra)) {
+        await trx
+          .updateTable('document')
+          .set({
+            ...sealPrivate(scope.key, doc.id, {
+              notes: details.notes ?? null,
+              extra: details.extra ?? {},
+            }),
+            notes: null,
+            extra: '{}',
+          })
+          .where('id', '=', doc.id)
+          .execute();
+      }
       const fileKey = newKey();
       const key = `${hh}/${doc.id}/1/x.pdf.enc`;
       const enc = new EncryptStream(fileKey);
@@ -218,11 +235,12 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(row.document_count).toBe(3); // Sana's private note is not the owner's to export
     expect(row.storage_key).toBe(`${hh}/exports/${exportId}.zip.enc`);
 
-    // The stored object is ciphertext; decrypting it yields a real ZIP.
-    const hhKey = await withSystem(db, hh, (trx) =>
-      keys.unwrap(trx, { householdId: hh, kind: 'household' }),
+    // The stored object is ciphertext, under the requester's own key (0.5.8);
+    // decrypting it yields a real ZIP.
+    const memberKey = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: ownerMember }),
     );
-    const fileKey = unwrapKey(row.file_key_wrapped as Buffer, hhKey.key, `export:${exportId}`);
+    const fileKey = unwrapKey(row.file_key_wrapped as Buffer, memberKey.key, `export:${exportId}`);
     const zip = await decryptToBuffer(
       new LocalAdapter(vaultDir),
       row.storage_key as string,
@@ -317,13 +335,13 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
     );
     expect(row.state).toBe('done');
-    const hhKey = await withSystem(db, hh, (trx) =>
-      keys.unwrap(trx, { householdId: hh, kind: 'household' }),
+    const memberKey = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: ownerMember }),
     );
     const zip = await decryptToBuffer(
       new LocalAdapter(vaultDir),
       row.storage_key as string,
-      unwrapKey(row.file_key_wrapped as Buffer, hhKey.key, `export:${exportId}`),
+      unwrapKey(row.file_key_wrapped as Buffer, memberKey.key, `export:${exportId}`),
     );
     const entries = zipEntries(zip);
 
@@ -393,5 +411,116 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(page.split('constructor: ')).toHaveLength(2);
     // Somebody else's Only me car is in none of it.
     expect(Buffer.concat([...entries.values()]).includes(Buffer.from('SANASVIN'))).toBe(false);
+  }, 60_000);
+
+  /** An export for an account, built, and opened with the key it says it is under. */
+  async function exported(account: string) {
+    const exportId = await withSystem(db, hh, (trx) =>
+      trx
+        .insertInto('export')
+        .values({ household_id: hh, requested_by: account })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.id);
+    await buildExport(
+      {
+        db,
+        keys,
+        credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+        localRoot: vaultDir,
+        log: () => undefined,
+      },
+      { household_id: hh, export_id: exportId },
+    );
+    const row = await withSystem(db, hh, (trx) =>
+      trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
+    );
+    expect(row.state).toBe('done');
+    const zip = await withSystem(db, hh, async (trx) =>
+      decryptToBuffer(
+        new LocalAdapter(vaultDir),
+        row.storage_key as string,
+        unwrapKey(
+          row.file_key_wrapped as Buffer,
+          await keys.unwrapById(trx, row.wrapped_by_scope as string),
+          `export:${exportId}`,
+        ),
+      ),
+    );
+    const entries = zipEntries(zip);
+    const index = JSON.parse(entries.get('index.json')?.toString() ?? '{}') as {
+      documents: Array<{ title: string; notes: string | null; extra: Record<string, unknown> }>;
+    };
+    return { exportId, row, entries, index, all: Buffer.concat([...entries.values()]) };
+  }
+
+  it('sealed notes are opened only for their owner', async () => {
+    // Sana signs in too, and asks for an export of her own.
+    const sanaAccount = (
+      await admin.query<{ id: string }>(
+        "insert into account (email) values ('s@x.test') returning id",
+      )
+    ).rows[0]?.id as string;
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+      [sanaAccount, hh, otherMember],
+    );
+    await addDoc('My sealed will', 'private', ownerMember, 'MY WILL', 'legal', {
+      type_key: 'will',
+      notes: 'The original is with the solicitor',
+      extra: { executor: 'Rahul' },
+    });
+    await addDoc('Her sealed diary', 'private', otherMember, 'HER DIARY', 'legal', {
+      notes: 'Sana keeps this to herself',
+    });
+    await addDoc('Family recipes', 'household', ownerMember, 'RECIPES', 'other', {
+      notes: 'Gran wrote these',
+    });
+
+    // Mine, opened for me; hers nowhere, sealed or not.
+    const mine = await exported(ownerAccount);
+    expect(mine.index.documents.find((d) => d.title === 'My sealed will')).toMatchObject({
+      notes: 'The original is with the solicitor',
+      extra: { executor: 'Rahul' },
+    });
+    expect(mine.index.documents.find((d) => d.title === 'Family recipes')?.notes).toBe(
+      'Gran wrote these',
+    );
+    expect(mine.entries.get('index.csv')?.toString()).toContain(
+      'The original is with the solicitor',
+    );
+    expect(mine.all.includes(Buffer.from('Sana keeps'))).toBe(false);
+
+    // Hers, opened for her; mine nowhere.
+    const hers = await exported(sanaAccount);
+    expect(hers.index.documents.find((d) => d.title === 'Her sealed diary')?.notes).toBe(
+      'Sana keeps this to herself',
+    );
+    expect(hers.index.documents.find((d) => d.title === 'Family recipes')?.notes).toBe(
+      'Gran wrote these',
+    );
+    expect(hers.all.includes(Buffer.from('solicitor'))).toBe(false);
+    expect(hers.index.documents.map((d) => d.title)).not.toContain('My sealed will');
+  }, 60_000);
+
+  it('an export containing an Only me document cannot be unwrapped with the household key', async () => {
+    const mine = await exported(ownerAccount);
+    expect(mine.index.documents.map((d) => d.title)).toContain('My private note');
+    const [hhKey, memberKey] = await withSystem(db, hh, (trx) =>
+      Promise.all([
+        keys.unwrap(trx, { householdId: hh, kind: 'household' }),
+        keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: ownerMember }),
+      ]),
+    );
+    // Wrapped under the requester's own key, and said to be.
+    expect(mine.row.wrapped_by_scope).toBe(memberKey.id);
+    const wrapped = mine.row.file_key_wrapped as Buffer;
+    expect(() => unwrapKey(wrapped, hhKey.key, `export:${mine.exportId}`)).toThrow(/cannot unwrap/);
+    expect(unwrapKey(wrapped, memberKey.key, `export:${mine.exportId}`)).toHaveLength(32);
+    // Nor with the other adult's.
+    const hers = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: otherMember }),
+    );
+    expect(() => unwrapKey(wrapped, hers.key, `export:${mine.exportId}`)).toThrow(/cannot unwrap/);
   }, 60_000);
 });

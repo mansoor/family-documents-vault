@@ -5,21 +5,23 @@ import { createReadStream } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { DecryptStream } from '@fdv/crypto';
-import { createPool, listMigrations, migrateUp } from '@fdv/db';
+import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
+import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
 import { libpqConnection, withDatabase } from './libpq.js';
+import { sealPrivateValues } from './seal.js';
 
 /**
  * Putting a backup back (NFR-07).
  *
  * A backup is a plain `pg_dump`, encrypted (backup.ts). Restoring loads it
  * into an empty database, then does what the vault's own start would: runs
- * any migrations the backup predates and gives the application role its
- * privileges, which the dump does not carry. Then it checks the result the
- * way the vault will use it — as the application role, through row-level
- * security — rather than counting rows as the owner, which is all the drill
- * did until 0.4.5, and why it never noticed that a restored vault could not
- * read itself.
+ * any migrations the backup predates, gives the application role its
+ * privileges, which the dump does not carry, and seals the Only me notes
+ * and details a backup from before 0.5.8 holds plain (seal.ts). Then it
+ * checks the result the way the vault will use it — as the application
+ * role, through row-level security — rather than counting rows as the
+ * owner, which is all the drill did until 0.4.5, and why it never noticed
+ * that a restored vault could not read itself.
  *
  * The load is one transaction, and it is committed only after the whole
  * file has decrypted and authenticated: the last chunk carries the flag
@@ -71,6 +73,8 @@ export async function restoreBackup(
   backupKey: Buffer,
   target: RestoreTarget,
   log: Log,
+  /** The vault's scope keys, under its master key: what private.seal seals with. */
+  keys: ScopeKeys,
 ): Promise<RestoreReport> {
   await assertEmpty(target.adminUrl);
   const known = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
@@ -85,6 +89,10 @@ export async function restoreBackup(
       // then give the application role its privileges.
       const applied = await migrateUp(admin, undefined, (m) => log('info', `migrate: ${m}`));
       if (applied.length) log('info', 'backup brought up to date', { migrations: applied.length });
+      // And what the worker's start does, before the vault opens: a backup
+      // can be older than the sealing of its Only me notes and details
+      // (0.5.8), and they are not to be plain in the vault for a moment.
+      await sealRestored(admin, target.appUrl, keys, log);
       open = await stillOpen(admin);
     } finally {
       await admin.end();
@@ -92,6 +100,29 @@ export async function restoreBackup(
     return { ...(await checkRestored(target)), ...undone, ...open };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
+  }
+}
+
+/** private.seal, on the restored database; any document it could not seal fails the restore. */
+async function sealRestored(
+  admin: ReturnType<typeof createPool>,
+  appUrl: string,
+  keys: ScopeKeys,
+  log: Log,
+): Promise<void> {
+  const app = createDb(createPool(appUrl, 1));
+  try {
+    const r = await sealPrivateValues({ admin, app, keys, log });
+    if (r.sealed) log('info', 'Only me notes and details sealed', r);
+    if (r.failed) {
+      // What went wrong, as it went wrong: a connection or a password is as
+      // likely as a key (5.9 review), and each document's is in the log.
+      throw new Error(
+        `${r.failed} Only me document${r.failed === 1 ? "'s" : "s'"} notes and details could not be sealed (${r.firstError ?? 'no reason given'}); each is in the log`,
+      );
+    }
+  } finally {
+    await app.destroy();
   }
 }
 
@@ -148,6 +179,7 @@ const DRILL_PREFIX = 'fdv_restore_drill_';
 export async function restoreDrill(opts: {
   file: string;
   backupKey: Buffer;
+  keys: ScopeKeys;
   adminUrl: string;
   appUrl: string;
   log: Log;
@@ -170,6 +202,7 @@ export async function restoreDrill(opts: {
       opts.backupKey,
       { adminUrl: withDatabase(opts.adminUrl, name), appUrl: withDatabase(opts.appUrl, name) },
       opts.log,
+      opts.keys,
     );
   } finally {
     process.off('SIGINT', onSignal);

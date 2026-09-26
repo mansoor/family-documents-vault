@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-09-26 — iteration 5.9
+
+### Security
+
+- An Only me document's notes and details are now sealed with its owner's own key, as its pages' words already were: they leave the plain table, the search index and every backup from now on, and only their owner's own requests open them. Existing ones are sealed when the worker starts, and again after a restore, before the vault opens. Backups made before this release keep them unsealed until they rotate out.
+- A household export is now locked with the key of the person who asked for it, not the household's, since it holds that person's Only me documents.
+- The database itself refuses an Only me note or detail written in plain text, should any path ever try.
+
+### Changed
+
+- Lists of documents, and a phone's offline set, no longer carry the notes and details of Only me documents; they say whether there are notes (`has_notes`), and the document itself shows them to its owner.
+
 ## [0.5.7] - 2026-09-26 — iteration 5.8
 
 A kind of document's own details — a car's VIN, a will's executor, a policy's cover — are now kept properly: checked against what the kind asks for, found by search, and in the export. Screens to fill them in come next.

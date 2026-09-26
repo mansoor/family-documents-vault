@@ -513,6 +513,41 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "an Only me document's notes and details are on its own page, and not in a list (0.5.8)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const me = await api.me(token);
+      const made = await api.createDocument(token, {
+        type_key: 'bank_statement',
+        title: 'Contract savings',
+        owner_member_id: me.member_id,
+        visibility: 'private',
+        notes: '  Kept in the blue folder ',
+        extra: { period: 'March 2026' },
+      });
+      // Its owner, asking for it, reads them.
+      const kept = { notes: 'Kept in the blue folder', has_notes: true };
+      expect(made).toMatchObject({ ...kept, extra: { period: 'March 2026' } });
+      expect(await api.document(token, made.id)).toMatchObject({
+        ...kept,
+        extra: { period: 'March 2026' },
+      });
+      // A list says it has notes, and shows neither them nor its details.
+      const listed = async (id: string) =>
+        (await api.documents(token)).items.find((d) => d.id === id);
+      expect(await listed(made.id)).toMatchObject({ notes: null, has_notes: true, extra: {} });
+      // One the family can see is listed as it is.
+      const shared = await api.createDocument(token, {
+        type_key: 'bank_statement',
+        title: 'Contract current account',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        notes: 'Joint',
+      });
+      expect(await listed(shared.id)).toMatchObject({ notes: 'Joint', has_notes: true });
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

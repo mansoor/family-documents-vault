@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { DecryptStream, deriveKey } from '@fdv/crypto';
+import { DecryptStream, deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import {
@@ -33,6 +33,8 @@ async function main() {
     ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
     : (config.FDV_MASTER_KEY as string);
   const backupKey = deriveKey(masterSecret, 'database-backup');
+  // What a restore seals a backup's Only me notes and details with (0.5.8).
+  const keys = new ScopeKeys(new EnvKeyProvider(masterSecret));
   const log = (level: string, msg: string, extra?: Record<string, unknown>) =>
     console.log(JSON.stringify({ level, msg, ...extra }));
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
@@ -63,6 +65,7 @@ async function main() {
       const report = await restoreDrill({
         file,
         backupKey,
+        keys,
         adminUrl,
         appUrl: config.DATABASE_URL,
         log,
@@ -102,6 +105,7 @@ async function main() {
         backupKey,
         { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL },
         log,
+        keys,
       );
       console.log(summary(file, report));
     } catch (err) {

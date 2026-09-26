@@ -798,6 +798,38 @@ duplicates, dropped}`. Each event id is recorded once, however often
       an `etag`, `409 conflict` for a stale `If-Match`, and `501` for a
       field it does not keep, rather than dropping it — and says the Needs
       info words.
+  - Only me notes and details are sealed (5.9). An Only me document's
+    `notes` and its type's details (`extra`) are sealed under its owner's own
+    key, as its pages' text always has been: from this release on they are
+    in no plain column, no search index and no new backup. Those written
+    before are sealed when the worker first starts, and by a restore.
+    - `GET /api/v1/documents/{id}` gives them to the document's owner as
+      before, and so do the answers to creating, editing and restoring it.
+    - **Changed:** `GET /api/v1/documents`, and each `document` of
+      `GET /api/v1/offline/essentials`, answer an Only me document with
+      `notes: null` and `extra: {}`. The reason: a list would have to open
+      every Only me document's notes and details to show them, in every
+      list, and no client shows them there; they are opened only when their
+      owner asks for the document itself. A new field, `has_notes`, says
+      whether a document has notes, on every document. A client that reads
+      notes from `GET /api/v1/documents/{id}`, as the web and the app do,
+      sees no change. Absent from older vaults.
+    - An Only me document's `status` still names what it needs ("Needs a
+      box number"), in a list too: which details it has is written down,
+      unopened, whenever its owner writes them.
+    - Search: an Only me document's notes, like its details (5.8), are no
+      longer in the index. The second pass (`GET /api/v1/search/sealed`)
+      opens them, with its pages, for its owner alone, and a match there is
+      `matched_in: "title"`, as the first pass says of a document's own
+      words. `sealed_pending.count` counts the caller's Only me documents
+      with pages, notes or details to open.
+    - The export opens the requester's own Only me documents' notes and
+      details, and nobody else's are in it (as before). It is now kept
+      under the requester's own key rather than the household's.
+    - `@fdv/shared`: `DocumentView.has_notes`, `withSealed`. `@fdv/crypto`:
+      `sealPrivate`, `openPrivate`. The fake keeps `notes`, answers
+      `has_notes`, and seals an Only me document's notes and details in a
+      list; a contract scenario holds the vault and the fake to it.
 
 ## Deprecations in effect
 
