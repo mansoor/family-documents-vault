@@ -153,7 +153,9 @@ function enclosing(node: ts.Node): string {
   return '(top level)';
 }
 
-describe('withSystem in the API', () => {
+// Parsing every source file takes about a second alone; under the whole
+// suite's load it has taken over 5 s (5.14), so these have room of their own.
+describe('withSystem in the API', { timeout: 30_000 }, () => {
   it('withSystem is called only from the allow-list', async () => {
     const found: string[] = [];
     for (const file of await sources()) {

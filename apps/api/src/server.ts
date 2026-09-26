@@ -10,6 +10,7 @@ import { PgBoss } from 'pg-boss';
 import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { TypeService } from './documents/types.js';
+import { ListService } from './lists/service.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
     vaults,
     documents,
     types: new TypeService(db, enqueue, stepUpService),
+    lists: new ListService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     reminders,
     notifications: new NotificationService(

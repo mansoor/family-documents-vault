@@ -22,6 +22,8 @@ type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
 export type Visibility = 'household' | 'adults' | 'private';
 export type DatePrecision = 'day' | 'month' | 'year';
+/** Who a list of documents is for (0036). */
+export type ListAudience = 'everyone' | 'teens' | 'adults' | 'only_me';
 /** Where a version's page previews are (0027). */
 export type PreviewState = 'none' | 'queued' | 'ready' | 'unsupported' | 'failed';
 /** What an attribute holds (0031). */
@@ -448,6 +450,35 @@ export interface Schema {
     a: string;
     b: string;
     created_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A list of documents (0036): who it is for, and the member who made it —
+   * the one who changes it, and the one an Only me list is for. Marked
+   * deleted, never removed.
+   */
+  doc_list: {
+    id: Generated<string>;
+    household_id: string;
+    name: string;
+    description: string | null;
+    audience: ListAudience;
+    owner_member_id: string | null;
+    created_by: string | null;
+    created_at: GeneratedTimestamp;
+    /** Its name, words and audience: never its items. */
+    updated_at: GeneratedTimestamp;
+    deleted_at: Timestamp | null;
+  };
+
+  /** A document on a list, in the order they were put there. */
+  doc_list_item: {
+    list_id: string;
+    document_id: string;
+    household_id: string;
+    added_by: string | null;
+    added_at: GeneratedTimestamp;
+    position: number;
   };
 
   export: {

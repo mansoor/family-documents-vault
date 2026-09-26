@@ -19,6 +19,10 @@ import type {
   ExportRow,
   Invitation,
   InvitationPreview,
+  ListAudience,
+  ListDetail,
+  ListInput,
+  ListView,
   Me,
   Member,
   MfaChallenge,
@@ -374,6 +378,66 @@ export function createApi(http: Http) {
      */
     page: (token: string, versionId: string, n: number): Promise<ResponseLike> =>
       raw(`/api/v1/versions/${versionId}/pages/${n}`, { token }),
+
+    // ---------------------------------------------- lists (0.5.12)
+    /**
+     * Lists of documents (when `features.lists`): every list the caller may
+     * see, each with `item_count`, how many of its documents they can see.
+     * A viewer is given none.
+     */
+    lists: (token: string) => request<{ items: ListView[] }>('/api/v1/lists', { token }),
+    /** A list made by the caller (owners, adults and teens), for an audience they are in. */
+    createList: (
+      token: string,
+      body: { name: string; audience: ListAudience; description?: string | null },
+    ) => request<ListDetail>('/api/v1/lists', { method: 'POST', body, token }),
+    /**
+     * One list, with a page of the documents on it the caller can see, in
+     * the order they were put there: 50 unless `limit` says (200 at most),
+     * from the start or after `cursor`, the last page's `next_cursor`.
+     * `item_count` is all of them. A cursor whose document has since left
+     * the list, or the caller's sight, is `422`: start again.
+     */
+    getList: (token: string, id: string, page: { limit?: number; cursor?: string | null } = {}) =>
+      request<ListDetail>(`/api/v1/lists/${enc(id)}${qs(page)}`, { token }),
+    /**
+     * Its name, words or audience, by its maker while they are in its
+     * audience (`403` once they are not), made to the list they saw: pass
+     * its `etag`, and a newer one answers `409 conflict`.
+     */
+    updateList: (token: string, id: string, body: ListInput, etag?: string) =>
+      request<ListDetail>(`/api/v1/lists/${enc(id)}`, {
+        method: 'PATCH',
+        body,
+        token,
+        ...(etag ? { headers: { 'if-match': etag } } : {}),
+      }),
+    /**
+     * Gone for everybody: by its maker, whatever their role now, or by an
+     * owner when nobody may change it any more — its maker is outside its
+     * audience, or has no sign-in. Anybody else in its audience is `403`.
+     */
+    deleteList: (token: string, id: string) =>
+      request<void>(`/api/v1/lists/${enc(id)}`, { method: 'DELETE', token }),
+    /**
+     * Documents put on a list by its maker, at the end: each one the maker
+     * can see, or `404` and none is put on. The answer is the list's first
+     * page.
+     */
+    addToList: (token: string, id: string, documentIds: string[]) =>
+      request<ListDetail>(`/api/v1/lists/${enc(id)}/items`, {
+        method: 'POST',
+        body: { document_ids: documentIds },
+        token,
+      }),
+    removeFromList: (token: string, id: string, documentId: string) =>
+      request<void>(`/api/v1/lists/${enc(id)}/items/${enc(documentId)}`, {
+        method: 'DELETE',
+        token,
+      }),
+    /** The lists a document is on, of those the caller may see. */
+    documentLists: (token: string, documentId: string) =>
+      request<{ items: ListView[] }>(`/api/v1/documents/${enc(documentId)}/lists`, { token }),
 
     // ------------------------------------------------ offline (0.4.13)
     /**

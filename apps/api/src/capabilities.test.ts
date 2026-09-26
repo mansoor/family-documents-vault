@@ -58,6 +58,8 @@ describe('buildCapabilities', () => {
       unified_push: false,
       // 0.5.11: kinds of document of the household's own, and the editor (5.11, 5.12).
       custom_types: true,
+      // 0.5.12: lists of documents (5.14).
+      lists: true,
     });
     expect(caps.deprecations).toEqual([]);
   });

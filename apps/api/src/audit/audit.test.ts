@@ -286,6 +286,54 @@ describe('who reads each line', () => {
       false,
     ]);
   });
+
+  it("a list's line follows the list: its audience, Only me its maker's, and with no row nobody's (5.14)", () => {
+    const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
+    const viewer: Reader = { role: 'viewer', memberId: randomUUID() };
+    const list = (audience: string | null, by: string | null = owner.memberId) => ({
+      action: 'list.renamed',
+      object_type: 'list',
+      document_visibility: null,
+      document_owner: null,
+      list_audience: audience,
+      list_owner: by,
+    });
+    const who = (line: ReturnType<typeof list>) =>
+      [owner, adult, teen, viewer].map((r) => shownTo(r, line));
+    expect(who(list('everyone'))).toEqual([true, true, true, false]);
+    expect(who(list('teens'))).toEqual([true, true, true, false]);
+    expect(who(list('adults'))).toEqual([true, true, false, false]);
+    expect(who(list('only_me'))).toEqual([true, false, false, false]);
+    expect(who(list('only_me', adult.memberId))).toEqual([false, true, false, false]);
+    // Another member's Only me list is not given to the reader at all: no row.
+    expect(who(list(null, null))).toEqual([false, false, false, false]);
+    // An audience nobody has taught the log is nobody's.
+    expect(who(list('constructor'))).toEqual([false, false, false, false]);
+  });
+
+  it('a document put on a list is a line about the document, shown only to who sees both (5.14)', () => {
+    const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
+    const item = (visibility: 'household' | 'adults' | 'private', audience: string | null) => ({
+      action: 'list.item_added',
+      object_type: 'document',
+      document_visibility: visibility,
+      document_owner: owner.memberId,
+      list_audience: audience,
+      list_owner: owner.memberId,
+    });
+    const who = (line: ReturnType<typeof item>) =>
+      [owner, adult, teen].map((r) => shownTo(r, line));
+    expect(who(item('household', 'everyone'))).toEqual([true, true, true]);
+    expect(who(item('adults', 'everyone'))).toEqual([true, true, false]);
+    expect(who(item('private', 'everyone'))).toEqual([true, false, false]);
+    expect(who(item('household', 'adults'))).toEqual([true, true, false]);
+    // Everybody sees the document; only its maker, the Only me list.
+    expect(who(item('household', 'only_me'))).toEqual([true, false, false]);
+    expect(who(item('household', null))).toEqual([false, false, false]);
+    for (const action of ['list.item_added', 'list.item_removed']) {
+      expect(shownTo(teen, { ...item('household', 'everyone'), action }), action).toBe(true);
+    }
+  });
 });
 
 /**

@@ -65,6 +65,13 @@ export interface CapabilityFeatures {
    * categories. Absent from older vaults, which have the built-ins only.
    */
   custom_types?: boolean;
+  /**
+   * Lists of documents (0.5.12): /lists, their items and
+   * GET /documents/{id}/lists. Owners, adults and teens make them; each
+   * reader is given only the documents on a list they could see anyway.
+   * Absent from older vaults.
+   */
+  lists?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -133,10 +133,13 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     const rotated = json<Tokens>(first);
     expect(rotated.refresh_token).not.toBe(tokens.refresh_token);
 
-    // Replay of the old token: theft signal.
+    // Replay of the old token from somewhere else: theft signal. (From the
+    // same browser, within 30 seconds, it would be a page reloaded while
+    // its refresh was on the way — refresh-grace.test.ts.)
     const replay = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/refresh',
+      headers: { 'user-agent': 'a browser that is not the owner’s' },
       payload: { refresh_token: tokens.refresh_token },
     });
     expect(replay.statusCode).toBe(401);

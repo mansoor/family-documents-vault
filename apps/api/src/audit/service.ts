@@ -1,5 +1,11 @@
 import { withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
-import { canSee, describeEvents, type ActivityEvent, type ActivityLine } from '@fdv/shared';
+import {
+  canSee,
+  canSeeList,
+  describeEvents,
+  type ActivityEvent,
+  type ActivityLine,
+} from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
@@ -30,12 +36,19 @@ export interface Reader {
   memberId: string;
 }
 
-/** What a rule is told about a row: what happened, to what, and the document's live row. */
+/**
+ * What a rule is told about a row: what happened, to what, the document's
+ * live row, and the live row of the list it was about or on (5.14) — null
+ * when the reader is not given it (another member's Only me list), or when
+ * there is none.
+ */
 export interface Line {
   action: string;
   object_type: string | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
+  list_audience?: string | null;
+  list_owner?: string | null;
 }
 
 type Audience = (reader: Reader, line: Line) => boolean;
@@ -51,6 +64,24 @@ const everyone: Audience = () => true;
 const seesTheDocument: Audience = (reader, line) =>
   line.document_visibility !== null &&
   canSee(reader, { visibility: line.document_visibility, owner_member_id: line.document_owner });
+
+/**
+ * A list's lines follow the list (5.14): whoever is in its audience now, as
+ * its live row says — Only me, its maker alone. A list the reader is not
+ * given (the database keeps another member's Only me list from them) is
+ * nobody's line, like a document with no row.
+ */
+const seesTheList: Audience = (reader, line) =>
+  line.list_audience != null &&
+  canSeeList(reader, { audience: line.list_audience, owner_member_id: line.list_owner ?? null });
+
+/**
+ * A document put on a list, or taken off: one line per document, written
+ * about the document, so the document's rule applies — and the list's too,
+ * or the line would say that a list the reader may not know of exists.
+ */
+const seesTheDocumentOnTheList: Audience = (reader, line) =>
+  seesTheDocument(reader, line) && seesTheList(reader, line);
 
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
@@ -127,6 +158,15 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['document_type.restored', everyone],
   ['document_type.deleted', everyone],
   ['document_attribute.created', everyone],
+  // lists of documents (5.14): a list's name is information ("Divorce"),
+  // so its lines are its audience's, and carry its id and no name. A
+  // document put on it or taken off is a line about the document.
+  ['list.created', seesTheList],
+  ['list.renamed', seesTheList],
+  ['list.updated', seesTheList],
+  ['list.deleted', seesTheList],
+  ['list.item_added', seesTheDocumentOnTheList],
+  ['list.item_removed', seesTheDocumentOnTheList],
 ]);
 
 /**
@@ -182,6 +222,9 @@ interface Row {
   document_visibility: Visibility | null;
   document_owner: string | null;
   member_name: string | null;
+  list_name: string | null;
+  list_audience: string | null;
+  list_owner: string | null;
 }
 
 export class AuditService {
@@ -211,7 +254,10 @@ export class AuditService {
                d.title                   as document_title,
                d.visibility              as document_visibility,
                d.owner_member_id         as document_owner,
-               object_member.display_name as member_name
+               object_member.display_name as member_name,
+               l.name                    as list_name,
+               l.audience                as list_audience,
+               l.owner_member_id         as list_owner
           from audit_event e
           left join account_household ah
             on ah.account_id = e.actor_account_id
@@ -221,6 +267,13 @@ export class AuditService {
             on e.object_type = 'document' and d.id = e.object_id
           left join member object_member
             on e.object_type = 'member' and object_member.id = e.object_id
+          -- A list's own lines name it; a document's line on a list keeps
+          -- the list's id in its detail (5.14).
+          left join doc_list l
+            on l.id = case when e.object_type = 'list' then e.object_id
+                           when e.action in ('list.item_added', 'list.item_removed')
+                             then (e.detail->>'list_id')::uuid
+                      end
          where e.household_id = ${p.householdId}
            ${opts.before ? sql`and e.id < ${opts.before}` : sql``}
          order by e.id desc
@@ -243,6 +296,7 @@ export class AuditService {
           object_type: r.object_type,
           object_id: r.object_id,
           object_title: r.document_title ?? r.member_name,
+          list_name: r.list_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
         });
       }

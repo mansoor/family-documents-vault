@@ -53,6 +53,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       unified_push: config.pushEnabled,
       // 0.5.11: the household's own kinds of document, and the web's editor for them.
       custom_types: true,
+      // 0.5.12: lists of documents, each reader given what they may see (5.14).
+      lists: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

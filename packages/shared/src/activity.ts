@@ -32,6 +32,12 @@ export interface ActivityEvent {
   object_id: string | null;
   /** The document's title, when the event is about one and it can be named. */
   object_title: string | null;
+  /**
+   * The list's name as it is now, when the event is about a list or a
+   * document on one (5.14). The line is shown only to whoever may see the
+   * list, so its name is theirs to read; the log itself keeps only its id.
+   */
+  list_name?: string | null;
   detail: Record<string, unknown>;
 }
 
@@ -58,6 +64,8 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
   const detail = e.detail ?? {};
   /** A kind of document or a field, by the name it had then (0.5.10). */
   const kind = text(detail.label) ? `“${text(detail.label)}”` : null;
+  /** A list, by the name it has now (0.5.12). */
+  const list = e.list_name ? `the list “${e.list_name}”` : 'a list';
   const documentId = e.object_type === 'document' ? e.object_id : null;
   const line = (text: string, notable = false): ActivityLine => ({
     id: e.id,
@@ -137,6 +145,25 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           ? `${who} added ${kind} to the fields a kind of document can ask for`
           : `${who} added a field a kind of document can ask for`,
       );
+
+    // ------------------------------------------ lists of documents (0.5.12)
+    // Said only to whoever may see the list, and a document's line only to
+    // whoever may also see the document: one line per document, so none
+    // names a document its reader is not given.
+    case 'list.created':
+      return line(`${who} made ${list}`);
+    case 'list.renamed':
+      return line(
+        e.list_name ? `${who} renamed a list, now “${e.list_name}”` : `${who} renamed a list`,
+      );
+    case 'list.updated':
+      return line(`${who} changed ${list}`);
+    case 'list.deleted':
+      return line(`${who} deleted ${list}`);
+    case 'list.item_added':
+      return line(`${who} added ${doc} to ${list}`);
+    case 'list.item_removed':
+      return line(`${who} took ${doc} off ${list}`);
 
     // ---------------------------------------------------------- people
     case 'member.added':
