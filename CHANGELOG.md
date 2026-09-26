@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Added
+
+- **Settings → Trash** lists the documents moved to the Trash, most recent first, and brings any of them back. The vault could always do this; the web app had no way to ask.
+
+### Changed
+
+- **Move to Trash**, with a trash icon, in place of "Move to the bin". It asks first in the app's own dialog rather than the browser's, with Cancel where Enter lands, and Escape keeps the document too. It no longer says a document can be brought back "within 30 days": nothing empties the Trash by itself, so it can be brought back any time. People who cannot change documents are no longer offered a button that would refuse them. The activity log says "moved … to the Trash" and "took … out of the Trash".
+- **"We noticed something missing" folds away**, on Home and on Reminders, with the number of things in brackets — "We noticed something missing (3)". Your browser remembers whether you folded it.
+- **A document's history says who added each version, and exactly when**: "added 26 Sept 2026, 3:12pm by Sarah". It used to say only the date.
+- **"What has been happening" is a table**: exactly when, and what happened, left-aligned. Point at a time to see it in words ("yesterday, 4:12pm").
+
 ## [0.5.0] - 2026-09-25 — Phase 4 — Pocket
 
 The vault, ready for the family's phones: a scan filed exactly once however

@@ -10,7 +10,14 @@ import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Avatar, BottomNav, categoryLabel, ErrorNote, StatusBadge } from '../ui.js';
+import {
+  Avatar,
+  BottomNav,
+  categoryLabel,
+  CollapsibleSection,
+  ErrorNote,
+  StatusBadge,
+} from '../ui.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -165,10 +172,7 @@ function MissingStrip({ items }: { items: SuggestionView[] }) {
   // cannot add anything is being shown a list of jobs for other people.
   if (items.length === 0 || !can(storedRole(), 'document.add')) return null;
   return (
-    <section aria-labelledby="missing-h">
-      <h2 id="missing-h" className="section-h">
-        We noticed something missing
-      </h2>
+    <CollapsibleSection id="home-missing" title="We noticed something missing" count={items.length}>
       <div className="tiles">
         {items.slice(0, 2).map((s) => (
           <Link key={s.key} to={addLink(s)} className="tile tile-missing">
@@ -183,7 +187,7 @@ function MissingStrip({ items }: { items: SuggestionView[] }) {
           {items.length - 2} more like this
         </Link>
       )}
-    </section>
+    </CollapsibleSection>
   );
 }
 

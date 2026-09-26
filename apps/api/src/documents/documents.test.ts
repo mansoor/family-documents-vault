@@ -194,6 +194,8 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
       headers: h.as(owner),
     });
     expect(json<{ items: VersionView[] }>(versions).items).toHaveLength(1);
+    // The history says who added it, by the name the household knows them by (5.1).
+    expect(json<{ items: VersionView[] }>(versions).items[0]?.uploaded_by_name).toBe('Owner');
 
     // Range: a slice from the middle, crossing the 1 MiB chunk boundary.
     const start = 1024 * 1024 - 100;

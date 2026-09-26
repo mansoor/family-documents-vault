@@ -1,4 +1,4 @@
-import { whenWords, type ActivityLine } from '@fdv/shared';
+import { whenExactly, whenWords, type ActivityLine } from '@fdv/shared';
 import { useState } from 'react';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -9,8 +9,8 @@ import { BottomNav, Button, ErrorNote, TopBar } from '../ui.js';
  *
  * *Sarah downloaded "Home insurance policy" — yesterday, 4:12pm.* This is
  * what makes a shared vault trustworthy between adults: not restrictions,
- * but visibility. So it is a list of sentences with times, and nothing
- * else — no filters, no event types, no ids.
+ * but visibility. So it is a table of sentences and exactly when (5.1), and
+ * nothing else — no filters, no event types, no ids.
  */
 export function ActivityScreen() {
   const { withToken, authVersion } = useApp();
@@ -48,15 +48,33 @@ export function ActivityScreen() {
         Everything anybody has done in this vault. Your own private documents are only ever in your
         copy of this list.
       </p>
-      <ul className="list">
-        {lines.map((l) => (
-          <li key={l.id} className="stack" style={{ gap: 2 }}>
-            <span className={l.notable ? 'doc-title' : undefined}>{l.text}</span>
-            <span className="muted">{whenWords(l.at)}</span>
-          </li>
-        ))}
-        {!loading && lines.length === 0 && <li className="muted">Nothing yet.</li>}
-      </ul>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th scope="col">When</th>
+            <th scope="col">What happened</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l) => (
+            <tr key={l.id} className={l.notable ? 'notable' : undefined}>
+              <td className="when">
+                <time dateTime={l.at} title={whenWords(l.at)}>
+                  {whenExactly(l.at)}
+                </time>
+              </td>
+              <td>{l.text}</td>
+            </tr>
+          ))}
+          {!loading && lines.length === 0 && (
+            <tr>
+              <td colSpan={2} className="muted">
+                Nothing yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
       {next !== null && (
         <Button kind="quiet" disabled={busy} onClick={() => void more(next)}>
           {busy ? 'Loading…' : 'Show older'}

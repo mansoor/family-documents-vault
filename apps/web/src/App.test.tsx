@@ -329,7 +329,7 @@ describe('App', () => {
     signedIn();
     render(<App />);
 
-    await screen.findByText('We noticed something missing');
+    await screen.findByText(/We noticed something missing/);
     expect(screen.getByText('No birth certificate for Aisha')).toBeInTheDocument();
     expect(screen.getByText(/Schools, passports and benefits/)).toBeInTheDocument();
     await expectAccessible();
@@ -530,7 +530,7 @@ describe('App', () => {
     // else to do.
     expect(screen.queryByLabelText('Add a document')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Add a person')).not.toBeInTheDocument();
-    expect(screen.queryByText('We noticed something missing')).not.toBeInTheDocument();
+    expect(screen.queryByText(/We noticed something missing/)).not.toBeInTheDocument();
     await expectAccessible();
   });
 
@@ -700,7 +700,8 @@ describe('App', () => {
     render(<App />);
 
     await screen.findByText('Sarah downloaded “Home insurance policy”');
-    expect(screen.getByText(/^yesterday, /)).toBeInTheDocument();
+    // Exactly when, in the table (5.1); in words when you point at it.
+    expect(screen.getByTitle(/^yesterday, /)).toBeInTheDocument();
     expect(screen.getByText(/private documents are only ever in your copy/)).toBeInTheDocument();
     await expectAccessible();
   });
@@ -1435,5 +1436,130 @@ describe('App', () => {
       expect(label.tagName).toBe('DT');
       expect(label.nextElementSibling?.textContent).toBe('Barclays');
     });
+  });
+});
+
+describe('the quick fixes (5.1)', () => {
+  it('Move to Trash asks in the app’s own dialog: Cancel and Escape keep it, confirming moves it', async () => {
+    // A copy: the fake moves it to the Trash, and the next test must not find it there.
+    const state = fresh({ documents: [{ ...PASSPORT }] });
+    installFakeApi(state);
+    signedIn();
+    const browserConfirm = vi.spyOn(window, 'confirm');
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    const deletes = () => state.calls.filter((c) => c.method === 'DELETE');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
+    // Enter never does it by accident: the answer that keeps it is where focus starts.
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    await screen.findByRole('alertdialog');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(deletes()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    const again = await screen.findByRole('alertdialog');
+    fireEvent.click(within(again).getByRole('button', { name: 'Move to Trash' }));
+    await waitFor(() =>
+      expect(deletes().map((c) => c.url)).toEqual([expect.stringMatching(/\/documents\/doc-1$/)]),
+    );
+    expect(browserConfirm).not.toHaveBeenCalled();
+  });
+
+  it('a viewer, who cannot move anything to the Trash, is not offered it', async () => {
+    installFakeApi(fresh({ documents: [{ ...PASSPORT }] }));
+    signedIn('viewer');
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+  });
+
+  it('the Trash lists what was moved there, and brings it back', async () => {
+    const state = fresh({ documents: [{ ...PASSPORT, deleted_at: '2026-09-26T10:04:00Z' }] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings/trash');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Trash' });
+    expect(await screen.findByText("Mansoor's passport")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Moved to the Trash \d{1,2} Sept 2026, \d{1,2}:04(am|pm)/),
+    ).toBeInTheDocument();
+    await expectAccessible();
+
+    fireEvent.click(screen.getByRole('button', { name: "Bring back Mansoor's passport" }));
+    expect(await screen.findByText('The Trash is empty.')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('is back');
+    expect(
+      state.calls.some((c) => c.method === 'POST' && c.url.endsWith('/documents/doc-1/restore')),
+    ).toBe(true);
+  });
+
+  it('a document’s history says who added each version, and exactly when', async () => {
+    installFakeApi(fresh({ documents: [{ ...PASSPORT }] }));
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    expect(
+      await screen.findByText(/added \d{1,2} Sept 2026, \d{1,2}:14(am|pm) by Mansoor Seikh/),
+    ).toBeInTheDocument();
+  });
+
+  it('"We noticed something missing" folds away, says how many, and is remembered', async () => {
+    installFakeApi(fresh({ suggestions: [{ ...MISSING_BIRTH_CERTIFICATE }] }));
+    signedIn();
+    const first = render(<App />);
+    const toggle = await screen.findByRole('button', { name: 'We noticed something missing (1)' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('No birth certificate for Aisha')).toBeVisible();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('No birth certificate for Aisha')).not.toBeVisible();
+    await expectAccessible();
+
+    // Folded it stays, on this browser.
+    first.unmount();
+    render(<App />);
+    const later = await screen.findByRole('button', { name: 'We noticed something missing (1)' });
+    expect(later).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('"What has been happening" is a table: exactly when, and what happened', async () => {
+    const state = fresh({
+      activity: [
+        {
+          id: 1,
+          at: '2026-09-25T14:05:00Z',
+          text: 'Mansoor moved “Water bill” to the Trash',
+          notable: false,
+          document_id: null,
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/settings/activity');
+    render(<App />);
+    const table = await screen.findByRole('table');
+    expect(
+      within(table)
+        .getAllByRole('columnheader')
+        .map((h) => h.textContent),
+    ).toEqual(['When', 'What happened']);
+    expect(
+      await within(table).findByText('Mansoor moved “Water bill” to the Trash'),
+    ).toBeInTheDocument();
+    expect(within(table).getByText(/^\d{1,2} Sept 2026, \d{1,2}:05(am|pm)$/)).toBeInTheDocument();
+    await expectAccessible();
   });
 });

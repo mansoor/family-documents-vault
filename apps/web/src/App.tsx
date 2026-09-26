@@ -6,6 +6,7 @@ import { DocumentScreen } from './screens/Document.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
+import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
@@ -197,6 +198,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <ActivityScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/trash"
+            element={
+              <Gate need="signed-in">
+                <TrashScreen />
               </Gate>
             }
           />

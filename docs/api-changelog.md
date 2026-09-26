@@ -656,6 +656,16 @@ duplicates, dropped}`. Each event id is recorded once, however often
     a browser forgets what it kept of the vault. Browsers act on it over
     https and on `localhost` only; apps ignore it.
 
+- After 0.5.0 (Phase 5):
+  - `VersionView.uploaded_by_name` — who added the version, by the name the
+    household knows them by, in `GET /api/v1/documents/{id}/versions` only.
+    Null when that person has left the household, and absent from older
+    vaults.
+  - `@fdv/client`: `restoreDocument(token, id)`, for the existing
+    `POST /api/v1/documents/{id}/restore`.
+  - The activity sentences for `document.deleted` and `document.restored`
+    say "moved … to the Trash" and "took … out of the Trash".
+
 ## Deprecations in effect
 
 None.

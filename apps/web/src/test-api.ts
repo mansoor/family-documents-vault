@@ -740,7 +740,9 @@ export function installFakeApi(state: FakeState) {
       });
     }
     if (path === '/api/v1/documents' && method === 'GET') {
-      let items = state.documents;
+      // The Trash is its own list (5.1), as the vault's `deleted=true` is.
+      const inTrash = query.get('deleted') === 'true';
+      let items = state.documents.filter((d) => Boolean(d.deleted_at) === inTrash);
       const cat = query.get('category');
       if (cat) items = items.filter((d) => d.category === cat);
       const from = query.get('issued_by');
@@ -827,6 +829,12 @@ export function installFakeApi(state: FakeState) {
         },
       );
     }
+    const restoreMatch = /^\/api\/v1\/documents\/([^/]+)\/restore$/.exec(path);
+    if (restoreMatch && method === 'POST') {
+      const doc = state.documents.find((d) => d.id === restoreMatch[1]);
+      if (doc) doc.deleted_at = null;
+      return json(doc);
+    }
     const docMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
     if (docMatch) {
       const doc = state.documents.find((d) => d.id === docMatch[1]);
@@ -835,6 +843,10 @@ export function installFakeApi(state: FakeState) {
           { error: { code: 'not_found', message: 'That document is not in the vault.' } },
           404,
         );
+      if (method === 'DELETE') {
+        doc.deleted_at = '2026-09-26T10:04:00Z';
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
       if (method === 'PATCH') {
         Object.assign(doc, body as object, { etag: '"next"' });
         return json(doc);
@@ -855,6 +867,7 @@ export function installFakeApi(state: FakeState) {
             page_count: state.pageCount,
             ocr_status: 'done',
             uploaded_at: '2026-09-20T09:14:00Z',
+            uploaded_by_name: 'Mansoor Seikh',
             preview_pages:
               state.pagesDrawn === 'unsupported'
                 ? 0

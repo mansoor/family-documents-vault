@@ -89,9 +89,9 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
         : line(`${who} opened ${doc} on their phone${without}`);
     }
     case 'document.deleted':
-      return line(`${who} moved ${doc} to the bin`);
+      return line(`${who} moved ${doc} to the Trash`);
     case 'document.restored':
-      return line(`${who} took ${doc} out of the bin`);
+      return line(`${who} took ${doc} out of the Trash`);
     case 'document.visibility_changed': {
       const to = text(detail.to);
       const words =
@@ -257,10 +257,7 @@ function roleWords(role: unknown): string {
  */
 export function whenWords(iso: string, now = new Date()): string {
   const at = new Date(iso);
-  const time = at
-    .toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true })
-    .replace(/\s/g, '')
-    .toLowerCase();
+  const time = clockTime(at);
   const days = daysBetween(at, now);
   if (days === 0) return `today, ${time}`;
   if (days === 1) return `yesterday, ${time}`;
@@ -269,6 +266,24 @@ export function whenWords(iso: string, now = new Date()): string {
     return `${at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}, ${time}`;
   }
   return at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+/**
+ * "26 Sep 2026, 3:12pm" — a moment exactly, date and time always both: for
+ * a table or a history, where lines are compared rather than read aloud.
+ */
+export function whenExactly(iso: string): string {
+  const at = new Date(iso);
+  const date = at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${date}, ${clockTime(at)}`;
+}
+
+/** "4:12pm": the time as the design writes it. */
+function clockTime(at: Date): string {
+  return at
+    .toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true })
+    .replace(/\s/g, '')
+    .toLowerCase();
 }
 
 /** Calendar days apart, not 24-hour periods: 11pm to 1am is yesterday. */

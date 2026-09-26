@@ -1,5 +1,5 @@
 import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
 
@@ -214,6 +214,167 @@ export function BottomNav() {
       {item('/reminders', 'Reminders', '◷')}
       {item('/people', 'People', '☺')}
     </nav>
+  );
+}
+
+/** A bin with a lid, drawn: emoji look different on every phone. */
+export function TrashIcon() {
+  return (
+    <svg
+      className="icon"
+      aria-hidden="true"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+/**
+ * The app's own "are you sure?" (5.1), never the browser's confirm(): over
+ * the page like the step-up sheet. Cancel or Escape is a real answer. Focus
+ * starts on Cancel, so Enter never does the irreversible-looking thing by
+ * accident, and it stays inside the dialog until the dialog is answered.
+ */
+export function ConfirmDialog(props: {
+  title: string;
+  children: ReactNode;
+  confirmLabel: string;
+  icon?: ReactNode;
+  danger?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const box = useRef<HTMLElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const onCancel = useRef(props.onCancel);
+  useEffect(() => {
+    onCancel.current = props.onCancel;
+  });
+  useEffect(() => {
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancel.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCancel.current();
+        return;
+      }
+      if (e.key !== 'Tab' || !box.current) return;
+      const focusable = [...box.current.querySelectorAll<HTMLElement>('button:not([disabled])')];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      before?.focus();
+    };
+  }, []);
+  return (
+    <div className="scrim" role="presentation">
+      <section
+        ref={box}
+        className="card stack sheet"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-h"
+        aria-describedby="confirm-body"
+      >
+        <h2 id="confirm-h" style={{ fontSize: 20 }}>
+          {props.title}
+        </h2>
+        <div id="confirm-body" className="muted">
+          {props.children}
+        </div>
+        <div className="row">
+          <button
+            type="button"
+            className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} btn-icon`}
+            disabled={props.busy}
+            onClick={props.onConfirm}
+          >
+            {props.icon}
+            {props.confirmLabel}
+          </button>
+          <button ref={cancel} type="button" className="btn btn-quiet" onClick={props.onCancel}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * A section that folds away (5.1), its count in brackets so a folded one
+ * still says how much is in it. Whether it is folded is remembered on this
+ * browser only.
+ */
+export function CollapsibleSection(props: {
+  id: string;
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const key = `fdv.fold.${props.id}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try {
+      localStorage.setItem(key, next ? 'open' : 'closed');
+    } catch {
+      // A private window: folded for now, not remembered.
+    }
+  };
+  return (
+    <section aria-labelledby={`${props.id}-h`}>
+      <h2 id={`${props.id}-h`} className="section-h">
+        <button
+          type="button"
+          className="section-toggle"
+          aria-expanded={open}
+          aria-controls={`${props.id}-body`}
+          onClick={toggle}
+        >
+          <span>
+            {props.title} ({props.count})
+          </span>
+          <span aria-hidden="true" className="chevron">
+            {open ? '▾' : '▸'}
+          </span>
+        </button>
+      </h2>
+      <div id={`${props.id}-body`} hidden={!open}>
+        {props.children}
+      </div>
+    </section>
   );
 }
 

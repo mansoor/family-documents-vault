@@ -1,9 +1,19 @@
-import { formatDate, issuedByLabel, type VersionView } from '@fdv/shared';
+import { can, formatDate, issuedByLabel, whenExactly, type VersionView } from '@fdv/shared';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { BottomNav, Button, categoryLabel, ErrorNote, StatusBadge, TopBar } from '../ui.js';
+import {
+  BottomNav,
+  Button,
+  categoryLabel,
+  ConfirmDialog,
+  ErrorNote,
+  StatusBadge,
+  TopBar,
+  TrashIcon,
+} from '../ui.js';
+import { storedRole } from '../session.js';
 import { SharePanel } from './Share.js';
 import { VisibilityControl } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
@@ -80,15 +90,20 @@ export function DocumentScreen() {
     }
   };
 
+  // Moving to the Trash asks first, in the app's own dialog (5.1).
+  const [confirmingTrash, setConfirmingTrash] = useState(false);
+  const [trashing, setTrashing] = useState(false);
   const remove = async () => {
     if (!data) return;
-    if (!window.confirm('Move this document to the bin? You can bring it back within 30 days.'))
-      return;
+    setTrashing(true);
     try {
       await withToken((t) => api.deleteDocument(t, data.doc.id));
       void navigate('/', { replace: true });
     } catch (err) {
+      setConfirmingTrash(false);
       setActionError(describeError(err));
+    } finally {
+      setTrashing(false);
     }
   };
 
@@ -222,7 +237,8 @@ export function DocumentScreen() {
                 <strong>{i === 0 ? 'Current' : `Version ${v.version_no}`}</strong>
                 <span className="muted">
                   {v.filename} · {(v.byte_size / 1024).toFixed(0)} KB · added{' '}
-                  {new Date(v.uploaded_at).toLocaleDateString()}
+                  {whenExactly(v.uploaded_at)}
+                  {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
                 </span>
               </span>
               {i > 0 && (
@@ -256,9 +272,32 @@ export function DocumentScreen() {
         </section>
       )}
       <SharePanel documentId={doc.id} documentTitle={doc.title} />
-      <Button kind="link" onClick={() => void remove()}>
-        Move to the bin
-      </Button>
+      {can(storedRole(), 'document.edit') && (
+        <button
+          type="button"
+          className="btn btn-link btn-trash"
+          onClick={() => setConfirmingTrash(true)}
+        >
+          <TrashIcon />
+          Move to Trash
+        </button>
+      )}
+      {confirmingTrash && (
+        <ConfirmDialog
+          title="Move to Trash?"
+          confirmLabel="Move to Trash"
+          icon={<TrashIcon />}
+          danger
+          busy={trashing}
+          onConfirm={() => void remove()}
+          onCancel={() => setConfirmingTrash(false)}
+        >
+          <p>
+            “{doc.title ?? 'This document'}” leaves every list, search and reminder. You can bring
+            it back from the Trash in Settings.
+          </p>
+        </ConfirmDialog>
+      )}
       <BottomNav />
     </main>
   );

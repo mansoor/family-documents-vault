@@ -851,13 +851,22 @@ export class DocumentService {
   async versions(p: Principal, documentId: string): Promise<VersionView[]> {
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       await this.fetch(trx, p, documentId, true);
+      // Who added each version, by the name the household knows them by
+      // (5.1). Somebody who has left the household has no name here.
       const rows = await trx
         .selectFrom('document_version')
-        .selectAll()
-        .where('document_id', '=', documentId)
-        .orderBy('version_no', 'desc')
+        .leftJoin('account_household', (j) =>
+          j
+            .onRef('account_household.account_id', '=', 'document_version.uploaded_by')
+            .on('account_household.household_id', '=', p.householdId),
+        )
+        .leftJoin('member', 'member.id', 'account_household.member_id')
+        .selectAll('document_version')
+        .select('member.display_name as uploaded_by_name')
+        .where('document_version.document_id', '=', documentId)
+        .orderBy('document_version.version_no', 'desc')
         .execute();
-      return rows.map(versionView);
+      return rows.map((r) => ({ ...versionView(r), uploaded_by_name: r.uploaded_by_name ?? null }));
     });
   }
 

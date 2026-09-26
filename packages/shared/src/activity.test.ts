@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { describeEvent, describeEvents, whenWords, type ActivityEvent } from './activity.js';
+import {
+  describeEvent,
+  describeEvents,
+  whenExactly,
+  whenWords,
+  type ActivityEvent,
+} from './activity.js';
 
 const base: ActivityEvent = {
   id: 1,
@@ -85,6 +91,11 @@ describe('when things happened, in words', () => {
     expect(whenWords('2026-09-18T09:05:00', now)).toBe('Friday, 9:05am');
     expect(whenWords('2026-08-02T09:05:00', now)).toBe('2 August, 9:05am');
     expect(whenWords('2025-08-02T09:05:00', now)).toBe('2 August 2025');
+  });
+
+  it('exactly, for a table or a history: the date and the time, however long ago (5.1)', () => {
+    expect(whenExactly('2026-09-22T16:12:00')).toBe('22 Sept 2026, 4:12pm');
+    expect(whenExactly('2025-08-02T09:05:00')).toBe('2 Aug 2025, 9:05am');
   });
 
   it('counts calendar days, so late last night is yesterday and not today', () => {
