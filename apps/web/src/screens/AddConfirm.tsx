@@ -1,17 +1,21 @@
 import {
   autoTitle,
   effectiveVisibility,
+  formatDate,
   issuedByLabel,
   issuerFromFilename,
   issuerKey,
+  missingFields,
   parseDateInput,
   reminderSentence,
   type CaptureMetadata,
   type CoreField,
   type DateOrder,
   type DocumentTypeView,
+  type DocumentView,
   type IssuerSuggestions,
   type KnownIssuer,
+  type RequiredValues,
   type Visibility,
 } from '@fdv/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -160,6 +164,16 @@ export function AddScreen() {
     // for a type that has none.
     if (type) fields.category = type.category;
     if (rest.type_key !== undefined && !type?.expiry_driver) fields.expires = null;
+    // What the card shows now is what the document keeps: a detail or a
+    // note the first try put there that the card has since cleared, or no
+    // longer asks for, is taken away. (On an Only me document the vault
+    // seals what it writes, as it does for every edit.)
+    const extra: Record<string, unknown> = { ...rest.extra };
+    for (const key of Object.keys(current.extra)) {
+      if (!(key in extra)) extra[key] = null;
+    }
+    if (Object.keys(extra).length > 0) fields.extra = extra;
+    if (rest.notes === undefined && (current.notes || current.has_notes)) fields.notes = null;
     const move = visibility && visibility !== current.visibility ? visibility : null;
     if (move && move !== 'private') {
       // Out of Only me asks what opening it asks (5.4).
@@ -246,13 +260,40 @@ function aOrAn(noun: string): string {
   return `${'aeiou'.includes(noun[0] ?? '') ? 'an' : 'a'} ${noun}`;
 }
 
+/**
+ * Save found the document changed somewhere else since the card was filled
+ * (409): what it holds now, as the card holds it, to be taken in.
+ */
+class ChangedElsewhere extends Error {
+  constructor(readonly now: CardValues) {
+    super('Someone else changed this document.');
+    this.name = 'ChangedElsewhere';
+  }
+}
+
+/** The document as the vault holds it now: it sends it with a 409 (0.5.7). */
+function heldNow(err: ApiRequestError): DocumentView | null {
+  try {
+    const doc = JSON.parse(err.detail ?? '') as Partial<DocumentView> | null;
+    return doc && typeof doc.id === 'string' && typeof doc.etag === 'string'
+      ? (doc as DocumentView)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The confirm card for a document already in the vault: its details, changed in place. */
 export function ConfirmScreen() {
   const { id } = useParams<{ id: string }>();
-  const { guarded } = useApp();
+  const { guarded, withToken } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { data, error: loadError } = useLoad(
+  const {
+    data,
+    error: loadError,
+    setData,
+  } = useLoad(
     async (t) => {
       const [doc, types, members] = await Promise.all([
         api.document(t, id as string),
@@ -279,12 +320,31 @@ export function ConfirmScreen() {
   const { doc, types, members } = data;
   const suggestedType = types.find((t) => t.key === params.get('type'));
   const suggestedOwner = members.find((m) => m.id === params.get('member'));
-  const owner =
-    members.find((m) => m.id === doc.owner_member_id) ??
-    suggestedOwner ??
-    members.find((m) => m.is_me);
-  const typeKey = doc.type_key ?? suggestedType?.key ?? '';
-  const type = types.find((t) => t.key === typeKey);
+  /** A document as the card holds it: its dates as a person writes them ("June 2027"). */
+  const cardFor = (d: DocumentView): CardValues => {
+    const owner =
+      members.find((m) => m.id === d.owner_member_id) ??
+      suggestedOwner ??
+      members.find((m) => m.is_me);
+    const typeKey = d.type_key ?? suggestedType?.key ?? '';
+    const type = types.find((t) => t.key === typeKey);
+    return {
+      typeKey,
+      title: d.title ?? '',
+      owner: owner?.id ?? '',
+      issuer: d.issued_by ?? '',
+      issued: d.issued ? formatDate(d.issued) : '',
+      expires: d.expires ? formatDate(d.expires) : '',
+      identifier: d.identifier ?? '',
+      location: d.physical_location ?? '',
+      visibility: d.visibility,
+      // Its own request, so an Only me document's are open here (0.5.8).
+      // Notes that are there but could not be opened are not offered to
+      // be typed over.
+      notes: d.notes ?? (d.has_notes ? null : ''),
+      details: detailInputs(d.extra, type?.fields ?? []),
+    };
+  };
   return (
     <ConfirmForm
       title="Is this right?"
@@ -293,29 +353,26 @@ export function ConfirmScreen() {
       documentId={doc.id}
       types={types}
       members={members}
-      initial={{
-        typeKey,
-        title: doc.title ?? '',
-        owner: owner?.id ?? '',
-        issuer: doc.issued_by ?? '',
-        issued: doc.issued?.date ?? '',
-        expires: doc.expires?.date ?? '',
-        identifier: doc.identifier ?? '',
-        location: doc.physical_location ?? '',
-        visibility: doc.visibility,
-        // Its own request, so an Only me document's are open here (0.5.8).
-        // Notes that are there but could not be opened are not offered to
-        // be typed over.
-        notes: doc.notes ?? (doc.has_notes ? null : ''),
-        details: detailInputs(doc.extra, type?.fields ?? []),
-      }}
+      initial={cardFor(doc)}
       submitLabel="Save to the vault"
       onSubmit={async (details) => {
         // Only send visibility when it changed: the server rewraps keys for it.
         if (details.visibility === doc.visibility) delete details.visibility;
-        // Out of Only me asks what opening it asks (5.4); not confirmed,
-        // nothing is saved and the card stays.
-        const saved = await guarded((t) => api.updateDocument(t, doc.id, details, doc.etag));
+        let saved: DocumentView | null;
+        try {
+          // Out of Only me asks what opening it asks (5.4); not confirmed,
+          // nothing is saved and the card stays.
+          saved = await guarded((t) => api.updateDocument(t, doc.id, details, doc.etag));
+        } catch (err) {
+          if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
+          // Changed somewhere else since the card was filled: what it holds
+          // now is taken in, what was typed is kept, and the next Save is
+          // made on top of it.
+          const now = heldNow(err) ?? (await withToken((t) => api.document(t, doc.id)));
+          if (!now) throw err;
+          setData({ doc: now, types, members });
+          throw new ChangedElsewhere(cardFor(now));
+        }
         if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
       }}
     />
@@ -447,6 +504,9 @@ export function ConfirmForm(props: {
   onChooseAgain?: () => void;
 }) {
   const { types, members, initial } = props;
+  // What the document held when the card was filled, which Save compares
+  // with: moved on when Save finds it changed somewhere else since.
+  const [base, setBase] = useState(initial);
   const [typeKey, setTypeKey] = useState(initial.typeKey);
   const [title, setTitle] = useState(initial.title);
   // The name follows the type, the person, the issuer and the month until
@@ -465,6 +525,8 @@ export function ConfirmForm(props: {
   const [detailValues, setDetailValues] = useState<Record<string, DetailInput>>(initial.details);
   // Once Save has waited for them, the fields it waited for say so.
   const [waited, setWaited] = useState(false);
+  // The field Save could not read, marked until it is changed.
+  const [unread, setUnread] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -483,20 +545,27 @@ export function ConfirmForm(props: {
   const expiresShown = Boolean(type?.expiry_driver) || (editing && expires !== '');
   const issuerLabel = issuedByLabel(type);
 
+  const order = dateOrder();
+
+  // What the vault requires of this type, by the vault's own rule
+  // (missingFields, @fdv/shared): everything it would find missing from a
+  // document with nothing in it. So an expiry date is required for every
+  // type that expires, as the document would then say it needs one.
+  const required = new Set(missingFields(type, {}).map((m) => m.key));
   // The fixed fields as the type asks for them (0.5.6): its own label
   // ('Passport number', not 'Number'), whether it is shown, whether Save
   // waits for it. One a document already has a value for is shown for
   // editing whatever the type says now, so nothing is kept out of reach.
   const shows = (key: CoreField, had: string | null) =>
     coreRule(type, key).shown || (editing && Boolean(had?.trim()));
-  const asks = (key: CoreField) => coreRule(type, key).required;
+  const asks = (key: CoreField) => required.has(key);
   const word = (key: CoreField, fallback: string) => coreRule(type, key).label ?? fallback;
-  const issuerShown = shows('issued_by', initial.issuer);
-  const issuedShown = shows('issued', initial.issued);
-  const identifierShown = shows('identifier', initial.identifier);
-  const locationShown = shows('physical_location', initial.location);
+  const issuerShown = shows('issued_by', base.issuer);
+  const issuedShown = shows('issued', base.issued);
+  const identifierShown = shows('identifier', base.identifier);
+  const locationShown = shows('physical_location', base.location);
   // Notes that are there but could not be opened are never typed over.
-  const notesShown = initial.notes !== null && shows('notes', initial.notes);
+  const notesShown = base.notes !== null && shows('notes', base.notes);
   const issuedLabel = word('issued', 'Issued');
   const expiresLabel = word('expires', 'Expires');
   const identifierLabel = word('identifier', 'Number');
@@ -508,27 +577,48 @@ export function ConfirmForm(props: {
   const library = useAttributes(ownFields.some((f) => f.kind === 'choice' && !f.choices?.length));
   const detailId = (key: string) => `f-x-${key}`;
 
+  /** A required switch left alone says no, as it shows (and is sent so). */
+  const answerOf = (f: { required?: boolean }, now: DetailInput | undefined) =>
+    now ?? (f.required === true ? false : null);
   /**
-   * What Save waits for, in the card's order: each required field with
-   * nothing in it (A7). A switch always says yes or no, so it never waits.
+   * What Save waits for, in the card's order: what the vault would find
+   * missing from the document as the card holds it (A7), by the same rule,
+   * so the card and the document never disagree. A field the card has no
+   * input for is not waited for.
    */
-  const missing: Array<{ id: string; label: string }> = [];
-  const need = (shown: boolean, key: CoreField, id: string, label: string, value: string) => {
-    if (shown && asks(key) && value.trim() === '') missing.push({ id, label });
+  const held: RequiredValues = {
+    issued_by: issuer,
+    issued: issued.trim() ? parseDateInput(issued, { order }) : null,
+    expires: expires.trim() ? parseDateInput(expires, { order }) : null,
+    identifier,
+    physical_location: location,
+    notes,
+    extra: Object.fromEntries(
+      ownFields.map((f) => [
+        f.key,
+        f.kind === 'yes_no' ? answerOf(f, detailValues[f.key]) : detailValues[f.key],
+      ]),
+    ),
   };
-  need(issuerShown, 'issued_by', 'f-issuer', issuerLabel, issuer);
-  need(issuedShown, 'issued', 'f-issued', issuedLabel, issued);
-  need(expiresShown, 'expires', 'f-expires', expiresLabel, expires);
-  need(identifierShown, 'identifier', 'f-number', identifierLabel, identifier);
-  need(locationShown, 'physical_location', 'f-location', locationLabel, location);
-  for (const f of ownFields) {
-    if (f.required === true && f.kind !== 'yes_no' && blankInput(detailValues[f.key])) {
-      missing.push({ id: detailId(f.key), label: f.label });
-    }
-  }
-  need(notesShown, 'notes', 'f-notes', notesLabel, notes);
-  /** Marked as needed once Save has waited for it, until it is filled. */
-  const wanting = (id: string) => waited && missing.some((m) => m.id === id);
+  const needed = new Set(missingFields(type, held).map((m) => m.key));
+  const missing = [
+    { key: 'issued_by', id: 'f-issuer', label: issuerLabel, shown: issuerShown },
+    { key: 'issued', id: 'f-issued', label: issuedLabel, shown: issuedShown },
+    { key: 'expires', id: 'f-expires', label: expiresLabel, shown: expiresShown },
+    { key: 'identifier', id: 'f-number', label: identifierLabel, shown: identifierShown },
+    { key: 'physical_location', id: 'f-location', label: locationLabel, shown: locationShown },
+    ...ownFields.map((f) => ({ key: f.key, id: detailId(f.key), label: f.label, shown: true })),
+    { key: 'notes', id: 'f-notes', label: notesLabel, shown: notesShown },
+  ]
+    .filter((f) => f.shown && needed.has(f.key))
+    .map(({ id, label }) => ({ id, label }));
+  /**
+   * Marked once Save has waited for it, until it is filled; or once Save
+   * could not read it, until it is changed.
+   */
+  const invalid = (id: string) => unread === id || (waited && missing.some((m) => m.id === id));
+  /** A field changed: if Save could not read it, it is not marked any more. */
+  const changed = (id: string) => setUnread((was) => (was === id ? null : was));
 
   const offers = useIssuerOffers({
     fileName: props.fileName,
@@ -562,13 +652,57 @@ export function ConfirmForm(props: {
     retitle({ issuer: v });
   };
 
+  /**
+   * The document as it is now, after somebody else changed it while the
+   * card was open: what they changed is taken in, wherever this card left
+   * it as it was; what was typed here is kept. Save compares with it next.
+   */
+  const takeIn = (now: CardValues) => {
+    const kept =
+      <T,>(was: T, then: T) =>
+      (typed: T) =>
+        typed === was ? then : typed;
+    setTypeKey(kept(base.typeKey, now.typeKey));
+    setTitle(kept(base.title, now.title));
+    setOwner(kept(base.owner, now.owner));
+    setIssuer(kept(base.issuer, now.issuer));
+    setIssued(kept(base.issued, now.issued));
+    setExpires(kept(base.expires, now.expires));
+    setIdentifier(kept(base.identifier, now.identifier));
+    setLocation(kept(base.location, now.location));
+    setVisibility(kept(base.visibility, now.visibility));
+    setNotes(kept(base.notes ?? '', now.notes ?? ''));
+    setDetailValues((typed) => {
+      const out = { ...typed };
+      for (const key of new Set([...Object.keys(base.details), ...Object.keys(now.details)])) {
+        const was = base.details[key];
+        const left = blankInput(typed[key]) ? blankInput(was) : typed[key] === was;
+        if (!left) continue;
+        const then = now.details[key];
+        if (then === undefined) delete out[key];
+        else out[key] = then;
+      }
+      return out;
+    });
+    setBase(now);
+    setWaited(false);
+    setUnread(null);
+  };
+
   const run = async (act: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
       await act();
     } catch (err) {
-      setError(describeError(err));
+      if (err instanceof ChangedElsewhere) {
+        takeIn(err.now);
+        setError(
+          'Someone else changed this document while you had it open. Their changes are on the card now, and yours are kept: check it, then save again.',
+        );
+      } else {
+        setError(describeError(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -579,6 +713,11 @@ export function ConfirmForm(props: {
     setError(message);
     document.getElementById(id)?.focus();
   };
+  /** A value Save could not read: said, marked, and the place on it. */
+  const unreadable = (message: string, id: string) => {
+    setUnread(id);
+    refuse(message, id);
+  };
 
   /**
    * Save: the dates and details read as the vault keeps them, then — unless
@@ -586,18 +725,20 @@ export function ConfirmForm(props: {
    * missing; A7). Skip for now never waits.
    */
   const submit = async (anyway: boolean) => {
-    const order = dateOrder();
     // A new document sends an expiry only for a type that expires; editing
-    // always sends it, so clearing the field clears the date.
-    const sendExpiry = expiresShown || editing;
+    // sends it once it is changed, so clearing the field clears the date. A
+    // date the edit card did not change is not sent: it keeps how it was
+    // written (June 2027 stays a month).
+    const sendExpiry = editing ? expires.trim() !== base.expires.trim() : expiresShown;
+    const sendIssued = issuedShown && (!editing || issued.trim() !== base.issued.trim());
     const exp = sendExpiry && expires ? parseDateInput(expires, { order }) : null;
-    const iss = issued ? parseDateInput(issued, { order }) : null;
+    const iss = sendIssued && issued ? parseDateInput(issued, { order }) : null;
     if (sendExpiry && expires && !exp) {
-      refuse('The expiry date: try 14 Mar 2031, March 2031, or just 2031.', 'f-expires');
+      unreadable('The expiry date: try 14 Mar 2031, March 2031, or just 2031.', 'f-expires');
       return;
     }
-    if (issuedShown && issued && !iss) {
-      refuse('The issue date: try 14 Mar 2021, March 2021, or just 2021.', 'f-issued');
+    if (sendIssued && issued && !iss) {
+      unreadable('The issue date: try 14 Mar 2021, March 2021, or just 2021.', 'f-issued');
       return;
     }
     // Only the details that changed are sent: an edit merges them (0.5.7),
@@ -606,17 +747,16 @@ export function ConfirmForm(props: {
     const extra: Record<string, unknown> = {};
     for (const f of ownFields) {
       const now = detailValues[f.key];
-      const was = initial.details[f.key];
+      const was = base.details[f.key];
       if (f.kind === 'yes_no') {
-        // A required switch left alone says no, as it shows.
-        const answer = now ?? (f.required === true ? false : null);
+        const answer = answerOf(f, now);
         if (answer !== null && answer !== (was ?? null)) extra[f.key] = answer;
         continue;
       }
       if ((now ?? '') === (was ?? '')) continue;
       const read = readDetail({ ...f, choices: choicesOf(f, library) }, now, order);
       if ('message' in read) {
-        refuse(read.message, detailId(f.key));
+        unreadable(read.message, detailId(f.key));
         return;
       }
       if (read.value !== null) extra[f.key] = read.value;
@@ -646,10 +786,10 @@ export function ConfirmForm(props: {
     if (issuerShown) details.issued_by = issuer.trim() || null;
     if (identifierShown) details.identifier = identifier.trim() || null;
     if (locationShown) details.physical_location = location.trim() || null;
-    if (issuedShown) details.issued = iss;
+    if (sendIssued) details.issued = iss;
     if (sendExpiry) details.expires = exp;
     // Sealed as it is written on an Only me document (0.5.8).
-    if (notesShown && notes !== (initial.notes ?? '')) details.notes = notes.trim() || null;
+    if (notesShown && notes !== (base.notes ?? '')) details.notes = notes.trim() || null;
     if (Object.keys(extra).length > 0) details.extra = extra;
     if (type) details.category = type.category;
     await run(() => props.onSubmit(details));
@@ -741,7 +881,7 @@ export function ConfirmForm(props: {
             onChange={chooseIssuer}
             required={false}
             requiredMark={asks('issued_by')}
-            invalid={wanting('f-issuer')}
+            invalid={invalid('f-issuer')}
           />
         )}
         {issuerShown && issuer.trim() === '' && offers.length > 0 && (
@@ -769,11 +909,12 @@ export function ConfirmForm(props: {
             value={issued}
             onChange={(v) => {
               setIssued(v);
+              changed('f-issued');
               retitle({ issued: v });
             }}
             required={false}
             requiredMark={asks('issued')}
-            invalid={wanting('f-issued')}
+            invalid={invalid('f-issued')}
             placeholder="14 Mar 2021"
             hint="A date, a month (March 2021) or a year"
           />
@@ -783,10 +924,13 @@ export function ConfirmForm(props: {
             id="f-expires"
             label={expiresLabel}
             value={expires}
-            onChange={setExpires}
+            onChange={(v) => {
+              setExpires(v);
+              changed('f-expires');
+            }}
             required={false}
             requiredMark={asks('expires')}
-            invalid={wanting('f-expires')}
+            invalid={invalid('f-expires')}
             placeholder="14 Mar 2031"
             hint="A date, a month (March 2031) or a year"
           />
@@ -799,7 +943,7 @@ export function ConfirmForm(props: {
             onChange={setIdentifier}
             required={false}
             requiredMark={asks('identifier')}
-            invalid={wanting('f-number')}
+            invalid={invalid('f-number')}
           />
         )}
         {locationShown && (
@@ -810,7 +954,7 @@ export function ConfirmForm(props: {
             onChange={setLocation}
             required={false}
             requiredMark={asks('physical_location')}
-            invalid={wanting('f-location')}
+            invalid={invalid('f-location')}
             placeholder="Bedroom safe, top shelf"
           />
         )}
@@ -822,8 +966,11 @@ export function ConfirmForm(props: {
             field={f}
             choices={choicesOf(f, library)}
             value={detailValues[f.key]}
-            invalid={wanting(detailId(f.key))}
-            onChange={(v) => setDetailValues((was) => ({ ...was, [f.key]: v }))}
+            invalid={invalid(detailId(f.key))}
+            onChange={(v) => {
+              setDetailValues((was) => ({ ...was, [f.key]: v }));
+              changed(detailId(f.key));
+            }}
           />
         ))}
         {notesShown && (
@@ -834,7 +981,7 @@ export function ConfirmForm(props: {
             maxLength={NOTES_MAX}
             onChange={setNotes}
             requiredMark={asks('notes')}
-            invalid={wanting('f-notes')}
+            invalid={invalid('f-notes')}
             hint={
               visibility === 'private'
                 ? 'Sealed with the document, so only you can read them.'

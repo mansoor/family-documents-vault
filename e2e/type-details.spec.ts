@@ -15,8 +15,9 @@ const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
 
 /**
- * Signed in through the page, once (sign-in is limited to 10 a minute, and
- * the specs before this one sign in too); the access token it was given
+ * Signed in through the page, once for this file (sign-in is limited to 10
+ * a minute, and the specs before this one sign in too: two runs of the
+ * suite back to back must stay under it); the access token it was given
  * too, to ask the API what it holds.
  */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
@@ -45,8 +46,20 @@ async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   return ((await signedIn.json()) as { access_token: string }).access_token;
 }
 
+// One page, signed in once, for both tests: one after the other.
+test.describe.configure({ mode: 'serial' });
+let page: Page;
+let token: string;
+test.beforeAll(async ({ browser, request }) => {
+  page = await browser.newPage();
+  token = await signIn(page, request);
+});
+test.afterAll(async () => {
+  await page.close();
+});
+
 /** The Add card, with a file chosen. */
-async function addCard(page: Page, filename: string) {
+async function addCard(filename: string) {
   await page.getByRole('link', { name: 'Add a document' }).click();
   await expect(page.getByRole('heading', { name: 'Add a document' })).toBeVisible();
   await page.getByLabel('Choose a file').setInputFiles({
@@ -57,27 +70,30 @@ async function addCard(page: Page, filename: string) {
   await expect(page.getByRole('heading', { name: 'Is this right?' })).toBeVisible();
 }
 
-test('a car added with its plate and VIN is found by its VIN', async ({ page, request }) => {
-  await signIn(page, request);
+test('a car added with its plate and VIN is found by its VIN', async () => {
   const run = Date.now().toString(36).toUpperCase();
   const vin = `WVWZZZ1KZ${run}`;
   const title = `The Golf ${run}`;
 
-  await addCard(page, 'car.pdf');
+  await addCard('car.pdf');
   await page.getByLabel('What it is').selectOption('vehicle_registration');
-  // The plate is required (A9): Save waits, and says what for.
+  // The plate is required (A9), and a car's expiry as the vault counts it:
+  // Save waits, and says what for, in the card's order.
   const plate = page.getByLabel(/^Registration plate/);
+  const expires = page.getByLabel(/^Expires/);
   await expect(plate).toHaveAttribute('aria-required', 'true');
+  await expect(expires).toHaveAttribute('aria-required', 'true');
   await page.getByRole('button', { name: 'Save to the vault' }).click();
   await expect(page.getByRole('alert')).toHaveText(
-    'Still needed: Registration plate. Fill it in, or skip for now.',
+    'Still needed: Expires and Registration plate. Fill them in, or skip for now.',
   );
-  await expect(plate).toBeFocused();
+  await expect(expires).toBeFocused();
+  await expect(plate).toHaveAttribute('aria-invalid', 'true');
 
   await plate.fill('KX19 ZLT');
   await page.getByLabel('VIN', { exact: true }).fill(vin);
   await page.getByLabel('Name', { exact: true }).fill(title);
-  await page.getByLabel('Expires').fill('Mar 2031');
+  await expires.fill('Mar 2031');
   await page.getByRole('button', { name: 'Save to the vault' }).click();
 
   // Its page lists them in the type's own words, and it needs nothing.
@@ -87,6 +103,7 @@ test('a car added with its plate and VIN is found by its VIN', async ({ page, re
   await expect(facts.getByText('KX19 ZLT')).toBeVisible();
   await expect(facts.getByText(vin)).toBeVisible();
   await expect(page.getByText('Needs a registration plate')).toHaveCount(0);
+  await expect(page.getByText('Needs an expiry date')).toHaveCount(0);
 
   // Found by its VIN.
   await page.getByRole('link', { name: 'Search' }).click();
@@ -94,15 +111,11 @@ test('a car added with its plate and VIN is found by its VIN', async ({ page, re
   await expect(page.getByRole('button', { name: new RegExp(`^${title}`) })).toBeVisible();
 });
 
-test('an Only me note is found only through its owner’s private search', async ({
-  page,
-  request,
-}) => {
-  const token = await signIn(page, request);
+test('an Only me note is found only through its owner’s private search', async ({ request }) => {
   const word = `kestrel${Date.now().toString(36)}`;
   const title = `Notes on the flat ${word.slice(-6)}`;
 
-  await addCard(page, 'flat.pdf');
+  await addCard('flat.pdf');
   await page.getByLabel('Name', { exact: true }).fill(title);
   await page.getByRole('button', { name: 'Only me' }).click();
   await page.getByLabel('Notes').fill(`Ask the agent about the ${word}\nbefore the lease ends`);

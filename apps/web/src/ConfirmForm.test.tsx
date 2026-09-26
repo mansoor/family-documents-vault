@@ -1,7 +1,9 @@
+import { missingFields, type RequiredValues } from '@fdv/shared';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
+import { readDetail } from './details.js';
 import { fresh, installFakeApi, PASSPORT, signedIn, TYPES, type FakeState } from './test-api.js';
 
 /**
@@ -233,11 +235,36 @@ describe('the card asks for a type’s details (5.10)', () => {
     expect(state.captures).toEqual([{ fields: ['file'], metadata: null }]);
   });
 
+  it('a car’s expiry is required as the vault counts it, so Save waits for it too', async () => {
+    const state = start('/add');
+    await addCard('vehicle_registration');
+    // The vault's own rule: a type that expires needs an expiry date,
+    // whatever its fixed fields say (0032 marks only three). A car saved
+    // without one would read "Needs an expiry date" straight away.
+    expect(CAR_TYPE.core.expires).toMatchObject({ required: false });
+    expect(missingFields(CAR_TYPE, { extra: { plate: 'KX19 ZLT' } })).toEqual([
+      { key: 'expires', label: null },
+    ]);
+    const expires = screen.getByLabelText(/^Expires/);
+    expect(expires).toHaveAttribute('aria-required', 'true');
+    expect(expires).toHaveAccessibleName('Expires required');
+
+    type(/^Registration plate/, 'KX19 ZLT');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Still needed: Expires. Fill it in, or skip for now.',
+    );
+    expect(expires).toHaveAttribute('aria-invalid', 'true');
+    expect(document.activeElement).toBe(expires);
+    expect(state.captures ?? []).toHaveLength(0);
+  });
+
   it('with every required field given, Save sends the details ahead of the file', async () => {
     const state = start('/add');
     await addCard('vehicle_registration');
     type(/^Registration plate/, ' KX19 ZLT ');
     type('VIN', 'WVWZZZ1KZAW000001');
+    type(/^Expires/, 'Mar 2031');
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
     expect(state.captures?.[0]?.metadata).toMatchObject({
@@ -247,6 +274,8 @@ describe('the card asks for a type’s details (5.10)', () => {
     // Nothing typed is nothing sent.
     expect(state.captures?.[0]?.metadata?.extra).not.toHaveProperty('mot_due');
     expect(state.captures?.[0]?.metadata).not.toHaveProperty('notes');
+    // And the vault finds nothing missing from what the card sent.
+    expect(missingFields(CAR_TYPE, state.captures?.[0]?.metadata as RequiredValues)).toEqual([]);
   });
 
   it('"Mar 2031" is accepted', async () => {
@@ -254,7 +283,7 @@ describe('the card asks for a type’s details (5.10)', () => {
     await addCard('vehicle_registration');
     type(/^Registration plate/, 'KX19 ZLT');
     type('MOT due', 'Mar 2031');
-    type('Expires', 'Mar 2031');
+    type(/^Expires/, 'Mar 2031');
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
     expect(state.captures?.[0]?.metadata).toMatchObject({
@@ -263,17 +292,81 @@ describe('the card asks for a type’s details (5.10)', () => {
     });
   });
 
-  it('a date the card cannot read is named, and nothing is sent', async () => {
+  it('a date the card cannot read is named and marked, and nothing is sent', async () => {
     const state = start('/add');
     await addCard('vehicle_registration');
     type(/^Registration plate/, 'KX19 ZLT');
-    type('MOT due', 'next week');
+    const expires = screen.getByLabelText(/^Expires/);
+    const mot = screen.getByLabelText('MOT due');
+
+    // A fixed date…
+    type(/^Expires/, 'soon');
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'MOT due: try 14 Mar 2031, March 2031, or just 2031.',
+      'The expiry date: try 14 Mar 2031, March 2031, or just 2031.',
     );
-    expect(document.activeElement).toBe(screen.getByLabelText('MOT due'));
+    expect(document.activeElement).toBe(expires);
+    expect(expires).toHaveAttribute('aria-invalid', 'true');
+    // …marked until it is changed.
+    type(/^Expires/, 'Mar 2031');
+    expect(expires).not.toHaveAttribute('aria-invalid');
+
+    // A detail's date likewise.
+    type('MOT due', 'next week');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'MOT due: try 14 Mar 2031, March 2031, or just 2031.',
+      ),
+    );
+    expect(document.activeElement).toBe(mot);
+    expect(mot).toHaveAttribute('aria-invalid', 'true');
+    expect(expires).not.toHaveAttribute('aria-invalid');
+    await expectAccessible();
+    type('MOT due', 'Mar 2031');
+    expect(mot).not.toHaveAttribute('aria-invalid');
     expect(state.captures ?? []).toHaveLength(0);
+  });
+
+  it('a comma is read only where it groups thousands: 12,50 is never kept as 1250', async () => {
+    const state = start('/add');
+    await addCard(PET_TYPE.key);
+    const species = await screen.findByRole('combobox', { name: /^Species/ });
+    await waitFor(() => expect((species as HTMLSelectElement).options).toHaveLength(3));
+    fireEvent.change(species, { target: { value: 'Cat' } });
+
+    // A decimal comma is not guessed at: the card says to use a point.
+    type('Cover', '12,50');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Cover: use a point for pence, such as 12.50.',
+    );
+    expect(screen.getByLabelText('Cover')).toHaveAttribute('aria-invalid', 'true');
+    type('Cover', '£1,234.50');
+    type('Claims made', '3,5');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Claims made: use a point for a decimal, such as 3.5.',
+      ),
+    );
+    expect(state.captures ?? []).toHaveLength(0);
+
+    // Thousands, and plain amounts, are read as ever.
+    type('Claims made', '1,234');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    expect(state.captures?.[0]?.metadata?.extra).toMatchObject({
+      h_cover00000: 1234.5,
+      h_claims0000: 1234,
+    });
+    const cover = { key: 'h_cover00000', label: 'Cover', kind: 'money' as const };
+    expect(readDetail(cover, '£12', 'dmy')).toEqual({ value: 12 });
+    expect(readDetail(cover, '1,200', 'dmy')).toEqual({ value: 1200 });
+    expect(readDetail(cover, '€ 99,99', 'dmy')).toEqual({
+      message: 'Cover: use a point for pence, such as 12.50.',
+    });
+    expect(readDetail(cover, '1,23,456', 'dmy')).toHaveProperty('message');
   });
 
   it('each kind has its own input: a pick-list, a yes/no switch, numbers and amounts', async () => {
@@ -281,7 +374,7 @@ describe('the card asks for a type’s details (5.10)', () => {
     await addCard(PET_TYPE.key);
     // What this type does not show is not asked.
     expect(screen.queryByLabelText('Where the original is kept')).toBeNull();
-    expect(screen.queryByLabelText('Expires')).toBeNull();
+    expect(screen.queryByLabelText(/^Expires/)).toBeNull();
 
     // A choice with no answers of its own offers the library's.
     const species = await screen.findByRole('combobox', { name: /^Species/ });
@@ -394,6 +487,94 @@ describe('the card asks for a type’s details (5.10)', () => {
     expect(body).not.toHaveProperty('extra');
     expect(body).not.toHaveProperty('notes');
   });
+
+  it('editing shows Issued and Expires as they are written, and a date left alone keeps its precision', async () => {
+    const state = start(`/documents/${PASSPORT.id}/confirm`, { documents: [{ ...PASSPORT }] });
+    // As the details' dates are shown: "March 2031", not 2031-03-31.
+    const expires = await screen.findByLabelText<HTMLInputElement>(/^Expires/);
+    expect(expires.value).toBe('March 2031');
+    expect(screen.getByLabelText<HTMLInputElement>('Issued').value).toBe('14 Mar 2021');
+    type('Name', 'My passport');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/documents/${PASSPORT.id}`));
+    const body = state.calls.find((c) => c.method === 'PATCH')?.body as Record<string, unknown>;
+    expect(body).toMatchObject({ title: 'My passport' });
+    // Not sent, so not turned into a day.
+    expect(body).not.toHaveProperty('expires');
+    expect(body).not.toHaveProperty('issued');
+    expect(state.documents[0]).toMatchObject({
+      issued: { date: '2021-03-14', precision: 'day' },
+      expires: { date: '2031-03-31', precision: 'month' },
+    });
+  });
+
+  it('changed somewhere else while the card was open: theirs is taken in, yours kept, and Save again goes through', async () => {
+    const state = start(`/documents/${CAR.id}/confirm`, { documents: [{ ...CAR }] });
+    const plate = await screen.findByLabelText<HTMLInputElement>(/^Registration plate/);
+    // Typed here…
+    type(/^Registration plate/, 'KX19 NEW');
+    type('Notes', 'Spare key in the blue tin');
+    // …while somebody else changes its name and the MOT date.
+    Object.assign(state.documents[0] as object, {
+      title: 'Our Golf',
+      extra: { ...CAR.extra, mot_due: { date: '2027-05-31', precision: 'month' } },
+      etag: '"elsewhere"',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Someone else changed this document while you had it open. Their changes are on the card now, and yours are kept: check it, then save again.',
+    );
+    expect(window.location.pathname).toBe(`/documents/${CAR.id}/confirm`);
+    // Theirs, where this card left it as it was; what was typed here, kept.
+    expect(screen.getByLabelText<HTMLInputElement>('Name').value).toBe('Our Golf');
+    expect(screen.getByLabelText<HTMLInputElement>('MOT due').value).toBe('May 2027');
+    expect(plate.value).toBe('KX19 NEW');
+    expect(screen.getByLabelText<HTMLTextAreaElement>('Notes').value).toBe(
+      'Spare key in the blue tin',
+    );
+
+    // Saved again: on top of what is there now, their change left as it is.
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/documents/${CAR.id}`));
+    const patches = state.calls.filter((c) => c.method === 'PATCH');
+    expect(patches.map((p) => p.headers?.['if-match'])).toEqual(['"car"', '"elsewhere"']);
+    expect((patches[1]?.body as { extra: unknown }).extra).toEqual({ plate: 'KX19 NEW' });
+    expect(state.documents[0]).toMatchObject({
+      title: 'Our Golf',
+      notes: 'Spare key in the blue tin',
+      extra: { plate: 'KX19 NEW', mot_due: { date: '2027-05-31', precision: 'month' } },
+    });
+  });
+
+  it('a retry after a lost answer leaves on the document only what the card shows', async () => {
+    const state = start('/add', { captureAnswersLost: 1 });
+    await addCard('vehicle_registration');
+    type(/^Registration plate/, 'KX19 ZLT');
+    type('VIN', 'WVW-SECRET');
+    type(/^Expires/, 'Mar 2031');
+    type('Notes', 'Spare key under the mat');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await screen.findByText(/can't reach|cannot reach|isn't answering|not answering/i);
+    // It landed, with its answer lost; the VIN and the note are cleared
+    // before trying again.
+    expect(state.documents.find((d) => d.id === 'doc-new')).toMatchObject({
+      notes: 'Spare key under the mat',
+    });
+    type('VIN', '');
+    type('Notes', '');
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+
+    // The document the first try made is put right: they are taken away.
+    expect(state.captures).toHaveLength(1);
+    const patch = state.calls.find(
+      (c) => c.method === 'PATCH' && c.url === '/api/v1/documents/doc-new',
+    );
+    expect(patch?.body).toMatchObject({ extra: { plate: 'KX19 ZLT', vin: null }, notes: null });
+    const made = state.documents.find((d) => d.id === 'doc-new');
+    expect(made?.extra).toEqual({ plate: 'KX19 ZLT' });
+    expect(made?.notes).toBeNull();
+  });
 });
 
 describe('the document page shows them (5.10)', () => {
@@ -443,6 +624,45 @@ describe('the document page shows them (5.10)', () => {
       mot_due: { date: '2027-03-31', precision: 'month' },
     });
     expect(screen.getByText('KX19 ZLT')).toBeInTheDocument();
+  });
+
+  it('a Remove refused because the document changed elsewhere loads it again, says so by the list, and the next one goes through', async () => {
+    const state = start(`/documents/${CAR.id}`, { documents: [{ ...CAR }] });
+    const section = (await screen.findByRole('heading', { name: 'Other details' })).closest(
+      'section',
+    ) as HTMLElement;
+    await within(section).findByText('Colour');
+    const loads = () =>
+      state.calls.filter((c) => c.method === 'GET' && c.url === `/api/v1/documents/${CAR.id}`)
+        .length;
+    const loaded = loads();
+    // Somebody else changes the car after the page was loaded.
+    (state.documents[0] as { etag: string }).etag = '"elsewhere"';
+
+    const remove = async () => {
+      fireEvent.click(within(section).getByRole('button', { name: 'Remove Colour' }));
+      const dialog = await screen.findByRole('alertdialog', { name: 'Remove this detail?' });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    };
+    await remove();
+    const note = await screen.findByText(
+      'This document was changed somewhere else, so it has been loaded again. Try again if “Colour” still needs removing.',
+    );
+    expect(note).toHaveAttribute('role', 'alert');
+    // By the list, where the person is: not at the top of the page.
+    expect(section.nextElementSibling).toBe(note);
+    await waitFor(() => expect(loads()).toBe(loaded + 1));
+    expect(within(section).getByText('Blue')).toBeInTheDocument();
+
+    // Tried again: made on what is there now, and it goes.
+    await remove();
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Other details' })).toBeNull(),
+    );
+    const patches = state.calls.filter((c) => c.method === 'PATCH');
+    expect(patches.map((p) => p.headers?.['if-match'])).toEqual(['"car"', '"elsewhere"']);
+    expect(state.documents[0]?.extra).not.toHaveProperty('colour');
+    expect(screen.queryByText(/changed somewhere else/)).toBeNull();
   });
 
   it('a viewer sees Other details, and is not offered Remove', async () => {

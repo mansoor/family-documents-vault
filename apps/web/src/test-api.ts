@@ -944,7 +944,8 @@ export function installFakeApi(state: FakeState) {
       }
       if (method === 'PATCH') {
         // As the vault: taking a check away asks for it first (5.4), and a
-        // write made from an older copy is refused.
+        // write made from an older copy is refused, with the document as it
+        // is now.
         const ask = askedToLoosen(doc, body as object);
         if (state.stepUpNeeded && ask) return stepUp(ask);
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
@@ -956,6 +957,7 @@ export function installFakeApi(state: FakeState) {
                 message: 'Someone else changed this document. Reload and try again.',
                 retriable: false,
                 request_id: 'r',
+                detail: JSON.stringify(doc),
               },
             },
             409,

@@ -88,6 +88,13 @@ export const blankInput = (v: DetailInput | undefined): boolean =>
   v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
 
 /**
+ * A comma is read only where it groups thousands: 1,234 and 1,234.50. Any
+ * other (12,50, 3,5) may be a decimal comma, and is never guessed at: read
+ * as thousands it would keep an amount 100 times too big.
+ */
+const THOUSANDS = /^[-+]?\d{1,3}(,\d{3})+(\.\d*)?$/;
+
+/**
  * What the card typed, as the vault keeps it: `null` for nothing, or the
  * words for why it cannot be read. The last word is the vault's own rules
  * (checkDetail), so the card never sends what would be refused.
@@ -113,7 +120,11 @@ export function readDetail(
         value = Number(value);
         break;
       case 'number': {
-        const n = value.replace(/[\s,]/g, '');
+        const typed = value.replace(/\s/g, '');
+        if (typed.includes(',') && !THOUSANDS.test(typed)) {
+          return { message: `${name}: use a point for a decimal, such as 3.5.` };
+        }
+        const n = typed.replace(/,/g, '');
         if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(n)) {
           return { message: `${name}: write a number, such as 3.` };
         }
@@ -121,7 +132,11 @@ export function readDetail(
         break;
       }
       case 'money': {
-        const n = value.replace(/[\s,£$€]/g, '');
+        const typed = value.replace(/[\s£$€]/g, '');
+        if (typed.includes(',') && !THOUSANDS.test(typed)) {
+          return { message: `${name}: use a point for pence, such as 12.50.` };
+        }
+        const n = typed.replace(/,/g, '');
         if (!/^-?(\d+(\.\d{1,2})?|\.\d{1,2})$/.test(n)) {
           return { message: `${name}: write an amount, such as 12.50.` };
         }

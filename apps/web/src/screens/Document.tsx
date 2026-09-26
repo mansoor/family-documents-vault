@@ -7,7 +7,7 @@ import {
 } from '@fdv/shared';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { api } from '../api.js';
+import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
@@ -131,12 +131,14 @@ export function DocumentScreen() {
     null,
   );
   const [removeBusy, setRemoveBusy] = useState(false);
+  // What became of a Remove that did not go through: said by the list.
+  const [removeNote, setRemoveNote] = useState<string | null>(null);
   // Where focus lands once a detail has gone, with its button.
   const facts = useRef<HTMLDListElement>(null);
   const removeDetail = async () => {
     if (!data || !removing) return;
     setRemoveBusy(true);
-    setActionError(null);
+    setRemoveNote(null);
     try {
       // null takes a key away, whatever the type asks for now (0.5.7).
       await withToken((t) =>
@@ -144,7 +146,16 @@ export function DocumentScreen() {
       );
       await reload();
     } catch (err) {
-      setActionError(describeError(err));
+      if (err instanceof ApiRequestError && err.status === 409) {
+        // Changed somewhere else since the page was loaded. It is loaded
+        // again, so the next try is made on what is there now.
+        setRemoveNote(
+          `This document was changed somewhere else, so it has been loaded again. Try again if “${removing.label}” still needs removing.`,
+        );
+        await reload();
+      } else {
+        setRemoveNote(describeError(err));
+      }
     } finally {
       setRemoveBusy(false);
       setRemoving(null);
@@ -323,6 +334,8 @@ export function DocumentScreen() {
           </ul>
         </section>
       )}
+      {/* By the list, where the person is: not at the top of the page. */}
+      <ErrorNote message={removeNote} />
       {removing && (
         <ConfirmDialog
           title="Remove this detail?"
