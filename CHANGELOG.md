@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-26 — iteration 5.7
+
+Groundwork for the family's own kinds of document: a household can now have types of its own, and its own changes to the built-in ones (hiding one, asking for different details), kept behind the same wall as its documents. Nothing in the app makes them yet, so every list of types is as it was.
+
+### Changed
+
+- A kind of document the household has hidden is no longer offered, unless a document you can see still uses it; phones that already have such a document keep finding its kind, offline too.
+
+### Fixed
+
+- Text containing a NUL character is refused as a mistake in the request, instead of failing on the server.
+- A phone's offline set, and a page of documents of many kinds, no longer look each kind up separately.
+
+### Security
+
+- The built-in kinds of document can no longer be changed by the application at all, and neither can the record of which upgrades the database has had.
+- A restore now also checks that no view reads past the households' walls, and that the rules for the household's own kinds of document came back.
+
 ## [0.5.5] - 2026-09-26 — iteration 5.6
 
 ### Security

@@ -726,6 +726,9 @@ duplicates, dropped}`. Each event id is recorded once, however often
     - `@fdv/client`: `documentTypes(token, { all })` and
       `documentAttributes(token)`; the fake answers both, the in-use rule
       included.
+  - **Changed:** text containing a NUL character (U+0000), in any field of
+    any request, is refused with `422 validation_failed`, "That text
+    contains a character the vault cannot keep." It was a `500`.
 
 ## Deprecations in effect
 
