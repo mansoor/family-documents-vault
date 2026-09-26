@@ -30,7 +30,7 @@ export interface RequestInitLike {
   headers: Record<string, string>;
   body?: unknown;
   signal?: AbortSignalLike;
-  /** Honoured by browsers; harmless elsewhere. */
+  /** Honoured by browsers; the `cache-control` request header covers the rest. */
   cache?: 'no-store';
 }
 
@@ -76,8 +76,6 @@ export interface RequestOptions {
   upload?: UploadBody;
   token?: string | null;
   headers?: Record<string, string>;
-  /** Skip the HTTP cache: where a stale answer would mislead. */
-  fresh?: boolean;
 }
 
 export interface Http {
@@ -114,7 +112,13 @@ export function createHttp(options: HttpOptions): Http {
       headers['content-type'] = opts.upload.contentType;
       init.body = opts.upload.bytes;
     }
-    if (opts.fresh) init.cache = 'no-store';
+    // Nothing the vault says is kept or reused by the platform's HTTP cache.
+    // `cache` is for browsers; the header is for fetches that ignore it — a
+    // phone's (expo/fetch on OkHttp) keeps a disk cache that obeys headers
+    // only, so a capability document kept from before an upgrade said the
+    // old version, and could vouch for a vault that was no longer there.
+    headers['cache-control'] = 'no-cache, no-store';
+    init.cache = 'no-store';
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;

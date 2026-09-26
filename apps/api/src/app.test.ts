@@ -89,11 +89,23 @@ describe('health', () => {
   });
 });
 
+describe('what a device may keep', () => {
+  it('every answer says no-store unless its route says otherwise, errors included', async () => {
+    const app = await make();
+    const missing = await app.inject('/api/v1/no-such-thing');
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers['cache-control']).toBe('no-store');
+    const unauthenticated = await app.inject('/api/v1/me');
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(unauthenticated.headers['cache-control']).toBe('no-store');
+  });
+});
+
 describe('GET /api/v1/capabilities', () => {
-  it('returns the capability document with cache headers', async () => {
+  it('returns the capability document, never to be cached', async () => {
     const res = await (await make()).inject('/api/v1/capabilities');
     expect(res.statusCode).toBe(200);
-    expect(res.headers['cache-control']).toBe('public, max-age=300');
+    expect(res.headers['cache-control']).toBe('no-store');
     const caps = res.json<Record<string, unknown>>();
     expect(caps.product).toBe('family-document-vault');
     expect(caps.api_version).toBe(1);
