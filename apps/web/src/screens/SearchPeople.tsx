@@ -599,12 +599,14 @@ export function RemindersScreen() {
 function Missing(props: {
   items: SuggestionView[];
   hidden: SuggestionView[];
-  profileAnswered: boolean;
+  /** Null for a viewer, who is not told about the family (5.3). */
+  profileAnswered: boolean | null;
   act: (fn: (t: string) => Promise<unknown>) => Promise<void>;
 }) {
   const [showHidden, setShowHidden] = useState(false);
   if (props.items.length === 0 && props.hidden.length === 0) {
-    return props.profileAnswered ? null : (
+    // Only an answered "no" is an invitation to answer; a viewer's null is not.
+    return props.profileAnswered !== false ? null : (
       <section aria-labelledby="missing-h">
         <h2 id="missing-h" className="section-h">
           We noticed something missing

@@ -73,6 +73,22 @@ export class HouseholdService {
         .select(['name', 'created_at', 'timezone'])
         .where('id', '=', p.householdId)
         .executeTakeFirstOrThrow();
+      // A viewer gets the household's name and time zone, which every
+      // screen shows, and none of its answers (5.3).
+      if (!allows(p, 'family.details')) {
+        return {
+          household_name: hh.name,
+          timezone: hh.timezone,
+          owns_home: null,
+          rents_home: null,
+          vehicle_count: null,
+          has_pets: null,
+          has_business: null,
+          country: null,
+          answered_at: null,
+          extra: {},
+        };
+      }
       return {
         household_name: hh.name,
         timezone: hh.timezone,
@@ -166,10 +182,12 @@ export class HouseholdService {
         .groupBy('owner_member_id')
         .execute();
       const countOf = new Map(counts.map((c) => [c.owner_member_id, Number(c.n)]));
+      // Birthdays are the family's: a viewer is told only their own (5.3).
+      const birthdays = allows(p, 'family.details');
       return rows.map((r) => ({
         id: r.id,
         display_name: r.display_name,
-        date_of_birth: r.date_of_birth,
+        date_of_birth: birthdays || r.id === p.memberId ? r.date_of_birth : null,
         relationship: r.relationship,
         is_deceased: r.is_deceased,
         colour: r.colour,

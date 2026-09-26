@@ -8,7 +8,7 @@ import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
-import { requireCapability } from '../authz.js';
+import { allows, requireCapability } from '../authz.js';
 import type { AlertRequest } from '../alert-job.js';
 import type { PushRequest } from '../push-job.js';
 
@@ -404,18 +404,22 @@ export class NotificationService {
         last_error: null,
       };
     }
+    // How email is set up — the host, the sign-in (often the owner's own
+    // address), the last error — is for whoever may change it. Everyone
+    // else is told only whether email works (5.3).
+    const full = allows(p, 'notifications.manage');
     return {
       configured: true,
-      provider: row.provider,
-      host: row.host,
-      port: row.port,
+      provider: full ? row.provider : null,
+      host: full ? row.host : null,
+      port: full ? row.port : null,
       secure: row.secure,
-      username: row.username,
-      from_name: row.from_name,
-      from_email: row.from_email,
+      username: full ? row.username : null,
+      from_name: full ? row.from_name : null,
+      from_email: full ? row.from_email : null,
       status: row.status,
       last_verified_at: row.last_verified_at?.toISOString() ?? null,
-      last_error: row.last_error,
+      last_error: full ? row.last_error : null,
     };
   }
 

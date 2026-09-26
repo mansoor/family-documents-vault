@@ -113,10 +113,11 @@ export function JoinScreen() {
           id="join-email"
           label="The email you will sign in with"
           type="email"
-          value={email ?? preview.email}
+          value={email ?? ''}
           onChange={setEmail}
           autoComplete="email"
-          hint="If you ever forget your password, the link to set a new one comes here — so make it an address only you can read."
+          placeholder={preview.email}
+          hint={`Leave it empty to keep the address this was sent to (${preview.email}). If you ever forget your password, the link to set a new one comes here — so make it an address only you can read.`}
         />
         <Field
           id="join-password"

@@ -399,7 +399,12 @@ export class InvitationService {
     return id;
   }
 
-  /** What an invitee is shown before they commit to anything. */
+  /**
+   * What an invitee is shown before they commit to anything. The link alone
+   * is not the invitation — the code is the other half — so the address it
+   * was sent to is shown masked (5.3): a forwarded link tells its reader
+   * the family's name, not somebody's email.
+   */
   async preview(token: string): Promise<InvitationPreview> {
     const householdId = await this.householdOf(token);
     return withScope(this.db, { householdId }, async (trx) => {
@@ -423,7 +428,7 @@ export class InvitationService {
       return {
         household_name: household.name,
         display_name: member.display_name,
-        email: row.email,
+        email: maskedEmail(row.email),
         role: row.role,
         role_label: roleLabel(row.role),
         invited_by: inviter?.display_name ?? null,
@@ -573,4 +578,10 @@ function stateOf(r: {
   if (r.attempts >= MAX_ATTEMPTS) return 'locked';
   if (r.expires_at.getTime() < Date.now()) return 'expired';
   return 'pending';
+}
+
+/** "j•••@example.com": enough for its owner to recognise, not enough to use (5.3). */
+export function maskedEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  return at <= 0 ? '•••' : `${email[0]}•••${email.slice(at)}`;
 }

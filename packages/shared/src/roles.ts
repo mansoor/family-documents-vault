@@ -59,7 +59,9 @@ export type Capability =
   | 'export.request'
   /** Read the household activity log (SHR-07), filtered to what the
    *  reader could already see. */
-  | 'audit.read';
+  | 'audit.read'
+  /** The family's own details: birthdays, the household's answers, what they lack (5.3). */
+  | 'family.details';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -140,6 +142,14 @@ const MATRIX: Record<Capability, Rule> = {
     // fair. A viewer is an outsider and sees none of it.
     roles: ['owner', 'adult', 'teen'],
     refusal: 'Viewers can open and download documents, but not see what the family has been doing.',
+  },
+  'family.details': {
+    // Who is how old, whether the family owns a home or a business, and
+    // the "no passport for Aisha" worked out from those: the family's own
+    // business. A viewer — an accountant or an attorney with a sign-in —
+    // is given documents, not the family (5.3).
+    roles: ['owner', 'adult', 'teen'],
+    refusal: 'Viewers see the documents they are given, not the family’s own details.',
   },
 };
 

@@ -724,7 +724,8 @@ export function installFakeApi(state: FakeState) {
       return json({
         household_name: 'The Seikh family',
         display_name: 'Sam',
-        email: 'sam@example.test',
+        // Masked, as the vault shows it before the code (5.3).
+        email: 's•••@example.test',
         role: 'adult',
         role_label: 'Adult',
         invited_by: 'Mansoor Seikh',

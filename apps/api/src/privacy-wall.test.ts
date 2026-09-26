@@ -908,6 +908,20 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
   }, 120_000);
   afterAll(() => h.close());
 
+  it('who a document went to is for those who may share: a teen and a viewer see no links (0.5.0)', async () => {
+    const viewer = await h.join(owner, {
+      name: 'Accountant',
+      email: 'acc-links@example.test',
+      role: 'viewer',
+    });
+    for (const who of [teen, viewer]) {
+      const res = await h.app.inject({ url: '/api/v1/shares', headers: as(who) });
+      expect(res.statusCode).toBe(200);
+      expect(json<{ items: unknown[] }>(res).items).toEqual([]);
+      expect(res.body).not.toContain('the solicitor');
+    }
+  });
+
   it('a link stops working the moment its document becomes somebody else’s "Only me"', async () => {
     expect(await opens(link.samDoc as string)).toBe(200);
     const marked = await h.app.inject({

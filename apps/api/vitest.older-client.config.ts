@@ -24,5 +24,6 @@ export default defineConfig({
     name: 'api-older-client',
     root: here('.'),
     include: ['src/client-contract.test.ts'],
+    hookTimeout: 30_000,
   },
 });

@@ -361,10 +361,11 @@ export function createApi(http: Http) {
         },
       ),
     suggestions: (token: string, dismissed = false) =>
-      request<{ items: SuggestionView[]; profile_answered: boolean; dismissed_count: number }>(
-        `/api/v1/suggestions${dismissed ? '?dismissed=true' : ''}`,
-        { token },
-      ),
+      request<{
+        items: SuggestionView[];
+        profile_answered: boolean | null;
+        dismissed_count: number;
+      }>(`/api/v1/suggestions${dismissed ? '?dismissed=true' : ''}`, { token }),
     dismissSuggestion: (token: string, key: string) =>
       request<void>(`/api/v1/suggestions/${enc(key)}/dismiss`, { method: 'POST', token }),
     restoreSuggestion: (token: string, key: string) =>
