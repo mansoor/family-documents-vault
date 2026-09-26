@@ -410,6 +410,7 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
    */
   const NOT_YET_ENFORCED: Partial<Record<Capability, string>> = {
     'document.see_adults': 'a filter, not a refusal — the test above',
+    'family.details': 'a filter, not a refusal — household/what-viewers-see.test.ts (5.3)',
     'document.share': '3.3, share links',
   };
 

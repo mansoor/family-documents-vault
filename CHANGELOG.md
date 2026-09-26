@@ -6,6 +6,11 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **A viewer is given documents, not the family.** A viewer — an accountant or an attorney with a sign-in, say — could see everybody's date of birth, the household's answers (whether you own a home, how many cars, a business) and the suggestions worked out from them ("No passport for Aisha"). A viewer now sees only their own date of birth, none of the household's answers, and no suggestions.
+- **An invitation link on its own shows the address masked.** Anyone holding the link saw the full email it was sent to; it now reads "j•••@example.com" until the code is entered, and leaving the address empty when joining keeps the one it was sent to.
+
 ## [0.5.1] - 2026-09-26 — iterations 5.1 and 5.2
 
 The first of Phase 5, on the development branch. 0.5.0 itself is kept on its own branch until the Phase 4 demonstration.

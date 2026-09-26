@@ -853,8 +853,12 @@ describe('App', () => {
     await expectAccessible();
 
     // The address they sign in with is theirs to choose: resets go there.
+    // The one it was sent to is shown masked, and kept if they leave it empty (5.3).
     const address = screen.getByLabelText('The email you will sign in with');
-    expect((address as HTMLInputElement).value).toMatch(/@/);
+    expect((address as HTMLInputElement).value).toBe('');
+    expect(
+      screen.getByText(/keep the address this was sent to \(s•••@example\.test\)/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/an address only you can read/)).toBeInTheDocument();
     fireEvent.change(address, { target: { value: 'me@my-own.example.test' } });
     expect((address as HTMLInputElement).value).toBe('me@my-own.example.test');

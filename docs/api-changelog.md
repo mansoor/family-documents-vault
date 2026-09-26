@@ -669,6 +669,16 @@ duplicates, dropped}`. Each event id is recorded once, however often
     `POST /api/v1/documents/{id}/restore`.
   - The activity sentences for `document.deleted` and `document.restored`
     say "moved … to the Trash" and "took … out of the Trash".
+  - **Changed (5.3), for viewers only** — they are given documents, not the
+    family: `GET /api/v1/members` answers `date_of_birth: null` for
+    everyone but themselves; `GET /api/v1/profile` answers every household
+    answer as null (the name and time zone stay); `GET /api/v1/suggestions`
+    answers no items and `profile_answered: null` (the type is now
+    `boolean | null`). The fields stay, so older clients read them as
+    unknown. New capability `family.details` (owners, adults, teens).
+  - **Changed (5.3):** `GET /api/v1/invitations/{token}` shows `email`
+    masked ("j•••@example.com"); accepting without an `email` keeps the one
+    it was sent to, as before.
 
 ## Deprecations in effect
 

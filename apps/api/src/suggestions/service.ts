@@ -32,8 +32,11 @@ import { allows, requireCapability } from '../authz.js';
 
 export interface SuggestionList {
   items: SuggestionView[];
-  /** False until someone answers the wizard's questions: the UI offers to. */
-  profile_answered: boolean;
+  /**
+   * False until someone answers the wizard's questions: the UI offers to.
+   * Null for a viewer, who is not told about the family at all (5.3).
+   */
+  profile_answered: boolean | null;
   /** How many suggestions this household has waved away. */
   dismissed_count: number;
 }
@@ -55,6 +58,10 @@ export class SuggestionService {
   constructor(private readonly db: Db) {}
 
   async list(p: Principal, opts: { includeDismissed?: boolean } = {}): Promise<SuggestionList> {
+    // Worked out from the household's answers and who is a child: "No
+    // passport for Aisha" tells a viewer what 5.3 keeps from them.
+    if (!allows(p, 'family.details'))
+      return { items: [], profile_answered: null, dismissed_count: 0 };
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const household = await trx
         .selectFrom('household')
