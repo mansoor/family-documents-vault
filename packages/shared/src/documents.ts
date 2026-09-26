@@ -69,6 +69,13 @@ export interface VersionView {
    * 0 for a file the vault cannot draw. At most `PREVIEW_MAX_PAGES`.
    */
   preview_pages?: number | null;
+  /**
+   * Who added this version, as the household knows them (5.1): in a
+   * document's history only (`GET /documents/{id}/versions`), and never to
+   * a viewer, who is not told what the family has been doing. Null then,
+   * when that person has left the household, or on an older vault.
+   */
+  uploaded_by_name?: string | null;
 }
 
 /** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */

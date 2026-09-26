@@ -810,3 +810,99 @@ h3 {
     align-items: center;
   }
 }
+
+/* 5.1: a section that folds away, the app's own confirmation, and tables. */
+.section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.section-toggle:focus-visible,
+.btn-trash:focus-visible {
+  outline: 3px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+.chevron {
+  font-size: 16px;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: var(--surface);
+}
+
+.btn-icon,
+.btn-trash {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-trash {
+  color: var(--danger);
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 16px;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 10px 16px 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table th {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.data-table td.when {
+  white-space: nowrap;
+  width: 1%;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table tr.notable td:last-child {
+  font-weight: 700;
+}
+
+@media (max-width: 420px) {
+  .data-table td.when {
+    white-space: normal;
+  }
+}
+
+.btn[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* A status line that is always there, so a screen reader hears it change. */
+.status-line:empty {
+  margin: 0;
+}

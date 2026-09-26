@@ -43,6 +43,16 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {can(storedRole(), 'document.edit') && (
+          <li>
+            <Link to="/settings/trash" className="rowbtn">
+              <span className="doc-title">Trash</span>
+              <span className="muted">
+                Documents moved to the Trash, and the way to bring them back
+              </span>
+            </Link>
+          </li>
+        )}
         <li>
           <Link to="/settings/notifications" className="rowbtn">
             <span className="doc-title">How you hear about things</span>

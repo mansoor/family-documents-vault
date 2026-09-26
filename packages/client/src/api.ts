@@ -268,6 +268,9 @@ export function createApi(http: Http) {
       }),
     deleteDocument: (token: string, id: string) =>
       request<void>(`/api/v1/documents/${id}`, { method: 'DELETE', token }),
+    /** Out of the Trash again (5.1). */
+    restoreDocument: (token: string, id: string) =>
+      request<DocumentView>(`/api/v1/documents/${id}/restore`, { method: 'POST', token }),
     setVisibility: (token: string, documentId: string, visibility: Visibility) =>
       request<{ notice: { title: string; body: string } | null }>(
         `/api/v1/documents/${documentId}/visibility`,

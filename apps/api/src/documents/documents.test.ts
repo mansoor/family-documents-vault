@@ -194,6 +194,8 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
       headers: h.as(owner),
     });
     expect(json<{ items: VersionView[] }>(versions).items).toHaveLength(1);
+    // The history says who added it, by the name the household knows them by (5.1).
+    expect(json<{ items: VersionView[] }>(versions).items[0]?.uploaded_by_name).toBe('Owner');
 
     // Range: a slice from the middle, crossing the 1 MiB chunk boundary.
     const start = 1024 * 1024 - 100;
@@ -446,5 +448,48 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     expect(set.has('document.version_added')).toBe(true);
     expect(set.has('document.deleted')).toBe(true);
     expect(set.has('document.restored')).toBe(true);
+  });
+
+  it('history names who added a version — never to a viewer — and still does once their sign-in is gone (5.1)', async () => {
+    const sam = await h.join(owner, {
+      name: 'Sam',
+      email: 'sam-history@example.test',
+      role: 'adult',
+    });
+    const added = await upload(
+      sam,
+      `/api/v1/documents/${passport.id}/versions`,
+      Buffer.concat([PDF, randomBytes(64)]),
+      'renewed.pdf',
+      'application/pdf',
+      randomUUID(),
+    );
+    expect(added.statusCode).toBe(201);
+    const names = async (who: typeof owner) =>
+      json<{ items: VersionView[] }>(
+        await h.app.inject({
+          url: `/api/v1/documents/${passport.id}/versions`,
+          headers: h.as(who),
+        }),
+      ).items.map((v) => v.uploaded_by_name);
+
+    const seen = await names(owner);
+    expect(seen[0]).toBe('Sam');
+    expect(seen.slice(1).every((n) => n === 'Owner')).toBe(true);
+
+    const viewer = await h.join(owner, {
+      name: 'Accountant',
+      email: 'acc-history@example.test',
+      role: 'viewer',
+    });
+    expect((await names(viewer)).every((n) => n === null)).toBe(true);
+
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${sam.member_id}/sign-in`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode).toBe(204);
+    expect((await names(owner))[0]).toBe('Sam');
   });
 });

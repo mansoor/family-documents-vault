@@ -16,6 +16,7 @@ import {
   BottomNav,
   Button,
   categoryLabel,
+  CollapsibleSection,
   ErrorNote,
   Field,
   StatusBadge,
@@ -616,10 +617,11 @@ function Missing(props: {
     );
   }
   return (
-    <section aria-labelledby="missing-h">
-      <h2 id="missing-h" className="section-h">
-        We noticed something missing
-      </h2>
+    <CollapsibleSection
+      id="missing"
+      title="We noticed something missing"
+      count={props.items.length}
+    >
       <ul className="list">
         {props.items.map((s) => (
           <li key={s.key} className="missing-row">
@@ -661,6 +663,6 @@ function Missing(props: {
             {props.hidden.length} hidden
           </Button>
         ))}
-    </section>
+    </CollapsibleSection>
   );
 }

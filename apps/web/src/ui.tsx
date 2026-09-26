@@ -1,5 +1,5 @@
 import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
 
@@ -214,6 +214,194 @@ export function BottomNav() {
       {item('/reminders', 'Reminders', '◷')}
       {item('/people', 'People', '☺')}
     </nav>
+  );
+}
+
+/** A bin with a lid, drawn: emoji look different on every phone. */
+export function TrashIcon() {
+  return (
+    <svg
+      className="icon"
+      aria-hidden="true"
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+/**
+ * The app's own "are you sure?" (5.1), never the browser's confirm(): over
+ * the page like the step-up sheet. Cancel or Escape is a real answer, until
+ * the action is on its way: then neither can take it back, so neither
+ * pretends to. Focus starts on Cancel, so Enter never does the thing by
+ * accident; it stays inside the dialog, and goes back where it came from.
+ */
+export function ConfirmDialog(props: {
+  title: string;
+  children: ReactNode;
+  confirmLabel: string;
+  /** What the confirm button says while the action is on its way. */
+  busyLabel?: string;
+  icon?: ReactNode;
+  danger?: boolean;
+  busy?: boolean;
+  /** Where focus goes afterwards when the browser remembered none (Safari). */
+  returnFocus?: RefObject<HTMLElement | null>;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const box = useRef<HTMLElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const latest = useRef({
+    onCancel: props.onCancel,
+    busy: props.busy,
+    returnFocus: props.returnFocus,
+  });
+  useEffect(() => {
+    latest.current = { onCancel: props.onCancel, busy: props.busy, returnFocus: props.returnFocus };
+  });
+  useEffect(() => {
+    const active = document.activeElement;
+    const before = active instanceof HTMLElement && active !== document.body ? active : null;
+    cancel.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!latest.current.busy) latest.current.onCancel();
+        return;
+      }
+      if (e.key !== 'Tab' || !box.current) return;
+      const focusable = [...box.current.querySelectorAll<HTMLElement>('button')];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (!box.current.contains(document.activeElement)) {
+        e.preventDefault();
+        (cancel.current ?? first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      (before ?? latest.current.returnFocus?.current)?.focus();
+    };
+  }, []);
+  const busy = Boolean(props.busy);
+  return (
+    <div className="scrim" role="presentation">
+      <section
+        ref={box}
+        className="card stack sheet"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-h"
+        aria-describedby="confirm-body"
+        aria-busy={busy}
+      >
+        <h2 id="confirm-h" style={{ fontSize: 20 }}>
+          {props.title}
+        </h2>
+        <div id="confirm-body" className="muted">
+          {props.children}
+        </div>
+        <div className="row">
+          {/* aria-disabled, not disabled: a disabled button drops the focus
+              it holds, and the trap above with it. */}
+          <button
+            type="button"
+            className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} btn-icon`}
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) props.onConfirm();
+            }}
+          >
+            {props.icon}
+            {busy && props.busyLabel ? props.busyLabel : props.confirmLabel}
+          </button>
+          <button
+            ref={cancel}
+            type="button"
+            className="btn btn-quiet"
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) props.onCancel();
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * A section that folds away (5.1), its count in brackets so a folded one
+ * still says how much is in it. Whether it is folded is remembered on this
+ * browser only.
+ */
+export function CollapsibleSection(props: {
+  id: string;
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const key = `fdv.fold.${props.id}`;
+  const [open, setOpen] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== 'closed';
+    } catch {
+      return true;
+    }
+  });
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    try {
+      localStorage.setItem(key, next ? 'open' : 'closed');
+    } catch {
+      // A private window: folded for now, not remembered.
+    }
+  };
+  return (
+    <section aria-labelledby={`${props.id}-h`}>
+      <h2 id={`${props.id}-h`} className="section-h">
+        <button
+          type="button"
+          className="section-toggle"
+          aria-expanded={open}
+          aria-controls={`${props.id}-body`}
+          onClick={toggle}
+        >
+          <span>
+            {props.title} ({props.count})
+          </span>
+          <span aria-hidden="true" className="chevron">
+            {open ? '▾' : '▸'}
+          </span>
+        </button>
+      </h2>
+      <div id={`${props.id}-body`} hidden={!open}>
+        {props.children}
+      </div>
+    </section>
   );
 }
 
