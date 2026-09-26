@@ -194,12 +194,22 @@ create policy doc_list_changes on doc_list as restrictive for update
 -- What an owner may change on a list they did not make: that it is
 -- deleted, once, and nothing else. A rule cannot say which columns change,
 -- so a trigger does; it compares every column but deleted_at, so a column
--- added later is the maker's too.
+-- added later is the maker's too. Somebody signed in is its maker only
+-- when their member is provably the list's (an unset member is nobody,
+-- and a list whose maker is gone has none). And nobody signed in hands a
+-- list to another member or household, its maker included: a list is
+-- made by its maker, for good.
 create function doc_list_owner_writes() returns trigger
   language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 begin
   if app_actor() = 'account'
-     and old.owner_member_id is distinct from app_member()
+     and (new.owner_member_id is distinct from old.owner_member_id
+          or new.household_id is distinct from old.household_id) then
+    raise exception 'a list keeps its maker and its household'
+      using errcode = 'insufficient_privilege';
+  end if;
+  if app_actor() = 'account'
+     and not coalesce(old.owner_member_id = app_member(), false)
      and ((to_jsonb(new) - 'deleted_at') is distinct from (to_jsonb(old) - 'deleted_at')
           or old.deleted_at is not null
           or new.deleted_at is null) then

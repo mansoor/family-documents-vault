@@ -16,6 +16,7 @@ import {
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DocumentService } from '../documents/service.js';
+import { ListService } from './service.js';
 import { createHarness, type Harness } from '../test-harness.js';
 
 /**
@@ -817,6 +818,61 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     });
   });
 
+  it('an owner’s delete that meets the maker’s sign-in given back meanwhile deletes nothing, and logs nothing', async () => {
+    const jo = await h.join(people.owner, {
+      name: 'Jo',
+      email: 'lists-jo-returns@example.test',
+      role: 'adult',
+    });
+    const list = await makeList(jo, 'ZZ Jo’s papers', 'everyone', [docs.household]);
+    const admin = createPool(h.adminUrl, 1);
+    try {
+      const { rows } = await admin.query<Record<string, unknown>>(
+        'select * from account_household where member_id = $1',
+        [jo.member_id],
+      );
+      const signIn = rows[0] as Record<string, unknown>;
+      const removed = await call('owner', 'DELETE', `/api/v1/members/${jo.member_id}/sign-in`);
+      expect(removed.statusCode, removed.body).toBe(204);
+
+      // The owner's delete finds the list stranded; before it is marked,
+      // Jo's sign-in is given back (as an accepted invitation would).
+      const proto = ListService.prototype as unknown as {
+        stranded: (...args: unknown[]) => Promise<boolean>;
+      };
+      const stranded = proto.stranded;
+      const spy = vi.spyOn(proto, 'stranded').mockImplementation(async function (
+        this: unknown,
+        ...args: unknown[]
+      ) {
+        const found = await stranded.apply(this, args);
+        const cols = Object.keys(signIn);
+        await admin.query(
+          `insert into account_household (${cols.join(', ')})
+           values (${cols.map((_, i) => `$${i + 1}`).join(', ')})`,
+          cols.map((c) => signIn[c]),
+        );
+        return found;
+      });
+      let answer;
+      try {
+        answer = await call('owner', 'DELETE', `/api/v1/lists/${list.id}`);
+      } finally {
+        spy.mockRestore();
+      }
+      // Not the owner's to clear any more: refused, still there, not logged.
+      expect(answer.statusCode, answer.body).toBe(403);
+      expect(await seen('owner', list.id)).not.toBeNull();
+      const logged = await admin.query<{ n: number }>(
+        "select count(*)::int as n from audit_event where action = 'list.deleted' and object_id = $1",
+        [list.id],
+      );
+      expect(logged.rows[0]?.n).toBe(0);
+    } finally {
+      await admin.end();
+    }
+  });
+
   it("a list's documents come a page at a time; item_count is all the reader sees; a cursor names nothing hidden", async () => {
     const list = await makeList('owner', 'Everything, paged', 'everyone', [
       docs.household,
@@ -1130,10 +1186,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       expect(await held('owner', sams.id)).toBe(0);
       expect(await held('adult', sams.id)).toBe(1);
       expect(await update('adult', sams.id, { name: 'Still Sam’s' })).toBe(1);
-      // Nor hands it to anybody else.
+      // Nor hands it to anybody else, or to another household.
       await expect(
         update('adult', sams.id, { owner_member_id: people.owner.member_id }),
-      ).rejects.toThrow(/row-level security/);
+      ).rejects.toThrow(/keeps its maker and its household/);
 
       // Nobody's now: not an adult's to touch.
       expect(await update('adult', nobodys, { deleted_at: new Date() })).toBe(0);
@@ -1146,7 +1202,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         { name: 'Renamed', deleted_at: new Date() },
       ]) {
         await expect(update('owner', nobodys, set), JSON.stringify(set)).rejects.toThrow(
-          /only its maker changes a list/,
+          /only its maker changes a list|keeps its maker/,
         );
       }
       // …and not with no role said, after the connection was used.
@@ -1171,6 +1227,39 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           ).numUpdatedRows,
       );
       expect(unsaid).toBe(0n);
+      // An owner with no member said is nobody's maker: a list whose maker
+      // is gone does not become theirs to change (the fix check, F514-1).
+      await expect(
+        withScope(
+          one,
+          {
+            householdId: hh,
+            actor: {
+              kind: 'account',
+              accountId: accounts.owner,
+              memberId: '',
+              role: 'owner',
+            },
+          },
+          (trx) =>
+            trx
+              .updateTable('doc_list')
+              .set({ name: 'Taken by nobody' })
+              .where('id', '=', nobodys)
+              .execute(),
+        ),
+      ).rejects.toThrow(/only its maker changes a list/);
+      // And an owner's own list is theirs to change, not to hand on (F514-3).
+      const owners = await makeList('owner', 'The owner’s, in the database', 'everyone');
+      expect(await update('owner', owners.id, { name: 'Still the owner’s' })).toBe(1);
+      for (const set of [
+        { owner_member_id: people.adult.member_id },
+        { owner_member_id: people.adult.member_id, audience: 'adults' },
+      ]) {
+        await expect(update('owner', owners.id, set), JSON.stringify(set)).rejects.toThrow(
+          /keeps its maker and its household/,
+        );
+      }
       // Marked deleted by an owner: once, and never brought back.
       expect(await update('owner', nobodys, { deleted_at: new Date() })).toBe(1);
       for (const set of [{ deleted_at: new Date() }, { deleted_at: null }]) {

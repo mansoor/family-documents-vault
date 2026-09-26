@@ -362,11 +362,15 @@ export class ListService {
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     await withPrincipal(this.db, p, async (trx) => {
       const current = await this.deletable(trx, p, id);
-      await trx
+      const marked = await trx
         .updateTable('doc_list')
         .set({ deleted_at: new Date() })
         .where('id', '=', current.id)
-        .execute();
+        .executeTakeFirst();
+      // The database's rules decide as the row is written: a maker's
+      // sign-in given back meanwhile means the list is no longer an
+      // owner's to clear. Nothing was deleted, so nothing is logged.
+      if (marked.numUpdatedRows === 0n) throw notYours();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
