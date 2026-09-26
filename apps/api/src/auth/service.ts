@@ -469,6 +469,7 @@ export class AuthService {
                 last_used_at: now,
                 expires_at: expiresAt,
                 ip: meta.ip ?? null,
+                user_agent: meta.userAgent ?? session.user_agent,
               }
             : {
                 refresh_hash: hashRefreshToken(next),
@@ -478,6 +479,9 @@ export class AuthService {
                 last_used_at: now,
                 expires_at: expiresAt,
                 ip: meta.ip ?? null,
+                // The browser as it is now: one updated since the sign-in
+                // is the same browser (its reload grace compares with this).
+                user_agent: meta.userAgent ?? session.user_agent,
               },
         )
         .where('id', '=', session.id)
@@ -689,8 +693,9 @@ export class AuthService {
 /**
  * Whether the one-time replay of a refresh token is allowed (0.4.11): the
  * token just replaced, within 30 seconds of that, the first replay since,
- * and from the app installation that holds the session. A browser has no
- * installation id, so a browser never gets it.
+ * and from the client that spent it — the app installation that holds the
+ * session, or, for a browser (which has no installation id), the same user
+ * agent from the same address as the refresh that spent it (0.5.12).
  */
 export function graceAllows(
   s: {

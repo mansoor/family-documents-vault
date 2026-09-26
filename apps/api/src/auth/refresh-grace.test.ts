@@ -131,6 +131,15 @@ describe.skipIf(!testAdminUrl())('refresh grace, sliding expiry, and why a sessi
     expect(twice.statusCode).toBe(401);
     expect(reasonOf(twice).reason).toBe('reused');
 
+    // A browser updated since the sign-in is still the same browser: the
+    // session keeps the user agent of the refresh that spent the token.
+    const t1 = await browserSignIn();
+    const UPDATED = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/141.0';
+    const spent = await asBrowser(t1.refresh_token, UPDATED);
+    expect(spent.statusCode, spent.body).toBe(200); // answer lost
+    const regrace = await asBrowser(t1.refresh_token, UPDATED);
+    expect(regrace.statusCode, regrace.body).toBe(200);
+
     // Another browser, or the same one from another address, is not it.
     for (const [agent, at] of [
       ['Mozilla/5.0 (Macintosh) Safari/19.0', from],

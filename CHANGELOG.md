@@ -15,6 +15,10 @@ Lists of documents, on the server: the screens come next.
 - Lists of documents — "For the accountant", "The house" — each for everyone in the family, for teens and up, for the adults, or for its maker alone. A list shows each reader only the documents they may see, and counts only those; a list outside someone's reach does not exist for them, name and all. Someone who can only view sees no lists yet.
 - Only a list's maker changes it. A maker who is moved to another role, or loses their sign-in, still sees and can delete what they made; an owner can delete a list nobody can change any more, but never reads more of it.
 
+### Fixed
+
+- Reloading a page at the moment it was renewing its sign-in no longer signs you out. The one allowance phones had for an answer lost on the way now holds for a browser too: the same browser, from the same address, within 30 seconds, once.
+
 ### Security
 
 - The database itself keeps a list that is for its maker alone invisible to everyone else, and keeps a list's items from anybody the list is not for.
