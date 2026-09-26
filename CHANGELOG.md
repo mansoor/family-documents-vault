@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-26 — iteration 5.6
+
+### Security
+
+- The database itself now answers each kind of caller by its own rule, as a second wall behind the application's checks. A share link is given only the document it was made for, and its file, while the link is live and the document is out of the Trash, and it can change nothing but its own count of opens and wrong PINs. Sign-in, invitation and reset pages, and anything that does not say who is asking, are given no documents at all.
+- The activity log shows a line only to those a rule names. Every line shown today is shown to the same people; a kind of line added later stays hidden until its audience is decided.
+- A restore now checks that these rules came back with the database.
+
 ## [0.5.4] - 2026-09-26 — iteration 5.5
 
 Groundwork for sharing lists of documents, upload requests and viewers limited to what they are given: every conversation with the database now says who is asking — somebody signed in, the vault itself, a share link, an upload request, or somebody not yet known. Nothing anybody sees changes yet; the next release lets the database refuse what the asker may not see.
