@@ -30,7 +30,7 @@ export interface RequestInitLike {
   headers: Record<string, string>;
   body?: unknown;
   signal?: AbortSignalLike;
-  /** Honoured by browsers; harmless elsewhere. */
+  /** Honoured by browsers; the `cache-control` request header covers the rest. */
   cache?: 'no-store';
 }
 
@@ -65,6 +65,12 @@ export interface HttpOptions {
   /** Give up waiting after this long. Unset: wait as long as fetch does. */
   timeoutMs?: number;
   now?: () => number;
+  /**
+   * The vault's version, from every answer that says it
+   * (X-FDV-Server-Version, 0.5.0 and later): an app learns of an upgrade
+   * from what it already asks. Never in the way of the answer itself.
+   */
+  onServerVersion?: (version: string) => void;
 }
 
 export type Method = 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT';
@@ -76,8 +82,6 @@ export interface RequestOptions {
   upload?: UploadBody;
   token?: string | null;
   headers?: Record<string, string>;
-  /** Skip the HTTP cache: where a stale answer would mislead. */
-  fresh?: boolean;
 }
 
 export interface Http {
@@ -114,7 +118,13 @@ export function createHttp(options: HttpOptions): Http {
       headers['content-type'] = opts.upload.contentType;
       init.body = opts.upload.bytes;
     }
-    if (opts.fresh) init.cache = 'no-store';
+    // Nothing the vault says is kept or reused by the platform's HTTP cache.
+    // `cache` is for browsers; the header is for fetches that ignore it — a
+    // phone's (expo/fetch on OkHttp) keeps a disk cache that obeys headers
+    // only, so a capability document kept from before an upgrade said the
+    // old version, and could vouch for a vault that was no longer there.
+    headers['cache-control'] = 'no-cache, no-store';
+    init.cache = 'no-store';
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
@@ -130,6 +140,14 @@ export function createHttp(options: HttpOptions): Http {
       throw new NetworkError(controller?.signal.aborted ? 'timeout' : 'offline');
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+    const version = res.headers.get('x-fdv-server-version');
+    if (version && options.onServerVersion) {
+      try {
+        options.onServerVersion(version);
+      } catch {
+        // The listener's trouble is not the request's.
+      }
     }
     if (!res.ok) throw await toError(res, now());
     return res;

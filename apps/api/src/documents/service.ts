@@ -1526,13 +1526,9 @@ export class DocumentService {
 
   /**
    * The cached, encrypted thumbnail, decrypted on the way out. Null until
-   * the worker has run. `sensitive`: an Essential's or an "only me"
-   * document's, which no cache may keep (0.4.12).
+   * the worker has run.
    */
-  async thumbnail(
-    p: Principal,
-    versionId: string,
-  ): Promise<{ bytes: Buffer; sensitive: boolean } | null> {
+  async thumbnail(p: Principal, versionId: string): Promise<{ bytes: Buffer } | null> {
     const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
@@ -1540,11 +1536,11 @@ export class DocumentService {
         .where('id', '=', versionId)
         .executeTakeFirst();
       if (!v) throw notFound();
-      const doc = await this.fetch(trx, p, v.document_id, true);
+      // Visibility first: a document this person may not see is a 404.
+      await this.fetch(trx, p, v.document_id, true);
       if (!v.thumbnail_key) return null;
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       return {
-        sensitive: sensitiveAction(doc) !== null,
         key: v.thumbnail_key,
         fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
         adapter: await this.vaults.adapterById(trx, v.vault_id),
@@ -1556,7 +1552,7 @@ export class DocumentService {
       pipeline(await ctx.adapter.get(ctx.key), dec),
       readAll(dec),
     ]);
-    return { bytes: plain, sensitive: ctx.sensitive };
+    return { bytes: plain };
   }
 
   /**

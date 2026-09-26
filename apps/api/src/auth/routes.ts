@@ -115,6 +115,10 @@ export function registerAuth(
   app.post('/api/v1/auth/logout', { preHandler: app.requireAuth }, async (req, reply) => {
     const p = req.principal as Principal;
     await auth.revokeSession(p, p.sessionId, metaOf(req), 'logout');
+    // A browser signing out forgets what it kept of this vault, including
+    // what versions before 0.5.0 let it keep. Browsers act on it over https
+    // and on localhost; apps ignore it.
+    void reply.header('clear-site-data', '"cache"');
     return reply.status(204).send();
   });
 

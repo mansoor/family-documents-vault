@@ -93,7 +93,7 @@ export function createApi(http: Http) {
     authHeaders: (token: string) => ({ authorization: `Bearer ${token}` }),
 
     // ------------------------------------------------------ signing in and out
-    capabilities: () => request<Capabilities>('/api/v1/capabilities', { fresh: true }),
+    capabilities: () => request<Capabilities>('/api/v1/capabilities'),
     setup: (body: {
       household_name: string;
       display_name: string;

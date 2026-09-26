@@ -89,6 +89,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
 
   app.addHook('onSend', async (req, reply) => {
     reply.header('x-request-id', req.id);
+    // Nothing the vault says is kept by a device's HTTP cache unless its
+    // route says otherwise: a phone's HTTP stack stores every answer it may,
+    // on disk, and keeps it after the phone is signed out.
+    if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
+    // Which version answered: an app notices an upgrade from what it
+    // already asks, instead of asking for the capability document again.
+    reply.header('x-fdv-server-version', deps.serverVersion);
   });
 
   app.setNotFoundHandler((req, reply) => {
@@ -152,13 +159,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     },
   });
 
-  // API-01: the first call any client makes. Unauthenticated, cacheable.
+  // API-01: the first call any client makes. Unauthenticated, and never
+  // cached: it says which vault this is and what it runs, and a phone on
+  // plain http checks the first before it sends anything. A kept answer
+  // said the old version for five minutes after an upgrade — and could
+  // vouch for a vault that was no longer there.
   app.get('/api/v1/capabilities', async (req, reply) => {
     const setupRequired = !(await deps.auth.setupComplete());
     const householdName = setupRequired ? null : await deps.auth.displayName();
-    // The document is cacheable — except while setup is pending, because a
-    // cached "setup_required: true" would show the wizard again after setup.
-    reply.header('cache-control', setupRequired ? 'no-store' : 'public, max-age=300');
+    reply.header('cache-control', 'no-store');
     return buildCapabilities({
       serverVersion: deps.serverVersion,
       edition: config.FDV_EDITION,
