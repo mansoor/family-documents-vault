@@ -235,7 +235,12 @@ export function autoTitle(
   return `${first}'s ${type.label.toLowerCase()}`;
 }
 
-function lead(days: number): string {
+/**
+ * How long before it expires, in the words the reminder sentence uses: "30
+ * days", "2 months". The kinds editor's lead-time chips say it the same way
+ * (0.5.11), so a chip and the sentence under it never disagree.
+ */
+export function leadWords(days: number): string {
   if (days >= 60) {
     const months = Math.round(days / 30);
     return months === 1 ? '1 month' : `${months} months`;
@@ -256,7 +261,7 @@ export function reminderSentence(
   const leads = [...new Set(type.reminder_leads)].filter((d) => d > 0).sort((a, b) => b - a);
   const onTheDay = type.reminder_leads.includes(0);
   if (leads.length === 0) return `We'll remind you on the day ${when}.`;
-  const words = leads.map(lead);
+  const words = leads.map(leadWords);
   const list =
     words.length === 1
       ? words[0]

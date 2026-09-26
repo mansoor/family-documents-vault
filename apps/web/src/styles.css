@@ -198,13 +198,16 @@ h3 {
   font-weight: 500;
 }
 
-/* A yes or a no (5.10): a switch, which says which in words as well. */
+/* A yes or a no (5.10): a switch, which says which in words as well — or,
+   alone in a row, its own word ("Hide", 5.12). The only switch there is. */
 .switch {
   display: inline-flex;
   align-items: center;
   gap: 10px;
   min-height: var(--tap);
+  flex-shrink: 0;
   font-weight: 600;
+  cursor: pointer;
 }
 
 .switch input {
@@ -1124,4 +1127,127 @@ h3 {
   .menu-title {
     display: none;
   }
+}
+
+/* 5.12: Settings → Kinds of document, and the editor for one. */
+a.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kind-fields {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.kind-fields > li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+/* A field's name on the left, its Show and Required on the right; what it
+   opens (its name on the card, when to remind) underneath, full width. */
+.kind-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.kind-field-name {
+  display: flex;
+  flex-direction: column;
+  /* A long word breaks rather than running into Show. */
+  overflow-wrap: anywhere;
+}
+
+/* A narrow screen (320px, or zoomed in): Show and Required go under the
+   field's name, so the name has the whole row. */
+@media (max-width: 360px) {
+  .kind-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.kind-field-more {
+  grid-column: 1 / -1;
+  gap: 10px;
+  padding-top: 6px;
+}
+
+.kind-field-more p {
+  margin: 0;
+}
+
+/* Show and Required in the same two columns on every row. */
+.kind-checks {
+  display: grid;
+  grid-template-columns: 88px 108px;
+}
+
+.kind-checks .check:only-child {
+  grid-column: 1 / -1;
+}
+
+.kind-checks .check {
+  align-items: center;
+}
+
+.kind-checks .check label {
+  padding-top: 0;
+}
+
+.kind-h3 {
+  font-size: 18px;
+}
+
+.kind-preview p {
+  margin: 0;
+}
+
+.kind-preview ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kind-preview li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* What saving would do to the documents already filed. Always there, so a
+   screen reader hears it change; drawn only when it has something to say. */
+.kind-warnings:not(:empty) {
+  background: var(--warn-soft);
+  border-left: 4px solid var(--warn);
+  border-radius: var(--radius-m);
+  padding: 12px 14px;
+}
+
+.kind-warnings p {
+  margin: 0;
+}
+
+.kind-warnings ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }

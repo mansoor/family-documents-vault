@@ -57,6 +57,14 @@ export interface CapabilityFeatures {
    * distributor (4.13). The same fact as `push`: the VAPID keys are set.
    */
   unified_push?: boolean;
+  /**
+   * The household keeps kinds of document of its own and changes the
+   * built-in ones (0.5.11): created, changed, hidden and archived through
+   * /document-types and /document-attributes by owners and adults, and
+   * offered to everybody who files documents, each under one of the twelve
+   * categories. Absent from older vaults, which have the built-ins only.
+   */
+  custom_types?: boolean;
 }
 
 export interface CapabilityLimits {

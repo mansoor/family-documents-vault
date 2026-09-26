@@ -1,4 +1,5 @@
 import {
+  can,
   CATEGORY_LABELS,
   checkCaptureMetadata,
   checkExtra,
@@ -27,7 +28,9 @@ import {
   type OfflineGrant,
   type OfflineItem,
   type ReminderView,
+  type Role,
   type Tokens,
+  type VersionView,
   type Visibility,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
@@ -78,6 +81,11 @@ export interface FakeVaultState {
   attributes: DocumentAttributeView[];
   /** What GET /members answers: the one person the fake signs in as, by default. */
   members: Array<{ id: string; display_name: string; role: string; is_me: boolean }>;
+  /**
+   * The role the fake signs everybody in as: an owner, unless a test says
+   * otherwise. A viewer is not told who added each version (0.5.11).
+   */
+  role: Role;
   /** Upload keys and what each made; a key is for one kind of request. */
   captures: Map<string, FakeUpload>;
   /** What GET /reminders answers, whatever the state asked for. */
@@ -231,33 +239,61 @@ const FAKE_ATTRIBUTES: DocumentAttributeView[] = [
 ];
 
 /**
- * The parts of a multipart body the fake cares about, in order: its fields
- * and whether each came before the file. Bytes are read as text, which is
- * enough for the details and a test's small PDF.
+ * One part of a multipart body: a field's value, or a file (value null)
+ * with its name, type and size as the fake can tell them.
  */
-function partsOf(body: unknown): Array<{ name: string; value: string | null }> | null {
+interface Part {
+  name: string;
+  value: string | null;
+  filename?: string;
+  type?: string;
+  size?: number;
+}
+
+/**
+ * The parts of a multipart body the fake cares about, in order: its fields
+ * and whether each came before the file, and the file's name, type and
+ * size. Bytes are read as text, which is enough for the details and a
+ * test's small PDF (a binary file's size is only near enough).
+ */
+function partsOf(body: unknown): Part[] | null {
   if (body instanceof Uint8Array) {
     const text = new TextDecoder().decode(body);
-    const out: Array<{ name: string; value: string | null }> = [];
+    const out: Part[] = [];
     const header =
-      /Content-Disposition: form-data; name="([^"]*)"(; filename="[^"]*")?[^]*?\r\n\r\n/g;
+      /Content-Disposition: form-data; name="([^"]*)"(; filename="([^"]*)")?([^]*?)\r\n\r\n/g;
     for (const m of text.matchAll(header)) {
-      if (m[2]) {
-        out.push({ name: m[1] as string, value: null });
-        continue;
-      }
       const start = (m.index ?? 0) + m[0].length;
       const end = text.indexOf('\r\n--', start);
+      if (m[2]) {
+        out.push({
+          name: m[1] as string,
+          value: null,
+          filename: m[3] as string,
+          type:
+            /Content-Type: ([^\r\n]+)/i.exec(m[4] ?? '')?.[1]?.trim() ?? 'application/octet-stream',
+          size: new TextEncoder().encode(text.slice(start, end)).length,
+        });
+        continue;
+      }
       out.push({ name: m[1] as string, value: text.slice(start, end) });
     }
     return out;
   }
   const entries = (body as { entries?: () => Iterable<[string, unknown]> } | null)?.entries;
   if (typeof entries === 'function') {
-    return [...entries.call(body)].map(([name, value]) => ({
-      name,
-      value: typeof value === 'string' ? value : null,
-    }));
+    return [...entries.call(body)].map(([name, value]) => {
+      if (typeof value === 'string') return { name, value };
+      // A platform File or Blob: what it says of itself.
+      const file = value as { name?: unknown; type?: unknown; size?: unknown } | null;
+      return {
+        name,
+        value: null,
+        filename: typeof file?.name === 'string' ? file.name : 'file',
+        type: typeof file?.type === 'string' && file.type ? file.type : 'application/octet-stream',
+        size: typeof file?.size === 'number' ? file.size : 0,
+      };
+    });
   }
   return null;
 }
@@ -266,6 +302,12 @@ interface FakeUpload {
   kind: 'capture' | 'version';
   document_id: string;
   version_id: string;
+  /** The version as GET /documents/{id}/versions lists it (0.5.11). */
+  version_no: number;
+  filename: string;
+  mime: string;
+  byte_size: number;
+  uploaded_at: string;
 }
 
 /** The fake's installation id, as a real vault reports its own. */
@@ -290,11 +332,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     types: FAKE_TYPES.map((t) => ({ ...t })),
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
+    role: 'owner',
     calls: [],
     offline: false,
   };
   let n = 0;
   const next = (prefix: string) => `${prefix}-${++n}`;
+  /** A document's versions: what each upload to it, or the capture that made it, stored. */
+  const versionsOf = (documentId: string) =>
+    [...state.captures.values()].filter((c) => c.document_id === documentId);
 
   // Kinds of document, managed (0.5.10): each kind's version, which every
   // change moves on, as its ETag says.
@@ -389,7 +435,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       refresh_expires_in: 2_592_000,
       household_id: 'fake-household',
       member_id: 'fake-member',
-      role: 'owner',
+      role: state.role,
       scopes_unlocked: ['household', 'adults', 'member'],
     };
   };
@@ -444,6 +490,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           issued_by: true,
           page_previews: true,
           offline_essentials: true,
+          // As the real vault (0.5.11): the household's own kinds of document.
+          custom_types: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -525,7 +573,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         account_id: 'fake-account',
         household_id: 'fake-household',
         member_id: 'fake-member',
-        role: 'owner',
+        role: state.role,
         totp_enabled: false,
         totp_required: true,
       });
@@ -696,12 +744,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         }
         return respond(201, answer(prior), { 'idempotent-replayed': 'true' });
       }
+      const parts = partsOf(init.body) ?? [];
       let documentId = target;
       if (documentId === undefined) {
         // The card's details come before the file, or not at all (0.4.9).
         let metadata: CaptureMetadata = {};
         let loose: Record<string, unknown> | null = null;
-        const parts = partsOf(init.body) ?? [];
         const file = parts.findIndex((p) => p.value === null);
         const meta = parts.findIndex((p) => p.name === 'metadata');
         if (meta > file && file >= 0) {
@@ -772,9 +820,53 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         state.documents.push(doc);
         documentId = doc.id;
       }
-      const made: FakeUpload = { kind, document_id: documentId, version_id: next('version') };
+      const file = parts.find((p) => p.value === null);
+      const made: FakeUpload = {
+        kind,
+        document_id: documentId,
+        version_id: next('version'),
+        version_no: versionsOf(documentId).length + 1,
+        filename: file?.filename ?? 'file',
+        mime: file?.type ?? 'application/octet-stream',
+        byte_size: file?.size ?? 0,
+        uploaded_at: new Date().toISOString(),
+      };
       state.captures.set(key.toLowerCase(), made);
       return ok(answer(made), 201);
+    }
+    // A document's history (0.5.11): its versions, newest first, and who
+    // added each — never to a viewer, who is not told what the family has
+    // been doing (on the activity log's terms, as the real vault).
+    if (uploadTo && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const id = decodeURIComponent(uploadTo[1] as string);
+      if (!state.documents.some((d) => d.id === id)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      const named = can(state.role, 'audit.read');
+      const me = state.members.find((m) => m.is_me);
+      const items: VersionView[] = versionsOf(id)
+        .sort((a, b) => b.version_no - a.version_no)
+        .map((v) => {
+          const drawn = state.pages.get(v.version_id);
+          return {
+            id: v.version_id,
+            document_id: v.document_id,
+            version_no: v.version_no,
+            filename: v.filename,
+            mime: v.mime,
+            byte_size: v.byte_size,
+            // Not worked out by the fake: a stand-in of the right shape.
+            sha256: '0'.repeat(64),
+            page_count: null,
+            ocr_status: 'pending',
+            uploaded_at: v.uploaded_at,
+            preview_pages: drawn === undefined ? null : drawn === 'unsupported' ? 0 : drawn,
+            uploaded_by_name: named ? (me?.display_name ?? null) : null,
+          };
+        });
+      return ok({ items });
     }
     if (path === '/api/v1/issuers' && init.method === 'GET') {
       const s = session();
@@ -1204,11 +1296,23 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           core: Object.fromEntries(
             CORE_FIELDS.map((f) => [f, count((d) => given((d as Record<string, unknown>)[f]))]),
           ) as DocumentTypeImpact['core'],
-          fields: t.fields.map((f) => ({
-            key: f.key,
-            label: f.label,
-            ...count((d) => given(d.extra?.[f.key])),
-          })),
+          fields: [
+            ...t.fields.map((f) => ({
+              key: f.key,
+              label: f.label,
+              ...count((d) => given(d.extra?.[f.key])),
+            })),
+            // Then every other field one of them keeps a value for, as the
+            // vault counts them (a field the kind dropped: 5.12).
+            ...[
+              ...new Set(
+                used.flatMap((d) => Object.keys(d.extra ?? {}).filter((k) => given(d.extra?.[k]))),
+              ),
+            ]
+              .filter((k) => !t.fields.some((f) => f.key === k))
+              .sort()
+              .map((key) => ({ key, label: null, ...count((d) => given(d.extra?.[key])) })),
+          ],
           reminders: state.reminders.filter(
             (r) =>
               r.kind === 'derived' &&

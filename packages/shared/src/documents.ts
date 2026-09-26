@@ -208,7 +208,7 @@ export interface DocumentAttributeInput {
 /** How many of a kind's documents have a value for one of its fields. */
 export interface FieldImpact {
   key: string;
-  /** The kind's name for it; null is the app's own word. */
+  /** The kind's name for it; null is the app's own word, or a field the kind does not ask for. */
   label: string | null;
   with_value: number;
   without_value: number;
@@ -229,7 +229,11 @@ export interface DocumentTypeImpact {
   in_trash: number;
   /** Each fixed field: how many of those documents have a value for it. */
   core: Record<CoreField, { with_value: number; without_value: number }>;
-  /** Each of its own fields, the same. */
+  /**
+   * Each of its own fields, the same; then every other field one of those
+   * documents keeps a value for (one the kind dropped: 5.12), `label` null.
+   * A field not listed, none of them has.
+   */
   fields: FieldImpact[];
   /** Reminders made from its lead times, not done yet, on those documents. */
   reminders: number;

@@ -1,5 +1,6 @@
 import {
   autoTitle,
+  can,
   effectiveVisibility,
   formatDate,
   issuedByLabel,
@@ -16,6 +17,7 @@ import {
   type IssuerSuggestions,
   type KnownIssuer,
   type RequiredValues,
+  type Role,
   type Visibility,
 } from '@fdv/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -70,6 +72,26 @@ function captureDetails(d: DocumentInput): CaptureMetadata {
 }
 
 /**
+ * Who can see a new document before anybody chooses: its kind's default
+ * (effectiveVisibility). A kind kept Only me by default is that only for
+ * the filer's own document: for somebody else's, or nobody's yet, the
+ * vault refuses it (PRIVATE_BY_DEFAULT), so the card starts at the
+ * narrowest left, Adults only, wherever the filer may choose it. Never
+ * wider: whichever of the kind and the person is chosen first (the 5.12
+ * review).
+ */
+function startingVisibility(
+  type: DocumentTypeView | undefined,
+  role: Role,
+  owner: string,
+  me: string | undefined,
+): Visibility {
+  const v = effectiveVisibility({}, type, role);
+  if (v !== 'private' || (owner !== '' && owner === me)) return v;
+  return can(role, 'document.see_adults') ? 'adults' : 'household';
+}
+
+/**
  * Add: the phone's camera or a file picker (CAP-01 arrives with the mobile
  * app; the web PWA uses the camera input). Choose the file, fill the card,
  * then Save — or Skip, and fill it later. Nothing leaves the browser until
@@ -91,7 +113,9 @@ export function AddScreen() {
     const [types, members] = await Promise.all([api.documentTypes(t), api.members(t)]);
     return { types: types.items, members: members.items };
   }, []);
-  const hintType = data?.types.find((x) => x.key === wanted)?.label ?? null;
+  // A kind hidden or archived is not offered for a new document, whatever
+  // the link says (the vault still lists one in use, marked hidden).
+  const hintType = data?.types.find((x) => x.key === wanted && !x.hidden)?.label ?? null;
   const hintMember = data?.members.find((m) => m.id === forMember)?.display_name ?? null;
 
   // The last try that failed: under which key, with what details, and —
@@ -186,10 +210,11 @@ export function AddScreen() {
   };
 
   if (file && data) {
-    const type = data.types.find((x) => x.key === wanted);
+    const type = data.types.find((x) => x.key === wanted && !x.hidden);
     const me = data.members.find((m) => m.is_me);
     const suggested = data.members.find((m) => m.id === forMember);
     const owner = me?.role === 'teen' ? me : (suggested ?? me);
+    const role = me?.role ?? 'owner';
     return (
       <ConfirmForm
         title="Is this right?"
@@ -207,7 +232,7 @@ export function AddScreen() {
           expires: '',
           identifier: '',
           location: '',
-          visibility: effectiveVisibility({}, type, me?.role ?? 'owner'),
+          visibility: startingVisibility(type, role, owner?.id ?? '', me?.id),
           notes: '',
           details: {},
         }}
@@ -318,7 +343,7 @@ export function ConfirmScreen() {
       </main>
     );
   const { doc, types, members } = data;
-  const suggestedType = types.find((t) => t.key === params.get('type'));
+  const suggestedType = types.find((t) => t.key === params.get('type') && !t.hidden);
   const suggestedOwner = members.find((m) => m.id === params.get('member'));
   /** A document as the card holds it: its dates as a person writes them ("June 2027"). */
   const cardFor = (d: DocumentView): CardValues => {
@@ -519,6 +544,9 @@ export function ConfirmForm(props: {
   const [identifier, setIdentifier] = useState(initial.identifier);
   const [location, setLocation] = useState(initial.location);
   const [visibility, setVisibility] = useState<Visibility>(initial.visibility);
+  // Until somebody chooses who can see a new one, it follows the kind and
+  // the person, as startingVisibility says.
+  const [visibilityChosen, setVisibilityChosen] = useState(false);
   const [notes, setNotes] = useState(initial.notes ?? '');
   // The type's own details, by field key. A key stays when the type
   // changes, so a field the next type shares keeps what was typed.
@@ -836,13 +864,17 @@ export function ConfirmForm(props: {
             // A new document takes the type's default; an existing one keeps
             // who can see it until somebody chooses otherwise.
             if (t && props.fileName) {
-              const next = effectiveVisibility({}, t, myRole);
-              setVisibility(next === 'private' && owner !== me?.id ? 'household' : next);
+              setVisibility(startingVisibility(t, myRole, owner, me?.id));
+              setVisibilityChosen(false);
             }
           }}
           options={[
             { value: '', label: 'Not sure yet' },
-            ...types.map((t) => ({ value: t.key, label: t.label })),
+            // A kind hidden or archived is not offered for a new document;
+            // one already filed under it keeps it (the 5.12 review).
+            ...types
+              .filter((t) => !t.hidden || t.key === base.typeKey || t.key === typeKey)
+              .map((t) => ({ value: t.key, label: t.label })),
           ]}
         />
         <Field
@@ -863,8 +895,11 @@ export function ConfirmForm(props: {
           onChange={(v) => {
             setOwner(v);
             retitle({ who: members.find((m) => m.id === v) ?? null });
-            // Only me is for your own documents.
-            if (visibility === 'private' && v !== me?.id) {
+            if (type && props.fileName && !visibilityChosen) {
+              // Nobody has chosen yet: the kind's default, for this person.
+              setVisibility(startingVisibility(type, myRole, v, me?.id));
+            } else if (visibility === 'private' && v !== me?.id) {
+              // Only me is for your own documents.
               setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
             }
           }}
@@ -1009,7 +1044,10 @@ export function ConfirmForm(props: {
                   (v === 'adults' && !adultsOnlyAllowed) ||
                   (visibilityLocked && v !== visibility)
                 }
-                onClick={() => setVisibility(v)}
+                onClick={() => {
+                  setVisibility(v);
+                  setVisibilityChosen(true);
+                }}
               >
                 {label}
               </button>
