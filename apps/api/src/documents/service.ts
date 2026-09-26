@@ -723,16 +723,12 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
-      // Details are checked against what the document holds (16 KB at
-      // most): two edits at once must not each pass against the same old
-      // copy and add up past it, so the row is held while this one runs.
-      let current = await this.fetch(trx, p, id, false, input.extra !== undefined);
-      // An Only me document's notes and details are opened, merged and
-      // sealed again here rather than in SQL (0.5.8): its row is held for
-      // any edit, so two at once cannot each put back what the other took.
-      if (current.visibility === 'private' && input.extra === undefined) {
-        current = await this.fetch(trx, p, id, false, true);
-      }
+      // The row is held for every edit, and read as it is once held (5.9
+      // review): details are checked against what it holds (16 KB at most);
+      // an Only me document's notes and details are opened, merged and
+      // sealed again here; and an edit that raced a move to Only me sees
+      // the move — and seals — instead of writing plain text into it.
+      const current = await this.fetch(trx, p, id, false, true);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
           409,
@@ -759,7 +755,7 @@ export class DocumentService {
         // anything the private.seal job has not reached yet.
         Object.assign(
           values,
-          await this.sealFor(trx, p.householdId, id, current.owner_member_id, {
+          await this.sealFor(trx, p.householdId, current.id, current.owner_member_id, {
             notes: 'notes' in values ? (values.notes as string | null) : open.notes,
             extra: 'extra' in values ? extraOf(values.extra) : open.extra,
           }),

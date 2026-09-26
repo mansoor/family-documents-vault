@@ -51,3 +51,27 @@ alter table document add column search_tsv tsvector
                    else ''::tsvector end, 'C')
   ) stored;
 create index document_search_idx on document using gin (search_tsv);
+
+-- The last wall: nobody who asks through the API writes an Only me
+-- document's notes or details in plain text. The API seals them; an edit
+-- that raced a move to Only me, or a path somebody forgets, is refused here
+-- rather than kept, and in every backup. A value an older release left is
+-- not a new write, so an edit of something else still goes through. The
+-- vault itself (system: the worker, whose private.seal only ever empties
+-- them) and the owning role's own maintenance (no actor) are not held to it.
+create function document_private_plain() returns trigger
+  language plpgsql set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if app_actor() is not null and app_actor() <> 'system' and new.visibility = 'private' and (
+       (new.notes is not null
+          and (tg_op = 'INSERT' or new.notes is distinct from old.notes))
+    or (new.extra is not null and new.extra <> '{}'::jsonb
+          and (tg_op = 'INSERT' or new.extra is distinct from old.extra))) then
+    raise exception 'an Only me document''s notes and details are kept sealed'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end $$;
+
+create trigger document_private_plain before insert or update on document
+  for each row execute function document_private_plain();

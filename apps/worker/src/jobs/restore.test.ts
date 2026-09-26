@@ -952,7 +952,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       );
       await expect(
         restoreBackup(olderFile, KEY, into(await empty()), quiet, wrongKeys),
-      ).rejects.toThrow(/could not be sealed: is this the master key/);
+      ).rejects.toThrow(/could not be sealed \(.+\); each is in the log/);
 
       const t = await empty();
       const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);

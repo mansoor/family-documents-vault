@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EnvKeyProvider, openPrivate, ScopeKeys } from '@fdv/crypto';
-import { createPool, withSystem } from '@fdv/db';
+import { createPool, withPrincipal, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -308,5 +308,101 @@ describe.skipIf(!testAdminUrl())("an Only me document's notes and details", () =
       has_notes: true,
       extra: { vin: VIN, plate: PLATE },
     });
+  });
+
+  it('an edit that raced a move to Only me is sealed with it, never kept plain', async () => {
+    const doc = await made({ title: 'Garage codes', notes: 'Family note' });
+    const admin = createPool(h.adminUrl, 2);
+    const holder = await admin.connect();
+    /** Until n requests are waiting on the row. */
+    const waiting = async (n: number) => {
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await admin.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'`,
+        );
+        if ((rows[0]?.n ?? 0) >= n) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error(`${n} requests never waited on the row`);
+    };
+    try {
+      await holder.query('begin');
+      await holder.query('select id from document where id = $1 for update', [doc.id]);
+      // The owner makes it Only me, and Sana edits its note, at once.
+      const moved = send(owner, 'POST', `/api/v1/documents/${doc.id}/visibility`, {
+        visibility: 'private',
+      });
+      await waiting(1);
+      const edited = send(other, 'PATCH', `/api/v1/documents/${doc.id}`, {
+        notes: 'Sana wrote this',
+      });
+      await waiting(2);
+      await holder.query('commit');
+      expect((await moved).statusCode).toBe(200);
+      // Held until the move was in, Sana's edit finds an Only me document
+      // that is not hers: not there, as everywhere else.
+      expect((await edited).statusCode).toBe(404);
+    } finally {
+      holder.release();
+      await admin.end();
+    }
+    const row = await stored(doc.id);
+    expect(row.notes).toBeNull();
+    expect(row.open().notes).toBe('Family note');
+  });
+
+  it('a move to Only me by an id in capitals seals for the id as it is kept', async () => {
+    const doc = await made({ title: 'Loft key', notes: 'Under the eaves' });
+    const moved = await send(
+      owner,
+      'POST',
+      `/api/v1/documents/${doc.id.toUpperCase()}/visibility`,
+      { visibility: 'private' },
+    );
+    expect(moved.statusCode, moved.body).toBe(200);
+    const own = await get(owner, `/api/v1/documents/${doc.id}`);
+    expect(own.statusCode, own.body).toBe(200);
+    expect(own.json<DocumentView>().notes).toBe('Under the eaves');
+    const back = await send(owner, 'POST', `/api/v1/documents/${doc.id}/visibility`, {
+      visibility: 'household',
+    });
+    expect(back.statusCode, back.body).toBe(200);
+  });
+
+  it('the database refuses an Only me note or detail written in plain text', async () => {
+    const doc = await made({
+      title: 'Safe combination',
+      visibility: 'private',
+      notes: 'sealed on write',
+    });
+    // Written by somebody signed in — the owner, even — past the API's sealing.
+    const accountId = await withSystem(h.db, owner.household_id, async (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', owner.member_id)
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.account_id);
+    const asOwner = {
+      householdId: owner.household_id,
+      accountId,
+      memberId: owner.member_id,
+      role: 'owner' as const,
+    };
+    for (const plain of [{ notes: 'in plain text' }, { extra: JSON.stringify({ vin: 'PLAIN' }) }]) {
+      await expect(
+        withPrincipal(h.db, asOwner, (trx) =>
+          trx.updateTable('document').set(plain).where('id', '=', doc.id).execute(),
+        ),
+      ).rejects.toThrow(/kept sealed/);
+    }
+    // The vault's own edits seal, and go through.
+    const renamed = await send(owner, 'PATCH', `/api/v1/documents/${doc.id}`, {
+      title: 'Safe',
+      notes: 'still sealed',
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect((await stored(doc.id)).notes).toBeNull();
   });
 });

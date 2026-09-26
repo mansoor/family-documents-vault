@@ -72,6 +72,10 @@ export class VisibilityService {
       if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
         throw new ApiError(404, 'not_found', 'That document is not in the vault.');
       }
+      // Sealed and wrapped for the id as the database writes it: the one in
+      // the address may be in capitals, or without its hyphens, and every
+      // reader opens by the row's own (5.9 review).
+      documentId = doc.id;
       // Only the owning member may see a private document, so only they may
       // move one in or out of private.
       if (

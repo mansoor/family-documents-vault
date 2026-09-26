@@ -34,7 +34,7 @@ export interface SealDeps {
 
 export async function sealPrivateValues(
   deps: SealDeps,
-): Promise<{ sealed: number; failed: number }> {
+): Promise<{ sealed: number; failed: number; firstError?: string }> {
   // In the bin too: it is in every backup as much as the rest.
   const { rows } = await deps.admin.query<{ household_id: string; id: string }>(
     `select household_id, id from document
@@ -43,6 +43,7 @@ export async function sealPrivateValues(
   );
   let sealed = 0;
   let failed = 0;
+  let firstError: string | undefined;
   for (const r of rows) {
     try {
       const done = await withSystem(deps.app, r.household_id, (trx) =>
@@ -51,6 +52,7 @@ export async function sealPrivateValues(
       if (done) sealed += 1;
     } catch (err) {
       failed += 1;
+      firstError ??= (err as Error).message;
       deps.log('error', "an Only me document's notes and details could not be sealed", {
         household_id: r.household_id,
         document_id: r.id,
@@ -58,7 +60,7 @@ export async function sealPrivateValues(
       });
     }
   }
-  return { sealed, failed };
+  return { sealed, failed, ...(firstError !== undefined ? { firstError } : {}) };
 }
 
 /** One document, in its own transaction. False when there was nothing to do by then. */

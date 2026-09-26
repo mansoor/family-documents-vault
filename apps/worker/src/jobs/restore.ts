@@ -115,8 +115,10 @@ async function sealRestored(
     const r = await sealPrivateValues({ admin, app, keys, log });
     if (r.sealed) log('info', 'Only me notes and details sealed', r);
     if (r.failed) {
+      // What went wrong, as it went wrong: a connection or a password is as
+      // likely as a key (5.9 review), and each document's is in the log.
       throw new Error(
-        `${r.failed} Only me document${r.failed === 1 ? "'s" : "s'"} notes and details could not be sealed: is this the master key the backup was made with?`,
+        `${r.failed} Only me document${r.failed === 1 ? "'s" : "s'"} notes and details could not be sealed (${r.firstError ?? 'no reason given'}); each is in the log`,
       );
     }
   } finally {

@@ -171,7 +171,12 @@ describe.skipIf(!testAdminUrl())('the private.seal job', () => {
       keys,
       log: (level, msg, extra) => log.push({ level, msg, ...extra }),
     });
-    expect(r).toEqual({ sealed: 4, failed: 1 });
+    // What went wrong comes back too, for a restore to say (5.9 review).
+    expect(r).toEqual({
+      sealed: 4,
+      failed: 1,
+      firstError: 'cannot unwrap key: wrong wrapping key or binding',
+    });
     // A transaction of its own for each of the five, all in their household.
     expect(opened).toEqual([hh, hh, hh, hh, hh]);
     expect(log).toMatchObject([{ level: 'error', document_id: ids.rahuls }]);
