@@ -101,12 +101,24 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
 
   it("the settings end with the transaction; the pooled connection's next user sees none", async () => {
     for (const [actor, said] of cases) {
-      const inside = await withScope(db, { householdId: hh, actor }, (trx) => settings(trx));
+      // The vault itself is only ever withSystem; every other caller withScope.
+      const inside =
+        actor.kind === 'system'
+          ? await withSystem(db, hh, (trx) => settings(trx))
+          : await withScope(db, { householdId: hh, actor }, (trx) => settings(trx));
       expect(none(inside), actor.kind).toEqual({ ...blank, 'app.household_id': hh, ...said });
 
       // Same pool, one connection, next borrower: nothing is left.
       expect(none(await settings(db)), actor.kind).toEqual(blank);
     }
+  });
+
+  it('only withSystem acts as the vault: withScope refuses a system actor', () => {
+    // A type test: it fails the typecheck if withScope ever takes 'system'.
+    const refused = () =>
+      // @ts-expect-error — system is withSystem's alone (5.5 review)
+      withScope(db, { householdId: hh, actor: { kind: 'system' } }, (trx) => settings(trx));
+    expect(typeof refused).toBe('function');
   });
 
   it('withPrincipal is the account, and withSystem the vault itself', async () => {

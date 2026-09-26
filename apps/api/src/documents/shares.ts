@@ -1,7 +1,15 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { unwrapKey, type ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withPrincipal, withScope, withSystem, type Db, type Scope } from '@fdv/db';
+import {
+  appendAudit,
+  withPrincipal,
+  withScope,
+  withSystem,
+  type Actor,
+  type Db,
+  type Scope,
+} from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -95,8 +103,8 @@ export interface SharedDocument {
 
 const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').digest();
 
-/** A transaction asked for by whoever holds one link, in its household. */
-type LinkScope = Scope & { householdId: string };
+/** A transaction asked for by whoever holds one link, in its household: never anybody else. */
+type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
 
 const gone = () =>
   new ApiError(
@@ -302,6 +310,10 @@ export class ShareService {
         .selectFrom('share_link')
         .select('id')
         .where('token_hash', '=', hashToken(token))
+        // Only a live link becomes somebody to ask as: a revoked or expired
+        // one is gone before it is anyone (live() still checks the rest).
+        .where('revoked_at', 'is', null)
+        .where('expires_at', '>', new Date())
         .executeTakeFirst(),
     );
     if (!found) throw gone();

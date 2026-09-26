@@ -565,8 +565,15 @@ export type Actor =
   | { kind: 'upload'; requestId: string }
   | { kind: 'anonymous' };
 
+/**
+ * Anybody but the vault itself. Only `withSystem` acts as the vault, so the
+ * calls that do can be counted (5.6's allow-list) and none slips through
+ * `withScope` (5.5 review).
+ */
+export type CallerActor = Exclude<Actor, { kind: 'system' }>;
+
 /** A caller not yet known. */
-export const ANONYMOUS: Actor = Object.freeze({ kind: 'anonymous' });
+export const ANONYMOUS: CallerActor = Object.freeze({ kind: 'anonymous' });
 
 /**
  * The tenant context for a transaction. Row-level-security policies read
@@ -580,7 +587,7 @@ export const ANONYMOUS: Actor = Object.freeze({ kind: 'anonymous' });
 export interface Scope {
   householdId?: string;
   accountId?: string;
-  actor: Actor;
+  actor: CallerActor;
 }
 
 /** What the database is told about somebody signed in. */
@@ -599,7 +606,16 @@ export interface ScopePrincipal {
  * Every setting is written, empty when it does not apply: a value somebody
  * set on the connection itself cannot show through.
  */
-export async function withScope<T>(db: Db, scope: Scope, fn: (trx: Db) => Promise<T>): Promise<T> {
+export function withScope<T>(db: Db, scope: Scope, fn: (trx: Db) => Promise<T>): Promise<T> {
+  return inScope(db, scope, fn);
+}
+
+/** The one place any actor, the vault included, reaches the settings. */
+async function inScope<T>(
+  db: Db,
+  scope: { householdId?: string; accountId?: string; actor: Actor },
+  fn: (trx: Db) => Promise<T>,
+): Promise<T> {
   const { actor } = scope;
   const account = actor.kind === 'account' ? actor : null;
   return db.transaction().execute(async (trx) => {
@@ -636,5 +652,5 @@ export function withSystem<T>(
   householdId: string,
   fn: (trx: Db) => Promise<T>,
 ): Promise<T> {
-  return withScope(db, { householdId, actor: { kind: 'system' } }, fn);
+  return inScope(db, { householdId, actor: { kind: 'system' } }, fn);
 }
