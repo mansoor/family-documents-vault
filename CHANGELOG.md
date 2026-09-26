@@ -6,6 +6,19 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-09-26 — iteration 5.13 (server side) and 5.14
+
+Lists of documents, on the server: the screens come next.
+
+### Added
+
+- Lists of documents — "For the accountant", "The house" — each for everyone in the family, for teens and up, for the adults, or for its maker alone. A list shows each reader only the documents they may see, and counts only those; a list outside someone's reach does not exist for them, name and all. Someone who can only view sees no lists yet.
+- Only a list's maker changes it. A maker who is moved to another role, or loses their sign-in, still sees and can delete what they made; an owner can delete a list nobody can change any more, but never reads more of it.
+
+### Security
+
+- The database itself keeps a list that is for its maker alone invisible to everyone else, and keeps a list's items from anybody the list is not for.
+
 ## [0.5.11] - 2026-09-26 — iteration 5.12
 
 ### Added
