@@ -348,6 +348,41 @@ begin
 end $guard$;`;
 }
 
+/** The triggers the vault relies on: each by name, table and function. */
+const GUARDS = [
+  { name: 'audit_event_no_update', table: 'audit_event', fn: 'audit_event_immutable' },
+  { name: 'owner_floor', table: 'account_household', fn: 'assert_owner_remains' },
+  { name: 'share_link_link_writes', table: 'share_link', fn: 'share_link_link_writes' },
+];
+
+/**
+ * Callers who are given nothing in the tables below, and how the check
+ * names them: nobody said, a signed-out page, an upload link, and a share
+ * link that is not one of the household's.
+ */
+const GIVEN_NOTHING: [actor: string, who: string][] = [
+  ['', 'a caller who says nothing'],
+  ['anonymous', 'a signed-out page'],
+  ['upload', 'an upload link'],
+  ['link', 'a share link it never made'],
+];
+
+/** The tables 0030 gives a rule for each kind of caller. */
+const ACTOR_GUARDED = [
+  'document',
+  'document_version',
+  'document_text',
+  'document_text_sealed',
+  'reminder',
+  'reminder_delivery',
+  'share_link',
+  'document_link',
+  'offline_fill',
+  'private_notice',
+  'upload_idempotency',
+  'export',
+];
+
 /**
  * The restored vault, seen the way the vault will see it: as the
  * application role, one household at a time.
@@ -380,16 +415,41 @@ export async function checkRestored(
     if (t.unprotected.length) {
       throw new Error(`row-level security is off on ${t.unprotected.join(', ')}`);
     }
-    // The database's own guards: the audit log refuses changes, and a
-    // household always keeps an owner.
+    // The database's own guards: the audit log refuses changes, a
+    // household always keeps an owner, and a link only counts on its share.
+    // Each on its own table, calling its own function, and firing for the
+    // vault's sessions ('O' or 'A': not only on a replica, not disabled).
     const { rows: guards } = await admin.query<{ tgname: string }>(
-      `select tgname from pg_trigger
-        where not tgisinternal and tgenabled <> 'D'
-          and tgname in ('audit_event_no_update', 'owner_floor')`,
+      `select t.tgname
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_proc f on f.oid = t.tgfoid
+         join unnest($1::text[], $2::text[], $3::text[]) as g(name, tbl, fn)
+           on g.name = t.tgname and g.tbl = c.relname and g.fn = f.proname
+        where not t.tgisinternal and t.tgenabled in ('O', 'A')`,
+      [GUARDS.map((g) => g.name), GUARDS.map((g) => g.table), GUARDS.map((g) => g.fn)],
     );
-    if (guards.length !== 2) {
+    if (guards.length !== GUARDS.length) {
       throw new Error(
         `a guard the vault relies on is missing (found: ${guards.map((g) => g.tgname).join(', ') || 'none'})`,
+      );
+    }
+    // And the second wall (0030): a rule for each kind of caller on the
+    // document, all that hangs off it, and exports — one that governs what
+    // is read, and asks who is asking. (What each rule then gives is tried
+    // below, household by household.)
+    const { rows: unguarded } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%')`,
+      [ACTOR_GUARDED],
+    );
+    if (unguarded.length) {
+      throw new Error(
+        `no rule for each kind of caller on ${unguarded.map((u) => u.name).join(', ')}`,
       );
     }
 
@@ -434,14 +494,19 @@ export async function checkRestored(
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
 
     // Outside withScope, so it says for itself what withSystem would: this
-    // household, asked by the vault itself.
-    const asHousehold = async <T>(household: string, sql: string): Promise<T[]> => {
+    // household, asked by the vault itself. Since 0030 a transaction that
+    // does not say who is asking is given no documents.
+    const asHousehold = async <T>(
+      household: string,
+      sql: string,
+      actor = 'system',
+    ): Promise<T[]> => {
       const client = await app.connect();
       try {
         await client.query('begin');
         await client.query(
-          `select set_config('app.household_id', $1, true), set_config('app.actor', 'system', true)`,
-          [household],
+          `select set_config('app.household_id', $1, true), set_config('app.actor', $2, true)`,
+          [household, actor],
         );
         const { rows } = await client.query<T & object>(sql);
         await client.query('commit');
@@ -479,6 +544,23 @@ export async function checkRestored(
           `household ${h.id}: the vault would see ${got.members} people and ${got.documents} ` +
             `documents, but the backup has ${h.members} and ${h.documents}`,
         );
+      }
+      // And the rules for each kind of caller (0030) came back doing what
+      // they did: nobody who is not signed in or the vault itself is given
+      // a row of these tables. (A link here names no share, so it is one
+      // the household never made.)
+      for (const [actor, who] of GIVEN_NOTHING) {
+        const given = await asHousehold<{ t: string; n: number }>(
+          h.id,
+          ACTOR_GUARDED.map((t) => `select '${t}' as t, count(*)::int as n from ${t}`).join(
+            ' union all ',
+          ),
+          actor,
+        );
+        const where = given.filter((g) => g.n > 0).map((g) => g.t);
+        if (where.length) {
+          throw new Error(`household ${h.id}: ${who} is given its documents (${where.join(', ')})`);
+        }
       }
     }
     return {
