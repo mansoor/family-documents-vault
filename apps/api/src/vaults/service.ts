@@ -1,4 +1,4 @@
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   adapterFromRow,
   LocalAdapter,
@@ -82,7 +82,7 @@ export class VaultService {
   }
 
   async list(p: Principal): Promise<VaultView[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const hh = await trx
         .selectFrom('household')
         .select('active_vault_id')
@@ -102,7 +102,7 @@ export class VaultService {
     if (input.provider !== 'aws' && (!endpoint || /\{/.test(endpoint))) {
       throw new ApiError(422, 'validation_failed', 'Enter the address of your storage provider.');
     }
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .insertInto('vault')
         .values({
@@ -143,7 +143,7 @@ export class VaultService {
 
   async test(p: Principal, vaultId: string): Promise<TestResult> {
     ownerOnly(p);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await this.row(trx, vaultId);
       const result = await this.adapter(row).test();
       await trx
@@ -162,7 +162,7 @@ export class VaultService {
   /** STO-03: no activation without a passing test. */
   async activate(p: Principal, vaultId: string, meta: RequestMeta): Promise<void> {
     ownerOnly(p);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const row = await this.row(trx, vaultId);
       if (row.status !== 'ok') {
         throw new ApiError(
@@ -189,7 +189,7 @@ export class VaultService {
 
   async remove(p: Principal, vaultId: string, meta: RequestMeta): Promise<void> {
     ownerOnly(p);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const hh = await trx
         .selectFrom('household')
         .select('active_vault_id')

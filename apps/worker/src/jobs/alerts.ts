@@ -1,5 +1,5 @@
 import type https from 'node:https';
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import nodemailer from 'nodemailer';
 import { liveDevice, openPassword, type VapidKeys } from './notify.js';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
@@ -89,7 +89,7 @@ export async function sendAlert(deps: AlertDeps, alert: Alert): Promise<string[]
 
 async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
   if (!deps.vapid) return 0;
-  const devices = await withHousehold(deps.app, alert.household_id, (trx) =>
+  const devices = await withSystem(deps.app, alert.household_id, (trx) =>
     trx
       .selectFrom('device')
       .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
@@ -135,7 +135,7 @@ async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
 }
 
 async function emailAlert(deps: AlertDeps, alert: Alert): Promise<number> {
-  const ctx = await withHousehold(deps.app, alert.household_id, async (trx) => {
+  const ctx = await withSystem(deps.app, alert.household_id, async (trx) => {
     const smtp = await trx
       .selectFrom('smtp_settings')
       .selectAll()
@@ -195,7 +195,7 @@ async function operatorEmail(deps: AlertDeps, alert: Alert): Promise<number> {
     });
     return 0;
   }
-  const recipients = await withHousehold(deps.app, alert.household_id, (trx) =>
+  const recipients = await withSystem(deps.app, alert.household_id, (trx) =>
     trx
       .selectFrom('account')
       .select(['email'])

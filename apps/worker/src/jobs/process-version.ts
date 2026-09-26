@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
-import { withHousehold, type Db } from '@fdv/db';
+import { withSystem, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
 import type { SendPreviews } from './previews.js';
 import {
@@ -59,7 +59,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
   const { household_id: hh, version_id } = job;
   const tools = await detectTools();
 
-  const ctx = await withHousehold(deps.db, hh, async (trx) => {
+  const ctx = await withSystem(deps.db, hh, async (trx) => {
     const version = await trx
       .selectFrom('document_version')
       .selectAll()
@@ -155,7 +155,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     }
 
     update.process_error = errors.length ? errors.join('; ') : null;
-    await withHousehold(deps.db, hh, (trx) =>
+    await withSystem(deps.db, hh, (trx) =>
       trx
         .updateTable('document_version')
         .set({ ...update, processed_at: new Date() })
@@ -164,7 +164,7 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     );
     if (doc.is_essential && drawable(version.mime) && deps.sendPreviews) {
       // Only one not yet asked for: the queue holds one job per version anyway.
-      const marked = await withHousehold(deps.db, hh, (trx) =>
+      const marked = await withSystem(deps.db, hh, (trx) =>
         trx
           .updateTable('document_version')
           .set({ preview_state: 'queued', preview_requested_at: new Date() })
@@ -209,7 +209,7 @@ async function storeText(
   scopeKey: Buffer,
   content: string,
 ) {
-  await withHousehold(db, hh, async (trx) => {
+  await withSystem(db, hh, async (trx) => {
     await trx.deleteFrom('document_text').where('version_id', '=', versionId).execute();
     await trx.deleteFrom('document_text_sealed').where('version_id', '=', versionId).execute();
     if (doc.visibility === 'private') {

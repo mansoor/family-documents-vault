@@ -1,4 +1,4 @@
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { can, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -72,7 +72,7 @@ export class CoOwnerService {
     meta: RequestMeta,
   ): Promise<RoleChangeResult> {
     requireCapability(p, 'role.change');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
         // Changing your own role is either meaningless or a way round the
@@ -147,7 +147,7 @@ export class CoOwnerService {
     if (to === 'owner') {
       throw new ApiError(422, 'validation_failed', 'Choose what you want to become instead.');
     }
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       await trx
         .updateTable('account_household')
         .set({ role: to })
@@ -188,7 +188,7 @@ export class CoOwnerService {
   async removeSignIn(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'member.remove');
     let removedPhones: PushTarget[] = [];
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
         throw new ApiError(
@@ -261,7 +261,7 @@ export class CoOwnerService {
     meta: RequestMeta,
   ): Promise<{ message: string }> {
     requireCapability(p, 'member.remove');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const member = await trx
         .selectFrom('member')
         .leftJoin('account', 'account.id', 'member.former_account_id')
@@ -341,7 +341,7 @@ export class CoOwnerService {
   // ------------------------------------------------------------- requests
 
   async list(p: Principal): Promise<OwnerChangeView[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await this.rows(trx);
       return rows.map((r) => this.view(r, p));
     });
@@ -349,7 +349,7 @@ export class CoOwnerService {
 
   /** The person a demotion is about says no, and that is the end of it. */
   async refuse(p: Principal, id: string, meta: RequestMeta): Promise<OwnerChangeView> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
       if (row.target_account !== p.accountId) {
@@ -393,7 +393,7 @@ export class CoOwnerService {
   /** Any owner may withdraw a request they no longer want. */
   async withdraw(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'role.change');
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
       if (row.completed_at || row.refused_at || row.withdrawn_at) {
@@ -429,7 +429,7 @@ export class CoOwnerService {
    */
   async complete(p: Principal, id: string, meta: RequestMeta): Promise<RoleChangeResult> {
     requireCapability(p, 'role.change');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
       if (row.completed_at || row.refused_at || row.withdrawn_at) {

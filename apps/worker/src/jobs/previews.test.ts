@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { crc32, deflateSync } from 'node:zlib';
 import { deriveKey, EncryptStream, EnvKeyProvider, newKey, ScopeKeys, wrapKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
@@ -151,7 +151,7 @@ describe.skipIf(!ready)('page previews', () => {
       [hh],
     );
     memberId = m.rows[0]?.id as string;
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       await keys.mintHouseholdKeys(trx, hh);
       await keys.mintMemberKey(trx, hh, memberId, null);
       const v = await trx
@@ -175,7 +175,7 @@ describe.skipIf(!ready)('page previews', () => {
   });
 
   async function store(plain: Buffer, mime: string, essential: boolean) {
-    return withHousehold(db, hh, async (trx) => {
+    return withSystem(db, hh, async (trx) => {
       const doc = await trx
         .insertInto('document')
         .values({
@@ -234,7 +234,7 @@ describe.skipIf(!ready)('page previews', () => {
   });
   const sentFor = (versionId: string) => sent.filter((s) => s.job.version_id === versionId);
   const row = (id: string) =>
-    withHousehold(db, hh, (trx) =>
+    withSystem(db, hh, (trx) =>
       trx
         .selectFrom('document_version')
         .select(['preview_state', 'preview_pages', 'process_error'])

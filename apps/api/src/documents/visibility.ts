@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { openChunk, sealChunk, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db, type Visibility } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
@@ -38,7 +38,7 @@ export class VisibilityService {
     meta: RequestMeta,
   ): Promise<{ notice: { title: string; body: string } | null }> {
     requireCapability(p, 'document.visibility');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       // Locked before its versions are read: an upload committing a new
       // version holds the same lock, so every version is rewrapped, the new
       // one included (documents/service.ts accept()).

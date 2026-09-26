@@ -1,7 +1,7 @@
 import { createCipheriv, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { isLoopbackName, isPrivateAddress, pushAddressProblem } from '@fdv/shared';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
@@ -206,7 +206,7 @@ export class NotificationService {
     }
     await this.checkAddress(input.endpoint);
     const installation = meta.installationId ?? null;
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       // A phone signing in again brings a new address: its old one goes.
       if (installation && input.kind === 'unified_push') {
         await trx
@@ -268,7 +268,7 @@ export class NotificationService {
   }
 
   async removeDevice(p: Principal, endpoint: string): Promise<void> {
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       trx
         .deleteFrom('device')
         .where('endpoint', '=', endpoint)
@@ -278,7 +278,7 @@ export class NotificationService {
   }
 
   async devices(p: Principal) {
-    return withScope(this.db, { householdId: p.householdId }, (trx) =>
+    return withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('device')
         .select([
@@ -315,7 +315,7 @@ export class NotificationService {
 
   /** A test push, to one of your own devices only (4.13). */
   async testDevice(p: Principal, id: string): Promise<void> {
-    const device = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const device = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('device')
         .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
@@ -356,7 +356,7 @@ export class NotificationService {
   }
 
   async preferences(p: Principal) {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('notification_preference')
         .selectAll()
@@ -371,7 +371,7 @@ export class NotificationService {
   }
 
   async updatePreferences(p: Principal, input: z.infer<typeof preferenceBody>) {
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       trx
         .insertInto('notification_preference')
         .values({ account_id: p.accountId, household_id: p.householdId, ...input })
@@ -382,7 +382,7 @@ export class NotificationService {
   }
 
   async smtp(p: Principal): Promise<SmtpView> {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('smtp_settings')
         .selectAll()
@@ -430,7 +430,7 @@ export class NotificationService {
     meta: RequestMeta,
   ): Promise<SmtpView> {
     ownerOnly(p);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const values = {
         household_id: p.householdId,
         provider: input.provider ?? null,
@@ -492,7 +492,7 @@ export class NotificationService {
    */
   async testSmtp(p: Principal, meta: RequestMeta): Promise<TestOutcome> {
     ownerOnly(p);
-    const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const ctx = await withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('smtp_settings')
         .selectAll()
@@ -547,7 +547,7 @@ export class NotificationService {
       transport.close();
     }
 
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       await trx
         .updateTable('smtp_settings')
         .set({

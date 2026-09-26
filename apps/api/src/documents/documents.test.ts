@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, VersionView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -152,7 +152,7 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     expect(v.sha256).toBe(createHash('sha256').update(body).digest('hex'));
 
     // The stored object is ciphertext under the boring key layout.
-    const row = await withHousehold(h.db, owner.household_id, (trx) =>
+    const row = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('document_version')
         .selectAll()
@@ -381,7 +381,7 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
 
   it('private documents belong to their member only, enforced in the query', async () => {
     // A second member (no sign-in) and a document private to them.
-    const other = await withHousehold(h.db, owner.household_id, (trx) =>
+    const other = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .insertInto('member')
         .values({ household_id: owner.household_id, display_name: 'Sana' })
@@ -436,11 +436,11 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
 
   it('wrote a clean audit chain including downloads', async () => {
     const { verifyAuditChain } = await import('@fdv/db');
-    const r = await withHousehold(h.db, owner.household_id, (trx) =>
+    const r = await withSystem(h.db, owner.household_id, (trx) =>
       verifyAuditChain(trx, owner.household_id),
     );
     expect(r.ok).toBe(true);
-    const actions = await withHousehold(h.db, owner.household_id, (trx) =>
+    const actions = await withSystem(h.db, owner.household_id, (trx) =>
       trx.selectFrom('audit_event').select('action').execute(),
     );
     const set = new Set(actions.map((a) => a.action));

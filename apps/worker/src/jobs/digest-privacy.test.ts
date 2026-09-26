@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import webpush from 'web-push';
@@ -125,7 +125,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
       [TITLES.ownerPrivate, 'private', people.owner.member],
       [TITLES.adultPrivate, 'private', people.adult.member],
     ];
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       for (const [title, visibility, owner] of docs) {
         const d = await trx
           .insertInto('document')
@@ -285,7 +285,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
   });
 
   it('the ledger records a private reminder as reaching the one person who may read it', async () => {
-    const ledger = await withHousehold(db, hh, (trx) =>
+    const ledger = await withSystem(db, hh, (trx) =>
       trx.selectFrom('reminder_delivery').select(['reminder_id', 'channel']).execute(),
     );
     const channels = (title: string) =>
@@ -364,7 +364,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
 
   it('somebody who may see none of it is sent nothing at all', async () => {
     // Only private documents belonging to the owner are due today.
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       const d = await trx
         .insertInto('document')
         .values({
@@ -418,7 +418,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
     owner: string,
     fireAt: string,
   ) =>
-    withHousehold(db, hh, async (trx) => {
+    withSystem(db, hh, async (trx) => {
       const d = await trx
         .insertInto('document')
         .values({ household_id: hh, title, visibility, owner_member_id: owner })
@@ -454,7 +454,7 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
       now: () => new Date('2026-09-25T09:10:00Z'),
       digestHour: 9,
     });
-    const ledger = await withHousehold(db, hh, (trx) =>
+    const ledger = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('reminder_delivery')
         .select(['reminder_id', 'channel'])

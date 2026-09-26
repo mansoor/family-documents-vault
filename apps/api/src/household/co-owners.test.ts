@@ -1,4 +1,4 @@
-import { createPool, withHousehold } from '@fdv/db';
+import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
@@ -169,7 +169,7 @@ describe.skipIf(!testAdminUrl())('co-owners', () => {
     const pending = (await requests(owner)).find((r) => r.state === 'waiting') as OwnerChangeView;
     // Wind the clock back rather than forward: the same thing, and it
     // leaves `lapses_at` in the future where it belongs.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('owner_change_request')
         .set({ opens_at: new Date(Date.now() - 1000) })
@@ -201,7 +201,7 @@ describe.skipIf(!testAdminUrl())('co-owners', () => {
     // Sam is an adult again, so the household is down to one owner.
     const me = memberOf('Owner');
     await expect(
-      withHousehold(h.db, owner.household_id, (trx) =>
+      withSystem(h.db, owner.household_id, (trx) =>
         trx
           .updateTable('account_household')
           .set({ role: 'adult' })
@@ -278,7 +278,7 @@ describe.skipIf(!testAdminUrl())('co-owners', () => {
   });
 
   it('every one of these is in the audit chain', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action'])
@@ -328,7 +328,7 @@ describe.skipIf(!testAdminUrl())('co-owners', () => {
       ).statusCode,
     ).toBe(200);
 
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('owner_change_request')
         .set({ opens_at: new Date(Date.now() - 1000) })
@@ -395,7 +395,7 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
     ).length;
   /** Thirty-one days ago, as far as this request is concerned. */
   const lapse = (id: string) =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('owner_change_request')
         .set({
@@ -445,7 +445,7 @@ describe.skipIf(!testAdminUrl())('a request nobody carried out', () => {
     expect(askedAlerts()).toBe(toldBefore + 1);
 
     // The old one is recorded as lapsed, and stays in the history as that.
-    const old = await withHousehold(h.db, owner.household_id, (trx) =>
+    const old = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('owner_change_request')
         .select(['lapsed_at', 'lapses_at', 'refused_at'])
@@ -563,7 +563,7 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     json<{ role: string }>(await h.app.inject({ url: '/api/v1/me', headers: h.as(sam) })).role;
   const code = (r: { json: () => unknown }) => json<{ error: { code: string } }>(r).error.code;
   const openNow = (id: string) =>
-    withHousehold(h.db, owner.household_id, (trx) =>
+    withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('owner_change_request')
         .set({ opens_at: new Date(Date.now() - 1000) })
@@ -642,7 +642,7 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     expect(await samRole()).toBe('viewer');
 
     // The audit chain says what stepping down did.
-    const audit = await withHousehold(h.db, owner.household_id, (trx) =>
+    const audit = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select('detail')
@@ -660,7 +660,7 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     expect((await setSamRole('owner')).statusCode).toBe(200);
     const asked = json<RoleChangeResult>(await setSamRole('adult')).request as OwnerChangeView;
     await openNow(asked.id);
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('account_household')
         .set({ role: 'teen' })

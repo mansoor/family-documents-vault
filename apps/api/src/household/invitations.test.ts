@@ -1,4 +1,4 @@
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
@@ -151,7 +151,7 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
       await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
     ).items.find((m) => m.display_name === 'Alex') as MemberView;
 
-    const key = await withHousehold(h.db, owner.household_id, (trx) =>
+    const key = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('scope_key')
         .select(['key_wrapped_cred', 'kdf_params'])
@@ -220,7 +220,7 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
     const created = json<CreatedInvitation>(
       await invite({ display_name: 'Stale', email: 'stale@example.test', role: 'viewer' }),
     );
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('invitation')
         .set({ expires_at: new Date(Date.now() - 1000) })
@@ -310,7 +310,7 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
   });
 
   it('the whole thing is in the audit chain, without either secret in it', async () => {
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action', 'detail'])

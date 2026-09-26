@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import webpush from 'web-push';
@@ -122,7 +122,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
   });
 
   it('once every sign-in has ended, nothing is sent anywhere', async () => {
-    await withHousehold(db, hh, (trx) =>
+    await withSystem(db, hh, (trx) =>
       trx.updateTable('session').set({ revoked_at: new Date() }).execute(),
     );
     const endpoints = pushedTo();

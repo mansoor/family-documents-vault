@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { unwrapKey, type ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, withScope, withSystem, type Db, type Scope } from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -95,6 +95,9 @@ export interface SharedDocument {
 
 const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').digest();
 
+/** A transaction asked for by whoever holds one link, in its household. */
+type LinkScope = Scope & { householdId: string };
+
 const gone = () =>
   new ApiError(
     404,
@@ -123,7 +126,7 @@ export class ShareService {
     const pinHash = pin ? await argon2.hash(pin, ARGON2) : null;
     const expiresAt = new Date(Date.now() + (input.expires_in_days ?? DEFAULT_DAYS) * 864e5);
 
-    const id = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const id = await withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
         .select(['id', 'title', 'visibility', 'owner_member_id'])
@@ -188,7 +191,7 @@ export class ShareService {
     // (0.5.0). A teen or a viewer — an accountant with a sign-in, say —
     // read every link to every document they could see.
     if (!can(p.role, 'document.share')) return [];
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('share_link')
         .innerJoin('document', 'document.id', 'share_link.document_id')
@@ -244,7 +247,7 @@ export class ShareService {
 
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       // A link to a document the caller cannot see is not there for them.
       const target = await trx
         .selectFrom('share_link')
@@ -286,10 +289,29 @@ export class ShareService {
     return id;
   }
 
+  /**
+   * Who asks for a token's link: whoever holds it. Finding which link that
+   * is, by the token's hash, is the one step taken as the vault itself —
+   * until it is found there is no link to ask as. Everything after asks as
+   * the link.
+   */
+  private async linkScope(token: string): Promise<LinkScope> {
+    const householdId = await this.householdOf(token);
+    const found = await withSystem(this.db, householdId, (trx) =>
+      trx
+        .selectFrom('share_link')
+        .select('id')
+        .where('token_hash', '=', hashToken(token))
+        .executeTakeFirst(),
+    );
+    if (!found) throw gone();
+    return { householdId, actor: { kind: 'link', shareId: found.id } };
+  }
+
   /** What the recipient sees before they have typed anything. */
   async preview(token: string): Promise<SharePreview> {
-    const householdId = await this.householdOf(token);
-    return withScope(this.db, { householdId }, async (trx) => {
+    const scope = await this.linkScope(token);
+    return withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, token);
       const context = await this.context(trx, link.document_id, link.created_by);
       return {
@@ -314,9 +336,10 @@ export class ShareService {
     input: z.infer<typeof openBody>,
     meta: RequestMeta,
   ): Promise<SharedDocument> {
-    const householdId = await this.householdOf(token);
-    await this.checkPin(householdId, token, input.pin);
-    return withScope(this.db, { householdId }, async (trx) => {
+    const scope = await this.linkScope(token);
+    const { householdId } = scope;
+    await this.checkPin(scope, token, input.pin);
+    return withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, token);
       const context = await this.context(trx, link.document_id, link.created_by);
       const version = await this.newestVersion(trx, link.document_id);
@@ -343,11 +366,11 @@ export class ShareService {
    * so that fetching the file after opening it does not count as a
    * second visit: the family's log should read like what happened.
    */
-  private async checkPin(householdId: string, token: string, pin?: string): Promise<void> {
-    const link = await withScope(this.db, { householdId }, (trx) => this.live(trx, token));
+  private async checkPin(scope: LinkScope, token: string, pin?: string): Promise<void> {
+    const link = await withScope(this.db, scope, (trx) => this.live(trx, token));
     if (!link.pin_hash) return;
     if (pin && (await argon2.verify(link.pin_hash, pin))) return;
-    const left = await withScope(this.db, { householdId }, async (trx) => {
+    const left = await withScope(this.db, scope, async (trx) => {
       const row = await trx
         .updateTable('share_link')
         .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
@@ -395,9 +418,10 @@ export class ShareService {
     input: z.infer<typeof openBody>,
     meta: RequestMeta,
   ): Promise<{ stream: Readable; total: number; contentType: string; filename: string }> {
-    const householdId = await this.householdOf(token);
-    await this.checkPin(householdId, token, input.pin);
-    const { version, adapter, fileKey } = await withScope(this.db, { householdId }, async (trx) => {
+    const scope = await this.linkScope(token);
+    const { householdId } = scope;
+    await this.checkPin(scope, token, input.pin);
+    const { version, adapter, fileKey } = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, token);
       const v = await this.newestVersion(trx, link.document_id);
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);

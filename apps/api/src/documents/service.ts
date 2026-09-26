@@ -21,7 +21,7 @@ import {
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { appendAudit, withScope, type Db, type Visibility } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
 import {
   deriveStatus,
   OFFLINE_SET_MAX,
@@ -421,7 +421,7 @@ export class DocumentService {
 
   async create(p: Principal, input: DocumentInput, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const values = await this.columns(trx, p, await this.ownVisibility(trx, p, input), null);
       // A teen's documents are their own, and only their own. Without
       // this, adding one without naming a person makes a family document
@@ -495,7 +495,7 @@ export class DocumentService {
   }
 
   async get(p: Principal, id: string): Promise<DocumentView> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) =>
+    return withPrincipal(this.db, p, async (trx) =>
       this.view(trx, await this.fetch(trx, p, id, true)),
     );
   }
@@ -509,7 +509,7 @@ export class DocumentService {
   ) {
     this.canWrite(p);
     let drawNow: string | null = null;
-    const view = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const view = await withPrincipal(this.db, p, async (trx) => {
       const current = await this.fetch(trx, p, id);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
@@ -575,7 +575,7 @@ export class DocumentService {
   /** ORG-08: soft delete, recoverable for 30 days. */
   async softDelete(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     this.canWrite(p);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       this.mustOwnIfTeen(p, await this.fetch(trx, p, id));
       await trx
         .updateTable('document')
@@ -596,7 +596,7 @@ export class DocumentService {
 
   async restore(p: Principal, id: string, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await this.fetch(trx, p, id, true);
       this.mustOwnIfTeen(p, row);
       if (!row.deleted_at) return this.view(trx, row);
@@ -624,7 +624,7 @@ export class DocumentService {
     q: ListQuery,
   ): Promise<{ items: DocumentView[]; next_cursor: string | null; has_more: boolean }> {
     const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       let query = trx
         .selectFrom('document')
         .selectAll()
@@ -680,7 +680,7 @@ export class DocumentService {
   }
 
   async tags(p: Principal, q: string | undefined): Promise<Array<{ tag: string; count: number }>> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const r = await sql<{ tag: string; count: number }>`
         select t as tag, count(*)::int as count
         from document d, unnest(d.tags) as t
@@ -713,7 +713,7 @@ export class DocumentService {
       category?: string | undefined;
     },
   ): Promise<IssuerCount[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) =>
+    return withPrincipal(this.db, p, async (trx) =>
       (await this.knownIssuers(trx, p, f))
         // For a type, only who has issued that type before: a passport card
         // offering "From Barclays?" helps nobody.
@@ -763,7 +763,7 @@ export class DocumentService {
    */
   async issuerSuggestions(p: Principal, id: string): Promise<IssuerSuggestions> {
     this.canWrite(p);
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const doc = await this.fetch(trx, p, id);
       this.mustOwnIfTeen(p, doc);
       const version = await trx
@@ -826,7 +826,7 @@ export class DocumentService {
 
   /** Counts by member and by category, for the home screen tiles (ORG-02). */
   async counts(p: Principal) {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const base = trx
         .selectFrom('document')
         .where(this.visibleTo(p) as never)
@@ -849,7 +849,7 @@ export class DocumentService {
   // ---------------------------------------------------------------- versions
 
   async versions(p: Principal, documentId: string): Promise<VersionView[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       await this.fetch(trx, p, documentId, true);
       // Who added each version, by the name the household knows them by
       // (5.1) — on the activity log's terms: a viewer, an outsider, is not
@@ -990,7 +990,7 @@ export class DocumentService {
     const moved: { to: string | null } = { to: null };
     let version: VersionView;
     try {
-      version = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      version = await withPrincipal(this.db, p, async (trx) => {
         await lockKey(trx, p.householdId, c.key);
         const still = await trx
           .selectFrom('upload_idempotency')
@@ -1144,7 +1144,7 @@ export class DocumentService {
     const nonce = randomUUID();
     // A stale try's temporary object, deleted once the takeover is committed.
     const leftovers: { key: string; vaultId: string }[] = [];
-    const out = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const out = await withPrincipal(this.db, p, async (trx) => {
       await lockKey(trx, p.householdId, key);
       // A document the caller cannot see is not there, whatever the key.
       const doc = target.kind === 'version' ? await this.fetch(trx, p, target.documentId) : null;
@@ -1248,7 +1248,7 @@ export class DocumentService {
         tempKey,
       } satisfies Claim;
     });
-    for (const l of leftovers) await this.dropObject(p.householdId, l).catch(() => undefined);
+    for (const l of leftovers) await this.dropObject(p, l).catch(() => undefined);
     return out;
   }
 
@@ -1302,7 +1302,7 @@ export class DocumentService {
    */
   private async release(p: Principal, c: Claim, moved: string | null = null): Promise<void> {
     await c.adapter.delete(c.tempKey).catch(() => undefined);
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       // A commit whose answer was lost still holds this lock until it ends.
       await lockKey(trx, p.householdId, c.key);
       if (moved) {
@@ -1324,8 +1324,8 @@ export class DocumentService {
     }).catch(() => undefined);
   }
 
-  private async dropObject(householdId: string, at: { key: string; vaultId: string }) {
-    const adapter = await withScope(this.db, { householdId }, (trx) =>
+  private async dropObject(p: Principal, at: { key: string; vaultId: string }) {
+    const adapter = await withPrincipal(this.db, p, (trx) =>
       this.vaults.adapterById(trx, at.vaultId),
     );
     await adapter.delete(at.key);
@@ -1338,7 +1338,7 @@ export class DocumentService {
    */
   async uploadStatus(p: Principal, key: string): Promise<UploadStatus> {
     if (!UUID.test(key)) throw unknownUpload();
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('upload_idempotency')
         .select(['state', 'document_id', 'version_id', 'claimed_at'])
@@ -1379,7 +1379,7 @@ export class DocumentService {
   }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
     const adultsOk = allows(p, 'document.see_adults');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await sql<{
         document_id: string;
         title: string | null;
@@ -1517,7 +1517,7 @@ export class DocumentService {
    * so the answer costs a download nothing it would not have paid anyway.
    */
   async stepUpFor(p: Principal, versionId: string): Promise<SensitiveAction | null> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('document_version')
         .innerJoin('document', 'document.id', 'document_version.document_id')
@@ -1534,7 +1534,7 @@ export class DocumentService {
 
   /** The same question for a whole document: before a link to it is made. */
   async stepUpForDocument(p: Principal, documentId: string): Promise<SensitiveAction | null> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('document')
         .select(['visibility', 'is_essential', 'owner_member_id'])
@@ -1586,7 +1586,7 @@ export class DocumentService {
    * the worker has run.
    */
   async thumbnail(p: Principal, versionId: string): Promise<{ bytes: Buffer } | null> {
-    const ctx = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const ctx = await withPrincipal(this.db, p, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -1624,7 +1624,7 @@ export class DocumentService {
     includePrivate: boolean,
   ): Promise<{ items: OfflineItem[]; truncated: boolean }> {
     if (p.role === 'viewer') return { items: [], truncated: false };
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       let q = trx
         .selectFrom('document')
         .selectAll('document')
@@ -1687,7 +1687,7 @@ export class DocumentService {
     versionId: string,
     includePrivate: boolean,
   ): Promise<{ documentId: string }> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .select(['id', 'document_id'])
@@ -1731,7 +1731,7 @@ export class DocumentService {
     // offline route records that once per version itself (0.4.13).
     opts: { audit?: boolean } = {},
   ): Promise<Buffer> {
-    const outcome = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const outcome = await withPrincipal(this.db, p, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -1813,7 +1813,7 @@ export class DocumentService {
 
   /** Version metadata for a principal allowed to see its document; no audit, no bytes. */
   async versionMeta(p: Principal, versionId: string): Promise<VersionView> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -1840,32 +1840,28 @@ export class DocumentService {
     total: number;
     range: { start: number; end: number } | null;
   }> {
-    const { version, adapter, fileKey } = await withScope(
-      this.db,
-      { householdId: p.householdId },
-      async (trx) => {
-        const v = await trx
-          .selectFrom('document_version')
-          .selectAll()
-          .where('id', '=', versionId)
-          .executeTakeFirst();
-        if (!v) throw notFound();
-        await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
-        const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
-        const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
-        const adapter = await this.vaults.adapterById(trx, v.vault_id);
-        await appendAudit(trx, {
-          householdId: p.householdId,
-          actorAccountId: p.accountId,
-          action: 'document.downloaded',
-          objectType: 'document',
-          objectId: v.document_id,
-          detail: { version_no: v.version_no, range: range ? `${range.start}-${range.end}` : null },
-          ip: meta.ip,
-        });
-        return { version: v, adapter, fileKey };
-      },
-    );
+    const { version, adapter, fileKey } = await withPrincipal(this.db, p, async (trx) => {
+      const v = await trx
+        .selectFrom('document_version')
+        .selectAll()
+        .where('id', '=', versionId)
+        .executeTakeFirst();
+      if (!v) throw notFound();
+      await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+      const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+      const adapter = await this.vaults.adapterById(trx, v.vault_id);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'document.downloaded',
+        objectType: 'document',
+        objectId: v.document_id,
+        detail: { version_no: v.version_no, range: range ? `${range.start}-${range.end}` : null },
+        ip: meta.ip,
+      });
+      return { version: v, adapter, fileKey };
+    });
 
     const total = Number(version.byte_size);
     if (range) {

@@ -1,7 +1,7 @@
 import type { Tokens } from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db, type Role } from '@fdv/db';
+import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db, type Role } from '@fdv/db';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { ApiError } from '../errors.js';
@@ -141,7 +141,8 @@ export class AuthService {
     const householdId = randomUUID();
     const passwordHash = await argon2.hash(input.password, ARGON2);
 
-    return withScope(this.db, { householdId }, async (trx) => {
+    // Nobody is anybody yet: the account this makes is not the one asking.
+    return withScope(this.db, { householdId, actor: ANONYMOUS }, async (trx) => {
       await trx
         .insertInto('household')
         .values({ id: householdId, name: input.householdName })
@@ -231,41 +232,38 @@ export class AuthService {
   ): Promise<Tokens> {
     const account = { id: accountId };
 
-    const memberships = await withScope(this.db, { accountId: account.id }, (trx) =>
-      trx
-        .selectFrom('account_household')
-        .select(['household_id', 'member_id', 'role'])
-        .orderBy('joined_at', 'desc')
-        .execute(),
+    // Proved, but not yet anybody in a household: only its own memberships show.
+    const memberships = await withScope(
+      this.db,
+      { accountId: account.id, actor: ANONYMOUS },
+      (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select(['household_id', 'member_id', 'role'])
+          .orderBy('joined_at', 'desc')
+          .execute(),
     );
     const m = memberships[0];
     if (!m) {
       throw new ApiError(403, 'no_household', 'Your sign-in is not part of any family vault yet.');
     }
 
-    return withScope(
-      this.db,
-      { householdId: m.household_id, accountId: account.id },
-      async (trx) => {
-        await appendAudit(trx, {
-          householdId: m.household_id,
-          actorAccountId: account.id,
-          action: 'auth.signed_in',
-          ip: meta.ip,
-          detail: { method },
-        });
-        return this.openSession(
-          trx,
-          {
-            accountId: account.id,
-            householdId: m.household_id,
-            memberId: m.member_id,
-            role: m.role,
-          },
-          meta,
-        );
-      },
-    );
+    const p = {
+      accountId: account.id,
+      householdId: m.household_id,
+      memberId: m.member_id,
+      role: m.role,
+    };
+    return withPrincipal(this.db, p, async (trx) => {
+      await appendAudit(trx, {
+        householdId: m.household_id,
+        actorAccountId: account.id,
+        action: 'auth.signed_in',
+        ip: meta.ip,
+        detail: { method },
+      });
+      return this.openSession(trx, p, meta);
+    });
   }
 
   private async openSession(
@@ -396,7 +394,9 @@ export class AuthService {
     if (!parsed) throw sessionEnded('malformed refresh token', 'malformed');
     const presented = hashRefreshToken(refreshToken);
 
-    const result = await withScope(this.db, { householdId: parsed.householdId }, async (trx) => {
+    // Until the token matches a session, whoever presents it is nobody yet.
+    const scope = { householdId: parsed.householdId, actor: ANONYMOUS };
+    const result = await withScope(this.db, scope, async (trx) => {
       const now = new Date();
       let session = await trx
         .selectFrom('session')
@@ -520,7 +520,8 @@ export class AuthService {
     presented: Buffer,
     meta: RequestMeta,
   ): Promise<boolean> {
-    const ended = await withScope(this.db, { householdId }, async (trx) => {
+    const scope = { householdId, actor: ANONYMOUS };
+    const ended = await withScope(this.db, scope, async (trx) => {
       const replayed = await trx
         .selectFrom('session')
         .select(['id', 'account_id'])
@@ -571,8 +572,10 @@ export class AuthService {
     // access token lasts fifteen minutes and a role change has to take
     // effect now: somebody just made an owner should not be told they
     // cannot, and somebody just removed from the household has no row
-    // here and so has no session either.
-    const open = await withScope(this.db, { householdId: claims.hid }, (trx) =>
+    // here and so has no session either. Until this answers, the bearer
+    // is nobody yet.
+    const scope = { householdId: claims.hid, actor: ANONYMOUS };
+    const open = await withScope(this.db, scope, (trx) =>
       trx
         .selectFrom('session')
         .innerJoin('account_household', (j) =>
@@ -597,7 +600,7 @@ export class AuthService {
 
   /** Why a session that no longer authenticates ended, for the 401. */
   private async whyEnded(householdId: string, sessionId: string): Promise<ApiError> {
-    const row = await withScope(this.db, { householdId }, (trx) =>
+    const row = await withScope(this.db, { householdId, actor: ANONYMOUS }, (trx) =>
       trx
         .selectFrom('session')
         .select(['revoked_at', 'revoked_reason'])
@@ -620,7 +623,7 @@ export class AuthService {
   }
 
   async listSessions(p: Principal) {
-    return withScope(this.db, { householdId: p.householdId }, (trx) =>
+    return withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('session')
         .select([
@@ -654,7 +657,7 @@ export class AuthService {
   }
 
   async revokeSession(p: Principal, sessionId: string, meta: RequestMeta, reason: string) {
-    const phones = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const phones = await withPrincipal(this.db, p, async (trx) => {
       const r = await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: reason })

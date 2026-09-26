@@ -3,7 +3,7 @@ import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { appendAudit, verifyAuditChain } from './audit.js';
-import { createDb, createPool, withHousehold, withScope, type Db } from './client.js';
+import { ANONYMOUS, createDb, createPool, withScope, withSystem, type Db } from './client.js';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from './testing.js';
 
 /**
@@ -46,14 +46,14 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
   });
 
   it('a query scoped to A sees only A, without a WHERE clause', async () => {
-    const rows = await withHousehold(app, A, (trx) =>
+    const rows = await withSystem(app, A, (trx) =>
       trx.selectFrom('member').select(['household_id', 'display_name']).execute(),
     );
     expect(rows).toEqual([{ household_id: A, display_name: 'Member of The A family' }]);
   });
 
   it('a query scoped to A cannot read B even when it asks for B by id', async () => {
-    const rows = await withHousehold(app, A, (trx) =>
+    const rows = await withSystem(app, A, (trx) =>
       trx.selectFrom('member').selectAll().where('household_id', '=', B).execute(),
     );
     expect(rows).toEqual([]);
@@ -61,25 +61,25 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
 
   it('a write scoped to A cannot insert a row for B', async () => {
     await expect(
-      withHousehold(app, A, (trx) =>
+      withSystem(app, A, (trx) =>
         trx.insertInto('member').values({ household_id: B, display_name: 'smuggled' }).execute(),
       ),
     ).rejects.toThrow(/row-level security/);
   });
 
   it('a write scoped to A cannot update or delete B', async () => {
-    const upd = await withHousehold(app, A, (trx) =>
+    const upd = await withSystem(app, A, (trx) =>
       trx.updateTable('member').set({ display_name: 'x' }).where('household_id', '=', B).execute(),
     );
     expect(Number(upd[0]?.numUpdatedRows ?? 0)).toBe(0);
-    const del = await withHousehold(app, A, (trx) =>
+    const del = await withSystem(app, A, (trx) =>
       trx.deleteFrom('member').where('household_id', '=', B).execute(),
     );
     expect(Number(del[0]?.numDeletedRows ?? 0)).toBe(0);
   });
 
   it('the scope does not survive the transaction', async () => {
-    await withHousehold(app, A, async (trx) => {
+    await withSystem(app, A, async (trx) => {
       await trx.selectFrom('member').selectAll().execute();
     });
     const after = await app.selectFrom('member').selectAll().execute();
@@ -98,12 +98,12 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
        values ($1, $2, $3, 'owner')`,
       [accountId, A, member.rows[0]?.id],
     );
-    const mine = await withScope(app, { accountId }, (trx) =>
+    const mine = await withScope(app, { accountId, actor: ANONYMOUS }, (trx) =>
       trx.selectFrom('account_household').select(['household_id', 'role']).execute(),
     );
     expect(mine).toEqual([{ household_id: A, role: 'owner' }]);
 
-    const someoneElse = await withScope(app, { accountId: randomUUID() }, (trx) =>
+    const someoneElse = await withScope(app, { accountId: randomUUID(), actor: ANONYMOUS }, (trx) =>
       trx.selectFrom('account_household').selectAll().execute(),
     );
     expect(someoneElse).toEqual([]);
@@ -111,7 +111,7 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
 
   describe('audit chain', () => {
     it('appends linked rows and verifies clean', async () => {
-      await withHousehold(app, A, async (trx) => {
+      await withSystem(app, A, async (trx) => {
         await appendAudit(trx, { householdId: A, action: 'household.created' });
         await appendAudit(trx, {
           householdId: A,
@@ -121,12 +121,12 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
         });
         await appendAudit(trx, { householdId: A, action: 'signed_in', ip: '10.0.0.1' });
       });
-      const result = await withHousehold(app, A, (trx) => verifyAuditChain(trx, A));
+      const result = await withSystem(app, A, (trx) => verifyAuditChain(trx, A));
       expect(result).toEqual({ ok: true, checked: 3 });
     });
 
     it('is invisible from another household', async () => {
-      const rows = await withHousehold(app, B, (trx) =>
+      const rows = await withSystem(app, B, (trx) =>
         trx.selectFrom('audit_event').selectAll().execute(),
       );
       expect(rows).toEqual([]);
@@ -134,7 +134,7 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
 
     it('the application role cannot update or delete audit rows', async () => {
       await expect(
-        withHousehold(app, A, (trx) =>
+        withSystem(app, A, (trx) =>
           trx
             .updateTable('audit_event')
             .set({ action: 'x' })
@@ -161,7 +161,7 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
       } finally {
         await admin.query('alter table audit_event enable trigger audit_event_no_update');
       }
-      const result = await withHousehold(app, A, (trx) => verifyAuditChain(trx, A));
+      const result = await withSystem(app, A, (trx) => verifyAuditChain(trx, A));
       expect(result.ok).toBe(false);
       expect(result.reason).toBe('hash');
       expect(result.brokenAt).toBeDefined();
@@ -177,7 +177,7 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
       } finally {
         await admin.query('alter table audit_event enable trigger audit_event_no_update');
       }
-      const result = await withHousehold(app, A, (trx) => verifyAuditChain(trx, A));
+      const result = await withSystem(app, A, (trx) => verifyAuditChain(trx, A));
       expect(result.ok).toBe(false);
       expect(result.reason).toBe('link');
     });

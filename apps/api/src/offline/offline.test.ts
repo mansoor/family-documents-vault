@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { deriveKey, EncryptStream, EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
-import { withHousehold } from '@fdv/db';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { ActivityLine, DocumentView, OfflineSet, SessionRow } from '@fdv/shared';
 import { adapterFromRow } from '@fdv/storage';
@@ -73,7 +73,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
   };
   /** What the worker would leave: one drawn page. */
   const draw = (who: Tokens, versionId: string) =>
-    withHousehold(h.db, who.household_id, async (trx) => {
+    withSystem(h.db, who.household_id, async (trx) => {
       const v = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -141,7 +141,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
   const codeOf = (r: { json: () => unknown }) =>
     (r.json() as { error: { code: string; message: string } }).error;
   const audits = (who: Tokens, action: string) =>
-    withHousehold(h.db, who.household_id, (trx) =>
+    withSystem(h.db, who.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .selectAll()
@@ -459,7 +459,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
 
   it('a grant lapses after 30 days, and never outlives its session', async () => {
     await grant(phone, OWNER.password);
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ offline_expires_at: new Date(Date.now() - 1000) })
@@ -471,7 +471,7 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
       'offline_grant_required',
     );
     // A session with five days left gives a grant of five days.
-    await withHousehold(h.db, owner.household_id, (trx) =>
+    await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .updateTable('session')
         .set({ absolute_expires_at: new Date(Date.now() + 5 * 86_400_000) })

@@ -1,4 +1,4 @@
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   addDays,
   addMonths,
@@ -126,7 +126,7 @@ export class ReminderService {
   }
 
   async list(p: Principal, state: 'due' | 'upcoming' | 'all'): Promise<ReminderView[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const today = await this.today(trx, p.householdId);
       let q = trx
         .selectFrom('reminder')
@@ -170,7 +170,7 @@ export class ReminderService {
         'Repeat can be monthly, quarterly, annual, or every:Nm.',
       );
     }
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
         .select(['id', 'title'])
@@ -257,7 +257,7 @@ export class ReminderService {
 
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'reminder.manage');
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       // Only on a document the caller can see: a reminder on somebody
       // else's private document is not there, not "not yours".
       const r = await trx
@@ -298,7 +298,7 @@ export class ReminderService {
     ) => Promise<Record<string, unknown> & { action: string }>,
   ): Promise<ReminderView> {
     requireCapability(p, 'reminder.manage');
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const r = await trx
         .selectFrom('reminder')
         .innerJoin('document', 'document.id', 'reminder.document_id')

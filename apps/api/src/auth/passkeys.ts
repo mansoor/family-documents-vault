@@ -5,7 +5,7 @@ import {
   verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { withScope, type Db } from '@fdv/db';
+import { withPrincipal, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import { appendAudit } from '@fdv/db';
 import { ApiError } from '../errors.js';
@@ -143,7 +143,7 @@ export class PasskeyService {
       .returningAll()
       .executeTakeFirstOrThrow();
 
-    await withScope(this.db, { householdId: p.householdId, accountId: p.accountId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -313,7 +313,7 @@ export class PasskeyService {
     if (!row) throw new ApiError(404, 'not_found', 'There is no passkey by that name here.');
 
     await this.db.deleteFrom('credential').where('id', '=', row.id).execute();
-    await withScope(this.db, { householdId: p.householdId, accountId: p.accountId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

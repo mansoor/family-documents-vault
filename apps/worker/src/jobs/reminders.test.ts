@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { addDays } from '@fdv/shared';
 import pg from 'pg';
@@ -44,7 +44,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
       "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
       [a.rows[0]?.id, hh, m.rows[0]?.id],
     );
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       const docs: Array<[string, string]> = [
         ['Passport', '2026-09-20'],
         ['Car registration', '2026-09-24'],
@@ -83,7 +83,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
   });
 
   const statuses = () =>
-    withHousehold(db, hh, (trx) =>
+    withSystem(db, hh, (trx) =>
       trx.selectFrom('reminder').select(['fire_at', 'status']).orderBy('fire_at').execute(),
     ).then((rows) => rows.map((r) => `${String(r.fire_at).slice(0, 10)}:${r.status}`));
 
@@ -107,7 +107,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
     });
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 0 });
     expect(sent).toHaveLength(1);
-    const ledger = await withHousehold(db, hh, (trx) =>
+    const ledger = await withSystem(db, hh, (trx) =>
       trx.selectFrom('reminder_delivery').selectAll().execute(),
     );
     expect(ledger).toHaveLength(1);
@@ -144,7 +144,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
   });
 
   it('a snoozed reminder returns to due when the snooze ends', async () => {
-    await withHousehold(db, hh, (trx) =>
+    await withSystem(db, hh, (trx) =>
       trx
         .updateTable('reminder')
         .set({ status: 'snoozed', snoozed_until: '2026-10-05' })
@@ -161,7 +161,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
     at('2026-10-05T09:00:00Z');
     const r = await refreshStatus(deps());
     expect(r.documents).toBe(3);
-    const cached = await withHousehold(db, hh, (trx) =>
+    const cached = await withSystem(db, hh, (trx) =>
       trx.selectFrom('document').select(['title', 'status_cache']).orderBy('title').execute(),
     );
     expect(cached.every((c) => c.status_cache === 'expiring_soon')).toBe(true);

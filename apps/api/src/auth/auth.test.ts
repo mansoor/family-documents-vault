@@ -1,4 +1,4 @@
-import { verifyAuditChain, withHousehold, type Db } from '@fdv/db';
+import { verifyAuditChain, withSystem, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -53,7 +53,7 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     expect(tokens.expires_in).toBe(900);
     expect(tokens.refresh_token.startsWith(`${tokens.household_id}.`)).toBe(true);
 
-    const scopes = await withHousehold(db, tokens.household_id, (trx) =>
+    const scopes = await withSystem(db, tokens.household_id, (trx) =>
       trx.selectFrom('scope_key').select(['kind', 'key_wrapped_cred']).orderBy('kind').execute(),
     );
     expect(scopes.map((s) => s.kind).sort()).toEqual(['adults', 'household', 'member']);
@@ -197,12 +197,12 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
   });
 
   it('wrote a clean audit chain for everything above', async () => {
-    const result = await withHousehold(db, tokens.household_id, (trx) =>
+    const result = await withSystem(db, tokens.household_id, (trx) =>
       verifyAuditChain(trx, tokens.household_id),
     );
     expect(result.ok).toBe(true);
     expect(result.checked).toBeGreaterThanOrEqual(6);
-    const actions = await withHousehold(db, tokens.household_id, (trx) =>
+    const actions = await withSystem(db, tokens.household_id, (trx) =>
       trx.selectFrom('audit_event').select('action').orderBy('id').execute(),
     );
     expect(actions.map((a) => a.action)).toContain('household.created');

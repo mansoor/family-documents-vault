@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -137,7 +137,7 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
       "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
       [a.rows[0]?.id, hh, m.rows[0]?.id],
     );
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       const d = await trx
         .insertInto('document')
         .values({
@@ -181,7 +181,7 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
   });
 
   it('untested SMTP is never used', async () => {
-    await withHousehold(db, hh, (trx) =>
+    await withSystem(db, hh, (trx) =>
       trx
         .insertInto('smtp_settings')
         .values({
@@ -206,7 +206,7 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
   it.skipIf(!withMailpit)(
     'a weekly summary reaches the people who asked for email',
     async () => {
-      await withHousehold(db, hh, (trx) =>
+      await withSystem(db, hh, (trx) =>
         trx
           .updateTable('smtp_settings')
           .set({
@@ -281,7 +281,7 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
       const { sealPassword } = await import('./seal-test-helper.js');
       const accountId = (await admin.query<{ id: string }>('select id from account limit 1'))
         .rows[0]?.id as string;
-      await withHousehold(db, hh, async (trx) => {
+      await withSystem(db, hh, async (trx) => {
         await trx
           .updateTable('smtp_settings')
           .set({ username: 'someone', password_encrypted: sealPassword(smtpKey, 'hunter2', hh) })

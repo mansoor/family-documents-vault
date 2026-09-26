@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { SignJWT, jwtVerify } from 'jose';
 import * as OTPAuth from 'otpauth';
 import { ApiError } from '../errors.js';
@@ -56,7 +56,7 @@ export class TotpService {
       })
       .where('id', '=', p.accountId)
       .execute();
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -88,7 +88,7 @@ export class TotpService {
       .set({ totp_confirmed_at: new Date() })
       .where('id', '=', p.accountId)
       .execute();
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -115,7 +115,7 @@ export class TotpService {
       .set({ totp_secret: null, totp_confirmed_at: null })
       .where('id', '=', p.accountId)
       .execute();
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

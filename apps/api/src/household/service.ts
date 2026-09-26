@@ -1,5 +1,5 @@
 import type { ScopeKeys } from '@fdv/crypto';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -62,7 +62,7 @@ export class HouseholdService {
   ) {}
 
   async profile(p: Principal) {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('household_profile')
         .selectAll()
@@ -106,7 +106,7 @@ export class HouseholdService {
 
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
     requireCapability(p, 'profile.edit');
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const values: Record<string, unknown> = { answered_at: new Date() };
       for (const k of [
         'owns_home',
@@ -148,7 +148,7 @@ export class HouseholdService {
   }
 
   async members(p: Principal): Promise<MemberView[]> {
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('member')
         .leftJoin('account_household', (j) =>
@@ -207,7 +207,7 @@ export class HouseholdService {
     meta: RequestMeta,
   ): Promise<MemberView> {
     requireCapability(p, 'member.add');
-    const id = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const id = await withPrincipal(this.db, p, async (trx) => {
       const n = await trx
         .selectFrom('member')
         .select((eb) => eb.fn.countAll<number>().as('n'))

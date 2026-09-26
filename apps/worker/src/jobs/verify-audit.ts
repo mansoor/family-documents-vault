@@ -1,4 +1,4 @@
-import { createDb, createPool, verifyAuditChain, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, verifyAuditChain, withSystem, type Db } from '@fdv/db';
 import type pg from 'pg';
 
 export interface VerifyAuditReport {
@@ -21,7 +21,7 @@ export async function verifyAllAuditChains(admin: pg.Pool, app: Db): Promise<Ver
   );
   const report: VerifyAuditReport = { households: rows.length, broken: [] };
   for (const { id } of rows) {
-    const result = await withHousehold(app, id, (trx) => verifyAuditChain(trx, id));
+    const result = await withSystem(app, id, (trx) => verifyAuditChain(trx, id));
     if (!result.ok) {
       report.broken.push({ household_id: id, broken_at: result.brokenAt, reason: result.reason });
     }

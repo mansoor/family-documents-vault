@@ -214,8 +214,8 @@ describe.skipIf(!testAdminUrl())('passkeys', () => {
   });
 
   it('both additions and removals are in the audit chain', async () => {
-    const { withHousehold } = await import('@fdv/db');
-    const rows = await withHousehold(h.db, owner.household_id, (trx) =>
+    const { withSystem } = await import('@fdv/db');
+    const rows = await withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('audit_event')
         .select(['action'])

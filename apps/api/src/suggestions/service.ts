@@ -1,4 +1,4 @@
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   conditionHolds,
   localToday,
@@ -62,7 +62,7 @@ export class SuggestionService {
     // passport for Aisha" tells a viewer what 5.3 keeps from them.
     if (!allows(p, 'family.details'))
       return { items: [], profile_answered: null, dismissed_count: 0 };
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const household = await trx
         .selectFrom('household')
         .select('timezone')
@@ -210,59 +210,51 @@ export class SuggestionService {
   async dismiss(p: Principal, key: string, meta: RequestMeta): Promise<void> {
     this.canDecide(p);
     const { ruleKey, memberId } = this.split(key);
-    await withScope(
-      this.db,
-      { householdId: p.householdId, accountId: p.accountId },
-      async (trx) => {
-        const rule = await trx
-          .selectFrom('suggestion_rule')
-          .select('key')
-          .where('key', '=', ruleKey)
-          .executeTakeFirst();
-        if (!rule) throw new ApiError(404, 'not_found', 'There is no suggestion by that name.');
-        await trx
-          .insertInto('suggestion_dismissal')
-          .values({
-            household_id: p.householdId,
-            rule_key: ruleKey,
-            member_id: memberId,
-            dismissed_by: p.accountId,
-          })
-          .onConflict((oc) => oc.doNothing())
-          .execute();
-        await appendAudit(trx, {
-          householdId: p.householdId,
-          actorAccountId: p.accountId,
-          action: 'suggestion.dismiss',
-          objectType: 'suggestion',
-          detail: { key },
-          ip: meta.ip,
-        });
-      },
-    );
+    await withPrincipal(this.db, p, async (trx) => {
+      const rule = await trx
+        .selectFrom('suggestion_rule')
+        .select('key')
+        .where('key', '=', ruleKey)
+        .executeTakeFirst();
+      if (!rule) throw new ApiError(404, 'not_found', 'There is no suggestion by that name.');
+      await trx
+        .insertInto('suggestion_dismissal')
+        .values({
+          household_id: p.householdId,
+          rule_key: ruleKey,
+          member_id: memberId,
+          dismissed_by: p.accountId,
+        })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'suggestion.dismiss',
+        objectType: 'suggestion',
+        detail: { key },
+        ip: meta.ip,
+      });
+    });
   }
 
   /** Show it again. */
   async restore(p: Principal, key: string, meta: RequestMeta): Promise<void> {
     this.canDecide(p);
     const { ruleKey, memberId } = this.split(key);
-    await withScope(
-      this.db,
-      { householdId: p.householdId, accountId: p.accountId },
-      async (trx) => {
-        let q = trx.deleteFrom('suggestion_dismissal').where('rule_key', '=', ruleKey);
-        q = memberId ? q.where('member_id', '=', memberId) : q.where('member_id', 'is', null);
-        await q.execute();
-        await appendAudit(trx, {
-          householdId: p.householdId,
-          actorAccountId: p.accountId,
-          action: 'suggestion.restore',
-          objectType: 'suggestion',
-          detail: { key },
-          ip: meta.ip,
-        });
-      },
-    );
+    await withPrincipal(this.db, p, async (trx) => {
+      let q = trx.deleteFrom('suggestion_dismissal').where('rule_key', '=', ruleKey);
+      q = memberId ? q.where('member_id', '=', memberId) : q.where('member_id', 'is', null);
+      await q.execute();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'suggestion.restore',
+        objectType: 'suggestion',
+        detail: { key },
+        ip: meta.ip,
+      });
+    });
   }
 
   private canDecide(p: Principal): void {

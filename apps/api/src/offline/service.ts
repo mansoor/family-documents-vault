@@ -1,5 +1,5 @@
 import argon2 from 'argon2';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   canSee,
   type OfflineGrant,
@@ -63,7 +63,7 @@ export class OfflineService {
         "People outside the family can't keep documents on a phone.",
       );
     }
-    const granted = await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    const granted = await withPrincipal(this.db, p, async (trx) => {
       const session = await trx
         .selectFrom('session')
         .select(['installation_id', 'absolute_expires_at'])
@@ -122,7 +122,7 @@ export class OfflineService {
     });
     if (granted) return granted;
     // Recorded in a transaction of its own: the refusal must not take it back.
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -137,7 +137,7 @@ export class OfflineService {
 
   /** DELETE /offline/grant: this phone keeps nothing more. */
   async endGrant(p: Principal, meta: RequestMeta): Promise<void> {
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       await trx
         .updateTable('session')
         .set({ offline_granted_at: null, offline_expires_at: null, offline_include_private: false })
@@ -156,7 +156,7 @@ export class OfflineService {
 
   /** The grant in force on this session, if any. */
   private async current(p: Principal): Promise<OfflineGrant | null> {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('session')
         .select(['offline_granted_at', 'offline_expires_at', 'offline_include_private'])
@@ -208,7 +208,7 @@ export class OfflineService {
     );
     if (!grant) throw grantRequired();
     const bytes = await this.docs.page(p, versionId, n, meta, { audit: false });
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const first = await trx
         .insertInto('offline_fill')
         .values({ household_id: p.householdId, session_id: p.sessionId, version_id: versionId })
@@ -239,7 +239,7 @@ export class OfflineService {
     const result: OfflineOpensResult = { accepted: 0, duplicates: 0, dropped: 0 };
     const now = Date.now();
     const earliest = now - this.maxOfflineDays * DAY;
-    await withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       for (const e of events) {
         const row = await trx
           .selectFrom('document_version')

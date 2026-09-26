@@ -548,37 +548,93 @@ export function createDb(pool: pg.Pool): Db {
 }
 
 /**
+ * Who a transaction is for. The database is told, so that a policy can
+ * answer each kind of caller differently:
+ * - `account`: somebody signed in, as the member and role they hold;
+ * - `system`: the vault itself — the worker's jobs, and the few lookups
+ *   that must happen before any caller is known;
+ * - `link`: whoever holds a share link, once the link is found;
+ * - `upload`: whoever holds an upload request's link;
+ * - `anonymous`: a caller not yet known — a sign-in page, an invitation,
+ *   a reset.
+ */
+export type Actor =
+  | { kind: 'account'; accountId: string; memberId: string; role: Role }
+  | { kind: 'system' }
+  | { kind: 'link'; shareId: string }
+  | { kind: 'upload'; requestId: string }
+  | { kind: 'anonymous' };
+
+/** A caller not yet known. */
+export const ANONYMOUS: Actor = Object.freeze({ kind: 'anonymous' });
+
+/**
  * The tenant context for a transaction. Row-level-security policies read
- * `app.household_id`; `app.account_id` additionally lets an account see its
- * own memberships before a household is chosen (sign-in).
+ * `app.household_id`. `app.account_id` also lets an account see its own
+ * memberships before a household is chosen: an account actor sets it for
+ * itself, and `accountId` sets it for a caller that is not one yet
+ * (sign-in, a reset).
+ *
+ * The actor is required, so a transaction cannot forget to say who it is for.
  */
 export interface Scope {
   householdId?: string;
   accountId?: string;
+  actor: Actor;
+}
+
+/** What the database is told about somebody signed in. */
+export interface ScopePrincipal {
+  householdId: string;
+  accountId: string;
+  memberId: string;
+  role: Role;
 }
 
 /**
  * Runs `fn` inside a transaction with the scope settings applied for its
  * duration. `set_config(..., true)` is transaction-local, so nothing leaks
  * to the next borrower of the pooled connection.
+ *
+ * Every setting is written, empty when it does not apply: a value somebody
+ * set on the connection itself cannot show through.
  */
 export async function withScope<T>(db: Db, scope: Scope, fn: (trx: Db) => Promise<T>): Promise<T> {
+  const { actor } = scope;
+  const account = actor.kind === 'account' ? actor : null;
   return db.transaction().execute(async (trx) => {
-    if (scope.householdId) {
-      await sql`select set_config('app.household_id', ${scope.householdId}, true)`.execute(trx);
-    }
-    if (scope.accountId) {
-      await sql`select set_config('app.account_id', ${scope.accountId}, true)`.execute(trx);
-    }
+    await sql`select
+      set_config('app.household_id', ${scope.householdId ?? ''}, true),
+      set_config('app.actor', ${actor.kind}, true),
+      set_config('app.account_id', ${account?.accountId ?? scope.accountId ?? ''}, true),
+      set_config('app.member_id', ${account?.memberId ?? ''}, true),
+      set_config('app.role', ${account?.role ?? ''}, true),
+      set_config('app.share_id', ${actor.kind === 'link' ? actor.shareId : ''}, true),
+      set_config('app.upload_request_id', ${actor.kind === 'upload' ? actor.requestId : ''}, true)
+    `.execute(trx);
     return fn(trx);
   });
 }
 
-/** Shorthand for the common case: one household, no account context. */
-export function withHousehold<T>(
+/** Somebody signed in, in their own household, as the member and role they hold. */
+export function withPrincipal<T>(
+  db: Db,
+  principal: ScopePrincipal,
+  fn: (trx: Db) => Promise<T>,
+): Promise<T> {
+  const { householdId, accountId, memberId, role } = principal;
+  return withScope(db, { householdId, actor: { kind: 'account', accountId, memberId, role } }, fn);
+}
+
+/**
+ * The vault itself, in one household: the worker's jobs, and the lookups
+ * that must happen before a caller is known. Whatever runs here answers to
+ * no member's limits, so the API calls it only where it must.
+ */
+export function withSystem<T>(
   db: Db,
   householdId: string,
   fn: (trx: Db) => Promise<T>,
 ): Promise<T> {
-  return withScope(db, { householdId }, fn);
+  return withScope(db, { householdId, actor: { kind: 'system' } }, fn);
 }

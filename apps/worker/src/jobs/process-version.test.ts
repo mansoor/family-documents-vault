@@ -13,7 +13,7 @@ import {
   ScopeKeys,
   wrapKey,
 } from '@fdv/crypto';
-import { createDb, createPool, withHousehold, type Db } from '@fdv/db';
+import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
@@ -74,7 +74,7 @@ describe.skipIf(!ready)('version.process job', () => {
       [hh],
     );
     memberId = m.rows[0]?.id as string;
-    await withHousehold(db, hh, async (trx) => {
+    await withSystem(db, hh, async (trx) => {
       await keys.mintHouseholdKeys(trx, hh);
       await keys.mintMemberKey(trx, hh, memberId, null);
       const v = await trx
@@ -97,7 +97,7 @@ describe.skipIf(!ready)('version.process job', () => {
   });
 
   async function storeVersion(visibility: 'household' | 'private', plain: Buffer) {
-    return withHousehold(db, hh, async (trx) => {
+    return withSystem(db, hh, async (trx) => {
       const doc = await trx
         .insertInto('document')
         .values({ household_id: hh, title: 't', owner_member_id: memberId, visibility })
@@ -158,7 +158,7 @@ describe.skipIf(!ready)('version.process job', () => {
     );
     await processVersion(deps(), { household_id: hh, version_id: versionId });
 
-    const v = await withHousehold(db, hh, (trx) =>
+    const v = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('document_version')
         .selectAll()
@@ -177,7 +177,7 @@ describe.skipIf(!ready)('version.process job', () => {
     );
     expect(thumb.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true); // JPEG
 
-    const text = await withHousehold(db, hh, (trx) =>
+    const text = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('document_text')
         .select('content')
@@ -186,7 +186,7 @@ describe.skipIf(!ready)('version.process job', () => {
     );
     expect(text.content.replace(/\s+/g, ' ')).toMatch(/POLICY NUMBER 4471/i);
 
-    const hit = await withHousehold(db, hh, (trx) =>
+    const hit = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('document_text')
         .select('document_id')
@@ -199,11 +199,11 @@ describe.skipIf(!ready)('version.process job', () => {
   it('a private document gets sealed text and no plain index row', async () => {
     const { versionId, scopeKey } = await storeVersion('private', textPdf('SECRET WILL CLAUSE 7'));
     await processVersion(deps(), { household_id: hh, version_id: versionId });
-    const plain = await withHousehold(db, hh, (trx) =>
+    const plain = await withSystem(db, hh, (trx) =>
       trx.selectFrom('document_text').selectAll().where('version_id', '=', versionId).execute(),
     );
     expect(plain).toEqual([]);
-    const sealed = await withHousehold(db, hh, (trx) =>
+    const sealed = await withSystem(db, hh, (trx) =>
       trx
         .selectFrom('document_text_sealed')
         .selectAll()

@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
-import { appendAudit, withScope, type Db } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { ApiError } from '../errors.js';
 import type { PasskeyService } from './passkeys.js';
 import type { Principal, RequestMeta } from './service.js';
@@ -62,7 +62,7 @@ export class StepUpService {
    * for a credential on every single action.
    */
   private async verifiedAt(p: Principal): Promise<Date | null> {
-    const row = await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('session')
         .select(['verified_at'])
@@ -123,10 +123,10 @@ export class StepUpService {
     }
 
     const now = new Date();
-    await withScope(this.db, { householdId: p.householdId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       trx.updateTable('session').set({ verified_at: now }).where('id', '=', p.sessionId).execute(),
     );
-    await withScope(this.db, { householdId: p.householdId, accountId: p.accountId }, (trx) =>
+    await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
