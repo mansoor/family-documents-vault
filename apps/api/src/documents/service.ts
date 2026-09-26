@@ -1564,7 +1564,7 @@ export class DocumentService {
     if (!unhides && !unmarks) return null;
     if (change.visibility !== undefined && !allows(p, 'document.visibility')) return null;
     if (change.is_essential !== undefined && !allows(p, 'document.edit')) return null;
-    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+    return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('document')
         .select(['visibility', 'is_essential', 'owner_member_id'])
