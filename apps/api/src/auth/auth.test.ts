@@ -84,9 +84,14 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
     expect(anon.statusCode).toBe(401);
     expect(error(anon).code).toBe('unauthenticated');
 
+    // The signature's first character changed: always a different
+    // signature (its last character carries padding bits, so changing that
+    // one could decode to the same bytes, and did about once a thousand runs).
+    const [head, body, signature = ''] = tokens.access_token.split('.');
+    const other = signature.startsWith('A') ? 'B' : 'A';
     const forged = await app.inject({
       url: '/api/v1/me',
-      headers: { authorization: `Bearer ${tokens.access_token.slice(0, -2)}xx` },
+      headers: { authorization: `Bearer ${head}.${body}.${other}${signature.slice(1)}` },
     });
     expect(forged.statusCode).toBe(401);
   });
