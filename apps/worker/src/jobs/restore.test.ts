@@ -347,6 +347,39 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it('notices a table that lost its rule for each kind of caller, or a link free to rewrite its share', async () => {
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'reminder_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    await sql(vault.adminUrl, 'drop policy reminder_actor on public.reminder');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on reminder/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy reminder_actor on public.reminder as restrictive using (${rule})`,
+      );
+    }
+
+    await sql(
+      vault.adminUrl,
+      'alter table public.share_link disable trigger share_link_link_writes',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.share_link enable trigger share_link_link_writes',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);

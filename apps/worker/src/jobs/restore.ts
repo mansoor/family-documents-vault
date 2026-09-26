@@ -348,6 +348,22 @@ begin
 end $guard$;`;
 }
 
+/** The tables 0030 gives a rule for each kind of caller. */
+const ACTOR_GUARDED = [
+  'document',
+  'document_version',
+  'document_text',
+  'document_text_sealed',
+  'reminder',
+  'reminder_delivery',
+  'share_link',
+  'document_link',
+  'offline_fill',
+  'private_notice',
+  'upload_idempotency',
+  'export',
+];
+
 /**
  * The restored vault, seen the way the vault will see it: as the
  * application role, one household at a time.
@@ -380,16 +396,30 @@ export async function checkRestored(
     if (t.unprotected.length) {
       throw new Error(`row-level security is off on ${t.unprotected.join(', ')}`);
     }
-    // The database's own guards: the audit log refuses changes, and a
-    // household always keeps an owner.
+    // The database's own guards: the audit log refuses changes, a
+    // household always keeps an owner, and a link only counts on its share.
     const { rows: guards } = await admin.query<{ tgname: string }>(
       `select tgname from pg_trigger
         where not tgisinternal and tgenabled <> 'D'
-          and tgname in ('audit_event_no_update', 'owner_floor')`,
+          and tgname in ('audit_event_no_update', 'owner_floor', 'share_link_link_writes')`,
     );
-    if (guards.length !== 2) {
+    if (guards.length !== 3) {
       throw new Error(
         `a guard the vault relies on is missing (found: ${guards.map((g) => g.tgname).join(', ') || 'none'})`,
+      );
+    }
+    // And the second wall (0030): a rule for each kind of caller on the
+    // document, all that hangs off it, and exports.
+    const { rows: unguarded } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive)`,
+      [ACTOR_GUARDED],
+    );
+    if (unguarded.length) {
+      throw new Error(
+        `no rule for each kind of caller on ${unguarded.map((u) => u.name).join(', ')}`,
       );
     }
 

@@ -46,6 +46,7 @@ begin
   -- A link's rule (0030) asks it which document the link may see.
   if to_regprocedure('public.app_shared_document()') is not null then
     grant execute on function public.app_shared_document() to fdv_app;
+    grant execute on function public.app_shared_version() to fdv_app;
   end if;
 end $$;
 

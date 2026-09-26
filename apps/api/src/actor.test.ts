@@ -60,6 +60,31 @@ function usesIn(file: string, text: string): string[] {
       }
       return; // a plain import of it is not a use
     }
+    // The other ways of asking as the vault: loading @fdv/db as the code
+    // runs (where a name can be put together), a scope that names the system
+    // as its actor, and the setting said by hand.
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+      node.arguments.some((a) => ts.isStringLiteralLike(a) && a.text === '@fdv/db')
+    ) {
+      found.push(`${file} ${enclosing(node)} (loads @fdv/db as it runs)`);
+    }
+    if (
+      ts.isPropertyAssignment(node) &&
+      node.name.getText() === 'kind' &&
+      ts.isStringLiteralLike(node.initializer) &&
+      node.initializer.text === 'system'
+    ) {
+      found.push(`${file} ${enclosing(node)} (kind: 'system')`);
+    }
+    if (
+      (ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)) &&
+      node.text.includes('app.actor')
+    ) {
+      found.push(`${file} ${enclosing(node)} (says app.actor)`);
+    }
     if (ts.isIdentifier(node) && node.text === 'withSystem') {
       const called = ts.isCallExpression(node.parent) && node.parent.expression === node;
       found.push(`${file} ${enclosing(node)}${called ? '' : ' (not a plain call)'}`);
@@ -118,6 +143,9 @@ describe('withSystem in the API', () => {
       }
       export function run() { return db.withSystem(x, 'h', f); }
       const handedOn = { go: withSystem };
+      export async function loaded() { const m = await import('@fdv/db'); return m['with' + 'System']; }
+      export function cast() { return withScope(d, { householdId: 'h', actor: { kind: 'system' } as never }, f); }
+      export function byHand(trx) { return sql.raw("select set_config('app.actor', 'system', true)").execute(trx); }
     `;
     expect(usesIn('x.ts', code).sort()).toEqual(
       [
@@ -127,7 +155,27 @@ describe('withSystem in the API', () => {
         'x.ts Things.list',
         'x.ts run (not a plain call)',
         'x.ts (top level) (not a plain call)',
+        'x.ts loaded (loads @fdv/db as it runs)',
+        "x.ts cast (kind: 'system')",
+        'x.ts byHand (says app.actor)',
       ].sort(),
     );
+  });
+
+  it('no package asks as the vault, but @fdv/db where it says how', async () => {
+    const packages = path.join(SRC, '..', '..', '..', 'packages');
+    const found: string[] = [];
+    for (const pkg of await readdir(packages)) {
+      const src = path.join(packages, pkg, 'src');
+      const files = await readdir(src, { recursive: true }).catch(() => [] as string[]);
+      for (const f of files.map((f) => f.split(path.sep).join('/')).sort()) {
+        if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+        const name = `packages/${pkg}/src/${f}`;
+        found.push(...usesIn(name, await readFile(path.join(src, f), 'utf8')));
+      }
+    }
+    // client.ts makes withSystem and the scopes, and so says app.actor and
+    // 'system' itself; nothing else in the packages may.
+    expect(found.filter((f) => !f.startsWith('packages/db/src/client.ts '))).toEqual([]);
   });
 });

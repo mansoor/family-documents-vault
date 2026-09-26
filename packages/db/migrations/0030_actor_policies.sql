@@ -10,14 +10,17 @@
 --              5.32 narrows it for a viewer given only some documents.
 --   system     every row: the worker's jobs, and the API's few lookups
 --              before a caller is known (withSystem, on an allow-list).
---   link       reads the one document its share was made for, its file,
---              and the share itself: only while the share is live (not
---              taken back, not expired) and the document is not in the
---              Trash. Not the document's text, reminders or links to other
---              documents, and never another document of the household. It
---              writes only its own share's row (an open, a wrong PIN): it
---              adds, changes and takes away nothing else. 5.19 adds the
---              items of a list share.
+--   link       reads the one document its share was made for, the newest
+--              version of its file, and the share itself: only while the
+--              share is live (not taken back, not expired, not locked by
+--              wrong PINs), its maker can still see the document, and the
+--              document is not in the Trash — the checks shares.ts makes on
+--              every open, made here too. Not the document's text,
+--              reminders or links to other documents, and never another
+--              document of the household. It writes only its own share's
+--              counts of opens and wrong PINs, and only upwards: it adds,
+--              changes and takes away nothing else. 5.19 adds the items of
+--              a list share.
 --   upload     nothing. 5.21 gives it tables of its own.
 --   anonymous  nothing: a sign-in, invitation or reset page has no business
 --              with documents.
@@ -34,9 +37,11 @@
 --   as to the rows read.
 -- * The page previews (0027) are columns of document_version, and covered
 --   with it.
--- * A live share's own row stays writable by its link, attempts and all: a
---   wrong PIN must still be counted. The rule does not look at attempts;
---   ten wrong ones end the link in the application.
+-- * A live share's own row stays writable by its link: a wrong PIN must
+--   still be counted. A trigger keeps that write to the counts.
+-- * Every function here that runs with the owner's rights puts pg_temp last
+--   in its path, so a temporary table cannot stand in for one it reads; the
+--   older ones are brought in line at the end.
 
 create function app_actor() returns text
   language sql stable parallel safe as
@@ -58,22 +63,47 @@ create function app_upload_request() returns uuid
   language sql stable parallel safe as
   $$ select nullif(current_setting('app.upload_request_id', true), '')::uuid $$;
 
--- The document the asking link was made for, while the link is live and the
--- document is not in the Trash; otherwise null. It reads with the owner's
--- rights, as share_link_household() does: share_link's rule needs document
--- and document's rule needs share_link, and a policy that reads a table
--- whose policy reads it back is refused as recursion.
+-- The document the asking link was made for, while the link is live, its
+-- maker can still see the document and the document is not in the Trash;
+-- otherwise null. These are ShareService.live()'s checks (shares.ts): 10 is
+-- its MAX_PIN_ATTEMPTS, and the visibility case is canSee() with the roles
+-- of document.see_adults (packages/shared/src/roles.ts). Change them
+-- together. It reads with the owner's rights, as share_link_household()
+-- does: share_link's rule needs document and document's rule needs
+-- share_link, and a policy that reads a table whose policy reads it back is
+-- refused as recursion.
 create function app_shared_document() returns uuid
-  language sql stable parallel safe security definer set search_path = public as
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
   $$ select s.document_id
        from share_link s
        join document d on d.id = s.document_id
+       join account_household maker
+         on maker.account_id = s.created_by and maker.household_id = s.household_id
       where s.id = app_share()
         and s.household_id = app_household()
         and s.revoked_at is null
         and s.expires_at > now()
-        and d.deleted_at is null $$;
+        and s.attempts < 10
+        and d.deleted_at is null
+        and case d.visibility
+              when 'household' then true
+              when 'adults' then maker.role in ('owner', 'adult')
+              when 'private' then d.owner_member_id = maker.member_id
+              else false
+            end $$;
 grant execute on function app_shared_document() to fdv_app;
+
+-- The newest version of that document's file: the one the share page gives.
+create function app_shared_version() returns uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select v.id
+       from document_version v
+      where v.document_id = app_shared_document()
+      order by v.version_no desc
+      limit 1 $$;
+grant execute on function app_shared_version() to fdv_app;
 
 -- ------------------------------------------------------------ the document
 
@@ -85,12 +115,12 @@ create policy document_actor on document as restrictive
            else false
          end);
 
--- Its file, one row per version.
+-- Its file, one row per version; a link is given the newest.
 create policy document_version_actor on document_version as restrictive
   using (case app_actor()
            when 'account' then true
            when 'system' then true
-           when 'link' then document_id = (select app_shared_document())
+           when 'link' then id = (select app_shared_version())
            else false
          end);
 
@@ -102,6 +132,28 @@ create policy share_link_actor on share_link as restrictive
            when 'link' then id = app_share() and document_id = (select app_shared_document())
            else false
          end);
+
+-- What a link may change on its own share: its counts of opens (and when)
+-- and of wrong PINs, each only upwards. When it ends, its PIN and whom it
+-- is for are the sharer's. A rule cannot say which columns change, so a
+-- trigger does; it compares every column but those three, so a column
+-- added later is the sharer's too.
+create function share_link_link_writes() returns trigger
+  language plpgsql set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if app_actor() = 'link' and (
+       (to_jsonb(new) - array['open_count', 'last_opened_at', 'attempts'])
+         is distinct from (to_jsonb(old) - array['open_count', 'last_opened_at', 'attempts'])
+       or new.open_count < old.open_count
+       or new.attempts < old.attempts) then
+    raise exception 'a share link may only count its opens and wrong PINs'
+      using errcode = 'insufficient_privilege';
+  end if;
+  return new;
+end $$;
+
+create trigger share_link_link_writes before update on share_link
+  for each row execute function share_link_link_writes();
 
 -- A link reads: adding, changing or taking away a document, a file or a
 -- share is for somebody signed in, or the vault itself. The one write a
@@ -187,3 +239,19 @@ create policy upload_idempotency_actor on upload_idempotency as restrictive
            when 'system' then true
            else false
          end);
+
+-- A household's export: the whole archive, and the key to it.
+create policy export_actor on export as restrictive
+  using (case app_actor()
+           when 'account' then true
+           when 'system' then true
+           else false
+         end);
+
+-- ------------------------------------- the owner's rights, pg_temp last
+
+alter function setup_complete() set search_path = pg_catalog, public, pg_temp;
+alter function vault_display_name() set search_path = pg_catalog, public, pg_temp;
+alter function invitation_household(bytea) set search_path = pg_catalog, public, pg_temp;
+alter function share_link_household(bytea) set search_path = pg_catalog, public, pg_temp;
+alter function assert_owner_remains() set search_path = pg_catalog, public, pg_temp;

@@ -175,7 +175,7 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
   });
 });
 
-/** The tables 0030 guards: the document and everything that hangs off it. */
+/** The tables 0030 guards: the document, everything that hangs off it, and exports. */
 const GUARDED = [
   'document',
   'document_version',
@@ -188,6 +188,7 @@ const GUARDED = [
   'offline_fill',
   'private_notice',
   'upload_idempotency',
+  'export',
 ] as const;
 type Counts = Record<(typeof GUARDED)[number], number>;
 
@@ -208,9 +209,22 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
   let everything: Counts;
 
   const hh = randomUUID();
-  const ids = { account: '', member: '', lease: '', will: '' };
-  /** Share links: the one asked as, one for the other document, and two that are over. */
-  const shares = { lease: '', will: '', revoked: '', expired: '' };
+  const ids = {
+    account: '',
+    member: '',
+    lease: '',
+    will: '',
+    /** The lease's second scan: the newest, and the one a link is given. */
+    leaseV2: '',
+    /** A grown-up who shares the lease too, whose sight of it can end. */
+    adultAccount: '',
+    adultMember: '',
+  };
+  /**
+   * Share links: the one asked as, one for the other document, three that
+   * are over, and the adult's.
+   */
+  const shares = { lease: '', will: '', revoked: '', expired: '', locked: '', byAdult: '' };
 
   const one = async <T>(text: string, values: unknown[] = []): Promise<T> =>
     (await admin.query<T & object>(text, values)).rows[0] as T;
@@ -297,15 +311,44 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
         [randomUUID(), hh, doc.id, version.id, ids.account],
       );
     }
+    ids.leaseV2 = (
+      await one<{ id: string }>(
+        `insert into document_version
+           (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+            cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+         values ($1, $2, 2, 'rescan.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00', $3, $4, '\\x00', $5)
+         returning id`,
+        [hh, ids.lease, `k-${ids.lease}-2`, vault.id, scope.id],
+      )
+    ).id;
     await admin.query(
       'insert into document_link (household_id, a, b) values ($1, least($2::uuid, $3::uuid), greatest($2::uuid, $3::uuid))',
       [hh, ids.lease, ids.will],
     );
-    const share = async (doc: string, ended = '') => {
+    await admin.query('insert into export (household_id, requested_by) values ($1, $2)', [
+      hh,
+      ids.account,
+    ]);
+    ids.adultMember = (
+      await one<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'Adult') returning id",
+        [hh],
+      )
+    ).id;
+    ids.adultAccount = (
+      await one<{ id: string }>('insert into account (email) values ($1) returning id', [
+        `rules-adult-${hh}@example.test`,
+      ])
+    ).id;
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+      [ids.adultAccount, hh, ids.adultMember],
+    );
+    const share = async (doc: string, ended = '', by = ids.account) => {
       const { id } = await one<{ id: string }>(
         `insert into share_link (household_id, document_id, token_hash, created_by, expires_at)
          values ($1, $2, $3, $4, now() + interval '7 days') returning id`,
-        [hh, doc, randomBytes(32), ids.account],
+        [hh, doc, randomBytes(32), by],
       );
       if (ended) await admin.query(`update share_link set ${ended} where id = $1`, [id]);
       return id;
@@ -314,6 +357,9 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     shares.will = await share(ids.will);
     shares.revoked = await share(ids.lease, 'revoked_at = now(), revoked_by = created_by');
     shares.expired = await share(ids.lease, "expires_at = now() - interval '1 minute'");
+    // Ten wrong PINs: MAX_PIN_ATTEMPTS in shares.ts.
+    shares.locked = await share(ids.lease, 'attempts = 10');
+    shares.byAdult = await share(ids.lease, '', ids.adultAccount);
 
     everything = await counts(createDb(admin));
   }, 60_000);
@@ -357,17 +403,16 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
   it('a link actor gets no row for a document outside its share', async () => {
     const seen = await as(link(shares.lease), async (trx) => ({
       documents: (await trx.selectFrom('document').select('id').execute()).map((r) => r.id),
-      versions: (await trx.selectFrom('document_version').select('document_id').execute()).map(
-        (r) => r.document_id,
-      ),
+      versions: (await trx.selectFrom('document_version').select('id').execute()).map((r) => r.id),
       shares: (await trx.selectFrom('share_link').select('id').execute()).map((r) => r.id),
       counts: await counts(trx),
     }));
-    // Its document, its file and its own share: not the text, the reminders,
-    // the link to the will, or anybody's phone's copy.
+    // Its document, the newest scan of it and its own share: not the first
+    // scan, the text, the reminders, the link to the will, anybody's phone's
+    // copy or the household's export.
     expect(seen).toEqual({
       documents: [ids.lease],
-      versions: [ids.lease],
+      versions: [ids.leaseV2],
       shares: [shares.lease],
       counts: { ...nothing, document: 1, document_version: 1, share_link: 1 },
     });
@@ -440,8 +485,9 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
       await as(link(shares.will), (trx) => trx.selectFrom('document').select('id').execute()),
     ).toEqual([{ id: ids.will }]);
 
-    // A link taken back or expired is given nothing, even of its own document.
-    for (const over of [shares.revoked, shares.expired]) {
+    // A link taken back, expired or locked by wrong PINs is given nothing,
+    // even of its own document.
+    for (const over of [shares.revoked, shares.expired, shares.locked]) {
       expect(await as(link(over), counts)).toEqual(nothing);
     }
     // Nor is a live one whose document went in the Trash.
@@ -453,6 +499,152 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     }
     // And a share id from nowhere is given nothing.
     expect(await as(link(randomUUID()), counts)).toEqual(nothing);
+  });
+
+  it('a link counts its opens and wrong PINs, upwards, and changes nothing else on its share', async () => {
+    const counted = await as(link(shares.lease), (trx) =>
+      trx
+        .updateTable('share_link')
+        .set((eb) => ({ open_count: eb('open_count', '+', 1), last_opened_at: new Date() }))
+        .where('id', '=', shares.lease)
+        .returning('open_count')
+        .executeTakeFirst(),
+    );
+    expect(counted?.open_count).toBeGreaterThan(0);
+
+    // When it ends, its PIN, whom it is for, and its counts going down are
+    // the sharer's.
+    const theSharers: [string, (trx: Db) => Promise<unknown>][] = [
+      [
+        'a later end',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ expires_at: new Date('2126-01-01') })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'a PIN of its own choosing',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ pin_hash: 'chosen by whoever holds the link' })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'somebody else',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ recipient_label: 'somebody else' })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'taken back',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ revoked_at: new Date(), revoked_by: ids.account })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'fewer wrong PINs',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set((eb) => ({ attempts: eb('attempts', '-', 1) }))
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'fewer opens',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set((eb) => ({ open_count: eb('open_count', '-', 1) }))
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'a new token, by way of a conflict',
+        (trx) =>
+          sql`insert into share_link (id, household_id, document_id, token_hash, created_by, expires_at)
+              select id, household_id, document_id, ${randomBytes(32)}, created_by, expires_at
+                from share_link where id = ${shares.lease}
+              on conflict (id) do update set token_hash = excluded.token_hash`.execute(trx),
+      ],
+    ];
+    for (const [what, change] of theSharers) {
+      await expect(as(link(shares.lease), change), what).rejects.toThrow(
+        /only count its opens|row-level security/,
+      );
+    }
+
+    // Somebody signed in is not held to it: the trigger is the link's alone.
+    const p = {
+      householdId: hh,
+      accountId: ids.account,
+      memberId: ids.member,
+      role: 'owner' as const,
+    };
+    const relabelled = await withPrincipal(db, p, (trx) =>
+      trx
+        .updateTable('share_link')
+        .set({ recipient_label: 'the letting agent' })
+        .where('id', '=', shares.lease)
+        .executeTakeFirst(),
+    );
+    expect(relabelled.numUpdatedRows).toBe(1n);
+  });
+
+  it("a link lasts only as long as its maker's sight of the document", async () => {
+    const documents = async () => (await as(link(shares.byAdult), counts)).document;
+    expect(await documents()).toBe(1);
+
+    // Made Only me by the owner: the adult no longer sees it, nor does their link.
+    await admin.query(
+      "update document set visibility = 'private', owner_member_id = $1 where id = $2",
+      [ids.member, ids.lease],
+    );
+    try {
+      expect(await documents()).toBe(0);
+    } finally {
+      await admin.query(
+        "update document set visibility = 'household', owner_member_id = null where id = $1",
+        [ids.lease],
+      );
+    }
+
+    // For the adults, and the adult made a teen.
+    await admin.query("update document set visibility = 'adults' where id = $1", [ids.lease]);
+    try {
+      expect(await documents()).toBe(1);
+      await admin.query("update account_household set role = 'teen' where account_id = $1", [
+        ids.adultAccount,
+      ]);
+      expect(await documents()).toBe(0);
+    } finally {
+      await admin.query("update account_household set role = 'adult' where account_id = $1", [
+        ids.adultAccount,
+      ]);
+      await admin.query("update document set visibility = 'household' where id = $1", [ids.lease]);
+    }
+
+    // Their sign-in taken away.
+    await admin.query('delete from account_household where account_id = $1', [ids.adultAccount]);
+    try {
+      expect(await documents()).toBe(0);
+    } finally {
+      await admin.query(
+        "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'adult')",
+        [ids.adultAccount, hh, ids.adultMember],
+      );
+    }
+    expect(await documents()).toBe(1);
   });
 
   it('an upload actor and an anonymous page see no document', async () => {
