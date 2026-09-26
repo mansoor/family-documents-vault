@@ -97,11 +97,51 @@ describe.skipIf(!testAdminUrl())('refresh grace, sliding expiry, and why a sessi
     }
   });
 
-  it('a browser never gets the grace', async () => {
-    const t0 = await signIn(null);
-    await refreshed(t0.refresh_token, null);
-    const replay = await refresh(t0.refresh_token, null);
-    expect(replay.statusCode).toBe(401);
+  it('a browser gets the grace only as itself: its own user agent, from the address it refreshed from', async () => {
+    // A page reloaded while its refresh was on the way: the same browser,
+    // at the same address, presents the token just spent.
+    const BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/140.0';
+    const from = { remoteAddress: '10.9.9.9' };
+    const asBrowser = (token: string, agent = BROWSER, at = from) =>
+      h.app.inject({
+        ...at,
+        method: 'POST',
+        url: '/api/v1/auth/refresh',
+        headers: { 'user-agent': agent },
+        payload: { refresh_token: token },
+      });
+    const browserSignIn = async () => {
+      const res = await h.app.inject({
+        ...from,
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        headers: { 'user-agent': BROWSER },
+        payload: { email: 'owner@example.test', password: 'correct horse battery' },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json<Tokens>();
+    };
+
+    const t0 = await browserSignIn();
+    expect((await asBrowser(t0.refresh_token)).statusCode).toBe(200); // answer lost
+    const again = await asBrowser(t0.refresh_token);
+    expect(again.statusCode, again.body).toBe(200);
+    // Once: the same replay a second time ends the session.
+    const twice = await asBrowser(t0.refresh_token);
+    expect(twice.statusCode).toBe(401);
+    expect(reasonOf(twice).reason).toBe('reused');
+
+    // Another browser, or the same one from another address, is not it.
+    for (const [agent, at] of [
+      ['Mozilla/5.0 (Macintosh) Safari/19.0', from],
+      [BROWSER, { remoteAddress: '10.9.9.10' }],
+    ] as const) {
+      const t = await browserSignIn();
+      expect((await asBrowser(t.refresh_token)).statusCode).toBe(200);
+      const replay = await asBrowser(t.refresh_token, agent, at);
+      expect(replay.statusCode, `${agent} ${at.remoteAddress}`).toBe(401);
+      expect(reasonOf(replay).reason).toBe('reused');
+    }
   });
 
   it('a replay after 30 s revokes the session', async () => {

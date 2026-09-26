@@ -382,12 +382,15 @@ export class AuthService {
    *
    * A token that was already rotated is proof of theft (either the thief or
    * the owner is replaying): the whole session is revoked and both must
-   * sign in again. With one exception, for phones on networks that drop
-   * answers: the token just replaced may be presented once more, within 30
-   * seconds of its rotation, from the session's own app installation — a
-   * refresh whose answer never arrived, tried again. It gets a new
-   * rotation, and the token it displaces becomes the previous one, so that
-   * whoever holds that one ends the session if they ever use it.
+   * sign in again. With one exception, for answers that never arrive — a
+   * phone on a network that drops them, or a browser page reloaded while
+   * its refresh was on the way: the token just replaced may be presented
+   * once more, within 30 seconds of its rotation, from the same client —
+   * the session's own app installation, or, for a browser (which has
+   * none), the same browser from the same address it last refreshed from.
+   * It gets a new rotation, and the token it displaces becomes the
+   * previous one, so that whoever holds that one ends the session if they
+   * ever use it.
    */
   async refresh(refreshToken: string, meta: RequestMeta): Promise<Tokens> {
     const parsed = parseRefreshToken(refreshToken);
@@ -694,18 +697,32 @@ export function graceAllows(
     rotated_at: Date | null;
     grace_used_at: Date | null;
     installation_id: string | null;
+    user_agent: string | null;
+    ip: string | null;
     revoked_at: Date | null;
   },
   meta: RequestMeta,
   now: Date,
 ): boolean {
+  // The same client that spent the token: an app says which installation
+  // it is; a browser says nothing of the kind, so it is the browser with
+  // the session's user agent, at the address the token was spent from
+  // (5.14: a page reloaded while its refresh was on the way lost the
+  // answer, and with it the session).
+  const sameClient =
+    s.installation_id !== null
+      ? meta.installationId === s.installation_id
+      : !meta.installationId &&
+        s.user_agent !== null &&
+        meta.userAgent === s.user_agent &&
+        s.ip !== null &&
+        meta.ip === s.ip;
   return (
     s.revoked_at === null &&
     s.rotated_at !== null &&
     now.getTime() - s.rotated_at.getTime() <= REFRESH_GRACE_MS &&
     s.grace_used_at === null &&
-    s.installation_id !== null &&
-    meta.installationId === s.installation_id
+    sameClient
   );
 }
 
