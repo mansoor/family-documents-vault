@@ -58,6 +58,8 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
             title,
             owner_member_id: m.rows[0]?.id as string,
             type_key: 'passport',
+            // A passport's number is required from 0032 (A9): these have one.
+            identifier: `P-${title}`,
             expires_on: addDays(fire, 180),
             expires_precision: 'day',
           })
@@ -196,5 +198,37 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
     }
     await refreshStatus(deps());
     expect((await statuses()).every((c) => c.status_cache === 'expiring_soon')).toBe(true);
+  });
+
+  it('refreshStatus: a required field with no value is Needs info, as the API says (0.5.7)', async () => {
+    // With 30 days' warning the passports are simply valid — but one has
+    // no number, which a passport requires (A9).
+    await admin.query(
+      `insert into document_type_setting (household_id, type_key, reminder_leads)
+       values ($1, 'passport', '{30}')`,
+      [hh],
+    );
+    await admin.query(
+      "update document set identifier = null where household_id = $1 and title = 'Insurance'",
+      [hh],
+    );
+    try {
+      at('2026-10-05T09:00:00Z');
+      await refreshStatus(deps());
+      const cached = await withSystem(db, hh, (trx) =>
+        trx.selectFrom('document').select(['title', 'status_cache']).orderBy('title').execute(),
+      );
+      expect(cached).toEqual([
+        { title: 'Car registration', status_cache: 'active' },
+        { title: 'Insurance', status_cache: 'needs_info' },
+        { title: 'Passport', status_cache: 'active' },
+      ]);
+    } finally {
+      await admin.query('delete from document_type_setting where household_id = $1', [hh]);
+      await admin.query(
+        "update document set identifier = 'P-Insurance' where household_id = $1 and title = 'Insurance'",
+        [hh],
+      );
+    }
   });
 });

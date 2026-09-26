@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
 import { EncryptStream, newKey, unwrapKey, wrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
-import { formatDate, type DateValue } from '@fdv/shared';
+import { formatDate, wellFormedDate, type DateValue, type TypeField } from '@fdv/shared';
 import { adapterFromRow } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
 import { sql } from 'kysely';
@@ -46,9 +46,17 @@ interface Entry {
   physical_location: string | null;
   tags: string[];
   notes: string | null;
+  /** The type's own details, by field key, as the vault keeps them (0.5.7). */
+  extra: Record<string, unknown>;
   file: string | null;
   version_no: number | null;
   sha256: string | null;
+}
+
+/** A column for one of the types' details: its key, and the name it is shown by. */
+interface DetailColumn {
+  key: string;
+  label: string;
 }
 
 const safe = (s: string) =>
@@ -103,6 +111,16 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .orderBy('title')
         .execute();
       const members = await trx.selectFrom('member').select(['id', 'display_name']).execute();
+      // What each detail is called: by its type as the household has it,
+      // hidden ones too, or else by the attribute library (0.5.7).
+      const types = await trx
+        .selectFrom('effective_document_type')
+        .select(['key', 'fields'])
+        .execute();
+      const attributes = await trx
+        .selectFrom('document_attribute')
+        .select(['key', 'label'])
+        .execute();
       const versions = await trx
         .selectFrom('document_version')
         .selectAll()
@@ -120,8 +138,23 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .select('active_vault_id')
         .where('id', '=', hh)
         .executeTakeFirstOrThrow();
-      return { docs, members, versions, vaults, hhKey, activeVaultId: active.active_vault_id, exp };
+      return {
+        docs,
+        members,
+        types,
+        attributes,
+        versions,
+        vaults,
+        hhKey,
+        activeVaultId: active.active_vault_id,
+        exp,
+      };
     });
+    const columns = detailColumns(
+      ctx.docs.map((d) => ({ type_key: d.type_key, extra: extraOf(d.extra) })),
+      ctx.types.map((t) => ({ key: t.key, fields: (t.fields ?? []) as TypeField[] })),
+      ctx.attributes,
+    );
 
     const memberName = new Map(ctx.members.map((m) => [m.id, m.display_name]));
     const latestOf = new Map<string, (typeof ctx.versions)[number]>();
@@ -172,6 +205,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         physical_location: d.physical_location,
         tags: d.tags,
         notes: d.notes,
+        extra: extraOf(d.extra),
         file,
         version_no: v?.version_no ?? null,
         sha256: v ? v.sha256.toString('hex') : null,
@@ -179,11 +213,20 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
     }
 
     archive.append(
-      JSON.stringify({ exported_at: new Date().toISOString(), documents: entries }, null, 2),
+      JSON.stringify(
+        {
+          exported_at: new Date().toISOString(),
+          // What each key in a document's `extra` is called.
+          details: columns.map(({ key, label }) => ({ key, label })),
+          documents: entries,
+        },
+        null,
+        2,
+      ),
       { name: 'index.json' },
     );
-    archive.append(csv(entries), { name: 'index.csv' });
-    archive.append(html(entries), { name: 'index.html' });
+    archive.append(csv(entries, columns), { name: 'index.csv' });
+    archive.append(html(entries, columns), { name: 'index.html' });
     archive.append(README, { name: 'README.txt' });
     await archive.finalize();
     await done;
@@ -226,8 +269,59 @@ function dateOf(d: string | null, precision: DateValue['precision'] | null): str
   return formatDate({ date: d.slice(0, 10), precision });
 }
 
-function csv(entries: Entry[]): string {
-  const cols: Array<keyof Entry> = [
+/**
+ * A document's details as the database hands them over: an object, or
+ * nothing — copied onto no prototype, so a detail a document lacks is
+ * nothing, not something every object inherits ("constructor", kept by a
+ * vault before 0.5.7, which took any key).
+ */
+function extraOf(v: unknown): Record<string, unknown> {
+  const own = Object.create(null) as Record<string, unknown>;
+  if (v && typeof v === 'object' && !Array.isArray(v)) Object.assign(own, v);
+  return own;
+}
+
+/**
+ * A column for each detail any exported document has, in the order its
+ * type asks for them, named as the type names it (else as the library
+ * does, else by its key). Two details called the same are told apart by
+ * their keys: "Account (account)", "Account (h_x2k…)".
+ */
+export function detailColumns(
+  docs: ReadonlyArray<{ type_key: string | null; extra: Record<string, unknown> }>,
+  types: ReadonlyArray<{ key: string; fields: ReadonlyArray<Pick<TypeField, 'key' | 'label'>> }>,
+  library: ReadonlyArray<{ key: string; label: string }>,
+): DetailColumn[] {
+  const byKey = new Map<string, DetailColumn>();
+  for (const d of docs) {
+    const fields = types.find((t) => t.key === d.type_key)?.fields ?? [];
+    const held = Object.keys(d.extra);
+    const ordered = [
+      ...fields.map((f) => f.key).filter((k) => held.includes(k)),
+      ...held.filter((k) => !fields.some((f) => f.key === k)).sort(),
+    ];
+    for (const key of ordered) {
+      if (byKey.has(key)) continue;
+      const named = fields.find((f) => f.key === key) ?? library.find((a) => a.key === key);
+      byKey.set(key, { key, label: named?.label ?? key });
+    }
+  }
+  const columns = [...byKey.values()];
+  const count = (label: string) => columns.filter((c) => c.label === label).length;
+  return columns.map((c) => (count(c.label) > 1 ? { ...c, label: `${c.label} (${c.key})` } : c));
+}
+
+/** One detail as a person reads it: a date in words, yes or no; numbers stay numbers. */
+function detailValue(v: unknown): string | number | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'string' || typeof v === 'number') return v;
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (wellFormedDate(v as DateValue)) return formatDate(v as DateValue);
+  return JSON.stringify(v);
+}
+
+function csv(entries: Entry[], details: DetailColumn[]): string {
+  const cols = [
     'title',
     'type_key',
     'category',
@@ -240,15 +334,17 @@ function csv(entries: Entry[]): string {
     'physical_location',
     'tags',
     'notes',
-    'file',
-    'version_no',
-    'sha256',
-    'document_id',
+  ] as const;
+  const tail = ['file', 'version_no', 'sha256', 'document_id'] as const;
+  // A detail's name is somebody's writing too, so the header is guarded as
+  // every cell is.
+  const header = [...cols, ...details.map((c) => c.label), ...tail].map(csvCell);
+  const row = (e: Entry) => [
+    ...cols.map((c) => csvCell(e[c])),
+    ...details.map((c) => csvCell(detailValue(e.extra[c.key]))),
+    ...tail.map((c) => csvCell(e[c])),
   ];
-  return (
-    [cols.join(','), ...entries.map((e) => cols.map((c) => csvCell(e[c])).join(','))].join('\n') +
-    '\n'
-  );
+  return [header.join(','), ...entries.map((e) => row(e).join(','))].join('\n') + '\n';
 }
 
 /**
@@ -263,22 +359,28 @@ export function csvCell(v: string | number | string[] | null): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function html(entries: Entry[]): string {
+function html(entries: Entry[], details: DetailColumn[]): string {
   const esc = (s: string | number | null) =>
     String(s ?? '').replace(
       /[&<>"]/g,
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
     );
+  // Each document's details, one to a line: "VIN: 1HGCM82633A004352".
+  const detailsOf = (e: Entry) =>
+    details
+      .filter((c) => detailValue(e.extra[c.key]) !== null)
+      .map((c) => `${esc(c.label)}: ${esc(detailValue(e.extra[c.key]))}`)
+      .join('<br>');
   const rows = entries
     .map(
       (e) =>
-        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${esc(e.physical_location)}</td></tr>`,
+        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
     )
     .join('\n');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Family Document Vault export</title>
 <style>body{font-family:system-ui,sans-serif;margin:24px;color:#1c1a17;background:#faf8f4}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:8px 10px;border-bottom:1px solid #e6e0d6}th{font-size:13px;color:#5e574e}h1{font-weight:600}</style></head>
 <body><h1>Family Document Vault export</h1><p>${entries.length} document${entries.length === 1 ? '' : 's'}. Files are in folders by category; this page and index.csv list what each one is.</p>
-<table><thead><tr><th>Document</th><th>Category</th><th>Person</th><th>Expires</th><th>Number</th><th>Original is kept</th></tr></thead><tbody>
+<table><thead><tr><th>Document</th><th>Category</th><th>Person</th><th>Expires</th><th>Number</th><th>Details</th><th>Original is kept</th></tr></thead><tbody>
 ${rows}
 </tbody></table></body></html>\n`;
 }

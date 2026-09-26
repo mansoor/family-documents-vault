@@ -1467,6 +1467,55 @@ describe('App', () => {
   });
 });
 
+describe("a type's details (5.8)", () => {
+  /** A passport kept without its number: the vault says what it needs. */
+  const needy = () => ({
+    ...PASSPORT,
+    identifier: null,
+    status: { value: 'needs_info', label: 'Needs a passport number' },
+  });
+
+  it('the words that say what a document needs appear wherever its status shows', async () => {
+    const state = fresh({ documents: [needy()] });
+    installFakeApi(state);
+    signedIn();
+    render(<App />);
+    // Home: in what needs attention, and on the document's own row.
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    await waitFor(() =>
+      expect(screen.getAllByText('Needs a passport number').length).toBeGreaterThanOrEqual(2),
+    );
+    expect(
+      screen.queryByText('Everything is fine. Nothing needs your attention.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('the document itself, the Needs attention list and search say it too', async () => {
+    const state = fresh({ documents: [needy()] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    const { unmount } = render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    expect(screen.getByText('Needs a passport number')).toHaveClass('status', 'status-warn');
+    unmount();
+
+    window.history.replaceState({}, '', '/reminders');
+    const again = render(<App />);
+    await screen.findByRole('heading', { name: 'Needs attention' });
+    expect(await screen.findByText('Needs a passport number')).toBeInTheDocument();
+    again.unmount();
+
+    window.history.replaceState({}, '', '/search');
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText('Search everything'), {
+      target: { value: 'passport' },
+    });
+    await screen.findByText("Mansoor's passport");
+    expect(screen.getByText('Needs a passport number')).toBeInTheDocument();
+  });
+});
+
 describe('the quick fixes (5.1)', () => {
   it('Move to Trash asks in the app’s own dialog: Cancel and Escape keep it, confirming moves it', async () => {
     // A copy: the fake moves it to the Trash, and the next test must not find it there.

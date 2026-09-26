@@ -1,5 +1,15 @@
 import { withSystem, type Db } from '@fdv/db';
-import { addDays, canSee, deriveStatus, localHour, localToday, reminderLabel } from '@fdv/shared';
+import {
+  addDays,
+  canSee,
+  deriveStatus,
+  localHour,
+  localToday,
+  missingFields,
+  reminderLabel,
+  type DateValue,
+  type RequiredRules,
+} from '@fdv/shared';
 import { sql } from 'kysely';
 import type pg from 'pg';
 
@@ -381,7 +391,8 @@ export async function refreshStatus(
     const today = localToday(hh.timezone, now);
     n += await withSystem(deps.app, hh.id, async (trx) => {
       // Each type as this household has it (0031): its own lead times, and
-      // no expiry where it has switched Expires off.
+      // no expiry where it has switched Expires off; and the fields it
+      // requires, which a document without is Needs info (0.5.7).
       const docs = await trx
         .selectFrom('document')
         .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
@@ -390,30 +401,51 @@ export async function refreshStatus(
           'document.owner_member_id',
           'document.expires_on',
           'document.expires_precision',
+          'document.issued_on',
+          'document.issued_precision',
+          'document.identifier',
+          'document.issued_by',
+          'document.physical_location',
+          'document.tags',
+          'document.notes',
+          'document.extra',
           't.key as type_key',
           't.expiry_driver',
           't.reminder_leads',
+          't.core',
+          't.fields',
         ])
         .where('document.deleted_at', 'is', null)
         .execute();
       for (const d of docs) {
-        const expires = d.expires_on
+        const dateOf = (on: string | null, precision: DateValue['precision'] | null) =>
+          on ? { date: String(on).slice(0, 10), precision: precision ?? 'day' } : null;
+        const expires = dateOf(d.expires_on, d.expires_precision);
+        const type = d.type_key
           ? {
-              date: String(d.expires_on).slice(0, 10),
-              precision: d.expires_precision ?? 'day',
+              key: d.type_key,
+              expiry_driver: d.expiry_driver,
+              reminder_leads: d.reminder_leads ?? [],
             }
           : null;
         const status = deriveStatus(
           {
-            type: d.type_key
-              ? {
-                  key: d.type_key,
-                  expiry_driver: d.expiry_driver,
-                  reminder_leads: d.reminder_leads ?? [],
-                }
-              : null,
+            type,
             owner_member_id: d.owner_member_id,
             expires,
+            missing: missingFields(
+              type && {
+                expiry_driver: type.expiry_driver,
+                core: d.core as RequiredRules['core'],
+                fields: d.fields as RequiredRules['fields'],
+              },
+              {
+                ...d,
+                issued: dateOf(d.issued_on, d.issued_precision),
+                expires,
+                extra: d.extra as Record<string, unknown> | null,
+              },
+            ),
           },
           today,
         );

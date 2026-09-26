@@ -6,6 +6,24 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-09-26 — iteration 5.8
+
+A kind of document's own details — a car's VIN, a will's executor, a policy's cover — are now kept properly: checked against what the kind asks for, found by search, and in the export. Screens to fill them in come next.
+
+### Added
+
+- Search finds a document by its details, for documents the family or the adults can see. An Only me document's details stay out of the search index.
+- The export lists each document's details, a column for each, named as its kind names them, and guarded against spreadsheet formulas like every other cell.
+
+### Changed
+
+- A passport without its number or expiry, a driving licence without its expiry, and an insurance policy without its insurer or expiry now read "Needs a passport number" and the like. Nothing is ever refused for want of one; add it and the document reads as its dates say.
+- An edit to a document's details changes only the details it sends, so two people editing different details both keep theirs.
+
+### Security
+
+- A document's details are checked: only the ones its kind asks for, each of its own kind, 16 KB in all at most — also when two edits arrive at once.
+
 ## [0.5.6] - 2026-09-26 — iteration 5.7
 
 Groundwork for the family's own kinds of document: a household can now have types of its own, and its own changes to the built-in ones (hiding one, asking for different details), kept behind the same wall as its documents. Nothing in the app makes them yet, so every list of types is as it was.

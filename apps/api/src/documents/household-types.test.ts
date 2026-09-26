@@ -470,7 +470,8 @@ describe('document types belong to the household', () => {
         core: {
           identifier: { shown: true, required: true, label: 'Passport number' },
           issued_by: { shown: true, required: false, label: 'Issuing country' },
-          expires: { shown: true, required: false, label: null },
+          // Required by the built-in itself since 0032 (A9).
+          expires: { shown: true, required: true, label: null },
         },
       });
       // Every other type is as it was, for B; A's passport is A's; and the
@@ -497,6 +498,8 @@ describe('document types belong to the household', () => {
         type_key: 'passport',
         title: 'New passport',
         owner_member_id: owner.member_id,
+        // The number the setting requires: without it, Needs info (0.5.7).
+        identifier: '563914782',
         expires: { date: in60, precision: 'day' },
       });
       expect(made.statusCode).toBe(201);

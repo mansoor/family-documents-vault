@@ -23,13 +23,19 @@ import {
 } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db, type Schema, type Visibility } from '@fdv/db';
 import {
+  checkExtra,
   deriveStatus,
+  missingFields,
   OFFLINE_SET_MAX,
   type DateValue,
+  type DetailProblem,
   type DocumentAttributeView,
   type DocumentTypeView,
   type DocumentView,
   type OfflineItem,
+  type RequiredRules,
+  type RequiredValues,
+  type Status,
   type TypeField,
   type VersionView,
 } from '@fdv/shared';
@@ -200,6 +206,44 @@ function typeLookup(trx: Db): TypeLookup {
     return (await all).get(key);
   };
 }
+
+/**
+ * A document's status, as its type in the household has it: the required
+ * fields it has no value for make it Needs info, "Needs a passport number"
+ * (0.5.7). Never a refusal: a document is saved without them (A7).
+ */
+export function statusOf(
+  type:
+    | Pick<EffectiveType, 'key' | 'expiry_driver' | 'reminder_leads' | 'core' | 'fields'>
+    | null
+    | undefined,
+  doc: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
+): Status {
+  return deriveStatus(
+    {
+      type: type
+        ? { key: type.key, expiry_driver: type.expiry_driver, reminder_leads: type.reminder_leads }
+        : null,
+      owner_member_id: doc.owner_member_id,
+      expires: doc.expires,
+      missing: missingFields(
+        type
+          ? {
+              expiry_driver: type.expiry_driver,
+              core: type.core as RequiredRules['core'],
+              fields: type.fields as RequiredRules['fields'],
+            }
+          : null,
+        doc,
+      ),
+    },
+    today(),
+  );
+}
+
+/** A detail refused: 422 invalid_extra, naming its key (0.5.7). */
+const invalidExtra = (problem: DetailProblem) =>
+  new ApiError(422, 'invalid_extra', problem.message, { detail: problem.key });
 
 /** A type as GET /document-types answers it: the old shape, and what 0.5.6 added. */
 function typeView(t: EffectiveType): DocumentTypeView {
@@ -405,13 +449,21 @@ export class DocumentService {
     }
   }
 
-  private async fetch(trx: Db, p: Principal, id: string, includeDeleted = false): Promise<DocRow> {
+  private async fetch(
+    trx: Db,
+    p: Principal,
+    id: string,
+    includeDeleted = false,
+    /** Hold the row until the transaction ends: an edit checked against what it holds. */
+    lock = false,
+  ): Promise<DocRow> {
     let q = trx
       .selectFrom('document')
       .selectAll()
       .where('id', '=', id)
       .where(this.visibleTo(p) as never);
     if (!includeDeleted) q = q.where('deleted_at', 'is', null);
+    if (lock) q = q.forUpdate();
     const row = await q.executeTakeFirst();
     if (!row) throw notFound();
     return row;
@@ -459,20 +511,12 @@ export class DocumentService {
       tags: row.tags,
       notes: row.notes,
       extra: (row.extra ?? {}) as Record<string, unknown>,
-      status: deriveStatus(
-        {
-          type: type
-            ? {
-                key: type.key,
-                expiry_driver: type.expiry_driver,
-                reminder_leads: type.reminder_leads,
-              }
-            : null,
-          owner_member_id: row.owner_member_id,
-          expires,
-        },
-        today(),
-      ),
+      status: statusOf(type, {
+        ...row,
+        issued,
+        expires,
+        extra: (row.extra ?? {}) as Record<string, unknown>,
+      }),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -575,7 +619,10 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
-      const current = await this.fetch(trx, p, id);
+      // Details are checked against what the document holds (16 KB at
+      // most): two edits at once must not each pass against the same old
+      // copy and add up past it, so the row is held while this one runs.
+      const current = await this.fetch(trx, p, id, false, input.extra !== undefined);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
           409,
@@ -1337,19 +1384,34 @@ export class DocumentService {
     // ones too, since a phone queues a scan against the list it had.
     const types = await trx
       .selectFrom('effective_document_type')
-      .select(['key', 'expiry_driver', 'default_visibility'])
+      .select(['key', 'expiry_driver', 'default_visibility', 'fields'])
       .execute();
+    // The details are checked against the type named, as the phone checks
+    // them before it queues the scan (0.5.7).
+    const named = types.find((t) => t.key === metadata.type_key);
+    const namedFields = named
+      ? await this.withChoices(trx, (named.fields ?? []) as TypeField[])
+      : [];
     const problem = checkCaptureMetadata(metadata, {
       me: { member_id: p.memberId, role: p.role },
       members,
-      types,
+      types: types.map(({ key, expiry_driver, default_visibility }) => ({
+        key,
+        expiry_driver,
+        default_visibility,
+        ...(key === named?.key ? { fields: namedFields } : {}),
+      })),
     });
     if (problem) {
       throw new ApiError(
         problem.status,
-        problem.status === 403 ? 'forbidden' : 'validation_failed',
+        problem.field === 'extra'
+          ? 'invalid_extra'
+          : problem.status === 403
+            ? 'forbidden'
+            : 'validation_failed',
         problem.message,
-        { detail: problem.field },
+        { detail: problem.key ?? problem.field },
       );
     }
     const input: DocumentInput = { title: null, ...metadata };
@@ -1459,6 +1521,11 @@ export class DocumentService {
         issued_by: string | null;
         issued_on: string | null;
         issued_precision: DateValue['precision'] | null;
+        identifier: string | null;
+        physical_location: string | null;
+        tags: string[];
+        notes: string | null;
+        extra: Record<string, unknown> | null;
         rank: number;
         snippet: string;
         matched_in: 'title' | 'content';
@@ -1466,9 +1533,14 @@ export class DocumentService {
         with query as (select websearch_to_tsquery('simple', ${q.q}) as tsq),
         doc_hits as (
           select d.id, ts_rank(d.search_tsv, query.tsq) * 2 as rank,
+                 -- The details' words are shown where the index has them (0032).
                  ts_headline('simple',
                    coalesce(d.title, '') || ' ' || coalesce(d.issued_by, '') || ' ' ||
-                   coalesce(d.identifier, '') || ' ' || coalesce(d.notes, ''),
+                   coalesce(d.identifier, '') || ' ' ||
+                   case when d.visibility in ('household', 'adults')
+                        then fdv_details_text(d.extra) || ' '
+                        else '' end ||
+                   coalesce(d.notes, ''),
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
                  'title'::text as matched_in
           from document d, query
@@ -1493,6 +1565,7 @@ export class DocumentService {
         )
         select d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
+               d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                h.rank, h.snippet, h.matched_in
         from hits h join document d on d.id = h.id
         where d.deleted_at is null
@@ -1515,6 +1588,12 @@ export class DocumentService {
               precision: r.expires_precision as DateValue['precision'],
             }
           : null;
+        const issued = r.issued_on
+          ? {
+              date: isoDate(r.issued_on) as string,
+              precision: r.issued_precision as DateValue['precision'],
+            }
+          : null;
         items.push({
           document_id: r.document_id,
           title: r.title,
@@ -1522,26 +1601,8 @@ export class DocumentService {
           category: r.category,
           owner_member_id: r.owner_member_id,
           issued_by: r.issued_by,
-          issued: r.issued_on
-            ? {
-                date: isoDate(r.issued_on) as string,
-                precision: r.issued_precision as DateValue['precision'],
-              }
-            : null,
-          status: deriveStatus(
-            {
-              type: type
-                ? {
-                    key: type.key,
-                    expiry_driver: type.expiry_driver,
-                    reminder_leads: type.reminder_leads,
-                  }
-                : null,
-              owner_member_id: r.owner_member_id,
-              expires,
-            },
-            today(),
-          ),
+          issued,
+          status: statusOf(type, { ...r, issued, expires }),
           snippet: r.snippet,
           matched_in: r.matched_in,
           rank: Number(r.rank),
@@ -1958,11 +2019,13 @@ export class DocumentService {
 
   private async columns(trx: Db, p: Principal, input: DocumentInput, current: DocRow | null) {
     const out: Record<string, unknown> = {};
+    let type: EffectiveType | null = null;
     if (input.type_key !== undefined) {
       if (input.type_key === null) {
         out.type_key = null;
       } else {
         const t = await this.typeOrThrow(input.type_key, trx);
+        type = t;
         out.type_key = t.key;
         if (input.category === undefined && !current?.category) out.category = t.category;
         if (input.visibility === undefined && !current) out.visibility = t.default_visibility;
@@ -2027,8 +2090,44 @@ export class DocumentService {
       );
     }
     if (input.notes !== undefined) out.notes = input.notes?.trim() || null;
-    if (input.extra !== undefined) out.extra = JSON.stringify(input.extra);
+    if (input.extra !== undefined) {
+      // Checked against the type it will have — the one sent, or the one it
+      // has — as the caller's household has it, hidden or not (0.5.7).
+      const key = input.type_key !== undefined ? input.type_key : (current?.type_key ?? null);
+      if (key && !type) type = await this.typeOrThrow(key, trx);
+      const fields = type ? await this.withChoices(trx, (type.fields ?? []) as TypeField[]) : [];
+      const held = (current?.extra ?? {}) as Record<string, unknown>;
+      const checked = checkExtra(input.extra, fields, held);
+      if ('problem' in checked) throw invalidExtra(checked.problem);
+      if (!current) {
+        out.extra = JSON.stringify(checked.set);
+      } else if (Object.keys(checked.set).length > 0 || checked.remove.length > 0) {
+        // A merge, in one statement: a key this edit did not send is left
+        // as it is, even if another edit changed it a moment ago.
+        out.extra = sql`(extra || ${JSON.stringify(checked.set)}::jsonb) - ${checked.remove}::text[]`;
+      }
+    }
     return out as Partial<Record<keyof DocRow, unknown>> as Record<string, never>;
+  }
+
+  /**
+   * A type's fields with the answers each choice field offers: its own, or
+   * else the attribute library's for its key (0031), so a choice is always
+   * checked against something.
+   */
+  private async withChoices(trx: Db, fields: TypeField[]): Promise<TypeField[]> {
+    const bare = fields.filter((f) => f.kind === 'choice' && !f.choices?.length).map((f) => f.key);
+    if (bare.length === 0) return fields;
+    const library = await trx
+      .selectFrom('document_attribute')
+      .select(['key', 'choices'])
+      .where('key', 'in', bare)
+      .execute();
+    return fields.map((f) =>
+      bare.includes(f.key)
+        ? { ...f, choices: library.find((a) => a.key === f.key)?.choices ?? [] }
+        : f,
+    );
   }
 }
 

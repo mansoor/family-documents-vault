@@ -41,6 +41,10 @@ export interface DocumentView {
   is_essential: boolean;
   tags: string[];
   notes: string | null;
+  /**
+   * The type's own details, by field key: each of its field's kind since
+   * 0.5.7 (details.ts). A key its type no longer asks for may still be here.
+   */
   extra: Record<string, unknown>;
   status: Status;
   versions: number;
@@ -265,11 +269,135 @@ export function parseDateInput(input: string, opts: { order?: DateOrder } = {}):
   return null;
 }
 
+/** A date the card could have sent: a real day, with a precision it agrees with. */
+export function wellFormedDate(d: DateValue): boolean {
+  if (typeof d !== 'object' || d === null) return false;
+  if (!['day', 'month', 'year'].includes(d.precision)) return false;
+  const m = typeof d.date === 'string' ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(d.date) : null;
+  if (!m) return false;
+  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const dt = new Date(Date.UTC(y, mo - 1, day));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== day) {
+    return false;
+  }
+  // A month is stored as its last day, a year as 31 December.
+  if (d.precision === 'month') return new Date(Date.UTC(y, mo, 0)).getUTCDate() === day;
+  if (d.precision === 'year') return mo === 12 && day === 31;
+  return true;
+}
+
+/**
+ * A field a document's type requires and the document has no value for
+ * (0.5.7): one of the fixed fields ('identifier', 'expires'…) or the key of
+ * one of the type's own, in `extra`. Its label is the type's name for it,
+ * "Passport number"; null is the app's own word.
+ */
+export interface MissingField {
+  key: string;
+  label: string | null;
+}
+
+/** What `missingFields` reads of a type: how it asks for its fields. */
+export interface RequiredRules {
+  expiry_driver: string | null;
+  core?: Partial<Record<CoreField, Partial<CoreFieldRule>>> | null | undefined;
+  fields?: ReadonlyArray<Pick<TypeField, 'key' | 'label' | 'required'>> | null | undefined;
+}
+
+/** What `missingFields` reads of a document: its fixed fields and its details. */
+export interface RequiredValues {
+  identifier?: string | null | undefined;
+  issued_by?: string | null | undefined;
+  issued?: DateValue | null | undefined;
+  expires?: DateValue | null | undefined;
+  physical_location?: string | null | undefined;
+  tags?: ReadonlyArray<string> | null | undefined;
+  notes?: string | null | undefined;
+  extra?: Record<string, unknown> | null | undefined;
+}
+
+const blank = (v: unknown): boolean =>
+  v === undefined ||
+  v === null ||
+  (typeof v === 'string' && v.trim() === '') ||
+  (Array.isArray(v) && v.length === 0);
+
+/**
+ * The fields a document's type requires that it has no value for, in the
+ * order the card asks them: the fixed fields, then the type's own. A fixed
+ * field is required only where the type shows it; an expiry date always is,
+ * for a type that expires, as it has been from the start. A document is
+ * never refused for any of these (A7): it is Needs info until they are given.
+ */
+export function missingFields(
+  type: RequiredRules | null | undefined,
+  doc: RequiredValues,
+): MissingField[] {
+  if (!type) return [];
+  const out: MissingField[] = [];
+  for (const key of CORE_FIELDS) {
+    const rule = type.core?.[key];
+    const required =
+      key === 'expires'
+        ? type.expiry_driver !== null
+        : rule?.shown !== false && rule?.required === true;
+    if (required && blank(doc[key])) out.push({ key, label: rule?.label ?? null });
+  }
+  for (const f of type.fields ?? []) {
+    if (f.required === true && blank(doc.extra?.[f.key])) out.push({ key: f.key, label: f.label });
+  }
+  return out;
+}
+
+/** The app's own words for a fixed field a document needs, when its type has none. */
+const CORE_WORDS: Record<CoreField, string> = {
+  identifier: 'a number',
+  issued_by: 'an issuer',
+  issued: 'an issue date',
+  expires: 'an expiry date',
+  physical_location: 'where the original is',
+  tags: 'a tag',
+  notes: 'a note',
+};
+
+/**
+ * A field's name after "Needs": "a passport number", "an insurer", "a VIN",
+ * "an MOT certificate". Lower case, unless it starts with an abbreviation.
+ */
+function needsWords(label: string): string {
+  const trimmed = label.trim();
+  const abbreviation = /^[A-Z0-9]{2,}\b/.test(trimmed);
+  const words = abbreviation ? trimmed : trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+  const an = abbreviation
+    ? /^[AEFHILMNORSX]/.test(words)
+    : /^[aeiou]/.test(words) && !/^(uni|use|usu|eu|one\b)/.test(words);
+  return `${an ? 'an' : 'a'} ${words}`;
+}
+
+function needsInfo(missing: ReadonlyArray<MissingField>): Status {
+  const words = missing.map((m) =>
+    m.label ? needsWords(m.label) : (CORE_WORDS[m.key as CoreField] ?? needsWords(m.key)),
+  );
+  const [first, second] = words;
+  const label =
+    words.length === 1
+      ? `Needs ${first}`
+      : words.length === 2
+        ? `Needs ${first} and ${second}`
+        : `Needs ${first} and ${words.length - 1} more details`;
+  return { value: 'needs_info', label };
+}
+
 export interface StatusInput {
   type: { key: string; expiry_driver: string | null; reminder_leads: number[] } | null;
   owner_member_id: string | null;
   expires: DateValue | null;
   superseded?: boolean;
+  /**
+   * The required fields it has no value for, as `missingFields` finds them
+   * (0.5.7). Left out, only the expiry date is asked for, as before.
+   */
+  missing?: ReadonlyArray<MissingField>;
 }
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -281,13 +409,22 @@ function daysBetween(fromIso: string, toIso: string): number {
 /**
  * Status is a pure function of the document, its type's rules and today
  * (REM-01). Computed on read, never stored authoritatively.
+ *
+ * A required field with no value makes it Needs info, in words that name
+ * it: "Needs a passport number" (0.5.7). An expiry that has passed, or is
+ * close, still comes first: that is what somebody has to act on.
  */
 export function deriveStatus(doc: StatusInput, todayIso: string): Status {
   if (doc.superseded) return { value: 'superseded', label: 'Replaced by a newer version' };
   if (!doc.type) return { value: 'needs_info', label: 'Needs a name' };
   if (!doc.owner_member_id) return { value: 'needs_info', label: 'Needs a person' };
-  if (!doc.type.expiry_driver) return { value: 'valid', label: '' };
-  if (!doc.expires) return { value: 'needs_info', label: 'Needs an expiry date' };
+  const missing = [...(doc.missing ?? [])];
+  if (!doc.type.expiry_driver)
+    return missing.length ? needsInfo(missing) : { value: 'valid', label: '' };
+  if (!doc.expires) {
+    if (!missing.some((m) => m.key === 'expires')) missing.push({ key: 'expires', label: null });
+    return needsInfo(missing);
+  }
 
   const days = daysBetween(todayIso, doc.expires.date);
   if (days < 0) return { value: 'expired', label: `Expired ${formatDate(doc.expires)}` };
@@ -298,6 +435,7 @@ export function deriveStatus(doc: StatusInput, todayIso: string): Status {
       label: days === 0 ? 'Expires today' : `Expires in ${days} day${days === 1 ? '' : 's'}`,
     };
   }
+  if (missing.length) return needsInfo(missing);
   return { value: 'active', label: `Valid for ${humaniseDays(days)}` };
 }
 
