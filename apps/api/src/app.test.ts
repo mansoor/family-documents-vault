@@ -66,7 +66,9 @@ async function make(
 }
 
 describe('health', () => {
-  it('/healthz is up regardless of dependencies', async () => {
+  // The file's first app is built cold, every route module loaded for the
+  // first time: under the whole suite's load that has taken over 5 s (5.2).
+  it('/healthz is up regardless of dependencies', { timeout: 20_000 }, async () => {
     const res = await (await make(() => Promise.reject(new Error('db down')))).inject('/healthz');
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });

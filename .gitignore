@@ -5,6 +5,8 @@ prototype/
 # ---- dependencies / build ----
 node_modules/
 dist/
+# The older client, extracted by scripts/older-client.mjs (5.2).
+.older-client/
 build/
 .turbo/
 *.tsbuildinfo

@@ -1,6 +1,6 @@
 {
   "name": "family-document-vault",
-  "version": "0.5.0-rc.1",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "A household document vault: every important paper in one place, telling you its own status and warning you before it expires.",
@@ -21,6 +21,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:older-client": "node scripts/older-client.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
     "e2e": "playwright test"
   },

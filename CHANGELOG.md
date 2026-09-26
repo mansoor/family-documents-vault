@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-26 — iterations 5.1 and 5.2
+
+The first of Phase 5, on the development branch. 0.5.0 itself is kept on its own branch until the Phase 4 demonstration.
+
 ### Added
 
 - **Settings → Trash** lists the documents moved to the Trash, most recent first, and brings any of them back. The vault could always do this; the web app had no way to ask.
@@ -16,6 +20,8 @@ All notable changes to Family Document Vault. The format follows
 - **"We noticed something missing" folds away**, on Home and on Reminders, with the number of things in brackets — "We noticed something missing (3)". Your browser remembers whether you folded it.
 - **A document's history says who added each version, and exactly when**: "added 26 Sept 2026, 3:12pm by Sarah". It used to say only the date. A viewer is told when, not who — as with the activity log, which a viewer does not see — and somebody whose sign-in was taken away is still named.
 - "Show older" at the bottom of "What has been happening" came back after the last page, and loaded that page again.
+- **`latest` means a release.** The `latest` images move only for a release on `main` — a milestone or a fix to one — never for a tag on the development branch (like this one) or a release candidate, which publish their own version only. A vault that follows `latest` gets releases; pin `FDV_VERSION` to be exact.
+- Every change to the server is now checked against the client the phone app already in use carries, so an upgrade cannot break a phone in somebody's pocket.
 - **"What has been happening" is a table**: exactly when, and what happened, left-aligned. Point at a time to see it in words ("yesterday, 4:12pm").
 
 ## [0.5.0] - 2026-09-25 — Phase 4 — Pocket
