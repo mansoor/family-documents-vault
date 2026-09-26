@@ -676,6 +676,10 @@ duplicates, dropped}`. Each event id is recorded once, however often
     answers no items and `profile_answered: null` (the type is now
     `boolean | null`). The fields stay, so older clients read them as
     unknown. New capability `family.details` (owners, adults, teens).
+  - **Changed (5.3):** `GET /api/v1/notifications/smtp` answers `provider`,
+    `host`, `port`, `username`, `from_name`, `from_email` and `last_error`
+    as null to anybody without `notifications.manage` (everyone but owners);
+    `configured`, `secure`, `status` and `last_verified_at` stay.
   - **Changed (5.3):** `GET /api/v1/invitations/{token}` shows `email`
     masked ("j•••@example.com"); accepting without an `email` keeps the one
     it was sent to, as before.

@@ -127,10 +127,21 @@ jobs:
           # for a tag whose commit is on main (a milestone or a hotfix) and
           # has no pre-release part (5.2). Iteration tags on develop and
           # release candidates publish their own versions only.
-          if [[ "$GITHUB_REF_NAME" != *-* ]] && git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "latest=true" >> "$GITHUB_OUTPUT"
-          else
+          # It must also be the newest release on main, so re-running an
+          # older tag's build never moves `latest` backwards. A release is
+          # tagged on main's commit after the merge; tagged earlier, its
+          # build says so and `latest` waits for a re-run.
+          newest=$(git tag --merged origin/main --sort=-v:refname 'v*' | grep -v -- - | head -1)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             echo "latest=false" >> "$GITHUB_OUTPUT"
+          elif ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::notice::$GITHUB_REF_NAME is not on main: published as its own version only, latest unchanged."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          elif [ "$newest" != "$GITHUB_REF_NAME" ]; then
+            echo "::notice::$GITHUB_REF_NAME is not the newest release on main ($newest): latest unchanged."
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR

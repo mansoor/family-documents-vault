@@ -98,6 +98,59 @@ describe.skipIf(!testAdminUrl())('what a viewer is not told (5.3)', () => {
     }
   });
 
+  it('a viewer keeps their own date of birth', async () => {
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: h.as(owner),
+      payload: { display_name: 'Grandpa', date_of_birth: '1950-02-03' },
+    });
+    expect(added.statusCode, added.body).toBe(201);
+    const invited = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${json<{ id: string }>(added).id}/invite`,
+      headers: h.as(owner),
+      payload: { email: 'grandpa-5.3@example.test', role: 'viewer' },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const { link_token, code } = json<{ link_token: string; code: string }>(invited);
+    const accepted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/invitations/${link_token}/accept`,
+      payload: { code, password: 'another correct horse' },
+      remoteAddress: '10.53.0.9',
+    });
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    const grandpa = json<Tokens>(accepted);
+    const people = (await get<{ items: MemberView[] }>(grandpa, '/api/v1/members')).items;
+    expect(people.find((m) => m.is_me)?.date_of_birth).toBe('1950-02-03');
+    expect(people.find((m) => m.display_name === 'Aisha')?.date_of_birth).toBeNull();
+  });
+
+  it('a viewer is told whether email works, not how it is set up', async () => {
+    const saved = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/notifications/smtp',
+      headers: h.as(owner),
+      payload: {
+        host: 'smtp.example.test',
+        username: 'owner.personal@example.test',
+        password: 'an app password',
+        from_email: 'owner.personal@example.test',
+      },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    for (const who of [viewer, adult]) {
+      const seen = await h.app.inject({ url: '/api/v1/notifications/smtp', headers: h.as(who) });
+      expect(seen.statusCode).toBe(200);
+      expect(json<{ configured: boolean }>(seen).configured).toBe(true);
+      expect(seen.body).not.toContain('owner.personal');
+      expect(seen.body).not.toContain('smtp.example.test');
+    }
+    const theirs = await h.app.inject({ url: '/api/v1/notifications/smtp', headers: h.as(owner) });
+    expect(theirs.body).toContain('owner.personal@example.test');
+  });
+
   it('the invitation preview never shows the whole address before the code', async () => {
     const invited = await h.app.inject({
       method: 'POST',

@@ -14,6 +14,7 @@ export default tseslint.config(
       'docs-private/**',
       'prototype/**',
       '.older-client/**',
+      '.claude/**',
     ],
   },
   js.configs.recommended,
