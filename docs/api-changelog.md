@@ -731,8 +731,9 @@ duplicates, dropped}`. Each event id is recorded once, however often
     contains a character the vault cannot keep." It was a `500`.
   - A type's details are kept, searched and exported (5.8). A document's
     `extra` holds its type's own fields, by key.
-    - `extra` on `POST /api/v1/documents` and `PATCH /api/v1/documents/{id}`
-      is checked against the type the document will have, as the caller's
+    - **Changed:** `extra` on `POST /api/v1/documents` and
+      `PATCH /api/v1/documents/{id}` was taken as it came; it is now
+      checked against the type the document will have, as the caller's
       household has it (hidden types included): only its fields' keys, each
       value of its field's `kind` — `text` a string of up to 500
       characters, `long_text` up to 10,000, `date` a `{ date, precision }`
@@ -740,8 +741,11 @@ duplicates, dropped}`. Each event id is recorded once, however often
       a number with no more than two decimal places, `choice` one of the
       field's `choices`, `yes_no` true or false — and the whole object up to
       16 KB as JSON. Text is kept trimmed, and blank text is no value.
-      Anything else answers `422 invalid_extra`; `detail` is the key and
-      `message` names it. A document with no type has no details to give.
+      Anything else — text with a NUL or half a surrogate pair included —
+      answers `422 invalid_extra`; `detail` is the key and `message` names
+      it. A document with no type has no details to give. Two edits at once
+      are measured one after the other, so together they cannot pass the
+      16 KB either.
     - **Changed:** `PATCH /api/v1/documents/{id}` merges `extra` into what
       the document holds, and `null` takes a key away — a key the type no
       longer asks for included. Before, `extra` replaced the whole object,
@@ -753,26 +757,34 @@ duplicates, dropped}`. Each event id is recorded once, however often
       edit never fails on what it did not change.
     - `POST /api/v1/capture`'s `metadata` takes `extra`, checked the same
       way before anything is kept (`422 invalid_extra`, the key in
-      `detail`). A vault before 0.5.7 refuses the field, so send it only to
-      a vault whose types have fields to fill in. A type the household has
+      `detail`). A vault before 0.5.7 refuses the field, and replaces a
+      document's details whole on an edit: send `extra` on a capture, or a
+      partial set on an edit, only when the capability document's
+      `server_version` is 0.5.7 or later (every vault's types have had
+      fields since 0.1, so they cannot tell you). A type the household has
       hidden or archived is still accepted, since a phone queues a scan
       against the list it had.
-    - A required field with no value never stops a document being saved.
+    - **Changed:** a required field with no value never stops a document being saved.
       It makes the document `needs_info`, in words that name the field:
       "Needs a passport number", "Needs an insurer and an expiry date",
       "Needs a passport number and 2 more details". An expiry that has
       passed or is close is still said first. The built-ins now require: a
       passport its number (`core.identifier`, labelled "Passport number")
       and expiry; a driving licence its expiry; an insurance policy its
-      insurer and expiry; a vehicle registration its plate (the `plate`
-      field, labelled "Registration plate"). Documents of those types that
-      have none of them read Needs info from this release on. An older
+      insurer and expiry. Existing documents of those types that lack any
+      of them read Needs info from this release on, so `?status=active` and
+      `?status=valid` list fewer of them and `?status=needs_info` more. (A
+      vehicle registration's `plate`, now labelled "Registration plate", is
+      required from the release whose card can ask for it.) An older
       phone never sends `extra`, so its captures of such a type read Needs
-      info; nothing is refused.
-    - Search matches the details' words and numbers, weighted with the
-      issuer and the tags, and shows them in the snippet — for documents
-      the household or the adults can see. An Only me document's details
-      are not in the index.
+      info; nothing is refused. App 0.2.0 works an Essential's status out
+      offline without the details, so a passport with a future expiry and
+      no number reads Valid on the phone and Needs info on the vault until
+      the app is updated.
+    - Search matches the details' words and numbers, and a date detail's
+      date (not its precision), weighted with the issuer and the tags, and
+      shows them in the snippet — for documents the household or the adults
+      can see. An Only me document's details are not in the index.
     - The export's `index.csv` gains a column for each detail, named as
       its type names it, guarded against spreadsheet formulas like every
       other cell (the names too); `index.json` carries each document's
@@ -782,8 +794,10 @@ duplicates, dropped}`. Each event id is recorded once, however often
       `CaptureMetadata.extra`, which `checkCaptureMetadata` checks offline;
       `deriveStatus` takes `missing`. `@fdv/client`: `DocumentInput.extra`.
       The fake keeps `extra` on captures, creates and edits (merged, as the
-      vault does), answers `GET` and `PATCH /api/v1/documents/{id}`, and
-      says the Needs info words.
+      vault does), answers `GET` and `PATCH /api/v1/documents/{id}` — with
+      an `etag`, `409 conflict` for a stale `If-Match`, and `501` for a
+      field it does not keep, rather than dropping it — and says the Needs
+      info words.
 
 ## Deprecations in effect
 

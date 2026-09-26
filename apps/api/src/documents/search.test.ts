@@ -190,6 +190,22 @@ describe.skipIf(!testAdminUrl())('search', () => {
     expect((await search('KX19')).items.map((i) => i.document_id)).not.toContain(car);
   });
 
+  it("a date's precision is not a word to find", async () => {
+    const will = await create({
+      type_key: 'will',
+      title: 'Our wills',
+      visibility: 'adults',
+      extra: { executor: 'Aunt Jo', last_reviewed: { date: '2026-03-31', precision: 'month' } },
+    });
+    // The executor and the date are there to be found; "month" is how
+    // exactly the date is known, and finds nothing.
+    expect((await search('Jo')).items.map((i) => i.document_id)).toContain(will);
+    expect((await search('2026')).items.map((i) => i.document_id)).toContain(will);
+    expect((await search('month')).items.map((i) => i.document_id)).not.toContain(will);
+    const snippet = (await search('Jo')).items.find((i) => i.document_id === will)?.snippet;
+    expect(snippet).not.toContain('month');
+  });
+
   it("an Only me document's details never enter the search index", async () => {
     const hidden = await create({
       type_key: 'vehicle_registration',

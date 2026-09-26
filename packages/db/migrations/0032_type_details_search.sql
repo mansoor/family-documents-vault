@@ -11,18 +11,32 @@
 --   search pass finds them there.
 -- * The built-ins ask for what makes each one of use (A9): a passport its
 --   number and expiry, a driving licence its expiry, an insurance policy
---   its insurer and expiry, a vehicle registration its plate. Nothing is
---   ever refused for want of one (A7): documents without them read "Needs
---   a passport number" until somebody adds it.
+--   its insurer and expiry. Nothing is ever refused for want of one (A7):
+--   documents without them read "Needs a passport number" until somebody
+--   adds it. A vehicle registration's plate waits for 5.10: it is one of
+--   the type's own details, and no screen can add one before then, so every
+--   car would read Needs info with nothing to be done about it.
 --
 -- A migration is nobody's edit: no document's updated_at moves, and no
 -- audit event is written.
 
 -- ------------------------------------------------------------------ search
 
+-- The words of a document's details: each text, choice and number, and a
+-- date's date — not its precision, which would make "month" find every
+-- document with a date to the month. A yes or a no says nothing to search
+-- for. The search's snippet shows the same words.
+create function fdv_details_text(extra jsonb) returns text
+  language sql immutable parallel safe as $$
+  select coalesce(string_agg(case jsonb_typeof(v) when 'object' then v->>'date'
+                                                  else v #>> '{}' end, ' '), '')
+    from jsonb_each(case jsonb_typeof(extra) when 'object' then extra else '{}'::jsonb end)
+           as e(k, v)
+   where jsonb_typeof(v) in ('string', 'number')
+      or (jsonb_typeof(v) = 'object' and jsonb_typeof(v->'date') = 'string') $$;
+
 -- A generated column's expression cannot be changed in place on PostgreSQL
 -- 16, so it is made again, as 0025 made it (dropping it drops its index).
--- Strings and numbers only: a yes or a no says nothing to search for.
 -- Which documents' details are indexed is an allow-list, so a kind of
 -- visibility added later is kept out until somebody says otherwise.
 alter table document drop column search_tsv;
@@ -33,7 +47,7 @@ alter table document add column search_tsv tsvector
     setweight(to_tsvector('simple', coalesce(issued_by, '')), 'B') ||
     setweight(to_tsvector('simple', fdv_tags_text(tags)), 'B') ||
     setweight(case when visibility in ('household', 'adults')
-                   then jsonb_to_tsvector('simple', extra, '["string", "numeric"]')
+                   then to_tsvector('simple', fdv_details_text(extra))
                    else ''::tsvector end, 'B') ||
     setweight(to_tsvector('simple', coalesce(physical_location, '')), 'C') ||
     setweight(to_tsvector('simple', coalesce(notes, '')), 'C')
@@ -64,10 +78,11 @@ update document_type
        pack_version = pack_version + 1
  where key = 'insurance_policy' and household_id is null;
 
--- A vehicle registration: its plate, called what people call it.
+-- A vehicle registration: its plate, called what people call it (required
+-- from 5.10, when the card can ask for it).
 update document_type t
    set fields = (select jsonb_agg(case when e->>'key' = 'plate'
-                                       then e || '{"required": true, "label": "Registration plate"}'
+                                       then e || '{"label": "Registration plate"}'
                                        else e end
                                   order by i)
                    from jsonb_array_elements(t.fields) with ordinality x(e, i)),

@@ -92,10 +92,24 @@ export interface FakeVaultState {
   offline: boolean;
 }
 
-type FakeDocument = { id: string; title: string | null } & Omit<
+type FakeDocument = { id: string; title: string | null; revision?: number } & Omit<
   CaptureMetadata,
   'title' | 'issued' | 'tags'
 >;
+
+/** What the fake keeps from an edit; anything else it refuses to pretend to keep. */
+const FAKE_EDITABLE = [
+  'type_key',
+  'extra',
+  'title',
+  'owner_member_id',
+  'identifier',
+  'issued_by',
+  'expires',
+];
+
+/** A document's version, as an If-Match names it: changed by every edit. */
+const etagOf = (doc: FakeDocument) => `"${doc.id}.${doc.revision ?? 1}"`;
 
 /**
  * The fixed fields as a built-in asks for them (0.5.6): every one shown, in
@@ -478,6 +492,22 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const doc = state.documents.find((d) => d.id === decodeURIComponent(one[1] as string));
       if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
       if (init.method === 'GET') return ok(viewOf(doc));
+      // As the real vault: an edit made to a version somebody has since
+      // changed is refused, not laid over theirs.
+      const ifMatch = init.headers['if-match'];
+      if (ifMatch && ifMatch !== etagOf(doc)) {
+        return fail(409, 'conflict', 'Someone else changed this document. Reload and try again.');
+      }
+      // A field the fake does not keep fails loudly, so a client test never
+      // passes against an edit the fake quietly dropped.
+      const unkept = Object.keys(body).filter((k) => !FAKE_EDITABLE.includes(k));
+      if (unkept.length) {
+        return fail(
+          501,
+          'not_implemented',
+          `The fake vault does not keep ${unkept.join(', ')} on an edit.`,
+        );
+      }
       const type_key =
         body.type_key !== undefined ? (body.type_key as string | null) : (doc.type_key ?? null);
       if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
@@ -494,11 +524,13 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (body.owner_member_id !== undefined) {
         doc.owner_member_id = body.owner_member_id as string | null;
       }
+      // Trimmed, as the vault keeps an identifier: its inner spaces are its own.
       if (body.identifier !== undefined) {
-        doc.identifier = tidy(body.identifier as string | null);
+        doc.identifier = (body.identifier as string | null)?.trim() || null;
       }
       if (body.issued_by !== undefined) doc.issued_by = tidy(body.issued_by as string | null);
       if (body.expires !== undefined) doc.expires = body.expires as DateValue | null;
+      doc.revision = (doc.revision ?? 1) + 1;
       return ok(viewOf(doc));
     }
     // Uploads, the way the real vault treats their keys: a retry is answered
@@ -849,6 +881,7 @@ function documentView(doc: FakeDocument, types: ReadonlyArray<DocumentTypeView>)
     expires,
     visibility: doc.visibility ?? 'household',
     extra: doc.extra ?? {},
+    etag: etagOf(doc),
     status: deriveStatus(
       {
         type: type ?? null,

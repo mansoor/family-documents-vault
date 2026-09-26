@@ -276,6 +276,39 @@ describe.skipIf(!testAdminUrl())("a type's details", () => {
     expect(Object.keys(json<DocumentView>(less).extra).sort()).toEqual([k.band, k.terms].sort());
   });
 
+  it('two edits at once cannot take the details past 16 KB between them', async () => {
+    // Each is well under on its own; together they are not. Held one after
+    // the other, the second is measured against what the first left.
+    const outcomes: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const made = await create({ type_key: policy, title: `Policy ${i}` });
+      const id = json<DocumentView>(made).id;
+      const both = await Promise.all([
+        patch(id, { extra: { [k.terms]: 'a'.repeat(9_000) } }),
+        patch(id, { extra: { [k.terms2]: 'b'.repeat(9_000) } }),
+      ]);
+      outcomes.push(...both.map((r) => r.statusCode));
+      const kept = (await stored(id)) as Record<string, unknown>;
+      expect(Buffer.byteLength(JSON.stringify(kept))).toBeLessThanOrEqual(16 * 1024);
+      expect(both.map((r) => r.statusCode).sort()).toEqual([200, 422]);
+    }
+    expect(outcomes.filter((c) => c === 422)).toHaveLength(5);
+  });
+
+  it('text the vault cannot keep is refused and named, never a 500', async () => {
+    const made = await create({ type_key: policy, title: 'Odd characters' });
+    const id = json<DocumentView>(made).id;
+    for (const odd of ['a\ud800b', 'b\udc00', 'nul\u0000here']) {
+      const r = await patch(id, { extra: { [k.terms]: odd } });
+      expect(r.statusCode, r.body).toBe(422);
+      expect(refusal(r)).toMatchObject({ code: 'invalid_extra', detail: k.terms });
+      expect(refusal(r).message).toBe('Terms contains a character the vault cannot keep.');
+    }
+    // A pair that belongs together is a character like any other.
+    const fine = await patch(id, { extra: { [k.terms]: 'a smile \ud83d\ude00' } });
+    expect(fine.statusCode, fine.body).toBe(200);
+  });
+
   it('PATCH merges; null removes', async () => {
     const car = json<DocumentView>(
       await create({
@@ -391,7 +424,9 @@ describe.skipIf(!testAdminUrl())("a type's details", () => {
     const car = await needs(
       await create({ type_key: 'vehicle_registration', ...mine, expires: future }),
     );
-    expect(car.status).toEqual({ value: 'needs_info', label: 'Needs a registration plate' });
+    // A car's plate is not asked for yet: it is one of the type's own
+    // details, and no screen can add one before 5.10.
+    expect(car.status.value).toBe('active');
 
     // Lists and search say the same.
     const listed = json<{ items: DocumentView[] }>(

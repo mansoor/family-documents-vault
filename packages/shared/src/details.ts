@@ -63,6 +63,28 @@ function canonical(v: unknown): string {
 }
 
 /**
+ * Text the database cannot keep: a NUL, or half of a surrogate pair (which
+ * JSON writes as an escape PostgreSQL refuses). Checked by hand, not with
+ * String.prototype.isWellFormed, which a phone's JavaScript may not have.
+ */
+function unkeepable(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0) return true;
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i++;
+        continue;
+      }
+      return true;
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) return true;
+  }
+  return false;
+}
+
+/**
  * One value for one field: the value as it is kept (text trimmed; blank
  * text is null, no value), or the words for why it cannot be. A kind this
  * code does not know is left for the server to judge.
@@ -76,6 +98,9 @@ export function checkDetail(
     case 'text':
     case 'long_text': {
       if (typeof value !== 'string') return { message: `${name} must be written as text.` };
+      if (unkeepable(value)) {
+        return { message: `${name} contains a character the vault cannot keep.` };
+      }
       const max = field.kind === 'text' ? DETAIL_TEXT_MAX : DETAIL_LONG_TEXT_MAX;
       const kept = value.trim();
       if (kept.length > max) {

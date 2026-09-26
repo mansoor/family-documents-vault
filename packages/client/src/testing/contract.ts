@@ -483,6 +483,13 @@ export const contractScenarios: Scenario[] = [
         code: 'invalid_extra',
         detail: 'registration_no',
       });
+
+      // An edit to a version somebody has since changed is refused, not
+      // laid over theirs; one to the version as it is now goes through.
+      const stale = await refusal(api.updateDocument(token, doc.id, { title: 'Mine' }, doc.etag));
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      const fresh = await api.updateDocument(token, doc.id, { title: 'Mine' }, edited.etag);
+      expect(fresh.title).toBe('Mine');
       const refused = await refusal(
         api.capture(
           token,

@@ -449,13 +449,21 @@ export class DocumentService {
     }
   }
 
-  private async fetch(trx: Db, p: Principal, id: string, includeDeleted = false): Promise<DocRow> {
+  private async fetch(
+    trx: Db,
+    p: Principal,
+    id: string,
+    includeDeleted = false,
+    /** Hold the row until the transaction ends: an edit checked against what it holds. */
+    lock = false,
+  ): Promise<DocRow> {
     let q = trx
       .selectFrom('document')
       .selectAll()
       .where('id', '=', id)
       .where(this.visibleTo(p) as never);
     if (!includeDeleted) q = q.where('deleted_at', 'is', null);
+    if (lock) q = q.forUpdate();
     const row = await q.executeTakeFirst();
     if (!row) throw notFound();
     return row;
@@ -611,7 +619,10 @@ export class DocumentService {
     this.canWrite(p);
     let drawNow: string | null = null;
     const view = await withPrincipal(this.db, p, async (trx) => {
-      const current = await this.fetch(trx, p, id);
+      // Details are checked against what the document holds (16 KB at
+      // most): two edits at once must not each pass against the same old
+      // copy and add up past it, so the row is held while this one runs.
+      const current = await this.fetch(trx, p, id, false, input.extra !== undefined);
       if (ifMatch && ifMatch !== etagOf(current.id, current.updated_at)) {
         throw new ApiError(
           409,
@@ -1527,9 +1538,7 @@ export class DocumentService {
                    coalesce(d.title, '') || ' ' || coalesce(d.issued_by, '') || ' ' ||
                    coalesce(d.identifier, '') || ' ' ||
                    case when d.visibility in ('household', 'adults')
-                        then coalesce((select string_agg(v #>> '{}', ' ')
-                                         from jsonb_path_query(d.extra, 'strict $.**') v
-                                        where jsonb_typeof(v) in ('string', 'number')), '') || ' '
+                        then fdv_details_text(d.extra) || ' '
                         else '' end ||
                    coalesce(d.notes, ''),
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,

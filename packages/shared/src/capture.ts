@@ -31,8 +31,10 @@ export interface CaptureMetadata {
   notes?: string | null;
   /**
    * The type's own details, by field key (0.5.7), each checked by its kind
-   * (details.ts). A vault before 0.5.7 refuses the field: send it only to
-   * one whose types have fields to fill in.
+   * (details.ts). A vault before 0.5.7 refuses the field, and replaces a
+   * document's details whole on an edit: send it, or a partial set on an
+   * edit, only when the capability document's `server_version` is 0.5.7 or
+   * later (every vault's types have had fields since 0.1).
    */
   extra?: Record<string, unknown>;
 }

@@ -269,9 +269,16 @@ function dateOf(d: string | null, precision: DateValue['precision'] | null): str
   return formatDate({ date: d.slice(0, 10), precision });
 }
 
-/** A document's details as the database hands them over: an object, or nothing. */
+/**
+ * A document's details as the database hands them over: an object, or
+ * nothing — copied onto no prototype, so a detail a document lacks is
+ * nothing, not something every object inherits ("constructor", kept by a
+ * vault before 0.5.7, which took any key).
+ */
 function extraOf(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const own = Object.create(null) as Record<string, unknown>;
+  if (v && typeof v === 'object' && !Array.isArray(v)) Object.assign(own, v);
+  return own;
 }
 
 /**

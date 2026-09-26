@@ -284,6 +284,12 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       type_key: own,
       extra: { [field]: 'Annual', retired_key: true },
     });
+    // Kept by a vault before 0.5.7, which took any key: one every object
+    // inherits. Other documents have nothing under it, not the inherited one.
+    await addDoc('Old receipt', 'household', ownerMember, 'RECEIPT BYTES', 'other', {
+      type_key: 'warranty',
+      extra: { constructor: 'legacy' },
+    });
     // Not the requester's to export: its details are not either.
     await addDoc("Sana's car", 'private', otherMember, 'NOT FOR OWNER', 'property', {
       type_key: 'vehicle_registration',
@@ -359,6 +365,10 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(cell('Rail pass', `"'=HYPERLINK(""x"")"`)).toBe('Annual');
     expect(cell('Rail pass', 'retired_key')).toBe('Yes');
     expect(cell('Estate car', 'Executor')).toBe('');
+    // The old receipt's detail, and nothing inherited for anybody else's.
+    expect(cell('Old receipt', 'constructor')).toBe('legacy');
+    expect(cell('Estate car', 'constructor')).toBe('');
+    expect(entries.get('index.csv')?.toString()).not.toContain('undefined');
 
     // index.json keeps the details as the vault does, with what each is called.
     const index = JSON.parse(entries.get('index.json')?.toString() ?? '{}') as {
@@ -380,6 +390,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     const page = entries.get('index.html')?.toString() ?? '';
     expect(page).toContain('VIN: =2+5<br>Registration plate: AB12 CDE');
     expect(page).toContain('=HYPERLINK(&quot;x&quot;): Annual');
+    expect(page.split('constructor: ')).toHaveLength(2);
     // Somebody else's Only me car is in none of it.
     expect(Buffer.concat([...entries.values()]).includes(Buffer.from('SANASVIN'))).toBe(false);
   }, 60_000);
