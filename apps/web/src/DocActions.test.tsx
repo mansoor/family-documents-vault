@@ -307,7 +307,11 @@ describe('quick actions on every document (5.4)', () => {
     const { menu } = await openMenu();
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
     const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    // Focus moves in an effect after the dialog is drawn: under a loaded
+    // machine that can be after findByRole has seen it.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
     await expectAccessible();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
@@ -326,7 +330,7 @@ describe('quick actions on every document (5.4)', () => {
     const first = await openMenu();
     fireEvent.click(within(first.menu).getByRole('menuitem', { name: 'Share a link' }));
     const share = await screen.findByRole('dialog', { name: "Share “Mansoor's passport”" });
-    expect(within(share).getByLabelText('Who is it for?')).toHaveFocus();
+    await waitFor(() => expect(within(share).getByLabelText('Who is it for?')).toHaveFocus());
     await expectAccessible();
     fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -376,7 +380,7 @@ describe('quick actions on every document (5.4)', () => {
     const prompt = await screen.findByRole('dialog', { name: STEP_UP });
     const password = within(prompt).getByLabelText('Or your password');
     const cancel = within(prompt).getByRole('button', { name: 'Cancel' });
-    expect(password).toHaveFocus();
+    await waitFor(() => expect(password).toHaveFocus());
     // Tab goes round inside it, both ways, never back into the sheet.
     cancel.focus();
     fireEvent.keyDown(cancel, { key: 'Tab' });

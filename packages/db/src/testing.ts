@@ -1,4 +1,5 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { listMigrations, migrateUp } from './migrate.js';
 
@@ -14,6 +15,13 @@ import { listMigrations, migrateUp } from './migrate.js';
  * and the one-time build are serialised by an advisory lock: `CREATE
  * DATABASE`, `CREATE ROLE` and `ALTER ROLE` all touch cluster-wide
  * catalogues, and doing them at once yields "tuple concurrently updated".
+ *
+ * The template is named after the migrations it holds (a hash of their
+ * names and contents), so checkouts at different migrations — another
+ * branch, a worktree — share the cluster without testing against each
+ * other's schema or rebuilding each other's template. Templates of sets no
+ * checkout has any more stay until dropped by hand
+ * (`drop database fdv_test_template_…`); each is an empty schema.
  *
  * Tests connect as `fdv_app_test`, a member of the application role rather
  * than the application role itself. Roles are cluster-wide: the README
@@ -35,7 +43,7 @@ export interface TestDatabase {
 
 export const TEST_APP_ROLE = 'fdv_app_test';
 export const TEST_APP_PASSWORD = 'fdv_app_test';
-const TEMPLATE = 'fdv_test_template';
+const TEMPLATE_PREFIX = 'fdv_test_template';
 const SETUP_LOCK = 7402;
 
 export function testAdminUrl(): string | undefined {
@@ -52,36 +60,56 @@ function withDatabase(url: string, name: string, user?: string, password?: strin
   return u.toString();
 }
 
+/** The template for the migrations on disk: named after their names and contents. */
+async function templateName(): Promise<{ name: string; migrations: number }> {
+  const migrations = await listMigrations();
+  const hash = createHash('sha256');
+  for (const m of migrations) {
+    hash.update(`${m.version}_${m.name}\0`);
+    hash.update(await readFile(m.file));
+    hash.update('\0');
+  }
+  return {
+    name: `${TEMPLATE_PREFIX}_${hash.digest('hex').slice(0, 16)}`,
+    migrations: migrations.length,
+  };
+}
+
 /**
- * Builds the template if it is missing, or if a migration has been added
- * since it was built. The caller holds the setup lock.
+ * Builds the template if it is missing, or if a build of it stopped part
+ * way (a killed test run). The caller holds the setup lock.
  *
- * That second condition is not optional: the template survives between
- * runs, so without it a new migration is invisible locally and every test
- * runs against yesterday's schema. CI never sees it — a fresh cluster has
- * no template — which is exactly what makes it worth checking here.
+ * Its name changes with any migration added or edited, so a template that
+ * exists holds exactly the migrations on disk: without that, the template
+ * surviving between runs would leave every test on yesterday's schema (CI
+ * never sees it — a fresh cluster has no template — which is exactly what
+ * makes it worth getting right here).
  */
-async function ensureTemplate(root: pg.Client, adminUrl: string): Promise<void> {
+async function ensureTemplate(
+  root: pg.Client,
+  adminUrl: string,
+  template: { name: string; migrations: number },
+): Promise<void> {
   const { rows } = await root.query<{ ok: boolean }>(
     'select exists (select 1 from pg_database where datname = $1) as ok',
-    [TEMPLATE],
+    [template.name],
   );
   if (rows[0]?.ok) {
-    if (await templateIsCurrent(adminUrl)) return;
-    // Sessions on the template would block the drop; there should be none,
-    // because copying only holds it briefly under the same lock.
-    await root.query(`select pg_terminate_backend(pid) from pg_stat_activity where datname = $1`, [
-      TEMPLATE,
-    ]);
-    await root.query(`drop database if exists ${TEMPLATE} with (force)`);
+    if (await templateIsComplete(adminUrl, template)) return;
+    await root.query(`drop database if exists ${template.name} with (force)`);
   }
-  await root.query(`create database ${TEMPLATE}`);
-  const pool = new pg.Pool({ connectionString: withDatabase(adminUrl, TEMPLATE), max: 2 });
+  // The single template of before (0.5.4) is never current again.
+  await root.query(`drop database if exists ${TEMPLATE_PREFIX} with (force)`);
+  await root.query(`create database ${template.name}`);
+  const pool = new pg.Pool({ connectionString: withDatabase(adminUrl, template.name), max: 2 });
   try {
     await migrateUp(pool);
-  } finally {
+  } catch (err) {
     await pool.end();
+    await root.query(`drop database if exists ${template.name} with (force)`);
+    throw err;
   }
+  await pool.end();
 }
 
 /** The test's own login, inheriting `fdv_app` rather than replacing it. */
@@ -96,16 +124,18 @@ async function ensureRole(root: pg.Client): Promise<void> {
   );
 }
 
-/** Has every migration on disk been applied to the template? */
-async function templateIsCurrent(adminUrl: string): Promise<boolean> {
-  const latest = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
-  const client = new pg.Client({ connectionString: withDatabase(adminUrl, TEMPLATE) });
+/** Did the build of this template finish? */
+async function templateIsComplete(
+  adminUrl: string,
+  template: { name: string; migrations: number },
+): Promise<boolean> {
+  const client = new pg.Client({ connectionString: withDatabase(adminUrl, template.name) });
   await client.connect();
   try {
-    const { rows } = await client.query<{ version: number | null }>(
-      'select max(version)::int as version from schema_migration',
+    const { rows } = await client.query<{ n: number }>(
+      'select count(*)::int as n from schema_migration',
     );
-    return (rows[0]?.version ?? 0) >= latest;
+    return rows[0]?.n === template.migrations;
   } catch {
     return false; // no schema_migration table: not a template we can trust
   } finally {
@@ -142,15 +172,18 @@ async function newDatabase(
   if (!adminUrl)
     throw new Error('DATABASE_ADMIN_URL is not set; integration tests need PostgreSQL');
   const name = `fdv_test_${randomBytes(4).toString('hex')}`;
+  const template = await templateName();
 
   const root = new pg.Client({ connectionString: adminUrl });
   await root.connect();
   try {
     await root.query('select pg_advisory_lock($1)', [SETUP_LOCK]);
-    await ensureTemplate(root, adminUrl);
+    await ensureTemplate(root, adminUrl, template);
     await ensureRole(root); // after the template: migration 0001 creates fdv_app
     await root.query(
-      fromTemplate ? `create database ${name} template ${TEMPLATE}` : `create database ${name}`,
+      fromTemplate
+        ? `create database ${name} template ${template.name}`
+        : `create database ${name}`,
     );
   } finally {
     await root.query('select pg_advisory_unlock($1)', [SETUP_LOCK]).catch(() => undefined);
