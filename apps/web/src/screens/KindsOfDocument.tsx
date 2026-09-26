@@ -111,6 +111,10 @@ const DEFAULT_LEADS = [30];
 export const PASSWORD_MANAGER =
   'Passwords and PINs belong in a password manager, not here: everybody who can see a document can read its details.';
 
+/** Said before a field is added: it is the family's at once, and for good. */
+export const LIBRARY_AT_ONCE =
+  'Adding it puts it in the family’s library straight away, for every kind, even if you don’t save this one. It can’t be taken out again, so check the name first.';
+
 const leadLabel = (days: number) => (days === 0 ? 'On the day' : leadWords(days));
 
 const visibilityWords = (v: Visibility) => VISIBILITY.find(([key]) => key === v)?.[1] ?? v;
@@ -375,6 +379,8 @@ export function KindScreen() {
     },
     [authVersion, key],
   );
+  // How many times "Load the latest" has started the editor again.
+  const [reloads, setReloads] = useState(0);
   const kind = key === undefined ? null : data?.types.find((k) => k.key === key);
 
   if (!manage || error || !data || kind === undefined) {
@@ -393,13 +399,15 @@ export function KindScreen() {
       </main>
     );
   }
-  // A new start whenever the kind itself changes: after "Load the latest".
+  // A new start whenever the kind itself changes, and after "Load the
+  // latest", which says so.
   return (
     <KindEditor
-      key={kind?.etag ?? kind?.key ?? 'new'}
+      key={`${kind?.etag ?? kind?.key ?? 'new'}#${reloads}`}
       kind={kind}
       library={data.library}
-      onReload={() => void reload()}
+      reloaded={reloads > 0}
+      onReload={() => void reload().then(() => setReloads((n) => n + 1))}
     />
   );
 }
@@ -407,6 +415,8 @@ export function KindScreen() {
 function KindEditor(props: {
   kind: DocumentTypeView | null;
   library: DocumentAttributeView[];
+  /** Started again by "Load the latest": it says what it loaded, and takes the focus. */
+  reloaded: boolean;
   onReload: () => void;
 }) {
   const { kind } = props;
@@ -434,6 +444,14 @@ function KindEditor(props: {
   const [asking, setAsking] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const archiveButton = useRef<HTMLButtonElement>(null);
+  const loadedLine = useRef<HTMLParagraphElement>(null);
+  // The button pressed has gone with the old copy: the place is on what
+  // was loaded instead, so it is heard.
+  useEffect(() => {
+    if (props.reloaded) loadedLine.current?.focus();
+    // Only as this copy opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const impact = useLoad(
     async (t) => (kind ? api.documentTypeImpact(t, kind.key) : null),
     [kind?.key, kind?.etag],
@@ -536,7 +554,7 @@ function KindEditor(props: {
   const saved = kind?.default_visibility;
   const narrowOnly = saved !== undefined && !mayWiden;
   const warnings =
-    kind && impact.data ? warningsFor(kind, draft, impact.data, cardName, fieldOf) : [];
+    kind && impact.data ? warningsFor(kind, draft, impact.data, wordFor, fieldOf) : [];
 
   return (
     <main className="page page-top">
@@ -553,6 +571,11 @@ function KindEditor(props: {
             : 'For anything the built-in kinds don’t cover. The phone and the web offer it as soon as it is saved.'}
         </p>
       )}
+      <p role="status" ref={loadedLine} tabIndex={-1} className="notice status-line">
+        {props.reloaded
+          ? 'This is the latest, with the other change in it. Your changes weren’t kept: make them again, then save.'
+          : null}
+      </p>
       {kind?.hidden && (
         <p className="status status-warn">
           {builtin
@@ -624,6 +647,7 @@ function KindEditor(props: {
                   <p className="muted">A document of a kind that expires always needs the date.</p>
                   <LeadChips
                     leads={draft.leads}
+                    saved={kind?.reminder_leads ?? []}
                     when={review ? 'it’s due for review' : 'it expires'}
                     onChange={(leads) => setDraft((d) => ({ ...d, leads }))}
                   />
@@ -667,6 +691,7 @@ function KindEditor(props: {
           {added}
         </p>
         <AddOwnField
+          library={library}
           onAdded={(a) => {
             setLibrary((l) => [...l, a]);
             setOrder((o) => {
@@ -715,8 +740,8 @@ function KindEditor(props: {
           )}
           {draft.visibility === 'private' && (
             <span className="muted">
-              Only the person it belongs to can open one. Filing one for somebody else asks who can
-              see it.
+              Only the person it belongs to can open one. One filed for somebody else starts as
+              Adults only instead, and whoever files it can change that.
             </span>
           )}
         </div>
@@ -750,7 +775,7 @@ function KindEditor(props: {
             <p className="field-label">Before you save</p>
             <ul>
               {warnings.map((w) => (
-                <li key={w}>{w}</li>
+                <li key={w.key}>{w.text}</li>
               ))}
             </ul>
           </>
@@ -875,9 +900,21 @@ function FieldRow(props: {
   );
 }
 
-/** When to remind, before it expires: chips, at most eight on. */
-function LeadChips(props: { leads: number[]; when: string; onChange: (leads: number[]) => void }) {
-  const offered = [...new Set([...LEAD_CHOICES, ...props.leads])].sort((a, b) => a - b);
+/**
+ * When to remind, before it expires: chips, at most eight on. A time of the
+ * kind's own (45 days) is a chip too, and stays one while it is off, so it
+ * can be turned on again and the place stays on it.
+ */
+function LeadChips(props: {
+  leads: number[];
+  /** The lead times as saved. */
+  saved: number[];
+  when: string;
+  onChange: (leads: number[]) => void;
+}) {
+  const offered = [...new Set([...LEAD_CHOICES, ...props.saved, ...props.leads])].sort(
+    (a, b) => a - b,
+  );
   const full = props.leads.length >= MAX_LEADS;
   return (
     <div className="field" role="group" aria-labelledby="k-leads-l">
@@ -908,8 +945,16 @@ function LeadChips(props: { leads: number[]; when: string; onChange: (leads: num
   );
 }
 
-/** A field of the household's own, for the library, shown on this kind at once. */
-function AddOwnField(props: { onAdded: (a: DocumentAttributeView) => void }) {
+/**
+ * A field of the household's own, for the library, shown on this kind at
+ * once. It goes into the library as it is added, for every kind, and there
+ * is no taking it out: that is said before, and a name the library already
+ * has is not added twice (the 5.12 review).
+ */
+function AddOwnField(props: {
+  library: DocumentAttributeView[];
+  onAdded: (a: DocumentAttributeView) => void;
+}) {
   const { withToken } = useApp();
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AttributeKind>('text');
@@ -926,6 +971,13 @@ function AddOwnField(props: { onAdded: (a: DocumentAttributeView) => void }) {
       .filter(Boolean);
     if (!name) {
       setError('Give the field a name.');
+      return;
+    }
+    const same = props.library.find((a) => tidy(a.label)?.toLowerCase() === name.toLowerCase());
+    if (same) {
+      setError(
+        `The library already has “${same.label}”. Tick Show beside it in the list above instead.`,
+      );
       return;
     }
     if (kind === 'choice' && answers.length === 0) {
@@ -986,8 +1038,11 @@ function AddOwnField(props: { onAdded: (a: DocumentAttributeView) => void }) {
             hint="Separated by commas: Gold, Silver, Bronze"
           />
         )}
+        <p id="k-own-library" className="muted">
+          {LIBRARY_AT_ONCE}
+        </p>
         <ErrorNote message={error} />
-        <Button type="submit" kind="quiet" disabled={busy}>
+        <Button type="submit" kind="quiet" disabled={busy} describedBy="k-own-library">
           {busy ? 'Adding…' : 'Add this field'}
         </Button>
       </form>
@@ -1042,35 +1097,46 @@ function Preview(props: {
 
 const documentsHave = (n: number) => (n === 1 ? '1 document has' : `${n} documents have`);
 
+/** One thing saving would do: `key` says which, whatever its words. */
+interface Warning {
+  key: string;
+  text: string;
+}
+
 /**
  * What saving would do to the documents already filed, as far as the
  * reader can see them — and, whenever it would touch any, the sentence
- * saying there may be others they can't see (5.11).
+ * saying there may be others they can't see (5.11). A field is named as
+ * its documents show it now, as saved, so renaming it on this page does
+ * not say a warning again at every letter (the 5.12 review).
  */
 function warningsFor(
   kind: DocumentTypeView,
   draft: Draft,
   impact: DocumentTypeImpact,
-  cardName: (f: CoreField) => string,
+  wordFor: (f: CoreField) => string,
   fieldOf: (key: string) => { label: string },
-): string[] {
+): Warning[] {
   const before = draftOf(kind);
-  const out: string[] = [];
+  const savedName = (f: CoreField) => tidy(before.core[f].label) ?? wordFor(f);
+  const out: Warning[] = [];
   let touches = false;
-  const needsInfo = (n: number, name: string) => {
+  const needsInfo = (key: string, n: number, name: string) => {
     touches = true;
     if (n > 0) {
-      out.push(
-        `${documentsHave(n)} nothing in “${name}” yet. ${n === 1 ? 'It' : 'They'}’ll show Needs info until someone fills it in.`,
-      );
+      out.push({
+        key: `needs-${key}`,
+        text: `${documentsHave(n)} nothing in “${name}” yet. ${n === 1 ? 'It' : 'They'}’ll show Needs info until someone fills it in.`,
+      });
     }
   };
-  const kept = (n: number, name: string, where: string) => {
+  const kept = (key: string, n: number, name: string, where: string) => {
     touches = true;
     if (n > 0) {
-      out.push(
-        `${documentsHave(n)} something in “${name}”. It stays, ${where}; the card just stops asking for it.`,
-      );
+      out.push({
+        key: `kept-${key}`,
+        text: `${documentsHave(n)} something in “${name}”. It stays, ${where}; the card just stops asking for it.`,
+      });
     }
   };
 
@@ -1078,38 +1144,43 @@ function warningsFor(
     const was = before.core[f];
     const now = draft.core[f];
     const counts = impact.core[f];
-    if (needed(f, now) && !needed(f, was)) needsInfo(counts.without_value, cardName(f));
-    if (was.shown && !now.shown) kept(counts.with_value, cardName(f), 'on each of them');
+    if (needed(f, now) && !needed(f, was)) needsInfo(f, counts.without_value, savedName(f));
+    if (was.shown && !now.shown) kept(f, counts.with_value, savedName(f), 'on each of them');
   }
   for (const f of draft.fields) {
     const had = before.fields.find((x) => x.key === f.key);
     if (f.required && !had?.required) {
+      // The vault counts every field its documents keep a value for, the
+      // kind's or not (a field it dropped, kept under Other details): one
+      // it does not list, none of them has.
       const counts = impact.fields.find((x) => x.key === f.key);
-      needsInfo(counts?.without_value ?? impact.documents, fieldOf(f.key).label);
+      needsInfo(`f-${f.key}`, counts?.without_value ?? impact.documents, fieldOf(f.key).label);
     }
   }
   for (const f of before.fields) {
     if (!draft.fields.some((x) => x.key === f.key)) {
       const counts = impact.fields.find((x) => x.key === f.key);
-      kept(counts?.with_value ?? 0, fieldOf(f.key).label, 'under Other details');
+      kept(`f-${f.key}`, counts?.with_value ?? 0, fieldOf(f.key).label, 'under Other details');
     }
   }
   const expired = before.core.expires.shown;
   if (expired && !draft.core.expires.shown) {
     touches = true;
     if (impact.reminders > 0) {
-      out.push(
-        `${impact.reminders === 1 ? 'Its 1 reminder stops' : `Its ${impact.reminders} reminders stop`}: its documents no longer expire.`,
-      );
+      out.push({
+        key: 'reminders',
+        text: `${impact.reminders === 1 ? 'Its 1 reminder stops' : `Its ${impact.reminders} reminders stop`}: its documents no longer expire.`,
+      });
     }
   } else if (expired && !sameLeads(draft.leads, before.leads)) {
     touches = true;
     if (impact.documents > 0) {
-      out.push(
-        `The reminders for ${impact.documents === 1 ? 'its 1 document are' : `its ${impact.documents} documents are`} made again for the new times.`,
-      );
+      out.push({
+        key: 'reminders',
+        text: `The reminders for ${impact.documents === 1 ? 'its 1 document are' : `its ${impact.documents} documents are`} made again for the new times.`,
+      });
     }
   }
-  if (touches) out.push(impact.unseen);
+  if (touches) out.push({ key: 'unseen', text: impact.unseen });
   return out;
 }

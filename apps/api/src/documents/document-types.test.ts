@@ -632,6 +632,48 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     });
   });
 
+  it('impact counts a field the kind dropped where its documents keep a value, as the caller sees them (5.12 review)', async () => {
+    const officer = await ok<{ key: string }>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Case worker', kind: 'text' }),
+    );
+    const court = await ok<{ key: string }>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Court', kind: 'text' }),
+    );
+    const appeal = await kind({
+      label: 'Appeal',
+      fields: [{ key: officer.key }, { key: court.key }],
+    });
+    await file(owner, {
+      type_key: appeal.key,
+      title: 'First appeal',
+      owner_member_id: owner.member_id,
+      // Adults only: a viewer's library holds no field of the household's own (5.7 review).
+      visibility: 'adults',
+      extra: { [officer.key]: 'Ms Khan' },
+    });
+    await file(owner, { type_key: appeal.key, title: 'Second appeal', visibility: 'adults' });
+    // Sam's own, Only me: its detail sealed, counted only for him.
+    await file(sam, {
+      type_key: appeal.key,
+      title: "Sam's appeal",
+      owner_member_id: sam.member_id,
+      visibility: 'private',
+      extra: { [officer.key]: 'Mr Ali' },
+    });
+    // Dropped: the values stay, under Other details.
+    await ok(call(owner, 'PATCH', `/api/v1/document-types/${appeal.key}`, { fields: [] }));
+
+    const impact = async (who: Tokens) =>
+      ok<DocumentTypeImpact>(call(who, 'GET', `/api/v1/document-types/${appeal.key}/impact`));
+    // Shown again as required, one of the owner's two would need it — not both.
+    expect((await impact(owner)).fields).toEqual([
+      { key: officer.key, label: null, with_value: 1, without_value: 1 },
+    ]);
+    expect((await impact(sam)).fields).toEqual([
+      { key: officer.key, label: null, with_value: 2, without_value: 1 },
+    ]);
+  });
+
   it('a delete depends only on the documents the caller can see (5.11 review)', async () => {
     // One kind only Sam's Only me document uses; one the family's does; one nobody's.
     const hidden = await kind({ label: 'Divorce proceedings', category: 'legal' });

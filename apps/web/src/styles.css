@@ -1161,6 +1161,16 @@ a.btn {
 .kind-field-name {
   display: flex;
   flex-direction: column;
+  /* A long word breaks rather than running into Show. */
+  overflow-wrap: anywhere;
+}
+
+/* A narrow screen (320px, or zoomed in): Show and Required go under the
+   field's name, so the name has the whole row. */
+@media (max-width: 360px) {
+  .kind-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .kind-field-more {

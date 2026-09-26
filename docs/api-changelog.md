@@ -999,8 +999,8 @@ choices? }` → `201` with the field, for the library; a `choice` has at
       sent a second time; and one household whose digest fails no longer
       stops the others'.
   - Kinds of document: the editor (5.12). The web's Settings → Kinds of
-    document uses the endpoints of 5.11; nothing on the wire changes but
-    one flag.
+    document uses the endpoints of 5.11; on the wire, one flag and one
+    more count.
     - **New:** `features.custom_types: true` in `GET /api/v1/capabilities`:
       the household keeps kinds of document of its own, each under one of
       the twelve categories, and changes the built-ins. A client that
@@ -1008,6 +1008,13 @@ choices? }` → `201` with the field, for the library; a `choice` has at
       details, needs nothing new; a document whose kind requires a field
       it has no value for is Needs info, naming it. Absent from older
       vaults.
+    - `GET /api/v1/document-types/{key}/impact`'s `fields` lists, after
+      the kind's own, every other field one of the documents it counts
+      keeps a value for — one the kind dropped, kept under Other details
+      — with `label: null`. So an editor that shows it again as required
+      says how many would need it, as Needs info will; a field not listed,
+      none of them has. The fake counts the same, and the contract holds
+      both to it (the 5.12 review).
     - `@fdv/shared`: `CapabilityFeatures.custom_types`, `leadWords` (the
       reminder sentence's words for a lead time). The fake answers
       `features.custom_types`, and `GET /api/v1/documents/{id}/versions`

@@ -1161,6 +1161,85 @@ describe('App', () => {
     );
   });
 
+  describe('a kind kept Only me by default, for somebody else (5.12 review)', () => {
+    /** A kind an adult has narrowed to Only me in Settings → Kinds of document. */
+    const DIARY = {
+      ...TYPES[1],
+      key: 'h_diary',
+      label: 'Private diary',
+      default_visibility: 'private' as const,
+    };
+    const card = async (path = '/add') => {
+      const state = fresh({ members: [ME, AISHA], types: [...TYPES, DIARY] });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', path);
+      render(<App />);
+      await toCard();
+      return state;
+    };
+    const whose = (id: string) =>
+      fireEvent.change(screen.getByLabelText('Whose it is'), { target: { value: id } });
+    const what = (key: string) =>
+      fireEvent.change(screen.getByLabelText('What it is'), { target: { value: key } });
+    const pressed = () =>
+      screen
+        .getAllByRole('button', { pressed: true })
+        .map((b) => b.textContent)
+        .filter((t) => ['Everyone', 'Adults only', 'Only me'].includes(t ?? ''));
+    /** Saved: who it is for and who can see it, as the capture sent them. */
+    const saved = async (state: ReturnType<typeof fresh>) => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+      await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+      return state.captures?.at(-1)?.metadata;
+    };
+
+    it('the person first, then the kind: Adults only, never Everyone', async () => {
+      const state = await card();
+      whose(AISHA.id);
+      what(DIARY.key);
+      expect(pressed()).toEqual(['Adults only']);
+      expect(screen.getByRole('button', { name: 'Only me' })).toBeDisabled();
+      expect(await saved(state)).toMatchObject({
+        type_key: DIARY.key,
+        owner_member_id: AISHA.id,
+        visibility: 'adults',
+      });
+    });
+
+    it('the kind first, then the person: the same, and Only me again for their own', async () => {
+      const state = await card();
+      what(DIARY.key);
+      // Their own: Only me, as the kind says.
+      expect(pressed()).toEqual(['Only me']);
+      whose(AISHA.id);
+      expect(pressed()).toEqual(['Adults only']);
+      whose(ME.id);
+      expect(pressed()).toEqual(['Only me']);
+      whose(AISHA.id);
+      expect(await saved(state)).toMatchObject({
+        owner_member_id: AISHA.id,
+        visibility: 'adults',
+      });
+    });
+
+    it('from a link naming the kind and somebody else, it starts at Adults only', async () => {
+      const state = await card(`/add?type=${DIARY.key}&member=${AISHA.id}`);
+      expect(screen.getByLabelText<HTMLSelectElement>('What it is').value).toBe(DIARY.key);
+      expect(pressed()).toEqual(['Adults only']);
+      expect(await saved(state)).toMatchObject({ visibility: 'adults' });
+    });
+
+    it('chosen by hand, it stays as chosen when the person changes', async () => {
+      await card();
+      what(DIARY.key);
+      whose(AISHA.id);
+      fireEvent.click(screen.getByRole('button', { name: 'Everyone' }));
+      whose(ME.id);
+      expect(pressed()).toEqual(['Everyone']);
+    });
+  });
+
   it('a landed Only me document handed to somebody else is un-privated first, then given', async () => {
     const state = fresh({ members: [ME, AISHA], captureAnswersLost: 1 });
     installFakeApi(state);

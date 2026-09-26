@@ -818,9 +818,12 @@ export function installFakeApi(state: FakeState) {
     }
     // Kinds of document, managed (5.12), as the vault manages them (0.5.10).
     if (path === '/api/v1/document-types' && method === 'GET') {
-      // A hidden kind is listed with ?all=true (the editor's list).
+      // A hidden kind is listed with ?all=true (the editor's list), and,
+      // marked hidden, while a document uses it, so that one still says
+      // what it is — as the vault lists them (0.5.6).
       const all = query.get('all') === 'true';
-      return json({ items: state.types.filter((t) => all || !t.hidden) });
+      const used = (key: unknown) => state.documents.some((d) => d.type_key === key);
+      return json({ items: state.types.filter((t) => all || !t.hidden || used(t.key)) });
     }
     if (path === '/api/v1/document-attributes' && method === 'GET') {
       return json({ items: state.attributes ?? [] });

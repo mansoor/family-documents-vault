@@ -1,8 +1,10 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { PASSWORD_MANAGER } from './screens/KindsOfDocument.js';
+import { LIBRARY_AT_ONCE, PASSWORD_MANAGER } from './screens/KindsOfDocument.js';
 import { fresh, installFakeApi, signedIn, type FakeState } from './test-api.js';
 
 /**
@@ -109,6 +111,33 @@ const LIBRARY = [
 ];
 
 const UNSEEN = "Documents you can't see may also be affected.";
+
+/** What a change to Passport would touch: 14 documents, 12 with no number. */
+const PASSPORT_IMPACT = {
+  key: 'passport',
+  documents: 14,
+  in_trash: 0,
+  core: {
+    ...Object.fromEntries(
+      ['issued_by', 'issued', 'expires', 'physical_location', 'tags', 'notes'].map((f) => [
+        f,
+        { with_value: 14, without_value: 0 },
+      ]),
+    ),
+    identifier: { with_value: 2, without_value: 12 },
+  },
+  fields: [],
+  reminders: 20,
+  unseen: UNSEEN,
+};
+
+/** The web's stylesheet, read from disk: under Vitest an import of it is empty. */
+const CSS = (() => {
+  const file = ['src/styles.css', 'apps/web/src/styles.css']
+    .map((p) => resolve(process.cwd(), p))
+    .find((p) => existsSync(p));
+  return file ? readFileSync(file, 'utf8') : '';
+})();
 
 /** The vault, signed in as `role`, with the page at `path`. */
 function open(
@@ -248,24 +277,7 @@ describe('Settings → Kinds of document (5.12)', () => {
   });
 
   it('the warning says how many documents would need information', async () => {
-    const impact = {
-      key: 'passport',
-      documents: 14,
-      in_trash: 0,
-      core: {
-        ...Object.fromEntries(
-          ['issued_by', 'issued', 'expires', 'physical_location', 'tags', 'notes'].map((f) => [
-            f,
-            { with_value: 14, without_value: 0 },
-          ]),
-        ),
-        identifier: { with_value: 2, without_value: 12 },
-      },
-      fields: [],
-      reminders: 20,
-      unseen: UNSEEN,
-    };
-    open('/settings/kinds/passport', 'owner', { impact: { passport: impact } });
+    open('/settings/kinds/passport', 'owner', { impact: { passport: PASSPORT_IMPACT } });
     await screen.findByRole('heading', { name: 'Passport', level: 1 });
     // Nothing changed yet: nothing to say.
     expect(screen.queryByText(UNSEEN)).toBeNull();
@@ -437,5 +449,201 @@ describe('Settings → Kinds of document (5.12)', () => {
       await within(screen.getByRole('region', { name: 'Your own' })).findByText(/Archived/),
     ).toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('Kinds of document: the 5.12 review', () => {
+  it('a kind hidden with its switch is not offered on the Add card; a document filed under it keeps it', async () => {
+    const state = open('/settings/kinds');
+    fireEvent.click(await screen.findByRole('switch', { name: 'Hide Passport' }));
+    await screen.findByText(/“Passport” is no longer offered for new documents/);
+    // A passport is filed, so the vault still lists the kind, marked hidden.
+    expect(state.types.find((t) => t.key === 'passport')?.hidden).toBe(true);
+    expect(state.documents.some((d) => d.type_key === 'passport')).toBe(true);
+    cleanup();
+
+    // Not even from a link that names it.
+    window.history.replaceState({}, '', '/add?type=passport');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    expect(screen.queryByText(/Adding a passport/)).toBeNull();
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'scan.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    const what = screen.getByLabelText<HTMLSelectElement>('What it is');
+    expect(what.value).toBe('');
+    expect([...what.options].map((o) => o.text)).toEqual([
+      'Not sure yet',
+      'Will / trust / power of attorney',
+      'Allotment tenancy',
+    ]);
+    cleanup();
+
+    // The passport already filed still says what it is.
+    window.history.replaceState({}, '', '/documents/doc-1/confirm');
+    render(<App />);
+    const kept = await screen.findByLabelText<HTMLSelectElement>('What it is');
+    expect(kept.value).toBe('passport');
+    expect([...kept.options].map((o) => o.text)).toContain('Passport');
+  });
+
+  it('Load the latest starts again from the saved copy, says so, and the place is on what it says', async () => {
+    const state = open('/settings/kinds/passport');
+    await screen.findByRole('heading', { name: 'Passport', level: 1 });
+    // Somebody else renames its number meanwhile.
+    state.types = state.types.map((t) =>
+      t.key === 'passport'
+        ? {
+            ...t,
+            etag: '"passport.2"',
+            core: core({
+              identifier: { label: 'Passport no.' },
+              issued_by: { label: 'Issuing country' },
+              expires: { required: true },
+            }),
+          }
+        : t,
+    );
+    fireEvent.click(within(group('Number')).getByRole('checkbox', { name: 'Required' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Someone else changed this kind of document. Reload and try again.',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load the latest' }));
+    const said = await screen.findByText(
+      'This is the latest, with the other change in it. Your changes weren’t kept: make them again, then save.',
+    );
+    expect(said).toHaveAttribute('role', 'status');
+    await waitFor(() => expect(document.activeElement).toBe(said));
+    // Theirs is in; what was ticked here is not.
+    expect(within(group('Number')).getByLabelText('What the card calls it')).toHaveValue(
+      'Passport no.',
+    );
+    expect(within(group('Number')).getByRole('checkbox', { name: 'Required' })).not.toBeChecked();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await expectAccessible();
+  });
+
+  it("a kind's own reminder time turned off stays a chip, and can be turned on again from where it was", async () => {
+    // As Insurance and Vehicle are: 45 days, not one of the usual chips.
+    open('/settings/kinds/passport', 'owner', {
+      types: [{ ...PASSPORT, reminder_leads: [45, 7] }],
+    });
+    await screen.findByRole('heading', { name: 'Passport', level: 1 });
+    const chip = within(group('Remind us before it expires')).getByRole('button', {
+      name: '45 days',
+    });
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    chip.focus();
+    fireEvent.click(chip);
+    // The same chip, off, with the place still on it.
+    expect(
+      within(group('Remind us before it expires')).getByRole('button', { name: '45 days' }),
+    ).toBe(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    expect(document.activeElement).toBe(chip);
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('renaming a field a warning names does not say the warning again at every letter', async () => {
+    open('/settings/kinds/passport', 'owner', { impact: { passport: PASSPORT_IMPACT } });
+    await screen.findByRole('heading', { name: 'Passport', level: 1 });
+    fireEvent.click(within(group('Number')).getByRole('checkbox', { name: 'Required' }));
+    const warning = await screen.findByText(/^12 documents have nothing in “Passport number” yet/);
+    const region = warning.closest('[aria-live]') as HTMLElement;
+    expect(region).toHaveAttribute('aria-live', 'polite');
+
+    const changes: MutationRecord[] = [];
+    const watch = new MutationObserver((records) => changes.push(...records));
+    watch.observe(region, { childList: true, subtree: true, characterData: true });
+    const rename = within(group('Number')).getByLabelText('What the card calls it');
+    for (const value of ['Passport numbe', 'Passport numb', 'Passport no', 'Passport no.']) {
+      fireEvent.change(rename, { target: { value } });
+    }
+    await Promise.resolve();
+    changes.push(...watch.takeRecords());
+    watch.disconnect();
+    // Nothing new in the live region: the warning is as it was, named as saved.
+    expect(changes).toEqual([]);
+    expect(warning.isConnected).toBe(true);
+    expect(warning).toHaveTextContent(/^12 documents have nothing in “Passport number” yet/);
+    // The preview follows the new name.
+    const preview = screen.getByRole('region', { name: 'How the card will look' });
+    expect(within(preview).getByText('Passport no.')).toBeInTheDocument();
+  });
+
+  it('adding a field says first that it goes into the library for good, and a name the library has is not added twice', async () => {
+    const state = open('/settings/kinds/passport');
+    await screen.findByRole('heading', { name: 'Passport', level: 1 });
+    const own = screen.getByRole('region', { name: 'Add your own field' });
+    const add = within(own).getByRole('button', { name: 'Add this field' });
+    // Said before the button, and heard with it.
+    const note = within(own).getByText(LIBRARY_AT_ONCE);
+    expect(note.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(add).toHaveAccessibleDescription(LIBRARY_AT_ONCE);
+
+    fireEvent.change(within(own).getByLabelText('What it’s called'), {
+      target: { value: '  place of  BIRTH ' },
+    });
+    fireEvent.click(add);
+    expect(await within(own).findByRole('alert')).toHaveTextContent(
+      'The library already has “Place of birth”. Tick Show beside it in the list above instead.',
+    );
+    expect(
+      state.calls.some((c) => c.method === 'POST' && c.url.endsWith('/document-attributes')),
+    ).toBe(false);
+    expect(state.attributes).toHaveLength(LIBRARY.length);
+    await expectAccessible();
+  });
+
+  it('a field the kind dropped, shown again as required, is counted as the vault counts it', async () => {
+    // Executor was dropped from the will; 12 of its 14 documents keep a value.
+    const will = { ...WILL, fields: [] };
+    const impact = {
+      ...PASSPORT_IMPACT,
+      key: 'will',
+      core: { ...PASSPORT_IMPACT.core, identifier: { with_value: 14, without_value: 0 } },
+      fields: [{ key: 'executor', label: null, with_value: 12, without_value: 2 }],
+    };
+    open('/settings/kinds/will', 'owner', {
+      types: [PASSPORT, will],
+      impact: { will: impact },
+    });
+    await screen.findByRole('heading', { name: 'Will / trust / power of attorney', level: 1 });
+    const executor = group('Executor');
+    fireEvent.click(within(executor).getByRole('checkbox', { name: 'Show' }));
+    fireEvent.click(within(executor).getByRole('checkbox', { name: 'Required' }));
+    expect(
+      await screen.findByText(
+        '2 documents have nothing in “Executor” yet. They’ll show Needs info until someone fills it in.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('there is one switch: one set of rules, one knob', () => {
+    expect(CSS.length).toBeGreaterThan(1000);
+    expect(CSS.match(/^\.switch \{/gm)).toHaveLength(1);
+    expect(CSS.match(/^\.switch input \{/gm)).toHaveLength(1);
+    expect(CSS.match(/^\.switch input(:checked)?::(before|after) \{/gm)).toEqual([
+      '.switch input::before {',
+      '.switch input:checked::before {',
+    ]);
+  });
+
+  it("on a narrow screen a field's Show and Required go under its name, and a long name breaks", () => {
+    const rule = /^\.kind-field-name \{([^}]*)\}/m.exec(CSS)?.[1] ?? '';
+    expect(rule).toMatch(/overflow-wrap: anywhere;/);
+    const narrow =
+      /@media \(max-width: (\d+)px\) \{\s*\.kind-field \{\s*grid-template-columns: minmax\(0, 1fr\);/.exec(
+        CSS,
+      );
+    // 320px wide, and 1280 at 400% zoom, are among them.
+    expect(Number(narrow?.[1] ?? 0)).toBeGreaterThanOrEqual(320);
   });
 });

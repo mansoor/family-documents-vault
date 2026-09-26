@@ -198,6 +198,8 @@ export function Button(props: {
   disabled?: boolean;
   onClick?: () => void;
   ariaLabel?: string;
+  /** The id of what a screen reader should hear with it: what pressing it does. */
+  describedBy?: string;
 }) {
   return (
     <button
@@ -206,6 +208,7 @@ export function Button(props: {
       disabled={props.disabled}
       onClick={props.onClick}
       aria-label={props.ariaLabel}
+      aria-describedby={props.describedBy}
     >
       {props.children}
     </button>

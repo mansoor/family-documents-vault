@@ -255,11 +255,23 @@ export class TypeService {
       const core = Object.fromEntries(
         CORE_FIELDS.map((f) => [f, count((v) => given(v[f]))]),
       ) as DocumentTypeImpact['core'];
-      const fields: FieldImpact[] = ((t.fields ?? []) as TypeField[]).map((f) => ({
+      const own = (t.fields ?? []) as TypeField[];
+      const fields: FieldImpact[] = own.map((f) => ({
         key: f.key,
         label: f.label,
         ...count((v) => given(v.extra?.[f.key])),
       }));
+      // Then every other field one of them keeps a value for — one the kind
+      // dropped, kept under Other details — so an editor showing it again
+      // as required counts what would need it as Needs info will (the 5.12
+      // review). A field none of them has a value for is not listed: all
+      // of them lack it.
+      const others = new Set(
+        values.flatMap((v) => Object.keys(v.extra ?? {}).filter((k) => given(v.extra?.[k]))),
+      );
+      for (const key of [...others].filter((k) => !own.some((f) => f.key === k)).sort()) {
+        fields.push({ key, label: null, ...count((v) => given(v.extra?.[key])) });
+      }
       const reminders = await sql<{ n: number }>`
         select count(*)::int as n
           from reminder r join document d on d.id = r.document_id

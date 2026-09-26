@@ -663,7 +663,7 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a kind of document as the vault keeps it: a conflict to reload from, names, Expires, what an edit touches, and a scan queued for a kind since deleted (0.5.10)',
+    name: 'a kind of document as the vault keeps it: a conflict to reload from, names, Expires, what an edit touches (a field it dropped included), and a scan queued for a kind since deleted (0.5.10)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
       const me = await api.me(token);
@@ -739,6 +739,28 @@ export const contractScenarios: Scenario[] = [
         tags: one,
         identifier: { with_value: 0, without_value: 1 },
       });
+
+      // A field the kind no longer asks for is counted too, where one of its
+      // documents keeps a value for it: shown again as required, that is
+      // how many would need it (the 5.12 review). One none has, is not.
+      const card = await api.createDocumentAttribute(token, { label: 'Member card', kind: 'text' });
+      const locker = await api.createDocumentAttribute(token, { label: 'Locker', kind: 'text' });
+      await api.updateDocumentType(token, gym.key, {
+        fields: [{ key: card.key }, { key: locker.key }],
+      });
+      await api.createDocument(token, {
+        type_key: gym.key,
+        title: 'Old gym pass',
+        owner_member_id: me.member_id,
+        expires: { date: '2027-01-05', precision: 'day' },
+        extra: { [card.key]: 'M-104' },
+      });
+      await api.updateDocumentType(token, gym.key, { fields: [] });
+      const dropped = await api.documentTypeImpact(token, gym.key);
+      expect(dropped.documents).toBe(2);
+      expect(dropped.fields).toEqual([
+        { key: card.key, label: null, with_value: 1, without_value: 1 },
+      ]);
 
       // A scan queued offline against a kind deleted since is filed with no
       // kind, not refused for good; left unsaid, it is its filer's Only me.

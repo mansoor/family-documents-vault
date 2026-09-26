@@ -1296,11 +1296,23 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           core: Object.fromEntries(
             CORE_FIELDS.map((f) => [f, count((d) => given((d as Record<string, unknown>)[f]))]),
           ) as DocumentTypeImpact['core'],
-          fields: t.fields.map((f) => ({
-            key: f.key,
-            label: f.label,
-            ...count((d) => given(d.extra?.[f.key])),
-          })),
+          fields: [
+            ...t.fields.map((f) => ({
+              key: f.key,
+              label: f.label,
+              ...count((d) => given(d.extra?.[f.key])),
+            })),
+            // Then every other field one of them keeps a value for, as the
+            // vault counts them (a field the kind dropped: 5.12).
+            ...[
+              ...new Set(
+                used.flatMap((d) => Object.keys(d.extra ?? {}).filter((k) => given(d.extra?.[k]))),
+              ),
+            ]
+              .filter((k) => !t.fields.some((f) => f.key === k))
+              .sort()
+              .map((key) => ({ key, label: null, ...count((d) => given(d.extra?.[key])) })),
+          ],
           reminders: state.reminders.filter(
             (r) =>
               r.kind === 'derived' &&
