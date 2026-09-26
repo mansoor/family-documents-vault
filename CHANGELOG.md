@@ -6,6 +6,18 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-09-26 — iteration 5.12
+
+### Added
+
+- Settings → Kinds of document: hide a built-in kind the family never needs, add the family's own (an allotment tenancy, a season ticket), and choose what the card asks for each — which fixed fields it shows and what they are called, which details from the shared library, which are required, when to be reminded before it expires, who sees a new one by default, and whether it is usually Essential. A preview shows the card as it will be, and before saving it says what the change would affect — counting only the documents you can see.
+- Letting more people see a kind's new documents by default asks an owner to confirm it's them; an adult can make it narrower, not wider.
+
+### Changed
+
+- A kind that is hidden or archived is no longer offered when adding a document; documents already filed under it keep it.
+- A kind that is Only me by default starts at Adults only when the document is somebody else's.
+
 ## [0.5.10] - 2026-09-26 — iteration 5.11
 
 The family's own kinds of document, on the server: an owner or an adult can make a kind of document, change what the card asks for it, hide a built-in one the family never needs, archive their own, and delete one nobody uses. The screens come in the next release.
