@@ -330,6 +330,23 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     await sql(vault.adminUrl, 'drop policy everybody on public.document');
   });
 
+  it('notices a caller who says nothing being given documents', async () => {
+    // 0030's rule for the document, opened up: the tenant wall still holds,
+    // but within the household a transaction that names no actor sees all.
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    await sql(vault.adminUrl, 'alter policy document_actor on public.document using (true)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/says nothing is given its documents/);
+    } finally {
+      await sql(vault.adminUrl, `alter policy document_actor on public.document using (${rule})`);
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -613,6 +630,63 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       await rm(olderDir, { recursive: true, force: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a backup made before 0030 restores, and every household sees its own documents', async () => {
+    // 0.5.4: every transaction says who is asking, and nothing reads it yet.
+    const older = await empty();
+    const migrations = await migrationsUpTo(29);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0029-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const households = [await seed(older.adminUrl), await seed(older.adminUrl)];
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      // The restore brings it up to date, 0030's rules included, and its
+      // check — asking as the vault itself — passes.
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet);
+      expect(report).toMatchObject({ schema: known, households: 2, members: 4, documents: 6 });
+      const rules = await sql(
+        t.adminUrl,
+        `select count(*)::int as n from pg_policy
+          where polname = 'document_actor' and not polpermissive`,
+      );
+      expect(rules.rows[0]?.n).toBe(1);
+
+      // Each household is given its own three documents, by the vault and by
+      // somebody signed in; asked with no actor, none.
+      for (const hh of households) {
+        const seen = await withClient(t.appUrl, async (c) => {
+          const as = async (actor: string) => {
+            await c.query('begin');
+            await c.query(
+              `select set_config('app.household_id', $1, true), set_config('app.actor', $2, true)`,
+              [hh, actor],
+            );
+            const { rows } = await c.query<{ n: number }>(
+              'select count(*)::int as n from document',
+            );
+            await c.query('commit');
+            return rows[0]?.n;
+          };
+          return { system: await as('system'), account: await as('account'), none: await as('') };
+        });
+        expect(seen, hh).toEqual({ system: 3, account: 3, none: 0 });
+      }
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
     }
   }, 120_000);
 

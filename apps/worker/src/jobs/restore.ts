@@ -434,14 +434,19 @@ export async function checkRestored(
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
 
     // Outside withScope, so it says for itself what withSystem would: this
-    // household, asked by the vault itself.
-    const asHousehold = async <T>(household: string, sql: string): Promise<T[]> => {
+    // household, asked by the vault itself. Since 0030 a transaction that
+    // does not say who is asking is given no documents.
+    const asHousehold = async <T>(
+      household: string,
+      sql: string,
+      actor = 'system',
+    ): Promise<T[]> => {
       const client = await app.connect();
       try {
         await client.query('begin');
         await client.query(
-          `select set_config('app.household_id', $1, true), set_config('app.actor', 'system', true)`,
-          [household],
+          `select set_config('app.household_id', $1, true), set_config('app.actor', $2, true)`,
+          [household, actor],
         );
         const { rows } = await client.query<T & object>(sql);
         await client.query('commit');
@@ -479,6 +484,16 @@ export async function checkRestored(
           `household ${h.id}: the vault would see ${got.members} people and ${got.documents} ` +
             `documents, but the backup has ${h.members} and ${h.documents}`,
         );
+      }
+      // And nobody is given a document without saying who is asking: the
+      // rules for each kind of caller (0030) came back too.
+      const unsaid = await asHousehold<{ n: number }>(
+        h.id,
+        'select count(*)::int as n from document',
+        '',
+      );
+      if ((unsaid[0]?.n ?? 0) > 0) {
+        throw new Error(`household ${h.id}: a caller who says nothing is given its documents`);
       }
     }
     return {

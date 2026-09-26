@@ -25,9 +25,9 @@ import { verifyAllAuditChains } from './jobs/verify-audit.js';
 
 /**
  * The worker is the vault itself (5.5): every job it runs says so to the
- * database, and still does its work. Nothing reads the actor yet; once the
- * policies do (5.6), a job that forgot to say it would quietly process
- * nothing, and this is where that shows.
+ * database, and still does its work. The policies read the actor (5.6), so
+ * a job that forgot to say it would quietly process nothing, and this is
+ * where that shows.
  *
  * Every job main.ts registers that opens a scope is run here once, against
  * one seeded household. The heartbeat and the backup open none: the backup

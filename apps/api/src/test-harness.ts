@@ -2,10 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
-import { createDb, createPool, type Db } from '@fdv/db';
+import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
 import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
 import type { FastifyInstance } from 'fastify';
+import { Kysely, PostgresDialect, type LogEvent } from 'kysely';
 import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
 import { TotpService } from './auth/totp.js';
@@ -85,10 +86,18 @@ export interface SetupBody {
   password: string;
 }
 
-export async function createHarness(): Promise<Harness> {
+export interface HarnessOptions {
+  /** Hears every query the API runs, as Kysely logs it: for a test that listens. */
+  log?: (event: LogEvent) => void;
+}
+
+export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const tdb: TestDatabase = await createTestDatabase();
   const vaultDir = await mkdtemp(path.join(tmpdir(), 'fdv-api-vault-'));
-  const db = createDb(createPool(tdb.appUrl, 4));
+  const pool = createPool(tdb.appUrl, 4);
+  const db = opts.log
+    ? new Kysely<Schema>({ dialect: new PostgresDialect({ pool }), log: opts.log })
+    : createDb(pool);
   const config = loadConfig({
     DATABASE_URL: tdb.appUrl,
     FDV_MASTER_KEY: TEST_MASTER,

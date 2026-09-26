@@ -548,15 +548,19 @@ export function createDb(pool: pg.Pool): Db {
 }
 
 /**
- * Who a transaction is for. The database is told, so that a policy can
- * answer each kind of caller differently:
- * - `account`: somebody signed in, as the member and role they hold;
+ * Who a transaction is for. The database is told, and its policies (0030)
+ * answer each kind of caller differently in the document tables:
+ * - `account`: somebody signed in, as the member and role they hold —
+ *   what the application's rules allow;
  * - `system`: the vault itself — the worker's jobs, and the few lookups
- *   that must happen before any caller is known;
- * - `link`: whoever holds a share link, once the link is found;
- * - `upload`: whoever holds an upload request's link;
+ *   that must happen before any caller is known — everything;
+ * - `link`: whoever holds a share link, once the link is found — its one
+ *   document, while the link is live;
+ * - `upload`: whoever holds an upload request's link — nothing;
  * - `anonymous`: a caller not yet known — a sign-in page, an invitation,
- *   a reset.
+ *   a reset — nothing.
+ *
+ * A transaction that names nobody is given nothing.
  */
 export type Actor =
   | { kind: 'account'; accountId: string; memberId: string; role: Role }

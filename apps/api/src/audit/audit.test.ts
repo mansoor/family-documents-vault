@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { appendAudit, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import type { ActivityLine, DocumentView } from '@fdv/shared';
+import { describeEvent, type ActivityLine, type DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
+import { hasRule, shownTo, type Reader } from './service.js';
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
 
@@ -147,6 +150,30 @@ describe.skipIf(!testAdminUrl())('the activity log', () => {
     expect(lines).toContain('Owner made a link to “Home insurance policy” for the letting agent');
   });
 
+  it('a line about an unknown object type is shown to nobody', async () => {
+    // The same action with a sentence, once about a member and once about
+    // a kind of thing nobody has said the audience of.
+    await withSystem(h.db, owner.household_id, async (trx) => {
+      for (const [objectType, name] of [
+        ['member', 'Crumpet'],
+        ['pet', 'Biscuit'],
+      ] as const) {
+        await appendAudit(trx, {
+          householdId: owner.household_id,
+          action: 'member.added',
+          objectType,
+          objectId: randomUUID(),
+          detail: { display_name: name },
+        });
+      }
+    });
+    for (const reader of [owner, sam, teen]) {
+      const lines = (await texts(reader)).join(' ');
+      expect(lines).toContain('Somebody added Crumpet to the family');
+      expect(lines).not.toContain('Biscuit');
+    }
+  });
+
   it('pages backwards without losing anything', async () => {
     const first = json<{ items: ActivityLine[]; next: number | null }>(
       await h.app.inject({ url: '/api/v1/audit?limit=3', headers: h.as(owner) }),
@@ -162,6 +189,102 @@ describe.skipIf(!testAdminUrl())('the activity log', () => {
     );
     const ids = new Set(first.items.map((l) => l.id));
     for (const l of second.items) expect(ids.has(l.id)).toBe(false);
+  });
+});
+
+/**
+ * The log denies by default (5.6): a line is shown only when a rule says to
+ * whom, and nothing new inherits an audience by being about a familiar kind
+ * of thing.
+ */
+describe('who reads each line', () => {
+  const readers: Array<[string, Reader]> = [
+    ['an owner', { role: 'owner', memberId: randomUUID() }],
+    ['an adult', { role: 'adult', memberId: randomUUID() }],
+    ['a teen', { role: 'teen', memberId: randomUUID() }],
+  ];
+  const about = (action: string, object_type: string | null) => ({
+    action,
+    object_type,
+    document_visibility: null,
+    document_owner: null,
+  });
+
+  /** Every action `@fdv/shared/activity` has a sentence for, read from its source. */
+  const said = async () => {
+    const source = await readFile(
+      new URL('../../../../packages/shared/src/activity.ts', import.meta.url),
+      'utf8',
+    );
+    return [...source.matchAll(/case '([a-z_]+\.[a-z_]+)':/g)].map((m) => m[1] as string);
+  };
+  const withoutRule = (actions: string[]) => actions.filter((a) => !hasRule(a));
+
+  it('an action with a sentence but no rule fails the test', async () => {
+    const actions = await said();
+    // Read right: each of these really is said.
+    expect(actions.length).toBeGreaterThan(30);
+    for (const action of actions) {
+      const line = describeEvent({
+        id: 1,
+        at: new Date().toISOString(),
+        action,
+        actor: 'Sam',
+        actor_label: null,
+        object_type: null,
+        object_id: null,
+        object_title: null,
+        detail: {},
+      });
+      expect(line, action).not.toBeNull();
+    }
+    expect(withoutRule(actions)).toEqual([]);
+    // And a sentence added tomorrow without a rule is caught here.
+    expect(withoutRule([...actions, 'member.made_owner'])).toEqual(['member.made_owner']);
+  });
+
+  it('a new action on `member` with no row of its own is shown to nobody, not to everyone who sees `member` lines', () => {
+    for (const [who, reader] of readers) {
+      // Today's lines about a member are everyone's …
+      expect(shownTo(reader, about('member.role_changed', 'member')), who).toBe(true);
+      expect(shownTo(reader, about('member.sign_in_removed', 'member')), who).toBe(true);
+      // … and an owner's action from 5.28–5.30, before its iteration gives
+      // it an audience, is nobody's.
+      expect(shownTo(reader, about('member.made_owner', 'member')), who).toBe(false);
+      expect(shownTo(reader, about('member.suspended', 'member')), who).toBe(false);
+      // Nor does a name that happens to be on every object count as a rule.
+      expect(shownTo(reader, about('constructor', 'member')), who).toBe(false);
+    }
+  });
+
+  it("a document's line follows the document, and with no row to go by is nobody's", () => {
+    const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
+    const doc = (visibility: 'household' | 'adults' | 'private' | null, by: string | null) => ({
+      action: 'document.downloaded',
+      object_type: 'document',
+      document_visibility: visibility,
+      document_owner: by,
+    });
+    expect([owner, adult, teen].map((r) => shownTo(r, doc('household', null)))).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect([owner, adult, teen].map((r) => shownTo(r, doc('adults', null)))).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    expect([owner, adult, teen].map((r) => shownTo(r, doc('private', adult.memberId)))).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect([owner, adult, teen].map((r) => shownTo(r, doc(null, null)))).toEqual([
+      false,
+      false,
+      false,
+    ]);
   });
 });
 

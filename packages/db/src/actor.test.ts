@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
+import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ANONYMOUS,
@@ -15,10 +16,10 @@ import {
 import { createTestDatabase, testAdminUrl, type TestDatabase } from './testing.js';
 
 /**
- * The database is told who is asking (5.5). Nothing reads these settings
- * yet — the policies that answer each kind of caller come next — so what
- * is tested here is that they are said, and that they end with the
- * transaction that said them.
+ * The database is told who is asking (5.5), and answers each kind of caller
+ * by its own rule (5.6). First, that the settings are said and end with the
+ * transaction that said them; then, what each caller is given of the
+ * document tables.
  */
 
 const SETTINGS = [
@@ -171,5 +172,269 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
       }),
     ).rejects.toThrow('rolled back');
     expect(none(await settings(db))).toEqual(blank);
+  });
+});
+
+/** The tables 0030 guards: the document and everything that hangs off it. */
+const GUARDED = [
+  'document',
+  'document_version',
+  'document_text',
+  'document_text_sealed',
+  'reminder',
+  'reminder_delivery',
+  'share_link',
+  'document_link',
+  'offline_fill',
+  'private_notice',
+  'upload_idempotency',
+] as const;
+type Counts = Record<(typeof GUARDED)[number], number>;
+
+/** How many rows of each the caller is given. */
+async function counts(executor: Db): Promise<Counts> {
+  const r = await sql<Counts>`select ${sql.raw(
+    GUARDED.map((t) => `(select count(*)::int from ${t}) as ${t}`).join(', '),
+  )}`.execute(executor);
+  return r.rows[0] as Counts;
+}
+
+const nothing = Object.fromEntries(GUARDED.map((t) => [t, 0])) as Counts;
+
+describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
+  let tdb: TestDatabase;
+  let admin: pg.Pool;
+  let db: Db;
+  let everything: Counts;
+
+  const hh = randomUUID();
+  const ids = { account: '', member: '', lease: '', will: '' };
+  /** Share links: the one asked as, one for the other document, and two that are over. */
+  const shares = { lease: '', will: '', revoked: '', expired: '' };
+
+  const one = async <T>(text: string, values: unknown[] = []): Promise<T> =>
+    (await admin.query<T & object>(text, values)).rows[0] as T;
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    // One connection: whoever asks next is given the one somebody used before.
+    db = createDb(createPool(tdb.appUrl, 1));
+
+    // As the owning role, round every policy: two documents, each with all
+    // that can hang off it.
+    await admin.query("insert into household (id, name) values ($1, 'Rules')", [hh]);
+    ids.member = (
+      await one<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'Owner') returning id",
+        [hh],
+      )
+    ).id;
+    ids.account = (
+      await one<{ id: string }>('insert into account (email) values ($1) returning id', [
+        `rules-${hh}@example.test`,
+      ])
+    ).id;
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [ids.account, hh, ids.member],
+    );
+    const vault = await one<{ id: string }>(
+      "insert into vault (household_id, kind, label) values ($1, 'local', 'test') returning id",
+      [hh],
+    );
+    const scope = await one<{ id: string }>(
+      "insert into scope_key (household_id, kind, key_wrapped) values ($1, 'household', '\\x00') returning id",
+      [hh],
+    );
+    const session = await one<{ id: string }>(
+      `insert into session (account_id, household_id, refresh_hash, expires_at)
+       values ($1, $2, $3, now() + interval '30 days') returning id`,
+      [ids.account, hh, randomBytes(32)],
+    );
+    for (const title of ['lease', 'will'] as const) {
+      const doc = await one<{ id: string }>(
+        'insert into document (household_id, title) values ($1, $2) returning id',
+        [hh, title],
+      );
+      ids[title] = doc.id;
+      const version = await one<{ id: string }>(
+        `insert into document_version
+           (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+            cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+         values ($1, $2, 1, 'scan.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00', $3, $4, '\\x00', $5)
+         returning id`,
+        [hh, doc.id, `k-${doc.id}`, vault.id, scope.id],
+      );
+      await admin.query(
+        'insert into document_text (version_id, household_id, document_id, content) values ($1, $2, $3, $4)',
+        [version.id, hh, doc.id, `the words of the ${title}`],
+      );
+      await admin.query(
+        "insert into document_text_sealed (version_id, household_id, document_id, content_cipher) values ($1, $2, $3, '\\x00')",
+        [version.id, hh, doc.id],
+      );
+      const reminder = await one<{ id: string }>(
+        `insert into reminder (household_id, document_id, kind, fire_at, note)
+         values ($1, $2, 'manual', '2027-01-01', 'ring the broker') returning id`,
+        [hh, doc.id],
+      );
+      await admin.query(
+        "insert into reminder_delivery (reminder_id, household_id, fire_date, channel) values ($1, $2, '2027-01-01', 'email')",
+        [reminder.id, hh],
+      );
+      await admin.query(
+        'insert into offline_fill (household_id, session_id, version_id) values ($1, $2, $3)',
+        [hh, session.id, version.id],
+      );
+      await admin.query(
+        'insert into private_notice (household_id, document_id, member_id) values ($1, $2, $3)',
+        [hh, doc.id, ids.member],
+      );
+      await admin.query(
+        `insert into upload_idempotency (idempotency_key, household_id, document_id, version_id, account_id)
+         values ($1, $2, $3, $4, $5)`,
+        [randomUUID(), hh, doc.id, version.id, ids.account],
+      );
+    }
+    await admin.query(
+      'insert into document_link (household_id, a, b) values ($1, least($2::uuid, $3::uuid), greatest($2::uuid, $3::uuid))',
+      [hh, ids.lease, ids.will],
+    );
+    const share = async (doc: string, ended = '') => {
+      const { id } = await one<{ id: string }>(
+        `insert into share_link (household_id, document_id, token_hash, created_by, expires_at)
+         values ($1, $2, $3, $4, now() + interval '7 days') returning id`,
+        [hh, doc, randomBytes(32), ids.account],
+      );
+      if (ended) await admin.query(`update share_link set ${ended} where id = $1`, [id]);
+      return id;
+    };
+    shares.lease = await share(ids.lease);
+    shares.will = await share(ids.will);
+    shares.revoked = await share(ids.lease, 'revoked_at = now(), revoked_by = created_by');
+    shares.expired = await share(ids.lease, "expires_at = now() - interval '1 minute'");
+
+    everything = await counts(createDb(admin));
+  }, 60_000);
+
+  afterAll(async () => {
+    await db?.destroy();
+    await admin?.end();
+    await tdb?.drop();
+  });
+
+  const as = <T>(actor: Actor, fn: (trx: Db) => Promise<T>) =>
+    actor.kind === 'system'
+      ? withSystem(db, hh, fn)
+      : withScope(db, { householdId: hh, actor }, fn);
+  const link = (shareId: string): Actor => ({ kind: 'link', shareId });
+  const addDocument = (trx: Db) =>
+    trx.insertInto('document').values({ household_id: hh, title: 'slipped in' }).execute();
+
+  it('a transaction with no actor sees no documents', async () => {
+    // Somebody asked first, on the only connection there is: an unset
+    // setting now reads '' rather than null, which is the case to test.
+    expect(await as({ kind: 'system' }, counts)).toEqual(everything);
+
+    const seen = await db.transaction().execute(async (trx) => {
+      await sql`select set_config('app.household_id', ${hh}, true)`.execute(trx);
+      const actor = await sql<{ actor: string | null }>`
+        select current_setting('app.actor', true) as actor`.execute(trx);
+      return { actor: actor.rows[0]?.actor, counts: await counts(trx) };
+    });
+    expect(seen).toEqual({ actor: '', counts: nothing });
+
+    // Nor may it write one.
+    await expect(
+      db.transaction().execute(async (trx) => {
+        await sql`select set_config('app.household_id', ${hh}, true)`.execute(trx);
+        await addDocument(trx);
+      }),
+    ).rejects.toThrow(/row-level security/);
+  });
+
+  it('a link actor gets no row for a document outside its share', async () => {
+    const seen = await as(link(shares.lease), async (trx) => ({
+      documents: (await trx.selectFrom('document').select('id').execute()).map((r) => r.id),
+      versions: (await trx.selectFrom('document_version').select('document_id').execute()).map(
+        (r) => r.document_id,
+      ),
+      shares: (await trx.selectFrom('share_link').select('id').execute()).map((r) => r.id),
+      counts: await counts(trx),
+    }));
+    // Its document, its file and its own share: not the text, the reminders,
+    // the link to the will, or anybody's phone's copy.
+    expect(seen).toEqual({
+      documents: [ids.lease],
+      versions: [ids.lease],
+      shares: [shares.lease],
+      counts: { ...nothing, document: 1, document_version: 1, share_link: 1 },
+    });
+
+    await as(link(shares.lease), async (trx) => {
+      // Asked for by id, the other document is not there.
+      expect(
+        await trx.selectFrom('document').select('id').where('id', '=', ids.will).executeTakeFirst(),
+      ).toBeUndefined();
+      expect(
+        await trx
+          .selectFrom('document_version')
+          .select('id')
+          .where('document_id', '=', ids.will)
+          .execute(),
+      ).toEqual([]);
+      // Nor can it be changed.
+      const changed = await trx
+        .updateTable('document')
+        .set({ title: 'changed' })
+        .where('id', '=', ids.will)
+        .executeTakeFirst();
+      expect(changed.numUpdatedRows).toBe(0n);
+      // A wrong PIN is still counted, on the link's own row.
+      const counted = await trx
+        .updateTable('share_link')
+        .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
+        .where('id', '=', shares.lease)
+        .returning('attempts')
+        .executeTakeFirst();
+      expect(counted?.attempts).toBe(1);
+    });
+    await expect(as(link(shares.lease), addDocument)).rejects.toThrow(/row-level security/);
+
+    // The other document's link is given that one, and only that one.
+    expect(
+      await as(link(shares.will), (trx) => trx.selectFrom('document').select('id').execute()),
+    ).toEqual([{ id: ids.will }]);
+
+    // A link taken back or expired is given nothing, even of its own document.
+    for (const over of [shares.revoked, shares.expired]) {
+      expect(await as(link(over), counts)).toEqual(nothing);
+    }
+    // Nor is a live one whose document went in the Trash.
+    await admin.query('update document set deleted_at = now() where id = $1', [ids.lease]);
+    try {
+      expect(await as(link(shares.lease), counts)).toEqual(nothing);
+    } finally {
+      await admin.query('update document set deleted_at = null where id = $1', [ids.lease]);
+    }
+    // And a share id from nowhere is given nothing.
+    expect(await as(link(randomUUID()), counts)).toEqual(nothing);
+  });
+
+  it('an upload actor and an anonymous page see no document', async () => {
+    for (const actor of [{ kind: 'upload', requestId: randomUUID() } as const, ANONYMOUS]) {
+      expect(await as(actor, counts), actor.kind).toEqual(nothing);
+      await expect(as(actor, addDocument), actor.kind).rejects.toThrow(/row-level security/);
+    }
+    // Somebody signed in, and the vault itself, are given all of it.
+    const p = {
+      householdId: hh,
+      accountId: ids.account,
+      memberId: ids.member,
+      role: 'owner' as const,
+    };
+    expect(await withPrincipal(db, p, counts)).toEqual(everything);
+    expect(await as({ kind: 'system' }, counts)).toEqual(everything);
   });
 });

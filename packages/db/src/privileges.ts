@@ -43,6 +43,10 @@ begin
   if to_regprocedure('public.share_link_household(bytea)') is not null then
     grant execute on function public.share_link_household(bytea) to fdv_app;
   end if;
+  -- A link's rule (0030) asks it which document the link may see.
+  if to_regprocedure('public.app_shared_document()') is not null then
+    grant execute on function public.app_shared_document() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the
