@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-26 — iteration 5.4
+
+### Added
+
+- **Quick actions on every document.** A ⋯ beside each document in a list — on Home, in search, on a person's page and in Reminders — offers what the document's own page offers, without going there first: Open, Download, Read full size, Edit details, Share a link, Who can see, Essential on or off, Add a new version, and Move to Trash. You are offered only what you are allowed to do: a viewer sees Open and Download, and a teen can change only their own documents. Downloading an Only me or Essential document still asks you to confirm it is you. If somebody else changed a document since the list was shown, turning Essential on or off loads the list again and says so, rather than overwriting their change. On a phone the actions rise from the bottom of the screen; on a wider screen they open beside the ⋯. The keyboard works too: the arrow keys move through them, and Escape closes them.
+
+### Security
+
+- **Turning Essential off, or taking a document out of Only me, asks you to confirm it is you.** Opening an Essential or an Only me document asks who is asking, but turning Essential off — one tap from the ⋯ — took that question away without asking it, so a session left open on an unlocked computer could download the document straight after. The vault now asks first, as it does before a download; the web app asks from the ⋯, from Who can see and from the edit page. Turning Essential on and making something Only me ask nothing.
+
+### Fixed
+
+- **"Just checking it is you" has the keyboard.** Over the Share sheet it could not be reached without a mouse: Tab went back into the sheet underneath. Wherever it appears, focus now starts in it, Tab stays in it, Escape answers it (and not the sheet under it), and focus goes back where it was afterwards.
+- **A link, its PIN, or "Only you can open this" is never lost to Escape.** While a link is being made or a change to who can see is being saved, Escape and Cancel leave the sheet open, so what comes back is shown. These are shown once, only there.
+- **A document made Only me from a search keeps its notice until you have read it.** The search used to run again straight away and take the document, and the notice with it, off the screen; it now runs again after "I understand". Your private documents' results stay on screen while it runs, with what the ⋯ said beside them.
+- **The menu beside the ⋯ always fits on the screen.** On a wider screen it could run off the bottom, with Move to Trash out of reach. It now opens on the side with room, and scrolls inside itself when there is not enough.
+- Moving the only document in a list to the Trash left the keyboard nowhere; focus goes to the list's heading now. A search result that leaves the results leaves focus on the line that counts them.
+- Turning Essential off and on again before the list had come back said the document "was changed somewhere else". The second change is now made on the copy the first one saved.
+- **Share a link is offered only for a document with a file**, from the ⋯ and on the document's page. With no file yet, the vault always refused it.
+
 ## [0.5.2] - 2026-09-26 — iteration 5.3
 
 ### Security

@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { useApp } from './app-context.js';
 import * as passkeys from './passkeys.js';
-import { Button, ErrorNote, Field } from './ui.js';
+import { Button, ErrorNote, Field, useSheetFocus } from './ui.js';
 
 /**
  * "Confirm it is you" (SEC-17).
@@ -10,7 +10,8 @@ import { Button, ErrorNote, Field } from './ui.js';
  * It appears over whatever the person was doing, takes one credential,
  * and hands control back so the action they asked for goes through by
  * itself. Cancelling is a first-class answer: nothing was done, and
- * nothing is lost.
+ * nothing is lost. Escape is one too, and the keyboard stays inside it
+ * until it is answered, over a sheet as well (5.4).
  */
 export function StepUpPrompt(props: { message: string; onSettled: (confirmed: boolean) => void }) {
   // A wrong password here answers 401 with `invalid_credentials`, which
@@ -23,6 +24,8 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const canUsePasskey = passkeys.supported() && passkeys.secureEnough();
+  const box = useRef<HTMLElement>(null);
+  useSheetFocus(box, { onEscape: () => props.onSettled(false), busy });
 
   const withPassword = async (e: FormEvent) => {
     e.preventDefault();
@@ -60,6 +63,7 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
   return (
     <div className="scrim" role="presentation">
       <section
+        ref={box}
         className="card stack sheet"
         role="dialog"
         aria-modal="true"

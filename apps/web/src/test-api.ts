@@ -33,6 +33,12 @@ export interface FakeState {
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
+  /**
+   * Hold any request until the promise this gives for it settles (5.4): a
+   * slow vault, for what happens on screen meanwhile. Undefined answers
+   * at once.
+   */
+  hold?: (method: string, path: string) => Promise<void> | undefined;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
   types: Array<Record<string, unknown>>;
@@ -290,6 +296,42 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
 
 export function installFakeApi(state: FakeState) {
   const json = (body: unknown, status = 200) => Promise.resolve(Response.json(body, { status }));
+  const refuse = (status: number, code: string, message: string, more: object = {}) =>
+    json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
+  /** SEC-17, as the vault asks it, saying what the credential is for. */
+  const stepUp = (action: 'open_private_document' | 'open_essential') =>
+    refuse(
+      403,
+      'step_up_required',
+      `Please confirm it is you ${
+        action === 'open_private_document'
+          ? 'to open a document only you can see'
+          : 'to open an Essential document'
+      }.`,
+      { action },
+    );
+  /** What opening a document asks for: "only me" first, then Essentials. */
+  const askedToOpen = (doc: Record<string, unknown> | undefined) =>
+    doc?.visibility === 'private'
+      ? ('open_private_document' as const)
+      : doc?.is_essential
+        ? ('open_essential' as const)
+        : null;
+  /**
+   * What taking a check away asks for (5.4): out of "only me", what opening
+   * it asks; Essential turned off, what opening an Essential asks.
+   */
+  const askedToLoosen = (
+    doc: Record<string, unknown> | undefined,
+    change: { visibility?: unknown; is_essential?: unknown },
+  ) =>
+    change.visibility !== undefined &&
+    change.visibility !== 'private' &&
+    doc?.visibility === 'private'
+      ? ('open_private_document' as const)
+      : change.is_essential === false && doc?.is_essential
+        ? ('open_essential' as const)
+        : null;
   const fn = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const method = init?.method ?? 'GET';
@@ -297,7 +339,19 @@ export function installFakeApi(state: FakeState) {
     const query = new URLSearchParams(url.split('?')[1] ?? '');
     const body = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
     state.calls.push({ method, url, body, headers: init?.headers as Record<string, string> });
+    const held = state.hold?.(method, path);
+    const answer = () => respond(url, method, path, query, body, init);
+    return held ? held.then(answer) : answer();
+  });
 
+  const respond = (
+    url: string,
+    method: string,
+    path: string,
+    query: URLSearchParams,
+    body: unknown,
+    init?: RequestInit,
+  ): Promise<Response> => {
     if (state.offline && path !== '/api/v1/capabilities') {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
@@ -515,6 +569,9 @@ export function installFakeApi(state: FakeState) {
     if (path.endsWith('/visibility') && method === 'POST') {
       const to = (body as { visibility: string }).visibility;
       const doc = state.documents.find((d) => path.includes(String(d.id)));
+      // Out of "only me" asks what opening it asks (5.4).
+      const ask = askedToLoosen(doc, { visibility: to });
+      if (state.stepUpNeeded && ask) return stepUp(ask);
       if (doc) doc.visibility = to;
       const firstTime = to === 'private' && !state.privateNoticeShown;
       if (firstTime) state.privateNoticeShown = true;
@@ -530,6 +587,22 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     if (path.endsWith('/share') && method === 'POST') {
       const documentId = path.split('/')[4] as string;
+      const doc = state.documents.find((d) => d.id === documentId && !d.deleted_at);
+      // In the vault's order: a link asks what opening it asks, then who
+      // may share, then whether there is anything to send (5.4).
+      const ask = askedToOpen(doc);
+      if (state.stepUpNeeded && ask) return stepUp(ask);
+      if (!['owner', 'adult'].includes(storedRole())) {
+        return refuse(403, 'forbidden', 'Only an adult can share a document outside the family.');
+      }
+      if (!doc) return refuse(404, 'not_found', 'That document is not in the vault.');
+      if (!doc.latest_version_id) {
+        return refuse(
+          422,
+          'nothing_to_share',
+          'There is no file on this document yet, so there is nothing to send.',
+        );
+      }
       const b = body as { recipient_label?: string; with_pin?: boolean };
       const share = {
         id: `sh-${state.shares.length}`,
@@ -865,17 +938,60 @@ export function installFakeApi(state: FakeState) {
         return state.holdDelete ? state.holdDelete.then(answer) : Promise.resolve(answer());
       }
       if (method === 'PATCH') {
-        Object.assign(doc, body as object, { etag: '"next"' });
+        // As the vault: taking a check away asks for it first (5.4), and a
+        // write made from an older copy is refused.
+        const ask = askedToLoosen(doc, body as object);
+        if (state.stepUpNeeded && ask) return stepUp(ask);
+        const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+        if (ifMatch && ifMatch !== doc.etag) {
+          return json(
+            {
+              error: {
+                code: 'conflict',
+                message: 'Someone else changed this document. Reload and try again.',
+                retriable: false,
+                request_id: 'r',
+              },
+            },
+            409,
+          );
+        }
+        // A new ETag for every change, as the vault's comes from when it was made.
+        Object.assign(doc, body as object, { etag: `"edit-${state.calls.length}"` });
         return json(doc);
       }
       return json(doc);
     }
-    if (/^\/api\/v1\/documents\/[^/]+\/versions$/.test(path)) {
+    const versionsOf = /^\/api\/v1\/documents\/([^/]+)\/versions$/.exec(path);
+    if (versionsOf) {
+      // Each document's own current version: the passport's is v-1.
+      const doc = state.documents.find((d) => d.id === versionsOf[1]);
+      if (method === 'POST') {
+        return json(
+          {
+            id: 'v-new',
+            document_id: versionsOf[1],
+            version_no: 2,
+            filename: 'renewed.pdf',
+            mime: 'application/pdf',
+            byte_size: 1024,
+            sha256: 'y',
+            page_count: 1,
+            ocr_status: 'pending',
+            uploaded_at: '2026-09-26T10:00:00Z',
+            uploaded_by_name: 'Mansoor Seikh',
+            preview_pages: null,
+          },
+          201,
+        );
+      }
+      // Details with no file yet have no versions.
+      if (doc && doc.latest_version_id === null) return json({ items: [] });
       return json({
         items: [
           {
-            id: 'v-1',
-            document_id: 'doc-1',
+            id: (doc?.latest_version_id as string | undefined) ?? 'v-1',
+            document_id: versionsOf[1],
             version_no: 1,
             filename: 'passport.pdf',
             mime: 'application/pdf',
@@ -929,6 +1045,19 @@ export function installFakeApi(state: FakeState) {
         }),
       );
     }
+    const contentOf = /^\/api\/v1\/versions\/([^/]+)\/content$/.exec(path);
+    if (contentOf) {
+      // An Only me or an Essential document asks who is asking first (SEC-17).
+      const doc = state.documents.find((d) => d.latest_version_id === contentOf[1]);
+      const ask = askedToOpen(doc);
+      if (state.stepUpNeeded && ask) return stepUp(ask);
+      return Promise.resolve(
+        new Response('%PDF-1.4', {
+          status: 200,
+          headers: { 'content-type': 'application/pdf', 'cache-control': 'private, no-store' },
+        }),
+      );
+    }
     if (/^\/api\/v1\/versions\/[^/]+\/thumbnail$/.test(path))
       return json({ error: { code: 'no_thumbnail', message: 'No preview yet.' } }, 404);
     if (path === '/api/v1/search') {
@@ -955,8 +1084,11 @@ export function installFakeApi(state: FakeState) {
           matched_in: 'title',
         }));
       const from = query.get('issued_by');
+      // The words inside doc-1's pages, while they are in the index: made
+      // Only me, they move to the sealed table, out of the first pass.
+      const inPages = state.documents.find((d) => d.id === 'doc-1')?.visibility !== 'private';
       const items = [
-        ...(q.includes('4471')
+        ...(q.includes('4471') && inPages
           ? [
               {
                 document_id: 'doc-1',
@@ -988,7 +1120,7 @@ export function installFakeApi(state: FakeState) {
       return json({ items, searched: state.sealed.length });
     }
     return Promise.reject(new Error(`unmocked ${method} ${url}`));
-  });
+  };
   vi.stubGlobal('fetch', fn);
   return fn;
 }

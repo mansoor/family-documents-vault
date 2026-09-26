@@ -683,6 +683,19 @@ duplicates, dropped}`. Each event id is recorded once, however often
   - **Changed (5.3):** `GET /api/v1/invitations/{token}` shows `email`
     masked ("j•••@example.com"); accepting without an `email` keeps the one
     it was sent to, as before.
+  - **Changed (5.4):** taking a check away asks for it (SEC-17).
+    `PATCH /api/v1/documents/{id}` with `is_essential: false` on a document
+    that is Essential answers `403 step_up_required` with
+    `action: "open_essential"` unless a credential was presented in the
+    last five minutes; `POST /api/v1/documents/{id}/visibility`, or a
+    `PATCH` carrying `visibility`, that takes a document out of `private`
+    answers the same with `action: "open_private_document"`. Nothing is
+    changed until then. Turning Essential on, making a document private
+    and every other edit ask nothing, and a role that may not make the
+    change, or a document the caller cannot see, is answered as before
+    (`403 forbidden`, `404`). Send these through the confirm-it-is-you flow
+    (`POST /api/v1/auth/step-up`) and try again, as a download of the same
+    document already is.
 
 ## Deprecations in effect
 

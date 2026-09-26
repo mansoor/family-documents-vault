@@ -32,9 +32,19 @@ export function VisibilityControl(props: {
   current: Visibility;
   isMine: boolean;
   onChanged: () => Promise<void>;
+  /**
+   * Opened from a row's ⋯ (5.4): it starts at the choice, and Cancel, a
+   * save, or "I understand" closes the sheet it is in.
+   */
+  onClose?: () => void;
+  /**
+   * A change is being saved. The sheet it is in stays open until it is
+   * done: the vault says "Only you can open this" once, and only here.
+   */
+  onBusy?: (busy: boolean) => void;
 }) {
   const { guarded } = useApp();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(props.onClose));
   const [choice, setChoice] = useState<Visibility>(props.current);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,18 +56,24 @@ export function VisibilityControl(props: {
   const choices = props.isMine ? CHOICES : CHOICES.filter((c) => c.value !== 'private');
   if (props.current === 'private' && !props.isMine) return null;
 
+  const working = (on: boolean) => {
+    setBusy(on);
+    props.onBusy?.(on);
+  };
+
   const save = async () => {
-    setBusy(true);
+    working(true);
     setError(null);
     try {
       const result = await guarded((t) => api.setVisibility(t, props.documentId, choice));
       await props.onChanged();
       setOpen(false);
       if (result?.notice) setNotice(result.notice);
+      else props.onClose?.();
     } catch (err) {
       setError(describeError(err));
     } finally {
-      setBusy(false);
+      working(false);
     }
   };
 
@@ -68,7 +84,14 @@ export function VisibilityControl(props: {
           {notice.title}
         </h2>
         <p>{notice.body}</p>
-        <Button onClick={() => setNotice(null)}>I understand</Button>
+        <Button
+          onClick={() => {
+            setNotice(null);
+            props.onClose?.();
+          }}
+        >
+          I understand
+        </Button>
       </section>
     );
   }
@@ -95,7 +118,12 @@ export function VisibilityControl(props: {
         <Button disabled={busy || choice === props.current} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save'}
         </Button>
-        <Button kind="quiet" onClick={() => setOpen(false)}>
+        {/* Not while it is being saved: it would be saved, and the notice never shown. */}
+        <Button
+          kind="quiet"
+          disabled={busy}
+          onClick={() => (props.onClose ? props.onClose() : setOpen(false))}
+        >
           Cancel
         </Button>
       </div>

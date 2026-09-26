@@ -1112,6 +1112,29 @@ describe('App', () => {
     expect(state.calls.some((c) => c.url.endsWith('/visibility'))).toBe(false);
   });
 
+  it('editing a document out of Only me asks to confirm it is you first (5.4)', async () => {
+    const passport = { ...PASSPORT, visibility: 'private' };
+    const state = fresh({ documents: [passport], stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', `/documents/${PASSPORT.id}/confirm`);
+    render(<App />);
+    await screen.findByLabelText('What it is');
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+
+    await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(screen.getByText(/to open a document only you can see/)).toBeInTheDocument();
+    expect(passport.visibility).toBe('private');
+    fireEvent.change(screen.getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    // Confirmed, the save carries on by itself.
+    await waitFor(() => expect(window.location.pathname).toBe(`/documents/${PASSPORT.id}`));
+    expect(passport.visibility).toBe('household');
+  });
+
   it('a teen is never offered Adults only, and a type that defaults to it starts as Everyone', async () => {
     const medical = {
       ...TYPES[0],

@@ -13,14 +13,28 @@ import { Button, ErrorNote, Field } from '../ui.js';
  * needs to believe: it stops working on a date, it can be taken back, and
  * every time somebody opens it the family will see.
  */
-export function SharePanel(props: { documentId: string; documentTitle: string | null }) {
+export function SharePanel(props: {
+  documentId: string;
+  documentTitle: string | null;
+  /**
+   * Opened from a row's ⋯ (5.4): it starts at the form, and Cancel or Done
+   * closes the sheet it is in.
+   */
+  onClose?: () => void;
+  /**
+   * A link is being made or taken back. The sheet it is in stays open
+   * until it is done: the link and its PIN are shown once, here, and
+   * nowhere else.
+   */
+  onBusy?: (busy: boolean) => void;
+}) {
   const { guarded, authVersion } = useApp();
   const [made, setMade] = useState<CreatedShare | null>(null);
   const [label, setLabel] = useState('');
   const [days, setDays] = useState('7');
   const [withPin, setWithPin] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(Boolean(props.onClose));
+  const [busy, setBusy] = useState<'making' | 'taking back' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data, reload } = useLoad(
@@ -31,8 +45,13 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
 
   const active = (data ?? []).filter((s) => s.state === 'active');
 
+  const working = (on: typeof busy) => {
+    setBusy(on);
+    props.onBusy?.(on !== null);
+  };
+
   const create = async () => {
-    setBusy(true);
+    working('making');
     setError(null);
     try {
       const created = await guarded((t) =>
@@ -51,20 +70,33 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
     } catch (err) {
       setError(describeError(err));
     } finally {
-      setBusy(false);
+      working(null);
     }
   };
 
   const revoke = async (s: Share) => {
+    working('taking back');
     try {
       await guarded((t) => api.revokeShare(t, s.id));
       await reload();
     } catch (err) {
       setError(describeError(err));
+    } finally {
+      working(null);
     }
   };
 
-  if (made) return <HandOver created={made} onDone={() => setMade(null)} />;
+  if (made) {
+    return (
+      <HandOver
+        created={made}
+        onDone={() => {
+          setMade(null);
+          props.onClose?.();
+        }}
+      />
+    );
+  }
 
   return (
     <section className="card stack">
@@ -76,7 +108,7 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
           {active.map((s) => (
             <li key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
               <span className="muted">{s.summary}</span>
-              <Button kind="quiet" onClick={() => void revoke(s)}>
+              <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
                 Take it back
               </Button>
             </li>
@@ -111,10 +143,15 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
             <span>Also ask for a four-digit PIN, which you tell them separately</span>
           </label>
           <div className="row">
-            <Button disabled={busy} onClick={() => void create()}>
-              {busy ? 'Making the link…' : 'Make the link'}
+            <Button disabled={busy !== null} onClick={() => void create()}>
+              {busy === 'making' ? 'Making the link…' : 'Make the link'}
             </Button>
-            <Button kind="quiet" onClick={() => setOpen(false)}>
+            {/* Not while the link is being made: it would be made, and never shown. */}
+            <Button
+              kind="quiet"
+              disabled={busy !== null}
+              onClick={() => (props.onClose ? props.onClose() : setOpen(false))}
+            >
               Cancel
             </Button>
           </div>

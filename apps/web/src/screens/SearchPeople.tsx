@@ -6,10 +6,11 @@ import {
   type Role,
   type SuggestionView,
 } from '@fdv/shared';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { DocActions } from '../DocActions.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -54,6 +55,13 @@ export function SearchScreen() {
   }>({ state: 'idle', items: [], searched: 0 });
   const [browse, setBrowse] = useState<DocumentView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when a row's ⋯ changed something (5.4): the same search again.
+  const [changed, setChanged] = useState(0);
+  const again = () => setChanged((n) => n + 1);
+  // What the last search asked. The same search again keeps the second
+  // pass's results on screen while it runs: emptied, each of their rows
+  // would go, and the note and the focus on the row that acted with it.
+  const asked = useRef('');
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
   const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
   // Who issued what, among what is being looked at: the chips narrow it further.
@@ -85,13 +93,20 @@ export function SearchScreen() {
             }),
           );
           if (!cancelled && r) {
+            const asking = JSON.stringify([q, category, memberId, issuer]);
+            const same = asked.current === asking;
+            asked.current = asking;
             setHits(r.items);
             setBrowse(null);
             const handle = r.sealed_pending.token;
             if (!handle) {
               setSealed({ state: 'idle', items: [], searched: 0 });
             } else {
-              setSealed({ state: 'searching', items: [], searched: 0 });
+              setSealed(
+                same
+                  ? (was) => ({ ...was, state: 'searching' })
+                  : { state: 'searching', items: [], searched: 0 },
+              );
               const more = await withToken((t) => api.searchSealed(t, handle));
               if (!cancelled)
                 setSealed({
@@ -111,6 +126,7 @@ export function SearchScreen() {
             }),
           );
           if (!cancelled && r) {
+            asked.current = '';
             setBrowse(r.items);
             setHits(null);
             setSealed({ state: 'idle', items: [], searched: 0 });
@@ -125,7 +141,7 @@ export function SearchScreen() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [q, category, memberId, issuer, withToken]);
+  }, [q, category, memberId, issuer, withToken, changed]);
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
@@ -205,7 +221,8 @@ export function SearchScreen() {
       <ErrorNote message={error} />
       {hits && (
         <>
-          <p className="muted" role="status">
+          {/* Where focus goes when a row leaves the results with it (5.4). */}
+          <p className="muted" role="status" tabIndex={-1} data-landing>
             {/* Counts both passes, so the line never says "0 documents"
                 above a result the second pass found. */}
             {hits.length + sealed.items.length} document
@@ -218,6 +235,7 @@ export function SearchScreen() {
                 hit={h}
                 types={types}
                 onOpen={() => void navigate(`/documents/${h.document_id}`)}
+                onChanged={again}
               />
             ))}
           </ul>
@@ -237,6 +255,7 @@ export function SearchScreen() {
                     hit={h}
                     types={types}
                     onOpen={() => void navigate(`/documents/${h.document_id}`)}
+                    onChanged={again}
                   />
                 ))}
               </ul>
@@ -259,6 +278,7 @@ export function SearchScreen() {
               doc={d}
               types={types}
               onOpen={() => void navigate(`/documents/${d.id}`)}
+              onChanged={again}
             />
           ))}
         </ul>
@@ -277,15 +297,19 @@ function HitRow({
   hit,
   types,
   onOpen,
+  onChanged,
 }: {
   hit: SearchHit;
   types: DocumentTypeView[] | null;
   onOpen: () => void;
+  /** Its ⋯ changed something (5.4): the search is run again. */
+  onChanged: () => void;
 }) {
+  const title = hit.title ?? 'Untitled';
   return (
-    <li>
+    <li className="docrow">
       <button type="button" className="rowbtn" onClick={onOpen}>
-        <span className="doc-title">{hit.title ?? 'Untitled'}</span>
+        <span className="doc-title">{title}</span>
         <span className="muted">{rowLine(hit, types)}</span>
         <span
           className="snippet"
@@ -293,6 +317,8 @@ function HitRow({
         />
         <StatusBadge status={hit.status} />
       </button>
+      {/* A hit has no version or ETag: its ⋯ fetches the document on opening. */}
+      <DocActions documentId={hit.document_id} title={title} onChanged={onChanged} />
     </li>
   );
 }
@@ -440,6 +466,7 @@ export function PersonScreen() {
             doc={d}
             types={data?.types}
             onOpen={() => void navigate(`/documents/${d.id}`)}
+            onChanged={reload}
           />
         ))}
         {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
@@ -552,6 +579,7 @@ export function RemindersScreen() {
             doc={d}
             types={data?.types}
             onOpen={() => void navigate(`/documents/${d.id}`)}
+            onChanged={reload}
           />
         ))}
       </ul>
