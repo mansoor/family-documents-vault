@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Quick actions on every document.** A ⋯ beside each document in a list — on Home, in search, on a person's page and in Reminders — offers what the document's own page offers, without going there first: Open, Download, Read full size, Edit details, Share a link, Who can see, Essential on or off, Add a new version, and Move to Trash. You are offered only what you are allowed to do: a viewer sees Open and Download, and a teen can change only their own documents. Downloading an Only me or Essential document still asks you to confirm it is you. If somebody else changed a document since the list was shown, turning Essential on or off loads the list again and says so, rather than overwriting their change. On a phone the actions rise from the bottom of the screen; on a wider screen they open beside the ⋯. The keyboard works too: the arrow keys move through them, and Escape closes them.
+
 ## [0.5.2] - 2026-09-26 — iteration 5.3
 
 ### Security

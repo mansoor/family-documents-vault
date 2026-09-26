@@ -865,17 +865,54 @@ export function installFakeApi(state: FakeState) {
         return state.holdDelete ? state.holdDelete.then(answer) : Promise.resolve(answer());
       }
       if (method === 'PATCH') {
+        // As the vault: a write made from an older copy is refused (5.4).
+        const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+        if (ifMatch && ifMatch !== doc.etag) {
+          return json(
+            {
+              error: {
+                code: 'conflict',
+                message: 'Someone else changed this document. Reload and try again.',
+                retriable: false,
+                request_id: 'r',
+              },
+            },
+            409,
+          );
+        }
         Object.assign(doc, body as object, { etag: '"next"' });
         return json(doc);
       }
       return json(doc);
     }
-    if (/^\/api\/v1\/documents\/[^/]+\/versions$/.test(path)) {
+    const versionsOf = /^\/api\/v1\/documents\/([^/]+)\/versions$/.exec(path);
+    if (versionsOf) {
+      // Each document's own current version: the passport's is v-1.
+      const doc = state.documents.find((d) => d.id === versionsOf[1]);
+      if (method === 'POST') {
+        return json(
+          {
+            id: 'v-new',
+            document_id: versionsOf[1],
+            version_no: 2,
+            filename: 'renewed.pdf',
+            mime: 'application/pdf',
+            byte_size: 1024,
+            sha256: 'y',
+            page_count: 1,
+            ocr_status: 'pending',
+            uploaded_at: '2026-09-26T10:00:00Z',
+            uploaded_by_name: 'Mansoor Seikh',
+            preview_pages: null,
+          },
+          201,
+        );
+      }
       return json({
         items: [
           {
-            id: 'v-1',
-            document_id: 'doc-1',
+            id: (doc?.latest_version_id as string | undefined) ?? 'v-1',
+            document_id: versionsOf[1],
             version_no: 1,
             filename: 'passport.pdf',
             mime: 'application/pdf',
@@ -926,6 +963,37 @@ export function installFakeApi(state: FakeState) {
         new Response(`page ${n}`, {
           status: 200,
           headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' },
+        }),
+      );
+    }
+    const contentOf = /^\/api\/v1\/versions\/([^/]+)\/content$/.exec(path);
+    if (contentOf) {
+      // An Only me or an Essential document asks who is asking first (SEC-17).
+      const doc = state.documents.find((d) => d.latest_version_id === contentOf[1]);
+      const why =
+        doc?.visibility === 'private'
+          ? 'to open a document only you can see'
+          : doc?.is_essential
+            ? 'to open an Essential document'
+            : null;
+      if (state.stepUpNeeded && why) {
+        return json(
+          {
+            error: {
+              code: 'step_up_required',
+              message: `Please confirm it is you ${why}.`,
+              action: doc?.visibility === 'private' ? 'open_private_document' : 'open_essential',
+              retriable: false,
+              request_id: 'r',
+            },
+          },
+          403,
+        );
+      }
+      return Promise.resolve(
+        new Response('%PDF-1.4', {
+          status: 200,
+          headers: { 'content-type': 'application/pdf', 'cache-control': 'private, no-store' },
         }),
       );
     }

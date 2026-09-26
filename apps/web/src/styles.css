@@ -906,3 +906,132 @@ h3 {
 .status-line:empty {
   margin: 0;
 }
+
+/* 5.4: a ⋯ beside every document's row, and the menu it opens. The row's
+   own button and the ⋯ are siblings in two columns: a button inside a
+   button is not a button. What the ⋯ has to say goes underneath both. */
+.list li.docrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 8px;
+}
+
+.docrow > p {
+  grid-column: 1 / -1;
+}
+
+.docrow > p:not(:empty) {
+  margin-top: 6px;
+}
+
+.more {
+  width: var(--tap);
+  height: var(--tap);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.more:hover,
+.more[aria-expanded='true'] {
+  background: var(--accent-soft);
+}
+
+.more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Narrow: a sheet from the bottom, over the page. */
+.menu-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--scrim);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px;
+}
+
+.menu-box {
+  width: min(480px, 100%);
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 8px;
+}
+
+.menu-title {
+  margin: 4px 12px 8px;
+  font-weight: 600;
+}
+
+.menu-box [role='menu'] {
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  background: var(--accent-soft);
+}
+
+.menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.menu-item-danger {
+  color: var(--danger);
+}
+
+.menu-wait {
+  margin: 8px 12px;
+}
+
+/* Wide: a menu beside the ⋯, and the page left as it is. */
+@media (min-width: 640px) {
+  .menu-layer {
+    background: none;
+    display: block;
+    padding: 0;
+  }
+
+  .menu-box {
+    position: fixed;
+    top: var(--menu-top, auto);
+    bottom: var(--menu-bottom, auto);
+    right: var(--menu-right, 16px);
+    width: 280px;
+    max-height: 60vh;
+    box-shadow: 0 8px 24px var(--scrim);
+  }
+
+  .menu-title {
+    display: none;
+  }
+}

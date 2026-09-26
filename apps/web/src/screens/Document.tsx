@@ -1,14 +1,15 @@
-import { can, formatDate, issuedByLabel, whenExactly, type VersionView } from '@fdv/shared';
+import { formatDate, issuedByLabel, whenExactly, type VersionView } from '@fdv/shared';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { mayChange } from '../DocActions.js';
 import {
   BottomNav,
   Button,
   categoryLabel,
-  ConfirmDialog,
   ErrorNote,
+  MoveToTrashDialog,
   StatusBadge,
   TopBar,
   TrashIcon,
@@ -126,12 +127,8 @@ export function DocumentScreen() {
     );
 
   const { doc, versions, members, types } = data;
-  // Who may move it to the Trash: whoever may change documents, and a teen
-  // only their own — as the vault itself says (5.1).
-  const role = storedRole();
-  const mayChange =
-    can(role, 'document.edit') &&
-    (role !== 'teen' || doc.owner_member_id === session.info?.member_id);
+  // Who may move it to the Trash: the same rule as its row's ⋯ (5.1, 5.4).
+  const mayTrash = mayChange(storedRole(), session.info?.member_id, doc);
   const owner = members.find((m) => m.id === doc.owner_member_id);
   const type = types.find((t) => t.key === doc.type_key);
   const visibilityLabel =
@@ -279,7 +276,7 @@ export function DocumentScreen() {
         </section>
       )}
       <SharePanel documentId={doc.id} documentTitle={doc.title} />
-      {mayChange && (
+      {mayTrash && (
         <button
           ref={trashButton}
           type="button"
@@ -291,22 +288,13 @@ export function DocumentScreen() {
         </button>
       )}
       {confirmingTrash && (
-        <ConfirmDialog
-          title="Move to Trash?"
-          confirmLabel="Move to Trash"
-          busyLabel="Moving to Trash…"
-          returnFocus={trashButton}
-          icon={<TrashIcon />}
-          danger
+        <MoveToTrashDialog
+          title={doc.title}
           busy={trashing}
+          returnFocus={trashButton}
           onConfirm={() => void remove()}
           onCancel={() => setConfirmingTrash(false)}
-        >
-          <p>
-            “{doc.title ?? 'This document'}” leaves every list, search and reminder. You can bring
-            it back from the Trash in Settings.
-          </p>
-        </ConfirmDialog>
+        />
       )}
       <BottomNav />
     </main>

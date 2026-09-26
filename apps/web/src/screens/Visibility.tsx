@@ -32,9 +32,14 @@ export function VisibilityControl(props: {
   current: Visibility;
   isMine: boolean;
   onChanged: () => Promise<void>;
+  /**
+   * Opened from a row's ⋯ (5.4): it starts at the choice, and Cancel, a
+   * save, or "I understand" closes the sheet it is in.
+   */
+  onClose?: () => void;
 }) {
   const { guarded } = useApp();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(props.onClose));
   const [choice, setChoice] = useState<Visibility>(props.current);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +59,7 @@ export function VisibilityControl(props: {
       await props.onChanged();
       setOpen(false);
       if (result?.notice) setNotice(result.notice);
+      else props.onClose?.();
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -68,7 +74,14 @@ export function VisibilityControl(props: {
           {notice.title}
         </h2>
         <p>{notice.body}</p>
-        <Button onClick={() => setNotice(null)}>I understand</Button>
+        <Button
+          onClick={() => {
+            setNotice(null);
+            props.onClose?.();
+          }}
+        >
+          I understand
+        </Button>
       </section>
     );
   }
@@ -95,7 +108,7 @@ export function VisibilityControl(props: {
         <Button disabled={busy || choice === props.current} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save'}
         </Button>
-        <Button kind="quiet" onClick={() => setOpen(false)}>
+        <Button kind="quiet" onClick={() => (props.onClose ? props.onClose() : setOpen(false))}>
           Cancel
         </Button>
       </div>

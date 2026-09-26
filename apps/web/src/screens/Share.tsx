@@ -13,13 +13,21 @@ import { Button, ErrorNote, Field } from '../ui.js';
  * needs to believe: it stops working on a date, it can be taken back, and
  * every time somebody opens it the family will see.
  */
-export function SharePanel(props: { documentId: string; documentTitle: string | null }) {
+export function SharePanel(props: {
+  documentId: string;
+  documentTitle: string | null;
+  /**
+   * Opened from a row's ⋯ (5.4): it starts at the form, and Cancel or Done
+   * closes the sheet it is in.
+   */
+  onClose?: () => void;
+}) {
   const { guarded, authVersion } = useApp();
   const [made, setMade] = useState<CreatedShare | null>(null);
   const [label, setLabel] = useState('');
   const [days, setDays] = useState('7');
   const [withPin, setWithPin] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(props.onClose));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,7 +72,17 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
     }
   };
 
-  if (made) return <HandOver created={made} onDone={() => setMade(null)} />;
+  if (made) {
+    return (
+      <HandOver
+        created={made}
+        onDone={() => {
+          setMade(null);
+          props.onClose?.();
+        }}
+      />
+    );
+  }
 
   return (
     <section className="card stack">
@@ -114,7 +132,7 @@ export function SharePanel(props: { documentId: string; documentTitle: string | 
             <Button disabled={busy} onClick={() => void create()}>
               {busy ? 'Making the link…' : 'Make the link'}
             </Button>
-            <Button kind="quiet" onClick={() => setOpen(false)}>
+            <Button kind="quiet" onClick={() => (props.onClose ? props.onClose() : setOpen(false))}>
               Cancel
             </Button>
           </div>

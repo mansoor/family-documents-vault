@@ -9,6 +9,7 @@ import {
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
+import { DocActions } from '../DocActions.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -27,7 +28,7 @@ import {
 export function HomeScreen() {
   const { caps, authVersion } = useApp();
   const navigate = useNavigate();
-  const { data, error } = useLoad(
+  const { data, error, reload } = useLoad(
     async (t) => {
       const [members, counts, recent, docs, me, due, suggestions, types] = await Promise.all([
         api.members(t),
@@ -152,6 +153,7 @@ export function HomeScreen() {
               doc={d}
               types={data?.types}
               onOpen={() => void navigate(`/documents/${d.id}`)}
+              onChanged={reload}
             />
           ))}
         </ul>
@@ -252,24 +254,31 @@ export function DocRow({
   doc,
   types,
   onOpen,
+  onChanged,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
   types?: ReadonlyArray<DocumentTypeView> | null | undefined;
   onOpen: () => void;
+  /** Its ⋯ changed something (5.4): the list is loaded again. */
+  onChanged: () => void | Promise<unknown>;
 }) {
   const who =
     doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
+  const title = doc.title ?? 'Scan · needs a name';
   return (
-    <li>
+    <li className="docrow">
       <button type="button" className="rowbtn" onClick={onOpen}>
-        <span className="doc-title">{doc.title ?? 'Scan · needs a name'}</span>
+        <span className="doc-title">{title}</span>
         <span className="muted">
           <span>{rowLine(doc, types)}</span>
           {who && <span>{` · ${who}`}</span>}
         </span>
         <StatusBadge status={doc.status} />
       </button>
+      {/* Beside the row's button, never inside it: a button inside a
+          button is not a button to anybody using a screen reader. */}
+      <DocActions documentId={doc.id} title={title} doc={doc} onChanged={onChanged} />
     </li>
   );
 }
