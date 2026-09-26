@@ -1,9 +1,13 @@
 import {
   checkCaptureMetadata,
+  CORE_FIELDS,
   effectiveVisibility,
   PREVIEW_MAX_PAGES,
   type Capabilities,
   type CaptureMetadata,
+  type CoreField,
+  type CoreFieldRule,
+  type DocumentAttributeView,
   type DocumentTypeView,
   type DocumentView,
   type IssuerSuggestions,
@@ -50,8 +54,14 @@ export interface FakeVaultState {
   /** access token → session id */
   access: Map<string, string>;
   documents: FakeDocument[];
-  /** What GET /document-types answers: a few real types, by default. */
+  /**
+   * The household's types: a few real ones, by default. GET /document-types
+   * answers them as the real vault does (0.5.6): one set `hidden` is left
+   * out unless a document uses it, or the client asks with `?all=true`.
+   */
   types: DocumentTypeView[];
+  /** What GET /document-attributes answers (0.5.6). */
+  attributes: DocumentAttributeView[];
   /** What GET /members answers: the one person the fake signs in as, by default. */
   members: Array<{ id: string; display_name: string; role: string; is_me: boolean }>;
   /** Upload keys and what each made; a key is for one kind of request. */
@@ -83,8 +93,34 @@ type FakeDocument = { id: string; title: string | null } & Omit<
   'title' | 'issued' | 'expires' | 'tags'
 >;
 
+/**
+ * The fixed fields as a built-in asks for them (0.5.6): every one shown,
+ * none required, in the app's own words — but an expiry only for a type
+ * that expires, and the issuer by the type's word for it.
+ */
+function coreOf(type: {
+  expiry_driver: string | null;
+  issued_by_label?: string | null;
+}): Record<CoreField, CoreFieldRule> {
+  const core = Object.fromEntries(
+    CORE_FIELDS.map((f) => [f, { shown: true, required: false, label: null }]),
+  ) as Record<CoreField, CoreFieldRule>;
+  core.expires.shown = type.expiry_driver !== null;
+  core.issued_by.label = type.issued_by_label ?? null;
+  return core;
+}
+
+const builtin = (t: Omit<DocumentTypeView, 'builtin' | 'hidden' | 'core'>): DocumentTypeView => ({
+  short_label: null,
+  issuer_noun: null,
+  ...t,
+  builtin: true,
+  hidden: false,
+  core: coreOf(t),
+});
+
 const FAKE_TYPES: DocumentTypeView[] = [
-  {
+  builtin({
     key: 'passport',
     label: 'Passport',
     category: 'identity',
@@ -94,39 +130,68 @@ const FAKE_TYPES: DocumentTypeView[] = [
     usually_essential: true,
     default_visibility: 'household',
     issued_by_label: 'Issuing country',
-  },
-  {
+  }),
+  builtin({
     key: 'bank_statement',
     label: 'Bank / investment statement',
     category: 'financial',
-    fields: [],
+    fields: [
+      { key: 'account_last4', label: 'Account (last 4)', kind: 'text', required: false },
+      { key: 'period', label: 'Period', kind: 'text', required: false },
+    ],
     expiry_driver: null,
     reminder_leads: [],
     usually_essential: false,
     default_visibility: 'adults',
     issued_by_label: 'Institution',
-  },
-  {
+    short_label: 'Bank statement',
+    issuer_noun: 'statement',
+  }),
+  builtin({
     key: 'birth_certificate',
     label: 'Birth certificate',
     category: 'identity',
-    fields: [],
+    fields: [
+      { key: 'registration_no', label: 'Registration number', kind: 'text', required: false },
+      { key: 'place_of_birth', label: 'Place of birth', kind: 'text', required: false },
+    ],
     expiry_driver: null,
     reminder_leads: [],
     usually_essential: true,
     default_visibility: 'household',
-  },
-  {
+    issued_by_label: null,
+  }),
+  builtin({
     key: 'utility_bill',
     label: 'Utility / bill',
     category: 'bills',
-    fields: [],
-    expiry_driver: null,
-    reminder_leads: [],
+    fields: [
+      { key: 'account', label: 'Account', kind: 'text', required: false },
+      { key: 'amount', label: 'Amount', kind: 'text', required: false },
+    ],
+    expiry_driver: 'expires_on',
+    reminder_leads: [7, 1],
     usually_essential: false,
     default_visibility: 'household',
     issued_by_label: 'Provider',
+    short_label: 'Bill',
+    issuer_noun: 'bill',
+  }),
+];
+
+/** What GET /document-attributes answers: some of the library the real vault starts with. */
+const FAKE_ATTRIBUTES: DocumentAttributeView[] = [
+  { key: 'account_last4', label: 'Account (last 4)', kind: 'text', choices: null, builtin: true },
+  { key: 'period', label: 'Period', kind: 'text', choices: null, builtin: true },
+  { key: 'place_of_birth', label: 'Place of birth', kind: 'text', choices: null, builtin: true },
+  {
+    key: 'registration_no',
+    label: 'Registration number',
+    kind: 'text',
+    choices: null,
+    builtin: true,
   },
+  { key: 'tax_year', label: 'Tax year', kind: 'year', choices: null, builtin: true },
 ];
 
 /**
@@ -187,6 +252,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     pages: new Map(),
     offlineEssentials: { items: [], received: new Set() },
     types: FAKE_TYPES.map((t) => ({ ...t })),
+    attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     calls: [],
     offline: false,
@@ -637,7 +703,17 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/document-types' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
-      return ok({ items: state.types });
+      // As the real vault (0.5.6): a hidden type stays while a document uses
+      // it — app 0.2.0 looks its documents' types up in this list — and
+      // ?all=true lists every one.
+      const all = param(url, 'all') === 'true';
+      const inUse = (key: string) => state.documents.some((d) => d.type_key === key);
+      return ok({ items: state.types.filter((t) => all || !t.hidden || inUse(t.key)) });
+    }
+    if (path === '/api/v1/document-attributes' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return ok({ items: state.attributes });
     }
     if (path === '/api/v1/members' && init.method === 'GET') {
       const s = session();

@@ -188,7 +188,7 @@ export function effectiveVisibility(
  * filing it): "Aisha's passport"; "Passport" when nobody is chosen.
  */
 export function autoTitle(
-  type: Pick<DocumentTypeView, 'key' | 'label'>,
+  type: Pick<DocumentTypeView, 'key' | 'label' | 'issuer_noun'>,
   member: { display_name: string } | null | undefined,
   details: { issued_by?: string | null; issued?: DateValue | null } = {},
 ): string {

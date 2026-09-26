@@ -127,7 +127,17 @@ describe('the log (0.5.0)', () => {
     await app.inject('/api/v1/password-resets/resetsecret123');
     await app.inject('/api/v1/invitations/invitesecret123');
     await app.inject('/api/v1/documents?q=divorce');
-    const log = lines.join('');
+    // What the lines say, without the log's own numbers: a PIN of 4242 is
+    // in a timestamp like 1790424273535 by chance, not by leaking.
+    const log = lines
+      .map((l) => {
+        const said = JSON.parse(l) as Record<string, unknown>;
+        delete said.time;
+        delete said.pid;
+        delete said.responseTime;
+        return JSON.stringify(said);
+      })
+      .join(' ');
     expect(log).toContain('/api/v1/shared/[redacted]/content?[redacted]');
     for (const secret of [
       'tokensecret123',

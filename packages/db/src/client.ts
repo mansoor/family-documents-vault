@@ -24,6 +24,9 @@ export type Visibility = 'household' | 'adults' | 'private';
 export type DatePrecision = 'day' | 'month' | 'year';
 /** Where a version's page previews are (0027). */
 export type PreviewState = 'none' | 'queued' | 'ready' | 'unsupported' | 'failed';
+/** What an attribute holds (0031). */
+export type AttributeKind =
+  'text' | 'long_text' | 'date' | 'year' | 'number' | 'money' | 'choice' | 'yes_no';
 type DateOnly = ColumnType<string, string | null, string | null>;
 
 export interface Schema {
@@ -269,6 +272,70 @@ export interface Schema {
     pack_version: number;
     /** This type's word for who issued it; null reads "Issued by" (0025). */
     issued_by_label: string | null;
+    /** Whose type it is: null for a built-in, which every household reads (0031). */
+    household_id: string | null;
+    archived_at: Timestamp | null;
+    created_by: string | null;
+    updated_at: GeneratedTimestamp;
+    /** The fixed fields, each shown, required and labelled (0031). */
+    core: GeneratedJson;
+    /** "Bank statement" for 'Bank / investment statement' (0031). */
+    short_label: string | null;
+    /** The noun after its issuer in a name: "Barclays statement" (0031). */
+    issuer_noun: string | null;
+  };
+
+  /** A household's changes to a built-in type; null keeps the built-in's own (0031). */
+  document_type_setting: {
+    household_id: string;
+    type_key: string;
+    hidden: Generated<boolean>;
+    core: GeneratedJson;
+    fields: ColumnType<unknown, string | null | undefined, string | null>;
+    reminder_leads: number[] | null;
+    default_visibility: Visibility | null;
+    usually_essential: boolean | null;
+    updated_at: GeneratedTimestamp;
+    updated_by: string | null;
+  };
+
+  /** The fields a type can ask for: built-in (no household) or a household's own (0031). */
+  document_attribute: {
+    id: Generated<string>;
+    household_id: string | null;
+    key: string;
+    label: string;
+    kind: AttributeKind;
+    choices: string[] | null;
+  };
+
+  /**
+   * A household's types as they are in effect: the built-ins with its
+   * settings applied, and its own (0031). A view, read with the caller's
+   * own rights; never written.
+   */
+  effective_document_type: {
+    key: string;
+    household_id: string | null;
+    builtin: boolean;
+    label: string;
+    category: string;
+    locale: string | null;
+    fields: unknown;
+    expiry_driver: string | null;
+    reminder_leads: number[];
+    usually_essential: boolean;
+    default_visibility: Visibility;
+    sort_order: number;
+    pack_version: number;
+    core: unknown;
+    issued_by_label: string | null;
+    short_label: string | null;
+    issuer_noun: string | null;
+    /** Hidden by the household, or archived. */
+    hidden: boolean;
+    archived_at: Date | null;
+    updated_at: Date;
   };
 
   document: {

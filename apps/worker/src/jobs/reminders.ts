@@ -380,17 +380,19 @@ export async function refreshStatus(
   for (const hh of await households(deps.admin)) {
     const today = localToday(hh.timezone, now);
     n += await withSystem(deps.app, hh.id, async (trx) => {
+      // Each type as this household has it (0031): its own lead times, and
+      // no expiry where it has switched Expires off.
       const docs = await trx
         .selectFrom('document')
-        .leftJoin('document_type', 'document_type.key', 'document.type_key')
+        .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
         .select([
           'document.id',
           'document.owner_member_id',
           'document.expires_on',
           'document.expires_precision',
-          'document_type.key as type_key',
-          'document_type.expiry_driver',
-          'document_type.reminder_leads',
+          't.key as type_key',
+          't.expiry_driver',
+          't.reminder_leads',
         ])
         .where('document.deleted_at', 'is', null)
         .execute();

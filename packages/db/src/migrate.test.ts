@@ -73,6 +73,38 @@ describe.skipIf(!testAdminUrl())('migrateUp against PostgreSQL', () => {
     expect(Number(rows[0]?.n)).toBe(before.applied.length);
   });
 
+  it("every view reads with the caller's rights, behind the household's wall", async () => {
+    const { rows } = await pool.query<{ view: string; invoker: boolean }>(
+      `select c.relname as view,
+              coalesce((select o.option_value in ('true', 'on', '1')
+                          from pg_options_to_table(c.reloptions) o
+                         where o.option_name = 'security_invoker'), false) as invoker
+         from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind = 'v'`,
+    );
+    // There is one at least (0031's types in effect), and none reads as its
+    // owner: `create or replace view` without the option would drop it.
+    expect(rows.map((r) => r.view)).toContain('effective_document_type');
+    expect(rows.filter((r) => !r.invoker)).toEqual([]);
+  });
+
+  it('the application only reads the migrations and the shared suggestion rules', async () => {
+    const app = new pg.Pool({ connectionString: db.appUrl, max: 1 });
+    try {
+      for (const write of [
+        "insert into schema_migration (version, name) values (9998, 'slipped_in')",
+        'delete from schema_migration where version = 1',
+        "update suggestion_rule set scope = 'household'",
+        'delete from suggestion_rule',
+      ]) {
+        await expect(app.query(write), write).rejects.toThrow(/permission denied/);
+      }
+      await expect(app.query('select count(*) from suggestion_rule')).resolves.toBeTruthy();
+    } finally {
+      await app.end();
+    }
+  });
+
   it('refuses a database a newer release has upgraded, and says what to do', async () => {
     const app = new pg.Pool({ connectionString: db.appUrl, max: 1 });
     try {

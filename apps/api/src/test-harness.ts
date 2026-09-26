@@ -46,6 +46,8 @@ export interface Harness {
   db: Db;
   /** The owning role, for fixtures that must go round the application role. */
   adminUrl: string;
+  /** The application role, for a test that needs a pool of its own (one connection, say). */
+  appUrl: string;
   vaultDir: string;
   /** Jobs the API asked the worker to run. */
   jobs: Array<{
@@ -201,6 +203,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     app,
     db,
     adminUrl: tdb.adminUrl,
+    appUrl: tdb.appUrl,
     vaultDir,
     jobs,
     dns,

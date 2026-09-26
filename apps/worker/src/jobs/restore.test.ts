@@ -330,6 +330,48 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     await sql(vault.adminUrl, 'drop policy everybody on public.document');
   });
 
+  it('a restore passes with built-in types that belong to no household', async () => {
+    // Built-in types and the library's fields belong to no household, and
+    // every household reads them (0031): that is not a stranger seeing
+    // somebody else's rows. A household's own type, setting and field are
+    // still its own, and still checked.
+    const hh = (await sql(vault.adminUrl, 'select id from household')).rows[0]?.id as string;
+    const shared = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from document_type where household_id is null) as types,
+              (select count(*)::int from document_attribute where household_id is null) as fields`,
+    );
+    expect(shared.rows[0]?.types).toBeGreaterThan(0);
+    expect(shared.rows[0]?.fields).toBeGreaterThan(0);
+    await sql(
+      vault.adminUrl,
+      `insert into document_type (key, label, category, household_id)
+         values ('h_restored22', 'Immigration case', 'legal', '${hh}');
+       insert into document_type_setting (household_id, type_key, hidden)
+         values ('${hh}', 'passport', true);
+       insert into document_attribute (household_id, key, label, kind)
+         values ('${hh}', 'h_restored22', 'Case number', 'text')`,
+    );
+    try {
+      expect(await checkRestored(target())).toMatchObject({ households: 1, documents: 3 });
+
+      // A household's own type opened to everybody is still caught.
+      await sql(vault.adminUrl, 'create policy everybody on public.document_type using (true)');
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(/not its own in document_type/);
+      } finally {
+        await sql(vault.adminUrl, 'drop policy everybody on public.document_type');
+      }
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `delete from document_attribute where household_id is not null;
+         delete from document_type_setting;
+         delete from document_type where household_id is not null`,
+      );
+    }
+  });
+
   it('notices a caller who says nothing being given documents', async () => {
     // 0030's rule for the document, opened up: the tenant wall still holds,
     // but within the household a transaction that names no actor sees all.
@@ -439,6 +481,54 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
           'alter table public.share_link enable trigger share_link_link_writes',
         );
       }
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
+  it("notices 0031's types left open: a view reading as its owner, a rule gone, a key free to move", async () => {
+    await sql(vault.adminUrl, 'alter view public.effective_document_type reset (security_invoker)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /effective_document_type would read with its owner's rights/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter view public.effective_document_type set (security_invoker = true)',
+      );
+    }
+
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_type_setting_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      'drop policy document_type_setting_actor on public.document_type_setting',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on document_type_setting/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy document_type_setting_actor on public.document_type_setting as restrictive using (${rule})`,
+      );
+    }
+
+    await sql(
+      vault.adminUrl,
+      'alter table public.document_type disable trigger document_type_fixed',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.document_type enable trigger document_type_fixed',
+      );
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });

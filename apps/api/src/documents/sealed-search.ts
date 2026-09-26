@@ -97,7 +97,7 @@ export class SealedSearchService {
 
         if (row.type_key && !types.has(row.type_key)) {
           const t = await trx
-            .selectFrom('document_type')
+            .selectFrom('effective_document_type')
             .select(['expiry_driver', 'reminder_leads'])
             .where('key', '=', row.type_key)
             .executeTakeFirst();

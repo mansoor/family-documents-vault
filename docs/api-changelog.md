@@ -696,6 +696,39 @@ duplicates, dropped}`. Each event id is recorded once, however often
     (`403 forbidden`, `404`). Send these through the confirm-it-is-you flow
     (`POST /api/v1/auth/step-up`) and try again, as a download of the same
     document already is.
+  - Document types belong to the household (5.7). A household has types of
+    its own, and its own changes to the built-in ones; nothing in the API
+    makes either yet (5.11 will), so every list is as it was until then.
+    - `GET /api/v1/document-types` items gain `builtin`, `hidden`, `core`,
+      `short_label` and `issuer_noun`, and each of `fields` gains
+      `required`. `core` is the fixed fields (`identifier`, `issued_by`,
+      `issued`, `expires`, `physical_location`, `tags`, `notes`), each
+      `{ shown, required, label }`; a null `label` is the app's own word,
+      and `issued_by`'s is `issued_by_label`. A field's `kind` may now also
+      be `long_text`, `number`, `money`, `choice` (with `choices`) or
+      `yes_no`. All absent from older vaults.
+    - `GET /api/v1/document-types?all=true` lists every type, hidden and
+      archived ones included.
+    - **New:** `GET /api/v1/document-attributes` — the fields a type can
+      ask for, the vault's and the household's:
+      `{ items: [{ key, label, kind, choices, builtin }] }`.
+    - A household's own type keys are `h_` and ten base32 characters, and
+      never change.
+    - **Changed:** a type the household has hidden or archived leaves the
+      default list, so it is no longer offered — unless a document the
+      caller can see still uses it. That one stays, marked `hidden: true`,
+      so a client that looks a document's type up in this list (app 0.2.0
+      does, offline, for an Essential's expiry) still finds it.
+    - A capture or an edit naming a type the household does not have —
+      another household's own included — is refused as an unknown type
+      always was: `422 validation_failed`, "That kind of document is not
+      on the list."
+    - `@fdv/client`: `documentTypes(token, { all })` and
+      `documentAttributes(token)`; the fake answers both, the in-use rule
+      included.
+  - **Changed:** text containing a NUL character (U+0000), in any field of
+    any request, is refused with `422 validation_failed`, "That text
+    contains a character the vault cannot keep." It was a `500`.
 
 ## Deprecations in effect
 

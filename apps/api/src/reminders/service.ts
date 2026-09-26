@@ -66,15 +66,12 @@ export class ReminderService {
    * straight away rather than being silently skipped.
    */
   async regenerateDerived(trx: Db, householdId: string, documentId: string): Promise<void> {
+    // The type as the household has it (0031): its own lead times, and no
+    // expiry where it has switched Expires off.
     const doc = await trx
       .selectFrom('document')
-      .leftJoin('document_type', 'document_type.key', 'document.type_key')
-      .select([
-        'document.expires_on',
-        'document.deleted_at',
-        'document_type.reminder_leads',
-        'document_type.expiry_driver',
-      ])
+      .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
+      .select(['document.expires_on', 'document.deleted_at', 't.reminder_leads', 't.expiry_driver'])
       .where('document.id', '=', documentId)
       .executeTakeFirst();
     await trx

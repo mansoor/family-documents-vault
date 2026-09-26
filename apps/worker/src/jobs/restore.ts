@@ -353,6 +353,7 @@ const GUARDS = [
   { name: 'audit_event_no_update', table: 'audit_event', fn: 'audit_event_immutable' },
   { name: 'owner_floor', table: 'account_household', fn: 'assert_owner_remains' },
   { name: 'share_link_link_writes', table: 'share_link', fn: 'share_link_link_writes' },
+  { name: 'document_type_fixed', table: 'document_type', fn: 'document_type_fixed' },
 ];
 
 /**
@@ -367,7 +368,7 @@ const GIVEN_NOTHING: [actor: string, who: string][] = [
   ['link', 'a share link it never made'],
 ];
 
-/** The tables 0030 gives a rule for each kind of caller. */
+/** The tables 0030 and 0031 give a rule for each kind of caller. */
 const ACTOR_GUARDED = [
   'document',
   'document_version',
@@ -381,7 +382,18 @@ const ACTOR_GUARDED = [
   'private_notice',
   'upload_idempotency',
   'export',
+  // A household's own types, its changes to the built-ins, and its own
+  // fields (0031).
+  'document_type',
+  'document_type_setting',
+  'document_attribute',
 ];
+
+/** The rows of a guarded table that are a household's: the built-ins are everybody's. */
+const HOUSEHOLD_ROWS: Record<string, string> = {
+  document_type: 'household_id is not null',
+  document_attribute: 'household_id is not null',
+};
 
 /**
  * The restored vault, seen the way the vault will see it: as the
@@ -403,17 +415,32 @@ export async function checkRestored(
       schema: number;
       versions: number;
       unprotected: string[];
+      definer_views: string[];
     }>(
       `select (select max(version)::int from schema_migration) as schema,
               (select count(*)::int from document_version) as versions,
               array(select c.oid::regclass::text from pg_class c
                      where exists (select 1 from pg_policy p where p.polrelid = c.oid)
-                       and not c.relrowsecurity) as unprotected`,
+                       and not c.relrowsecurity) as unprotected,
+              array(select c.oid::regclass::text from pg_class c
+                      join pg_namespace n on n.oid = c.relnamespace
+                     where n.nspname = 'public' and c.relkind = 'v'
+                       and not coalesce((select o.option_value in ('true', 'on', '1')
+                                           from pg_options_to_table(c.reloptions) o
+                                          where o.option_name = 'security_invoker'), false))
+                as definer_views`,
     );
     const t = totals[0];
     if (!t) throw new Error('the restored database has no schema_migration');
     if (t.unprotected.length) {
       throw new Error(`row-level security is off on ${t.unprotected.join(', ')}`);
+    }
+    // A view reads with its owner's rights unless it says otherwise, and
+    // the owner is past every household's wall (0031's types).
+    if (t.definer_views.length) {
+      throw new Error(
+        `${t.definer_views.join(', ')} would read with its owner's rights, past the households' walls`,
+      );
     }
     // The database's own guards: the audit log refuses changes, a
     // household always keeps an owner, and a link only counts on its share.
@@ -525,12 +552,17 @@ export async function checkRestored(
       )[0] ?? { members: -1, documents: -1 };
 
     // Somebody else's household sees nothing, in any table that belongs to
-    // a household: the policies came back.
+    // a household: the policies came back. A row that belongs to no
+    // household is everybody's to read — the built-in document types and
+    // attributes (0031) — and is not a leak.
     const stranger = randomUUID();
     const leaks = await asHousehold<{ t: string; n: number }>(
       stranger,
       r.tenant_tables
-        .map((t) => `select '${t.replace(/'/g, "''")}' as t, count(*)::int as n from ${t}`)
+        .map(
+          (t) =>
+            `select '${t.replace(/'/g, "''")}' as t, count(*)::int as n from ${t} where household_id is not null`,
+        )
         .join(' union all '),
     );
     const leaking = leaks.filter((l) => l.n > 0).map((l) => l.t);
@@ -552,9 +584,11 @@ export async function checkRestored(
       for (const [actor, who] of GIVEN_NOTHING) {
         const given = await asHousehold<{ t: string; n: number }>(
           h.id,
-          ACTOR_GUARDED.map((t) => `select '${t}' as t, count(*)::int as n from ${t}`).join(
-            ' union all ',
-          ),
+          ACTOR_GUARDED.map(
+            (t) =>
+              `select '${t}' as t, count(*)::int as n from ${t}` +
+              (HOUSEHOLD_ROWS[t] ? ` where ${HOUSEHOLD_ROWS[t]}` : ''),
+          ).join(' union all '),
           actor,
         );
         const where = given.filter((g) => g.n > 0).map((g) => g.t);

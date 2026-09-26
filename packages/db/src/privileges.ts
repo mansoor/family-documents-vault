@@ -48,6 +48,19 @@ begin
     grant execute on function public.app_shared_document() to fdv_app;
     grant execute on function public.app_shared_version() to fdv_app;
   end if;
+  -- The migrations' own record, and the suggestion rules every household
+  -- shares, are the vault's: the application only reads them.
+  if to_regclass('public.schema_migration') is not null then
+    revoke insert, update, delete on public.schema_migration from fdv_app;
+  end if;
+  if to_regclass('public.suggestion_rule') is not null then
+    revoke insert, update, delete on public.suggestion_rule from fdv_app;
+  end if;
+  -- A household's types as they are in effect (0031) are read, never
+  -- written: a type is changed where it is kept.
+  if to_regclass('public.effective_document_type') is not null then
+    revoke insert, update, delete on public.effective_document_type from fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

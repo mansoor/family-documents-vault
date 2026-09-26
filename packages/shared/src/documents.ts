@@ -81,17 +81,78 @@ export interface VersionView {
 /** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */
 export const PREVIEW_MAX_PAGES = 30;
 
+/** What a type's own field holds (0.5.6). Older vaults have text, date and year only. */
+export type AttributeKind =
+  'text' | 'long_text' | 'date' | 'year' | 'number' | 'money' | 'choice' | 'yes_no';
+
+/** The fields every document has, which a type can show, require and label (0.5.6). */
+export const CORE_FIELDS = [
+  'identifier',
+  'issued_by',
+  'issued',
+  'expires',
+  'physical_location',
+  'tags',
+  'notes',
+] as const;
+export type CoreField = (typeof CORE_FIELDS)[number];
+
+/** How a type asks for one of the fixed fields. A null label is the app's own word. */
+export interface CoreFieldRule {
+  shown: boolean;
+  required: boolean;
+  label: string | null;
+}
+
+/** One of a type's own fields, kept in a document's `extra` under its key. */
+export interface TypeField {
+  key: string;
+  label: string;
+  kind: AttributeKind;
+  /** Asked for before the card saves (0.5.6); absent from older vaults. */
+  required?: boolean;
+  /** The answers a `choice` field offers. */
+  choices?: string[];
+}
+
 export interface DocumentTypeView {
   key: string;
   label: string;
   category: string;
-  fields: Array<{ key: string; label: string; kind: 'text' | 'date' | 'year' }>;
+  fields: TypeField[];
   expiry_driver: string | null;
   reminder_leads: number[];
   usually_essential: boolean;
   default_visibility: Visibility;
   /** This type's word for who issued it ("Bank", "Insurer"…); null reads "Issued by" (0.4.10). */
   issued_by_label?: string | null;
+  // Since 0.5.6 a household has types of its own, and changes the built-in
+  // ones. The fields below are absent from older vaults, where every type
+  // is a built-in and shown.
+  /** One of the vault's own types, rather than the household's. */
+  builtin?: boolean;
+  /**
+   * Hidden or archived by the household: not offered for a new document.
+   * Still listed while a document uses it (unless asked with `?all=true`,
+   * which lists every type), so a document's type can always be looked up.
+   */
+  hidden?: boolean;
+  /** The fixed fields: each shown or not, required or not, and its label. */
+  core?: Record<CoreField, CoreFieldRule>;
+  /** Its short name in a line, "Bank statement"; null is its label. */
+  short_label?: string | null;
+  /** The noun after its issuer in a name, "statement"; null when named for its person. */
+  issuer_noun?: string | null;
+}
+
+/** An attribute a type can ask for, from the library (GET /document-attributes, 0.5.6). */
+export interface DocumentAttributeView {
+  key: string;
+  label: string;
+  kind: AttributeKind;
+  choices: string[] | null;
+  /** One of the vault's own, rather than the household's. */
+  builtin: boolean;
 }
 
 /** Renders a date value the way a person wrote it: "14 Mar 2031", "March 2031", "2031". */

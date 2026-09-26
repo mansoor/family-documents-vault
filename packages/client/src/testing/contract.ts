@@ -1,4 +1,4 @@
-import type { Tokens } from '@fdv/shared';
+import { CORE_FIELDS, type Tokens } from '@fdv/shared';
 import { expect } from 'vitest';
 import type { Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
@@ -20,6 +20,12 @@ export interface ContractContext {
   password: string;
   tokens?: Tokens;
   spent?: string;
+  /**
+   * Hides a type for the household, as a household can from 0.5.6 on: the
+   * real API's run writes the household's setting, the fake's marks its
+   * type. Nothing in the API does it yet (5.11 will).
+   */
+  hideType: (householdId: string, key: string) => Promise<void>;
 }
 
 export interface Scenario {
@@ -333,6 +339,98 @@ export const contractScenarios: Scenario[] = [
         },
       ]);
       expect(told).toEqual({ accepted: 0, duplicates: 0, dropped: 1 });
+    },
+  },
+  {
+    name: 'GET /document-types answers the old shape plus the new fields',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const { items } = await api.documentTypes(token);
+      expect(items.length).toBeGreaterThan(0);
+      for (const t of items) {
+        // What every client has read from the start, app 0.2.0 included…
+        const kinds = {
+          key: typeof t.key,
+          label: typeof t.label,
+          category: typeof t.category,
+          fields: Array.isArray(t.fields),
+          reminder_leads: Array.isArray(t.reminder_leads),
+          usually_essential: typeof t.usually_essential,
+          default_visibility: typeof t.default_visibility,
+        };
+        expect(kinds).toEqual({
+          key: 'string',
+          label: 'string',
+          category: 'string',
+          fields: true,
+          reminder_leads: true,
+          usually_essential: 'boolean',
+          default_visibility: 'string',
+        });
+        expect(t).toHaveProperty('expiry_driver');
+        expect(t).toHaveProperty('issued_by_label');
+        // …and what 0.5.6 added: nothing is hidden until a household hides it.
+        expect(t.hidden).toBe(false);
+        expect(typeof t.builtin).toBe('boolean');
+        expect(t).toHaveProperty('short_label');
+        expect(t).toHaveProperty('issuer_noun');
+        expect(Object.keys(t.core ?? {}).sort()).toEqual([...CORE_FIELDS].sort());
+        for (const rule of Object.values(t.core ?? {})) {
+          expect(typeof rule.shown).toBe('boolean');
+          expect(typeof rule.required).toBe('boolean');
+          expect(rule.label === null || typeof rule.label === 'string').toBe(true);
+        }
+        for (const f of t.fields) expect(typeof f.required).toBe('boolean');
+      }
+      const type = (key: string) => items.find((t) => t.key === key);
+      expect(type('passport')).toMatchObject({
+        builtin: true,
+        expiry_driver: 'expires_on',
+        issued_by_label: 'Issuing country',
+        core: {
+          expires: { shown: true, required: false, label: null },
+          issued_by: { shown: true, required: false, label: 'Issuing country' },
+        },
+      });
+      // A type that does not expire does not show an expiry.
+      expect(type('bank_statement')).toMatchObject({
+        short_label: 'Bank statement',
+        issuer_noun: 'statement',
+        core: { expires: { shown: false } },
+      });
+      // The library a type's own fields come from.
+      expect((await api.documentAttributes(token)).items).toContainEqual({
+        key: 'account_last4',
+        label: 'Account (last 4)',
+        kind: 'text',
+        choices: null,
+        builtin: true,
+      });
+    },
+  },
+  {
+    name: 'a hidden type still in use stays in the default list, as the 0.2.0 client needs',
+    run: async (api, ctx) => {
+      const t = ctx.tokens as Tokens;
+      // App 0.2.0 keeps this list to look each document's type up by key,
+      // offline: a passport's expiry comes from its type. A passport was
+      // captured above; nothing is a birth certificate.
+      await ctx.hideType(t.household_id, 'passport');
+      await ctx.hideType(t.household_id, 'birth_certificate');
+      const listed = (await api.documentTypes(t.access_token)).items;
+      expect(listed.find((x) => x.key === 'passport')).toMatchObject({
+        hidden: true,
+        label: 'Passport',
+        expiry_driver: 'expires_on',
+        reminder_leads: [270, 180],
+      });
+      // Hidden and unused: no longer offered.
+      expect(listed.map((x) => x.key)).not.toContain('birth_certificate');
+      expect(listed.find((x) => x.key === 'bank_statement')?.hidden).toBe(false);
+      // Every type, when asked for all of them.
+      const all = (await api.documentTypes(t.access_token, { all: true })).items;
+      expect(all.find((x) => x.key === 'birth_certificate')?.hidden).toBe(true);
+      expect(all.length).toBe(listed.length + 1);
     },
   },
   {

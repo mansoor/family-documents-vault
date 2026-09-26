@@ -7,7 +7,11 @@ import type { DateValue, DocumentTypeView } from './documents.js';
  * "Bank statement · Barclays · Sep 2026".
  */
 
-/** Each type's short name, where its full label names several things. */
+/**
+ * Each type's short name, where its full label names several things. Since
+ * 0.5.6 the vault says it for each type (`short_label`), a household's own
+ * types included; these are the built-ins' words for an older vault.
+ */
 const SHORT_LABELS: Record<string, string> = {
   national_id: 'National ID',
   visa: 'Visa',
@@ -26,9 +30,14 @@ const SHORT_LABELS: Record<string, string> = {
   pet_record: 'Pet record',
 };
 
-/** "Bank statement" for 'Bank / investment statement'; the label as it is otherwise. */
-export function shortTypeLabel(type: Pick<DocumentTypeView, 'key' | 'label'>): string {
-  return SHORT_LABELS[type.key] ?? type.label;
+/**
+ * "Bank statement" for 'Bank / investment statement': the type's own short
+ * name, then the built-in's, then the label as it is.
+ */
+export function shortTypeLabel(
+  type: Pick<DocumentTypeView, 'key' | 'label' | 'short_label'>,
+): string {
+  return type.short_label?.trim() || SHORT_LABELS[type.key] || type.label;
 }
 
 /**
@@ -44,7 +53,8 @@ export function issuedByLabel(
 /**
  * The noun a named document takes after its issuer: "Barclays statement",
  * "British Gas bill", "Aviva policy". Types not listed here are named for
- * their person instead ("Aisha's passport").
+ * their person instead ("Aisha's passport"). Since 0.5.6 the vault says it
+ * for each type (`issuer_noun`); these are the built-ins' for an older one.
  */
 const ISSUER_NOUNS: Record<string, string> = {
   bank_statement: 'statement',
@@ -58,13 +68,20 @@ const ISSUER_NOUNS: Record<string, string> = {
 };
 
 /** True when documents of this type are named for their issuer, not their person. */
-export function namedForIssuer(type: Pick<DocumentTypeView, 'key'> | null | undefined): boolean {
-  return type ? type.key in ISSUER_NOUNS : false;
+export function namedForIssuer(
+  type: Pick<DocumentTypeView, 'key' | 'issuer_noun'> | null | undefined,
+): boolean {
+  return type ? issuerNoun(type) !== undefined : false;
 }
 
-/** The noun that follows the issuer in a name, for types named that way. */
-export function issuerNoun(type: Pick<DocumentTypeView, 'key'>): string | undefined {
-  return ISSUER_NOUNS[type.key];
+/**
+ * The noun that follows the issuer in a name, for types named that way: the
+ * type's own, then the built-in's.
+ */
+export function issuerNoun(
+  type: Pick<DocumentTypeView, 'key' | 'issuer_noun'>,
+): string | undefined {
+  return type.issuer_noun?.trim() || ISSUER_NOUNS[type.key];
 }
 
 const MONTHS = [
@@ -98,7 +115,7 @@ export function monthYear(d: DateValue | null | undefined, short = false): strin
  * "Bank statement · Barclays · Sep 2026".
  */
 export function documentLine(parts: {
-  type?: Pick<DocumentTypeView, 'key' | 'label'> | null;
+  type?: Pick<DocumentTypeView, 'key' | 'label' | 'short_label'> | null;
   issued_by?: string | null;
   issued?: DateValue | null;
 }): string {
