@@ -86,6 +86,47 @@ export async function migrationStatus(
 }
 
 /**
+ * Refuses a database that a newer release has upgraded: it has migrations
+ * this release does not. Its schema may hold rules this release does not
+ * know to satisfy — since 0030 a transaction that does not say who is
+ * asking is given no documents — so running on it would look like an empty
+ * vault, or half-work. The way back from an upgrade is the backup taken
+ * before it, not the older image on the newer database.
+ */
+async function refuseNewer(client: pg.PoolClient, dir: string): Promise<void> {
+  const known = (await listMigrations(dir)).reduce((max, m) => Math.max(max, m.version), 0);
+  const { rows: table } = await client.query<{ present: boolean }>(
+    "select to_regclass('public.schema_migration') is not null as present",
+  );
+  if (!table[0]?.present) return; // a new database: nothing has run on it yet
+  const { rows } = await client.query<{ made: number | null }>(
+    'select max(version)::int as made from schema_migration',
+  );
+  const made = rows[0]?.made ?? 0;
+  if (made > known) {
+    throw new Error(
+      `this database was upgraded by a newer release of the vault (database schema ${made}), ` +
+        `and this release only knows schema ${known}: run that release or a later one, ` +
+        'or restore the backup taken before the upgrade (README, "Upgrading")',
+    );
+  }
+}
+
+/**
+ * The same refusal, for a process that does not migrate: the API when
+ * migrations are left to another replica, and the worker. The application
+ * role may read `schema_migration`.
+ */
+export async function assertSchemaKnown(pool: pg.Pool, dir = MIGRATIONS_DIR): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await refuseNewer(client, dir);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Applies every pending migration, then the application role's privileges
  * (privileges.ts) — every time, so a database restored from a backup, which
  * carries none, is put right on the vault's first start. Takes an advisory
@@ -103,6 +144,7 @@ export async function migrateUp(
   const applied: Migration[] = [];
   try {
     await client.query('select pg_advisory_lock($1)', [LOCK_KEY]);
+    await refuseNewer(client, dir);
     const { pending } = await status(client, dir);
     for (const m of pending) {
       const body = await readFile(m.file, 'utf8');

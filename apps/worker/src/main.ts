@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { assertSchemaKnown, createPool } from '@fdv/db';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
@@ -25,6 +26,15 @@ const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
 
 async function main(): Promise<void> {
   const config = loadConfig();
+
+  // A database a newer release has upgraded is refused before any job
+  // touches it: this release's jobs would see no documents on it.
+  const probe = createPool(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, 1);
+  try {
+    await assertSchemaKnown(probe);
+  } finally {
+    await probe.end();
+  }
 
   // The queue schema is installed with the owning role; job data itself is
   // not tenant data, so row-level security is not a concern here.

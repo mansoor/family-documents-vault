@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
-import { createDb, createPool, migrateUp } from '@fdv/db';
+import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
@@ -67,6 +67,9 @@ async function main(): Promise<void> {
   }
 
   const pool = createPool(config.DATABASE_URL);
+  // A database a newer release has upgraded is refused, not half-served
+  // (migrateUp above refuses it too, when this replica migrates).
+  await assertSchemaKnown(pool);
   const db = createDb(pool);
   const vaults = new VaultService(
     db,

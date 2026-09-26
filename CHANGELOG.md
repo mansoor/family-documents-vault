@@ -10,9 +10,13 @@ All notable changes to Family Document Vault. The format follows
 
 ### Security
 
-- The database itself now answers each kind of caller by its own rule, as a second wall behind the application's checks. A share link is given only the document it was made for, and its file, while the link is live and the document is out of the Trash, and it can change nothing but its own count of opens and wrong PINs. Sign-in, invitation and reset pages, and anything that does not say who is asking, are given no documents at all.
+- The database itself now answers each kind of caller by its own rule, as a second wall behind the application's checks. A share link is given only the document it was made for, and the newest scan of it, while the link is live, has not been locked by wrong PINs, its maker can still see the document, and the document is out of the Trash; it can change nothing but its own counts of opens and wrong PINs. Sign-in, invitation and reset pages, and anything that does not say who is asking, are given no documents and no exports at all.
 - The activity log shows a line only to those a rule names. Every line shown today is shown to the same people; a kind of line added later stays hidden until its audience is decided.
 - A restore now checks that these rules came back with the database.
+
+### Fixed
+
+- A release no longer starts on a database a newer release has upgraded: the API and the worker stop with a message saying to run that release, or to restore the backup taken before the upgrade. Without it, an older image put back after this upgrade would start and show an empty vault. Releases before this one do not have the check: going back past 0.5.5 means restoring the backup taken before the upgrade.
 
 ## [0.5.4] - 2026-09-26 — iteration 5.5
 
