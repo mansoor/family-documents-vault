@@ -6,6 +6,8 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-26 — iteration 5.3
+
 ### Security
 
 - **A viewer is given documents, not the family.** A viewer — an accountant or an attorney with a sign-in, say — could see everybody's date of birth, the household's answers (whether you own a home, how many cars, a business) and the suggestions worked out from them ("No passport for Aisha"). A viewer now sees only their own date of birth, none of the household's answers, and no suggestions.
