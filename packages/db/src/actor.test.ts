@@ -399,8 +399,41 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
         .returning('attempts')
         .executeTakeFirst();
       expect(counted?.attempts).toBe(1);
+      // Its own document, file and share it reads, and cannot change or
+      // take away: counting is the only write a link makes.
+      const own = await trx
+        .updateTable('document')
+        .set({ title: 'changed' })
+        .where('id', '=', ids.lease)
+        .executeTakeFirst();
+      expect(own.numUpdatedRows).toBe(0n);
+      const file = await trx
+        .updateTable('document_version')
+        .set({ filename: 'changed.pdf' })
+        .where('document_id', '=', ids.lease)
+        .executeTakeFirst();
+      expect(file.numUpdatedRows).toBe(0n);
+      for (const gone of [
+        trx.deleteFrom('share_link').where('id', '=', shares.lease),
+        trx.deleteFrom('document_version').where('document_id', '=', ids.lease),
+        trx.deleteFrom('document').where('id', '=', ids.lease),
+      ]) {
+        expect((await gone.executeTakeFirst()).numDeletedRows).toBe(0n);
+      }
     });
     await expect(as(link(shares.lease), addDocument)).rejects.toThrow(/row-level security/);
+    // Nor add a file to its own document.
+    await expect(
+      as(link(shares.lease), (trx) =>
+        sql`insert into document_version
+              (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+               cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+            select household_id, document_id, version_no + 1, filename, mime, byte_size, sha256,
+                   cipher_bytes, cipher_sha256, storage_key || '-2', vault_id, file_key_wrapped,
+                   wrapped_by_scope
+              from document_version where document_id = ${ids.lease}`.execute(trx),
+      ),
+    ).rejects.toThrow(/row-level security/);
 
     // The other document's link is given that one, and only that one.
     expect(

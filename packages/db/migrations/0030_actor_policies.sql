@@ -10,11 +10,13 @@
 --              5.32 narrows it for a viewer given only some documents.
 --   system     every row: the worker's jobs, and the API's few lookups
 --              before a caller is known (withSystem, on an allow-list).
---   link       the one document its share was made for, its file, and the
---              share itself: only while the share is live (not taken back,
---              not expired) and the document is not in the Trash. Not the
---              document's text, reminders or links to other documents, and
---              never another document of the household. 5.19 adds the
+--   link       reads the one document its share was made for, its file,
+--              and the share itself: only while the share is live (not
+--              taken back, not expired) and the document is not in the
+--              Trash. Not the document's text, reminders or links to other
+--              documents, and never another document of the household. It
+--              writes only its own share's row (an open, a wrong PIN): it
+--              adds, changes and takes away nothing else. 5.19 adds the
 --              items of a list share.
 --   upload     nothing. 5.21 gives it tables of its own.
 --   anonymous  nothing: a sign-in, invitation or reset page has no business
@@ -100,6 +102,28 @@ create policy share_link_actor on share_link as restrictive
            when 'link' then id = app_share() and document_id = (select app_shared_document())
            else false
          end);
+
+-- A link reads: adding, changing or taking away a document, a file or a
+-- share is for somebody signed in, or the vault itself. The one write a
+-- link makes is to its own share's row (share_link_actor above), and an
+-- insert there is refused by that rule already: a new share has another id.
+
+create policy document_actor_insert on document as restrictive for insert
+  with check (case app_actor() when 'account' then true when 'system' then true else false end);
+create policy document_actor_update on document as restrictive for update
+  using (case app_actor() when 'account' then true when 'system' then true else false end);
+create policy document_actor_delete on document as restrictive for delete
+  using (case app_actor() when 'account' then true when 'system' then true else false end);
+
+create policy document_version_actor_insert on document_version as restrictive for insert
+  with check (case app_actor() when 'account' then true when 'system' then true else false end);
+create policy document_version_actor_update on document_version as restrictive for update
+  using (case app_actor() when 'account' then true when 'system' then true else false end);
+create policy document_version_actor_delete on document_version as restrictive for delete
+  using (case app_actor() when 'account' then true when 'system' then true else false end);
+
+create policy share_link_actor_delete on share_link as restrictive for delete
+  using (case app_actor() when 'account' then true when 'system' then true else false end);
 
 -- ------------------------------------------- the family's, not a link's
 
