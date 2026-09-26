@@ -535,15 +535,31 @@ describe('document types belong to the household', () => {
     const before = await documentCount(B);
     const notOnTheList = 'That kind of document is not on the list.';
 
-    // A capture naming A's type: refused before anything is kept.
-    const captured = await capture({ type_key: typeA, title: 'Case papers' });
-    expect(captured.statusCode).toBe(422);
-    expect(refusal(captured).message).toBe(notOnTheList);
-    // Typed in.
+    // Typed in: refused before anything is kept.
     const typed = await send('POST', '/api/v1/documents', { type_key: typeA, title: 'Case' });
     expect(typed.statusCode).toBe(422);
     expect(refusal(typed).message).toBe(notOnTheList);
     expect(await documentCount(B)).toBe(before);
+    // A capture naming A's type is filed with no kind (the 5.11 review: a
+    // phone's scan queued for a kind deleted since is not refused for
+    // good) — exactly as one naming a key nobody has: nothing says A's is.
+    const filedAs = async (key: string) => {
+      const r = await capture({ type_key: key, title: 'Case papers' });
+      expect(r.statusCode, r.body).toBe(201);
+      const d = json<DocumentView>(
+        await get(`/api/v1/documents/${json<{ document_id: string }>(r).document_id}`),
+      );
+      return {
+        type_key: d.type_key,
+        title: d.title,
+        visibility: d.visibility,
+        category: d.category,
+      };
+    };
+    const ofA = await filedAs(typeA);
+    expect(ofA).toEqual(await filedAs('h_zzzzzzzzzz'));
+    expect(ofA.type_key).toBeNull();
+    expect(await documentCount(B)).toBe((before ?? 0) + 2);
 
     // Its own type it may file under, by capture and by hand…
     const own = await capture({ type_key: typeB, title: 'Acme pension' });

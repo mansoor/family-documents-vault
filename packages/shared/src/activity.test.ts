@@ -168,3 +168,53 @@ describe('a phone keeping Essentials (0.4.13)', () => {
     );
   });
 });
+
+describe('kinds of document (0.5.10)', () => {
+  const kind = (action: string, detail: Record<string, unknown>) =>
+    describeEvent(
+      ev({ action, object_type: 'document_type', object_id: null, object_title: null, detail }),
+    );
+
+  it('names the kind as it was called then, and never links to a document', () => {
+    const made = kind('document_type.created', { key: 'h_abcdefghij', label: 'Allotment' });
+    expect(made).toMatchObject({
+      text: 'Sarah added a kind of document, “Allotment”',
+      notable: false,
+      document_id: null,
+    });
+    expect(kind('document_type.archived', { label: 'Allotment' })?.text).toBe(
+      'Sarah archived “Allotment”',
+    );
+    expect(kind('document_type.archived', { label: 'Pet records', builtin: true })?.text).toBe(
+      'Sarah stopped offering “Pet records”',
+    );
+    expect(kind('document_type.restored', { label: 'Pet records', builtin: true })?.text).toBe(
+      'Sarah offered “Pet records” again',
+    );
+    expect(kind('document_type.deleted', {})?.text).toBe('Sarah deleted a kind of document');
+  });
+
+  it('letting more people see a kind is news; keeping it to fewer is not', () => {
+    const widened = kind('document_type.updated', {
+      label: 'Will',
+      from: 'adults',
+      default_visibility: 'household',
+      widened: true,
+    });
+    expect(widened).toMatchObject({
+      text: 'Sarah made new “Will” documents visible to everyone in the family',
+      notable: true,
+    });
+    const narrowed = kind('document_type.updated', {
+      label: 'Will',
+      from: 'household',
+      default_visibility: 'adults',
+      widened: false,
+    });
+    expect(narrowed).toMatchObject({
+      text: 'Sarah made new “Will” documents visible to the adults only',
+      notable: false,
+    });
+    expect(kind('document_type.updated', { label: 'Will' })?.text).toBe('Sarah changed “Will”');
+  });
+});

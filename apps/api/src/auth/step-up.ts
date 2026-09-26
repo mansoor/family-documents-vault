@@ -30,7 +30,8 @@ export type StepUpAction =
   | 'change_people'
   | 'export_everything'
   | 'change_password'
-  | 'change_sign_in';
+  | 'change_sign_in'
+  | 'widen_type_visibility';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -46,6 +47,10 @@ const WHY: Record<StepUpAction, string> = {
   // A passkey added from a session somebody else picked up would outlast
   // the session, and every password change after it.
   change_sign_in: 'to change how you sign in',
+  // A kind of document made visible to more people by default: the next
+  // will or tax return anybody files, a phone's queued scan among them,
+  // is in front of them (0.5.10).
+  widen_type_visibility: 'to let more people see a kind of document',
 };
 
 export class StepUpService {
@@ -60,21 +65,26 @@ export class StepUpService {
    * this has to be asked inside the household's scope — outside it the
    * query returns nothing, which would read as "never verified" and ask
    * for a credential on every single action.
+   *
+   * Asked in the caller's own transaction when it has one: a change that
+   * decides under a lock whether it needs asking (a kind of document made
+   * visible to more people, 0.5.10) asks there, without a second
+   * connection.
    */
-  private async verifiedAt(p: Principal): Promise<Date | null> {
-    const row = await withPrincipal(this.db, p, (trx) =>
-      trx
+  private async verifiedAt(p: Principal, trx?: Db): Promise<Date | null> {
+    const read = (t: Db) =>
+      t
         .selectFrom('session')
         .select(['verified_at'])
         .where('id', '=', p.sessionId)
-        .executeTakeFirst(),
-    );
+        .executeTakeFirst();
+    const row = trx ? await read(trx) : await withPrincipal(this.db, p, read);
     return row?.verified_at ? new Date(row.verified_at) : null;
   }
 
   /** Throws `step_up_required` unless a credential was seen recently. */
-  async require(p: Principal, action: StepUpAction): Promise<void> {
-    const at = (await this.verifiedAt(p))?.getTime() ?? 0;
+  async require(p: Principal, action: StepUpAction, trx?: Db): Promise<void> {
+    const at = (await this.verifiedAt(p, trx))?.getTime() ?? 0;
     if (Date.now() - at <= STEP_UP_WINDOW_MS) return;
     throw new ApiError(403, 'step_up_required', `Please confirm it is you ${WHY[action]}.`, {
       action,

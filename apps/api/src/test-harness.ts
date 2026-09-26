@@ -14,6 +14,7 @@ import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
+import { TypeService } from './documents/types.js';
 import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
@@ -172,6 +173,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     visibility: new VisibilityService(db, keys),
     vaults,
     documents,
+    types: new TypeService(db, enqueue, stepUp),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
     shares: new ShareService(db, keys, vaults),

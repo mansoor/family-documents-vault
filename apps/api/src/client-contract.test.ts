@@ -1,6 +1,5 @@
 import { createApi, createHttp, type FetchLike } from '@fdv/client';
 import { contractScenarios, type ContractContext } from '@fdv/client/testing';
-import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, it } from 'vitest';
 import { createHarness, type Harness } from './test-harness.js';
@@ -56,19 +55,17 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
   const ctx: ContractContext = {
     email: 'contract@example.test',
     password: 'a long enough password',
-    // The household's own setting on a built-in (0031), as 5.11's editor
-    // will write it; nothing in the API does yet, so the owning role does.
-    hideType: async (householdId, key) => {
-      const admin = createPool(h.adminUrl, 1);
-      try {
-        await admin.query(
-          `insert into document_type_setting (household_id, type_key, hidden) values ($1, $2, true)
-           on conflict (household_id, type_key) do update set hidden = true`,
-          [householdId, key],
-        );
-      } finally {
-        await admin.end();
-      }
+    // The household's own setting on a built-in (0031), written as the
+    // editor writes it (0.5.10), by the owner the scenarios signed in as.
+    hideType: async (_householdId, key) => {
+      const res = await h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/document-types/${key}`,
+        headers: { authorization: `Bearer ${ctx.tokens?.access_token ?? ''}` },
+        payload: { hidden: true },
+        remoteAddress: `10.66.${++peer >> 8}.${peer & 0xff}`,
+      });
+      if (res.statusCode !== 200) throw new Error(`hiding ${key}: ${res.body}`);
     },
   };
 

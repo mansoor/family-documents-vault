@@ -283,6 +283,11 @@ export interface Schema {
     short_label: string | null;
     /** The noun after its issuer in a name: "Barclays statement" (0031). */
     issuer_noun: string | null;
+    /**
+     * Deleted while documents its deleter could not see still used it
+     * (0035): kept only as the name of those documents.
+     */
+    deleted_at: Timestamp | null;
   };
 
   /** A household's changes to a built-in type; null keeps the built-in's own (0031). */
@@ -332,10 +337,12 @@ export interface Schema {
     issued_by_label: string | null;
     short_label: string | null;
     issuer_noun: string | null;
-    /** Hidden by the household, or archived. */
+    /** Hidden by the household, archived, or deleted (0035). */
     hidden: boolean;
     archived_at: Date | null;
     updated_at: Date;
+    /** Deleted, kept for the documents that use it (0035); see document_type. */
+    deleted_at: Date | null;
   };
 
   document: {

@@ -4,6 +4,7 @@ import {
   formatDate,
   missingFields,
   parseDateInput,
+  widensVisibility,
   withSealed,
 } from './documents.js';
 
@@ -209,5 +210,18 @@ describe('what an Only me document needs, its notes and details sealed (0.5.8)',
     const plain = { notes: 'In the drawer', extra: { plate: 'KX19 ZLT' } };
     expect(withSealed(plain, { notes: false, details: [] })).toBe(plain);
     expect(withSealed(plain, null)).toBe(plain);
+  });
+});
+
+describe("a kind of document's default visibility (0.5.10)", () => {
+  it('widens when a new document would be in front of more people', () => {
+    expect(widensVisibility('adults', 'household')).toBe(true);
+    expect(widensVisibility('private', 'adults')).toBe(true);
+    expect(widensVisibility('private', 'household')).toBe(true);
+    expect(widensVisibility('household', 'adults')).toBe(false);
+    expect(widensVisibility('adults', 'private')).toBe(false);
+    expect(widensVisibility('adults', 'adults')).toBe(false);
+    // A value this code has never heard of reaches nobody: never a widening.
+    expect(widensVisibility('adults', 'sealed' as never)).toBe(false);
   });
 });

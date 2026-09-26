@@ -36,6 +36,7 @@ describe('the role matrix', () => {
       'role.change',
       'notifications.manage',
       'member.invite_adult',
+      'types.widen_visibility',
     ] as Capability[]) {
       expect(rolesWith(c), c).toEqual(['owner']);
     }

@@ -16,6 +16,7 @@
     "migrate": "tsx src/cli.ts"
   },
   "dependencies": {
+    "@fdv/shared": "workspace:*",
     "kysely": "^0.29.6",
     "pg": "^8.23.0"
   },

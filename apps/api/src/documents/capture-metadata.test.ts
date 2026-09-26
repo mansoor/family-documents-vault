@@ -243,8 +243,9 @@ describe('a capture that knows what it is', () => {
     const before = await documentCount();
     const key = randomUUID();
     for (const bad of [
-      // A birth certificate does not expire.
-      { type_key: 'birth_certificate', expires: { date: '2031-03-31', precision: 'month' } },
+      // No such day. (An expiry on a type that does not expire is kept
+      // since 0.5.10, as POST /documents keeps it: document-types.test.ts.)
+      { type_key: 'birth_certificate', issued: { date: '2021-02-30', precision: 'day' } },
       // Only me, for somebody else's document.
       { owner_member_id: adult.member_id, visibility: 'private' },
       // A month is stored as its last day.

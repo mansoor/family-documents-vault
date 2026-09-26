@@ -21,6 +21,7 @@ import { processVersion } from './jobs/process-version.js';
 import { pushDepsOf, sendPushJob } from './jobs/push.js';
 import { deliver, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { sealPrivateValues } from './jobs/seal.js';
+import { regenerateTypeReminders } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { verifyAllAuditChains } from './jobs/verify-audit.js';
 
@@ -481,6 +482,26 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
             [diary.id],
           );
           expect(row.rows[0]).toEqual({ notes: null, sealed: true });
+        },
+      ],
+      [
+        'types.regenerate',
+        async () => {
+          // The passport's reminders, made again from the type's lead times:
+          // those still ahead (the 5.11 review), so its expiry is put where
+          // both are, whatever day the test runs.
+          await admin.query(
+            'update document set expires_on = current_date + 400, updated_at = updated_at where id = $1',
+            [ids.document],
+          );
+          expect(
+            await regenerateTypeReminders(app, { household_id: hh, type_key: 'passport' }),
+          ).toEqual({ documents: 1, failed: 0 });
+          const made = await admin.query<{ lead_days: number }>(
+            "select lead_days from reminder where document_id = $1 and kind = 'derived' order by lead_days",
+            [ids.document],
+          );
+          expect(made.rows.map((r) => r.lead_days)).toEqual([180, 270]);
         },
       ],
     ];

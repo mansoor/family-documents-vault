@@ -155,6 +155,117 @@ export interface DocumentTypeView {
   short_label?: string | null;
   /** The noun after its issuer in a name, "statement"; null when named for its person. */
   issuer_noun?: string | null;
+  /**
+   * The type as it is now (0.5.10): send it as `If-Match` on
+   * `PATCH /document-types/{key}`, which refuses an edit made to an older
+   * one (`409 conflict`). Absent from older vaults.
+   */
+  etag?: string;
+}
+
+/** The longest a kind of document's name, or one of its fields' names, may be (0.5.10). */
+export const TYPE_LABEL_MAX = 80;
+
+/**
+ * A new kind of document, or a change to one (0.5.10): every field
+ * optional on a change, and what is left out stays as it is. A built-in
+ * keeps its name and category (its label, category, short label and noun);
+ * the household's own cannot be `hidden`, it is archived instead.
+ */
+export interface DocumentTypeInput {
+  label?: string;
+  /** One of the twelve (CATEGORY_LABELS). */
+  category?: string;
+  short_label?: string | null;
+  issuer_noun?: string | null;
+  /**
+   * The fixed fields, each changed key by key. `expires.shown` is whether
+   * the kind expires at all. A field is required only where it is shown.
+   */
+  core?: Partial<Record<CoreField, Partial<CoreFieldRule>>>;
+  /**
+   * The kind's own fields, the whole list in order, each a field of the
+   * library (GET /document-attributes) by key: its kind and its answers are
+   * the library's, its label the library's unless given.
+   */
+  fields?: Array<{ key: string; label?: string; required?: boolean }>;
+  /** Days before it expires to remind, at most eight of them. */
+  reminder_leads?: number[];
+  default_visibility?: Visibility;
+  usually_essential?: boolean;
+  /** A built-in, no longer offered (or offered again). */
+  hidden?: boolean;
+}
+
+/** A field for the library, made by the household (0.5.10). */
+export interface DocumentAttributeInput {
+  label: string;
+  kind: AttributeKind;
+  /** The answers a `choice` field offers; only a choice has them. */
+  choices?: string[] | null;
+}
+
+/** How many of a kind's documents have a value for one of its fields. */
+export interface FieldImpact {
+  key: string;
+  /** The kind's name for it; null is the app's own word. */
+  label: string | null;
+  with_value: number;
+  without_value: number;
+}
+
+/**
+ * What a change to a kind of document would touch (GET
+ * /document-types/{key}/impact, 0.5.10): its documents the caller can see,
+ * never those they cannot, and `unseen` says so in words, always, with no
+ * number — a count would say that somebody's Only me documents are of
+ * this kind. "12 passports have no number yet".
+ */
+export interface DocumentTypeImpact {
+  key: string;
+  /** Its documents the caller can see, out of the Trash. */
+  documents: number;
+  /** In the Trash, that the caller can see. */
+  in_trash: number;
+  /** Each fixed field: how many of those documents have a value for it. */
+  core: Record<CoreField, { with_value: number; without_value: number }>;
+  /** Each of its own fields, the same. */
+  fields: FieldImpact[];
+  /** Reminders made from its lead times, not done yet, on those documents. */
+  reminders: number;
+  /** "Documents you can't see may also be affected." */
+  unseen: string;
+}
+
+/** Said with every count of a kind's documents, whether or not there are any the reader can't see. */
+export const UNSEEN_DOCUMENTS = "Documents you can't see may also be affected.";
+
+/**
+ * A kind of document's delete refused (`409 type_in_use`, 0.5.10): only
+ * for a document the caller can see (the 5.11 review). One that only
+ * documents they cannot see use is deleted for them, as an unused one is.
+ */
+export const TYPE_IN_USE =
+  "This kind of document is still in use, so it can't be deleted. Archive it instead: every document filed under it stays as it is.";
+
+/**
+ * A change asking a kind that expires not to require its expiry (`422`,
+ * `detail: "expires"`, the 5.11 review): every kind that expires requires
+ * one, and `core.expires.required` always says whether the kind expires.
+ */
+export const EXPIRY_ALWAYS_REQUIRED =
+  'A kind of document that expires always needs its expiry date. Switch Expires off instead.';
+
+/** Who a visibility reaches, fewest first. An unknown one reaches nobody. */
+const REACH: Record<string, number> = { private: 1, adults: 2, household: 3 };
+
+/**
+ * Whether a kind's default visibility of `to` puts a new document in front
+ * of more people than `from` did (0.5.10): Only me or Adults only to
+ * Everyone, Only me to Adults only. An owner's decision, confirmed.
+ */
+export function widensVisibility(from: Visibility, to: Visibility): boolean {
+  return (REACH[to] ?? 0) > (REACH[from] ?? 0);
 }
 
 /** An attribute a type can ask for, from the library (GET /document-attributes, 0.5.6). */

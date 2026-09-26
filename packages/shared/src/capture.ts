@@ -89,14 +89,21 @@ export interface CaptureProblem {
  *
  *  - a teen files documents for themselves only, and never as Adults only
  *    (a teen cannot see those, their own included);
- *  - Only me is for documents that are yours;
+ *  - Only me is for documents that are yours, whether it is asked for or
+ *    is the type's default (0.5.10): a type private by default never files
+ *    somebody else's document as their Only me;
  *  - the person is in the family, and the type is one the vault knows;
- *  - an expiry date needs a type that expires;
  *  - a date is a real day, with a precision it agrees with;
  *  - text fits: the same limits POST /documents keeps;
  *  - the details are the type's own, each of its kind (0.5.7). A required
  *    one left out is not a problem: the document is Needs info until it is
  *    given (A7).
+ *
+ * An expiry date is never a problem (0.5.10). Until then one on a type that
+ * does not expire was refused here, and for good: a scan queued while the
+ * household's type still expired, then sent after somebody switched its
+ * Expires off, could never be taken — while POST /documents took the same
+ * date. Now both keep it, and it counts only while the type expires.
  *
  * Returns the first problem, or null.
  */
@@ -131,7 +138,7 @@ export function checkCaptureMetadata(
   if (visibility === 'private' && owner !== ctx.me.member_id) {
     return {
       field: 'visibility',
-      message: 'Only the person a document belongs to can make it private to them.',
+      message: meta.visibility ? PRIVATE_TO_THEM : PRIVATE_BY_DEFAULT,
       status: 422,
     };
   }
@@ -166,17 +173,19 @@ export function checkCaptureMetadata(
       };
     }
   }
-  if (meta.expires != null && !type?.expiry_driver) {
-    return {
-      field: 'expires',
-      message: type
-        ? "This kind of document doesn't expire, so it has no expiry date."
-        : 'Choose what it is before giving it an expiry date.',
-      status: 422,
-    };
-  }
   return null;
 }
+
+/** Only me, asked for a document that is somebody else's. */
+export const PRIVATE_TO_THEM = 'Only the person a document belongs to can make it private to them.';
+
+/**
+ * Only me as a type's default, for a document that is somebody else's
+ * (0.5.10): the same check as asking for it, in words that say where it
+ * came from.
+ */
+export const PRIVATE_BY_DEFAULT =
+  'This kind of document is kept private to the person it belongs to. Choose who can see this one.';
 
 /** The longest each text field may be (POST /documents' limits). */
 const LIMITS = [

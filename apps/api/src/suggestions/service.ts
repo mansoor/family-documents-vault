@@ -83,9 +83,11 @@ export class SuggestionService {
       };
       const today = localToday(household.timezone);
 
+      // A built-in the household has hidden is one it has said it does not
+      // keep (5.11): nothing suggests it is missing.
       const rules = await trx
         .selectFrom('suggestion_rule')
-        .innerJoin('document_type', 'document_type.key', 'suggestion_rule.suggests_type')
+        .innerJoin('effective_document_type as t', 't.key', 'suggestion_rule.suggests_type')
         .select([
           'suggestion_rule.key',
           'suggestion_rule.condition',
@@ -95,9 +97,10 @@ export class SuggestionService {
           'suggestion_rule.noun',
           'suggestion_rule.why',
           'suggestion_rule.sort_order',
-          'document_type.label as type_label',
+          't.label as type_label',
         ])
         .where('suggestion_rule.enabled', '=', true)
+        .where('t.hidden', '=', false)
         .orderBy('suggestion_rule.sort_order')
         .execute();
 

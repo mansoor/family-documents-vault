@@ -17,6 +17,7 @@ import { isAlert, sendAlert } from './jobs/alerts.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { sealPrivateValues } from './jobs/seal.js';
+import { regenerateTypeReminders, type RegenerateTypeJob } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import type { JobWithMetadata } from 'pg-boss';
@@ -140,6 +141,21 @@ async function main(): Promise<void> {
     if (r.failed) throw new Error(`${r.failed} Only me documents could not be sealed`);
   });
   await boss.send(JOBS.sealPrivate, {});
+
+  // A type's lead times changed, or its Expires switched on or off: each of
+  // its documents reminded anew, as the vault, one per transaction (0.5.10).
+  await boss.createQueue(JOBS.regenerateTypes, {
+    policy: 'stately',
+    retryLimit: 3,
+    retryDelay: 60,
+  });
+  await boss.work<RegenerateTypeJob>(JOBS.regenerateTypes, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      const r = await regenerateTypeReminders(dbs.app, job.data);
+      log('info', "a type's reminders made again", { type_key: job.data.type_key, ...r });
+      if (r.failed) throw new Error(`${r.failed} documents' reminders could not be made again`);
+    }
+  });
 
   const backupDeps = {
     adminUrl: config.DATABASE_ADMIN_URL ?? config.DATABASE_URL,

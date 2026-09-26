@@ -9,8 +9,11 @@ import type {
   CreatedInvitation,
   CreatedShare,
   DeviceRow,
+  DocumentAttributeInput,
   DocumentAttributeView,
   DocumentInput,
+  DocumentTypeImpact,
+  DocumentTypeInput,
   DocumentTypeView,
   DocumentView,
   ExportRow,
@@ -254,6 +257,46 @@ export function createApi(http: Http) {
     /** The fields a type can ask for, from the library (0.5.6). */
     documentAttributes: (token: string) =>
       request<{ items: DocumentAttributeView[] }>('/api/v1/document-attributes', { token }),
+    // Kinds of document, managed (0.5.10; owners and adults, `types.manage`).
+    /** A kind of the household's own, under an `h_` key it keeps for good. */
+    createDocumentType: (token: string, body: DocumentTypeInput) =>
+      request<DocumentTypeView>('/api/v1/document-types', { method: 'POST', body, token }),
+    /**
+     * A change to a kind, made to the one the caller saw: pass its `etag`,
+     * and a newer one answers `409 conflict`. Letting more people see it by
+     * default is an owner's, and asks them to confirm it is them.
+     */
+    updateDocumentType: (token: string, key: string, body: DocumentTypeInput, etag?: string) =>
+      request<DocumentTypeView>(`/api/v1/document-types/${enc(key)}`, {
+        method: 'PATCH',
+        body,
+        token,
+        ...(etag ? { headers: { 'if-match': etag } } : {}),
+      }),
+    /** No longer offered: the household's own archived, a built-in hidden. Its documents keep it. */
+    archiveDocumentType: (token: string, key: string) =>
+      request<DocumentTypeView>(`/api/v1/document-types/${enc(key)}/archive`, {
+        method: 'POST',
+        token,
+      }),
+    restoreDocumentType: (token: string, key: string) =>
+      request<DocumentTypeView>(`/api/v1/document-types/${enc(key)}/restore`, {
+        method: 'POST',
+        token,
+      }),
+    /** Only a kind of the household's own that no document uses: `409 type_in_use` otherwise. */
+    deleteDocumentType: (token: string, key: string) =>
+      request<void>(`/api/v1/document-types/${enc(key)}`, { method: 'DELETE', token }),
+    /** What a change would touch, among the documents the caller can see. */
+    documentTypeImpact: (token: string, key: string) =>
+      request<DocumentTypeImpact>(`/api/v1/document-types/${enc(key)}/impact`, { token }),
+    /** A field of the household's own, for the library. */
+    createDocumentAttribute: (token: string, body: DocumentAttributeInput) =>
+      request<DocumentAttributeView>('/api/v1/document-attributes', {
+        method: 'POST',
+        body,
+        token,
+      }),
     documents: (token: string, params: Params = {}) =>
       request<Page<DocumentView>>(`/api/v1/documents${qs(params)}`, { token }),
     /**
