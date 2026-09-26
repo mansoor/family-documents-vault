@@ -233,6 +233,16 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(res.statusCode).toBe(403);
       expect(json<{ error: { code: string } }>(res).error.code).toBe('forbidden');
     }
+    // Nor do they see who else's documents went where (0.5.0): the owner's
+    // link to a document they can both see is not in their list.
+    expect(
+      json<CreatedShare>(await share(lease, { recipient_label: 'the letting agent' })).share.id,
+    ).toBeTruthy();
+    for (const who of [viewer, teen]) {
+      const list = await h.app.inject({ url: '/api/v1/shares', headers: h.as(who) });
+      expect(list.statusCode).toBe(200);
+      expect(json<{ items: ShareView[] }>(list).items).toEqual([]);
+    }
   });
 
   it("another adult cannot share somebody else's private document, or even see the link", async () => {
