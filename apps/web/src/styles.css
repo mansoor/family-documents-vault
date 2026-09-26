@@ -896,3 +896,13 @@ h3 {
     white-space: normal;
   }
 }
+
+.btn[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* A status line that is always there, so a screen reader hears it change. */
+.status-line:empty {
+  margin: 0;
+}

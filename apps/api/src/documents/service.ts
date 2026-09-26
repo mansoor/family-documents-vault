@@ -852,7 +852,11 @@ export class DocumentService {
     return withScope(this.db, { householdId: p.householdId }, async (trx) => {
       await this.fetch(trx, p, documentId, true);
       // Who added each version, by the name the household knows them by
-      // (5.1). Somebody who has left the household has no name here.
+      // (5.1) — on the activity log's terms: a viewer, an outsider, is not
+      // told what the family has been doing. Somebody whose sign-in was
+      // taken away is still named (former_account_id); somebody who has
+      // left the household is not.
+      const named = allows(p, 'audit.read');
       const rows = await trx
         .selectFrom('document_version')
         .leftJoin('account_household', (j) =>
@@ -861,12 +865,20 @@ export class DocumentService {
             .on('account_household.household_id', '=', p.householdId),
         )
         .leftJoin('member', 'member.id', 'account_household.member_id')
+        .leftJoin('member as former', (j) =>
+          j
+            .onRef('former.former_account_id', '=', 'document_version.uploaded_by')
+            .on('former.household_id', '=', p.householdId),
+        )
         .selectAll('document_version')
-        .select('member.display_name as uploaded_by_name')
+        .select(['member.display_name as uploaded_by_name', 'former.display_name as former_name'])
         .where('document_version.document_id', '=', documentId)
         .orderBy('document_version.version_no', 'desc')
         .execute();
-      return rows.map((r) => ({ ...versionView(r), uploaded_by_name: r.uploaded_by_name ?? null }));
+      return rows.map((r) => ({
+        ...versionView(r),
+        uploaded_by_name: named ? (r.uploaded_by_name ?? r.former_name ?? null) : null,
+      }));
     });
   }
 

@@ -1,5 +1,5 @@
 import { can, formatDate, issuedByLabel, whenExactly, type VersionView } from '@fdv/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -93,6 +93,7 @@ export function DocumentScreen() {
   // Moving to the Trash asks first, in the app's own dialog (5.1).
   const [confirmingTrash, setConfirmingTrash] = useState(false);
   const [trashing, setTrashing] = useState(false);
+  const trashButton = useRef<HTMLButtonElement>(null);
   const remove = async () => {
     if (!data) return;
     setTrashing(true);
@@ -125,6 +126,12 @@ export function DocumentScreen() {
     );
 
   const { doc, versions, members, types } = data;
+  // Who may move it to the Trash: whoever may change documents, and a teen
+  // only their own — as the vault itself says (5.1).
+  const role = storedRole();
+  const mayChange =
+    can(role, 'document.edit') &&
+    (role !== 'teen' || doc.owner_member_id === session.info?.member_id);
   const owner = members.find((m) => m.id === doc.owner_member_id);
   const type = types.find((t) => t.key === doc.type_key);
   const visibilityLabel =
@@ -272,8 +279,9 @@ export function DocumentScreen() {
         </section>
       )}
       <SharePanel documentId={doc.id} documentTitle={doc.title} />
-      {can(storedRole(), 'document.edit') && (
+      {mayChange && (
         <button
+          ref={trashButton}
           type="button"
           className="btn btn-link btn-trash"
           onClick={() => setConfirmingTrash(true)}
@@ -286,6 +294,8 @@ export function DocumentScreen() {
         <ConfirmDialog
           title="Move to Trash?"
           confirmLabel="Move to Trash"
+          busyLabel="Moving to Trash…"
+          returnFocus={trashButton}
           icon={<TrashIcon />}
           danger
           busy={trashing}

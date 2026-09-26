@@ -71,8 +71,9 @@ export interface VersionView {
   preview_pages?: number | null;
   /**
    * Who added this version, as the household knows them (5.1): in a
-   * document's history only (`GET /documents/{id}/versions`). Null when
-   * that person has left the household, or on an older vault.
+   * document's history only (`GET /documents/{id}/versions`), and never to
+   * a viewer, who is not told what the family has been doing. Null then,
+   * when that person has left the household, or on an older vault.
    */
   uploaded_by_name?: string | null;
 }

@@ -18,12 +18,15 @@ export function ActivityScreen() {
   // which is the only reason this screen keeps any state of its own.
   const { data, error: loadError, loading } = useLoad((t) => api.activity(t), [authVersion]);
   const [older, setOlder] = useState<ActivityLine[]>([]);
-  const [cursor, setCursor] = useState<number | null>(null);
+  // Undefined until "Show older" is used; then the next page, or null at
+  // the end — which used to fall back to the first page's cursor, so the
+  // button came back and the same page arrived twice.
+  const [cursor, setCursor] = useState<number | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const lines = [...(data?.items ?? []), ...older];
-  const next = cursor ?? data?.next ?? null;
+  const next = cursor === undefined ? (data?.next ?? null) : cursor;
 
   const more = async (before: number) => {
     setBusy(true);

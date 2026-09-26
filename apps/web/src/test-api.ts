@@ -31,6 +31,10 @@ export interface FakeState {
   sharePin: string | null;
   shareValid: boolean;
   documents: Array<Record<string, unknown>>;
+  /** Hold a document's DELETE until this settles (5.1). */
+  holdDelete?: Promise<void>;
+  /** Answer GET /documents in pages of this many, with a cursor (5.1). */
+  pageSize?: number;
   types: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
@@ -743,6 +747,15 @@ export function installFakeApi(state: FakeState) {
       // The Trash is its own list (5.1), as the vault's `deleted=true` is.
       const inTrash = query.get('deleted') === 'true';
       let items = state.documents.filter((d) => Boolean(d.deleted_at) === inTrash);
+      if (state.pageSize) {
+        const start = Number(query.get('cursor') ?? 0);
+        const more = start + state.pageSize < items.length;
+        return json({
+          items: items.slice(start, start + state.pageSize),
+          next_cursor: more ? String(start + state.pageSize) : null,
+          has_more: more,
+        });
+      }
       const cat = query.get('category');
       if (cat) items = items.filter((d) => d.category === cat);
       const from = query.get('issued_by');
@@ -844,8 +857,11 @@ export function installFakeApi(state: FakeState) {
           404,
         );
       if (method === 'DELETE') {
-        doc.deleted_at = '2026-09-26T10:04:00Z';
-        return Promise.resolve(new Response(null, { status: 204 }));
+        const answer = () => {
+          doc.deleted_at = '2026-09-26T10:04:00Z';
+          return new Response(null, { status: 204 });
+        };
+        return state.holdDelete ? state.holdDelete.then(answer) : Promise.resolve(answer());
       }
       if (method === 'PATCH') {
         Object.assign(doc, body as object, { etag: '"next"' });

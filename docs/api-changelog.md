@@ -659,8 +659,9 @@ duplicates, dropped}`. Each event id is recorded once, however often
 - After 0.5.0 (Phase 5):
   - `VersionView.uploaded_by_name` — who added the version, by the name the
     household knows them by, in `GET /api/v1/documents/{id}/versions` only.
-    Null when that person has left the household, and absent from older
-    vaults.
+    Null for a viewer (the activity log's rule: `audit.read`) and when that
+    person has left the household; still the name when only their sign-in
+    was taken away. Absent from older vaults.
   - `@fdv/client`: `restoreDocument(token, id)`, for the existing
     `POST /api/v1/documents/{id}/restore`.
   - The activity sentences for `document.deleted` and `document.restored`

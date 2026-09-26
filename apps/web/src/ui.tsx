@@ -1,5 +1,5 @@
 import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
 
@@ -242,41 +242,54 @@ export function TrashIcon() {
 
 /**
  * The app's own "are you sure?" (5.1), never the browser's confirm(): over
- * the page like the step-up sheet. Cancel or Escape is a real answer. Focus
- * starts on Cancel, so Enter never does the irreversible-looking thing by
- * accident, and it stays inside the dialog until the dialog is answered.
+ * the page like the step-up sheet. Cancel or Escape is a real answer, until
+ * the action is on its way: then neither can take it back, so neither
+ * pretends to. Focus starts on Cancel, so Enter never does the thing by
+ * accident; it stays inside the dialog, and goes back where it came from.
  */
 export function ConfirmDialog(props: {
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** What the confirm button says while the action is on its way. */
+  busyLabel?: string;
   icon?: ReactNode;
   danger?: boolean;
   busy?: boolean;
+  /** Where focus goes afterwards when the browser remembered none (Safari). */
+  returnFocus?: RefObject<HTMLElement | null>;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const box = useRef<HTMLElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
-  const onCancel = useRef(props.onCancel);
-  useEffect(() => {
-    onCancel.current = props.onCancel;
+  const latest = useRef({
+    onCancel: props.onCancel,
+    busy: props.busy,
+    returnFocus: props.returnFocus,
   });
   useEffect(() => {
-    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    latest.current = { onCancel: props.onCancel, busy: props.busy, returnFocus: props.returnFocus };
+  });
+  useEffect(() => {
+    const active = document.activeElement;
+    const before = active instanceof HTMLElement && active !== document.body ? active : null;
     cancel.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onCancel.current();
+        if (!latest.current.busy) latest.current.onCancel();
         return;
       }
       if (e.key !== 'Tab' || !box.current) return;
-      const focusable = [...box.current.querySelectorAll<HTMLElement>('button:not([disabled])')];
+      const focusable = [...box.current.querySelectorAll<HTMLElement>('button')];
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
+      if (!box.current.contains(document.activeElement)) {
+        e.preventDefault();
+        (cancel.current ?? first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
@@ -287,9 +300,10 @@ export function ConfirmDialog(props: {
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      before?.focus();
+      (before ?? latest.current.returnFocus?.current)?.focus();
     };
   }, []);
+  const busy = Boolean(props.busy);
   return (
     <div className="scrim" role="presentation">
       <section
@@ -299,6 +313,7 @@ export function ConfirmDialog(props: {
         aria-modal="true"
         aria-labelledby="confirm-h"
         aria-describedby="confirm-body"
+        aria-busy={busy}
       >
         <h2 id="confirm-h" style={{ fontSize: 20 }}>
           {props.title}
@@ -307,16 +322,28 @@ export function ConfirmDialog(props: {
           {props.children}
         </div>
         <div className="row">
+          {/* aria-disabled, not disabled: a disabled button drops the focus
+              it holds, and the trap above with it. */}
           <button
             type="button"
             className={`btn ${props.danger ? 'btn-danger' : 'btn-primary'} btn-icon`}
-            disabled={props.busy}
-            onClick={props.onConfirm}
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) props.onConfirm();
+            }}
           >
             {props.icon}
-            {props.confirmLabel}
+            {busy && props.busyLabel ? props.busyLabel : props.confirmLabel}
           </button>
-          <button ref={cancel} type="button" className="btn btn-quiet" onClick={props.onCancel}>
+          <button
+            ref={cancel}
+            type="button"
+            className="btn btn-quiet"
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) props.onCancel();
+            }}
+          >
             Cancel
           </button>
         </div>

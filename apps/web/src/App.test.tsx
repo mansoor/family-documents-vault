@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { whenExactly } from '@fdv/shared';
 import { App } from './App.js';
 import {
   AISHA,
@@ -1492,13 +1493,16 @@ describe('the quick fixes (5.1)', () => {
     await screen.findByRole('heading', { name: 'Trash' });
     expect(await screen.findByText("Mansoor's passport")).toBeInTheDocument();
     expect(
-      screen.getByText(/Moved to the Trash \d{1,2} Sept 2026, \d{1,2}:04(am|pm)/),
+      screen.getByText(`Moved to the Trash ${whenExactly('2026-09-26T10:04:00Z')}`),
     ).toBeInTheDocument();
     await expectAccessible();
 
-    fireEvent.click(screen.getByRole('button', { name: "Bring back Mansoor's passport" }));
+    fireEvent.click(screen.getByRole('button', { name: "Bring it back: Mansoor's passport" }));
     expect(await screen.findByText('The Trash is empty.')).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent('is back');
+    const news = screen.getByRole('status');
+    expect(news).toHaveTextContent('is back');
+    // The button that had focus went with its row: the news has it now.
+    expect(news).toHaveFocus();
     expect(
       state.calls.some((c) => c.method === 'POST' && c.url.endsWith('/documents/doc-1/restore')),
     ).toBe(true);
@@ -1510,7 +1514,9 @@ describe('the quick fixes (5.1)', () => {
     window.history.replaceState({}, '', '/documents/doc-1');
     render(<App />);
     expect(
-      await screen.findByText(/added \d{1,2} Sept 2026, \d{1,2}:14(am|pm) by Mansoor Seikh/),
+      await screen.findByText(
+        new RegExp(`added ${whenExactly('2026-09-20T09:14:00Z')} by Mansoor Seikh`),
+      ),
     ).toBeInTheDocument();
   });
 
@@ -1559,7 +1565,75 @@ describe('the quick fixes (5.1)', () => {
     expect(
       await within(table).findByText('Mansoor moved “Water bill” to the Trash'),
     ).toBeInTheDocument();
-    expect(within(table).getByText(/^\d{1,2} Sept 2026, \d{1,2}:05(am|pm)$/)).toBeInTheDocument();
+    expect(within(table).getByText(whenExactly('2026-09-25T14:05:00Z'))).toBeInTheDocument();
     await expectAccessible();
+  });
+
+  it('while it is on its way, neither Cancel nor Escape pretends to take it back', async () => {
+    let release: () => void = () => undefined;
+    const state = fresh({
+      documents: [{ ...PASSPORT }],
+      holdDelete: new Promise<void>((r) => {
+        release = r;
+      }),
+    });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    expect(
+      await within(dialog).findByRole('button', { name: 'Moving to Trash…' }),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+
+    await act(async () => release());
+    await screen.findByText(/Everything is fine|thing.* need/);
+  });
+
+  it('a teen is offered the Trash, and a way back, only for their own documents', async () => {
+    const theirs = { ...PASSPORT, owner_member_id: 'm-0' };
+    installFakeApi(fresh({ documents: [theirs] }));
+    signedIn('teen');
+    window.history.replaceState({}, '', '/documents/doc-1');
+    const first = render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
+    first.unmount();
+
+    installFakeApi(fresh({ documents: [{ ...theirs, deleted_at: '2026-09-26T10:04:00Z' }] }));
+    // A new fake vault: the first one rotated the refresh token it knew.
+    signedIn('teen');
+    window.history.replaceState({}, '', '/settings/trash');
+    render(<App />);
+    expect(await screen.findByText("Mansoor's passport")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Bring it back/ })).not.toBeInTheDocument();
+  });
+
+  it('the Trash shows every page, not only the first', async () => {
+    const binned = (id: string, title: string) => ({
+      ...PASSPORT,
+      id,
+      title,
+      deleted_at: '2026-09-26T10:04:00Z',
+    });
+    installFakeApi(
+      fresh({ documents: [binned('d-1', 'Old lease'), binned('d-2', 'Old policy')], pageSize: 1 }),
+    );
+    signedIn();
+    window.history.replaceState({}, '', '/settings/trash');
+    render(<App />);
+    expect(await screen.findByText('Old lease')).toBeInTheDocument();
+    expect(screen.queryByText('Old policy')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show older' }));
+    expect(await screen.findByText('Old policy')).toBeInTheDocument();
+    // The end: no button to come round again.
+    expect(screen.queryByRole('button', { name: 'Show older' })).not.toBeInTheDocument();
   });
 });
