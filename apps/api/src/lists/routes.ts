@@ -1,4 +1,4 @@
-import { LIST_AUDIENCES } from '@fdv/shared';
+import { LIST_AUDIENCES, LIST_ITEMS_PAGE_MAX } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -11,6 +11,8 @@ import type { ListService } from './service.js';
  * given none (A17) — and the changes ask `list.manage` before they read
  * the body, so somebody who may not is told that first. Only a list's
  * maker changes it (A18): the service says so, once it has found the list.
+ * A delete has no body, and its maker may delete their list whatever their
+ * role now, so the service asks `list.manage` of anybody else.
  */
 
 // Tidied and measured by the service, which says what is wrong in words.
@@ -28,6 +30,12 @@ const itemsBody = z.object({ document_ids: z.array(z.string().uuid()).min(1).max
 const idParam = z.object({ id: z.string().uuid() });
 const itemParam = z.object({ id: z.string().uuid(), documentId: z.string().uuid() });
 
+/** A page of a list's documents, as GET /documents pages its own. */
+const pageQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(LIST_ITEMS_PAGE_MAX).optional(),
+  cursor: z.string().max(512).optional(),
+});
+
 export function registerLists(app: FastifyInstance, lists: ListService): void {
   const auth = { preHandler: app.requireAuth };
   const manage = { preHandler: [app.requireAuth, needs('list.manage')] };
@@ -43,7 +51,7 @@ export function registerLists(app: FastifyInstance, lists: ListService): void {
   });
 
   app.get('/api/v1/lists/:id', auth, async (req, reply) => {
-    const list = await lists.get(principal(req), idOf(req));
+    const list = await lists.get(principal(req), idOf(req), parse(pageQuery, req.query ?? {}));
     reply.header('etag', list.etag);
     return list;
   });
@@ -65,7 +73,7 @@ export function registerLists(app: FastifyInstance, lists: ListService): void {
     return changed;
   });
 
-  app.delete('/api/v1/lists/:id', manage, async (req, reply) => {
+  app.delete('/api/v1/lists/:id', auth, async (req, reply) => {
     await lists.remove(principal(req), idOf(req), metaOf(req));
     return reply.status(204).send();
   });

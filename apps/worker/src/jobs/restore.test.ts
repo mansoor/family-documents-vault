@@ -618,6 +618,14 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         `create policy doc_list_item_actor on public.doc_list_item as restrictive using (${items})`,
       );
     }
+    // The guard that keeps an owner to marking deleted a list nobody can
+    // change any more, and to nothing else, turned off.
+    await sql(vault.adminUrl, 'alter table public.doc_list disable trigger doc_list_owner_writes');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(vault.adminUrl, 'alter table public.doc_list enable trigger doc_list_owner_writes');
+    }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 

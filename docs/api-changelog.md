@@ -1030,10 +1030,11 @@ mine, item_count, created_at, updated_at, etag }`. `item_count` is how
       many of its documents the caller can see, out of the Trash: never how
       many they cannot, and nothing else says so either.
     - **New:** `POST /api/v1/lists` `{ name, audience, description? }` →
-      `201` with the list (`ListDetail`: the view and its `items`) and its
-      `ETag`. `audience` is `everyone` (owners, adults and teens), `teens`
-      (the same, for now), `adults` (owners and adults) or `only_me` (its
-      maker alone). The name is tidied, 1–80 characters (`422
+      `201` with the list (`ListDetail`: the view, the first page of its
+      `items`, `next_cursor` and `has_more`) and its `ETag`. `audience` is
+      `everyone` (owners, adults and teens), `teens` (the same, for now),
+      `adults` (owners and adults) or `only_me` (its maker alone). The
+      name is tidied, 1–80 characters (`422
 validation_failed`, `detail: "name"`); what it is for, 1000 at most;
       with no audience, `422` (`detail: "audience"`). Owners, adults and
       teens (`list.manage`): a viewer is `403 forbidden`, "Viewers can open
@@ -1047,11 +1048,21 @@ validation_failed`, `detail: "name"`); what it is for, 1000 at most;
       sealed). `hint` is for the list's maker only — "Teens in this list’s
       audience can’t see this one.", "Only you can see this one. It is
       private." — and null for everybody else.
+    - `items` come a page at a time, as `GET /api/v1/documents` gives
+      documents: `?limit` (1–200; 50 unasked) and `?cursor`, the last
+      page's `next_cursor`, which is null, with `has_more: false`, on the
+      last page. `item_count` is all of them the caller can see, on every
+      page. A cursor names the last document the caller was given and
+      nothing else; one naming anything else — a document taken off the
+      list since, or out of the caller's sight — is `422
+validation_failed`, "That page cursor is not valid.", whatever it
+      names: start again from the first page.
     - **New:** `PATCH /api/v1/lists/{id}` `{ name?, description?,
 audience? }`, made to the list as the caller saw it: a stale
       `If-Match` is `409 conflict`, with the list as it now is in `detail`.
       `DELETE /api/v1/lists/{id}` → `204`: gone for everybody; its
-      documents are untouched.
+      documents are untouched. A change answers with the list as `GET`
+      gives its first page, read once the change is made.
     - **New:** `POST /api/v1/lists/{id}/items` `{ document_ids }` (1–200) →
       the list: put on at the end, in the order given, each once; one
       already on it stays where it is. Each must be one the caller can see,
@@ -1068,6 +1079,24 @@ audience? }`, made to the list as the caller saw it: a stale
       viewer sees no list at all, not even one for everyone, until a later
       release lets one be granted to them: `GET /api/v1/lists` answers
       `{ items: [] }`.
+    - A list's maker keeps it, whatever their role now. Made a teen or a
+      viewer, they still see it (`mine: true`, in `GET /api/v1/lists`, by
+      id and among a document's lists), with the documents on it their
+      role now may see, counted so, and they may `DELETE` it, a viewer
+      too; its lines in the activity log are theirs as well (a viewer reads
+      no log). Once they are outside its audience they may no longer
+      change it: `PATCH` and its items are `403 forbidden`, "This list is
+      for people you are no longer one of. You can still delete it, but not
+      change it." (a viewer is told what a viewer is told of any change).
+    - When nobody may change a list any more — its maker is outside its
+      audience now, or has no sign-in in the household — an owner who can
+      see it may `DELETE` it: `204`, and "Owner deleted the list “…”" in
+      the log, as for its maker. They never change it (`403`, "Only the
+      person who made this list can change it.") and are given no more of
+      it than they see anyway; anybody else is `403` as before. An Only me
+      list whose maker has no sign-in stays invisible to everybody, an
+      owner too: it is kept as it is, and is its maker's again with their
+      sign-in.
     - A document taken to the Trash, or made somebody else's Only me, is
       gone from every list at once for whoever can no longer see it; brought
       back, it is where it was. A list's `updated_at` and ETag move with its
@@ -1083,15 +1112,18 @@ audience? }`, made to the list as the caller saw it: a stale
     - A copy of everything (`POST /api/v1/exports`) is unchanged: it holds
       documents, not lists.
     - `@fdv/shared`: capability `list.manage`; `LIST_AUDIENCES`,
-      `canSeeList`, `inListAudience`, `listItemHint`, `LIST_HINT_TEENS`,
-      `LIST_HINT_PRIVATE`, `LIST_HINT_SOME`, `LIST_NAME_MAX`,
-      `LIST_DESCRIPTION_MAX`, `ListView`, `ListDetail`, `ListItemView`,
-      `ListInput`, `CapabilityFeatures.lists`. `@fdv/client`: `lists`,
-      `createList`, `getList`, `updateList(token, id, body, etag)`,
-      `deleteList`, `addToList`, `removeFromList`, `documentLists`. The fake
-      keeps lists and what is on them as the vault does, for each role
-      (`state.lists`), and a contract scenario holds the vault and the fake
-      to it.
+      `canSeeList` (a list's maker always), `inListAudience`,
+      `listItemHint`, `LIST_HINT_TEENS`, `LIST_HINT_PRIVATE`,
+      `LIST_HINT_SOME`, `LIST_NAME_MAX`, `LIST_DESCRIPTION_MAX`,
+      `LIST_ITEMS_PAGE`, `LIST_ITEMS_PAGE_MAX`, `ListView`, `ListDetail`
+      (with `next_cursor` and `has_more`), `ListItemView`, `ListInput`,
+      `CapabilityFeatures.lists`. `@fdv/client`: `lists`, `createList`,
+      `getList(token, id, { limit?, cursor? })`,
+      `updateList(token, id, body, etag)`, `deleteList`, `addToList`,
+      `removeFromList`, `documentLists`. The fake keeps lists and what is
+      on them as the vault does, for each role (`state.lists`), pages them,
+      and lets a maker, and an owner, delete as the vault does; a contract
+      scenario holds the vault and the fake to it.
 
 ## Deprecations in effect
 

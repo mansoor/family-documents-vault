@@ -387,6 +387,8 @@ const GUARDS = [
   { name: 'owner_floor', table: 'account_household', fn: 'assert_owner_remains' },
   { name: 'share_link_link_writes', table: 'share_link', fn: 'share_link_link_writes' },
   { name: 'document_type_fixed', table: 'document_type', fn: 'document_type_fixed' },
+  // An owner marks deleted a list nobody can change any more, and nothing else (0036).
+  { name: 'doc_list_owner_writes', table: 'doc_list', fn: 'doc_list_owner_writes' },
 ];
 
 /**

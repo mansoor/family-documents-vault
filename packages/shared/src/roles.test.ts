@@ -116,15 +116,31 @@ describe('who sees a list (5.14)', () => {
     expect(who(list('teens'))).toEqual(['owner', 'adult', 'teen']);
     expect(who(list('adults'))).toEqual(['owner', 'adult']);
     expect(who(list('only_me'))).toEqual([]);
-    expect(who(list('only_me', me))).toEqual(['owner', 'adult', 'teen']);
+    // Its maker, whatever their role now.
+    expect(who(list('only_me', me))).toEqual(['owner', 'adult', 'teen', 'viewer']);
   });
 
   it('a viewer sees no list, not even one made for everyone (A17)', () => {
     for (const audience of LIST_AUDIENCES) {
-      expect(canSeeList({ role: 'viewer', memberId: me }, list(audience, me)), audience).toBe(
-        false,
-      );
+      expect(canSeeList({ role: 'viewer', memberId: me }, list(audience)), audience).toBe(false);
     }
+  });
+
+  it('its maker still sees a list outside its audience now, and nobody else does (the 5.14 review)', () => {
+    // An adult made a teen, or a viewer: the list they made for the adults
+    // is theirs to see (and delete), and still nobody else's outside it.
+    for (const role of ['teen', 'viewer'] as const) {
+      for (const audience of LIST_AUDIENCES) {
+        expect(canSeeList({ role, memberId: me }, list(audience, me)), `${role} ${audience}`).toBe(
+          true,
+        );
+      }
+      expect(canSeeList({ role, memberId: me }, list('adults'))).toBe(false);
+      expect(inListAudience(role, 'adults')).toBe(false);
+    }
+    // Nobody is the maker of a list whose maker is gone.
+    expect(canSeeList({ role: 'owner', memberId: null }, list('adults', null))).toBe(true);
+    expect(canSeeList({ role: 'teen', memberId: null }, list('adults', null))).toBe(false);
   });
 
   it('an audience never heard of, or nobody at all, is closed', () => {

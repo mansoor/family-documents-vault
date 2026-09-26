@@ -12,6 +12,8 @@ import {
   inListAudience,
   LIST_AUDIENCES,
   LIST_DESCRIPTION_MAX,
+  LIST_ITEMS_PAGE,
+  LIST_ITEMS_PAGE_MAX,
   LIST_NAME_MAX,
   listItemHint,
   missingFields,
@@ -117,7 +119,9 @@ export interface FakeVaultState {
   offlineEssentials: { items: OfflineItem[]; received: Set<string> };
   /**
    * Lists of documents (0.5.12), as the real vault keeps them: each made by
-   * the one member the fake signs in as, and marked deleted, never removed.
+   * the one member the fake signs in as — or, put here by a test, by one of
+   * `state.members`, or by somebody with no sign-in there — and marked
+   * deleted, never removed.
    */
   lists: FakeList[];
   /** Every request, in order, for assertions. */
@@ -1360,9 +1364,11 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
     }
     // Lists of documents (0.5.12), as the real vault keeps them: a list
-    // exists only for whoever is in its audience (a viewer is in none);
-    // each reader is given the documents on it they can see, counted as
-    // they see them; only its maker changes it.
+    // exists only for its maker and whoever is in its audience (a viewer is
+    // in none); each reader is given the documents on it they can see,
+    // counted as they see them; only its maker changes it, while they are
+    // in its audience, and deletes it whatever their role; an owner deletes
+    // one nobody may change any more.
     const me = { role: state.role, memberId: 'fake-member' };
     const listAt = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
     const docLists = /^\/api\/v1\/documents\/([^/]+)\/lists$/.exec(path);
@@ -1394,20 +1400,57 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         updated_at: l.updated_at,
         etag: listTag(l),
       });
-      const detail = (l: FakeList): ListDetail => ({
-        ...listView(l),
-        items: onIt(l).map((i) => ({
-          document: listedOf(i.doc),
-          added_at: i.added_at,
-          hint:
-            l.owner_member_id === me.memberId
-              ? listItemHint(l.audience, {
-                  visibility: i.doc.visibility ?? 'household',
-                  owner_member_id: i.doc.owner_member_id ?? null,
-                })
-              : null,
-        })),
-      });
+      /** A list and a page of what is on it: its first, unless asked. */
+      const detail = (l: FakeList, from = 0, limit = LIST_ITEMS_PAGE): ListDetail => {
+        const all = onIt(l);
+        const shown = all.slice(from, from + limit);
+        const more = from + limit < all.length;
+        const last = shown[shown.length - 1];
+        return {
+          ...listView(l),
+          items: shown.map((i) => ({
+            document: listedOf(i.doc),
+            added_at: i.added_at,
+            hint:
+              l.owner_member_id === me.memberId
+                ? listItemHint(l.audience, {
+                    visibility: i.doc.visibility ?? 'household',
+                    owner_member_id: i.doc.owner_member_id ?? null,
+                  })
+                : null,
+          })),
+          next_cursor: more && last ? `after.${last.document_id}` : null,
+          has_more: more,
+        };
+      };
+      /**
+       * The page GET /lists/{id} asks for: 50 unless `limit` says (200 at
+       * most), after the document `cursor` names — one the reader is given
+       * on it, or the cursor is not valid.
+       */
+      const paged = (l: FakeList): ListDetail | ResponseLike => {
+        const asked = param(url, 'limit');
+        const limit = asked === undefined ? LIST_ITEMS_PAGE : Number(asked);
+        if (!Number.isInteger(limit) || limit < 1 || limit > LIST_ITEMS_PAGE_MAX) {
+          return fail(422, 'validation_failed', 'That page size is not valid.');
+        }
+        const cursor = param(url, 'cursor');
+        if (cursor === undefined) return detail(l, 0, limit);
+        const after = /^after\.(.+)$/.exec(cursor)?.[1];
+        const at = onIt(l).findIndex((i) => i.document_id === after);
+        if (at < 0) return fail(422, 'validation_failed', 'That page cursor is not valid.');
+        return detail(l, at + 1, limit);
+      };
+      /** Whose role now, of the member who made a list: the fake's own, or one of `state.members`. */
+      const roleOf = (memberId: string): Role | undefined =>
+        memberId === me.memberId
+          ? state.role
+          : (state.members.find((m) => m.id === memberId)?.role as Role | undefined);
+      /** Nobody may change it any more: its maker has no sign-in, or is outside its audience. */
+      const stranded = (l: FakeList) => {
+        const role = roleOf(l.owner_member_id);
+        return role === undefined || !inListAudience(role, l.audience);
+      };
       // By name, whatever the case; made first, first (a stable sort).
       const byName = (a: FakeList, b: FakeList) => {
         const [x, y] = [a.name.toLowerCase(), b.name.toLowerCase()];
@@ -1495,16 +1538,36 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         return ok({ items: on.sort(byName).map(listView) });
       }
       if (listAt) {
+        const found = state.lists.find((x) => x.id === decodeURIComponent(listAt[1] as string));
+        const l = found && shown(found) ? found : undefined;
+        const mine = l !== undefined && l.owner_member_id === me.memberId;
+        const notYours = () =>
+          fail(403, 'forbidden', 'Only the person who made this list can change it.');
+        // Its maker deletes it whatever their role now; anybody else needs
+        // list.manage, and then an owner only one nobody may change any more.
+        if (!listAt[2] && init.method === 'DELETE') {
+          const refused = mine ? null : manage();
+          if (refused) return refused;
+          if (!l) return fail(404, 'not_found', 'That list does not exist.');
+          if (!mine && (state.role !== 'owner' || !stranded(l))) return notYours();
+          l.deleted = true;
+          return empty();
+        }
         const changing = init.method !== 'GET';
         const refused = changing ? manage() : null;
         if (refused) return refused;
-        const l = state.lists.find((x) => x.id === decodeURIComponent(listAt[1] as string));
-        if (!l || !shown(l)) return fail(404, 'not_found', 'That list does not exist.');
+        if (!l) return fail(404, 'not_found', 'That list does not exist.');
         if (!listAt[2] && init.method === 'GET') {
-          return respond(200, detail(l), { etag: listTag(l) });
+          const page = paged(l);
+          return isResponse(page) ? page : respond(200, page, { etag: listTag(l) });
         }
-        if (changing && l.owner_member_id !== me.memberId) {
-          return fail(403, 'forbidden', 'Only the person who made this list can change it.');
+        if (changing && !mine) return notYours();
+        if (changing && !inListAudience(state.role, l.audience)) {
+          return fail(
+            403,
+            'forbidden',
+            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+          );
         }
         if (!listAt[2] && init.method === 'PATCH') {
           const ifMatch = init.headers['if-match'];
@@ -1527,10 +1590,6 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             l.revision += 1;
           }
           return respond(200, detail(l), { etag: listTag(l) });
-        }
-        if (!listAt[2] && init.method === 'DELETE') {
-          l.deleted = true;
-          return empty();
         }
         if (listAt[2] && !listAt[3] && init.method === 'POST') {
           const ids = [...new Set((body.document_ids as string[] | undefined) ?? [])];

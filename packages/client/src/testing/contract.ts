@@ -872,6 +872,21 @@ export const contractScenarios: Scenario[] = [
       const missing = await refusal(api.addToList(token, made.id, [everyday.id, NEVER_USED]));
       expect(missing).toMatchObject({ status: 404, code: 'not_found' });
       expect((await api.getList(token, made.id)).item_count).toBe(2);
+      expect(filled).toMatchObject({ has_more: false, next_cursor: null });
+
+      // A page at a time: item_count is all of them, on every page.
+      const first = await api.getList(token, made.id, { limit: 1 });
+      expect(first.items.map((i) => i.document.id)).toEqual([everyday.id]);
+      expect(first).toMatchObject({ item_count: 2, has_more: true });
+      expect(typeof first.next_cursor).toBe('string');
+      const second = await api.getList(token, made.id, {
+        limit: 1,
+        cursor: first.next_cursor,
+      });
+      expect(second.items.map((i) => i.document.id)).toEqual([adults.id]);
+      expect(second).toMatchObject({ item_count: 2, has_more: false, next_cursor: null });
+      const badCursor = await refusal(api.getList(token, made.id, { cursor: 'not-a-cursor' }));
+      expect(badCursor).toMatchObject({ status: 422, code: 'validation_failed' });
 
       // The same count in the list of lists; each document says it is on it.
       const listed = (await api.lists(token)).items.find((l) => l.id === made.id);

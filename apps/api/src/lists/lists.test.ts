@@ -2,8 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { createDb, createPool, withPrincipal, withScope, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
+  inListAudience,
+  LIST_AUDIENCES,
   LIST_HINT_PRIVATE,
   LIST_HINT_TEENS,
+  ROLES,
   type ActivityLine,
   type DocumentView,
   type ListDetail,
@@ -11,7 +14,8 @@ import {
   type Tokens,
 } from '@fdv/shared';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { DocumentService } from '../documents/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
 
 /**
@@ -41,8 +45,12 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
   };
 
   const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  // Each request from an address of its own: the file asks more than the
+  // vault's ceiling for one address in a minute.
+  let nth = 0;
+  /** A request as somebody: one of `people`, or anybody else's tokens. */
   const call = (
-    who: Person,
+    who: Person | Tokens,
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     url: string,
     payload?: object,
@@ -51,11 +59,12 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     h.app.inject({
       method,
       url,
-      headers: { ...h.as(people[who]), ...headers },
+      headers: { ...h.as(typeof who === 'string' ? people[who] : who), ...headers },
+      remoteAddress: `10.14.${(++nth >> 8) & 0xff}.${nth & 0xff}`,
       ...(payload ? { payload } : {}),
     });
   const makeList = async (
-    who: Person,
+    who: Person | Tokens,
     name: string,
     audience: string,
     documentIds: string[] = [],
@@ -70,7 +79,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     expect(added.statusCode, added.body).toBe(200);
     return json<ListDetail>(added);
   };
-  const seen = async (who: Person, id: string) => {
+  const seen = async (who: Person | Tokens, id: string) => {
     const res = await call(who, 'GET', `/api/v1/lists/${id}`);
     return res.statusCode === 200 ? json<ListDetail>(res) : null;
   };
@@ -80,7 +89,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     const { error } = json<{ error: Record<string, unknown> }>(r);
     return { status: r.statusCode, ...error, request_id: null };
   };
-  const activity = async (who: Person) =>
+  const activity = async (who: Person | Tokens) =>
     json<{ items: ActivityLine[] }>(await call(who, 'GET', '/api/v1/audit?limit=100')).items.map(
       (l) => l.text,
     );
@@ -265,11 +274,13 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           'created_at',
           'description',
           'etag',
+          'has_more',
           'id',
           'item_count',
           'items',
           'mine',
           'name',
+          'next_cursor',
           'owner_member_id',
           'updated_at',
         ].sort(),
@@ -563,6 +574,383 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     }
   });
 
+  describe('a list whose maker is moved or loses their sign-in (the 5.14 review)', () => {
+    const nowhere = randomUUID();
+    const setRole = async (member: string, role: string) => {
+      const res = await call('owner', 'POST', `/api/v1/members/${member}/role`, { role });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(json<{ applied: boolean }>(res).applied).toBe(true);
+    };
+    /** Everything somebody outside a list's audience reads that a list could leave a mark on. */
+    const outsiderSees = async (who: Person) => ({
+      lists: json<{ items: ListView[] }>(await call(who, 'GET', '/api/v1/lists')).items.map(
+        (l) => l.id,
+      ),
+      ofDoc: json<{ items: ListView[] }>(
+        await call(who, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      ).items.map((l) => l.id),
+    });
+    /** Every way of asking about a list, answered as for one that never was. */
+    const asNowhere = async (who: Person | Tokens, id: string, label: string) => {
+      for (const [method, path, body] of [
+        ['GET', '', undefined],
+        ['PATCH', '', { name: 'Mine now' }],
+        ['DELETE', '', undefined],
+        ['POST', '/items', { document_ids: [docs.household] }],
+        ['DELETE', `/items/${docs.household}`, undefined],
+      ] as const) {
+        const res = await call(who, method, `/api/v1/lists/${id}${path}`, body);
+        expect(refusal(res), `${label} ${method} ${path}`).toEqual(
+          refusal(await call(who, method, `/api/v1/lists/${nowhere}${path}`, body)),
+        );
+      }
+    };
+    const changes = (id: string) =>
+      [
+        ['PATCH', `/api/v1/lists/${id}`, { name: 'Taken back' }],
+        ['POST', `/api/v1/lists/${id}/items`, { document_ids: [docs.household] }],
+        ['DELETE', `/api/v1/lists/${id}/items/${docs.household}`, undefined],
+      ] as const;
+    const notYours = {
+      status: 403,
+      code: 'forbidden',
+      message: 'Only the person who made this list can change it.',
+    };
+
+    it('its maker, made a teen and then a viewer, still sees it and deletes it, but no longer changes it; nobody else may', async () => {
+      const alex = await h.join(people.owner, {
+        name: 'Alex',
+        email: 'lists-alex@example.test',
+        role: 'adult',
+      });
+      const lawyer = await makeList(alex, 'ZZ For the lawyer', 'adults', [
+        docs.household,
+        docs.adults,
+      ]);
+      const car = await makeList(alex, 'Alex’s car', 'everyone', [docs.household]);
+      const second = await makeList(alex, 'ZZ Second thoughts', 'adults', [docs.household]);
+      const ownersOwn = await makeList('owner', 'Owner’s own', 'everyone');
+      const before = { teen: await outsiderSees('teen'), viewer: await outsiderSees('viewer') };
+
+      await setRole(alex.member_id, 'teen');
+
+      // Its maker sees it, with only what a teen may see on it, counted so.
+      const theirs = await seen(alex, lawyer.id);
+      expect(theirs).toMatchObject({ mine: true, item_count: 1 });
+      expect(itemIds(theirs)).toEqual([docs.household]);
+      const listed = json<{ items: ListView[] }>(await call(alex, 'GET', '/api/v1/lists')).items;
+      expect(listed.find((l) => l.id === lawyer.id)).toMatchObject({ item_count: 1 });
+      const ofDoc = json<{ items: ListView[] }>(
+        await call(alex, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      ).items;
+      expect(ofDoc.map((l) => l.id)).toEqual(expect.arrayContaining([lawyer.id, car.id]));
+      // …and changes it no more: not its name, not what is on it.
+      for (const [method, url, body] of changes(lawyer.id)) {
+        expect(refusal(await call(alex, method, url, body)), `${method} ${url}`).toMatchObject({
+          status: 403,
+          code: 'forbidden',
+          message:
+            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+        });
+      }
+      // A list for everyone is still theirs to change: a teen is in it.
+      const renamed = await call(alex, 'PATCH', `/api/v1/lists/${car.id}`, {
+        name: 'Alex’s bike',
+      });
+      expect(renamed.statusCode, renamed.body).toBe(200);
+
+      // Nobody else changes it: not an owner, not an adult.
+      for (const who of ['owner', 'adult'] as const) {
+        expect((await seen(who, lawyer.id))?.item_count, who).toBe(2);
+        for (const [method, url, body] of changes(lawyer.id)) {
+          expect(refusal(await call(who, method, url, body)), `${who} ${method}`).toMatchObject(
+            notYours,
+          );
+        }
+      }
+      expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${lawyer.id}`))).toMatchObject(
+        notYours,
+      );
+      // An owner may not delete one its maker can still change.
+      expect(refusal(await call('owner', 'DELETE', `/api/v1/lists/${car.id}`))).toMatchObject(
+        notYours,
+      );
+      // Outside its audience it is still a list that never was.
+      await asNowhere('teen', lawyer.id, 'teen');
+      await asNowhere('viewer', lawyer.id, 'viewer');
+
+      // Its maker takes it back; those in its audience are told, as for any
+      // list, and its maker too.
+      expect((await call(alex, 'DELETE', `/api/v1/lists/${lawyer.id}`)).statusCode).toBe(204);
+      for (const who of ['owner', 'adult', 'teen'] as const) {
+        expect(await seen(who, lawyer.id), who).toBeNull();
+      }
+      expect(await seen(alex, lawyer.id)).toBeNull();
+      for (const who of ['owner', 'adult', alex] as const) {
+        expect(await activity(who)).toContain('Alex deleted the list “ZZ For the lawyer”');
+      }
+
+      // Made a viewer, who may make and change no list: sees their own, and deletes it.
+      await setRole(alex.member_id, 'viewer');
+      const asViewer = await seen(alex, second.id);
+      expect(asViewer).toMatchObject({ mine: true, item_count: 1 });
+      expect(
+        refusal(await call(alex, 'PATCH', `/api/v1/lists/${second.id}`, { name: 'x' })),
+      ).toMatchObject({
+        status: 403,
+        message: 'Viewers can open and download documents, but not make lists of them.',
+      });
+      // Their own lists, and nobody else's: somebody else's is still, to a
+      // viewer, a list that never was, asked any way.
+      const asViewerLists = json<{ items: ListView[] }>(await call(alex, 'GET', '/api/v1/lists'));
+      expect(asViewerLists.items.map((l) => l.id).sort()).toEqual([car.id, second.id].sort());
+      await asNowhere(alex, ownersOwn.id, 'Alex, a viewer');
+      expect((await call(alex, 'DELETE', `/api/v1/lists/${second.id}`)).statusCode).toBe(204);
+      expect(await seen('owner', second.id)).toBeNull();
+
+      // Nothing reached anybody outside the lists' audience: no list they
+      // did not have before, not a name in a teen's activity (a viewer is
+      // given none).
+      for (const who of ['teen', 'viewer'] as const) {
+        const now = await outsiderSees(who);
+        for (const key of ['lists', 'ofDoc'] as const) {
+          expect(
+            now[key].filter((id) => !before[who][key].includes(id)),
+            `${who} ${key}`,
+          ).toEqual([]);
+        }
+      }
+      expect((await activity('teen')).join('\n')).not.toMatch(/ZZ /);
+    });
+
+    it('an owner deletes a list whose maker is no longer in its audience, never changes it; the log says so as for its maker', async () => {
+      const jo = await h.join(people.owner, {
+        name: 'Jo',
+        email: 'lists-jo@example.test',
+        role: 'adult',
+      });
+      const papers = await makeList(jo, 'ZZ Jo’s papers', 'adults', [docs.household, docs.adults]);
+      await setRole(jo.member_id, 'teen');
+
+      // Seen by the owner as ever, never changed by them.
+      expect((await seen('owner', papers.id))?.item_count).toBe(2);
+      for (const [method, url, body] of changes(papers.id)) {
+        expect(refusal(await call('owner', method, url, body)), method).toMatchObject(notYours);
+      }
+      // An adult who is not an owner may not delete it.
+      expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${papers.id}`))).toMatchObject(
+        notYours,
+      );
+      expect((await call('owner', 'DELETE', `/api/v1/lists/${papers.id}`)).statusCode).toBe(204);
+      for (const who of ['owner', 'adult', jo] as const) {
+        expect(await seen(who, papers.id)).toBeNull();
+        expect(await activity(who)).toContain('Owner deleted the list “ZZ Jo’s papers”');
+      }
+      expect((await activity('teen')).join('\n')).not.toContain('ZZ Jo’s papers');
+    });
+
+    it('a maker whose sign-in is taken away: an owner deletes their lists, never changes them; their Only me list is nobody’s', async () => {
+      const kim = await h.join(people.owner, {
+        name: 'Kim',
+        email: 'lists-kim@example.test',
+        role: 'adult',
+      });
+      const forms = await makeList(kim, 'ZZ Kim’s school forms', 'everyone', [docs.household]);
+      const remortgage = await makeList(kim, 'ZZ Kim’s remortgage', 'adults', [
+        docs.household,
+        docs.adults,
+      ]);
+      const own = await makeList(kim, 'ZZ Kim’s own', 'only_me', [docs.household]);
+      const before = await outsiderSees('teen');
+
+      const removed = await call('owner', 'DELETE', `/api/v1/members/${kim.member_id}/sign-in`);
+      expect(removed.statusCode, removed.body).toBe(204);
+      expect((await call(kim, 'GET', `/api/v1/lists/${forms.id}`)).statusCode).toBe(401);
+
+      for (const list of [forms, remortgage]) {
+        // Seen as ever by those in its audience; changed by none of them.
+        for (const who of ['owner', 'adult'] as const) {
+          expect(await seen(who, list.id), `${who} ${list.name}`).not.toBeNull();
+          for (const [method, url, body] of changes(list.id)) {
+            expect(refusal(await call(who, method, url, body)), `${who} ${method}`).toMatchObject(
+              notYours,
+            );
+          }
+        }
+        expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${list.id}`))).toMatchObject(
+          notYours,
+        );
+      }
+      // Outside its audience, a list that never was — before an owner deletes it, and after.
+      await asNowhere('teen', remortgage.id, 'teen');
+      for (const list of [forms, remortgage]) {
+        expect((await call('owner', 'DELETE', `/api/v1/lists/${list.id}`)).statusCode).toBe(204);
+        for (const who of ['owner', 'adult', 'teen'] as const) {
+          expect(await seen(who, list.id), `${who} ${list.name}`).toBeNull();
+        }
+      }
+      await asNowhere('teen', remortgage.id, 'teen, after');
+      expect(await activity('adult')).toContain('Owner deleted the list “ZZ Kim’s remortgage”');
+      expect(await activity('teen')).toContain('Owner deleted the list “ZZ Kim’s school forms”');
+      expect((await activity('teen')).join('\n')).not.toContain('remortgage');
+
+      // Their Only me list is nobody's, an owner's no more than anybody's:
+      // it stays, unseen and unchanged.
+      for (const who of ['owner', 'adult', 'teen'] as const) {
+        await asNowhere(who, own.id, `${who}, Only me`);
+        expect((await activity(who)).join('\n'), who).not.toContain('Kim’s own');
+      }
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        const { rows } = await admin.query<{ deleted: boolean }>(
+          'select deleted_at is not null as deleted from doc_list where id = $1',
+          [own.id],
+        );
+        expect(rows).toEqual([{ deleted: false }]);
+      } finally {
+        await admin.end();
+      }
+      // And nothing reached the teen: no list they did not have before.
+      const now = await outsiderSees('teen');
+      expect(now.lists.filter((id) => !before.lists.includes(id))).toEqual([]);
+      expect(now.ofDoc.filter((id) => !before.ofDoc.includes(id))).toEqual([]);
+    });
+  });
+
+  it("a list's documents come a page at a time; item_count is all the reader sees; a cursor names nothing hidden", async () => {
+    const list = await makeList('owner', 'Everything, paged', 'everyone', [
+      docs.household,
+      docs.adults,
+      docs.ownerPrivate,
+      docs.teenOwn,
+    ]);
+    const all = async (who: Person, limit: number) => {
+      const pages: ListDetail[] = [];
+      let cursor: string | null = null;
+      do {
+        const q: string = `?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const res = await call(who, 'GET', `/api/v1/lists/${list.id}${q}`);
+        expect(res.statusCode, res.body).toBe(200);
+        const page: ListDetail = json<ListDetail>(res);
+        pages.push(page);
+        cursor = page.next_cursor;
+      } while (cursor && pages.length < 10);
+      return pages;
+    };
+    const expected: Record<'owner' | 'adult' | 'teen', string[]> = {
+      owner: [docs.household, docs.adults, docs.ownerPrivate, docs.teenOwn],
+      adult: [docs.household, docs.adults, docs.teenOwn],
+      teen: [docs.household, docs.teenOwn],
+    };
+    for (const who of ['owner', 'adult', 'teen'] as const) {
+      const pages = await all(who, 1);
+      expect(pages.flatMap(itemIds), who).toEqual(expected[who]);
+      expect(
+        pages.map((p) => p.items.length),
+        who,
+      ).toEqual(expected[who].map(() => 1));
+      expect(new Set(pages.map((p) => p.item_count)), who).toEqual(new Set([expected[who].length]));
+      expect(
+        pages.map((p) => p.has_more),
+        who,
+      ).toEqual(expected[who].map((_, i) => i < expected[who].length - 1));
+      // Unasked, a page holds up to 50: all of these.
+      const whole = await seen(who, list.id);
+      expect(itemIds(whole), who).toEqual(expected[who]);
+      expect(whole, who).toMatchObject({ has_more: false, next_cursor: null });
+    }
+
+    // A cursor that names a document the reader is not given — on the list
+    // or not, theirs to see elsewhere or not — is one that is not valid,
+    // exactly as one naming nothing.
+    const naming = (id: string) => Buffer.from(JSON.stringify({ after: id })).toString('base64url');
+    const page = (who: Person, cursor: string) =>
+      call(who, 'GET', `/api/v1/lists/${list.id}?cursor=${encodeURIComponent(cursor)}`);
+    const invalid = refusal(await page('teen', naming(randomUUID())));
+    expect(invalid).toMatchObject({ status: 422, code: 'validation_failed' });
+    for (const hidden of [docs.adults, docs.ownerPrivate, docs.adultPrivate]) {
+      expect(refusal(await page('teen', naming(hidden))), hidden).toEqual(invalid);
+    }
+    expect(refusal(await page('teen', 'not a cursor'))).toEqual(invalid);
+    // One the owner was given, passed to a teen, is no way round it either.
+    const ownerFirst = (await all('owner', 2))[0]?.next_cursor as string;
+    expect(refusal(await page('teen', ownerFirst))).toEqual(invalid);
+    // Pages hold 1 to 200.
+    for (const limit of [0, 201]) {
+      expect(
+        refusal(await call('owner', 'GET', `/api/v1/lists/${list.id}?limit=${limit}`)),
+      ).toMatchObject({ status: 422 });
+    }
+  });
+
+  it('a change is made and let go before the list is read back: the log and the rows are not held while it renders', async () => {
+    const list = await makeList('owner', 'Held while drawn?', 'everyone');
+    const target = { list: list.id, documents: [docs.household, docs.adults] };
+    const admin = createPool(h.adminUrl, 2);
+    const hh = people.owner.household_id;
+    const held: Array<{ audit: boolean; list: boolean; documents: boolean }> = [];
+    const locked = async (q: string, params: unknown[]) =>
+      admin.query(q, params).then(
+        () => false,
+        (e: { code?: string }) => {
+          if (e.code === '55P03') return true;
+          throw e;
+        },
+      );
+    // The render as it is, to call once the probe has looked.
+    const listed = Object.getOwnPropertyDescriptor(DocumentService.prototype, 'listed')
+      ?.value as DocumentService['listed'];
+    const spy = vi.spyOn(DocumentService.prototype, 'listed').mockImplementation(async function (
+      this: DocumentService,
+      trx,
+      rows,
+    ) {
+      // While the answer is drawn, from another connection: is anything
+      // the change took still taken?
+      const free = await admin.query<{ free: boolean }>(
+        "select pg_try_advisory_xact_lock(hashtext('audit:' || $1)) as free",
+        [hh],
+      );
+      held.push({
+        audit: free.rows[0]?.free !== true,
+        list: await locked('select id from doc_list where id = $1 for update nowait', [
+          target.list,
+        ]),
+        documents: await locked(
+          'select id from document where id = any($1::uuid[]) for update nowait',
+          [target.documents],
+        ),
+      });
+      return listed.call(this, trx, rows);
+    });
+    try {
+      const added = await call('owner', 'POST', `/api/v1/lists/${list.id}/items`, {
+        document_ids: [docs.household, docs.adults],
+      });
+      expect(added.statusCode, added.body).toBe(200);
+      const renamed = await call('owner', 'PATCH', `/api/v1/lists/${list.id}`, {
+        name: 'Not held',
+      });
+      expect(renamed.statusCode, renamed.body).toBe(200);
+      const stale = await call(
+        'owner',
+        'PATCH',
+        `/api/v1/lists/${list.id}`,
+        { name: 'Stale' },
+        { 'if-match': list.etag },
+      );
+      expect(stale.statusCode).toBe(409);
+      expect(held).toEqual([
+        { audit: false, list: false, documents: false },
+        { audit: false, list: false, documents: false },
+        { audit: false, list: false, documents: false },
+      ]);
+    } finally {
+      spy.mockRestore();
+      await admin.end();
+    }
+  });
+
   describe('in the database, as the application role', () => {
     let one: Db;
     let divorce: ListDetail;
@@ -671,6 +1059,125 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         name: 'Divorce lawyer',
         item_count: 2,
       });
+    });
+
+    it('the roles in each audience are the same here as in @fdv/shared', async () => {
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        for (const role of [...ROLES, '', 'root', null]) {
+          for (const audience of [...LIST_AUDIENCES, 'public', '']) {
+            const { rows } = await admin.query<{ has: boolean }>(
+              'select list_audience_has($1, $2) as has',
+              [role, audience],
+            );
+            const known = ROLES.find((r) => r === role);
+            expect(rows[0]?.has, `${role} ${audience}`).toBe(
+              known ? inListAudience(known, audience) : false,
+            );
+          }
+        }
+      } finally {
+        await admin.end();
+      }
+    });
+
+    it('only its maker changes a list; an owner only marks deleted one nobody can change any more', async () => {
+      const hh = people.owner.household_id;
+      // Sam's, for everyone: Sam is in it, so it is Sam's alone to change.
+      const sams = await makeList('adult', 'Sam’s, in the database', 'everyone');
+      // And one whose maker is somebody with no sign-in at all.
+      const admin = createPool(h.adminUrl, 1);
+      let nobodys = '';
+      try {
+        const gone = await admin.query<{ id: string }>(
+          "insert into member (household_id, display_name) values ($1, 'Gone') returning id",
+          [hh],
+        );
+        const made = await admin.query<{ id: string }>(
+          `insert into doc_list (household_id, name, audience, owner_member_id)
+           values ($1, 'Nobody’s now', 'everyone', $2) returning id`,
+          [hh, gone.rows[0]?.id],
+        );
+        nobodys = made.rows[0]?.id as string;
+      } finally {
+        await admin.end();
+      }
+      const update = (who: Person, id: string, set: Record<string, unknown>) =>
+        withPrincipal(one, principal(who), async (trx) =>
+          Number(
+            (await trx.updateTable('doc_list').set(set).where('id', '=', id).executeTakeFirst())
+              .numUpdatedRows,
+          ),
+        );
+      const held = (who: Person, id: string) =>
+        withPrincipal(
+          one,
+          principal(who),
+          async (trx) =>
+            (
+              await trx
+                .selectFrom('doc_list')
+                .select('id')
+                .where('id', '=', id)
+                .forUpdate()
+                .execute()
+            ).length,
+        );
+
+      // Sam's own: nobody else changes it, or holds it — not an owner.
+      expect(await update('owner', sams.id, { deleted_at: new Date() })).toBe(0);
+      expect(await update('teen', sams.id, { name: 'Taken' })).toBe(0);
+      expect(await held('owner', sams.id)).toBe(0);
+      expect(await held('adult', sams.id)).toBe(1);
+      expect(await update('adult', sams.id, { name: 'Still Sam’s' })).toBe(1);
+      // Nor hands it to anybody else.
+      await expect(
+        update('adult', sams.id, { owner_member_id: people.owner.member_id }),
+      ).rejects.toThrow(/row-level security/);
+
+      // Nobody's now: not an adult's to touch.
+      expect(await update('adult', nobodys, { deleted_at: new Date() })).toBe(0);
+      expect(await held('adult', nobodys)).toBe(0);
+      // An owner's to hold, but not to change, nor to take for their own…
+      expect(await held('owner', nobodys)).toBe(1);
+      for (const set of [
+        { name: 'Renamed' },
+        { owner_member_id: people.owner.member_id },
+        { name: 'Renamed', deleted_at: new Date() },
+      ]) {
+        await expect(update('owner', nobodys, set), JSON.stringify(set)).rejects.toThrow(
+          /only its maker changes a list/,
+        );
+      }
+      // …and not with no role said, after the connection was used.
+      const unsaid = await withScope(
+        one,
+        {
+          householdId: hh,
+          actor: {
+            kind: 'account',
+            accountId: accounts.owner,
+            memberId: people.owner.member_id,
+            role: '' as unknown as Person,
+          },
+        },
+        async (trx) =>
+          (
+            await trx
+              .updateTable('doc_list')
+              .set({ deleted_at: new Date() })
+              .where('id', '=', nobodys)
+              .executeTakeFirst()
+          ).numUpdatedRows,
+      );
+      expect(unsaid).toBe(0n);
+      // Marked deleted by an owner: once, and never brought back.
+      expect(await update('owner', nobodys, { deleted_at: new Date() })).toBe(1);
+      for (const set of [{ deleted_at: new Date() }, { deleted_at: null }]) {
+        await expect(update('owner', nobodys, set), JSON.stringify(set)).rejects.toThrow(
+          /only its maker changes a list/,
+        );
+      }
     });
   });
 });

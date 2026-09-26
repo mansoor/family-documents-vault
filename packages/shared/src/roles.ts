@@ -275,7 +275,9 @@ const LIST_READERS: ReadonlyMap<string, readonly Role[]> = new Map<string, reado
 /**
  * Whether a role is in an audience. For Only me that is only half of it:
  * the reader must also be the list's maker (`canSeeList`). An audience
- * this code has never heard of is nobody's.
+ * this code has never heard of is nobody's. A list's maker changes it only
+ * while they are in its audience (A18); the database's own copy of these
+ * roles is list_audience_has (0036).
  */
 export function inListAudience(role: Role, audience: string): boolean {
   return LIST_READERS.get(audience)?.includes(role) ?? false;
@@ -285,16 +287,19 @@ export function inListAudience(role: Role, audience: string): boolean {
  * Whether someone may see a list — that it exists, its name, and what of
  * it they can see. The API asks this in SQL (lists/service.ts) and of each
  * line in the activity log; the database itself keeps Only me (0036).
+ *
+ * Its maker always may, whatever their role now (the 5.14 review): an
+ * adult made a teen, or a viewer, still sees the list they made for the
+ * adults — the documents on it as a teen or a viewer sees them — and may
+ * delete it, but no longer change it. Everybody else, by its audience.
  */
 export function canSeeList(
   reader: { role: Role; memberId: string | null },
   list: { audience: string; owner_member_id: string | null },
 ): boolean {
-  if (!inListAudience(reader.role, list.audience)) return false;
-  return (
-    list.audience !== 'only_me' ||
-    (reader.memberId !== null && list.owner_member_id === reader.memberId)
-  );
+  if (!LIST_READERS.has(list.audience)) return false;
+  if (reader.memberId !== null && list.owner_member_id === reader.memberId) return true;
+  return list.audience !== 'only_me' && inListAudience(reader.role, list.audience);
 }
 
 /** A list's maker is told, beside a document on it, who of its audience is not given it (5.14). */

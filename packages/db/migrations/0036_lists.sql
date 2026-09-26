@@ -127,6 +127,91 @@ create policy doc_list_only_me on doc_list as restrictive
 create policy doc_list_item_list on doc_list_item as restrictive
   using (exists (select 1 from doc_list l where l.id = doc_list_item.list_id));
 
+-- ------------------------------------------------- who changes a list
+
+-- Only its maker changes a list (A18), and the application says so. Two
+-- things can leave one that nobody may change: its maker moved to a role
+-- outside its audience (an adult made a teen, with a list for the adults),
+-- or their sign-in taken away. Its maker may still see it and delete it —
+-- these rules read no role, so they give a maker their own row whatever
+-- their role now — and an owner may mark it deleted, and nothing else, so
+-- the household can clear a name ("Divorce") nobody can take back.
+--
+-- So here too: a list is changed by the member who made it (app_member()),
+-- or by the vault itself; an owner (app_role()) changes one only while it
+-- is stranded, and then only its deleted_at, from nothing to a moment
+-- (doc_list_owner_writes). An Only me list stays its maker's alone even
+-- then: doc_list_only_me keeps it from the owner, so one whose maker has no
+-- sign-in is seen, and changed, by nobody.
+--
+-- Rows this rule does not give are not given to a SELECT ... FOR UPDATE
+-- either: the application looks at a list before it holds one, to tell a
+-- member of its audience who did not make it why they may not.
+
+-- The roles in each audience (A17): inListAudience in
+-- packages/shared/src/roles.ts. Change them together; lists.test.ts holds
+-- them equal. An audience, or a role, this has never heard of is nobody's.
+create function list_audience_has(member_role text, aud text) returns boolean
+  language sql immutable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select case aud
+              when 'everyone' then coalesce(member_role in ('owner', 'adult', 'teen'), false)
+              when 'teens' then coalesce(member_role in ('owner', 'adult', 'teen'), false)
+              when 'adults' then coalesce(member_role in ('owner', 'adult'), false)
+              when 'only_me' then coalesce(member_role in ('owner', 'adult', 'teen'), false)
+              else false
+            end $$;
+
+-- Whether nobody may change a list any more: its maker (null once their
+-- member is gone) has no sign-in in the caller's household, or one whose
+-- role is outside the list's audience. It reads account_household with the
+-- owner's rights, so its answer does not rest on what the caller may read
+-- there, and only about the caller's own household; with no household
+-- said, nothing is stranded.
+create function doc_list_stranded(maker uuid, aud text) returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select coalesce(aud in ('everyone', 'teens', 'adults', 'only_me'), false)
+        and app_household() is not null
+        and not exists (
+              select 1 from account_household ah
+               where ah.household_id = app_household()
+                 and ah.member_id = maker
+                 and list_audience_has(ah.role, aud)) $$;
+grant execute on function doc_list_stranded(uuid, text) to fdv_app;
+
+-- With no WITH CHECK, the rule holds the row as written too: nobody hands
+-- a list to somebody else.
+create policy doc_list_changes on doc_list as restrictive for update
+  using (case app_actor()
+           when 'account' then coalesce(owner_member_id = app_member(), false)
+                               or (case app_role() when 'owner' then true else false end
+                                   and coalesce(doc_list_stranded(owner_member_id, audience), false))
+           when 'system' then true
+           else false
+         end);
+
+-- What an owner may change on a list they did not make: that it is
+-- deleted, once, and nothing else. A rule cannot say which columns change,
+-- so a trigger does; it compares every column but deleted_at, so a column
+-- added later is the maker's too.
+create function doc_list_owner_writes() returns trigger
+  language plpgsql set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if app_actor() = 'account'
+     and old.owner_member_id is distinct from app_member()
+     and ((to_jsonb(new) - 'deleted_at') is distinct from (to_jsonb(old) - 'deleted_at')
+          or old.deleted_at is not null
+          or new.deleted_at is null) then
+    raise exception 'only its maker changes a list; an owner may only mark one deleted'
+      using errcode = 'insufficient_privilege';
+  end if;
+  return new;
+end $$;
+
+create trigger doc_list_owner_writes before update on doc_list
+  for each row execute function doc_list_owner_writes();
+
 grant select, insert, update, delete on doc_list_item to fdv_app;
 grant select, insert, update on doc_list to fdv_app;
 revoke delete on doc_list from fdv_app;

@@ -45,9 +45,23 @@ export interface ListItemView {
   hint: string | null;
 }
 
-/** One list, with the documents on it the reader can see, in the order they were put there. */
+/** The documents on a list given in one answer, unless fewer are asked for. */
+export const LIST_ITEMS_PAGE = 50;
+/** The most a page of a list's documents may hold. */
+export const LIST_ITEMS_PAGE_MAX = 200;
+
+/**
+ * One list, with a page of the documents on it the reader can see, in the
+ * order they were put there. `item_count` is all of them, not the page.
+ */
 export interface ListDetail extends ListView {
   items: ListItemView[];
+  /**
+   * For `?cursor=` on GET /lists/{id}: where the next page begins, or null
+   * when this one is the last. It names nothing the reader was not given.
+   */
+  next_cursor: string | null;
+  has_more: boolean;
 }
 
 /** POST /lists (name and audience required) and PATCH /lists/{id}. */
