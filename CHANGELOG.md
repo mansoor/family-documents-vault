@@ -6,7 +6,7 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
-## [0.5.12] - 2026-09-26 — iteration 5.13 (server side) and 5.14
+## [0.5.12] - 2026-09-26 — iteration 5.14
 
 Lists of documents, on the server: the screens come next.
 
