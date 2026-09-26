@@ -6,6 +6,10 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-26 — iteration 5.5
+
+Groundwork for sharing lists of documents, upload requests and viewers limited to what they are given: every conversation with the database now says who is asking — somebody signed in, the vault itself, a share link, an upload request, or somebody not yet known. Nothing anybody sees changes yet; the next release lets the database refuse what the asker may not see.
+
 ## [0.5.3] - 2026-09-26 — iteration 5.4
 
 ### Added
