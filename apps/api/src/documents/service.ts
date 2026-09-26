@@ -21,18 +21,20 @@ import {
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
+import { appendAudit, withPrincipal, type Db, type Schema, type Visibility } from '@fdv/db';
 import {
   deriveStatus,
   OFFLINE_SET_MAX,
   type DateValue,
+  type DocumentAttributeView,
   type DocumentTypeView,
   type DocumentView,
   type OfflineItem,
+  type TypeField,
   type VersionView,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
-import { sql, type Expression, type SqlBool } from 'kysely';
+import { sql, type Expression, type Selectable, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -167,6 +169,54 @@ export function etagOf(id: string, updatedAt: Date): string {
   return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
 }
 
+type EffectiveType = Selectable<Schema['effective_document_type']>;
+
+/** A type the caller's household has, by key; undefined when it has none of that key. */
+type TypeLookup = (key: string) => Promise<EffectiveType | undefined>;
+
+/**
+ * Looks types up by key, in the caller's own transaction: one indexed query
+ * for each key, asked once however many documents of it a page lists.
+ * Nothing is kept past the transaction — until 0.5.6 the types were kept
+ * for the life of the process, which was right only while they were the
+ * same for every household and never changed.
+ */
+function typeLookup(trx: Db): TypeLookup {
+  const asked = new Map<string, Promise<EffectiveType | undefined>>();
+  return (key) => {
+    let found = asked.get(key);
+    if (!found) {
+      found = trx
+        .selectFrom('effective_document_type')
+        .selectAll()
+        .where('key', '=', key)
+        .executeTakeFirst();
+      asked.set(key, found);
+    }
+    return found;
+  };
+}
+
+/** A type as GET /document-types answers it: the old shape, and what 0.5.6 added. */
+function typeView(t: EffectiveType): DocumentTypeView {
+  return {
+    key: t.key,
+    label: t.label,
+    category: t.category,
+    fields: ((t.fields ?? []) as TypeField[]).map((f) => ({ ...f, required: f.required === true })),
+    expiry_driver: t.expiry_driver,
+    reminder_leads: t.reminder_leads,
+    usually_essential: t.usually_essential,
+    default_visibility: t.default_visibility,
+    issued_by_label: t.issued_by_label,
+    builtin: t.builtin,
+    hidden: t.hidden,
+    core: t.core as NonNullable<DocumentTypeView['core']>,
+    short_label: t.short_label,
+    issuer_noun: t.issuer_noun,
+  };
+}
+
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
 /**
  * Puts a job on the worker's queue. `singletonKey` holds one job per key on
@@ -204,31 +254,68 @@ export class DocumentService {
 
   // ---------------------------------------------------------------- types
 
-  async types(): Promise<DocumentTypeView[]> {
-    const rows = await this.db
-      .selectFrom('document_type')
-      .selectAll()
-      .orderBy('sort_order')
-      .execute();
-    return rows.map((r) => ({
-      key: r.key,
-      label: r.label,
-      category: r.category,
-      fields: r.fields as DocumentTypeView['fields'],
-      expiry_driver: r.expiry_driver,
-      reminder_leads: r.reminder_leads,
-      usually_essential: r.usually_essential,
-      default_visibility: r.default_visibility,
-      issued_by_label: r.issued_by_label,
-    }));
+  /**
+   * The household's types as they are in effect (0031): the built-ins with
+   * its changes, and its own. A type hidden or archived is left out, unless
+   * `all` — or a document the caller can see still uses it. App 0.2.0 keeps
+   * this list to look a document's type up by key, offline, and builds its
+   * search chips from it: a type gone from the list would cost that
+   * document's Essential its expiry.
+   *
+   * Only documents the caller can see count, as everywhere else: a hidden
+   * type kept in the list must not say that somebody's Only me document is
+   * of that kind.
+   */
+  async types(p: Principal, opts: { all?: boolean | undefined } = {}): Promise<DocumentTypeView[]> {
+    return withPrincipal(this.db, p, async (trx) => {
+      let q = trx.selectFrom('effective_document_type as t').selectAll('t');
+      if (!opts.all) {
+        q = q.where((eb) =>
+          eb.or([
+            eb('t.hidden', '=', false),
+            eb.exists(
+              eb
+                .selectFrom('document')
+                .select('document.id')
+                .whereRef('document.type_key', '=', 't.key')
+                .where('document.deleted_at', 'is', null)
+                .where(this.visibleTo(p) as never),
+            ),
+          ]),
+        );
+      }
+      const rows = await q.orderBy('t.sort_order').orderBy('t.label').orderBy('t.key').execute();
+      return rows.map(typeView);
+    });
   }
 
-  private async typeOrThrow(key: string, db: Db = this.db) {
-    const t = await db
-      .selectFrom('document_type')
-      .selectAll()
-      .where('key', '=', key)
-      .executeTakeFirst();
+  /** The attributes a type can ask for: the vault's own and the household's (0031). */
+  async attributes(p: Principal): Promise<DocumentAttributeView[]> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const rows = await trx
+        .selectFrom('document_attribute')
+        .select(['key', 'label', 'kind', 'choices', 'household_id'])
+        .orderBy('label')
+        .orderBy('key')
+        .execute();
+      return rows.map((r) => ({
+        key: r.key,
+        label: r.label,
+        kind: r.kind,
+        choices: r.choices,
+        builtin: r.household_id === null,
+      }));
+    });
+  }
+
+  /**
+   * A type the caller's household has — a built-in or its own — hidden or
+   * not: a phone queues a scan against the list it had. The foreign key
+   * from a document to its type is checked without row-level security, so
+   * without this one household could file under another's `h_` key.
+   */
+  private async typeOrThrow(key: string, trx: Db) {
+    const t = await typeLookup(trx)(key);
     if (!t)
       throw new ApiError(422, 'validation_failed', 'That kind of document is not on the list.');
     return t;
@@ -328,8 +415,12 @@ export class DocumentService {
 
   // ---------------------------------------------------------------- views
 
-  private async view(trx: Db, row: DocRow): Promise<DocumentView> {
-    const type = row.type_key ? await this.typeCached(trx, row.type_key) : null;
+  private async view(
+    trx: Db,
+    row: DocRow,
+    typeOf: TypeLookup = typeLookup(trx),
+  ): Promise<DocumentView> {
+    const type = row.type_key ? await typeOf(row.type_key) : null;
     const versions = await trx
       .selectFrom('document_version')
       .select(['id', 'version_no'])
@@ -385,36 +476,6 @@ export class DocumentService {
       deleted_at: row.deleted_at?.toISOString() ?? null,
       etag: etagOf(row.id, row.updated_at),
     };
-  }
-
-  private typeCache = new Map<
-    string,
-    {
-      key: string;
-      expiry_driver: string | null;
-      reminder_leads: number[];
-      category: string;
-      default_visibility: Visibility;
-    }
-  >();
-  private async typeCached(trx: Db, key: string) {
-    const hit = this.typeCache.get(key);
-    if (hit) return hit;
-    const t = await trx
-      .selectFrom('document_type')
-      .selectAll()
-      .where('key', '=', key)
-      .executeTakeFirst();
-    if (!t) return null;
-    const v = {
-      key: t.key,
-      expiry_driver: t.expiry_driver,
-      reminder_leads: t.reminder_leads,
-      category: t.category,
-      default_visibility: t.default_visibility,
-    };
-    this.typeCache.set(key, v);
-    return v;
   }
 
   // ---------------------------------------------------------------- CRUD
@@ -662,7 +723,8 @@ export class DocumentService {
       }
       const rows = (await query.limit(limit + 1).execute()) as unknown as DocRow[];
       const page = rows.slice(0, limit);
-      const items = await Promise.all(page.map((r) => this.view(trx, r)));
+      const typeOf = typeLookup(trx);
+      const items = await Promise.all(page.map((r) => this.view(trx, r, typeOf)));
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
       const next =
@@ -1267,8 +1329,10 @@ export class DocumentService {
     // Through the claim's own transaction: a second connection taken while
     // holding one could empty the pool under enough captures at once.
     const members = await trx.selectFrom('member').select('id').execute();
+    // The household's own types and the built-ins, as it has them; hidden
+    // ones too, since a phone queues a scan against the list it had.
     const types = await trx
-      .selectFrom('document_type')
+      .selectFrom('effective_document_type')
       .select(['key', 'expiry_driver', 'default_visibility'])
       .execute();
     const problem = checkCaptureMetadata(metadata, {
@@ -1438,8 +1502,9 @@ export class DocumentService {
         limit ${limit}`.execute(trx);
 
       const items: SearchHit[] = [];
+      const typeOf = typeLookup(trx);
       for (const r of rows.rows) {
-        const type = r.type_key ? await this.typeCached(trx, r.type_key) : null;
+        const type = r.type_key ? await typeOf(r.type_key) : null;
         const expires = r.expires_on
           ? {
               date: isoDate(r.expires_on) as string,

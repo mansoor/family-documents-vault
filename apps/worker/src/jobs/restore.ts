@@ -525,12 +525,17 @@ export async function checkRestored(
       )[0] ?? { members: -1, documents: -1 };
 
     // Somebody else's household sees nothing, in any table that belongs to
-    // a household: the policies came back.
+    // a household: the policies came back. A row that belongs to no
+    // household is everybody's to read — the built-in document types and
+    // attributes (0031) — and is not a leak.
     const stranger = randomUUID();
     const leaks = await asHousehold<{ t: string; n: number }>(
       stranger,
       r.tenant_tables
-        .map((t) => `select '${t.replace(/'/g, "''")}' as t, count(*)::int as n from ${t}`)
+        .map(
+          (t) =>
+            `select '${t.replace(/'/g, "''")}' as t, count(*)::int as n from ${t} where household_id is not null`,
+        )
         .join(' union all '),
     );
     const leaking = leaks.filter((l) => l.n > 0).map((l) => l.t);

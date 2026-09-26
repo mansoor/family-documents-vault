@@ -140,7 +140,22 @@ export async function registerDocuments(
   const auth = { preHandler: app.requireAuth };
   const principal = (req: FastifyRequest) => req.principal as Principal;
 
-  app.get('/api/v1/document-types', auth, async () => ({ items: await docs.types() }));
+  // The household's types (0.5.6: its own, and its changes to the
+  // built-ins). A hidden one no document uses is listed only with ?all=true.
+  const typesQuery = z.object({
+    all: z
+      .enum(['true', 'false'])
+      .transform((v) => v === 'true')
+      .optional(),
+  });
+  app.get('/api/v1/document-types', auth, async (req) => ({
+    items: await docs.types(principal(req), parse(typesQuery, req.query)),
+  }));
+
+  /** The fields a type can ask for, from the library (0.5.6). */
+  app.get('/api/v1/document-attributes', auth, async (req) => ({
+    items: await docs.attributes(principal(req)),
+  }));
 
   app.get<{ Querystring: { q?: string } }>('/api/v1/tags', auth, async (req) => ({
     items: await docs.tags(principal(req), req.query.q),

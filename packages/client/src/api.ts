@@ -9,6 +9,7 @@ import type {
   CreatedInvitation,
   CreatedShare,
   DeviceRow,
+  DocumentAttributeView,
   DocumentInput,
   DocumentTypeView,
   DocumentView,
@@ -240,8 +241,19 @@ export function createApi(http: Http) {
     ) => request<Tokens>(`/api/v1/invitations/${enc(linkToken)}/accept`, { method: 'POST', body }),
 
     // ------------------------------------------------------------- documents
-    documentTypes: (token: string) =>
-      request<{ items: DocumentTypeView[] }>('/api/v1/document-types', { token }),
+    /**
+     * The household's types. A type it has hidden or archived is listed
+     * while a document it can see still uses it, marked `hidden` (0.5.6);
+     * `all` lists every one.
+     */
+    documentTypes: (token: string, params: { all?: boolean } = {}) =>
+      request<{ items: DocumentTypeView[] }>(
+        `/api/v1/document-types${qs(params.all ? { all: true } : {})}`,
+        { token },
+      ),
+    /** The fields a type can ask for, from the library (0.5.6). */
+    documentAttributes: (token: string) =>
+      request<{ items: DocumentAttributeView[] }>('/api/v1/document-attributes', { token }),
     documents: (token: string, params: Params = {}) =>
       request<Page<DocumentView>>(`/api/v1/documents${qs(params)}`, { token }),
     /**

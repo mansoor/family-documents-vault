@@ -166,4 +166,35 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
     );
     expect(cached.every((c) => c.status_cache === 'expiring_soon')).toBe(true);
   });
+
+  it("refreshStatus reads the household's own types, through the view", async () => {
+    // The household tells its passports to warn 30 days out, not 270 and
+    // 180 (0031): each, about six months from its expiry, is simply valid.
+    await admin.query(
+      `insert into document_type_setting (household_id, type_key, reminder_leads)
+       values ($1, 'passport', '{30}')`,
+      [hh],
+    );
+    const statuses = () =>
+      withSystem(db, hh, (trx) =>
+        trx.selectFrom('document').select('status_cache').orderBy('title').execute(),
+      );
+    try {
+      at('2026-10-05T09:00:00Z');
+      expect((await refreshStatus(deps())).documents).toBe(3);
+      expect((await statuses()).map((c) => c.status_cache)).toEqual(['active', 'active', 'active']);
+      // And with Expires switched off, a passport no longer expires at all.
+      await admin.query(
+        `update document_type_setting set core = '{"expires": {"shown": false}}'
+          where household_id = $1 and type_key = 'passport'`,
+        [hh],
+      );
+      await refreshStatus(deps());
+      expect((await statuses()).map((c) => c.status_cache)).toEqual(['valid', 'valid', 'valid']);
+    } finally {
+      await admin.query('delete from document_type_setting where household_id = $1', [hh]);
+    }
+    await refreshStatus(deps());
+    expect((await statuses()).every((c) => c.status_cache === 'expiring_soon')).toBe(true);
+  });
 });
