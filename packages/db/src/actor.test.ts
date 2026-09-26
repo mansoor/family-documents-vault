@@ -114,12 +114,19 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
     }
   });
 
-  it('only withSystem acts as the vault: withScope refuses a system actor', () => {
+  it('only withSystem acts as the vault: withScope refuses a system actor', async () => {
     // A type test: it fails the typecheck if withScope ever takes 'system'.
     const refused = () =>
       // @ts-expect-error — system is withSystem's alone (5.5 review)
       withScope(db, { householdId: hh, actor: { kind: 'system' } }, (trx) => settings(trx));
     expect(typeof refused).toBe('function');
+    // And a cast past the type is refused as it runs (5.6 review), before
+    // anything reaches the database.
+    for (const actor of [{ kind: 'system' } as never, { kind: 'system' as never }]) {
+      await expect(
+        withScope(db, { householdId: hh, actor }, (trx) => settings(trx)),
+      ).rejects.toThrow(/only withSystem acts as the vault itself/);
+    }
   });
 
   it('withPrincipal is the account, and withSystem the vault itself', async () => {

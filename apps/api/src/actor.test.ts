@@ -45,6 +45,14 @@ function usesIn(file: string, text: string): string[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === '@fdv/db'
+    ) {
+      found.push(`${file} re-exports @fdv/db`);
+    }
     if (ts.isImportDeclaration(node)) {
       const names = node.importClause?.namedBindings;
       const from = ts.isStringLiteral(node.moduleSpecifier) ? node.moduleSpecifier.text : '';
@@ -66,16 +74,20 @@ function usesIn(file: string, text: string): string[] {
     if (
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-        (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
-      node.arguments.some((a) => ts.isStringLiteralLike(a) && a.text === '@fdv/db')
+        (ts.isIdentifier(node.expression) &&
+          (node.expression.text === 'require' || node.expression.text === 'createRequire')))
     ) {
-      found.push(`${file} ${enclosing(node)} (loads @fdv/db as it runs)`);
+      // A module loaded as the code runs: @fdv/db by name, or any module
+      // whose name is put together (and so could be it).
+      const named = node.arguments[0];
+      if (!named || !ts.isStringLiteralLike(named) || named.text === '@fdv/db') {
+        found.push(`${file} ${enclosing(node)} (loads a module as it runs)`);
+      }
     }
     if (
       ts.isPropertyAssignment(node) &&
-      node.name.getText() === 'kind' &&
-      ts.isStringLiteralLike(node.initializer) &&
-      node.initializer.text === 'system'
+      propertyName(node.name) === 'kind' &&
+      literal(node.initializer) === 'system'
     ) {
       found.push(`${file} ${enclosing(node)} (kind: 'system')`);
     }
@@ -93,6 +105,25 @@ function usesIn(file: string, text: string): string[] {
   };
   visit(source);
   return found;
+}
+
+/** A property's name, quoted or not. */
+function propertyName(name: ts.PropertyName): string {
+  return ts.isStringLiteralLike(name) ? name.text : name.getText();
+}
+
+/** The string a value is, seen through `as`, `satisfies`, `<T>` and brackets. */
+function literal(node: ts.Expression): string | null {
+  let n: ts.Expression = node;
+  while (
+    ts.isAsExpression(n) ||
+    ts.isSatisfiesExpression(n) ||
+    ts.isTypeAssertionExpression(n) ||
+    ts.isParenthesizedExpression(n)
+  ) {
+    n = n.expression;
+  }
+  return ts.isStringLiteralLike(n) ? n.text : null;
 }
 
 /** The named function a node is in: "Class.method", "function", or "(top level)". */
@@ -144,6 +175,10 @@ describe('withSystem in the API', () => {
       export function run() { return db.withSystem(x, 'h', f); }
       const handedOn = { go: withSystem };
       export async function loaded() { const m = await import('@fdv/db'); return m['with' + 'System']; }
+      export async function putTogether() { return (await import('@fdv/' + 'db')).withScope; }
+      export function castInside() { return withScope(d, { householdId: 'h', actor: { kind: ('system' as never) } }, f); }
+      export function quoted() { return withScope(d, { householdId: 'h', actor: { 'kind': 'system' } as never }, f); }
+      export * from '@fdv/db';
       export function cast() { return withScope(d, { householdId: 'h', actor: { kind: 'system' } as never }, f); }
       export function byHand(trx) { return sql.raw("select set_config('app.actor', 'system', true)").execute(trx); }
     `;
@@ -155,7 +190,11 @@ describe('withSystem in the API', () => {
         'x.ts Things.list',
         'x.ts run (not a plain call)',
         'x.ts (top level) (not a plain call)',
-        'x.ts loaded (loads @fdv/db as it runs)',
+        'x.ts loaded (loads a module as it runs)',
+        'x.ts putTogether (loads a module as it runs)',
+        "x.ts castInside (kind: 'system')",
+        "x.ts quoted (kind: 'system')",
+        'x.ts re-exports @fdv/db',
         "x.ts cast (kind: 'system')",
         'x.ts byHand (says app.actor)',
       ].sort(),

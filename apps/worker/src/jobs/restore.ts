@@ -348,6 +348,25 @@ begin
 end $guard$;`;
 }
 
+/** The triggers the vault relies on: each by name, table and function. */
+const GUARDS = [
+  { name: 'audit_event_no_update', table: 'audit_event', fn: 'audit_event_immutable' },
+  { name: 'owner_floor', table: 'account_household', fn: 'assert_owner_remains' },
+  { name: 'share_link_link_writes', table: 'share_link', fn: 'share_link_link_writes' },
+];
+
+/**
+ * Callers who are given nothing in the tables below, and how the check
+ * names them: nobody said, a signed-out page, an upload link, and a share
+ * link that is not one of the household's.
+ */
+const GIVEN_NOTHING: [actor: string, who: string][] = [
+  ['', 'a caller who says nothing'],
+  ['anonymous', 'a signed-out page'],
+  ['upload', 'an upload link'],
+  ['link', 'a share link it never made'],
+];
+
 /** The tables 0030 gives a rule for each kind of caller. */
 const ACTOR_GUARDED = [
   'document',
@@ -398,23 +417,34 @@ export async function checkRestored(
     }
     // The database's own guards: the audit log refuses changes, a
     // household always keeps an owner, and a link only counts on its share.
+    // Each on its own table, calling its own function, and firing for the
+    // vault's sessions ('O' or 'A': not only on a replica, not disabled).
     const { rows: guards } = await admin.query<{ tgname: string }>(
-      `select tgname from pg_trigger
-        where not tgisinternal and tgenabled <> 'D'
-          and tgname in ('audit_event_no_update', 'owner_floor', 'share_link_link_writes')`,
+      `select t.tgname
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_proc f on f.oid = t.tgfoid
+         join unnest($1::text[], $2::text[], $3::text[]) as g(name, tbl, fn)
+           on g.name = t.tgname and g.tbl = c.relname and g.fn = f.proname
+        where not t.tgisinternal and t.tgenabled in ('O', 'A')`,
+      [GUARDS.map((g) => g.name), GUARDS.map((g) => g.table), GUARDS.map((g) => g.fn)],
     );
-    if (guards.length !== 3) {
+    if (guards.length !== GUARDS.length) {
       throw new Error(
         `a guard the vault relies on is missing (found: ${guards.map((g) => g.tgname).join(', ') || 'none'})`,
       );
     }
     // And the second wall (0030): a rule for each kind of caller on the
-    // document, all that hangs off it, and exports.
+    // document, all that hangs off it, and exports — one that governs what
+    // is read, and asks who is asking. (What each rule then gives is tried
+    // below, household by household.)
     const { rows: unguarded } = await admin.query<{ name: string }>(
       `select t as name from unnest($1::text[]) as t
         where not exists (select 1 from pg_policy p
                            where p.polrelid = to_regclass('public.' || t)
-                             and not p.polpermissive)`,
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%')`,
       [ACTOR_GUARDED],
     );
     if (unguarded.length) {
@@ -515,15 +545,22 @@ export async function checkRestored(
             `documents, but the backup has ${h.members} and ${h.documents}`,
         );
       }
-      // And nobody is given a document without saying who is asking: the
-      // rules for each kind of caller (0030) came back too.
-      const unsaid = await asHousehold<{ n: number }>(
-        h.id,
-        'select count(*)::int as n from document',
-        '',
-      );
-      if ((unsaid[0]?.n ?? 0) > 0) {
-        throw new Error(`household ${h.id}: a caller who says nothing is given its documents`);
+      // And the rules for each kind of caller (0030) came back doing what
+      // they did: nobody who is not signed in or the vault itself is given
+      // a row of these tables. (A link here names no share, so it is one
+      // the household never made.)
+      for (const [actor, who] of GIVEN_NOTHING) {
+        const given = await asHousehold<{ t: string; n: number }>(
+          h.id,
+          ACTOR_GUARDED.map((t) => `select '${t}' as t, count(*)::int as n from ${t}`).join(
+            ' union all ',
+          ),
+          actor,
+        );
+        const where = given.filter((g) => g.n > 0).map((g) => g.t);
+        if (where.length) {
+          throw new Error(`household ${h.id}: ${who} is given its documents (${where.join(', ')})`);
+        }
       }
     }
     return {

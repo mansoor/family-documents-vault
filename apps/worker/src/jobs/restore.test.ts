@@ -338,7 +338,10 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_actor'`,
     );
     const rule = rows[0]?.rule as string;
-    await sql(vault.adminUrl, 'alter policy document_actor on public.document using (true)');
+    await sql(
+      vault.adminUrl,
+      `alter policy document_actor on public.document using ((${rule}) or app_actor() is null)`,
+    );
     try {
       await expect(checkRestored(target())).rejects.toThrow(/says nothing is given its documents/);
     } finally {
@@ -365,17 +368,77 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       );
     }
 
-    await sql(
+    // The read rule on the files gone, the write rules left: the files are
+    // open to a signed-out page, and that is noticed (5.6 review).
+    const { rows: file } = await sql(
       vault.adminUrl,
-      'alter table public.share_link disable trigger share_link_link_writes',
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_version_actor'`,
     );
+    const fileRule = file[0]?.rule as string;
+    await sql(vault.adminUrl, 'drop policy document_version_actor on public.document_version');
     try {
-      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on document_version/,
+      );
     } finally {
       await sql(
         vault.adminUrl,
-        'alter table public.share_link enable trigger share_link_link_writes',
+        `create policy document_version_actor on public.document_version as restrictive using (${fileRule})`,
       );
+    }
+
+    // A rule opened up in place: it asks nobody anything.
+    await sql(
+      vault.adminUrl,
+      'alter policy document_version_actor on public.document_version using (true)',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on document_version/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy document_version_actor on public.document_version using (${fileRule})`,
+      );
+    }
+
+    // A rule that still asks, but lets a signed-out page through: the
+    // documents are there to be given, and that is noticed.
+    const { rows: doc } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_actor'`,
+    );
+    const docRule = doc[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      `alter policy document_actor on public.document using ((${docRule}) or app_actor() = 'anonymous')`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a signed-out page is given its documents \(document\)/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy document_actor on public.document using (${docRule})`,
+      );
+    }
+
+    // The link's trigger off, or on for a replica only (which never fires
+    // for the vault's own sessions).
+    for (const how of ['disable trigger', 'enable replica trigger']) {
+      await sql(vault.adminUrl, `alter table public.share_link ${how} share_link_link_writes`);
+      try {
+        await expect(checkRestored(target()), how).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.share_link enable trigger share_link_link_writes',
+        );
+      }
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });

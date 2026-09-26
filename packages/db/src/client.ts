@@ -611,6 +611,11 @@ export interface ScopePrincipal {
  * set on the connection itself cannot show through.
  */
 export function withScope<T>(db: Db, scope: Scope, fn: (trx: Db) => Promise<T>): Promise<T> {
+  // Its type already keeps the vault itself out; this keeps a cast
+  // (`{ kind: 'system' } as never`) from bringing it back in.
+  if ((scope.actor as Actor).kind === 'system') {
+    return Promise.reject(new Error('only withSystem acts as the vault itself'));
+  }
   return inScope(db, scope, fn);
 }
 
