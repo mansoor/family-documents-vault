@@ -190,6 +190,8 @@ describe.skipIf(!testAdminUrl())('setup and password auth', () => {
 
     const out = await app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: auth });
     expect(out.statusCode).toBe(204);
+    // The browser forgets what it kept of the vault (0.5.0).
+    expect(out.headers['clear-site-data']).toBe('"cache"');
     const aAfter = await app.inject({ url: '/api/v1/me', headers: auth });
     expect(aAfter.statusCode).toBe(401);
   });

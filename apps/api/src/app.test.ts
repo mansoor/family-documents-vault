@@ -99,6 +99,17 @@ describe('what a device may keep', () => {
     expect(unauthenticated.statusCode).toBe(401);
     expect(unauthenticated.headers['cache-control']).toBe('no-store');
   });
+
+  it('every answer says which version gave it, the one the capability document names', async () => {
+    const app = await make();
+    const caps = await app.inject('/api/v1/capabilities');
+    const version = caps.json<{ server_version: string }>().server_version;
+    expect(caps.headers['x-fdv-server-version']).toBe(version);
+    expect((await app.inject('/api/v1/no-such-thing')).headers['x-fdv-server-version']).toBe(
+      version,
+    );
+    expect((await app.inject('/api/v1/me')).headers['x-fdv-server-version']).toBe(version);
+  });
 });
 
 describe('GET /api/v1/capabilities', () => {

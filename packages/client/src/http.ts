@@ -65,6 +65,12 @@ export interface HttpOptions {
   /** Give up waiting after this long. Unset: wait as long as fetch does. */
   timeoutMs?: number;
   now?: () => number;
+  /**
+   * The vault's version, from every answer that says it
+   * (X-FDV-Server-Version, 0.5.0 and later): an app learns of an upgrade
+   * from what it already asks. Never in the way of the answer itself.
+   */
+  onServerVersion?: (version: string) => void;
 }
 
 export type Method = 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT';
@@ -134,6 +140,14 @@ export function createHttp(options: HttpOptions): Http {
       throw new NetworkError(controller?.signal.aborted ? 'timeout' : 'offline');
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+    const version = res.headers.get('x-fdv-server-version');
+    if (version && options.onServerVersion) {
+      try {
+        options.onServerVersion(version);
+      } catch {
+        // The listener's trouble is not the request's.
+      }
     }
     if (!res.ok) throw await toError(res, now());
     return res;

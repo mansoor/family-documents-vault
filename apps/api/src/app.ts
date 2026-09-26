@@ -93,6 +93,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     // route says otherwise: a phone's HTTP stack stores every answer it may,
     // on disk, and keeps it after the phone is signed out.
     if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
+    // Which version answered: an app notices an upgrade from what it
+    // already asks, instead of asking for the capability document again.
+    reply.header('x-fdv-server-version', deps.serverVersion);
   });
 
   app.setNotFoundHandler((req, reply) => {

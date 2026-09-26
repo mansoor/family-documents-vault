@@ -3,14 +3,14 @@ import { createApi } from './api.js';
 import { createHttp, type RequestInitLike } from './http.js';
 
 /** A fetch that answers 200 {} and remembers what it was asked. */
-function recorder() {
+function recorder(answerHeaders: Record<string, string> = {}) {
   const seen: { url: string; init: RequestInitLike }[] = [];
   const fetch = async (url: string, init: RequestInitLike) => {
     seen.push({ url, init });
     return {
       ok: true,
       status: 200,
-      headers: { get: () => null },
+      headers: { get: (name: string) => answerHeaders[name.toLowerCase()] ?? null },
       json: async () => ({}),
       text: async () => '',
       arrayBuffer: async () => new ArrayBuffer(0),
@@ -49,5 +49,36 @@ describe('nothing the vault says is cached (0.5.0)', () => {
     });
     await http.request('/api/v1/me', { headers: { 'cache-control': 'only-if-cached' } });
     expect(seen[0]?.init.headers['cache-control']).toBe('no-cache, no-store');
+  });
+});
+
+describe("the vault's version, from every answer (0.5.0)", () => {
+  it('is handed to the app with each answer that says it, and never gets in the way', async () => {
+    const heard: string[] = [];
+    const { fetch } = recorder({ 'x-fdv-server-version': '0.5.0' });
+    const http = createHttp({ baseUrl: '', fetch, onServerVersion: (v) => heard.push(v) });
+    await http.request('/api/v1/me');
+    await http.raw('/api/v1/versions/v/thumbnail');
+    expect(heard).toEqual(['0.5.0', '0.5.0']);
+
+    const throwing = createHttp({
+      baseUrl: '',
+      fetch,
+      onServerVersion: () => {
+        throw new Error('listener broke');
+      },
+    });
+    await expect(throwing.request('/api/v1/me')).resolves.toEqual({});
+  });
+
+  it('an older vault says nothing, and nothing is heard', async () => {
+    const heard: string[] = [];
+    const http = createHttp({
+      baseUrl: '',
+      fetch: recorder().fetch,
+      onServerVersion: (v) => heard.push(v),
+    });
+    await http.request('/api/v1/me');
+    expect(heard).toEqual([]);
   });
 });

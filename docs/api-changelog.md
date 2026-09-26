@@ -634,7 +634,7 @@ duplicates, dropped}`. Each event id is recorded once, however often
     alerts carry none, so one never replaces another. The Sunday summary
     is email only.
 
-- The Phase 4 release (0.5.0). Three changes:
+- The Phase 4 release (0.5.0). Five changes:
   - A push address whose host is `localhost`, or ends in `.localhost`, is
     refused (`422`) by its name, as `127.0.0.1` is — whatever DNS answers
     for it.
@@ -647,6 +647,14 @@ duplicates, dropped}`. Each event id is recorded once, however often
     request, and its `fresh` request option is gone.
   - Every thumbnail is `private, no-store`. An everyday document's was
     `private, max-age=3600`.
+  - **New:** every answer carries `X-FDV-Server-Version`, the same version
+    as the capability document's `server_version`. An app that sees a
+    different one knows the vault was upgraded (or rolled back) and reads
+    the capability document again; `@fdv/client`'s `createHttp` takes
+    `onServerVersion` to hear it. A vault before 0.5.0 sends none.
+  - `POST /api/v1/auth/logout` answers with `Clear-Site-Data: "cache"`, so
+    a browser forgets what it kept of the vault. Browsers act on it over
+    https and on `localhost` only; apps ignore it.
 
 ## Deprecations in effect
 
