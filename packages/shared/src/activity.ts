@@ -56,6 +56,8 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
   const who = e.actor ?? (e.actor_label ? capitalise(e.actor_label) : 'Somebody');
   const doc = quoted(e.object_title);
   const detail = e.detail ?? {};
+  /** A kind of document or a field, by the name it had then (0.5.10). */
+  const kind = text(detail.label) ? `“${text(detail.label)}”` : null;
   const documentId = e.object_type === 'document' ? e.object_id : null;
   const line = (text: string, notable = false): ActivityLine => ({
     id: e.id,
@@ -102,6 +104,39 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
             : 'everyone in the family can see';
       return line(`${who} made ${doc} something ${words}`, to === 'private');
     }
+
+    // ------------------------------------------- kinds of document (0.5.10)
+    // What the family calls its papers is the family's: said to everyone
+    // who reads the log, by the name it had when it happened.
+    case 'document_type.created':
+      return line(
+        kind ? `${who} added a kind of document, ${kind}` : `${who} added a kind of document`,
+      );
+    case 'document_type.updated': {
+      const to = text(detail.default_visibility);
+      if (!to) return line(`${who} changed ${kind ?? 'a kind of document'}`);
+      // Who sees the next one filed: letting more people see it is news.
+      return line(
+        `${who} made new ${kind ? `${kind} documents` : 'documents of a kind'} ${reachWords(to)}`,
+        detail.widened === true,
+      );
+    }
+    case 'document_type.archived':
+      return detail.builtin === true
+        ? line(`${who} stopped offering ${kind ?? 'a kind of document'}`)
+        : line(`${who} archived ${kind ?? 'a kind of document'}`);
+    case 'document_type.restored':
+      return detail.builtin === true
+        ? line(`${who} offered ${kind ?? 'a kind of document'} again`)
+        : line(`${who} brought back ${kind ?? 'a kind of document'}`);
+    case 'document_type.deleted':
+      return line(`${who} deleted ${kind ?? 'a kind of document'}`);
+    case 'document_attribute.created':
+      return line(
+        kind
+          ? `${who} added ${kind} to the fields a kind of document can ask for`
+          : `${who} added a field a kind of document can ask for`,
+      );
 
     // ---------------------------------------------------------- people
     case 'member.added':
@@ -234,6 +269,20 @@ function text(v: unknown): string {
 function nameOf(detail: Record<string, unknown>, key: string): string {
   const v = detail[key];
   return typeof v === 'string' && v.length > 0 ? v : 'somebody';
+}
+
+/** Who a new document of a kind is shown to, after "visible to" (0.5.10). */
+function reachWords(visibility: string): string {
+  switch (visibility) {
+    case 'household':
+      return 'visible to everyone in the family';
+    case 'adults':
+      return 'visible to the adults only';
+    case 'private':
+      return 'private to the person each belongs to';
+    default:
+      return 'visible to somebody else';
+  }
 }
 
 function roleWords(role: unknown): string {

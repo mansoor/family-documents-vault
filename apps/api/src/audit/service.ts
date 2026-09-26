@@ -72,7 +72,10 @@ const BY_TYPE = 'by type';
  * A test holds every action with a sentence in `@fdv/shared/activity` to
  * having a row here.
  */
-const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map([
+const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
+  string,
+  Audience | typeof BY_TYPE
+>([
   // documents, and the links made to them
   ['document.created', BY_TYPE],
   ['document.updated', BY_TYPE],
@@ -115,6 +118,15 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map([
   ['auth.totp_disabled', BY_TYPE],
   ['credential.passkey_added', BY_TYPE],
   ['credential.passkey_removed', BY_TYPE],
+  // kinds of document (5.11): what the family calls its papers is the
+  // family's, and each line names the kind as it was then, not a document.
+  // Everyone who reads the log; a viewer reads none of it.
+  ['document_type.created', everyone],
+  ['document_type.updated', everyone],
+  ['document_type.archived', everyone],
+  ['document_type.restored', everyone],
+  ['document_type.deleted', everyone],
+  ['document_attribute.created', everyone],
 ]);
 
 /**

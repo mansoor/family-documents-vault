@@ -19,6 +19,8 @@ import type { HouseholdService } from './household/service.js';
 import type { InvitationService } from './household/invitations.js';
 import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
+import { registerTypes } from './documents/type-routes.js';
+import type { TypeService } from './documents/types.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
 import { registerExports } from './exports/routes.js';
@@ -47,6 +49,8 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  /** Kinds of document, managed (5.11). */
+  types: TypeService;
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
@@ -220,6 +224,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerNotifications(app, deps.notifications);
   registerAudit(app, deps.audit);
   registerOffline(app, deps.offline);
+  registerTypes(app, deps.types);
   await registerDocuments(
     app,
     deps.documents,

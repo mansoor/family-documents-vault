@@ -1,8 +1,7 @@
-import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { appendAudit, regenerateDerived, withPrincipal, type Db } from '@fdv/db';
 import {
   addDays,
   addMonths,
-  derivedFireDates,
   localToday,
   nextOccurrence,
   parseRecurrence,
@@ -63,46 +62,11 @@ export class ReminderService {
    * expiry. Runs inside the caller's transaction (document create/update).
    * Leads whose date is already past are created as `due`, so a passport
    * added with two months left shows up in the needs-attention strip
-   * straight away rather than being silently skipped.
+   * straight away rather than being silently skipped. The worker's
+   * types.regenerate makes them the same way (@fdv/db, 0.5.10).
    */
   async regenerateDerived(trx: Db, householdId: string, documentId: string): Promise<void> {
-    // The type as the household has it (0031): its own lead times, and no
-    // expiry where it has switched Expires off.
-    const doc = await trx
-      .selectFrom('document')
-      .leftJoin('effective_document_type as t', 't.key', 'document.type_key')
-      .select(['document.expires_on', 'document.deleted_at', 't.reminder_leads', 't.expiry_driver'])
-      .where('document.id', '=', documentId)
-      .executeTakeFirst();
-    await trx
-      .deleteFrom('reminder')
-      .where('document_id', '=', documentId)
-      .where('kind', '=', 'derived')
-      .execute();
-    if (
-      !doc ||
-      doc.deleted_at ||
-      !doc.expires_on ||
-      !doc.expiry_driver ||
-      !doc.reminder_leads?.length
-    )
-      return;
-
-    const today = await this.today(trx, householdId);
-    const expires = iso(doc.expires_on) as string;
-    for (const { lead, fire_at } of derivedFireDates(expires, doc.reminder_leads)) {
-      await trx
-        .insertInto('reminder')
-        .values({
-          household_id: householdId,
-          document_id: documentId,
-          kind: 'derived',
-          fire_at,
-          lead_days: lead,
-          status: fire_at <= today ? 'due' : 'scheduled',
-        })
-        .execute();
-    }
+    await regenerateDerived(trx, householdId, documentId);
   }
 
   /** REM-08: a renewed document resolves its open reminders. */

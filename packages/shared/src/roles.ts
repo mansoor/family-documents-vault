@@ -61,7 +61,11 @@ export type Capability =
    *  reader could already see. */
   | 'audit.read'
   /** The family's own details: birthdays, the household's answers, what they lack (5.3). */
-  | 'family.details';
+  | 'family.details'
+  /** Add and change the household's kinds of document, and hide the built-in ones (5.11). */
+  | 'types.manage'
+  /** Let more people see a kind of document by default: Adults only to Everyone (5.11). */
+  | 'types.widen_visibility';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -150,6 +154,20 @@ const MATRIX: Record<Capability, Rule> = {
     // is given documents, not the family (5.3).
     roles: ['owner', 'adult', 'teen'],
     refusal: 'Viewers see the documents they are given, not the family’s own details.',
+  },
+  'types.manage': {
+    // What the family calls its papers, which fields each asks for and
+    // when it is reminded: the adults' to decide, as the household
+    // details are (A6).
+    roles: ['owner', 'adult'],
+    refusal: 'Only an adult can change the kinds of document the family keeps.',
+  },
+  'types.widen_visibility': {
+    // Turning Will or Tax from Adults only into Everyone puts the next one
+    // anybody files — a phone's scan queued offline among them — in front
+    // of the teens and the viewers. Narrowing is `types.manage`.
+    roles: ['owner'],
+    refusal: 'Only an owner can let more people see a kind of document from now on.',
   },
 };
 

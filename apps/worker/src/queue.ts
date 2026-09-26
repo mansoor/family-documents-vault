@@ -25,6 +25,13 @@ export const JOBS = {
    * (0.5.8), one document per transaction; on every start of the worker.
    */
   sealPrivate: 'private.seal',
+  /**
+   * Every document of one type reminded anew (0.5.10), after a household
+   * changed the type's lead times or switched its Expires on or off. The
+   * API sends it, one queued and one running per type (`stately`); the
+   * name matches the API's REGENERATE_JOB.
+   */
+  regenerateTypes: 'types.regenerate',
   /** Nightly encrypted pg_dump with 30-day retention. */
   backupDatabase: 'backup.database',
   /** Every 15 minutes: scheduled/snoozed reminders become due on the local date. */

@@ -1,4 +1,5 @@
 import {
+  CATEGORY_LABELS,
   checkCaptureMetadata,
   checkExtra,
   CORE_FIELDS,
@@ -6,13 +7,19 @@ import {
   effectiveVisibility,
   missingFields,
   PREVIEW_MAX_PAGES,
+  PRIVATE_BY_DEFAULT,
+  PRIVATE_TO_THEM,
+  TYPE_IN_USE,
+  UNSEEN_DOCUMENTS,
   type Capabilities,
   type CaptureMetadata,
   type CoreField,
   type CoreFieldRule,
   type DateValue,
   type DocumentAttributeView,
+  type DocumentTypeImpact,
   type DocumentTypeView,
+  type TypeField,
   type DocumentView,
   type IssuerSuggestions,
   type OfflineGrant,
@@ -287,6 +294,59 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   let n = 0;
   const next = (prefix: string) => `${prefix}-${++n}`;
 
+  // Kinds of document, managed (0.5.10): each kind's version, which every
+  // change moves on, as its ETag says.
+  const revisions = new Map<string, number>();
+  const typeTag = (t: DocumentTypeView) => `"${t.key}.${revisions.get(t.key) ?? 1}"`;
+  const bump = (t: DocumentTypeView) => revisions.set(t.key, (revisions.get(t.key) ?? 1) + 1);
+  const typeAnswer = (t: DocumentTypeView): DocumentTypeView => ({ ...t, etag: typeTag(t) });
+  /**
+   * A change to a kind's fixed fields and its own fields, as the real vault
+   * makes it: each fixed field key by key (Expires on or off is whether it
+   * expires), its own fields from the library by key. A refusal, or null.
+   */
+  const changeType = (t: DocumentTypeView, change: TypeChange): ResponseLike | null => {
+    const core = t.core ?? coreOf(t);
+    for (const f of CORE_FIELDS) {
+      const rule = change.core?.[f];
+      if (!rule) continue;
+      if (rule.shown !== undefined) core[f].shown = rule.shown;
+      if (rule.required !== undefined) core[f].required = rule.required;
+      if (rule.label !== undefined) core[f].label = tidy(rule.label);
+    }
+    t.core = core;
+    t.expiry_driver = core.expires.shown ? (t.expiry_driver ?? 'expires_on') : null;
+    t.issued_by_label = core.issued_by.label;
+    for (const f of CORE_FIELDS) {
+      if (f !== 'expires' && core[f].required && !core[f].shown) {
+        return fail(422, 'validation_failed', 'A field has to be shown to be required.', f);
+      }
+    }
+    if (change.fields) {
+      const keys = change.fields.map((f) => f.key);
+      if (new Set(keys).size !== keys.length) {
+        return fail(422, 'validation_failed', 'Each field can be asked for once.', 'fields');
+      }
+      const fields: TypeField[] = [];
+      for (const f of change.fields) {
+        const had = t.fields.find((x) => x.key === f.key);
+        const lib = state.attributes.find((a) => a.key === f.key);
+        const kind = had?.kind ?? lib?.kind;
+        if (!kind)
+          return fail(422, 'validation_failed', 'That field is not in the library.', f.key);
+        fields.push({
+          key: f.key,
+          label: tidy(f.label) ?? had?.label ?? lib?.label ?? f.key,
+          kind,
+          required: f.required ?? had?.required ?? false,
+          ...(kind === 'choice' ? { choices: lib?.choices ?? had?.choices ?? [] } : {}),
+        });
+      }
+      t.fields = fields;
+    }
+    return null;
+  };
+
   const tokensFor = (s: FakeSession): Tokens => {
     const access = next('access');
     state.access.set(access, s.id);
@@ -467,16 +527,30 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         }
         const extra = detailsFor(type_key, body.extra);
         if (isResponse(extra)) return extra;
+        // As the real vault: the type's default, when nothing is asked for,
+        // and Only me — asked for or the default — only for your own (0.5.10).
+        const visibility =
+          (body.visibility as Visibility | undefined) ??
+          state.types.find((t) => t.key === type_key)?.default_visibility;
+        const owner = (body.owner_member_id as string | null | undefined) ?? null;
+        if (visibility === 'private' && owner !== 'fake-member') {
+          return fail(
+            422,
+            'validation_failed',
+            body.visibility === 'private' ? PRIVATE_TO_THEM : PRIVATE_BY_DEFAULT,
+            'visibility',
+          );
+        }
         const doc: FakeDocument = {
           id: next('document'),
           title: (body.title as string | null) ?? null,
           type_key,
-          owner_member_id: (body.owner_member_id as string | null | undefined) ?? null,
+          owner_member_id: owner,
           identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
           expires: (body.expires as DateValue | null | undefined) ?? null,
           notes: note(body.notes as string | null | undefined),
-          ...(body.visibility !== undefined ? { visibility: body.visibility as Visibility } : {}),
+          ...(visibility !== undefined ? { visibility } : {}),
           extra,
         };
         state.documents.push(doc);
@@ -830,12 +904,217 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       // ?all=true lists every one.
       const all = param(url, 'all') === 'true';
       const inUse = (key: string) => state.documents.some((d) => d.type_key === key);
-      return ok({ items: state.types.filter((t) => all || !t.hidden || inUse(t.key)) });
+      return ok({
+        items: state.types.filter((t) => all || !t.hidden || inUse(t.key)).map(typeAnswer),
+      });
     }
     if (path === '/api/v1/document-attributes' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
       return ok({ items: state.attributes });
+    }
+    // Kinds of document, managed (0.5.10), as the real vault manages them.
+    // The fake signs in as an owner, who may do all of it.
+    if (path === '/api/v1/document-attributes' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const label = tidy(body.label as string | undefined);
+      if (!label) return fail(422, 'validation_failed', 'Give the field a name.', 'label');
+      const kind = body.kind as DocumentAttributeView['kind'];
+      const answers = [
+        ...new Set(((body.choices as string[] | null | undefined) ?? []).map(tidy)),
+      ].filter((c): c is string => c !== null);
+      if (kind === 'choice' && answers.length === 0) {
+        return fail(422, 'validation_failed', 'Give a choice at least one answer.', 'choices');
+      }
+      if (kind !== 'choice' && answers.length > 0) {
+        return fail(
+          422,
+          'validation_failed',
+          'Only a choice has answers to choose from.',
+          'choices',
+        );
+      }
+      const made: DocumentAttributeView = {
+        key: ownKey(),
+        label,
+        kind,
+        choices: kind === 'choice' ? answers : null,
+        builtin: false,
+      };
+      state.attributes.push(made);
+      return ok(made, 201);
+    }
+    if (path === '/api/v1/document-types' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const label = tidy(body.label as string | undefined);
+      if (!label) {
+        return fail(422, 'validation_failed', 'Give the kind of document a name.', 'label');
+      }
+      const category = (body.category as string | undefined) ?? 'other';
+      if (!(category in CATEGORY_LABELS)) {
+        return fail(
+          422,
+          'validation_failed',
+          'Choose one of the categories the vault has.',
+          'category',
+        );
+      }
+      const sent = (body.core ?? {}) as TypeChange['core'];
+      const expires = sent?.expires?.shown === true;
+      const t: DocumentTypeView = {
+        key: ownKey(),
+        label,
+        category,
+        fields: [],
+        expiry_driver: expires ? 'expires_on' : null,
+        reminder_leads: leadsOf(
+          (body.reminder_leads as number[] | undefined) ?? (expires ? [30] : []),
+        ),
+        usually_essential: (body.usually_essential as boolean | undefined) ?? false,
+        default_visibility: (body.default_visibility as Visibility | undefined) ?? 'household',
+        issued_by_label: null,
+        builtin: false,
+        hidden: false,
+        core: coreOf({ expiry_driver: expires ? 'expires_on' : null }),
+        short_label: tidy(body.short_label as string | null | undefined),
+        issuer_noun: tidy(body.issuer_noun as string | null | undefined),
+      };
+      const problem = changeType(t, { core: sent, fields: body.fields as TypeChange['fields'] });
+      if (problem) return problem;
+      state.types.push(t);
+      return ok(typeAnswer(t), 201);
+    }
+    const typeAt = /^\/api\/v1\/document-types\/([^/]+)(\/archive|\/restore|\/impact)?$/.exec(path);
+    if (typeAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const t = state.types.find((x) => x.key === decodeURIComponent(typeAt[1] as string));
+      if (!t) return fail(404, 'not_found', 'That kind of document is not on the list.');
+      const action = typeAt[2];
+      const used = state.documents.filter((d) => d.type_key === t.key);
+      if (action === undefined && init.method === 'PATCH') {
+        // As the real vault: a change made to a kind somebody has since
+        // changed is refused, not laid over theirs.
+        const ifMatch = init.headers['if-match'];
+        if (ifMatch && ifMatch !== typeTag(t)) {
+          return fail(
+            409,
+            'conflict',
+            'Someone else changed this kind of document. Reload and try again.',
+          );
+        }
+        const named = ['label', 'category', 'short_label', 'issuer_noun'].some(
+          (k) => body[k] !== undefined,
+        );
+        if (t.builtin && named) {
+          return fail(
+            422,
+            'validation_failed',
+            'A built-in kind of document keeps its name and category. Add a kind of your own to call it something else.',
+          );
+        }
+        if (!t.builtin && body.hidden !== undefined) {
+          return fail(
+            422,
+            'validation_failed',
+            'A kind of document of your own is archived, not hidden.',
+            'hidden',
+          );
+        }
+        if (body.category !== undefined && !((body.category as string) in CATEGORY_LABELS)) {
+          return fail(
+            422,
+            'validation_failed',
+            'Choose one of the categories the vault has.',
+            'category',
+          );
+        }
+        const next: DocumentTypeView = JSON.parse(JSON.stringify(t)) as DocumentTypeView;
+        if (body.label !== undefined) {
+          const label = tidy(body.label as string);
+          if (!label) {
+            return fail(422, 'validation_failed', 'Give the kind of document a name.', 'label');
+          }
+          next.label = label;
+        }
+        if (body.category !== undefined) next.category = body.category as string;
+        if (body.short_label !== undefined)
+          next.short_label = tidy(body.short_label as string | null);
+        if (body.issuer_noun !== undefined)
+          next.issuer_noun = tidy(body.issuer_noun as string | null);
+        if (body.reminder_leads !== undefined) {
+          next.reminder_leads = leadsOf(body.reminder_leads as number[]);
+        }
+        if (body.default_visibility !== undefined) {
+          next.default_visibility = body.default_visibility as Visibility;
+        }
+        if (body.usually_essential !== undefined) {
+          next.usually_essential = body.usually_essential as boolean;
+        }
+        if (body.hidden !== undefined) next.hidden = body.hidden as boolean;
+        const problem = changeType(next, {
+          core: body.core as TypeChange['core'],
+          fields: body.fields as TypeChange['fields'],
+        });
+        if (problem) return problem;
+        Object.assign(t, next);
+        bump(t);
+        return ok(typeAnswer(t));
+      }
+      if (action === undefined && init.method === 'DELETE') {
+        if (t.builtin) {
+          return fail(
+            422,
+            'validation_failed',
+            "A built-in kind of document can't be deleted. Hide it instead.",
+          );
+        }
+        if (used.length > 0) return fail(409, 'type_in_use', TYPE_IN_USE);
+        state.types.splice(state.types.indexOf(t), 1);
+        return empty();
+      }
+      if ((action === '/archive' || action === '/restore') && init.method === 'POST') {
+        const hidden = action === '/archive';
+        if (t.hidden !== hidden) {
+          t.hidden = hidden;
+          bump(t);
+        }
+        return ok(typeAnswer(t));
+      }
+      if (action === '/impact' && init.method === 'GET') {
+        const count = (has: (d: FakeDocument) => boolean) => {
+          const n = used.filter(has).length;
+          return { with_value: n, without_value: used.length - n };
+        };
+        const given = (v: unknown) =>
+          v !== undefined &&
+          v !== null &&
+          !(typeof v === 'string' && v.trim() === '') &&
+          !(Array.isArray(v) && v.length === 0);
+        const impact: DocumentTypeImpact = {
+          key: t.key,
+          documents: used.length,
+          in_trash: 0,
+          core: Object.fromEntries(
+            CORE_FIELDS.map((f) => [f, count((d) => given((d as Record<string, unknown>)[f]))]),
+          ) as DocumentTypeImpact['core'],
+          fields: t.fields.map((f) => ({
+            key: f.key,
+            label: f.label,
+            ...count((d) => given(d.extra?.[f.key])),
+          })),
+          reminders: state.reminders.filter(
+            (r) =>
+              r.kind === 'derived' &&
+              ['scheduled', 'due', 'snoozed'].includes(r.status) &&
+              used.some((d) => d.id === r.document_id),
+          ).length,
+          unseen: UNSEEN_DOCUMENTS,
+        };
+        return ok(impact);
+      }
     }
     if (path === '/api/v1/members' && init.method === 'GET') {
       const s = session();
@@ -851,6 +1130,25 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   };
 
   return { fetch, state };
+}
+
+/** A change to a kind's fields, as POST and PATCH /document-types send it (0.5.10). */
+interface TypeChange {
+  core?: Partial<Record<CoreField, Partial<CoreFieldRule>>> | undefined;
+  fields?: Array<{ key: string; label?: string; required?: boolean }> | undefined;
+}
+
+/** A household's own key, as the real vault makes one: 'h_' and ten base32 characters. */
+function ownKey(): string {
+  const base32 = 'abcdefghijklmnopqrstuvwxyz234567';
+  let key = 'h_';
+  for (let i = 0; i < 10; i++) key += base32[Math.floor(Math.random() * 32)];
+  return key;
+}
+
+/** Lead times as the real vault keeps them: each once, furthest first. */
+function leadsOf(leads: number[]): number[] {
+  return [...new Set(leads)].sort((a, b) => b - a);
 }
 
 /** An issuer as the real vault keeps it: spaces tidied, and blank is nothing. */

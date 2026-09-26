@@ -265,6 +265,37 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
       what: 'export everything',
       call: (t) => h.app.inject({ method: 'POST', url: '/api/v1/exports', headers: h.as(t) }),
     },
+    {
+      capability: 'types.manage',
+      what: 'add a kind of document',
+      call: (t) =>
+        h.app.inject({
+          method: 'POST',
+          url: '/api/v1/document-types',
+          headers: h.as(t),
+          payload: { label: `Kind ${Math.random().toString(36).slice(2, 8)}`, category: 'other' },
+        }),
+    },
+    {
+      capability: 'types.widen_visibility',
+      what: 'let everyone see a kind of document the adults kept to themselves',
+      // A fresh kind each time, adults only: the first caller to widen one
+      // would leave nothing to widen for the next.
+      call: async (t) => {
+        const made = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/document-types',
+          headers: h.as(people.owner),
+          payload: { label: 'Adults only kind', category: 'legal', default_visibility: 'adults' },
+        });
+        return h.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/document-types/${made.json<{ key: string }>().key}`,
+          headers: h.as(t),
+          payload: { default_visibility: 'household' },
+        });
+      },
+    },
   ];
 
   for (const probe of probes) {

@@ -2,6 +2,8 @@ import {
   checkCaptureMetadata,
   effectiveVisibility,
   issuerCandidates,
+  PRIVATE_BY_DEFAULT,
+  PRIVATE_TO_THEM,
   type IssuerCount,
   type IssuerSuggestions,
   type KnownIssuer,
@@ -184,24 +186,59 @@ export function etagOf(id: string, updatedAt: Date): string {
   return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
 }
 
-type EffectiveType = Selectable<Schema['effective_document_type']>;
+export type EffectiveType = Selectable<Schema['effective_document_type']>;
 
 /** A type the caller's household has, by key; undefined when it has none of that key. */
-type TypeLookup = (key: string) => Promise<EffectiveType | undefined>;
+export type TypeLookup = (key: string) => Promise<EffectiveType | undefined>;
+
+/**
+ * A type's ETag (0.5.10): everything it says, as the household has it now.
+ * Any change to it — the household's, or a release's to a built-in — makes
+ * a new one, and an edit made to an older one is refused.
+ */
+export function typeEtag(t: EffectiveType): string {
+  const seed = JSON.stringify([
+    t.key,
+    t.label,
+    t.category,
+    t.fields,
+    t.expiry_driver,
+    t.reminder_leads,
+    t.usually_essential,
+    t.default_visibility,
+    t.core,
+    t.short_label,
+    t.issuer_noun,
+    t.hidden,
+    t.archived_at ? new Date(t.archived_at).toISOString() : null,
+    t.pack_version,
+    t.updated_at ? new Date(t.updated_at).toISOString() : null,
+  ]);
+  return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
+}
 
 /**
  * The caller's household's types, looked up in its own transaction: all of
  * them, in one query, the first time any is asked for — a page of twenty
  * kinds of document, or a phone's whole offline set, costs one query — and
  * kept for that transaction only, whichever part of the service asks.
- * (A transaction that changes a type, once 5.11 can, must not ask first.)
  * Until 0.5.6 the types were kept for the life of the process, which was
  * right only while they were the same for every household and never
  * changed.
+ *
+ * A transaction that writes a type or a setting (types.ts, 0.5.10) forgets
+ * them as it writes (`forgetTypes`), so whatever it asks next — the type it
+ * answers with, a document filed under it — is the type as it now is, not
+ * as it was when first asked (5.7 review).
  */
 const typesOf = new WeakMap<Db, Promise<Map<string, EffectiveType>>>();
 
-function typeLookup(trx: Db): TypeLookup {
+/** After a write to a type, a setting or the library: the next lookup asks the database again. */
+export function forgetTypes(trx: Db): void {
+  typesOf.delete(trx);
+}
+
+export function typeLookup(trx: Db): TypeLookup {
   return async (key) => {
     let all = typesOf.get(trx);
     if (!all) {
@@ -276,8 +313,8 @@ export const sealedOf = (row: {
 const invalidExtra = (problem: DetailProblem) =>
   new ApiError(422, 'invalid_extra', problem.message, { detail: problem.key });
 
-/** A type as GET /document-types answers it: the old shape, and what 0.5.6 added. */
-function typeView(t: EffectiveType): DocumentTypeView {
+/** A type as GET /document-types answers it: the old shape, and what 0.5.6 and 0.5.10 added. */
+export function typeView(t: EffectiveType): DocumentTypeView {
   return {
     key: t.key,
     label: t.label,
@@ -293,6 +330,7 @@ function typeView(t: EffectiveType): DocumentTypeView {
     core: t.core as NonNullable<DocumentTypeView['core']>,
     short_label: t.short_label,
     issuer_noun: t.issuer_noun,
+    etag: typeEtag(t),
   };
 }
 
@@ -344,39 +382,48 @@ export class DocumentService {
    * Only documents the caller can see count, as everywhere else: a hidden
    * type kept in the list must not say that somebody's Only me document is
    * of that kind.
+   *
+   * Somebody who files nothing — a viewer, an accountant with a sign-in —
+   * reads the built-ins, and of the household's own kinds only those of
+   * the documents they can see (0.5.10, from the 5.7 review). Now that
+   * adults name kinds ("Divorce proceedings"), the names say what the
+   * family keeps, and a viewer is given documents, not the family. Everyone
+   * who files documents is offered all of them, as the family always was.
    */
   async types(p: Principal, opts: { all?: boolean | undefined } = {}): Promise<DocumentTypeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
       let q = trx.selectFrom('effective_document_type as t').selectAll('t');
+      // A document of it the caller can see, out of the Trash.
+      const seen = sql<boolean>`exists (
+        select 1 from document d
+         where d.type_key = t.key and d.deleted_at is null
+           and (d.visibility = 'household'
+                or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+                or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid)))`;
+      if (!allows(p, 'document.add')) {
+        q = q.where((eb) => eb.or([eb('t.builtin', '=', true), seen]));
+      }
       if (!opts.all) {
-        q = q.where((eb) =>
-          eb.or([
-            eb('t.hidden', '=', false),
-            eb.exists(
-              eb
-                .selectFrom('document')
-                .select('document.id')
-                .whereRef('document.type_key', '=', 't.key')
-                .where('document.deleted_at', 'is', null)
-                .where(this.visibleTo(p) as never),
-            ),
-          ]),
-        );
+        q = q.where((eb) => eb.or([eb('t.hidden', '=', false), seen]));
       }
       const rows = await q.orderBy('t.sort_order').orderBy('t.label').orderBy('t.key').execute();
       return rows.map(typeView);
     });
   }
 
-  /** The attributes a type can ask for: the vault's own and the household's (0031). */
+  /**
+   * The attributes a type can ask for: the vault's own and the household's
+   * (0031). The library is for making kinds of document: somebody who files
+   * nothing is given the vault's own only (0.5.10) — the household's are
+   * named by the family, and a kind they can read carries its fields' names.
+   */
   async attributes(p: Principal): Promise<DocumentAttributeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
-      const rows = await trx
+      let q = trx
         .selectFrom('document_attribute')
-        .select(['key', 'label', 'kind', 'choices', 'household_id'])
-        .orderBy('label')
-        .orderBy('key')
-        .execute();
+        .select(['key', 'label', 'kind', 'choices', 'household_id']);
+      if (!allows(p, 'document.add')) q = q.where('household_id', 'is', null);
+      const rows = await q.orderBy('label').orderBy('key').execute();
       return rows.map((r) => ({
         key: r.key,
         label: r.label,
@@ -617,19 +664,24 @@ export class DocumentService {
   async create(p: Principal, input: DocumentInput, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
     return withPrincipal(this.db, p, async (trx) => {
-      const values = await this.columns(trx, p, await this.ownVisibility(trx, p, input), null);
       // A teen's documents are their own, and only their own. Without
       // this, adding one without naming a person makes a family document
       // they are immediately unable to change — which is what the rule
       // says if nobody asks what "their own" means at the moment of
       // creation. Naming somebody else is refused for the same reason:
       // it would put the document out of their reach as they filed it.
-      const named = (values as { owner_member_id?: string | null }).owner_member_id;
-      if (p.role === 'teen' && named != null && named !== p.memberId) {
+      // Theirs from the start, so Only me — asked for, or their type's
+      // default — is theirs to have, as a capture's is (0.5.10).
+      if (
+        p.role === 'teen' &&
+        input.owner_member_id != null &&
+        input.owner_member_id !== p.memberId
+      ) {
         throw new ApiError(403, 'forbidden', 'You can only add documents that belong to you.');
       }
-      const mine = p.role === 'teen' ? { owner_member_id: p.memberId } : {};
-      const made: Record<string, unknown> = { ...values, ...mine };
+      const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
+      const values = await this.columns(trx, p, await this.ownVisibility(trx, p, whose), null);
+      const made: Record<string, unknown> = { ...values };
       // Only me from the start: its notes and details are sealed as they
       // are written, and never kept plain (0.5.8). The id is minted here,
       // so they are sealed for this document and no other.
@@ -2210,15 +2262,23 @@ export class DocumentService {
           'Visibility changes must go through the visibility service.',
         );
       }
+      out.visibility = input.visibility;
+    }
+    // Only me is for the person a document belongs to, and theirs to ask
+    // for — whether the request says so or the type's default does (5.7
+    // review). A kind of document private by default never files somebody
+    // else's document, or nobody's, as Only me: the same check a capture
+    // makes (checkCaptureMetadata), in the same words.
+    if (!current && out.visibility === 'private') {
       const owner = (out.owner_member_id ?? null) as string | null;
-      if (input.visibility === 'private' && owner !== p.memberId) {
+      if (owner !== p.memberId) {
         throw new ApiError(
           422,
           'validation_failed',
-          'Only the person a document belongs to can make it private to them.',
+          input.visibility === 'private' ? PRIVATE_TO_THEM : PRIVATE_BY_DEFAULT,
+          { detail: 'visibility' },
         );
       }
-      out.visibility = input.visibility;
     }
     if (input.issued !== undefined) {
       out.issued_on = input.issued?.date ?? null;

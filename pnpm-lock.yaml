@@ -261,6 +261,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@fdv/shared':
+        specifier: workspace:*
+        version: link:../shared
       kysely:
         specifier: ^0.29.6
         version: 0.29.6

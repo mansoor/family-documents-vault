@@ -839,6 +839,116 @@ duplicates, dropped}`. Each event id is recorded once, however often
       have none and `?status=active` fewer. An Only me car whose plate is
       sealed counts it as given. A household that has changed the type's
       own fields keeps its own list.
+  - Kinds of document, managed (5.11). Owners and adults (`types.manage`)
+    add the household's own kinds, change them and the built-ins, and hide,
+    archive or delete them. Teens and viewers are refused every one of
+    these with `403 forbidden`, "Only an adult can change the kinds of
+    document the family keeps.", before the body is read.
+    - **New:** `POST /api/v1/document-types` — `{ label, category,
+short_label?, issuer_noun?, core?, fields?, reminder_leads?,
+default_visibility?, usually_essential? }` → `201` with the kind, as
+      `GET /document-types` lists it, and an `ETag`. Its key is `h_` and ten
+      base32 characters and never changes, whatever its name becomes.
+      `category` is one of the twelve (`identity`, `legal`, `property`,
+      `financial`, `tax`, `insurance`, `medical`, `education`, `bills`,
+      `work`, `pets`, `other`; `other` if left out). `core` changes the
+      fixed fields key by key, each `{ shown?, required?, label? }`:
+      `expires.shown` is whether the kind expires at all (one that does and
+      names no lead times is reminded 30 days before), and a field is
+      required only where it is shown (`422` otherwise, the field in
+      `detail`). `fields` is the kind's own fields, the whole list in
+      order, each `{ key, label?, required? }` naming a field of the
+      library by key — its kind and answers are the library's, its label
+      the library's unless given (`422`, the key in `detail`, for one the
+      library does not have). Names are trimmed and 80 characters at most.
+    - **New:** `PATCH /api/v1/document-types/{key}` — any of the same, and
+      `hidden` for a built-in; what is left out stays as it is. Send the
+      kind's `etag` as `If-Match`: a kind changed since answers
+      `409 conflict`, "Someone else changed this kind of document. Reload
+      and try again.", with the kind as it now is in `detail`. A built-in
+      keeps its name and category (`label`, `category`, `short_label` and
+      `issuer_noun` are `422`); the household's change to it is kept beside
+      it, and a release's changes to the built-in still reach it. A kind of
+      the household's own is archived, not hidden (`hidden` is `422`). When
+      its lead times change, or Expires is switched on or off, every
+      document of the kind — whoever can see it — has its reminders made
+      again by the worker (`types.regenerate`), and a reminder that stays
+      as it was keeps its state (done, snoozed or settled).
+    - **Letting more people see a kind by default is an owner's decision**:
+      Only me or Adults only to Everyone, or Only me to Adults only. Anybody
+      else is refused `403 forbidden`, "Only an owner can let more people
+      see a kind of document from now on." An owner who has not confirmed
+      it is them in the last five minutes is answered
+      `403 step_up_required` with `action: "widen_type_visibility"`, and
+      nothing changes until they do. Narrowing asks nothing more than
+      `types.manage`.
+    - **New:** `POST /api/v1/document-types/{key}/archive` and `/restore` —
+      no longer offered for a new document, or offered again; a built-in
+      is hidden rather than archived. They answer with the kind. Its
+      documents keep it, and it stays in the default list, marked
+      `hidden: true`, while a document the caller can see uses it; a
+      phone's scan queued against it is still taken.
+    - **New:** `DELETE /api/v1/document-types/{key}` — `204`, for a kind of
+      the household's own that no document uses, in the Trash included.
+      Otherwise `409 type_in_use`, in the same words whoever's documents
+      they are: "This kind of document is still in use, perhaps by
+      documents you can't see, so it can't be deleted. Archive it instead:
+      every document filed under it stays as it is." A built-in is `422`.
+    - **New:** `GET /api/v1/document-types/{key}/impact` — what a change
+      would touch, for the editor's warnings ("12 passports have no number
+      yet"): `{ key, documents, in_trash, core: { <field>: { with_value,
+without_value } }, fields: [{ key, label, with_value, without_value }],
+reminders, unseen }`. Only the documents the caller can see are
+      counted; `unseen` is always "Documents you can't see may also be
+      affected.", with no number, so nothing says that somebody's Only me
+      documents are of the kind.
+    - **New:** `POST /api/v1/document-attributes` — `{ label, kind,
+choices? }` → `201` with the field, for the library; a `choice` has at
+      least one answer, and nothing else has any.
+    - `GET /api/v1/document-types` items gain `etag`. Absent from older
+      vaults.
+    - **Changed:** somebody who files no documents (a viewer) is given the
+      built-in kinds and, of the household's own, only those of documents
+      they can see — with `?all=true` too — and only the built-in fields of
+      `GET /api/v1/document-attributes`. A kind's name ("Divorce
+      proceedings") says what the family keeps; a viewer is given
+      documents, not the family. Everybody who files documents is offered
+      every kind, as before.
+    - **Changed:** a kind whose default is Only me never files somebody
+      else's document, or nobody's, as Only me. `POST /api/v1/documents`
+      now refuses it as `POST /api/v1/capture` did: `422 validation_failed`,
+      "This kind of document is kept private to the person it belongs to.
+      Choose who can see this one." (`detail: "visibility"`). Before, it
+      filed the document as the other person's Only me, out of reach of
+      whoever filed it, or failed with a `500` when nobody was named. A teen's
+      document is theirs from the start, so a teen may now ask for Only me
+      without naming themselves, as a capture always could.
+    - **Changed:** `POST /api/v1/capture` no longer refuses an expiry date on
+      a kind that does not expire, nor one with no kind yet: a scan queued
+      while the household's kind still expired, sent after its Expires was
+      switched off, was refused for good, while `POST /api/v1/documents`
+      kept the same date. Both keep it now; it counts — status and
+      reminders — only while the kind expires. `checkCaptureMetadata` no
+      longer refuses it offline either.
+    - The activity log says, to everyone who reads it: "Sam added a kind of
+      document, “Allotment tenancy”", "Sam changed “Allotment tenancy”",
+      "Sam archived …" (a built-in: "stopped offering …", and back:
+      "offered … again" / "brought back …"), "Sam deleted …", "Sam added
+      “Plot size” to the fields a kind of document can ask for", and, marked
+      notable when it lets more people see them, "Sam made new “Will /
+      trust / power of attorney” documents visible to everyone in the
+      family".
+    - Suggestions ("No vehicle registration yet") leave out a built-in the
+      household has hidden.
+    - `@fdv/shared`: capabilities `types.manage` and
+      `types.widen_visibility`; `DocumentTypeInput`,
+      `DocumentAttributeInput`, `DocumentTypeImpact`, `widensVisibility`,
+      `TYPE_IN_USE`, `UNSEEN_DOCUMENTS`, `PRIVATE_BY_DEFAULT`.
+      `@fdv/client`: `createDocumentType`, `updateDocumentType(token, key,
+body, etag)`, `archiveDocumentType`, `restoreDocumentType`,
+      `deleteDocumentType`, `documentTypeImpact`, `createDocumentAttribute`;
+      the fake answers all of them as the vault does, and a contract
+      scenario holds the two to it.
 
 ## Deprecations in effect
 

@@ -442,6 +442,41 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     expect(people.find((m) => m.id === owner.member_id)?.document_count).toBe(1);
   });
 
+  it('what a change to its kind would touch counts nothing of it (5.11)', async () => {
+    // Medical records: the kind of the owner's document, and of nothing Sam
+    // can see. What Sam is told reads as a kind nobody has — the sentence
+    // about documents he can't see, with no number.
+    const r = await h.app.inject({
+      url: '/api/v1/document-types/medical_record/impact',
+      headers: as(sam),
+    });
+    expect(r.statusCode, r.body).toBe(200);
+    const impact = json<{
+      documents: number;
+      in_trash: number;
+      reminders: number;
+      unseen: string;
+      core: Record<string, { with_value: number; without_value: number }>;
+      fields: Array<{ with_value: number; without_value: number }>;
+    }>(r);
+    expect(impact).toMatchObject({
+      documents: 0,
+      in_trash: 0,
+      reminders: 0,
+      unseen: "Documents you can't see may also be affected.",
+    });
+    const none = { with_value: 0, without_value: 0 };
+    expect(Object.values(impact.core).every((c) => c.with_value + c.without_value === 0)).toBe(
+      true,
+    );
+    for (const f of impact.fields) expect(f).toMatchObject(none);
+    // And the list of kinds is his as it would be without it.
+    const kinds = json<{ items: Array<{ key: string; hidden: boolean }> }>(
+      await h.app.inject({ url: '/api/v1/document-types', headers: as(sam) }),
+    ).items;
+    expect(kinds.find((t) => t.key === 'medical_record')?.hidden).toBe(false);
+  });
+
   it('neither pass of search finds a word only that document contains', async () => {
     const first = json<{
       items: Array<{ document_id: string; snippet: string }>;

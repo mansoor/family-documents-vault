@@ -22,8 +22,9 @@ export interface ContractContext {
   spent?: string;
   /**
    * Hides a type for the household, as a household can from 0.5.6 on: the
-   * real API's run writes the household's setting, the fake's marks its
-   * type. Nothing in the API does it yet (5.11 will).
+   * real API's run asks it to (`PATCH /document-types/{key}`, 0.5.10), the
+   * fake's marks its type — so the scenarios an older client carries,
+   * which have no call for it, can still hide one.
    */
   hideType: (householdId: string, key: string) => Promise<void>;
 }
@@ -545,6 +546,118 @@ export const contractScenarios: Scenario[] = [
         notes: 'Joint',
       });
       expect(await listed(shared.id)).toMatchObject({ notes: 'Joint', has_notes: true });
+    },
+  },
+  {
+    name: "a household's own kind of document: made, renamed under the same key, archived, and deleted only while unused (0.5.10)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const me = await api.me(token);
+      const made = await api.createDocumentType(token, {
+        label: '  Allotment   tenancy ',
+        category: 'property',
+        core: { expires: { shown: true }, identifier: { label: 'Plot number', required: true } },
+        reminder_leads: [30, 60, 30],
+      });
+      expect(made.key).toMatch(/^h_[a-z2-7]{10}$/);
+      expect(made).toMatchObject({
+        label: 'Allotment tenancy',
+        category: 'property',
+        builtin: false,
+        hidden: false,
+        expiry_driver: 'expires_on',
+        reminder_leads: [60, 30],
+        default_visibility: 'household',
+        fields: [],
+        core: {
+          identifier: { shown: true, required: true, label: 'Plot number' },
+          expires: { shown: true },
+        },
+      });
+      expect(typeof made.etag).toBe('string');
+      expect((await api.documentTypes(token)).items.map((t) => t.key)).toContain(made.key);
+
+      // Renamed, it keeps its key; its tag moves on, and the old one is refused.
+      const renamed = await api.updateDocumentType(
+        token,
+        made.key,
+        { label: 'Allotment lease' },
+        made.etag,
+      );
+      expect(renamed).toMatchObject({ key: made.key, label: 'Allotment lease' });
+      expect(renamed.etag).not.toBe(made.etag);
+      const stale = await refusal(
+        api.updateDocumentType(token, made.key, { label: 'Plot' }, made.etag),
+      );
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      // A built-in keeps its name.
+      const builtin = await refusal(
+        api.updateDocumentType(token, 'passport', { label: 'Travel document' }),
+      );
+      expect(builtin).toMatchObject({ status: 422, code: 'validation_failed' });
+
+      // A field of the household's own, and the kind asking for it.
+      const size = await api.createDocumentAttribute(token, {
+        label: 'Plot size',
+        kind: 'choice',
+        choices: ['Half', 'Full', 'Half'],
+      });
+      expect(size.key).toMatch(/^h_[a-z2-7]{10}$/);
+      expect(size).toMatchObject({ label: 'Plot size', kind: 'choice', builtin: false });
+      expect(size.choices).toEqual(['Half', 'Full']);
+      const asking = await api.updateDocumentType(token, made.key, {
+        fields: [{ key: size.key, required: true }],
+      });
+      expect(asking.fields).toEqual([
+        {
+          key: size.key,
+          label: 'Plot size',
+          kind: 'choice',
+          required: true,
+          choices: ['Half', 'Full'],
+        },
+      ]);
+      const notThere = await refusal(
+        api.updateDocumentType(token, made.key, { fields: [{ key: 'no_such_field' }] }),
+      );
+      expect(notThere).toMatchObject({ status: 422, detail: 'no_such_field' });
+
+      // Filed under it, it is in use: counted, archived, never deleted.
+      const doc = await api.createDocument(token, {
+        type_key: made.key,
+        title: 'Plot 14',
+        owner_member_id: me.member_id,
+        identifier: 'P14',
+        expires: { date: '2031-03-31', precision: 'day' },
+        extra: { [size.key]: 'Half' },
+      });
+      expect(doc.status.value).toBe('active');
+      const impact = await api.documentTypeImpact(token, made.key);
+      expect(impact).toMatchObject({
+        key: made.key,
+        documents: 1,
+        unseen: "Documents you can't see may also be affected.",
+      });
+      expect(impact.core.identifier).toEqual({ with_value: 1, without_value: 0 });
+      expect(impact.core.expires).toEqual({ with_value: 1, without_value: 0 });
+      expect(impact.fields).toEqual([
+        { key: size.key, label: 'Plot size', with_value: 1, without_value: 0 },
+      ]);
+      const inUse = await refusal(api.deleteDocumentType(token, made.key));
+      expect(inUse).toMatchObject({ status: 409, code: 'type_in_use' });
+      expect((await api.archiveDocumentType(token, made.key)).hidden).toBe(true);
+      // Its document keeps it, and the list keeps it while the document is there.
+      expect((await api.document(token, doc.id)).type_key).toBe(made.key);
+      expect((await api.documentTypes(token)).items.find((t) => t.key === made.key)?.hidden).toBe(
+        true,
+      );
+      expect((await api.restoreDocumentType(token, made.key)).hidden).toBe(false);
+
+      // One nothing is filed under is deleted, and gone for good.
+      const spare = await api.createDocumentType(token, { label: 'Spare kind', category: 'other' });
+      await api.deleteDocumentType(token, spare.key);
+      const all = (await api.documentTypes(token, { all: true })).items.map((t) => t.key);
+      expect(all).not.toContain(spare.key);
     },
   },
   {

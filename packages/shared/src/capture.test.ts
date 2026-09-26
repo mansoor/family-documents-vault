@@ -4,6 +4,7 @@ import {
   CAPTURE_FIELDS,
   checkCaptureMetadata,
   effectiveVisibility,
+  PRIVATE_BY_DEFAULT,
   reminderSentence,
   type CaptureContext,
 } from './capture.js';
@@ -155,7 +156,29 @@ describe('the rules a capture keeps', () => {
         { type_key: 'therapy', owner_member_id: AISHA },
         { ...c, types: [secret] },
       ),
-    ).toMatchObject({ field: 'visibility' });
+    ).toMatchObject({
+      field: 'visibility',
+      status: 422,
+      // Said as the type's doing, not the person's (0.5.10).
+      message: PRIVATE_BY_DEFAULT,
+    });
+    // Nobody named is nobody's Only me either; a teen's own is theirs.
+    expect(checkCaptureMetadata({ type_key: 'therapy' }, { ...c, types: [secret] })).toMatchObject({
+      field: 'visibility',
+    });
+    expect(
+      checkCaptureMetadata({ type_key: 'therapy' }, { ...ctx('teen'), types: [secret] }),
+    ).toBeNull();
+    expect(
+      checkCaptureMetadata({ type_key: 'therapy', owner_member_id: ME }, { ...c, types: [secret] }),
+    ).toBeNull();
+    // Choosing who can see it is the way round it.
+    expect(
+      checkCaptureMetadata(
+        { type_key: 'therapy', owner_member_id: AISHA, visibility: 'adults' },
+        { ...c, types: [secret] },
+      ),
+    ).toBeNull();
   });
 
   it('the person is in the family, and the type is one the vault knows', () => {
@@ -169,16 +192,21 @@ describe('the rules a capture keeps', () => {
     });
   });
 
-  it('an expiry date needs a type that expires', () => {
+  it('an expiry date is never a reason to lose a scan, as POST /documents never refused one (0.5.10)', () => {
+    // A scan queued while the household's type still expired, sent after
+    // its Expires was switched off, was refused for good; the same date
+    // typed into the web was kept. Both keep it now, and it counts only
+    // while the type expires.
     const expires = { date: '2031-03-31', precision: 'month' as const };
-    expect(checkCaptureMetadata({ type_key: 'utility_bill', expires }, ctx())).toMatchObject({
-      field: 'expires',
-      message: "This kind of document doesn't expire, so it has no expiry date.",
-    });
-    expect(checkCaptureMetadata({ expires }, ctx())).toMatchObject({
-      field: 'expires',
-      message: 'Choose what it is before giving it an expiry date.',
-    });
+    expect(checkCaptureMetadata({ type_key: 'utility_bill', expires }, ctx())).toBeNull();
+    expect(checkCaptureMetadata({ expires }, ctx())).toBeNull();
+    // A date that is not one is still refused.
+    expect(
+      checkCaptureMetadata(
+        { type_key: 'passport', expires: { date: '2031-02-30', precision: 'day' } },
+        ctx(),
+      ),
+    ).toMatchObject({ field: 'expires', status: 422 });
   });
 
   it('a date is a real day, with a precision it agrees with', () => {
