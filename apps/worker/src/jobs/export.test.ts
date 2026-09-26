@@ -131,6 +131,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     owner: string,
     content: string,
     category = 'identity',
+    details: { type_key?: string; extra?: Record<string, unknown> } = {},
   ) {
     return withSystem(db, hh, async (trx) => {
       const doc = await trx
@@ -144,6 +145,8 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
           expires_on: '2031-03-31',
           expires_precision: 'month',
           identifier: 'ID-1',
+          ...(details.type_key ? { type_key: details.type_key } : {}),
+          ...(details.extra ? { extra: JSON.stringify(details.extra) } : {}),
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -258,5 +261,126 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       'Home insurance,,insurance,Mansoor,adults',
     );
     expect(entries.get('index.html')?.toString()).toContain('<td>March 2031</td>');
+  }, 60_000);
+
+  it('detail columns are labelled and formula-guarded', async () => {
+    // A type of the household's own, whose field somebody named like a formula.
+    const own = 'h_abcdefghij';
+    const field = 'h_klmnopqrst';
+    await admin.query(
+      `insert into document_type (key, label, category, household_id, fields)
+       values ($1, 'Season ticket', 'other', $2, $3)`,
+      [own, hh, JSON.stringify([{ key: field, label: '=HYPERLINK("x")', kind: 'text' }])],
+    );
+    await addDoc('Estate car', 'household', ownerMember, 'CAR BYTES', 'property', {
+      type_key: 'vehicle_registration',
+      extra: { vin: '=2+5', plate: 'AB12 CDE' },
+    });
+    await addDoc('Our wills', 'adults', ownerMember, 'WILL BYTES', 'legal', {
+      type_key: 'will',
+      extra: { last_reviewed: { date: '2026-03-31', precision: 'month' }, executor: '@Sana' },
+    });
+    await addDoc('Rail pass', 'household', ownerMember, 'PASS BYTES', 'other', {
+      type_key: own,
+      extra: { [field]: 'Annual', retired_key: true },
+    });
+    // Not the requester's to export: its details are not either.
+    await addDoc("Sana's car", 'private', otherMember, 'NOT FOR OWNER', 'property', {
+      type_key: 'vehicle_registration',
+      extra: { vin: 'SANASVIN0000001' },
+    });
+
+    const exportId = await withSystem(db, hh, (trx) =>
+      trx
+        .insertInto('export')
+        .values({ household_id: hh, requested_by: ownerAccount })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.id);
+    await buildExport(
+      {
+        db,
+        keys,
+        credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+        localRoot: vaultDir,
+        log: () => undefined,
+      },
+      { household_id: hh, export_id: exportId },
+    );
+    const row = await withSystem(db, hh, (trx) =>
+      trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
+    );
+    expect(row.state).toBe('done');
+    const hhKey = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'household' }),
+    );
+    const zip = await decryptToBuffer(
+      new LocalAdapter(vaultDir),
+      row.storage_key as string,
+      unwrapKey(row.file_key_wrapped as Buffer, hhKey.key, `export:${exportId}`),
+    );
+    const entries = zipEntries(zip);
+
+    // index.csv: a column for each detail, named as its type names it, and
+    // a name or a value a spreadsheet would run as a formula is written as text.
+    const [header = '', ...lines] = (entries.get('index.csv')?.toString() ?? '').split('\n');
+    const cols = header.split(',');
+    expect(cols.slice(0, 12)).toEqual([
+      'title',
+      'type_key',
+      'category',
+      'person',
+      'visibility',
+      'issued_by',
+      'issued',
+      'expires',
+      'identifier',
+      'physical_location',
+      'tags',
+      'notes',
+    ]);
+    expect(cols).toEqual(
+      expect.arrayContaining([
+        'VIN',
+        'Registration plate',
+        'Executor',
+        'Last reviewed',
+        `"'=HYPERLINK(""x"")"`,
+        'retired_key',
+      ]),
+    );
+    expect(cols.slice(-4)).toEqual(['file', 'version_no', 'sha256', 'document_id']);
+    const cell = (title: string, column: string) =>
+      lines.find((l) => l.startsWith(`${title},`))?.split(',')[cols.indexOf(column)];
+    expect(cell('Estate car', 'VIN')).toBe("'=2+5");
+    expect(cell('Estate car', 'Registration plate')).toBe('AB12 CDE');
+    expect(cell('Our wills', 'Executor')).toBe("'@Sana");
+    expect(cell('Our wills', 'Last reviewed')).toBe('March 2026');
+    expect(cell('Rail pass', `"'=HYPERLINK(""x"")"`)).toBe('Annual');
+    expect(cell('Rail pass', 'retired_key')).toBe('Yes');
+    expect(cell('Estate car', 'Executor')).toBe('');
+
+    // index.json keeps the details as the vault does, with what each is called.
+    const index = JSON.parse(entries.get('index.json')?.toString() ?? '{}') as {
+      details: Array<{ key: string; label: string }>;
+      documents: Array<{ title: string; extra: Record<string, unknown> }>;
+    };
+    expect(index.details).toEqual(
+      expect.arrayContaining([
+        { key: 'vin', label: 'VIN' },
+        { key: 'plate', label: 'Registration plate' },
+        { key: field, label: '=HYPERLINK("x")' },
+      ]),
+    );
+    expect(index.documents.find((d) => d.title === 'Our wills')?.extra).toEqual({
+      last_reviewed: { date: '2026-03-31', precision: 'month' },
+      executor: '@Sana',
+    });
+    // index.html lists them, escaped.
+    const page = entries.get('index.html')?.toString() ?? '';
+    expect(page).toContain('VIN: =2+5<br>Registration plate: AB12 CDE');
+    expect(page).toContain('=HYPERLINK(&quot;x&quot;): Annual');
+    // Somebody else's Only me car is in none of it.
+    expect(Buffer.concat([...entries.values()]).includes(Buffer.from('SANASVIN'))).toBe(false);
   }, 60_000);
 });

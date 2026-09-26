@@ -262,6 +262,11 @@ export interface DocumentInput {
   is_essential?: boolean;
   tags?: string[];
   notes?: string | null;
+  /**
+   * The type's own details, by field key (0.5.7). An edit merges them: a
+   * key left out stays as it is, and null takes it away.
+   */
+  extra?: Record<string, unknown>;
 }
 
 export interface Counts {

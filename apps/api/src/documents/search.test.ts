@@ -3,6 +3,7 @@ import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
+import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
@@ -142,6 +143,85 @@ describe.skipIf(!testAdminUrl())('search', () => {
     expect((await search('insurance', '&category=insurance')).items.length).toBeGreaterThan(0);
     expect((await search('insurance', '&category=pets')).items).toEqual([]);
     expect((await search('zqxjkv')).items).toEqual([]);
+  });
+
+  const create = async (payload: Record<string, unknown>) =>
+    (
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/documents',
+        headers: h.as(owner),
+        payload: { owner_member_id: owner.member_id, ...payload },
+      })
+    ).json<DocumentView>().id;
+
+  /** A document's search terms, read as every request reads them: as the application role. */
+  const indexed = async (id: string) =>
+    (
+      await withSystem(h.db, owner.household_id, (trx) =>
+        sql<{
+          terms: string;
+          role: string;
+        }>`select search_tsv::text as terms, current_user as role from document where id = ${id}`.execute(
+          trx,
+        ),
+      )
+    ).rows[0];
+
+  it('a VIN finds the car', async () => {
+    const car = await create({
+      type_key: 'vehicle_registration',
+      title: 'Family estate car',
+      extra: { vin: 'JM1BK32F781234567', plate: 'KX19 ZLT' },
+    });
+    const byVin = await search('JM1BK32F781234567');
+    expect(byVin.items.map((i) => i.document_id)).toEqual([car]);
+    expect(byVin.items[0]?.matched_in).toBe('title');
+    expect(byVin.items[0]?.snippet).toContain('<em>JM1BK32F781234567</em>');
+    // The plate, word by word; and an edit's new detail at once.
+    expect((await search('KX19')).items.map((i) => i.document_id)).toContain(car);
+    await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${car}`,
+      headers: h.as(owner),
+      payload: { extra: { plate: 'LM20 QRS' } },
+    });
+    expect((await search('LM20')).items.map((i) => i.document_id)).toEqual([car]);
+    expect((await search('KX19')).items.map((i) => i.document_id)).not.toContain(car);
+  });
+
+  it("an Only me document's details never enter the search index", async () => {
+    const hidden = await create({
+      type_key: 'vehicle_registration',
+      title: 'Private car',
+      visibility: 'private',
+      extra: { vin: 'ZZPRIVATEVIN0001', plate: 'QQ11 PRV' },
+    });
+    const own = await indexed(hidden);
+    expect(own?.role).toBe('fdv_app_test');
+    // Its title is searched, as ever; its details are nowhere in the index.
+    expect(own?.terms).toContain("'private'");
+    expect(own?.terms).not.toMatch(/zzprivatevin0001|qq11|prv/);
+    expect((await search('ZZPRIVATEVIN0001')).items).toEqual([]);
+    expect((await search('QQ11')).items).toEqual([]);
+
+    // A household document's details are in it, until it is made Only me.
+    const shared = await create({
+      type_key: 'vehicle_registration',
+      title: 'Shared car',
+      extra: { vin: 'ZZSHAREDVIN0002' },
+    });
+    expect((await indexed(shared))?.terms).toContain("'zzsharedvin0002'");
+    expect((await search('ZZSHAREDVIN0002')).items.map((i) => i.document_id)).toEqual([shared]);
+    const made = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${shared}/visibility`,
+      headers: h.as(owner),
+      payload: { visibility: 'private' },
+    });
+    expect(made.statusCode).toBe(200);
+    expect((await indexed(shared))?.terms).not.toContain('zzsharedvin0002');
+    expect((await search('ZZSHAREDVIN0002')).items).toEqual([]);
   });
 
   it('answers in well under half a second across fifty documents (NFR-02)', async () => {

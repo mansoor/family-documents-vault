@@ -1,4 +1,11 @@
-import type { DateValue, DocumentTypeView, Visibility } from './documents.js';
+import { checkExtra } from './details.js';
+import {
+  wellFormedDate,
+  type DateValue,
+  type DocumentTypeView,
+  type TypeField,
+  type Visibility,
+} from './documents.js';
 import { can, type Role } from './roles.js';
 import { issuerNoun, monthYear } from './titles.js';
 
@@ -22,6 +29,12 @@ export interface CaptureMetadata {
   is_essential?: boolean;
   tags?: string[];
   notes?: string | null;
+  /**
+   * The type's own details, by field key (0.5.7), each checked by its kind
+   * (details.ts). A vault before 0.5.7 refuses the field: send it only to
+   * one whose types have fields to fill in.
+   */
+  extra?: Record<string, unknown>;
 }
 
 /** The fields a capture's metadata may hold, in the order the card asks them. */
@@ -38,6 +51,7 @@ export const CAPTURE_FIELDS = [
   'is_essential',
   'tags',
   'notes',
+  'extra',
 ] as const satisfies ReadonlyArray<keyof CaptureMetadata>;
 
 export interface CaptureContext {
@@ -45,33 +59,25 @@ export interface CaptureContext {
   me: { member_id: string; role: Role };
   /** The household's people. */
   members: ReadonlyArray<{ id: string }>;
-  /** The document types the vault knows. */
-  types: ReadonlyArray<Pick<DocumentTypeView, 'key' | 'expiry_driver' | 'default_visibility'>>;
+  /**
+   * The document types the vault knows, and each one's own fields, which
+   * its details are checked against. A type given without its fields has
+   * its details left to the server.
+   */
+  types: ReadonlyArray<
+    Pick<DocumentTypeView, 'key' | 'expiry_driver' | 'default_visibility'> & {
+      fields?: ReadonlyArray<Pick<TypeField, 'key' | 'label' | 'kind' | 'choices'>>;
+    }
+  >;
 }
 
 /** Why a capture's details were refused: the field, the words, the status. */
 export interface CaptureProblem {
   field: keyof CaptureMetadata;
+  /** Which of the type's details, when the problem is in `extra` (0.5.7). */
+  key?: string;
   message: string;
   status: 403 | 422;
-}
-
-const PRECISIONS = new Set(['day', 'month', 'year']);
-
-/** A date the card could have sent: a real day, with a precision it agrees with. */
-function wellFormed(d: DateValue): boolean {
-  if (!PRECISIONS.has(d.precision)) return false;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d.date);
-  if (!m) return false;
-  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const dt = new Date(Date.UTC(y, mo - 1, day));
-  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== day) {
-    return false;
-  }
-  // A month is stored as its last day, a year as 31 December.
-  if (d.precision === 'month') return new Date(Date.UTC(y, mo, 0)).getUTCDate() === day;
-  if (d.precision === 'year') return mo === 12 && day === 31;
-  return true;
 }
 
 /**
@@ -85,7 +91,10 @@ function wellFormed(d: DateValue): boolean {
  *  - the person is in the family, and the type is one the vault knows;
  *  - an expiry date needs a type that expires;
  *  - a date is a real day, with a precision it agrees with;
- *  - text fits: the same limits POST /documents keeps.
+ *  - text fits: the same limits POST /documents keeps;
+ *  - the details are the type's own, each of its kind (0.5.7). A required
+ *    one left out is not a problem: the document is Needs info until it is
+ *    given (A7).
  *
  * Returns the first problem, or null.
  */
@@ -126,7 +135,7 @@ export function checkCaptureMetadata(
   }
   for (const field of ['issued', 'expires'] as const) {
     const d = meta[field];
-    if (d != null && !wellFormed(d)) {
+    if (d != null && !wellFormedDate(d)) {
       return {
         field,
         message: 'Send a date as a day, a month or a year, with its precision.',
@@ -142,6 +151,18 @@ export function checkCaptureMetadata(
   }
   if (meta.tags && (meta.tags.length > 50 || meta.tags.some((t) => t.length > 40))) {
     return { field: 'tags', message: 'At most 50 tags, of 40 characters each.', status: 422 };
+  }
+  // A type queued with no fields to hand leaves its details to the server.
+  if (meta.extra != null && (!type || type.fields !== undefined)) {
+    const checked = checkExtra(meta.extra, type?.fields ?? []);
+    if ('problem' in checked) {
+      return {
+        field: 'extra',
+        key: checked.problem.key,
+        message: checked.problem.message,
+        status: 422,
+      };
+    }
   }
   if (meta.expires != null && !type?.expiry_driver) {
     return {

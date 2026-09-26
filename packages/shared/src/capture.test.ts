@@ -194,6 +194,40 @@ describe('the rules a capture keeps', () => {
       });
     }
   });
+
+  it("a type's details are its own, each of its kind, checked before the scan is queued (0.5.7)", () => {
+    const car = {
+      ...bill,
+      key: 'vehicle_registration',
+      fields: [
+        { key: 'vin', label: 'VIN', kind: 'text' as const },
+        { key: 'plate', label: 'Registration plate', kind: 'text' as const, required: true },
+      ],
+    };
+    const withCar: CaptureContext = { ...ctx(), types: [passport, bill, car] };
+    const vin = { type_key: 'vehicle_registration', extra: { vin: 'JM1BK32F781234567' } };
+    // A required one left out is not a problem: it is Needs info until given.
+    expect(checkCaptureMetadata(vin, withCar)).toBeNull();
+    expect(checkCaptureMetadata({ ...vin, extra: { vin: 'JM1', colour: 'Red' } }, withCar)).toEqual(
+      {
+        field: 'extra',
+        key: 'colour',
+        message: 'This kind of document has no detail called "colour".',
+        status: 422,
+      },
+    );
+    expect(
+      checkCaptureMetadata({ ...vin, extra: { vin: 'V'.repeat(501) } }, withCar),
+    ).toMatchObject({ field: 'extra', key: 'vin', status: 422 });
+    // No type, no details; a type queued with no fields to hand, the server's to judge.
+    expect(checkCaptureMetadata({ extra: { vin: 'JM1' } }, withCar)).toMatchObject({
+      key: 'vin',
+    });
+    expect(checkCaptureMetadata({ type_key: 'utility_bill', extra: { vin: 'JM1' } }, ctx())).toBe(
+      null,
+    );
+    expect(CAPTURE_FIELDS).toContain('extra');
+  });
 });
 
 describe('what the card writes for you', () => {

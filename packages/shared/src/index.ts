@@ -2,6 +2,7 @@ export * from './version.js';
 export * from './activity.js';
 export * from './capabilities.js';
 export * from './capture.js';
+export * from './details.js';
 export * from './issuers.js';
 export * from './offline.js';
 export * from './push.js';

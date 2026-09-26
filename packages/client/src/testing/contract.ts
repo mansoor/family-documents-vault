@@ -41,6 +41,8 @@ const DETAILS_KEY = '5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a';
 const LATE_KEY = '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d';
 const ISSUER_KEY = '2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091';
 const PAGES_KEY = '3c4d5e6f-7081-4923-8a4b-5c6d7e8f9012';
+const EXTRA_KEY = '4d5e6f70-8192-4a34-9b5c-6d7e8f901234';
+const REFUSED_EXTRA_KEY = '5e6f7081-92a3-4b45-8c6d-7e8f90123456';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -388,7 +390,9 @@ export const contractScenarios: Scenario[] = [
         expiry_driver: 'expires_on',
         issued_by_label: 'Issuing country',
         core: {
-          expires: { shown: true, required: false, label: null },
+          // What makes a passport of use (0.5.7): its number, by that name, and its expiry.
+          identifier: { shown: true, required: true, label: 'Passport number' },
+          expires: { shown: true, required: true, label: null },
           issued_by: { shown: true, required: false, label: 'Issuing country' },
         },
       });
@@ -431,6 +435,74 @@ export const contractScenarios: Scenario[] = [
       const all = (await api.documentTypes(t.access_token, { all: true })).items;
       expect(all.find((x) => x.key === 'birth_certificate')?.hidden).toBe(true);
       expect(all.length).toBe(listed.length + 1);
+    },
+  },
+  {
+    name: "a type's details are kept from the capture, merged by an edit, and a missing one is Needs info (0.5.7)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const me = await api.me(token);
+      const file = {
+        kind: 'bytes' as const,
+        filename: 'certificate.pdf',
+        contentType: 'application/pdf',
+        bytes: PDF,
+      };
+      // Hidden above, and still taken: a phone queued it against the list it had.
+      const made = await api.capture(
+        token,
+        {
+          metadata: {
+            type_key: 'birth_certificate',
+            owner_member_id: me.member_id,
+            extra: { registration_no: '  R-1234 ', place_of_birth: 'Leeds' },
+          },
+          file,
+        },
+        EXTRA_KEY,
+      );
+      const doc = await api.document(token, made.document_id);
+      expect(doc.extra).toEqual({ registration_no: 'R-1234', place_of_birth: 'Leeds' });
+      expect(doc.status.value).toBe('valid');
+
+      // An edit merges: what it leaves out stays, and null takes a key away.
+      const edited = await api.updateDocument(token, doc.id, { extra: { place_of_birth: null } });
+      expect(edited.extra).toEqual({ registration_no: 'R-1234' });
+
+      // A detail the type does not have, or of the wrong kind, is refused and named.
+      const unknown = await refusal(
+        api.updateDocument(token, doc.id, { extra: { shoe_size: '9' } }),
+      );
+      expect(unknown).toMatchObject({ status: 422, code: 'invalid_extra', detail: 'shoe_size' });
+      expect(unknown.message).toContain('shoe_size');
+      const wrong = await refusal(
+        api.updateDocument(token, doc.id, { extra: { registration_no: 1234 } }),
+      );
+      expect(wrong).toMatchObject({
+        status: 422,
+        code: 'invalid_extra',
+        detail: 'registration_no',
+      });
+      const refused = await refusal(
+        api.capture(
+          token,
+          { metadata: { type_key: 'birth_certificate', extra: { shoe_size: '9' } }, file },
+          REFUSED_EXTRA_KEY,
+        ),
+      );
+      expect(refused).toMatchObject({ status: 422, code: 'invalid_extra', detail: 'shoe_size' });
+      expect((await refusal(api.uploadStatus(token, REFUSED_EXTRA_KEY))).status).toBe(404);
+
+      // A passport with no number is kept, and says what it needs.
+      const passport = await api.createDocument(token, {
+        type_key: 'passport',
+        title: 'Contract passport, no number',
+        owner_member_id: me.member_id,
+        expires: { date: '2036-03-31', precision: 'month' },
+      });
+      expect(passport.status).toEqual({ value: 'needs_info', label: 'Needs a passport number' });
+      const numbered = await api.updateDocument(token, passport.id, { identifier: '563914782' });
+      expect(numbered.status.value).toBe('active');
     },
   },
   {

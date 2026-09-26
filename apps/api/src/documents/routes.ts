@@ -33,6 +33,8 @@ const documentBody = z
     is_essential: z.boolean(),
     tags: z.array(z.string().max(40)).max(50),
     notes: z.string().max(10_000).nullable(),
+    // The type's own details (0.5.7): checked against the type in the
+    // service, and on an edit merged — null takes a key away.
     extra: z.record(z.string(), z.unknown()),
     // API spec §9: a client-set status is refused.
     status: z.never().optional(),
@@ -59,6 +61,7 @@ const captureBody = documentBody
     is_essential: true,
     tags: true,
     notes: true,
+    extra: true,
   })
   .strict();
 

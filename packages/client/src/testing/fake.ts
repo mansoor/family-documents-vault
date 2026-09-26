@@ -1,12 +1,16 @@
 import {
   checkCaptureMetadata,
+  checkExtra,
   CORE_FIELDS,
+  deriveStatus,
   effectiveVisibility,
+  missingFields,
   PREVIEW_MAX_PAGES,
   type Capabilities,
   type CaptureMetadata,
   type CoreField,
   type CoreFieldRule,
+  type DateValue,
   type DocumentAttributeView,
   type DocumentTypeView,
   type DocumentView,
@@ -90,47 +94,54 @@ export interface FakeVaultState {
 
 type FakeDocument = { id: string; title: string | null } & Omit<
   CaptureMetadata,
-  'title' | 'issued' | 'expires' | 'tags'
+  'title' | 'issued' | 'tags'
 >;
 
 /**
- * The fixed fields as a built-in asks for them (0.5.6): every one shown,
- * none required, in the app's own words — but an expiry only for a type
- * that expires, and the issuer by the type's word for it.
+ * The fixed fields as a built-in asks for them (0.5.6): every one shown, in
+ * the app's own words — but an expiry only for a type that expires, and the
+ * issuer by the type's word for it. Required, and named, as the built-in
+ * says (0.5.7: a passport's number and expiry).
  */
-function coreOf(type: {
-  expiry_driver: string | null;
-  issued_by_label?: string | null;
-}): Record<CoreField, CoreFieldRule> {
+function coreOf(
+  type: { expiry_driver: string | null; issued_by_label?: string | null },
+  own: Partial<Record<CoreField, Partial<CoreFieldRule>>> = {},
+): Record<CoreField, CoreFieldRule> {
   const core = Object.fromEntries(
-    CORE_FIELDS.map((f) => [f, { shown: true, required: false, label: null }]),
+    CORE_FIELDS.map((f) => [f, { shown: true, required: false, label: null, ...own[f] }]),
   ) as Record<CoreField, CoreFieldRule>;
   core.expires.shown = type.expiry_driver !== null;
   core.issued_by.label = type.issued_by_label ?? null;
   return core;
 }
 
-const builtin = (t: Omit<DocumentTypeView, 'builtin' | 'hidden' | 'core'>): DocumentTypeView => ({
+const builtin = (
+  t: Omit<DocumentTypeView, 'builtin' | 'hidden' | 'core'>,
+  core: Partial<Record<CoreField, Partial<CoreFieldRule>>> = {},
+): DocumentTypeView => ({
   short_label: null,
   issuer_noun: null,
   ...t,
   builtin: true,
   hidden: false,
-  core: coreOf(t),
+  core: coreOf(t, core),
 });
 
 const FAKE_TYPES: DocumentTypeView[] = [
-  builtin({
-    key: 'passport',
-    label: 'Passport',
-    category: 'identity',
-    fields: [],
-    expiry_driver: 'expires_on',
-    reminder_leads: [270, 180],
-    usually_essential: true,
-    default_visibility: 'household',
-    issued_by_label: 'Issuing country',
-  }),
+  builtin(
+    {
+      key: 'passport',
+      label: 'Passport',
+      category: 'identity',
+      fields: [],
+      expiry_driver: 'expires_on',
+      reminder_leads: [270, 180],
+      usually_essential: true,
+      default_visibility: 'household',
+      issued_by_label: 'Issuing country',
+    },
+    { identifier: { required: true, label: 'Passport number' }, expires: { required: true } },
+  ),
   builtin({
     key: 'bank_statement',
     label: 'Bank / investment statement',
@@ -411,15 +422,42 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         totp_required: true,
       });
     }
+    /** A document as the real vault answers it, with its status in words (0.5.7). */
+    const viewOf = (doc: FakeDocument) => documentView(doc, state.types);
+    /**
+     * The details sent for a document, checked as the real vault checks
+     * them (0.5.7): against the type it will have, merged into what it
+     * holds, null taking a key away. A refusal names the key.
+     */
+    const detailsFor = (typeKey: string | null | undefined, sent: unknown, held = {}) => {
+      const fields = state.types.find((t) => t.key === typeKey)?.fields ?? [];
+      const checked = checkExtra((sent ?? {}) as Record<string, unknown>, fields, held);
+      if ('problem' in checked) {
+        return fail(422, 'invalid_extra', checked.problem.message, checked.problem.key);
+      }
+      const merged: Record<string, unknown> = { ...held };
+      for (const key of checked.remove) delete merged[key];
+      return Object.assign(merged, checked.set);
+    };
     if (path === '/api/v1/documents') {
       const s = session();
       if (!('id' in s)) return s;
       if (init.method === 'POST') {
+        const type_key = (body.type_key as string | null | undefined) ?? null;
+        if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
+          return fail(422, 'validation_failed', 'That kind of document is not on the list.');
+        }
+        const extra = detailsFor(type_key, body.extra);
+        if (isResponse(extra)) return extra;
         const doc: FakeDocument = {
           id: next('document'),
           title: (body.title as string | null) ?? null,
-          type_key: (body.type_key as string | null | undefined) ?? null,
+          type_key,
+          owner_member_id: (body.owner_member_id as string | null | undefined) ?? null,
+          identifier: tidy(body.identifier as string | null | undefined),
           issued_by: tidy(body.issued_by as string | null | undefined),
+          expires: (body.expires as DateValue | null | undefined) ?? null,
+          extra,
         };
         state.documents.push(doc);
         return ok(viewOf(doc), 201);
@@ -430,6 +468,38 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         ? state.documents.filter((d) => d.issued_by?.toLowerCase() === by.trim().toLowerCase())
         : state.documents;
       return ok({ items: items.map(viewOf), next_cursor: null, has_more: false });
+    }
+    // One document, and an edit to it: the details merged, as the real
+    // vault merges them (0.5.7), so a client never wipes what it did not show.
+    const one = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
+    if (one && (init.method === 'GET' || init.method === 'PATCH')) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const doc = state.documents.find((d) => d.id === decodeURIComponent(one[1] as string));
+      if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      if (init.method === 'GET') return ok(viewOf(doc));
+      const type_key =
+        body.type_key !== undefined ? (body.type_key as string | null) : (doc.type_key ?? null);
+      if (type_key !== null && !state.types.some((t) => t.key === type_key)) {
+        return fail(422, 'validation_failed', 'That kind of document is not on the list.');
+      }
+      let extra = doc.extra ?? {};
+      if (body.extra !== undefined) {
+        const merged = detailsFor(type_key, body.extra, extra);
+        if (isResponse(merged)) return merged;
+        extra = merged;
+      }
+      Object.assign(doc, { type_key, extra });
+      if (body.title !== undefined) doc.title = (body.title as string | null) ?? null;
+      if (body.owner_member_id !== undefined) {
+        doc.owner_member_id = body.owner_member_id as string | null;
+      }
+      if (body.identifier !== undefined) {
+        doc.identifier = tidy(body.identifier as string | null);
+      }
+      if (body.issued_by !== undefined) doc.issued_by = tidy(body.issued_by as string | null);
+      if (body.expires !== undefined) doc.expires = body.expires as DateValue | null;
+      return ok(viewOf(doc));
     }
     // Uploads, the way the real vault treats their keys: a retry is answered
     // with what the first try made, marked as a replay; a key used for one
@@ -481,6 +551,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           } catch {
             return fail(422, 'validation_failed', 'The details must be sent as JSON.');
           }
+          // As the real vault: a type the household has hidden is still
+          // taken, since a phone queues a scan against the list it had.
           const problem = checkCaptureMetadata(metadata, {
             me: { member_id: 'fake-member', role: 'owner' },
             members: state.members,
@@ -489,17 +561,27 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           if (problem) {
             return fail(
               problem.status,
-              problem.status === 403 ? 'forbidden' : 'validation_failed',
+              problem.field === 'extra'
+                ? 'invalid_extra'
+                : problem.status === 403
+                  ? 'forbidden'
+                  : 'validation_failed',
               problem.message,
+              problem.key,
             );
           }
         }
+        const extra = detailsFor(metadata.type_key, metadata.extra);
+        if (isResponse(extra)) return extra;
         const doc: FakeDocument = {
           id: next('document'),
           title: metadata.title ?? null,
           type_key: metadata.type_key ?? null,
           owner_member_id: metadata.owner_member_id ?? null,
+          identifier: tidy(metadata.identifier),
           issued_by: tidy(metadata.issued_by),
+          expires: metadata.expires ?? null,
+          extra,
           visibility: effectiveVisibility(
             metadata,
             state.types.find((t) => t.key === metadata.type_key),
@@ -749,16 +831,39 @@ function answer(made: FakeUpload) {
     : { id: made.version_id, document_id: made.document_id };
 }
 
-function viewOf(doc: FakeDocument): DocumentView {
+/**
+ * A document as the real vault answers it: the fields the fake keeps, its
+ * details, and its status — worked out as the vault works it out, so a
+ * type's missing required field reads "Needs a passport number" (0.5.7).
+ */
+function documentView(doc: FakeDocument, types: ReadonlyArray<DocumentTypeView>): DocumentView {
+  const type = types.find((t) => t.key === doc.type_key);
+  const expires = doc.expires ?? null;
   return {
     id: doc.id,
     title: doc.title,
     type_key: doc.type_key ?? null,
     owner_member_id: doc.owner_member_id ?? null,
+    identifier: doc.identifier ?? null,
     issued_by: doc.issued_by ?? null,
+    expires,
     visibility: doc.visibility ?? 'household',
+    extra: doc.extra ?? {},
+    status: deriveStatus(
+      {
+        type: type ?? null,
+        owner_member_id: doc.owner_member_id ?? null,
+        expires,
+        missing: missingFields(type, { ...doc, expires }),
+      },
+      new Date().toISOString().slice(0, 10),
+    ),
   } as DocumentView;
 }
+
+/** A refusal the fake has already made, rather than a value to use. */
+const isResponse = (v: unknown): v is ResponseLike =>
+  typeof v === 'object' && v !== null && 'status' in v && 'ok' in v && 'json' in v;
 
 function respond(
   status: number,
@@ -798,8 +903,16 @@ function picture(bytes: Uint8Array): ResponseLike {
   };
 }
 const empty = () => respond(204, undefined);
-const fail = (status: number, code: string, message: string) =>
-  respond(status, { error: { code, message, retriable: false, request_id: 'fake' } });
+const fail = (status: number, code: string, message: string, detail?: string) =>
+  respond(status, {
+    error: {
+      code,
+      message,
+      ...(detail !== undefined ? { detail } : {}),
+      retriable: false,
+      request_id: 'fake',
+    },
+  });
 /** A session that has ended, and why, as the real vault says it (0.4.11). */
 const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed') =>
   respond(401, {

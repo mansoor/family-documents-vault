@@ -1,11 +1,11 @@
 import type { ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
 import { withPrincipal, type Db } from '@fdv/db';
-import { deriveStatus, matchText, parseQuery, type DateValue } from '@fdv/shared';
+import { matchText, parseQuery, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
-import type { SearchHit } from './service.js';
+import { statusOf, type SearchHit } from './service.js';
 import { verifySealedToken } from './sealed-token.js';
 
 /**
@@ -36,6 +36,11 @@ interface SealedRow {
   issued_by: string | null;
   issued_on: string | null;
   issued_precision: DateValue['precision'] | null;
+  identifier: string | null;
+  physical_location: string | null;
+  tags: string[];
+  notes: string | null;
+  extra: Record<string, unknown> | null;
   content_cipher: Buffer;
   wrapped_by_scope: string;
   updated_at: Date;
@@ -64,6 +69,7 @@ export class SealedSearchService {
                d.id as document_id, d.title, d.type_key, d.category, d.owner_member_id,
                d.expires_on, d.expires_precision, d.updated_at,
                d.issued_by, d.issued_on, d.issued_precision,
+               d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                s.content_cipher, v.wrapped_by_scope
           from document_text_sealed s
           join document d on d.id = s.document_id
@@ -81,7 +87,7 @@ export class SealedSearchService {
          limit ${MAX_DOCUMENTS}`.execute(trx);
 
       const scopeKeys = new Map<string, Buffer>();
-      const types = new Map<string, { expiry_driver: string | null; reminder_leads: number[] }>();
+      const types = new Map<string, Parameters<typeof statusOf>[0] & object>();
       const scored: Array<{ hit: SearchHit; hits: number; updated: number }> = [];
 
       for (const row of rows.rows) {
@@ -98,7 +104,7 @@ export class SealedSearchService {
         if (row.type_key && !types.has(row.type_key)) {
           const t = await trx
             .selectFrom('effective_document_type')
-            .select(['expiry_driver', 'reminder_leads'])
+            .select(['key', 'expiry_driver', 'reminder_leads', 'core', 'fields'])
             .where('key', '=', row.type_key)
             .executeTakeFirst();
           if (t) types.set(row.type_key, t);
@@ -106,6 +112,9 @@ export class SealedSearchService {
         const type = row.type_key ? types.get(row.type_key) : undefined;
         const expires = row.expires_on
           ? { date: row.expires_on, precision: row.expires_precision ?? 'day' }
+          : null;
+        const issued = row.issued_on
+          ? { date: String(row.issued_on).slice(0, 10), precision: row.issued_precision ?? 'day' }
           : null;
         scored.push({
           hits: m.hits,
@@ -117,26 +126,8 @@ export class SealedSearchService {
             category: row.category,
             owner_member_id: row.owner_member_id,
             issued_by: row.issued_by,
-            issued: row.issued_on
-              ? {
-                  date: String(row.issued_on).slice(0, 10),
-                  precision: row.issued_precision ?? 'day',
-                }
-              : null,
-            status: deriveStatus(
-              {
-                type: type
-                  ? {
-                      key: row.type_key as string,
-                      expiry_driver: type.expiry_driver,
-                      reminder_leads: type.reminder_leads,
-                    }
-                  : null,
-                owner_member_id: row.owner_member_id,
-                expires,
-              },
-              new Date().toISOString().slice(0, 10),
-            ),
+            issued,
+            status: statusOf(type, { ...row, issued, expires }),
             snippet: m.snippet,
             matched_in: 'content',
             // Ranks here are not comparable with PostgreSQL's, and saying
