@@ -252,6 +252,10 @@ export async function registerDocuments(
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
     const body = parse(documentBody, req.body ?? {});
+    // Essential turned off, or out of "only me": what opening it asks is
+    // asked first, or one tap takes the question away (5.4, SEC-17).
+    const ask = stepUp ? await docs.stepUpToLoosen(principal(req), req.params.id, body) : null;
+    if (stepUp && ask) await stepUp.require(principal(req), ask);
     // A visibility change rewraps keys and moves text; it is never a plain
     // column update. It runs first so the ETag check below sees its effect.
     const { visibility: nextVisibility, ...rest } = body;
@@ -282,6 +286,9 @@ export async function registerDocuments(
         z.object({ visibility: z.enum(['household', 'adults', 'private']) }),
         req.body,
       );
+      // Out of "only me" asks what opening it asks (5.4); into it, nothing.
+      const ask = stepUp ? await docs.stepUpToLoosen(principal(req), req.params.id, body) : null;
+      if (stepUp && ask) await stepUp.require(principal(req), ask);
       // Answering with the notice rather than 204: the moment somebody is
       // told "only you can open this" is part of the act, not a separate
       // thing the client has to know to go and ask about (SEC-19).

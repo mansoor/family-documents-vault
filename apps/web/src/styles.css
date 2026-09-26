@@ -1027,7 +1027,8 @@ h3 {
     bottom: var(--menu-bottom, auto);
     right: var(--menu-right, 16px);
     width: 280px;
-    max-height: 60vh;
+    /* No taller than the room on its side of the ⋯ (DocActions.tsx beside()). */
+    max-height: min(60vh, var(--menu-max, 60vh));
     box-shadow: 0 8px 24px var(--scrim);
   }
 

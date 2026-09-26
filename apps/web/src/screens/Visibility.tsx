@@ -37,6 +37,11 @@ export function VisibilityControl(props: {
    * save, or "I understand" closes the sheet it is in.
    */
   onClose?: () => void;
+  /**
+   * A change is being saved. The sheet it is in stays open until it is
+   * done: the vault says "Only you can open this" once, and only here.
+   */
+  onBusy?: (busy: boolean) => void;
 }) {
   const { guarded } = useApp();
   const [open, setOpen] = useState(Boolean(props.onClose));
@@ -51,8 +56,13 @@ export function VisibilityControl(props: {
   const choices = props.isMine ? CHOICES : CHOICES.filter((c) => c.value !== 'private');
   if (props.current === 'private' && !props.isMine) return null;
 
+  const working = (on: boolean) => {
+    setBusy(on);
+    props.onBusy?.(on);
+  };
+
   const save = async () => {
-    setBusy(true);
+    working(true);
     setError(null);
     try {
       const result = await guarded((t) => api.setVisibility(t, props.documentId, choice));
@@ -63,7 +73,7 @@ export function VisibilityControl(props: {
     } catch (err) {
       setError(describeError(err));
     } finally {
-      setBusy(false);
+      working(false);
     }
   };
 
@@ -108,7 +118,12 @@ export function VisibilityControl(props: {
         <Button disabled={busy || choice === props.current} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save'}
         </Button>
-        <Button kind="quiet" onClick={() => (props.onClose ? props.onClose() : setOpen(false))}>
+        {/* Not while it is being saved: it would be saved, and the notice never shown. */}
+        <Button
+          kind="quiet"
+          disabled={busy}
+          onClick={() => (props.onClose ? props.onClose() : setOpen(false))}
+        >
           Cancel
         </Button>
       </div>

@@ -1,6 +1,7 @@
 import { can, type DocumentView, type Role } from '@fdv/shared';
 import {
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -71,7 +72,8 @@ export function actionsFor(
   const mine = Boolean(memberId) && doc.owner_member_id === memberId;
   if (hasFile) actions.push('read');
   if (changes) actions.push('edit');
-  if (can(role, 'document.share')) actions.push('share');
+  // A link sends the file: with none yet, the vault has nothing to send.
+  if (hasFile && can(role, 'document.share')) actions.push('share');
   // Making something Only me, or taking it back, is its owner's alone.
   if (can(role, 'document.visibility') && (doc.visibility !== 'private' || mine)) {
     actions.push('visibility');
@@ -105,22 +107,31 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
   }
 }
 
+/** The most the menu can be: an owner's nine items, 44 px each, and its edges. */
+const MENU_TALLEST = 9 * 44 + 18;
+/** However little room there is, three items and a bit, so it is seen to scroll. */
+const MENU_SHORTEST = 132;
+
 /**
  * Where the menu sits on a wide screen: under the ⋯ with its right edge
- * lined up, or above it when the ⋯ is low on the screen. A narrow screen
- * ignores this and shows a sheet from the bottom (styles.css).
+ * lined up, or above it when there is not room for it below and there is
+ * more above. It is never taller than the room on its side, so all of it
+ * is on the screen, scrolling inside itself when it has to. A narrow
+ * screen ignores this and shows a sheet from the bottom (styles.css).
  */
-function beside(button: HTMLElement | null): CSSProperties {
+export function beside(button: HTMLElement | null): CSSProperties {
   if (!button) return {};
   const r = button.getBoundingClientRect();
+  const high = window.innerHeight;
+  const below = high - r.bottom - 8;
+  const above = r.top - 8;
+  const up = below < Math.min(MENU_TALLEST, high * 0.6) && above > below;
   const at: Record<string, string> = {
     '--menu-right': `${Math.max(8, window.innerWidth - r.right)}px`,
+    '--menu-max': `${Math.max(MENU_SHORTEST, (up ? above : below) - 4)}px`,
   };
-  if (r.bottom > window.innerHeight * 0.6) {
-    at['--menu-bottom'] = `${window.innerHeight - r.top + 4}px`;
-  } else {
-    at['--menu-top'] = `${r.bottom + 4}px`;
-  }
+  if (up) at['--menu-bottom'] = `${high - r.top + 4}px`;
+  else at['--menu-top'] = `${r.bottom + 4}px`;
   return at;
 }
 
@@ -144,14 +155,35 @@ export function DocActions(props: {
     error: null,
   });
   const [sheet, setSheet] = useState<'share' | 'visibility' | 'trash' | null>(null);
+  // What the sheet holds is on its way: Escape leaves it open until it is done.
+  const [sheetBusy, setSheetBusy] = useState(false);
+  // Who can see it was changed in the sheet: the list is loaded again when
+  // the sheet closes, not under it.
+  const changedInSheet = useRef(false);
   const [trashing, setTrashing] = useState(false);
+  // Essential being turned on or off: not chosen again until the vault answers.
+  const [toggling, setToggling] = useState(false);
+  // The copy Essential was last saved to, and the ETags it has replaced.
+  // Until the list is loaded again the row still has one of those, and
+  // this is what is there now (5.4).
+  const [saved, setSaved] = useState<{ doc: DocumentView; replaces: string[] } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [keys] = useState(createUploadKeys);
 
-  const doc = props.doc ?? fetched.doc;
+  const drawn = props.doc ?? fetched.doc;
+  const doc = saved && drawn && saved.replaces.includes(drawn.etag) ? saved.doc : drawn;
   const memberId = session.info?.member_id;
   const offered = actionsFor(storedRole(), memberId, doc);
+
+  // A row that leaves its list takes its ⋯ with it. If focus was there, it
+  // goes to what the list says about itself, which stays, not to nowhere.
+  useLayoutEffect(() => {
+    const row = more.current?.closest('li');
+    return () => {
+      if (row?.contains(document.activeElement)) landing(row)?.focus();
+    };
+  }, []);
 
   const openMenu = (start: 'first' | 'last') => {
     setNote(null);
@@ -188,22 +220,27 @@ export function DocActions(props: {
 
   const toggleEssential = async (d: DocumentView) => {
     const next = !d.is_essential;
+    setToggling(true);
     try {
-      // With the ETag the row was drawn from: a change made since is not
-      // quietly overwritten.
-      const saved = await withToken((t) =>
+      // With the ETag of the copy it was drawn from: a change made since is
+      // not quietly overwritten. Turning it off takes away the question
+      // opening it asks, so the vault may ask that first (SEC-17).
+      const result = await guarded((t) =>
         api.updateDocument(t, d.id, { is_essential: next }, d.etag),
       );
-      if (!saved) return;
-      if (!props.doc) setFetched({ doc: saved, error: null });
+      setToggling(false);
+      if (!result) return;
+      setSaved((s) => ({ doc: result, replaces: [...(s?.replaces ?? []), d.etag] }));
       setNote(
         next ? `“${props.title}” is Essential now.` : `“${props.title}” is not Essential any more.`,
       );
       await props.onChanged();
     } catch (err) {
+      setToggling(false);
       if (err instanceof ApiRequestError && err.status === 409) {
         // Changed somewhere else since the list was loaded. It is loaded
         // again, so the next try is made on what is there now.
+        setSaved(null);
         setNote(
           `“${props.title}” was changed somewhere else, so it has been loaded again. Try again if it still needs changing.`,
         );
@@ -238,6 +275,7 @@ export function DocActions(props: {
       await withToken((t) => api.deleteDocument(t, props.documentId));
       // The row goes when the list is loaded again, and its ⋯ with it, so
       // focus goes to the next row (or the one before) rather than nowhere.
+      // The only row in its list leaves it to the list's heading (landing).
       const row = more.current?.closest('li');
       const neighbour = (row?.nextElementSibling ?? row?.previousElementSibling)?.querySelector(
         'button',
@@ -272,7 +310,7 @@ export function DocActions(props: {
         void download();
         return;
       case 'essential':
-        if (doc) void toggleEssential(doc);
+        if (doc && !toggling) void toggleEssential(doc);
         return;
       case 'version':
         // Still inside the tap, so the browser lets the file chooser open.
@@ -286,7 +324,17 @@ export function DocActions(props: {
     }
   };
 
-  const closeSheet = () => setSheet(null);
+  const closeSheet = () => {
+    setSheet(null);
+    setSheetBusy(false);
+    // After "I understand", Cancel, or a save with nothing to say. A search
+    // hit made Only me can leave the results when they are loaded again,
+    // and would take "Only you can open this" with it, unread; the vault
+    // says that once (SEC-19).
+    if (!changedInSheet.current) return;
+    changedInSheet.current = false;
+    void props.onChanged();
+  };
 
   return (
     <>
@@ -330,7 +378,11 @@ export function DocActions(props: {
           id={menuId}
           label={`Actions for “${props.title}”`}
           title={props.title}
-          items={offered.map((action) => ({ action, label: labelFor(action, doc) }))}
+          items={offered.map((action) => ({
+            action,
+            label: labelFor(action, doc),
+            waiting: action === 'essential' && toggling,
+          }))}
           start={menu.start}
           at={menu.at}
           waiting={!doc && !fetched.error}
@@ -341,24 +393,36 @@ export function DocActions(props: {
         />
       )}
       {sheet === 'share' && (
-        <Sheet label={`Share “${props.title}”`} returnFocus={more} onClose={closeSheet}>
+        <Sheet
+          label={`Share “${props.title}”`}
+          busy={sheetBusy}
+          returnFocus={more}
+          onClose={closeSheet}
+        >
           <SharePanel
             documentId={props.documentId}
             documentTitle={doc?.title ?? null}
             onClose={closeSheet}
+            onBusy={setSheetBusy}
           />
         </Sheet>
       )}
       {sheet === 'visibility' && doc && (
-        <Sheet label={`Who can see “${props.title}”`} returnFocus={more} onClose={closeSheet}>
+        <Sheet
+          label={`Who can see “${props.title}”`}
+          busy={sheetBusy}
+          returnFocus={more}
+          onClose={closeSheet}
+        >
           <VisibilityControl
             documentId={props.documentId}
             current={doc.visibility}
             isMine={doc.owner_member_id !== null && doc.owner_member_id === memberId}
             onChanged={async () => {
-              await props.onChanged();
+              changedInSheet.current = true;
             }}
             onClose={closeSheet}
+            onBusy={setSheetBusy}
           />
         </Sheet>
       )}
@@ -384,7 +448,8 @@ function ActionMenu(props: {
   id: string;
   label: string;
   title: string;
-  items: Array<{ action: DocAction; label: string }>;
+  /** `waiting`: already on its way, so not chosen again until it is done. */
+  items: Array<{ action: DocAction; label: string; waiting: boolean }>;
   start: 'first' | 'last';
   at: CSSProperties;
   /** A search hit's document is still on its way. */
@@ -433,7 +498,10 @@ function ActionMenu(props: {
               type="button"
               role="menuitem"
               className={`menu-item${item.action === 'trash' ? ' menu-item-danger' : ''}`}
-              onClick={() => props.onChoose(item.action)}
+              aria-disabled={item.waiting || undefined}
+              onClick={() => {
+                if (!item.waiting) props.onChoose(item.action);
+              }}
             >
               {item.action === 'trash' && <TrashIcon />}
               {item.label}
@@ -451,20 +519,51 @@ function ActionMenu(props: {
   );
 }
 
-/** Sharing, or who can see it, over the list: the same panels as the document's page. */
+/**
+ * Sharing, or who can see it, over the list: the same panels as the
+ * document's page. While what it holds is on its way, Escape leaves it
+ * open, as the "are you sure?" does: what comes back is shown only here.
+ */
 function Sheet(props: {
   label: string;
+  busy: boolean;
   returnFocus: RefObject<HTMLElement | null>;
   onClose: () => void;
   children: ReactNode;
 }) {
   const box = useRef<HTMLElement>(null);
-  useSheetFocus(box, { onEscape: props.onClose, returnFocus: props.returnFocus });
+  useSheetFocus(box, {
+    onEscape: props.onClose,
+    busy: props.busy,
+    returnFocus: props.returnFocus,
+  });
   return (
     <div className="scrim" role="presentation">
-      <section ref={box} className="sheet" role="dialog" aria-modal="true" aria-label={props.label}>
+      <section
+        ref={box}
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={props.label}
+        aria-busy={props.busy}
+      >
         {props.children}
       </section>
     </div>
   );
+}
+
+/**
+ * Where focus goes when a row leaves its list with focus in it: the line
+ * that says what the list holds, when it has one, or its heading. Both stay
+ * when the row goes, and say where the person is.
+ */
+function landing(row: Element): HTMLElement | null {
+  const place = row.closest('section, main');
+  const at =
+    place?.querySelector<HTMLElement>('[data-landing]') ??
+    place?.querySelector<HTMLElement>('h2, h1') ??
+    null;
+  if (at && !at.hasAttribute('tabindex')) at.tabIndex = -1;
+  return at;
 }

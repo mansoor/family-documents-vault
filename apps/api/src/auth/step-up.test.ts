@@ -230,4 +230,91 @@ describe.skipIf(!testAdminUrl())('step-up authentication', () => {
       'passkey',
     ]);
   });
+
+  /**
+   * 5.4: one tap on a row's ⋯ turned Essential off, and the next download
+   * was not asked anything. Taking a check away now asks for it; adding
+   * one asks nothing.
+   */
+  it('taking a check away asks for it; adding one does not', async () => {
+    expect((await stepUp({ password: 'correct horse battery' })).statusCode).toBe(200);
+    const make = async (payload: Record<string, unknown>) =>
+      json<DocumentView>(
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/documents',
+          headers: h.as(owner),
+          payload: { owner_member_id: owner.member_id, ...payload },
+        }),
+      ).id;
+    const will = await make({ title: 'Will', is_essential: true, visibility: 'household' });
+    const diary = await make({ title: 'Diary', visibility: 'private' });
+    const bill = await make({ title: 'Gas bill', is_essential: false, visibility: 'household' });
+    const viewer = await h.join(owner, {
+      name: 'Accountant',
+      email: 'accountant-stepup@example.test',
+      role: 'viewer',
+    });
+    const teen = await h.join(owner, {
+      name: 'Aisha',
+      email: 'aisha-stepup@example.test',
+      role: 'teen',
+    });
+    const change = (who: Tokens, id: string, payload: Record<string, unknown>) =>
+      h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/documents/${id}`,
+        headers: h.as(who),
+        payload,
+      });
+    const show = (id: string, visibility: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${id}/visibility`,
+        headers: h.as(owner),
+        payload: { visibility },
+      });
+    const asked = (res: { statusCode: number; json: () => unknown }) => {
+      expect(res.statusCode).toBe(403);
+      const { error } = json<{ error: { code: string; action: string } }>(res);
+      expect(error.code).toBe('step_up_required');
+      return error.action;
+    };
+    const now = async (id: string) =>
+      json<DocumentView>(
+        await h.app.inject({ url: `/api/v1/documents/${id}`, headers: h.as(owner) }),
+      );
+
+    await goStale();
+    // Taken away: asked, and nothing changed.
+    expect(asked(await change(owner, will, { is_essential: false }))).toBe('open_essential');
+    expect(asked(await show(diary, 'household'))).toBe('open_private_document');
+    expect(asked(await change(owner, diary, { visibility: 'adults' }))).toBe(
+      'open_private_document',
+    );
+    expect((await now(will)).is_essential).toBe(true);
+    expect((await now(diary)).visibility).toBe('private');
+
+    // Added, or nothing taken away: not asked.
+    expect((await change(owner, bill, { is_essential: true })).statusCode).toBe(200);
+    expect((await show(bill, 'private')).statusCode).toBe(200);
+    expect((await change(owner, will, { title: 'The will', is_essential: true })).statusCode).toBe(
+      200,
+    );
+
+    // Somebody who may not make the change is refused, as before: never
+    // asked for a password that would get them nowhere.
+    for (const who of [viewer, teen]) {
+      const res = await change(who, will, { is_essential: false });
+      expect(res.statusCode).toBe(403);
+      expect(json<{ error: { code: string } }>(res).error.code).toBe('forbidden');
+    }
+
+    // Confirmed, both go through.
+    expect((await stepUp({ password: 'correct horse battery' })).statusCode).toBe(200);
+    expect((await change(owner, will, { is_essential: false })).statusCode).toBe(200);
+    expect((await show(diary, 'household')).statusCode).toBe(200);
+    expect((await now(will)).is_essential).toBe(false);
+    expect((await now(diary)).visibility).toBe('household');
+  });
 });

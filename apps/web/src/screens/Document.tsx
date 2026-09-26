@@ -275,7 +275,10 @@ export function DocumentScreen() {
           <p>{doc.notes}</p>
         </section>
       )}
-      <SharePanel documentId={doc.id} documentTitle={doc.title} />
+      {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
+      {doc.latest_version_id !== null && (
+        <SharePanel documentId={doc.id} documentTitle={doc.title} />
+      )}
       {mayTrash && (
         <button
           ref={trashButton}

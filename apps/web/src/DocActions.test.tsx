@@ -2,7 +2,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './test-api.js';
+import { beside } from './DocActions.js';
+import {
+  fresh,
+  installFakeApi,
+  PASSPORT,
+  SEALED_HIT,
+  signedIn,
+  type FakeState,
+} from './test-api.js';
 
 /**
  * Quick actions on every document (5.4): the ⋯ beside each row, what it
@@ -68,6 +76,25 @@ const offered = (menu: HTMLElement) =>
   within(menu)
     .getAllByRole('menuitem')
     .map((item) => item.textContent);
+
+/** A request held until `open()`: a slow vault, to see what is on screen meanwhile. */
+function gate() {
+  let open = () => {};
+  const until = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { until, open: () => open() };
+}
+
+const STEP_UP = 'Just checking it is you';
+
+async function confirmItsMe() {
+  const prompt = await screen.findByRole('dialog', { name: STEP_UP });
+  fireEvent.change(within(prompt).getByLabelText('Or your password'), {
+    target: { value: 'correct horse battery' },
+  });
+  fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm' }));
+}
 
 describe('quick actions on every document (5.4)', () => {
   it('the menu button is a sibling of the row button', async () => {
@@ -336,5 +363,278 @@ describe('quick actions on every document (5.4)', () => {
       (c) => c.method === 'POST' && c.url === '/api/v1/documents/doc-1/versions',
     );
     expect(upload?.headers?.['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('confirm it’s you over the Share sheet has the keyboard, and Escape there answers only it', async () => {
+    const state = home([{ ...PASSPORT }], 'owner', { stepUpNeeded: true });
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Share a link' }));
+    const share = await screen.findByRole('dialog', { name: "Share “Mansoor's passport”" });
+    fireEvent.click(within(share).getByRole('button', { name: 'Make the link' }));
+
+    // The passport is Essential: the prompt comes over the sheet, and takes focus.
+    const prompt = await screen.findByRole('dialog', { name: STEP_UP });
+    const password = within(prompt).getByLabelText('Or your password');
+    const cancel = within(prompt).getByRole('button', { name: 'Cancel' });
+    expect(password).toHaveFocus();
+    // Tab goes round inside it, both ways, never back into the sheet.
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: 'Tab' });
+    expect(password).toHaveFocus();
+    fireEvent.keyDown(password, { key: 'Tab', shiftKey: true });
+    expect(cancel).toHaveFocus();
+    await expectAccessible();
+
+    // Escape answers the prompt, not the sheet under it: nothing is made,
+    // and the sheet is still there to try again from.
+    fireEvent.keyDown(cancel, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: STEP_UP })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole('dialog', { name: "Share “Mansoor's passport”" })).toBe(share);
+    expect(share).toContainElement(document.activeElement as HTMLElement);
+    expect(state.shares).toHaveLength(0);
+
+    fireEvent.click(within(share).getByRole('button', { name: 'Make the link' }));
+    await confirmItsMe();
+    // Confirmed, the link is made and shown, in the sheet it was asked from.
+    expect(
+      await within(share).findByText(/\/shared\/share-secret-0123456789abcdef/),
+    ).toBeInTheDocument();
+    expect(state.shares).toHaveLength(1);
+  });
+
+  it('Escape and Cancel leave the Share sheet open while the link is being made', async () => {
+    const held = gate();
+    const state = home([{ ...PASSPORT }], 'owner', {
+      hold: (method, path) =>
+        method === 'POST' && path.endsWith('/share') ? held.until : undefined,
+    });
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Share a link' }));
+    const share = await screen.findByRole('dialog', { name: "Share “Mansoor's passport”" });
+    fireEvent.click(within(share).getByRole('button', { name: 'Make the link' }));
+    await within(share).findByRole('button', { name: 'Making the link…' });
+
+    fireEvent.keyDown(within(share).getByLabelText('Who is it for?'), { key: 'Escape' });
+    const cancel = within(share).getByRole('button', { name: 'Cancel' });
+    expect(cancel).toBeDisabled();
+    fireEvent.click(cancel);
+    expect(screen.getByRole('dialog', { name: "Share “Mansoor's passport”" })).toBe(share);
+
+    // The link is made while the sheet is still there to show it: the one
+    // place it is ever shown.
+    held.open();
+    expect(await within(share).findByText(/\/shared\/share-secret/)).toBeInTheDocument();
+    expect(state.shares).toHaveLength(1);
+  });
+
+  it('the same search again keeps the private results, and the note on the row that acted', async () => {
+    const notes = {
+      ...PASSPORT,
+      id: 'doc-sealed',
+      type_key: null,
+      title: 'Notes to myself',
+      visibility: 'private',
+      is_essential: false,
+      latest_version_id: 'v-9',
+      etag: '"notes"',
+    };
+    const state = fresh({ documents: [notes], sealed: [SEALED_HIT] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/search?q=estate');
+    render(<App />);
+    const { more, menu } = await openMenu('Actions for “Notes to myself”');
+    const secondPasses = () =>
+      state.calls.filter((c) => c.url.startsWith('/api/v1/search/sealed')).length;
+    const before = secondPasses();
+
+    // The second pass is the slow one, as it is on a real vault.
+    const held = gate();
+    state.hold = (_, path) => (path === '/api/v1/search/sealed' ? held.until : undefined);
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Make it Essential' }));
+    const said = '“Notes to myself” is Essential now.';
+    expect(await screen.findByText(said)).toBeInTheDocument();
+
+    // The search runs again; while its second pass is on its way, the row
+    // that acted is still there, with what it said and the focus.
+    await waitFor(() => expect(secondPasses()).toBe(before + 1));
+    expect(screen.getByText(said)).toBeInTheDocument();
+    expect(more).toHaveFocus();
+    held.open();
+    await waitFor(() =>
+      expect(screen.queryByText('Looking inside your private documents…')).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(said)).toBeInTheDocument();
+    expect(more).toHaveFocus();
+  });
+
+  it('the menu beside the ⋯ is never taller than the room on its side', () => {
+    vi.stubGlobal('innerWidth', 1366);
+    vi.stubGlobal('innerHeight', 650);
+    const at = (top: number) =>
+      beside({
+        getBoundingClientRect: () => ({ top, bottom: top + 44, right: 1300 }),
+      } as HTMLElement) as Record<string, string>;
+    const px = (v: string | undefined) => (v === undefined ? undefined : parseFloat(v));
+    for (let top = 8; top <= 598; top += 10) {
+      const place = at(top);
+      // What the CSS allows: no taller than 60vh, or than the room given.
+      const tall = Math.min(650 * 0.6, px(place['--menu-max']) as number);
+      const from = px(place['--menu-top']);
+      const upTo = px(place['--menu-bottom']);
+      const [edgeTop, edgeBottom] =
+        from !== undefined
+          ? [from, from + tall]
+          : [650 - (upTo as number) - tall, 650 - (upTo as number)];
+      expect(edgeTop, `⋯ at ${top}`).toBeGreaterThanOrEqual(0);
+      expect(edgeBottom, `⋯ at ${top}`).toBeLessThanOrEqual(650);
+    }
+    // Under the ⋯ when there is room for all of it, above it near the bottom.
+    expect(at(40)['--menu-top']).toBe('88px');
+    expect(at(540)['--menu-bottom']).toBe('114px');
+  });
+
+  it('Move to Trash on the only row leaves focus on the list’s heading', async () => {
+    home([{ ...PASSPORT }]);
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to Trash' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move to Trash' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: PASSPORT_MENU })).not.toBeInTheDocument(),
+    );
+    // Something that stays, which says where the person is: not nowhere.
+    expect(screen.getByRole('heading', { name: 'Recently added' })).toHaveFocus();
+  });
+
+  it('Essential turned off and on again before the list is back uses the copy it saved', async () => {
+    const passport = { ...PASSPORT };
+    const state = home([passport]);
+    const first = await openMenu();
+    // The list is slow to come back after the change.
+    const held = gate();
+    state.hold = (method, path) =>
+      method === 'GET' && path === '/api/v1/documents' ? held.until : undefined;
+    fireEvent.click(within(first.menu).getByRole('menuitem', { name: 'Stop it being Essential' }));
+    expect(
+      await screen.findByText("“Mansoor's passport” is not Essential any more."),
+    ).toBeInTheDocument();
+
+    // Opened again before the list is back: it says what is there now, and
+    // changes that copy, not the one the list was drawn from.
+    const second = await openMenu();
+    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Make it Essential' }));
+    expect(await screen.findByText("“Mansoor's passport” is Essential now.")).toBeInTheDocument();
+    expect(screen.queryByText(/changed somewhere else/)).not.toBeInTheDocument();
+    const matches = state.calls
+      .filter((c) => c.method === 'PATCH')
+      .map((c) => c.headers?.['if-match']);
+    expect(matches).toHaveLength(2);
+    expect(matches[0]).toBe('"abc"');
+    expect(matches[1]).not.toBe('"abc"');
+    expect(passport.is_essential).toBe(true);
+    held.open();
+  });
+
+  it('a search hit made Only me keeps its notice until it has been read', async () => {
+    const state = fresh({ documents: [{ ...PASSPORT }] });
+    installFakeApi(state);
+    signedIn();
+    // Found by the words in its pages, not by its name.
+    window.history.replaceState({}, '', '/search?q=4471');
+    render(<App />);
+    const name = 'Actions for “Home insurance policy”';
+    const searches = () => state.calls.filter((c) => c.url.startsWith('/api/v1/search?')).length;
+    const { menu } = await openMenu(name);
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see' }));
+    const who = await screen.findByRole('dialog', { name: 'Who can see “Home insurance policy”' });
+    fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    const notice = { name: 'Only you can open this' };
+    expect(await within(who).findByRole('heading', notice)).toBeInTheDocument();
+
+    // Its pages are sealed now, so the same search would not find it. The
+    // vault says this once, so the search is not run again under it.
+    const before = searches();
+    await new Promise((settle) => setTimeout(settle, 400));
+    expect(within(who).getByRole('heading', notice)).toBeInTheDocument();
+    expect(searches()).toBe(before);
+
+    // Read, the search runs again: it is gone from the results, and focus
+    // is on the line that says what they hold now.
+    fireEvent.click(within(who).getByRole('button', { name: 'I understand' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name })).not.toBeInTheDocument());
+    expect(screen.getByText('0 documents, searched inside the pages too')).toHaveFocus();
+  });
+
+  it('turning Essential off from the ⋯ asks to confirm it’s you; turning it on does not', async () => {
+    const passport = { ...PASSPORT };
+    const state = home([passport], 'owner', { stepUpNeeded: true });
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Stop it being Essential' }));
+    // Off, opening it would not ask any more: so it asks now.
+    const prompt = await screen.findByRole('dialog', { name: STEP_UP });
+    expect(within(prompt).getByText(/to open an Essential document/)).toBeInTheDocument();
+    expect(passport.is_essential).toBe(true);
+    await confirmItsMe();
+    // Confirmed, it carries on by itself.
+    expect(
+      await screen.findByText("“Mansoor's passport” is not Essential any more."),
+    ).toBeInTheDocument();
+    expect(passport.is_essential).toBe(false);
+
+    // On again takes nothing away: not asked, even with the question due.
+    state.stepUpNeeded = true;
+    const again = await openMenu();
+    fireEvent.click(within(again.menu).getByRole('menuitem', { name: 'Make it Essential' }));
+    expect(await screen.findByText("“Mansoor's passport” is Essential now.")).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: STEP_UP })).not.toBeInTheDocument();
+    expect(passport.is_essential).toBe(true);
+  });
+
+  it('taking a document out of Only me from the ⋯ asks to confirm it’s you', async () => {
+    const passport = { ...PASSPORT, visibility: 'private' };
+    home([passport], 'owner', { stepUpNeeded: true });
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see' }));
+    const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(within(who).getByRole('button', { name: 'Everyone in the family' }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    const prompt = await screen.findByRole('dialog', { name: STEP_UP });
+    expect(within(prompt).getByText(/to open a document only you can see/)).toBeInTheDocument();
+    expect(passport.visibility).toBe('private');
+    await confirmItsMe();
+    await waitFor(() => expect(passport.visibility).toBe('household'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('Share a link is offered only for a document with a file, as the vault refuses the rest', async () => {
+    home([{ ...PASSPORT, latest_version_id: null }], 'adult');
+    const { menu } = await openMenu();
+    expect(offered(menu)).toEqual([
+      'Open',
+      'Edit details',
+      'Who can see',
+      'Stop it being Essential',
+      'Add a new version',
+      'Move to Trash',
+    ]);
+    // The document's own page does not offer it either.
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Open' }));
+    expect(await screen.findByText('No file yet')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Share a link' })).not.toBeInTheDocument();
+
+    // The stand-in refuses as the vault does: nothing to send, or somebody
+    // who may not send anything.
+    const share = () => fetch('/api/v1/documents/doc-1/share', { method: 'POST', body: '{}' });
+    const empty = await share();
+    expect(empty.status).toBe(422);
+    expect(((await empty.json()) as { error: { code: string } }).error.code).toBe(
+      'nothing_to_share',
+    );
+    signedIn('teen');
+    expect((await share()).status).toBe(403);
   });
 });

@@ -250,12 +250,20 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ');
 
+/** The sheet on top of the page, if one is open: the last in the page is drawn over the rest. */
+function topSheet(): HTMLElement | null {
+  const open = document.querySelectorAll<HTMLElement>('[aria-modal="true"]');
+  return open[open.length - 1] ?? null;
+}
+
 /**
  * The focus handling every sheet over the page shares: the "are you sure?"
- * (5.1), and a row's ⋯ menu and what it opens (5.4). Focus starts on
- * `start`, or on the first thing in the box. Tab stays inside. Escape is an
- * answer, unless the action is already on its way. When the sheet goes,
- * focus goes back where it came from.
+ * (5.1), a row's ⋯ menu and what it opens (5.4), and "confirm it is you".
+ * Focus starts on `start`, or on the first thing in the box. Tab stays
+ * inside. Escape is an answer, unless the action is already on its way.
+ * Only the sheet on top listens: "confirm it is you" over a Share sheet
+ * takes its own Tab and Escape. When the sheet goes, focus goes back where
+ * it came from, or into the sheet underneath when that has gone.
  */
 export function useSheetFocus(
   box: RefObject<HTMLElement | null>,
@@ -278,6 +286,10 @@ export function useSheetFocus(
       box.current ? [...box.current.querySelectorAll<HTMLElement>(FOCUSABLE)] : [];
     (latest.current.start?.current ?? inside()[0])?.focus();
     const onKey = (e: KeyboardEvent) => {
+      // Another sheet is over this one: the keys are its. (A menu is not a
+      // sheet, so it steps aside for any.)
+      const top = topSheet();
+      if (top && box.current && top !== box.current && !box.current.contains(top)) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         if (!latest.current.busy) latest.current.onEscape();
@@ -302,7 +314,13 @@ export function useSheetFocus(
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      (before ?? latest.current.returnFocus?.current)?.focus();
+      // What focus came from may have gone, or been switched off while the
+      // sheet worked: then the next best that will take it.
+      const underneath = topSheet()?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
+      for (const to of [before, latest.current.returnFocus?.current, underneath]) {
+        to?.focus();
+        if (to && document.activeElement === to) return;
+      }
     };
   }, [box]);
 }

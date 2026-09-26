@@ -1546,6 +1546,42 @@ export class DocumentService {
   }
 
   /**
+   * The question a change asks when it takes one away (5.4). Turning
+   * Essential off asks what opening an Essential asks, and taking a
+   * document out of "only me" asks what opening it asks: otherwise one tap
+   * from a session left unlocked removes the question, and the download
+   * after it is not asked (SEC-17). Adding a check asks nothing. A change
+   * that would be refused anyway, and a document the caller cannot see,
+   * are answered as they were, never with a question first.
+   */
+  async stepUpToLoosen(
+    p: Principal,
+    documentId: string,
+    change: { visibility?: Visibility | undefined; is_essential?: boolean | undefined },
+  ): Promise<SensitiveAction | null> {
+    const unhides = change.visibility !== undefined && change.visibility !== 'private';
+    const unmarks = change.is_essential === false;
+    if (!unhides && !unmarks) return null;
+    if (change.visibility !== undefined && !allows(p, 'document.visibility')) return null;
+    if (change.is_essential !== undefined && !allows(p, 'document.edit')) return null;
+    return withScope(this.db, { householdId: p.householdId }, async (trx) => {
+      const row = await trx
+        .selectFrom('document')
+        .select(['visibility', 'is_essential', 'owner_member_id'])
+        .where('id', '=', documentId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      // A teen may change only their own: the rest is refused, not asked.
+      if (p.role === 'teen' && row.owner_member_id !== p.memberId) return null;
+      // Only its owner can see a private document, so only they are asked.
+      if (unhides && row.visibility === 'private') return 'open_private_document';
+      if (unmarks && row.is_essential) return 'open_essential';
+      return null;
+    });
+  }
+
+  /**
    * The cached, encrypted thumbnail, decrypted on the way out. Null until
    * the worker has run.
    */

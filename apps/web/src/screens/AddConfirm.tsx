@@ -55,7 +55,7 @@ function captureDetails(d: DocumentInput): CaptureMetadata {
  * the document is filed complete, and for the right people, from the start.
  */
 export function AddScreen() {
-  const { withToken } = useApp();
+  const { withToken, guarded } = useApp();
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [keys] = useState(createUploadKeys);
@@ -112,7 +112,7 @@ export function AddScreen() {
     }
     if (landed) {
       lastTry.current = { key, details: sent, documentId: landed };
-      if (details) await putDetails(landed, details);
+      if (details && !(await putDetails(landed, details))) return;
       keys.saved();
       lastTry.current = null;
       void navigate(`/documents/${landed}`, { replace: true });
@@ -129,11 +129,12 @@ export function AddScreen() {
    * The card's details, put on a document an earlier try made. Who can see
    * it and whose it is are changed in the order the vault allows: making
    * it Only me needs it to be yours first; giving an Only me document to
-   * somebody else needs it un-private first.
+   * somebody else needs it un-private first. False when that was not
+   * confirmed: nothing more is changed, and Save again tries again.
    */
-  const putDetails = async (id: string, details: CaptureMetadata) => {
+  const putDetails = async (id: string, details: CaptureMetadata): Promise<boolean> => {
     const current = await withToken((t) => api.document(t, id));
-    if (!current) return;
+    if (!current) return false;
     const { visibility, ...rest } = details;
     const type = data?.types.find((x) => x.key === rest.type_key);
     const fields: DocumentInput = { ...rest };
@@ -143,11 +144,13 @@ export function AddScreen() {
     if (rest.type_key !== undefined && !type?.expiry_driver) fields.expires = null;
     const move = visibility && visibility !== current.visibility ? visibility : null;
     if (move && move !== 'private') {
-      await withToken((t) => api.setVisibility(t, id, move));
+      // Out of Only me asks what opening it asks (5.4).
+      if (!(await guarded((t) => api.setVisibility(t, id, move)))) return false;
     }
     // No If-Match: a visibility change just now moved the etag on.
     await withToken((t) => api.updateDocument(t, id, fields));
     if (move === 'private') await withToken((t) => api.setVisibility(t, id, move));
+    return true;
   };
 
   if (file && data) {
@@ -226,7 +229,7 @@ function aOrAn(noun: string): string {
 /** The confirm card for a document already in the vault: its details, changed in place. */
 export function ConfirmScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken } = useApp();
+  const { guarded } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { data, error: loadError } = useLoad(
@@ -284,7 +287,9 @@ export function ConfirmScreen() {
       onSubmit={async (details) => {
         // Only send visibility when it changed: the server rewraps keys for it.
         if (details.visibility === doc.visibility) delete details.visibility;
-        const saved = await withToken((t) => api.updateDocument(t, doc.id, details, doc.etag));
+        // Out of Only me asks what opening it asks (5.4); not confirmed,
+        // nothing is saved and the card stays.
+        const saved = await guarded((t) => api.updateDocument(t, doc.id, details, doc.etag));
         if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
       }}
     />
