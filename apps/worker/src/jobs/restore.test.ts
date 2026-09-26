@@ -485,6 +485,54 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices 0031's types left open: a view reading as its owner, a rule gone, a key free to move", async () => {
+    await sql(vault.adminUrl, 'alter view public.effective_document_type reset (security_invoker)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /effective_document_type would read with its owner's rights/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter view public.effective_document_type set (security_invoker = true)',
+      );
+    }
+
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'document_type_setting_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    await sql(
+      vault.adminUrl,
+      'drop policy document_type_setting_actor on public.document_type_setting',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on document_type_setting/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy document_type_setting_actor on public.document_type_setting as restrictive using (${rule})`,
+      );
+    }
+
+    await sql(
+      vault.adminUrl,
+      'alter table public.document_type disable trigger document_type_fixed',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.document_type enable trigger document_type_fixed',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);

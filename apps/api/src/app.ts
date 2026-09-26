@@ -125,6 +125,19 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(err.status).send(err.toBody(req.id));
       return;
     }
+    // Text PostgreSQL cannot keep — a NUL character, in whichever field —
+    // is the caller's mistake, not the server's: 22021 in text, 22P05 in
+    // JSON.
+    const pgCode = (err as { code?: unknown }).code;
+    if (pgCode === '22021' || pgCode === '22P05') {
+      const refused = new ApiError(
+        422,
+        'validation_failed',
+        'That text contains a character the vault cannot keep.',
+      );
+      void reply.status(422).send(refused.toBody(req.id));
+      return;
+    }
     const status =
       typeof (err as { statusCode?: number }).statusCode === 'number'
         ? (err as { statusCode: number }).statusCode

@@ -150,8 +150,17 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
         .execute(),
     );
 
+  /** Queries for the household's types, while `countingTypes` is on. */
+  let typesAsked = 0;
+  let countingTypes = false;
+
   beforeAll(async () => {
-    h = await createHarness();
+    h = await createHarness({
+      log: (e) => {
+        if (countingTypes && e.level === 'query' && e.query.sql.includes('effective_document_type'))
+          typesAsked++;
+      },
+    });
     owner = await h.setup();
     adult = await h.join(owner, {
       name: 'Adult',
@@ -193,6 +202,30 @@ describe.skipIf(!testAdminUrl())('Essentials a phone may keep', () => {
     expect(caps.json<{ features: Record<string, boolean> }>().features.offline_essentials).toBe(
       true,
     );
+  });
+
+  it("asks for the household's types once, however many Essentials the set holds", async () => {
+    const p = await phoneOf(OWNER.email, OWNER.password);
+    expect((await grant(p, OWNER.password)).statusCode).toBe(200);
+    typesAsked = 0;
+    countingTypes = true;
+    let s: OfflineSet;
+    try {
+      s = await setOf(p);
+    } finally {
+      countingTypes = false;
+    }
+    // Several passports (5.7 review: it was one query for each of them).
+    expect(s.items.length).toBeGreaterThan(2);
+    expect(typesAsked).toBe(1);
+    // Its grant ended again, so the rest of this file counts only its own.
+    const ended = await h.app.inject({
+      ...peer(),
+      method: 'DELETE',
+      url: '/api/v1/offline/grant',
+      headers: h.as(p),
+    });
+    expect(ended.statusCode, ended.body).toBeLessThan(300);
   });
 
   it('without a grant, the set is empty: keep nothing', async () => {

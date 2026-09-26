@@ -308,6 +308,18 @@ describe('document types belong to the household', () => {
     await admin.query('delete from document where id = $1', [doc.rows[0]?.id]);
   });
 
+  it('a NUL in a type key, or in any text, is refused and never a 500', async () => {
+    for (const payload of [
+      { title: 'A passport', type_key: 'pass\u0000port' },
+      { title: 'A pass\u0000port', type_key: 'passport' },
+      { title: 'A passport', type_key: 'passport', notes: 'kept in the \u0000 drawer' },
+    ]) {
+      const r = await send('POST', '/api/v1/documents', payload);
+      expect(r.statusCode, r.body).toBe(422);
+      expect(json<{ error: { code: string } }>(r).error.code).toBe('validation_failed');
+    }
+  });
+
   it('fdv_app cannot insert, update or delete a built-in', async () => {
     const asOwner = <T>(fn: (trx: Db) => Promise<T>) => withPrincipal(one, ownerPrincipal, fn);
     const asVault = <T>(fn: (trx: Db) => Promise<T>) => withSystem(one, B, fn);

@@ -167,6 +167,11 @@ create policy document_type_actor_delete on document_type as restrictive for del
 
 grant select, insert, update, delete on document_type to fdv_app;
 
+-- The migrations' own record, and the suggestion rules every household
+-- shares, are the vault's: the application only reads them (privileges.ts
+-- says the same for a restored copy).
+revoke insert, update, delete on schema_migration, suggestion_rule from fdv_app;
+
 -- ------------------------------------ a household's changes to a built-in
 
 -- Null in a column leaves the built-in's own; core is changed key by key
@@ -267,8 +272,11 @@ select t.key,
   from document_type t
   left join document_type_setting s
     on t.household_id is null and s.type_key = t.key and s.household_id = app_household()
+  -- offset 0 keeps the planner from copying the merge into each column that
+  -- reads it, which ran it three times a row.
   cross join lateral (
     select fdv_type_core(t.core, s.core, t.issued_by_label, t.expiry_driver is not null) as core
+    offset 0
   ) c;
 
 -- Read only: a type is changed where it is kept.

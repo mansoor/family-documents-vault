@@ -175,25 +175,29 @@ type EffectiveType = Selectable<Schema['effective_document_type']>;
 type TypeLookup = (key: string) => Promise<EffectiveType | undefined>;
 
 /**
- * Looks types up by key, in the caller's own transaction: one indexed query
- * for each key, asked once however many documents of it a page lists.
- * Nothing is kept past the transaction — until 0.5.6 the types were kept
- * for the life of the process, which was right only while they were the
- * same for every household and never changed.
+ * The caller's household's types, looked up in its own transaction: all of
+ * them, in one query, the first time any is asked for — a page of twenty
+ * kinds of document, or a phone's whole offline set, costs one query — and
+ * kept for that transaction only, whichever part of the service asks.
+ * (A transaction that changes a type, once 5.11 can, must not ask first.)
+ * Until 0.5.6 the types were kept for the life of the process, which was
+ * right only while they were the same for every household and never
+ * changed.
  */
+const typesOf = new WeakMap<Db, Promise<Map<string, EffectiveType>>>();
+
 function typeLookup(trx: Db): TypeLookup {
-  const asked = new Map<string, Promise<EffectiveType | undefined>>();
-  return (key) => {
-    let found = asked.get(key);
-    if (!found) {
-      found = trx
+  return async (key) => {
+    let all = typesOf.get(trx);
+    if (!all) {
+      all = trx
         .selectFrom('effective_document_type')
         .selectAll()
-        .where('key', '=', key)
-        .executeTakeFirst();
-      asked.set(key, found);
+        .execute()
+        .then((rows) => new Map(rows.map((t) => [t.key, t])));
+      typesOf.set(trx, all);
     }
-    return found;
+    return (await all).get(key);
   };
 }
 
