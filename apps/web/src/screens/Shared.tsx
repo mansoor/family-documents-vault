@@ -39,7 +39,8 @@ export function SharedScreen() {
         if (!live) return;
         // A link made since 0.5.14, written the old way — by an app from
         // before then, say: the new page opens it, from the fragment,
-        // without this page's address staying in the history.
+        // without this page's address staying in this tab's history (the
+        // browser's own history of visited pages already has it).
         if (err instanceof ApiRequestError && err.code === 'link_not_valid' && token) {
           const isNew = await api.previewLink(token).then(
             () => true,

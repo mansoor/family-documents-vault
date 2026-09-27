@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { api, ApiRequestError, type SharedSession, type ShareLinkPreview } from '../api.js';
 import { describeError } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
@@ -14,16 +14,24 @@ import { Button, ErrorNote, Field, Logo } from '../ui.js';
  *
  * The secret is in the fragment, which no server is ever sent. It is read
  * once, before the page is drawn (takeLinkToken, from main.tsx), and taken
- * out of the address bar and this entry of the history at once. The PIN
- * goes in Open's body. What Open gives is a cookie for the share routes
- * alone; reloaded, the page finds what is open through it, and the token
- * is not needed again.
+ * out of the address bar and this tab's history at once. The browser's own
+ * history — the list of pages visited, which it may sync to other devices —
+ * has already recorded the link as it arrived, and no page can take it out
+ * of that; the PIN is what keeps a link found there shut. The PIN goes in
+ * Open's body. What Open gives is a cookie for the share routes alone;
+ * reloaded, the page finds what is open through it, and the token is not
+ * needed again.
+ *
+ * Each phase replaces the last, so its heading takes the focus as it
+ * arrives, and a screen reader says where it now is.
  */
 
 /**
  * The token from the address's fragment, and the fragment gone from the
- * address bar and from this entry of the history — also from a history
- * synced to other devices. Null when there is none.
+ * address bar and from this tab's history (its entry replaced, so Back
+ * does not bring it back). The browser's own history of visited pages may
+ * still hold the whole link: replaceState cannot reach that. Null when
+ * there is none.
  */
 export function takeLinkToken(): string | null {
   const raw = window.location.hash.replace(/^#/, '');
@@ -49,11 +57,25 @@ type Phase =
 const NO_LINK =
   'This page opens a link somebody sent you. Open the link from their message again — the whole of it.';
 
+/**
+ * Whether this page may open a link at all. Open's cookie is Secure, and a
+ * browser keeps it only on a secure page — https, or this computer itself
+ * (http://localhost counts). Anywhere else Open would count an open and
+ * tell the sender, and then every download would be refused.
+ */
+const secure = () => window.isSecureContext !== false;
+
 export function SharePage({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [pin, setPin] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  // What was there is gone, and the focus with it: the new heading takes it.
+  useEffect(() => {
+    if (phase.kind !== 'loading') heading.current?.focus();
+  }, [phase.kind]);
 
   useEffect(() => {
     let live = true;
@@ -81,7 +103,7 @@ export function SharePage({ token }: { token: string | null }) {
 
   const open = async (e: FormEvent) => {
     e.preventDefault();
-    if (!token) return;
+    if (!token || !secure()) return;
     setBusy(true);
     setError(null);
     try {
@@ -102,14 +124,20 @@ export function SharePage({ token }: { token: string | null }) {
   return (
     <main className="page share-page">
       <Logo />
-      {phase.kind === 'loading' && <span className="status status-warn">Opening the link…</span>}
+      {phase.kind === 'loading' && (
+        <p className="status status-warn" role="status">
+          Opening the link…
+        </p>
+      )}
 
       {phase.kind === 'dead' && (
         <section className="card stack" aria-labelledby="share-h">
-          <h1 id="share-h" style={{ fontSize: 22 }}>
+          <h1 id="share-h" style={{ fontSize: 22 }} tabIndex={-1} ref={heading}>
             This link cannot be opened
           </h1>
-          <p className="muted">{phase.message}</p>
+          <p className="muted" role="alert">
+            {phase.message}
+          </p>
         </section>
       )}
 
@@ -121,28 +149,34 @@ export function SharePage({ token }: { token: string | null }) {
           busy={busy}
           error={error}
           onOpen={(e) => void open(e)}
+          heading={heading}
         />
       )}
 
-      {phase.kind === 'open' && <Opened session={phase.session} />}
+      {phase.kind === 'open' && <Opened session={phase.session} heading={heading} />}
     </main>
   );
 }
 
-function Preview(props: {
+function Preview({
+  heading,
+  ...props
+}: {
   preview: ShareLinkPreview;
   pin: string;
   setPin: (v: string) => void;
   busy: boolean;
   error: string | null;
   onOpen: (e: FormEvent) => void;
+  heading: RefObject<HTMLHeadingElement | null>;
 }) {
   const { preview } = props;
   const needsPin = preview.protection.includes('pin');
   const from = preview.shared_by ? <strong>{preview.shared_by}</strong> : 'Somebody';
+  const canOpen = secure();
   return (
     <>
-      <h1 id="share-h" style={{ fontSize: 26 }}>
+      <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
         {preview.document_title ?? 'A shared document'}
       </h1>
       <form
@@ -168,14 +202,18 @@ function Preview(props: {
             hint="It came separately from the link. Its name stays hidden until the PIN is right."
           />
         )}
-        {window.isSecureContext === false && (
+        {!canOpen && (
           <p className="status status-warn" role="note">
-            This page is not on a secure connection, so your browser may not keep what Open gives
-            it. If the document does not appear, ask whoever sent the link for its https:// address.
+            This page is not on a secure connection, so this browser could not download the
+            document. Open is turned off: nothing has been opened, and the sender has not been told
+            it was. Ask whoever sent the link for one that starts with https://.
           </p>
         )}
         <ErrorNote message={props.error} />
-        <Button type="submit" disabled={props.busy || (needsPin && props.pin.trim().length < 4)}>
+        <Button
+          type="submit"
+          disabled={!canOpen || props.busy || (needsPin && props.pin.trim().length < 4)}
+        >
           {props.busy ? 'Opening…' : 'Open'}
         </Button>
         <p className="muted">
@@ -191,12 +229,18 @@ function Preview(props: {
   );
 }
 
-function Opened({ session }: { session: SharedSession }) {
+function Opened({
+  session,
+  heading,
+}: {
+  session: SharedSession;
+  heading: RefObject<HTMLHeadingElement | null>;
+}) {
   const from = session.shared_by ? <strong>{session.shared_by}</strong> : 'Somebody';
   const single = session.items.length === 1 ? session.items[0] : undefined;
   return (
     <>
-      <h1 id="share-h" style={{ fontSize: 26 }}>
+      <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
         {single?.title ?? 'Shared documents'}
       </h1>
       <section className="card stack" aria-labelledby="share-h">

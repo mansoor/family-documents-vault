@@ -124,12 +124,22 @@ It needs, in `.env`:
   address the people you send them to can reach. Without it a link starts with whichever
   address it was made at.
 
+**Share links need an `https://` address**: the TLS overlay above, or this public-only
+site. Opening a link gives the browser a cookie it keeps only on a secure page, so on
+`http://192.168.1.20:8080` the document could never be downloaded; the page turns
+**Open** off there rather than count an open that delivers nothing, and warns you when you
+make such a link. `FDV_PUBLIC_URL` must start with `https://` (only `http://localhost` is
+allowed, for trying things on this computer).
+
 A link reads `https://share.example.com/s#…`. What is after the `#` is the link's secret.
 A browser never sends that part to any server; the page reads it, takes it out of the
-address bar and the history, and opens nothing until
-the person presses **Open** — so an email program's link checker, which fetches every
-link it sees, cannot open or use up a link. Opening gives that browser a session for 30
-minutes of use, 4 hours at most and never past the link's own end.
+address bar and this tab's history, and opens nothing until the person presses **Open** —
+so an email program's link checker, which fetches every link it sees, cannot open or use
+up a link. The browser's own history of visited pages may still hold the whole link, and
+may sync it to the person's other devices; no page can take it out of that. So for
+anything sensitive, add a PIN and tell it to them some other way. Opening gives that
+browser a session for 30 minutes of use, 4 hours at most and never past the link's own
+end.
 
 What the site serves: `/s`, `/shared/…` (links made before 0.5.14), their files under
 `/assets/`, and `/api/v1/shared/*` (and, when upload requests arrive, `/drop` and
@@ -224,7 +234,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_HOSTNAME`                     | `vault.local`                             | The name devices use, when the TLS overlay is running.                                                                                                                                                                  |
 | `FDV_BASE_URL`                     | `http://localhost:8080`                   | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                                                                                                |
 | `FDV_CADDYFILE`                    | internal                                  | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                                                                                       |
-| `FDV_PUBLIC_URL`                   | unset                                     | The public-only site's address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                                          |
+| `FDV_PUBLIC_URL`                   | unset                                     | The public-only site's `https://` address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                               |
 | `FDV_PUBLIC_HOSTNAME`              | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
 | `FDV_PUBLIC_HTTPS_PORT`            | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`             | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |

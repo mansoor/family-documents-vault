@@ -41,16 +41,16 @@ describe.skipIf(!testAdminUrl())('share links', () => {
   let nth = 0;
   const peer = () => ({ remoteAddress: `10.7.${Math.floor(++nth / 200)}.${nth % 200}` });
 
-  const make = async (title: string, visibility: 'household' | 'private') => {
+  const make = async (title: string, visibility: 'household' | 'private', as: Tokens = owner) => {
     const created = await h.app.inject({
       method: 'POST',
       url: '/api/v1/documents',
-      headers: h.as(owner),
+      headers: h.as(as),
       payload: {
         title,
         type_key: 'utility_bill',
         visibility,
-        ...(visibility === 'private' ? { owner_member_id: owner.member_id } : {}),
+        ...(visibility === 'private' ? { owner_member_id: as.member_id } : {}),
       },
     });
     const id = created.json<DocumentView>().id;
@@ -59,7 +59,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     await h.app.inject({
       method: 'POST',
       url: `/api/v1/documents/${id}/versions`,
-      headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      headers: { ...h.as(as), ...form.getHeaders(), 'idempotency-key': randomUUID() },
       payload: form.getBuffer(),
     });
     return id;
@@ -181,6 +181,31 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     withSystem(h.db, owner.household_id, (trx) =>
       trx.updateTable('share_link').set(set).where('id', '=', id).execute(),
     );
+  /**
+   * A restore from a backup made before this link was taken back: in the
+   * backup it was never revoked, so it comes back live, and the restore
+   * then pauses it with its own rule (restore.ts, PAUSE_LINKS) — here for
+   * this one link, so the other tests' links are left as they are.
+   */
+  const restoredFromBefore = (id: string) =>
+    withSystem(h.db, owner.household_id, async (trx) => {
+      await trx
+        .updateTable('share_link')
+        .set({ revoked_at: null, revoked_by: null })
+        .where('id', '=', id)
+        .execute();
+      await sql`update public.share_link set paused_at = now(), paused_reason = 'restored'
+         where paused_at is null and revoked_at is null and expires_at > now() and attempts < 10
+           and id = ${id}`.execute(trx);
+    });
+  const pausedFor = async (who: Tokens) =>
+    json<{ links: ShareView[] }>(
+      await h.app.inject({ url: '/api/v1/after-restore', headers: h.as(who) }),
+    ).links.map((l) => l.id);
+  const resume = (who: Tokens, id: string) =>
+    h.app.inject({ method: 'POST', url: `/api/v1/shares/${id}/resume`, headers: h.as(who) });
+  const takeBack = (who: Tokens, id: string) =>
+    h.app.inject({ method: 'DELETE', url: `/api/v1/shares/${id}`, headers: h.as(who) });
 
   beforeAll(async () => {
     h = await createHarness({
@@ -637,45 +662,74 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     expect((await legacyPreview(pinned.token)).statusCode).toBe(404);
   });
 
-  it('a paused link opens nothing until an owner, or its maker, turns it back on', async () => {
-    const adult = await h.join(owner, { name: 'Sam', email: 'sam@example.test', role: 'adult' });
-    const ownersLink = await made(lease, { recipient_label: 'the bank' });
-    const samsLink = json<CreatedShare>(
-      await share(lease, { recipient_label: "Sam's solicitor" }, adult),
-    );
-    for (const l of [ownersLink, samsLink]) {
-      await setLink(l.share.id, { paused_at: new Date(), paused_reason: 'restored' });
-      expect((await preview(l.link_token)).statusCode).toBe(404);
-    }
+  describe('after a restore, a paused link waits for an owner (A55)', () => {
+    let sam: Tokens;
+    beforeAll(async () => {
+      sam = await h.join(owner, { name: 'Sam', email: 'sam@example.test', role: 'adult' });
+    });
 
-    const pausedFor = async (who: Tokens) =>
-      json<{ links: ShareView[] }>(
-        await h.app.inject({ url: '/api/v1/after-restore', headers: h.as(who) }),
-      ).links.map((l) => l.id);
-    // The owner sees both; Sam, his own.
-    expect(await pausedFor(owner)).toEqual(
-      expect.arrayContaining([ownersLink.share.id, samsLink.share.id]),
-    );
-    expect(await pausedFor(adult)).toEqual([samsLink.share.id]);
+    /** Sam's link, taken back by an owner, and brought back by a restore from before then. */
+    const samsLinkAfterRestore = async (label: string) => {
+      const link = json<CreatedShare>(await share(lease, { recipient_label: label }, sam));
+      expect((await takeBack(owner, link.share.id)).statusCode).toBe(204);
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+      await restoredFromBefore(link.share.id);
+      expect((await linkRow(link.share.id)).paused_at).not.toBeNull();
+      return link;
+    };
 
-    const resume = (who: Tokens, id: string) =>
-      h.app.inject({ method: 'POST', url: `/api/v1/shares/${id}/resume`, headers: h.as(who) });
-    // Sam may not turn the owner's back on.
-    const refused = await resume(adult, ownersLink.share.id);
-    expect(refused.statusCode).toBe(403);
-    expect(code(refused)).toBe('forbidden');
+    it("an owner revokes an adult's link, a restore brings it back, and the adult's resume gets 403 and the link is not listed to them", async () => {
+      const link = await samsLinkAfterRestore("Sam's solicitor");
+      expect((await preview(link.link_token)).statusCode).toBe(404);
 
-    const back = await resume(adult, samsLink.share.id);
-    expect(back.statusCode).toBe(200);
-    expect(json<ShareView>(back)).toMatchObject({ state: 'active', paused_at: null });
-    expect((await resume(owner, ownersLink.share.id)).statusCode).toBe(200);
-    for (const l of [ownersLink, samsLink]) {
-      expect((await preview(l.link_token)).statusCode).toBe(200);
-    }
-    // Once on, there is nothing more to turn on.
-    expect((await resume(owner, ownersLink.share.id)).statusCode).toBe(404);
-    expect(await pausedFor(owner)).not.toContain(ownersLink.share.id);
-    expect((await auditOf(samsLink.share.id)).map((a) => a.action)).toContain('share.resumed');
+      // Not Sam's to decide: the owner who took it back has no say in the
+      // backup, and nobody would see it come back.
+      expect(await pausedFor(sam)).not.toContain(link.share.id);
+      const refused = await resume(sam, link.share.id);
+      expect(refused.statusCode).toBe(403);
+      expect(code(refused)).toBe('forbidden');
+      expect((await linkRow(link.share.id)).paused_at).not.toBeNull();
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+      expect((await unlock(link.link_token)).statusCode).toBe(404);
+      expect((await auditOf(link.share.id)).map((a) => a.action)).not.toContain('share.resumed');
+
+      // Taking it back only closes, so that stays his.
+      expect((await takeBack(sam, link.share.id)).statusCode).toBe(204);
+      expect(await pausedFor(owner)).not.toContain(link.share.id);
+    });
+
+    it("an owner turns an adult's paused link back on", async () => {
+      const link = await samsLinkAfterRestore("Sam's accountant");
+      expect(await pausedFor(owner)).toContain(link.share.id);
+
+      const back = await resume(owner, link.share.id);
+      expect(back.statusCode).toBe(200);
+      expect(json<ShareView>(back)).toMatchObject({ state: 'active', paused_at: null });
+      expect((await preview(link.link_token)).statusCode).toBe(200);
+      expect((await auditOf(link.share.id)).map((a) => a.action)).toContain('share.resumed');
+      // Once on, there is nothing more to turn on.
+      expect((await resume(owner, link.share.id)).statusCode).toBe(404);
+      expect(await pausedFor(owner)).not.toContain(link.share.id);
+    });
+
+    it('the maker of a link to their own Only me document turns it back on: no owner can', async () => {
+      const diary = await make("Sam's diary", 'private', sam);
+      const link = json<CreatedShare>(await share(diary, { recipient_label: 'the GP' }, sam));
+      expect(link.share.state).toBe('active');
+      await restoredFromBefore(link.share.id);
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+
+      // The owner cannot see the document, so the link is not theirs to list.
+      expect(await pausedFor(owner)).not.toContain(link.share.id);
+      expect((await resume(owner, link.share.id)).statusCode).toBe(404);
+      expect(await pausedFor(sam)).toEqual([link.share.id]);
+
+      const back = await resume(sam, link.share.id);
+      expect(back.statusCode).toBe(200);
+      expect(json<ShareView>(back)).toMatchObject({ state: 'active', paused_at: null });
+      expect((await preview(link.link_token)).statusCode).toBe(200);
+      expect(await pausedFor(sam)).toEqual([]);
+    });
   });
 
   it('a link nobody made is refused, and a token is not a document id', async () => {

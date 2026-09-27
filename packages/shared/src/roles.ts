@@ -70,7 +70,8 @@ export type Capability =
   | 'list.manage'
   /**
    * Turn back on what a restore paused (A55): every link to a document the
-   * owner can see (5.16). A sharer may turn back on their own links.
+   * owner can see (5.16). Without it, only a link to your own Only me
+   * document, which no owner can see.
    */
   | 'restore.review';
 

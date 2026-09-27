@@ -46,6 +46,8 @@ export interface FakeState {
   /** Opens counted by /api/v1/shared/unlock (5.16), and whether this browser has one open. */
   shareOpens: number;
   shareSession: boolean;
+  /** CreatedShare.link_url: the vault's FDV_PUBLIC_URL link, when it has one (5.16). */
+  shareLinkUrl?: string | null;
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
@@ -655,17 +657,27 @@ export function installFakeApi(state: FakeState) {
         {
           share,
           link_token: 'share-secret-0123456789abcdef',
+          link_url: state.shareLinkUrl ?? null,
           ...(b.with_pin ? { pin: '4821' } : {}),
         },
         201,
       );
     }
-    // After a restore, and turning a link back on (5.16).
+    // After a restore, and turning a link back on (5.16): an owner, any
+    // link; anybody else, only one to their own Only me document (A55).
+    const mayResume = (link: Record<string, unknown>) => {
+      if (storedRole() === 'owner') return true;
+      const doc = state.documents.find((d) => d.id === link.document_id);
+      return doc?.visibility === 'private' && doc.owner_member_id === 'me';
+    };
     if (path === '/api/v1/after-restore' && method === 'GET') {
-      return json({ links: state.shares.filter((x) => x.state === 'paused') });
+      return json({ links: state.shares.filter((x) => x.state === 'paused' && mayResume(x)) });
     }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {
       const link = state.shares.find((x) => x.id === path.split('/')[4]);
+      if (link && !mayResume(link)) {
+        return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
+      }
       if (!link || link.state !== 'paused') {
         return refuse(404, 'not_found', 'That paused link does not exist.');
       }

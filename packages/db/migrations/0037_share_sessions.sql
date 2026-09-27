@@ -4,9 +4,10 @@
 -- server and proxy on the way sees, and a GET that opened it, which a link
 -- scanner in an email client does before anybody has read the message. A
 -- new link is /s#<token>. A fragment never reaches a server; the page reads
--- it, takes it out of the address bar and the history, and nothing is
--- opened until somebody presses Open. Opening sets a session cookie, and
--- the document is fetched inside that session.
+-- it, takes it out of the address bar and its tab's history (the browser's
+-- own history of visited pages may keep it), and nothing is opened until
+-- somebody presses Open. Opening sets a session cookie, and the document is
+-- fetched inside that session.
 --
 -- The two kinds of link are told apart, for good:
 --

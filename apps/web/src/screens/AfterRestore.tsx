@@ -1,19 +1,26 @@
+import { can } from '@fdv/shared';
 import { useRef, useState } from 'react';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { storedRole } from '../session.js';
 import { BottomNav, Button, ErrorNote, TopBar } from '../ui.js';
 
 /**
  * Settings → After a restore (5.16).
  *
  * A backup is the vault as it was when it was made: a link taken back since
- * is live again in it. So a restore pauses every link, and each waits here
- * for somebody who may to say it still stands (A55) — an owner for any link
- * to a document they can see, a sharer for their own. 5.21 adds upload
- * requests here, and 5.28 the people whose sign-ins wait too.
+ * is live again in it, and the line in the activity log that said who took
+ * it back is gone. So a restore pauses every link, and each waits here for
+ * an owner to say it still stands (A55), whoever made it. The one exception
+ * is a link to somebody's own Only me document, which no owner can see: it
+ * waits for them. The vault lists only what the reader may turn back on,
+ * so the rows and their buttons follow; the page says who decides the rest.
+ * 5.21 adds upload requests here, and 5.28 the people whose sign-ins wait
+ * too.
  */
 export function AfterRestoreScreen() {
   const { guarded, withToken, authVersion } = useApp();
+  const owner = can(storedRole(), 'restore.review');
   const {
     data,
     error: loadError,
@@ -52,6 +59,12 @@ export function AfterRestoreScreen() {
         The vault was put back from a backup. A link taken back after that backup was made would
         work again, so every link was paused. Turn back on the ones that should still work.
       </p>
+      {!owner && (
+        <p className="muted">
+          An owner decides about links to documents others can see, yours included. The ones here
+          are to your Only me documents, which no owner can see, so they wait for you.
+        </p>
+      )}
       <ErrorNote message={loadError ?? error} />
       <p className="notice" role="status" tabIndex={-1} ref={status} hidden={!said}>
         {said}

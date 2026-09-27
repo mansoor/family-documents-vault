@@ -1126,10 +1126,15 @@ audience? }`, made to the list as the caller saw it: a stale
       scenario holds the vault and the fake to it.
   - Links whose secrets stay out of URLs (5.16). A new link is
     `{origin}/s#{link_token}`: the token is in the fragment, which no
-    server is sent, and the page takes it out of the address bar and the
-    history. The page previews, opens nothing until the person presses
-    Open, and sends the token and the PIN in POST bodies. Open gives a
-    session cookie, inside which the document is fetched.
+    server is sent, and the page takes it out of the address bar and
+    that tab's history. The browser's own history of visited pages may
+    still hold the link, which no page can change; a PIN is the lock for
+    anything sensitive. The page previews, opens nothing until the person
+    presses Open, and sends the token and the PIN in POST bodies. Open
+    gives a session cookie, inside which the document is fetched. The
+    cookie is `Secure`, so Open needs a secure page: over plain http
+    anywhere but localhost the page turns Open off, and nothing is
+    counted.
     - **New:** `POST /api/v1/shared/preview` `{ token }` →
       `ShareLinkPreview` `{ household_name, shared_by, protection,
 expires_at, document_title }`. `protection` is what Open asks for:
@@ -1167,7 +1172,8 @@ frame-ancestors 'none'; sandbox`.
     - **New, additive:** `CreatedShare.link_url` — the link to send, on the
       vault's public-only site when the operator set `FDV_PUBLIC_URL`
       (`https://share.example.com/s#…`), else null: put the app's own
-      origin before `/s#{link_token}`. `Share` gains `flow` (`legacy` or
+      origin before `/s#{link_token}`. `FDV_PUBLIC_URL` must be `https://`
+      (`http://` only for localhost). `Share` gains `flow` (`legacy` or
       `v2`), `paused_at` and `paused_reason`, and `state` gains `paused`.
       All absent from older vaults.
     - **Changed:** the legacy routes — `GET /api/v1/shared/{token}`,
@@ -1185,12 +1191,16 @@ link_not_valid` on each, whatever its options, and a legacy link's is
       turned back on.
     - **New:** `GET /api/v1/after-restore` → `{ links: [Share] }`: the
       paused links the caller may turn back on — an owner, every one to a
-      document they can see; anybody else with `document.share`, their
-      own. `POST /api/v1/shares/{id}/resume` → the `Share`, active again
-      (`share.resumed`); it asks what making the link asks (step-up for an
-      Essential or Only me document). Somebody else's link, for a
-      non-owner, is `403 forbidden`; one that is not paused is `404`. 5.21
-      and 5.28 add upload requests and sign-ins to `after-restore`.
+      document they can see; anybody else with `document.share`, only the
+      links to their own Only me documents, which no owner can see. A
+      link's maker is not otherwise its judge: the backup brought back
+      whatever an owner took back since. `POST /api/v1/shares/{id}/resume`
+      → the `Share`, active again (`share.resumed`); it asks what making
+      the link asks (step-up for an Essential or Only me document). For a
+      non-owner, any other link — their own included — is `403 forbidden`;
+      one that is not paused is `404`. Taking a paused link back
+      (`DELETE /api/v1/shares/{id}`) is unchanged. 5.21 and 5.28 add
+      upload requests and sign-ins to `after-restore`.
     - An outsider's address is kept cut to its /24 (IPv4) or /48 (IPv6),
       in the activity log's share lines and in the session.
     - The activity log says "A link to “Lease” stopped working: its PIN was

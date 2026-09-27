@@ -278,4 +278,27 @@ describe('loadConfig', () => {
     expect(c.FDV_MAX_UPLOAD_BYTES).toBe(104857600);
     expect(c.FDV_BASE_URL).toBe('http://localhost:8080');
   });
+
+  it('FDV_PUBLIC_URL is https, but for this computer (5.16 review)', () => {
+    // Over plain http a browser drops the Secure cookie Open gives, so the
+    // open is counted and the file never comes.
+    const base = { DATABASE_URL: 'x', FDV_MASTER_KEY: config.FDV_MASTER_KEY };
+    for (const bad of ['http://192.168.1.20:8080', 'http://share.example.com/']) {
+      expect(() => loadConfig({ ...base, FDV_PUBLIC_URL: bad })).toThrow(
+        /FDV_PUBLIC_URL: Use https:\/\//,
+      );
+    }
+    for (const good of [
+      'https://share.example.com',
+      'https://share.example.com:8443/',
+      'http://localhost:8099',
+      'http://127.0.0.1:8099/',
+    ]) {
+      expect(loadConfig({ ...base, FDV_PUBLIC_URL: good }).FDV_PUBLIC_URL).toBe(good);
+    }
+    // The address alone, as before.
+    expect(() => loadConfig({ ...base, FDV_PUBLIC_URL: 'https://share.example.com/s' })).toThrow(
+      /Give the address alone/,
+    );
+  });
 });

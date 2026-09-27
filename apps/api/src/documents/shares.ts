@@ -45,13 +45,15 @@ import {
  * hard part and ten wrong PINs kill the link.
  *
  * Since 5.16 a link is `/s#<token>`: the secret rides in the fragment, which
- * no server sees, and the page takes it out of the address bar and the
- * history once it has read it. Its page shows who sent what, and opens
- * nothing until somebody presses Open (a link scanner previews; it never
- * opens). Opening is a POST with the PIN in its body, and gives a session
- * cookie — its hash is all the vault keeps — inside which the document is
- * fetched, every request checking the link again. The links made before
- * then (`flow = 'legacy'`) keep the old routes, and only they do (A25).
+ * no server sees, and the page takes it out of the address bar and its
+ * tab's history once it has read it (the browser's own history of visited
+ * pages may keep it; a PIN is the lock for that). Its page shows who sent
+ * what, and opens nothing until somebody presses Open (a link scanner
+ * previews; it never opens). Opening is a POST with the PIN in its body,
+ * and gives a session cookie — its hash is all the vault keeps — inside
+ * which the document is fetched, every request checking the link again.
+ * The links made before then (`flow = 'legacy'`) keep the old routes, and
+ * only they do (A25).
  */
 
 const MAX_PIN_ATTEMPTS = 10;
@@ -162,6 +164,40 @@ const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').
 
 /** A transaction asked for by whoever holds one link, in its household: never anybody else. */
 type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
+
+/** A link as the family's lists show it, with who made it and whose its document is. */
+type LinkView = ShareView & {
+  created_by: string;
+  visibility: string;
+  owner_member_id: string | null;
+};
+
+/** What the family's lists are sent of a link. */
+const viewOnly = ({
+  created_by: _by,
+  visibility: _visibility,
+  owner_member_id: _owner,
+  ...view
+}: LinkView): ShareView => view;
+
+/**
+ * Who may turn back on a link a restore paused (A55): an owner, for any
+ * link to a document they can see. A backup brings back a link an owner
+ * took back after it was made, and the activity log's line saying so is
+ * gone with the rest of what came after it — so its maker is not the one
+ * to decide it still stands. The one exception is a link to the caller's
+ * own Only me document: no owner can see it, so nobody else could, and it
+ * would stay paused for good.
+ */
+function mayResume(
+  p: Principal,
+  link: { visibility: string; owner_member_id: string | null },
+): boolean {
+  if (can(p.role, 'restore.review')) return true;
+  return (
+    link.visibility === 'private' && p.memberId !== null && link.owner_member_id === p.memberId
+  );
+}
 
 type LinkRow = {
   id: string;
@@ -317,11 +353,11 @@ export class ShareService {
   }
 
   async list(p: Principal): Promise<ShareView[]> {
-    return (await this.views(p)).map(({ created_by: _, ...view }) => view);
+    return (await this.views(p)).map(viewOnly);
   }
 
-  /** Every link the reader may know about, with who made it. */
-  private async views(p: Principal): Promise<Array<ShareView & { created_by: string }>> {
+  /** Every link the reader may know about, with who made it and whose document it is. */
+  private async views(p: Principal): Promise<LinkView[]> {
     // Who a document went to outside the family ("the divorce lawyer"),
     // who sent it and how often it was opened is for those who may share
     // (0.5.0). A teen or a viewer — an accountant with a sign-in, say —
@@ -384,6 +420,8 @@ export class ShareService {
             paused_reason: r.paused_reason,
             summary: summarise(r, state),
             created_by: r.created_by,
+            visibility: r.visibility,
+            owner_member_id: r.owner_member_id,
           };
         });
     });
@@ -427,29 +465,25 @@ export class ShareService {
 
   // ------------------------------------------------------ after a restore
 
-  /**
-   * The links a restore paused that the reader may turn back on (A55): an
-   * owner, every one to a document they can see; anybody else who may
-   * share, their own — so a link to an adult's Only me document, which no
-   * owner sees, is not left paused for good.
-   */
+  /** The links a restore paused that the reader may turn back on (A55): see mayResume. */
   async paused(p: Principal): Promise<ShareView[]> {
-    const owner = can(p.role, 'restore.review');
     return (await this.views(p))
-      .filter((s) => s.state === 'paused' && (owner || s.created_by === p.accountId))
-      .map(({ created_by: _, ...view }) => view);
+      .filter((s) => s.state === 'paused' && mayResume(p, s))
+      .map(viewOnly);
   }
 
   /**
    * Whether the caller may turn a paused link back on, and its document:
-   * an owner may, for any link to a document they can see; its maker may,
-   * for their own; nobody else.
+   * an owner may, for any link to a document they can see; anybody else
+   * only for a link to their own Only me document (mayResume). Taking a
+   * paused link back is not this: that only closes, and stays with
+   * whoever may take back a link.
    */
   async resumable(p: Principal, id: string): Promise<string> {
     requireCapability(p, 'document.share');
     const link = (await this.views(p)).find((s) => s.id === id);
     if (!link) throw notFound('That link');
-    if (link.created_by !== p.accountId) requireCapability(p, 'restore.review');
+    if (!mayResume(p, link)) requireCapability(p, 'restore.review');
     if (link.state !== 'paused') throw notFound('That paused link');
     return link.document_id;
   }

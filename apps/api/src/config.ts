@@ -84,12 +84,19 @@ const schema = z.object({
     .string()
     .url()
     .regex(/^https?:[/][/][^/]+[/]?$/, 'Give the address alone: https://share.example.com')
+    // A browser keeps the cookie Open gives only on a secure page, so over
+    // plain http a link is counted as opened and its file never comes.
+    // Browsers count this computer as secure, so http://localhost is fine.
+    .regex(
+      /^(?:https:|http:[/][/](?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?[/]?$)/,
+      'Use https://… — over plain http a share link cannot deliver its document (http:// is only for localhost)',
+    )
     .optional()
     .describe(
       'The public-only site (docker/caddy/Caddyfile.public-only), when there is ' +
         'one: the address the share links the vault makes start with, so the ' +
-        'people they are sent to can reach them. Unset, a link starts with ' +
-        'the address it was made at.',
+        'people they are sent to can reach them. It must be https://. Unset, a ' +
+        'link starts with the address it was made at.',
     ),
 
   FDV_SMTP_URL: z
