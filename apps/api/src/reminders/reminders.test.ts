@@ -412,6 +412,28 @@ describe.skipIf(!testAdminUrl())('reminders from a date field', () => {
     expect(await mine(bill.id)).toEqual([]);
   });
 
+  it('a due date put right from ahead to gone by drops the reminders about the old date', async () => {
+    const bill = await file({ type_key: tax.key, title: 'Council tax, June', extra: due(20) });
+    expect((await mine(bill.id)).map((r) => [r.lead_days, r.status])).toEqual([
+      [7, 'scheduled'],
+      [1, 'scheduled'],
+    ]);
+    // A typo: it was due three days ago, and was paid.
+    await made(send('PATCH', `/api/v1/documents/${bill.id}`, { extra: due(-3) }));
+    expect(await mine(bill.id)).toEqual([]);
+
+    // Due in two days, its 7-day reminder already due; then put right to
+    // yesterday: both about the old date go, the due one too, and none is
+    // made about yesterday.
+    const may = await file({ type_key: tax.key, title: 'Council tax, May', extra: due(2) });
+    expect((await mine(may.id)).map((r) => [r.lead_days, r.status])).toEqual([
+      [7, 'due'],
+      [1, 'scheduled'],
+    ]);
+    await made(send('PATCH', `/api/v1/documents/${may.id}`, { extra: due(-1) }));
+    expect(await mine(may.id)).toEqual([]);
+  });
+
   it('filed after two lead days have passed, only the nearer is due', async () => {
     const bill = await file({ type_key: tax.key, title: 'Council tax, August', extra: due(0) });
     expect((await mine(bill.id)).map((r) => [r.lead_days, r.status, r.about])).toEqual([

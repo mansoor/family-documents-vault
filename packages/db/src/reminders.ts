@@ -1,4 +1,5 @@
 import {
+  addDays,
   derivedFireDates,
   localToday,
   reminderWord,
@@ -204,10 +205,18 @@ export async function regenerateDerived(
   const today = localToday(hh.timezone);
   const dayOfRow = (r: { fire_at: unknown }) => String(r.fire_at).slice(0, 10);
 
-  // A date field's day gone by: nothing made, and nothing about it taken
-  // away. Reminders about another date go, as always.
+  // A date field's day gone by: nothing made, and nothing overdue taken
+  // away. Reminders about another source go, as always, and so do this
+  // field's own about a day still to come: the date is gone by, so they are
+  // about one it no longer holds (a due date put right from ahead to gone
+  // by must not keep reminding of the old one).
   if (source && source !== 'expires' && date !== null && date < today) {
-    const other = held.filter((r) => r.source !== source).map((r) => r.id);
+    const other = held
+      .filter(
+        (r) =>
+          r.source !== source || r.lead_days === null || addDays(dayOfRow(r), r.lead_days) >= today,
+      )
+      .map((r) => r.id);
     if (other.length) await trx.deleteFrom('reminder').where('id', 'in', other).execute();
     return;
   }
