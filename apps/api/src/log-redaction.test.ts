@@ -22,6 +22,20 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(loggableUrl('/api/v1/search?q=divorce')).toBe('/api/v1/search?[redacted]');
   });
 
+  it('keeps the names of the share routes that carry no secret in their paths (5.16)', () => {
+    expect(loggableUrl('/api/v1/shared/preview')).toBe('/api/v1/shared/preview');
+    expect(loggableUrl('/api/v1/shared/unlock')).toBe('/api/v1/shared/unlock');
+    expect(loggableUrl('/api/v1/shared/items')).toBe('/api/v1/shared/items');
+    expect(loggableUrl('/api/v1/shared/items/7f1c/content')).toBe(
+      '/api/v1/shared/items/7f1c/content',
+    );
+    // A token that merely starts like one of them is still a token.
+    expect(loggableUrl('/api/v1/shared/previewXYZ123')).toBe('/api/v1/shared/[redacted]');
+    expect(loggableUrl('/api/v1/shared/items-abc/content')).toBe(
+      '/api/v1/shared/[redacted]/content',
+    );
+  });
+
   it('leaves everything else as it was', () => {
     expect(loggableUrl('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
     expect(loggableUrl('/api/v1/shares')).toBe('/api/v1/shares');

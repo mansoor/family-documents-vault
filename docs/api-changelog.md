@@ -1124,7 +1124,105 @@ audience? }`, made to the list as the caller saw it: a stale
       on them as the vault does, for each role (`state.lists`), pages them,
       and lets a maker, and an owner, delete as the vault does; a contract
       scenario holds the vault and the fake to it.
+  - Links whose secrets stay out of URLs (5.16). A new link is
+    `{origin}/s#{link_token}`: the token is in the fragment, which no
+    server is sent, and the page takes it out of the address bar and
+    that tab's history. The browser's own history of visited pages may
+    still hold the link, which no page can change; a PIN is the lock for
+    anything sensitive. The page previews, opens nothing until the person
+    presses Open, and sends the token and the PIN in POST bodies. Open
+    gives a session cookie, inside which the document is fetched. The
+    cookie is `Secure`, so Open needs a secure page: over plain http
+    anywhere but localhost the page turns Open off, and nothing is
+    counted.
+    - **New:** `POST /api/v1/shared/preview` `{ token }` →
+      `ShareLinkPreview` `{ household_name, shared_by, protection,
+expires_at, document_title }`. `protection` is what Open asks for:
+      `["pin"]`, or `[]`. `document_title` is null while a protection is
+      on. Nothing is counted and nothing is written to the activity log.
+      Unauthenticated; 20 a minute per address.
+    - **New:** `POST /api/v1/shared/unlock` `{ token, secret? }` →
+      `SharedSession` `{ household_name, shared_by, expires_at,
+session_expires_at, items: [{ id, title, type_label, filename,
+content_type, byte_size }] }`, with `Set-Cookie: fdv_share=…;
+Path=/api/v1/shared; HttpOnly; Secure; SameSite=Strict; Max-Age=…`.
+      The cookie is 32 random bytes the vault keeps only as a SHA-256. The
+      session lasts 30 minutes from its last use and ends at the earlier
+      of 4 hours and the link's `expires_at` (`session_expires_at`). This
+      is the call that counts an open and writes `share.opened`. A wrong
+      PIN is `401 pin_wrong`; each uses one of the link's ten tries,
+      reserved before the PIN is checked, so tries made at once never get
+      past ten, and a right PIN gives its try back. The tenth locks the
+      link: `share.locked` is written once, its sessions end, and the
+      sharer is sent an alert (no title, no recipient). Every dead end —
+      unknown, expired, revoked, paused, locked, the sharer no longer able
+      to see the document, the document in the Trash — is `404
+link_not_valid`, as before. 20 a minute per address.
+    - **New:** `GET /api/v1/shared/items` (the cookie) → `SharedSession`,
+      and `GET /api/v1/shared/items/{document_id}/content` → the file
+      (`share.downloaded`; not a second open). Each request checks the
+      session (`401 share_session_ended` once it is over, idle, or never
+      was) and the link again, as Open did (`404 link_not_valid`, and the
+      session is ended). A document the link was not made for is `404
+not_found`, as one that does not exist. 120 a minute per address.
+    - Every answer under `/api/v1/shared/` carries `Referrer-Policy:
+no-referrer`, `X-Content-Type-Options: nosniff`, `X-Robots-Tag:
+noindex, nofollow` and `Content-Security-Policy: default-src 'none';
+frame-ancestors 'none'; sandbox`.
+    - **New, additive:** `CreatedShare.link_url` — the link to send, on the
+      vault's public-only site when the operator set `FDV_PUBLIC_URL`
+      (`https://share.example.com/s#…`), else null: put the app's own
+      origin before `/s#{link_token}`. `FDV_PUBLIC_URL` must be an
+      `https://` address alone — no path, query, fragment or user name
+      (`http://` only for localhost) — and is kept as its origin.
+      `Share` gains `flow` (`legacy` or
+      `v2`), `paused_at` and `paused_reason`, and `state` gains `paused`.
+      All absent from older vaults.
+    - **Changed:** the legacy routes — `GET /api/v1/shared/{token}`,
+      `POST /api/v1/shared/{token}/open` and
+      `GET /api/v1/shared/{token}/content` — answer only the links made
+      before 0.5.14 (`flow: "legacy"`): a new link's token is `404
+link_not_valid` on each, whatever its options, and a legacy link's is
+      the same on the new routes. No new legacy link is made, so the last
+      lapses within 90 days. The three are listed in `deprecations`
+      (`removed_in: "0.9.0"`). Their PIN tries are reserved the same way.
+    - **Changed:** a restore pauses every live link (`state: "paused"`,
+      `paused_reason: "restored"`), since one revoked after the backup was
+      made would otherwise work again, and ends every link session. A
+      paused link is `404 link_not_valid` on every route until it is
+      turned back on.
+    - **New:** `GET /api/v1/after-restore` → `{ links: [Share] }`: the
+      paused links the caller may decide about — an owner, every one to a
+      document they can see, to turn back on or take back; anybody else
+      with `document.share`, the links they made, only to take back.
+      `POST /api/v1/shares/{id}/resume` → the `Share`, active again
+      (`share.resumed`); it asks what making the link asks (step-up for an
+      Essential or Only me document). Only an owner (`restore.review`)
+      may: for anybody else it is `403 forbidden`, whoever made the link
+      and whatever its document, since the backup brought back whatever
+      an owner took back since. So a link to a non-owner's own Only me
+      document, which no owner can see, stays paused: its maker takes it
+      back and makes a new one. For an owner, a link that is not paused
+      is `404`. Taking a paused link back (`DELETE /api/v1/shares/{id}`)
+      is unchanged. 5.21 and 5.28 add upload requests and sign-ins to
+      `after-restore`.
+    - An outsider's address is kept cut to its /24 (IPv4) or /48 (IPv6),
+      in the activity log's share lines and in the session.
+    - The activity log says "A link to “Lease” stopped working: its PIN was
+      typed wrong ten times" and "Sam turned a link to “Lease” back on after
+      a restore".
+    - `@fdv/shared`: capability `restore.review` (owners); `ShareProtection`,
+      `ShareLinkPreview`, `SharedItem`, `SharedSession`; `Share.flow`,
+      `paused_at`, `paused_reason`; `CreatedShare.link_url`.
+      `@fdv/client`: `previewLink`, `unlockLink(token, secret?)`,
+      `linkItems`, `linkItemContentUrl`, `afterRestore`, `resumeShare`. A
+      pasted `/s#…` link gives the phone its vault's origin, the fragment
+      dropped, as other pasted links do.
 
 ## Deprecations in effect
 
-None.
+- `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and
+  `GET /api/v1/shared/{token}/content` (since 0.5.14; removed in 0.9.0).
+  They answer only links made before 0.5.14, the last of which lapses
+  within 90 days of that release. Use `POST /api/v1/shared/preview`,
+  `POST /api/v1/shared/unlock` and `GET /api/v1/shared/items` instead.

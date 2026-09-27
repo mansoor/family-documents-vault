@@ -1069,8 +1069,9 @@ describe.skipIf(!testAdminUrl())('the privacy wall: links, keys and hand-overs',
     (
       await h.app.inject({
         method: 'POST',
-        url: `/api/v1/shared/${token}/open`,
-        payload: {},
+        // Open, as the page at /s does it (5.16).
+        url: '/api/v1/shared/unlock',
+        payload: { token },
         ...peer(),
       })
     ).statusCode;

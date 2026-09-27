@@ -14,7 +14,7 @@ const PASSWORD = 'correct horse battery staple';
 /**
  * Signed in through the page, once for this file (sign-in is limited to 10
  * a minute, and the specs before and after this one sign in too: the suite
- * signs in five times a run, so two runs back to back stay within it); the
+ * signs in up to six times a run, so wait a minute between local runs); the
  * access token it was given too, to make this file's documents and to
  * tidy up after it.
  */

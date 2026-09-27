@@ -132,6 +132,23 @@ describe('a vault address, from whatever was typed or pasted', () => {
     expect(JSON.stringify(got)).not.toContain('SECRET');
   });
 
+  it('a pasted /s# link gives its origin; the fragment is dropped', () => {
+    // A share link since 0.5.14: the secret in the fragment, with or
+    // without a path before it, and on a port of its own.
+    for (const [link, origin] of [
+      ['https://vault.example/s#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://vault.example/s/#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://share.vault.example:8443/s#abcdefSECRETtoken', 'https://share.vault.example:8443'],
+      ['vault.example/s#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://vault.example#abcdefSECRETtoken', 'https://vault.example'],
+    ] as const) {
+      const got = serverOriginFrom(link);
+      expect(got?.origin, link).toBe(origin);
+      expect(got?.trimmed, link).toBe(true);
+      expect(JSON.stringify(got), link).not.toContain('SECRET');
+    }
+  });
+
   it('refuses what is not an address, or would mislead about one', () => {
     for (const bad of [
       '',

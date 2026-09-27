@@ -213,6 +213,35 @@ async function seed(url: string): Promise<string> {
        values ($1, $2, $3, 'k', 'a', null)`,
       [hh, account, `https://push.example.test/${hh}`],
     );
+    // Share links, where the schema has them (0016): one live, one taken
+    // back, one run out; and, where it has sessions (0037), the live one
+    // open in somebody's browser.
+    const links = await c.query<{ has: boolean }>(
+      "select to_regclass('public.share_link') is not null as has",
+    );
+    if (links.rows[0]?.has) {
+      await c.query(
+        `insert into share_link (household_id, document_id, token_hash, created_by, expires_at, revoked_at)
+         select $1, d.id, v.hash, $2, v.expires_at, v.revoked_at
+           from (select id from document where household_id = $1 limit 1) d,
+                (values ($3::bytea, now() + interval '7 days', null::timestamptz),
+                        ($4::bytea, now() + interval '7 days', now() - interval '1 day'),
+                        ($5::bytea, now() - interval '1 day', null::timestamptz))
+                  as v(hash, expires_at, revoked_at)`,
+        [hh, account, randomBytes(32), randomBytes(32), randomBytes(32)],
+      );
+      const sessions = await c.query<{ has: boolean }>(
+        "select to_regclass('public.share_session') is not null as has",
+      );
+      if (sessions.rows[0]?.has) {
+        await c.query(
+          `insert into share_session (household_id, share_id, cookie_hash, expires_at)
+           select $1, s.id, $2, now() + interval '1 hour' from share_link s
+            where s.household_id = $1 and s.revoked_at is null and s.expires_at > now()`,
+          [hh, randomBytes(32)],
+        );
+      }
+    }
   });
   return hh;
 }
@@ -842,6 +871,41 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     expect(jobs.rows[0]?.n).toBe(1);
   }, 60_000);
 
+  it('after a restore every link is paused and no session survives', async () => {
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    // The live link, and only that: one taken back or run out stays as it was.
+    expect(report.linksPaused).toBe(1);
+    const { rows } = await sql(
+      t.adminUrl,
+      `select (select count(*)::int from share_link
+                where paused_at is null and revoked_at is null and expires_at > now()) as live,
+              (select count(*)::int from share_link where paused_reason = 'restored') as paused,
+              (select count(*)::int from share_link where paused_at is not null
+                  and (revoked_at is not null or expires_at <= now())) as dead_paused,
+              (select count(*)::int from share_session) as sessions`,
+    );
+    expect(rows[0]).toEqual({ live: 0, paused: 1, dead_paused: 0, sessions: 0 });
+    // And a link asking as itself, as the vault will let it, reaches nothing.
+    const [link] = (
+      await sql(t.adminUrl, `select id, household_id from share_link where paused_at is not null`)
+    ).rows as Array<{ id: string; household_id: string }>;
+    const reached = await withClient(t.appUrl, async (c) => {
+      await c.query('begin');
+      await c.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                set_config('app.share_id', $2, true)`,
+        [link?.household_id, link?.id],
+      );
+      const { rows: r } = await c.query<{ n: number }>(
+        'select (select count(*)::int from document) + (select count(*)::int from share_link) as n',
+      );
+      await c.query('commit');
+      return r[0]?.n;
+    });
+    expect(reached).toBe(0);
+  }, 60_000);
+
   it("a household's lists come back, and an Only me list is still its maker's alone (0036)", async () => {
     const t = await empty();
     await restoreBackup(file, KEY, into(t), quiet, KEYS);
@@ -945,7 +1009,8 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       ).file;
       const t = await empty();
       const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
-      expect(report).toMatchObject({ schema: known, households: 1, documents: 3 });
+      // Its live link paused too, once the migrations gave it the means (5.16).
+      expect(report).toMatchObject({ schema: known, households: 1, documents: 3, linksPaused: 1 });
       const id = await sql(t.appUrl, 'select instance_id from instance');
       expect(id.rows).toHaveLength(1);
       // A backup older than 0023 cannot say "withdrawn": the running request

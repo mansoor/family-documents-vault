@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     household: new HouseholdService(db, keys),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push),
-    shares: new ShareService(db, keys, vaults),
+    shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,

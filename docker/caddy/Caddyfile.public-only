@@ -1,0 +1,75 @@
+# The public-only site (5.16): the one address people outside the family
+# are given, and nothing else of the vault.
+#
+# It serves the pages a link opens — a share link's (/s), an older link's
+# (/shared/…) and, later, an upload request's (/drop) — the files
+# those pages load, and the API routes they call: /api/v1/shared/* and
+# /api/v1/drop/*. Every other address answers 404: the front page, the
+# sign-in, /api/v1/auth/*, /api/v1/documents and the rest of the API. The
+# family keeps using the internal site (Caddyfile.internal, over Tailscale
+# or the home network), which nobody outside can reach.
+#
+# Start it with the compose profile, beside the vault:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile public-only up -d
+#
+# It needs FDV_PUBLIC_HOSTNAME, a public DNS name pointing at this machine,
+# FDV_TLS_EMAIL for Let's Encrypt, and the router forwarding ports 443 and
+# 80 from the internet to FDV_PUBLIC_HTTPS_PORT and FDV_PUBLIC_HTTP_PORT
+# (8443 and 8081 unless you say otherwise). See "Links for people outside
+# the family" in the README.
+#
+# Its rate limits are the vault's own, per address: opening a link is 20
+# tries a minute (preview and Open), an opened link 120 requests a minute,
+# everything else 300. Caddy passes the caller's address on and never
+# trusts one the caller wrote itself (no trusted_proxies), so each address
+# is counted as itself. Here, requests to the link routes are kept small
+# and slow callers are cut off.
+
+{
+	email {$FDV_TLS_EMAIL}
+	admin off
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 60s
+		}
+	}
+}
+
+{$FDV_PUBLIC_HOSTNAME} {
+	encode zstd gzip
+
+	# What a stranger's browser may ask for. Anything not named is not there.
+	@public path /s /s/ /shared/* /drop /drop/* /assets/* /icon-192.png /icon-512.png /manifest.webmanifest /api/v1/shared/* /api/v1/drop/*
+
+	# A link's calls carry a token, a PIN or nothing: a few kilobytes at most.
+	@link_api path /api/v1/shared/*
+	request_body @link_api {
+		max_size 16KB
+	}
+
+	handle @public {
+		reverse_proxy web:80 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Every page and answer here faces strangers: nothing is passed on as
+		# a referrer, sniffed, framed or indexed. The pages' own policy
+		# (docker/nginx.conf) and the API's (app.ts) come through as they are.
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		X-Robots-Tag "noindex, nofollow"
+		?Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		-Server
+	}
+}

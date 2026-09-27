@@ -197,6 +197,37 @@ export interface Schema {
     open_count: Generated<number>;
     last_opened_at: Timestamp | null;
     attempts: Generated<number>;
+    /**
+     * Which routes open it (0037): `legacy`, a link made before 5.16, on the
+     * old /shared/{token} routes only; `v2`, every link since, on the new
+     * ones only. A link keeps the flow it was made with.
+     */
+    flow: Generated<'legacy' | 'v2'>;
+    /** Paused for an owner to turn back on, and why: a restore (0037). */
+    paused_at: Timestamp | null;
+    paused_reason: 'restored' | null;
+  };
+
+  /**
+   * A v2 link opened in one browser (0037): the cookie's SHA-256, never the
+   * cookie. It lasts 30 minutes from its last use, and ends at the earlier
+   * of 4 hours and its link's end (`expires_at`).
+   */
+  share_session: {
+    id: Generated<string>;
+    household_id: string;
+    share_id: string;
+    flow: Generated<'v2'>;
+    cookie_hash: Buffer;
+    device_hash: Buffer | null;
+    /** What opened it: its PIN, or the link alone (null). */
+    verified_by: 'pin' | null;
+    created_at: GeneratedTimestamp;
+    last_seen_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    /** Cut to its /24 or /48 (A24). */
+    ip: string | null;
+    user_agent: string | null;
   };
 
   owner_change_request: {

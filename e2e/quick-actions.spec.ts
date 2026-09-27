@@ -26,9 +26,10 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
     });
   }
   // Signed in through the page, the one sign-in this file makes (sign-in
-  // is limited to 10 a minute, and the suite signs in five times a run, so
-  // two runs back to back stay within it); the access token it was given
-  // makes this file's document.
+  // is limited to 10 a minute, and the suite signs in up to six times a
+  // run, so a second run within a minute of the first can be refused: wait
+  // a minute between local runs); the access token it was given makes this
+  // file's document.
   await page.goto('/welcome');
   await page.getByRole('button', { name: 'Sign in' }).press('Enter');
   await page.getByLabel('Email').fill(EMAIL);
@@ -52,8 +53,16 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(page).toHaveURL(/\/$/);
 
   // The ⋯ is the next stop after the row's own button: beside it, not in it.
-  const more = page.getByRole('button', { name: `Actions for “${title}”` });
-  const row = page.getByRole('listitem').filter({ has: more });
+  // Looked for in Home's Recently added, so nothing is pressed until Home is
+  // drawn: until then Search, which lists the same row, is still on screen,
+  // and a focus given to its row was lost when Home replaced it. The row is
+  // the one with this ⋯ inside it: a `has` locator is looked for within each
+  // row, so it names the button from the page, not from the region.
+  const name = `Actions for “${title}”`;
+  const recent = page.getByRole('region', { name: 'Recently added' });
+  const row = recent.getByRole('listitem').filter({ has: page.getByRole('button', { name }) });
+  const more = row.getByRole('button', { name });
+  await expect(more).toBeVisible();
   await row.getByRole('button').first().focus();
   await page.keyboard.press('Tab');
   await expect(more).toBeFocused();

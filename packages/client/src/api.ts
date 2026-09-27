@@ -47,6 +47,8 @@ import type {
   SessionRow,
   Share,
   SharedDocument,
+  SharedSession,
+  ShareLinkPreview,
   SharePreview,
   SmtpInput,
   SmtpProvider,
@@ -558,6 +560,39 @@ export function createApi(http: Http) {
         method: 'POST',
         body: pin ? { pin } : {},
       }),
+
+    // ----------------------------------- a link, opened at /s (0.5.14)
+    // The token goes in a body, never a path. Open gives this browser a
+    // session cookie (for /api/v1/shared alone), which the vault keeps
+    // only as a hash; everything after it is asked inside that session.
+    /** What the page shows before Open. Nothing is counted or written down. */
+    previewLink: (linkToken: string) =>
+      request<ShareLinkPreview>('/api/v1/shared/preview', {
+        method: 'POST',
+        body: { token: linkToken },
+      }),
+    /** Open: counted, written down, and a session for this browser. */
+    unlockLink: (linkToken: string, secret?: string) =>
+      request<SharedSession>('/api/v1/shared/unlock', {
+        method: 'POST',
+        body: secret ? { token: linkToken, secret } : { token: linkToken },
+      }),
+    /** What is open in this browser's session; `401 share_session_ended` when nothing is. */
+    linkItems: () => request<SharedSession>('/api/v1/shared/items'),
+    linkItemContentUrl: (documentId: string) =>
+      http.url(`/api/v1/shared/items/${enc(documentId)}/content`),
+
+    // ------------------------------------------- after a restore (0.5.14)
+    /**
+     * What a restore paused that the caller may decide about: for an owner,
+     * to turn back on or take back; for anybody else, their own links, only
+     * to take back.
+     */
+    afterRestore: (token: string) =>
+      request<{ links: Share[] }>('/api/v1/after-restore', { token }),
+    /** Owners only (`restore.review`): anybody else is `403 forbidden`. */
+    resumeShare: (token: string, id: string) =>
+      request<Share>(`/api/v1/shares/${id}/resume`, { method: 'POST', token }),
   };
 }
 

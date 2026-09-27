@@ -1,11 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useParams } from 'react-router';
-import { api, type SharedDocument, type SharePreview } from '../api.js';
+import { api, ApiRequestError, type SharedDocument, type SharePreview } from '../api.js';
 import { describeError } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
- * The page somebody outside the family lands on (SHR-05).
+ * The page somebody outside the family lands on (SHR-05), for a link made
+ * before 0.5.14: `/shared/<token>`. Those links keep this page and the old
+ * routes until they lapse (A25); every link since opens at `/s`
+ * (SharePage.tsx).
  *
  * They have no account and are not going to make one. The page has one
  * job: tell them whose vault this is and who sent it, then give them the
@@ -33,6 +36,21 @@ export function SharedScreen() {
         // once rather than behind a button that says "continue".
         if (!p.needs_pin) setDoc(await api.openShare(token ?? ''));
       } catch (err) {
+        if (!live) return;
+        // A link made since 0.5.14, written the old way — by an app from
+        // before then, say: the new page opens it, from the fragment,
+        // without this page's address staying in this tab's history (the
+        // browser's own history of visited pages already has it).
+        if (err instanceof ApiRequestError && err.code === 'link_not_valid' && token) {
+          const isNew = await api.previewLink(token).then(
+            () => true,
+            () => false,
+          );
+          if (isNew && live) {
+            window.location.replace(`/s#${encodeURIComponent(token)}`);
+            return;
+          }
+        }
         if (live) setLoadError(describeError(err));
       }
     })();

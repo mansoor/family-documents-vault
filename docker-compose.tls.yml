@@ -15,6 +15,13 @@
 #
 # Remember to set FDV_BASE_URL to the https:// address as well: it is what
 # reminder emails and notifications link back to.
+#
+# The public-only site (docker/caddy/Caddyfile.public-only) is a second
+# address that serves only the pages a share link opens, for people outside
+# the family, while everything else stays on the address above. It starts
+# only with its profile:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile public-only up -d
 
 services:
   caddy:
@@ -36,6 +43,29 @@ services:
       web:
         condition: service_healthy
 
+  # The public-only site (5.16): share-link pages and their API, nothing
+  # else. Its own ports, so it runs beside the site above: forward the
+  # router's 443 and 80 to them. See the README.
+  caddy-public:
+    image: caddy:2-alpine
+    profiles: [public-only]
+    restart: unless-stopped
+    ports:
+      - '${FDV_PUBLIC_HTTPS_PORT:-8443}:443'
+      - '${FDV_PUBLIC_HTTP_PORT:-8081}:80'
+    environment:
+      FDV_PUBLIC_HOSTNAME: ${FDV_PUBLIC_HOSTNAME:-}
+      FDV_TLS_EMAIL: ${FDV_TLS_EMAIL:-}
+    volumes:
+      - ./docker/caddy/Caddyfile.public-only:/etc/caddy/Caddyfile:ro
+      - caddy-public-data:/data
+      - caddy-public-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+
 volumes:
   caddy-data:
   caddy-config:
+  caddy-public-data:
+  caddy-public-config:

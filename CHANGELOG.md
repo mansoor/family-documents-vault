@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-09-26 — iteration 5.16
+
+Share links whose secret stays out of the address a server sees.
+
+### Added
+
+- New share links look like `/s#…`: the part after `#` never reaches a server or its logs, and the page takes it out of the address bar and this tab's history as soon as it has read it. The browser's own history may still keep the link, so put a PIN on anything sensitive.
+- Opening a link is always a click: the page first shows who shared it, from which family, what protection it has and until when — nothing is opened, counted or logged until Open. A PIN goes in the request, never in the address.
+- An opened link lasts 30 minutes of quiet, and at most four hours or until the link itself ends, whichever is sooner. Every request checks the link again: taking it back, a restore, the tenth wrong PIN, or the document going to the Trash or out of its sharer's sight ends it at once.
+- Settings → After a restore: a restore pauses every share link, because a link taken back after the backup was made would otherwise work again. An owner turns back on the ones that should still work; whoever made a link can take it back.
+- A public-only site (`docker/caddy/Caddyfile.public-only`, the `public-only` profile) that serves only the share page and what it needs, and answers nothing else — sign-in included. `FDV_PUBLIC_URL` makes new links use its address; it must be https.
+
+### Changed
+
+- Links made before this release keep working through their old address until they expire; no new ones are made that way. Their routes are listed as deprecated and will be removed in 0.9.0.
+- The share page's answers tell browsers to send no referrer, not to guess content types, not to be framed and not to be indexed.
+
+### Security
+
+- The session a link opens is a cookie only the vault's share routes receive, kept in the database only as a hash, so a copy of the database or a backup cannot open anything.
+- Wrong PINs are counted in the same step that checks them, so parallel guesses cannot get past ten; the tenth locks the link once, and its sharer is told.
+- Over a plain-http address the share page does not open a link it could not deliver, so nothing is counted as opened.
+
 ## [0.5.13] - 2026-09-26 — iteration 5.15
 
 Lists on the web.

@@ -67,7 +67,15 @@ export type Capability =
   /** Let more people see a kind of document by default: Adults only to Everyone (5.11). */
   | 'types.widen_visibility'
   /** Make lists of documents, and change your own (5.14). Only a list's maker changes it (A18). */
-  | 'list.manage';
+  | 'list.manage'
+  /**
+   * Turn back on what a restore paused (A55): every link to a document the
+   * owner can see (5.16). Without it, nothing — not even a link you made
+   * to your own Only me document, which no owner can see: that one stays
+   * paused, and you take it back and make a new one. Taking a link back
+   * stays with `document.share`.
+   */
+  | 'restore.review';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -178,6 +186,12 @@ const MATRIX: Record<Capability, Rule> = {
     // viewer is given documents, not the family's lists (A17).
     roles: ['owner', 'adult', 'teen'],
     refusal: 'Viewers can open and download documents, but not make lists of them.',
+  },
+  'restore.review': {
+    // A backup brings back links taken back since it was made, so after a
+    // restore every link waits for an owner to say it still stands (A55).
+    roles: ['owner'],
+    refusal: 'Only an owner can turn things back on after a restore.',
   },
 };
 

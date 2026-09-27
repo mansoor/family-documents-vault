@@ -165,8 +165,25 @@ export function SharePanel(props: {
   );
 }
 
+/**
+ * Whether a link would open on a page no browser treats as secure: http://
+ * anywhere but this computer. There Open's Secure cookie is dropped, so the
+ * page refuses to open it (SharePage), and the person it is for gets nothing.
+ */
+function insecureLink(link: string): boolean {
+  try {
+    const url = new URL(link);
+    return url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function HandOver(props: { created: CreatedShare; onDone: () => void }) {
-  const link = `${window.location.origin}/shared/${props.created.link_token}`;
+  // The secret after the #: a browser never sends it to a server, and the
+  // page it opens takes it out of the address bar (5.16). On the vault's
+  // public-only site when it has one, so the person it is for can reach it.
+  const link = props.created.link_url ?? `${window.location.origin}/s#${props.created.link_token}`;
   const [copied, setCopied] = useState(false);
   return (
     <section className="card stack">
@@ -174,6 +191,13 @@ function HandOver(props: { created: CreatedShare; onDone: () => void }) {
         The link to {props.created.share.document_title ?? 'this document'}
       </h2>
       <code style={{ wordBreak: 'break-all' }}>{link}</code>
+      {insecureLink(link) && (
+        <p className="status status-warn" role="alert">
+          This link starts with http://, not https://, so whoever you send it to will not be able to
+          download the document: their browser will not open it over a connection that is not
+          secure. Ask whoever looks after the vault to give it an https:// address first.
+        </p>
+      )}
       <Button
         kind="quiet"
         onClick={() => {

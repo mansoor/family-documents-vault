@@ -19,6 +19,18 @@ export interface CapabilityConfig {
 export const MIN_CLIENT_VERSION = '0.0.1';
 
 /**
+ * What is going, and in which release (docs/api-changelog.md: four minor
+ * releases' notice). The old share routes answer only links made before
+ * 0.5.14, the last of which lapses within 90 days (A25); by 0.9.0 they
+ * would answer nothing.
+ */
+export const DEPRECATIONS: Capabilities['deprecations'] = [
+  { field: 'GET /api/v1/shared/{token}', removed_in: '0.9.0' },
+  { field: 'POST /api/v1/shared/{token}/open', removed_in: '0.9.0' },
+  { field: 'GET /api/v1/shared/{token}/content', removed_in: '0.9.0' },
+];
+
+/**
  * Builds the capability document from server configuration.
  *
  * Every feature starts `false` and is switched on by the iteration that ships
@@ -61,7 +73,7 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       max_members: null,
       max_storage_bytes: null,
     },
-    deprecations: [],
+    deprecations: DEPRECATIONS,
     branding: { display_name: config.displayName },
     ...(config.instanceId ? { instance_id: config.instanceId } : {}),
   };

@@ -9,9 +9,14 @@ import type { FastifyRequest } from 'fastify';
  * line with a working link in it is a working link. So the path keeps its
  * shape with the secret cut, and no query string is logged at all — one
  * can also carry what somebody searched for.
+ *
+ * The share routes of 5.16 carry no secret in their paths — the token and
+ * the PIN travel in a POST body, the session in a cookie, and the log keeps
+ * neither — so their names are kept: /api/v1/shared/preview, /unlock and
+ * /items.
  */
 const SECRET_SEGMENT =
-  /^(\/api\/v1\/(?:shared|password-resets|invitations)\/|\/(?:shared|reset|join)\/)[^/?#]+/;
+  /^(\/api\/v1\/(?:shared|password-resets|invitations)\/|\/(?:shared|reset|join)\/)(?!(?:preview|unlock|items)(?:[/?#]|$))[^/?#]+/;
 
 export function loggableUrl(url: string): string {
   const q = url.indexOf('?');

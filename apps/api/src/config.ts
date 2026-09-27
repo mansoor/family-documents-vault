@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+/** A URL, or null when it is not one. */
+function parsedUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * All API configuration comes from the environment. The public README's
  * configuration table is generated from the descriptions here, so every
@@ -78,6 +87,46 @@ const schema = z.object({
     .describe(
       'Where the vault is published. Reminder emails link to it, and ' +
         'passkeys are bound to its hostname.',
+    ),
+
+  FDV_PUBLIC_URL: z
+    .string()
+    .url()
+    .superRefine((value, ctx) => {
+      const url = parsedUrl(value);
+      if (!url) return; // .url() has said so
+      // A browser keeps the cookie Open gives only on a secure page, so over
+      // plain http a link is counted as opened and its file never comes.
+      // Browsers count this computer as secure, so http://localhost is fine.
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+      if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local))) {
+        ctx.addIssue({
+          code: 'custom',
+          message:
+            'Use https://… — over plain http a share link cannot deliver its document (http:// is only for localhost)',
+        });
+        return;
+      }
+      // A link is this followed by /s#…: a path, a query or a fragment would
+      // put it somewhere else, and a name and password before an @ are not
+      // the host they look like (https://localhost@evil.com is evil.com).
+      if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Give the address alone: https://share.example.com',
+        });
+      }
+    })
+    // Kept as the browser would write it: scheme and host in lower case,
+    // no default port and no slash at the end.
+    .transform((value) => parsedUrl(value)?.origin ?? value)
+    .optional()
+    .describe(
+      'The public-only site (docker/caddy/Caddyfile.public-only), when there is ' +
+        'one: the address the share links the vault makes start with, so the ' +
+        'people they are sent to can reach them. It must be https://, and the ' +
+        'address alone, with no path after it. Unset, a ' +
+        'link starts with the address it was made at.',
     ),
 
   FDV_SMTP_URL: z

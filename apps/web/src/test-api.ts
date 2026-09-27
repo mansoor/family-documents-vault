@@ -43,6 +43,11 @@ export interface FakeState {
   /** Set to require a PIN on the shared-document page. */
   sharePin: string | null;
   shareValid: boolean;
+  /** Opens counted by /api/v1/shared/unlock (5.16), and whether this browser has one open. */
+  shareOpens: number;
+  shareSession: boolean;
+  /** CreatedShare.link_url: the vault's FDV_PUBLIC_URL link, when it has one (5.16). */
+  shareLinkUrl?: string | null;
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
@@ -304,6 +309,8 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
     resetByOperator: false,
     sharePin: null,
     shareValid: true,
+    shareOpens: 0,
+    shareSession: false,
     documents: [PASSPORT],
     types: TYPES,
     suggestions: [],
@@ -650,10 +657,88 @@ export function installFakeApi(state: FakeState) {
         {
           share,
           link_token: 'share-secret-0123456789abcdef',
+          link_url: state.shareLinkUrl ?? null,
           ...(b.with_pin ? { pin: '4821' } : {}),
         },
         201,
       );
+    }
+    // After a restore, and turning a link back on (5.16): an owner decides
+    // every link; anybody else is shown the ones they made, only to take
+    // back — no one else turns a link back on, not even its maker (A55).
+    if (path === '/api/v1/after-restore' && method === 'GET') {
+      const owner = storedRole() === 'owner';
+      const mine = (x: Record<string, unknown>) => x.created_by_name === ME.display_name;
+      return json({
+        links: state.shares.filter((x) => x.state === 'paused' && (owner || mine(x))),
+      });
+    }
+    if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
+      }
+      const link = state.shares.find((x) => x.id === path.split('/')[4]);
+      if (!link || link.state !== 'paused') {
+        return refuse(404, 'not_found', 'That paused link does not exist.');
+      }
+      Object.assign(link, { state: 'active', paused_at: null, paused_reason: null });
+      return json(link);
+    }
+    // The page at /s (5.16): the token in a body, Open counted, a session after.
+    const linkGone = () =>
+      refuse(
+        404,
+        'link_not_valid',
+        'That link is not valid any more. Ask whoever sent it for a new one.',
+      );
+    const linkSession = () => ({
+      household_name: 'The Seikh family',
+      shared_by: 'Mansoor Seikh',
+      expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
+      items: [
+        {
+          id: 'doc-shared',
+          title: 'Flat 3 tenancy agreement',
+          type_label: 'Lease or tenancy agreement',
+          filename: 'tenancy.pdf',
+          content_type: 'application/pdf',
+          byte_size: 1024,
+        },
+      ],
+    });
+    if (path === '/api/v1/shared/preview' && method === 'POST') {
+      if (!state.shareValid) return linkGone();
+      return json({
+        household_name: 'The Seikh family',
+        shared_by: 'Mansoor Seikh',
+        protection: state.sharePin ? ['pin'] : [],
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        document_title: state.sharePin ? null : 'Flat 3 tenancy agreement',
+      });
+    }
+    if (path === '/api/v1/shared/unlock' && method === 'POST') {
+      if (!state.shareValid) return linkGone();
+      if (state.sharePin && (body as { secret?: string }).secret !== state.sharePin) {
+        return refuse(
+          401,
+          'pin_wrong',
+          'That PIN is not right. Check with whoever sent you the link.',
+        );
+      }
+      state.shareOpens += 1;
+      state.shareSession = true;
+      return json(linkSession());
+    }
+    if (path === '/api/v1/shared/items' && method === 'GET') {
+      if (!state.shareSession) {
+        return refuse(
+          401,
+          'share_session_ended',
+          'This page has been open too long, or was opened somewhere else. Open the link you were sent again.',
+        );
+      }
+      return json(linkSession());
     }
     if (path.startsWith('/api/v1/shares/') && method === 'DELETE') {
       const id = path.slice('/api/v1/shares/'.length);
