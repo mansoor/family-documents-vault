@@ -663,21 +663,21 @@ export function installFakeApi(state: FakeState) {
         201,
       );
     }
-    // After a restore, and turning a link back on (5.16): an owner, any
-    // link; anybody else, only one to their own Only me document (A55).
-    const mayResume = (link: Record<string, unknown>) => {
-      if (storedRole() === 'owner') return true;
-      const doc = state.documents.find((d) => d.id === link.document_id);
-      return doc?.visibility === 'private' && doc.owner_member_id === 'me';
-    };
+    // After a restore, and turning a link back on (5.16): an owner decides
+    // every link; anybody else is shown the ones they made, only to take
+    // back — no one else turns a link back on, not even its maker (A55).
     if (path === '/api/v1/after-restore' && method === 'GET') {
-      return json({ links: state.shares.filter((x) => x.state === 'paused' && mayResume(x)) });
+      const owner = storedRole() === 'owner';
+      const mine = (x: Record<string, unknown>) => x.created_by_name === ME.display_name;
+      return json({
+        links: state.shares.filter((x) => x.state === 'paused' && (owner || mine(x))),
+      });
     }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {
-      const link = state.shares.find((x) => x.id === path.split('/')[4]);
-      if (link && !mayResume(link)) {
+      if (storedRole() !== 'owner') {
         return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
       }
+      const link = state.shares.find((x) => x.id === path.split('/')[4]);
       if (!link || link.state !== 'paused') {
         return refuse(404, 'not_found', 'That paused link does not exist.');
       }

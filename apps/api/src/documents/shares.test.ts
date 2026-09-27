@@ -678,13 +678,24 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       return link;
     };
 
-    it("an owner revokes an adult's link, a restore brings it back, and the adult's resume gets 403 and the link is not listed to them", async () => {
+    /** Whether the document with this id may be seen by whoever this is. */
+    const sees = async (who: Tokens, documentId: string) =>
+      (await h.app.inject({ url: `/api/v1/documents/${documentId}`, headers: h.as(who) }))
+        .statusCode === 200;
+    const setVisibility = (who: Tokens, documentId: string, visibility: 'household' | 'private') =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${documentId}/visibility`,
+        headers: h.as(who),
+        payload: { visibility },
+      });
+
+    it("an owner revokes an adult's link, a restore brings it back, and the adult's resume gets 403", async () => {
       const link = await samsLinkAfterRestore("Sam's solicitor");
       expect((await preview(link.link_token)).statusCode).toBe(404);
 
       // Not Sam's to decide: the owner who took it back has no say in the
       // backup, and nobody would see it come back.
-      expect(await pausedFor(sam)).not.toContain(link.share.id);
       const refused = await resume(sam, link.share.id);
       expect(refused.statusCode).toBe(403);
       expect(code(refused)).toBe('forbidden');
@@ -692,10 +703,30 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect((await preview(link.link_token)).statusCode).toBe(404);
       expect((await unlock(link.link_token)).statusCode).toBe(404);
       expect((await auditOf(link.share.id)).map((a) => a.action)).not.toContain('share.resumed');
+    });
 
-      // Taking it back only closes, so that stays his.
-      expect((await takeBack(sam, link.share.id)).statusCode).toBe(204);
+    it('the maker of a paused link still has it listed, only to take it back', async () => {
+      const link = await samsLinkAfterRestore("Sam's surveyor");
+      const diary = await make("Sam's travel diary", 'private', sam);
+      const own = json<CreatedShare>(await share(diary, { recipient_label: 'the GP' }, sam));
+      await restoredFromBefore(own.share.id);
+
+      // Both are his to see, so that he can take them back: his own Only me
+      // document's link as much as the one an owner decides about.
+      const listed = await pausedFor(sam);
+      expect(listed).toContain(link.share.id);
+      expect(listed).toContain(own.share.id);
+      expect(await pausedFor(owner)).toContain(link.share.id);
+
+      // Taking a link back only closes, so that stays his.
+      for (const id of [link.share.id, own.share.id]) {
+        expect((await takeBack(sam, id)).statusCode).toBe(204);
+      }
+      expect(await pausedFor(sam)).not.toContain(link.share.id);
+      expect(await pausedFor(sam)).not.toContain(own.share.id);
       expect(await pausedFor(owner)).not.toContain(link.share.id);
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+      expect((await preview(own.link_token)).statusCode).toBe(404);
     });
 
     it("an owner turns an adult's paused link back on", async () => {
@@ -712,7 +743,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(await pausedFor(owner)).not.toContain(link.share.id);
     });
 
-    it('the maker of a link to their own Only me document turns it back on: no owner can', async () => {
+    it('no one but an owner turns a paused link back on, even the maker of a link to their own Only me document', async () => {
       const diary = await make("Sam's diary", 'private', sam);
       const link = json<CreatedShare>(await share(diary, { recipient_label: 'the GP' }, sam));
       expect(link.share.state).toBe('active');
@@ -722,13 +753,54 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       // The owner cannot see the document, so the link is not theirs to list.
       expect(await pausedFor(owner)).not.toContain(link.share.id);
       expect((await resume(owner, link.share.id)).statusCode).toBe(404);
-      expect(await pausedFor(sam)).toEqual([link.share.id]);
 
-      const back = await resume(sam, link.share.id);
-      expect(back.statusCode).toBe(200);
-      expect(json<ShareView>(back)).toMatchObject({ state: 'active', paused_at: null });
-      expect((await preview(link.link_token)).statusCode).toBe(200);
-      expect(await pausedFor(sam)).toEqual([]);
+      // Nor is it Sam's to decide (A55): every link waits for an owner. So
+      // this one stays paused; if it is still wanted, he makes a new one.
+      const refused = await resume(sam, link.share.id);
+      expect(refused.statusCode).toBe(403);
+      expect(code(refused)).toBe('forbidden');
+      expect((await linkRow(link.share.id)).paused_at).not.toBeNull();
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+      expect((await unlock(link.link_token)).statusCode).toBe(404);
+      expect((await auditOf(link.share.id)).map((a) => a.action)).not.toContain('share.resumed');
+    });
+
+    it('making a document Only me after a restore does not let its maker turn the link back on', async () => {
+      // An owner takes back Sam's link to a household document, and a
+      // restore from before then brings it back, paused.
+      const policy = await make('Car insurance policy', 'household', sam);
+      const link = json<CreatedShare>(await share(policy, { recipient_label: 'the garage' }, sam));
+      expect((await takeBack(owner, link.share.id)).statusCode).toBe(204);
+      await restoredFromBefore(link.share.id);
+      expect(await pausedFor(owner)).toContain(link.share.id);
+
+      // Sam makes the document his, then Only me: no owner can see it now.
+      const his = await h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/documents/${policy}`,
+        headers: h.as(sam),
+        payload: { owner_member_id: sam.member_id },
+      });
+      expect(his.statusCode, his.body).toBe(200);
+      const onlyHis = await setVisibility(sam, policy, 'private');
+      expect(onlyHis.statusCode, onlyHis.body).toBe(200);
+      expect(await sees(owner, policy)).toBe(false);
+      expect(await pausedFor(owner)).not.toContain(link.share.id);
+
+      // That does not make the link his to turn back on.
+      const refused = await resume(sam, link.share.id);
+      expect(refused.statusCode).toBe(403);
+      expect(code(refused)).toBe('forbidden');
+      expect((await linkRow(link.share.id)).paused_at).not.toBeNull();
+
+      // Put back for the household, the leaked link still does not work:
+      // it waits for an owner, as it did before.
+      const shared = await setVisibility(sam, policy, 'household');
+      expect(shared.statusCode, shared.body).toBe(200);
+      expect((await preview(link.link_token)).statusCode).toBe(404);
+      expect((await unlock(link.link_token)).statusCode).toBe(404);
+      expect(await pausedFor(owner)).toContain(link.share.id);
+      expect((await auditOf(link.share.id)).map((a) => a.action)).not.toContain('share.resumed');
     });
   });
 

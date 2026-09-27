@@ -70,8 +70,10 @@ export type Capability =
   | 'list.manage'
   /**
    * Turn back on what a restore paused (A55): every link to a document the
-   * owner can see (5.16). Without it, only a link to your own Only me
-   * document, which no owner can see.
+   * owner can see (5.16). Without it, nothing — not even a link you made
+   * to your own Only me document, which no owner can see: that one stays
+   * paused, and you take it back and make a new one. Taking a link back
+   * stays with `document.share`.
    */
   | 'restore.review';
 

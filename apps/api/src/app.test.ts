@@ -288,17 +288,41 @@ describe('loadConfig', () => {
         /FDV_PUBLIC_URL: Use https:\/\//,
       );
     }
-    for (const good of [
-      'https://share.example.com',
-      'https://share.example.com:8443/',
-      'http://localhost:8099',
-      'http://127.0.0.1:8099/',
-    ]) {
-      expect(loadConfig({ ...base, FDV_PUBLIC_URL: good }).FDV_PUBLIC_URL).toBe(good);
+    // Kept as the address alone, however it was written: a link is this
+    // followed by /s#…, so a slash too many would make a different path.
+    for (const [good, kept] of [
+      ['https://share.example.com', 'https://share.example.com'],
+      ['https://share.example.com:8443/', 'https://share.example.com:8443'],
+      ['http://localhost:8099', 'http://localhost:8099'],
+      ['http://127.0.0.1:8099/', 'http://127.0.0.1:8099'],
+      ['http://[::1]:8099', 'http://[::1]:8099'],
+      ['HTTPS://share.example.com', 'https://share.example.com'],
+      ['HTTPS://Share.Example.COM:443/', 'https://share.example.com'],
+    ] as const) {
+      expect(loadConfig({ ...base, FDV_PUBLIC_URL: good }).FDV_PUBLIC_URL).toBe(kept);
     }
-    // The address alone, as before.
-    expect(() => loadConfig({ ...base, FDV_PUBLIC_URL: 'https://share.example.com/s' })).toThrow(
-      /Give the address alone/,
+  });
+
+  it('FDV_PUBLIC_URL is the address alone: nothing a link would carry on after it (5.16 review)', () => {
+    const base = { DATABASE_URL: 'x', FDV_MASTER_KEY: config.FDV_MASTER_KEY };
+    // Each would make a link that goes somewhere else, or nowhere: /s#… put
+    // after a path, a query or a fragment, or a host that is really a name
+    // and a password in front of somebody else's.
+    for (const bad of [
+      'https://share.example.com/s',
+      'https://share.example.com#f',
+      'https://share.example.com?x',
+      'https://user:pw@evil.com',
+      'https://localhost@evil.com',
+      'http://localhost:8099/s',
+    ]) {
+      expect(() => loadConfig({ ...base, FDV_PUBLIC_URL: bad }), bad).toThrow(
+        /^invalid configuration:\n {2}FDV_PUBLIC_URL: Give the address alone: https:\/\/share\.example\.com$/,
+      );
+    }
+    // Plain http to a name that only says localhost is still plain http.
+    expect(() => loadConfig({ ...base, FDV_PUBLIC_URL: 'http://localhost@evil.com' })).toThrow(
+      /^invalid configuration:\n {2}FDV_PUBLIC_URL: Use https:\/\/[^\n]*$/,
     );
   });
 });

@@ -559,8 +559,9 @@ export async function registerDocuments(
   });
 
   /**
-   * After a restore (5.16): what it paused that the caller may turn back
-   * on. Links today; 5.21 adds upload requests and 5.28 sign-ins.
+   * After a restore (5.16): what it paused that the caller may decide
+   * about — an owner turns back on, anybody else only takes back their
+   * own. Links today; 5.21 adds upload requests and 5.28 sign-ins.
    */
   app.get('/api/v1/after-restore', auth, async (req) => ({
     links: await shares.paused(principal(req)),

@@ -583,9 +583,14 @@ export function createApi(http: Http) {
       http.url(`/api/v1/shared/items/${enc(documentId)}/content`),
 
     // ------------------------------------------- after a restore (0.5.14)
-    /** What a restore paused that the caller may turn back on. */
+    /**
+     * What a restore paused that the caller may decide about: for an owner,
+     * to turn back on or take back; for anybody else, their own links, only
+     * to take back.
+     */
     afterRestore: (token: string) =>
       request<{ links: Share[] }>('/api/v1/after-restore', { token }),
+    /** Owners only (`restore.review`): anybody else is `403 forbidden`. */
     resumeShare: (token: string, id: string) =>
       request<Share>(`/api/v1/shares/${id}/resume`, { method: 'POST', token }),
   };

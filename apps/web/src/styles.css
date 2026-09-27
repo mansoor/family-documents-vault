@@ -64,6 +64,16 @@ h3 {
   margin: 0;
 }
 
+/* Where the app moves the focus so a screen reader says what changed — a
+   new heading, a status line, the facts a dialog returns to — is not a
+   control: it is focused by script (tabindex -1) and nobody presses it.
+   Chromium rings such an element even before anybody has touched the page
+   (the share page's title as it loads), so none of them draws one. A
+   control keeps its ring, however it was focused. */
+:is(h1, h2, h3, p, dl)[tabindex='-1']:focus {
+  outline: none;
+}
+
 .page {
   min-height: 100dvh;
   max-width: 480px;

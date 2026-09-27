@@ -1,11 +1,29 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { SharePage, takeLinkToken } from './screens/SharePage.js';
 import { fresh, installFakeApi, PASSPORT, signedIn } from './test-api.js';
 
 const TOKEN = 'share-secret-0123456789abcdef';
+
+/** The web's stylesheet, read from disk: under Vitest an import of it is empty. */
+const CSS = (() => {
+  const file = ['src/styles.css', 'apps/web/src/styles.css']
+    .map((p) => resolve(process.cwd(), p))
+    .find((p) => existsSync(p));
+  return file ? readFileSync(file, 'utf8') : '';
+})();
+
+/** The selectors of the stylesheet's rules that take the focus ring away. */
+const RINGLESS = [...CSS.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  .filter(([, , body]) => /(?:^|;)\s*outline\s*:\s*(?:none|0)\s*(?:;|$)/.test(body ?? ''))
+  .map(([, selector]) => (selector ?? '').trim());
+
+/** Whether the element, focused, matches a rule that takes its focus ring away. */
+const ringless = (el: Element) => RINGLESS.some((selector) => el.matches(selector));
 
 beforeEach(() => {
   localStorage.clear();
@@ -180,6 +198,54 @@ describe('a screen reader hears the page change', () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 
+  it('the heading given the focus as the page loads draws no ring: it is not a control', async () => {
+    installFakeApi(fresh());
+    render(<SharePage token={TOKEN} />);
+    const title = await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+    await waitFor(() => expect(title).toHaveFocus());
+    // Chromium rings an element focused by script before anybody has touched
+    // the page; the stylesheet takes that ring away here.
+    expect(CSS.length).toBeGreaterThan(1000);
+    expect(ringless(title)).toBe(true);
+    // A control keeps its ring.
+    const open = screen.getByRole('button', { name: 'Open' });
+    open.focus();
+    expect(ringless(open)).toBe(false);
+  });
+
+  it('every place the app moves the focus to for a screen reader draws no ring, and no control loses one', () => {
+    const focused = (html: string) => {
+      const box = document.createElement('div');
+      box.innerHTML = html;
+      document.body.append(box);
+      const el = box.firstElementChild as HTMLElement;
+      el.focus();
+      expect(el).toHaveFocus();
+      const ringlessNow = ringless(el);
+      box.remove();
+      return ringlessNow;
+    };
+    // A heading a row left from, a status line, the facts a dialog returns to.
+    for (const html of [
+      '<h1 tabindex="-1">Links</h1>',
+      '<h2 tabindex="-1">Your paused links</h2>',
+      '<p class="notice" role="status" tabindex="-1">Done.</p>',
+      '<dl class="facts" tabindex="-1"><dt>Issued</dt><dd>2021</dd></dl>',
+    ]) {
+      expect(focused(html), html).toBe(true);
+    }
+    // A control, even one focused by script (a menu's items, say), keeps it.
+    for (const html of [
+      '<button class="btn" tabindex="-1">Take it back</button>',
+      '<button class="menu-item" role="menuitem" tabindex="-1">Rename</button>',
+      '<a href="/settings" tabindex="-1">Settings</a>',
+      '<input tabindex="-1" />',
+      '<h2 tabindex="0">A heading somebody tabs to</h2>',
+    ]) {
+      expect(focused(html), html).toBe(false);
+    }
+  });
+
   it('a dead link is an alert, and its card takes the focus', async () => {
     installFakeApi(fresh({ shareValid: false }));
     render(<SharePage token={TOKEN} />);
@@ -280,7 +346,7 @@ describe('Settings → After a restore', () => {
     expect(await screen.findByText(/Nothing is waiting/)).toBeInTheDocument();
   });
 
-  it('to anybody but an owner it offers only links to their own Only me documents, and says an owner decides the rest', async () => {
+  it('to its maker a paused link offers only Take it back, and says a link to an Only me document needs a new one', async () => {
     const diary = {
       ...PASSPORT,
       id: 'doc-diary',
@@ -291,9 +357,18 @@ describe('Settings → After a restore', () => {
     const state = fresh({
       documents: [{ ...PASSPORT }, diary],
       shares: [
-        // Sam's own link to a household document: an owner's to decide (A55).
+        // My own link to a household document: an owner's to decide (A55).
         { ...paused, id: 'sh-household', document_id: PASSPORT.id },
+        // And to my own Only me document, which no owner can see: nobody's.
         { ...paused, id: 'sh-diary', document_id: diary.id, document_title: 'My diary' },
+        // Somebody else's link is not mine to see here.
+        {
+          ...paused,
+          id: 'sh-sams',
+          document_id: PASSPORT.id,
+          document_title: 'Sam’s passport',
+          created_by_name: 'Sam',
+        },
       ],
     });
     installFakeApi(state);
@@ -301,17 +376,28 @@ describe('Settings → After a restore', () => {
     window.history.replaceState({}, '', '/settings');
     render(<App />);
 
-    fireEvent.click(await screen.findByRole('link', { name: /After a restore.*1 link is paused/ }));
+    fireEvent.click(
+      await screen.findByRole('link', { name: /After a restore.*2 links you made are paused/ }),
+    );
     await screen.findByText('My diary');
-    expect(screen.queryByText('Mansoor’s passport')).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/An owner decides about links to documents others can see/),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Mansoor’s passport')).toBeInTheDocument();
+    expect(screen.queryByText('Sam’s passport')).not.toBeInTheDocument();
+
+    // Only an owner turns a link back on; its maker may only take it back.
+    expect(screen.queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Take it back' })).toHaveLength(2);
+    expect(screen.getByText(/Only an owner can turn one back on/)).toBeInTheDocument();
+    const onlyMe = screen.getByText(/No owner can see your Only me documents/);
+    expect(onlyMe).toHaveTextContent(/so no one can turn a link to one of them back on/);
+    expect(onlyMe).toHaveTextContent(/If it is still needed, take it back and make a new link/);
     await expectAccessible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Turn back on' }));
-    await screen.findByText('The link to “My diary” works again.');
+    const diaryRow = screen.getByText('My diary').closest('li') as HTMLElement;
+    fireEvent.click(within(diaryRow).getByRole('button', { name: 'Take it back' }));
+    await screen.findByText('The link to “My diary” is taken back for good.');
+    expect(state.shares.map((s) => s.id)).not.toContain('sh-diary');
     expect(state.shares.find((s) => s.id === 'sh-household')?.state).toBe('paused');
+    expect(state.calls.some((c) => c.url.endsWith('/resume'))).toBe(false);
   });
 
   it('an owner is not told somebody else decides', async () => {
@@ -320,7 +406,9 @@ describe('Settings → After a restore', () => {
     window.history.replaceState({}, '', '/settings/after-restore');
     render(<App />);
     await screen.findByText('Mansoor’s passport');
-    expect(screen.queryByText(/An owner decides/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Turn back on' })).toBeInTheDocument();
+    expect(screen.queryByText(/Only an owner can/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No owner can see/)).not.toBeInTheDocument();
   });
 
   it('is not in Settings when nothing is paused', async () => {

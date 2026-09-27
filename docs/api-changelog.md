@@ -1172,8 +1172,10 @@ frame-ancestors 'none'; sandbox`.
     - **New, additive:** `CreatedShare.link_url` — the link to send, on the
       vault's public-only site when the operator set `FDV_PUBLIC_URL`
       (`https://share.example.com/s#…`), else null: put the app's own
-      origin before `/s#{link_token}`. `FDV_PUBLIC_URL` must be `https://`
-      (`http://` only for localhost). `Share` gains `flow` (`legacy` or
+      origin before `/s#{link_token}`. `FDV_PUBLIC_URL` must be an
+      `https://` address alone — no path, query, fragment or user name
+      (`http://` only for localhost) — and is kept as its origin.
+      `Share` gains `flow` (`legacy` or
       `v2`), `paused_at` and `paused_reason`, and `state` gains `paused`.
       All absent from older vaults.
     - **Changed:** the legacy routes — `GET /api/v1/shared/{token}`,
@@ -1190,17 +1192,20 @@ link_not_valid` on each, whatever its options, and a legacy link's is
       paused link is `404 link_not_valid` on every route until it is
       turned back on.
     - **New:** `GET /api/v1/after-restore` → `{ links: [Share] }`: the
-      paused links the caller may turn back on — an owner, every one to a
-      document they can see; anybody else with `document.share`, only the
-      links to their own Only me documents, which no owner can see. A
-      link's maker is not otherwise its judge: the backup brought back
-      whatever an owner took back since. `POST /api/v1/shares/{id}/resume`
-      → the `Share`, active again (`share.resumed`); it asks what making
-      the link asks (step-up for an Essential or Only me document). For a
-      non-owner, any other link — their own included — is `403 forbidden`;
-      one that is not paused is `404`. Taking a paused link back
-      (`DELETE /api/v1/shares/{id}`) is unchanged. 5.21 and 5.28 add
-      upload requests and sign-ins to `after-restore`.
+      paused links the caller may decide about — an owner, every one to a
+      document they can see, to turn back on or take back; anybody else
+      with `document.share`, the links they made, only to take back.
+      `POST /api/v1/shares/{id}/resume` → the `Share`, active again
+      (`share.resumed`); it asks what making the link asks (step-up for an
+      Essential or Only me document). Only an owner (`restore.review`)
+      may: for anybody else it is `403 forbidden`, whoever made the link
+      and whatever its document, since the backup brought back whatever
+      an owner took back since. So a link to a non-owner's own Only me
+      document, which no owner can see, stays paused: its maker takes it
+      back and makes a new one. For an owner, a link that is not paused
+      is `404`. Taking a paused link back (`DELETE /api/v1/shares/{id}`)
+      is unchanged. 5.21 and 5.28 add upload requests and sign-ins to
+      `after-restore`.
     - An outsider's address is kept cut to its /24 (IPv4) or /48 (IPv6),
       in the activity log's share lines and in the session.
     - The activity log says "A link to “Lease” stopped working: its PIN was

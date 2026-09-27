@@ -165,39 +165,11 @@ const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').
 /** A transaction asked for by whoever holds one link, in its household: never anybody else. */
 type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
 
-/** A link as the family's lists show it, with who made it and whose its document is. */
-type LinkView = ShareView & {
-  created_by: string;
-  visibility: string;
-  owner_member_id: string | null;
-};
+/** A link as the family's lists show it, with who made it. */
+type LinkView = ShareView & { created_by: string };
 
 /** What the family's lists are sent of a link. */
-const viewOnly = ({
-  created_by: _by,
-  visibility: _visibility,
-  owner_member_id: _owner,
-  ...view
-}: LinkView): ShareView => view;
-
-/**
- * Who may turn back on a link a restore paused (A55): an owner, for any
- * link to a document they can see. A backup brings back a link an owner
- * took back after it was made, and the activity log's line saying so is
- * gone with the rest of what came after it — so its maker is not the one
- * to decide it still stands. The one exception is a link to the caller's
- * own Only me document: no owner can see it, so nobody else could, and it
- * would stay paused for good.
- */
-function mayResume(
-  p: Principal,
-  link: { visibility: string; owner_member_id: string | null },
-): boolean {
-  if (can(p.role, 'restore.review')) return true;
-  return (
-    link.visibility === 'private' && p.memberId !== null && link.owner_member_id === p.memberId
-  );
-}
+const viewOnly = ({ created_by: _by, ...view }: LinkView): ShareView => view;
 
 type LinkRow = {
   id: string;
@@ -356,7 +328,7 @@ export class ShareService {
     return (await this.views(p)).map(viewOnly);
   }
 
-  /** Every link the reader may know about, with who made it and whose document it is. */
+  /** Every link the reader may know about, with who made it. */
   private async views(p: Principal): Promise<LinkView[]> {
     // Who a document went to outside the family ("the divorce lawyer"),
     // who sent it and how often it was opened is for those who may share
@@ -420,8 +392,6 @@ export class ShareService {
             paused_reason: r.paused_reason,
             summary: summarise(r, state),
             created_by: r.created_by,
-            visibility: r.visibility,
-            owner_member_id: r.owner_member_id,
           };
         });
     });
@@ -465,25 +435,37 @@ export class ShareService {
 
   // ------------------------------------------------------ after a restore
 
-  /** The links a restore paused that the reader may turn back on (A55): see mayResume. */
+  /**
+   * The links a restore paused that the reader may decide about (A55): an
+   * owner, every one to a document they can see, to turn back on or take
+   * back; anybody else who may share, the ones they made, only to take
+   * back (resumable says why).
+   */
   async paused(p: Principal): Promise<ShareView[]> {
+    const owner = can(p.role, 'restore.review');
     return (await this.views(p))
-      .filter((s) => s.state === 'paused' && mayResume(p, s))
+      .filter((s) => s.state === 'paused' && (owner || s.created_by === p.accountId))
       .map(viewOnly);
   }
 
   /**
    * Whether the caller may turn a paused link back on, and its document:
-   * an owner may, for any link to a document they can see; anybody else
-   * only for a link to their own Only me document (mayResume). Taking a
-   * paused link back is not this: that only closes, and stays with
-   * whoever may take back a link.
+   * an owner may, for any link to a document they can see; nobody else,
+   * whoever made it (A55: every link waits for an owner). A backup brings
+   * back a link an owner took back after it was made, and the activity
+   * log's line saying so is gone with the rest of what came after it — so
+   * its maker is not the one to decide it still stands. Not even for a
+   * link to their own Only me document, which no owner can see: what the
+   * document is now says nothing about what it was when the link was
+   * taken back, and it can be made Only me for the asking and put back
+   * after. Such a link stays paused; its maker takes it back and makes a
+   * new one. Taking a paused link back is not this: that only closes, and
+   * stays with whoever may take back a link.
    */
   async resumable(p: Principal, id: string): Promise<string> {
-    requireCapability(p, 'document.share');
+    requireCapability(p, 'restore.review');
     const link = (await this.views(p)).find((s) => s.id === id);
     if (!link) throw notFound('That link');
-    if (!mayResume(p, link)) requireCapability(p, 'restore.review');
     if (link.state !== 'paused') throw notFound('That paused link');
     return link.document_id;
   }

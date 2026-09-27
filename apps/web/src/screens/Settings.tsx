@@ -18,8 +18,10 @@ export function SettingsScreen() {
   );
   const { withToken } = useApp();
   // Shown only after a restore, while it paused something the reader may
-  // turn back on (5.16).
+  // decide about (5.16): an owner, any link; anybody else, the links they
+  // made, which only an owner turns back on.
   const mayShare = can(storedRole(), 'document.share');
+  const owner = can(storedRole(), 'restore.review');
   const { data: paused } = useLoad(
     async (t) => (mayShare ? (await api.afterRestore(t)).links : []),
     [authVersion, mayShare],
@@ -47,9 +49,13 @@ export function SettingsScreen() {
             <Link to="/settings/after-restore" className="rowbtn">
               <span className="doc-title">After a restore</span>
               <span className="muted">
-                {paused?.length === 1
-                  ? '1 link is paused until you turn it back on'
-                  : `${paused?.length} links are paused until you turn them back on`}
+                {owner
+                  ? paused?.length === 1
+                    ? '1 link is paused until you turn it back on'
+                    : `${paused?.length} links are paused until you turn them back on`
+                  : paused?.length === 1
+                    ? '1 link you made is paused'
+                    : `${paused?.length} links you made are paused`}
               </span>
             </Link>
           </li>
