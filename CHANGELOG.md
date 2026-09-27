@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-09-26 — iteration 5.15
+
+Lists on the web.
+
+### Added
+
+- Lists on Home and on their own screen: make a list, say who it is for — everyone in the family, teens and up, the adults, or only you — rename it, and delete it. A list's page shows only what you may see on it, and counts only that; its maker is told which documents some of the list's audience can't see. Someone who can only view still sees no lists.
+- "Add to a list" in every document's ⋯ menu — on Home, in search, on a person's page, in reminders and on other lists — and on the document page, which also names the lists the document is on.
+- "Select" in search: tick several documents and put them on a list at once, up to 200. They all go on, or — if one can't — none do, and it says so. While selecting, tapping a row ticks it.
+- Taking a document off a list, and deleting a list, ask first.
+
+### Fixed
+
+- The back button on every screen has its arrow in the middle, and is as large as the app's other buttons.
+
 ## [0.5.12] - 2026-09-26 — iteration 5.14
 
 Lists of documents, on the server: the screens come next.

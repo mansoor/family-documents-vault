@@ -575,6 +575,8 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     }
   });
 
+  // Two of these are long scenarios, some sixty requests each: 4 s on their
+  // own, so the default 5 s timed them out while the machine was busy (5.15).
   describe('a list whose maker is moved or loses their sign-in (the 5.14 review)', () => {
     const nowhere = randomUUID();
     const setRole = async (member: string, role: string) => {
@@ -722,7 +724,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         }
       }
       expect((await activity('teen')).join('\n')).not.toMatch(/ZZ /);
-    });
+    }, 20_000);
 
     it('an owner deletes a list whose maker is no longer in its audience, never changes it; the log says so as for its maker', async () => {
       const jo = await h.join(people.owner, {
@@ -815,7 +817,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const now = await outsiderSees('teen');
       expect(now.lists.filter((id) => !before.lists.includes(id))).toEqual([]);
       expect(now.ofDoc.filter((id) => !before.ofDoc.includes(id))).toEqual([]);
-    });
+    }, 20_000);
   });
 
   it('an owner’s delete that meets the maker’s sign-in given back meanwhile deletes nothing, and logs nothing', async () => {
