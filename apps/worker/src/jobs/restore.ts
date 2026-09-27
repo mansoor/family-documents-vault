@@ -34,8 +34,10 @@ import { sealPrivateValues } from './seal.js';
  * A backup is the past: whatever was revoked or ended since it was made
  * comes back with it. So, in the same transaction, every session is ended
  * — everybody signs in again — and what else can be ended safely is (see
- * UNDO); what only the family can decide (passkeys, share links,
- * invitations) is reported.
+ * UNDO). A share link cannot tell whether it was taken back since, so every
+ * live one is paused until an owner turns it back on (5.16, A55), and no
+ * session opened with one survives. What only the family can decide
+ * (passkeys, invitations) is reported.
  */
 
 export interface RestoreTarget {
@@ -55,8 +57,12 @@ export interface RestoreReport {
   sessionsEnded: number;
   /** Requests to change who is an owner, withdrawn: they are asked again, with fresh notice. */
   ownerChangesWithdrawn: number;
-  /** Share links that work again: any revoked since the backup is among them. */
-  liveShareLinks: number;
+  /**
+   * Share links paused (5.16): each waits for an owner to turn it back on,
+   * in Settings → After a restore, since any revoked after the backup was
+   * made would otherwise work again.
+   */
+  linksPaused: number;
   openInvitations: number;
 }
 
@@ -93,6 +99,9 @@ export async function restoreBackup(
       // can be older than the sealing of its Only me notes and details
       // (0.5.8), and they are not to be plain in the vault for a moment.
       await sealRestored(admin, target.appUrl, keys, log);
+      // A backup older than 0.5.14 has nothing to pause links with until
+      // the migrations have run: its links are paused now.
+      undone.linksPaused += await pauseLinks(admin);
       open = await stillOpen(admin);
     } finally {
       await admin.end();
@@ -129,22 +138,33 @@ async function sealRestored(
 interface Undone {
   sessionsEnded: number;
   ownerChangesWithdrawn: number;
+  linksPaused: number;
 }
 
 interface StillOpen {
-  liveShareLinks: number;
   openInvitations: number;
+}
+
+/** Every live share link, paused for an owner to turn back on (A55). UNDO says it too. */
+const PAUSE_LINKS = `update public.share_link set paused_at = now(), paused_reason = 'restored'
+   where paused_at is null and revoked_at is null and expires_at > now() and attempts < 10`;
+
+/**
+ * UNDO pauses the links in the load's own transaction when the backup has
+ * the column; this does it for a backup from before 0.5.14, once the
+ * migrations have added it. After a newer backup it finds nothing left.
+ */
+async function pauseLinks(admin: ReturnType<typeof createPool>): Promise<number> {
+  return (await admin.query(PAUSE_LINKS)).rowCount ?? 0;
 }
 
 /** What the family decides about, not the restore: counted for the report. */
 async function stillOpen(admin: ReturnType<typeof createPool>): Promise<StillOpen> {
-  const { rows } = await admin.query<{ links: number; invitations: number }>(
-    `select (select count(*)::int from share_link
-              where revoked_at is null and (expires_at is null or expires_at > now())) as links,
-            (select count(*)::int from invitation
+  const { rows } = await admin.query<{ invitations: number }>(
+    `select (select count(*)::int from invitation
               where accepted_at is null and revoked_at is null and expires_at > now()) as invitations`,
   );
-  return { liveShareLinks: rows[0]?.links ?? 0, openInvitations: rows[0]?.invitations ?? 0 };
+  return { openInvitations: rows[0]?.invitations ?? 0 };
 }
 
 /**
@@ -313,7 +333,11 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
   }
   const counted = (what: string) =>
     Number(new RegExp(`fdv-restore:${what}=(\\d+)`).exec(stdout)?.[1] ?? 0);
-  return { sessionsEnded: counted('sessions'), ownerChangesWithdrawn: counted('owner_changes') };
+  return {
+    sessionsEnded: counted('sessions'),
+    ownerChangesWithdrawn: counted('owner_changes'),
+    linksPaused: counted('links_paused'),
+  };
 }
 
 /**
@@ -323,8 +347,11 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * a lost phone, would otherwise work); reset links are expired; a request
  * to change who is an owner is withdrawn, to be asked again with fresh
  * notice (one refused since would otherwise be open, and past its seven
- * days); and browsers registered for notifications before 0.4.2, which no
- * session ties to, are forgotten. Guarded for older schemas.
+ * days); browsers registered for notifications before 0.4.2, which no
+ * session ties to, are forgotten; and every live share link is paused for
+ * an owner to turn back on, since one taken back since would work again,
+ * and no session opened with a link survives (5.16). Guarded for older
+ * schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 do $undo$
@@ -363,6 +390,15 @@ begin
               and attname = 'session_id' and not attisdropped) then
     delete from public.device where session_id is null;
   end if;
+  if exists (select 1 from pg_attribute where attrelid = to_regclass('public.share_link')
+              and attname = 'paused_at' and not attisdropped) then
+    ${PAUSE_LINKS};
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('links_paused', n);
+  end if;
+  if to_regclass('public.share_session') is not null then
+    delete from public.share_session;
+  end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
 
@@ -389,6 +425,8 @@ const GUARDS = [
   { name: 'document_type_fixed', table: 'document_type', fn: 'document_type_fixed' },
   // An owner marks deleted a list nobody can change any more, and nothing else (0036).
   { name: 'doc_list_owner_writes', table: 'doc_list', fn: 'doc_list_owner_writes' },
+  // A link keeps the flow it was made with: a new one never opens on an old route (0037).
+  { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
 ];
 
 /**
@@ -425,6 +463,8 @@ const ACTOR_GUARDED = [
   // Lists of documents, and what is on them (0036).
   'doc_list',
   'doc_list_item',
+  // What a share link's Open gives a browser (0037).
+  'share_session',
 ];
 
 /**

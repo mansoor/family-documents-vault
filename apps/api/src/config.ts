@@ -80,6 +80,18 @@ const schema = z.object({
         'passkeys are bound to its hostname.',
     ),
 
+  FDV_PUBLIC_URL: z
+    .string()
+    .url()
+    .regex(/^https?:[/][/][^/]+[/]?$/, 'Give the address alone: https://share.example.com')
+    .optional()
+    .describe(
+      'The public-only site (docker/caddy/Caddyfile.public-only), when there is ' +
+        'one: the address the share links the vault makes start with, so the ' +
+        'people they are sent to can reach them. Unset, a link starts with ' +
+        'the address it was made at.',
+    ),
+
   FDV_SMTP_URL: z
     .string()
     .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')

@@ -600,7 +600,9 @@ describe('App', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
 
-    await screen.findByText(/\/shared\/share-secret-0123456789abcdef/);
+    // The secret after a #, which no server is sent (5.16).
+    await screen.findByText(/\/s#share-secret-0123456789abcdef$/);
+    expect(screen.queryByText(/\/shared\//)).not.toBeInTheDocument();
     expect(
       screen.getByText(/this one document until it expires, and nothing else/),
     ).toBeInTheDocument();

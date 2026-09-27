@@ -61,7 +61,13 @@ describe('buildCapabilities', () => {
       // 0.5.12: lists of documents (5.14).
       lists: true,
     });
-    expect(caps.deprecations).toEqual([]);
+    // The old share routes answer only links made before 0.5.14, and go
+    // four minor releases on (5.16, A25).
+    expect(caps.deprecations).toEqual([
+      { field: 'GET /api/v1/shared/{token}', removed_in: '0.9.0' },
+      { field: 'POST /api/v1/shared/{token}/open', removed_in: '0.9.0' },
+      { field: 'GET /api/v1/shared/{token}/content', removed_in: '0.9.0' },
+    ]);
   });
 
   it('push is reported only when the vault has Web Push keys', () => {

@@ -17,6 +17,13 @@ export function SettingsScreen() {
     [authVersion],
   );
   const { withToken } = useApp();
+  // Shown only after a restore, while it paused something the reader may
+  // turn back on (5.16).
+  const mayShare = can(storedRole(), 'document.share');
+  const { data: paused } = useLoad(
+    async (t) => (mayShare ? (await api.afterRestore(t)).links : []),
+    [authVersion, mayShare],
+  );
 
   const revoke = async (id: string) => {
     await withToken((t) => api.revokeSession(t, id));
@@ -35,6 +42,18 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
+        {(paused?.length ?? 0) > 0 && (
+          <li>
+            <Link to="/settings/after-restore" className="rowbtn">
+              <span className="doc-title">After a restore</span>
+              <span className="muted">
+                {paused?.length === 1
+                  ? '1 link is paused until you turn it back on'
+                  : `${paused?.length} links are paused until you turn them back on`}
+              </span>
+            </Link>
+          </li>
+        )}
         {can(storedRole(), 'audit.read') && (
           <li>
             <Link to="/settings/activity" className="rowbtn">

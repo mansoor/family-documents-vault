@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { testAdminUrl } from '@fdv/db/testing';
+import FormData from 'form-data';
 import { can, CAPABILITIES, type Capability, ROLES, type Role } from '@fdv/shared';
 import type { DocumentView } from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -94,6 +96,31 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
     });
     return who.member_id;
   };
+
+  /** A link the owner made, to a document with a file on it: made once. */
+  let link: Promise<string> | null = null;
+  const ownersLink = () =>
+    (link ??= (async () => {
+      const id = await disposable();
+      const form = new FormData();
+      form.append('file', Buffer.from('%PDF-1.4\n%%EOF\n'), {
+        filename: 'scan.pdf',
+        contentType: 'application/pdf',
+      });
+      await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${id}/versions`,
+        headers: { ...h.as(people.owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+        payload: form.getBuffer(),
+      });
+      const made = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${id}/share`,
+        headers: h.as(people.owner),
+        payload: {},
+      });
+      return made.json<{ share: { id: string } }>().share.id;
+    })());
 
   const probes: Probe[] = [
     {
@@ -295,6 +322,18 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
           payload: { default_visibility: 'household' },
         });
       },
+    },
+    {
+      capability: 'restore.review',
+      what: "turn back on a link a restore paused, somebody else's",
+      // The owner's link, not paused: the owner is answered 404 (there is
+      // nothing to turn back on), everybody else is refused first.
+      call: async (t) =>
+        h.app.inject({
+          method: 'POST',
+          url: `/api/v1/shares/${await ownersLink()}/resume`,
+          headers: h.as(t),
+        }),
     },
     {
       capability: 'list.manage',

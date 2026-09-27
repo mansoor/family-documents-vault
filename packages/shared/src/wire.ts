@@ -186,15 +186,76 @@ export interface Share {
   has_pin: boolean;
   open_count: number;
   last_opened_at: string | null;
-  state: 'active' | 'expired' | 'revoked' | 'locked';
+  /** `paused` since 0.5.14: a restore paused it, for an owner to turn back on. */
+  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused';
+  /**
+   * Which routes open it (0.5.14): `legacy`, a link made before then, on
+   * the old /shared/{token} routes; `v2`, on the new ones. Absent from
+   * older vaults, where every link is legacy.
+   */
+  flow?: 'legacy' | 'v2';
+  /** When it was paused, and why (0.5.14). Absent from older vaults. */
+  paused_at?: string | null;
+  paused_reason?: 'restored' | null;
   summary: string;
 }
 
-/** The link and the PIN exist here and nowhere else. */
+/**
+ * The link and the PIN exist here and nowhere else. Since 0.5.14 the link
+ * is `{origin}/s#{link_token}`: in the fragment, which no server sees.
+ */
 export interface CreatedShare {
   share: Share;
   link_token: string;
+  /**
+   * The link to send, on the vault's public-only site (0.5.14, FDV_PUBLIC_URL):
+   * `https://share.example.com/s#{link_token}`. Null when the vault has none,
+   * and absent from older vaults: then the link is the app's own address
+   * followed by `/s#{link_token}`.
+   */
+  link_url?: string | null;
   pin?: string;
+}
+
+/** What protects a link (0.5.14): its PIN. 5.20 adds a password and an emailed code. */
+export type ShareProtection = 'pin';
+
+/**
+ * `POST /api/v1/shared/preview` (0.5.14): what the page shows before
+ * anybody presses Open. Nothing is counted and nothing is written down.
+ */
+export interface ShareLinkPreview {
+  household_name: string;
+  shared_by: string | null;
+  /** What Open asks for; empty when the link alone opens it. */
+  protection: ShareProtection[];
+  expires_at: string;
+  /** Withheld while a protection is on: a title can say a great deal. */
+  document_title: string | null;
+}
+
+/** A document inside an opened link (0.5.14). */
+export interface SharedItem {
+  id: string;
+  title: string | null;
+  type_label: string | null;
+  filename: string;
+  content_type: string;
+  byte_size: number;
+}
+
+/**
+ * What an opened link gives (0.5.14): `POST /api/v1/shared/unlock` and
+ * `GET /api/v1/shared/items`. The session lasts 30 minutes from its last
+ * use, and ends at `session_expires_at` at the latest.
+ */
+export interface SharedSession {
+  household_name: string;
+  shared_by: string | null;
+  /** The link's own end. */
+  expires_at: string;
+  session_expires_at: string;
+  items: SharedItem[];
 }
 
 export interface SharePreview {

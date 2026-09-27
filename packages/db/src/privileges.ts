@@ -48,6 +48,10 @@ begin
     grant execute on function public.app_shared_document() to fdv_app;
     grant execute on function public.app_shared_version() to fdv_app;
   end if;
+  -- Which link a session cookie belongs to, before the link is known (0037).
+  if to_regprocedure('public.share_session_find(bytea)') is not null then
+    grant execute on function public.share_session_find(bytea) to fdv_app;
+  end if;
   -- The migrations' own record, and the suggestion rules every household
   -- shares, are the vault's: the application only reads them.
   if to_regclass('public.schema_migration') is not null then

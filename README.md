@@ -99,6 +99,50 @@ the server and on the family's devices, use the internal Caddyfile with the Tail
 as `FDV_HOSTNAME`, and nothing is exposed to the internet at all — every device reaches
 the vault over the private network, with a name and a certificate that just work.
 
+### Links for people outside the family
+
+A share link is for someone who is not on your network — the letting agent, the
+accountant — so with only the middle road above, nobody you send one to can open it. The
+**public-only site** is a second address that serves just the page a link opens and the
+few API routes that page calls, and nothing else: the front page, the sign-in and the
+rest of the API answer 404 there. The family keeps using the internal address; only that
+one page faces the internet.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile public-only up -d
+```
+
+It needs, in `.env`:
+
+- `FDV_PUBLIC_HOSTNAME` — a public DNS name for it, pointing at your home's internet
+  address (`share.example.com`). Caddy gets its certificate from Let's Encrypt, so set
+  `FDV_TLS_EMAIL` too.
+- Your router forwarding ports 443 and 80 from the internet to this machine's
+  `FDV_PUBLIC_HTTPS_PORT` and `FDV_PUBLIC_HTTP_PORT` (8443 and 8081 unless you change
+  them), so it runs beside the internal site on 443.
+- `FDV_PUBLIC_URL=https://share.example.com`, so the links the vault makes start with the
+  address the people you send them to can reach. Without it a link starts with whichever
+  address it was made at.
+
+A link reads `https://share.example.com/s#…`. What is after the `#` is the link's secret.
+A browser never sends that part to any server; the page reads it, takes it out of the
+address bar and the history, and opens nothing until
+the person presses **Open** — so an email program's link checker, which fetches every
+link it sees, cannot open or use up a link. Opening gives that browser a session for 30
+minutes of use, 4 hours at most and never past the link's own end.
+
+What the site serves: `/s`, `/shared/…` (links made before 0.5.14), their files under
+`/assets/`, and `/api/v1/shared/*` (and, when upload requests arrive, `/drop` and
+`/api/v1/drop/*`). Every answer carries `Referrer-Policy: no-referrer`,
+`X-Content-Type-Options: nosniff`, and a content security policy that allows no framing
+and no script but the page's own. The vault counts requests per address — 20 a minute to
+preview or open a link, 120 a minute inside an opened one — and Caddy passes each
+caller's own address on, never one they wrote themselves.
+
+What it cannot do: it is still a page on the internet. Anyone can knock on it, and a link
+is only as private as the message you send it in; a PIN, told over the phone, is the
+second lock.
+
 ## Phones and other apps
 
 The phone app talks to the same API as the web app, at the same address. Nothing needs
@@ -180,6 +224,10 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_HOSTNAME`                     | `vault.local`                             | The name devices use, when the TLS overlay is running.                                                                                                                                                                  |
 | `FDV_BASE_URL`                     | `http://localhost:8080`                   | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                                                                                                |
 | `FDV_CADDYFILE`                    | internal                                  | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                                                                                       |
+| `FDV_PUBLIC_URL`                   | unset                                     | The public-only site's address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                                          |
+| `FDV_PUBLIC_HOSTNAME`              | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
+| `FDV_PUBLIC_HTTPS_PORT`            | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
+| `FDV_PUBLIC_HTTP_PORT`             | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |
 | `FDV_TRUST_PROXY`                  | `private`                                 | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.                                                                            |
 | `FDV_SMTP_URL`                     | unset                                     | Your own mail server for password-reset links only, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. See [Passwords](#passwords).                                                                                |
 | `FDV_SMTP_FROM`                    | `Family Document Vault <vault@localhost>` | Who those emails come from.                                                                                                                                                                                             |
@@ -428,7 +476,7 @@ The restore drill restores the newest backup into a scratch database beside your
 
 A restore goes into an empty database, never over a vault that is running: it refuses to. It gives the vault's database user its privileges back, brings a backup from an older release up to date, and checks the result before it says it is done. It refuses a backup from a newer release than the one you run — restore that with the newer release (`FDV_VERSION`).
 
-**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. The restore lists what else to look at, such as share links that work again.
+**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **Settings → After a restore** (whoever made a link can turn their own back on there too). The restore lists what else to look at.
 
 **If you lost the database but not the `fdv_vault-data` volume** (your files, and the backups in `/data/backups`), stop the vault, clear the database, and restore the newest backup into it:
 

@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
+import argon2 from 'argon2';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -63,6 +64,44 @@ describe.skipIf(!testAdminUrl())('a share link asks as itself', () => {
   }, 90_000);
   afterAll(() => h.close());
 
+  type Step = [string, () => Promise<LightMyRequestResponse>, number];
+
+  /**
+   * Runs each step, listening to what the database is told: `lookups` scopes
+   * as the vault first (finding the share by its token's hash), then the
+   * link, and only this link, in this household.
+   */
+  const run = async (steps: Step[], shareId: string, lookups: (name: string) => number) => {
+    for (const [name, step, status] of steps) {
+      said.length = 0;
+      const res = await step();
+      expect(res.statusCode, name).toBe(status);
+      if (/file/.test(name)) expect(res.rawPayload.equals(PDF), name).toBe(true);
+
+      const vault = said.slice(0, lookups(name));
+      const after = said.slice(lookups(name));
+      for (const lookup of vault) {
+        expect(lookup, name).toEqual({ household: owner.household_id, actor: 'system', share: '' });
+      }
+      expect(after.length, name).toBeGreaterThan(0);
+      expect(
+        after.filter(
+          (s) => s.actor !== 'link' || s.share !== shareId || s.household !== owner.household_id,
+        ),
+        name,
+      ).toEqual([]);
+    }
+  };
+
+  const counts = (id: string) =>
+    withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('share_link')
+        .select(['attempts', 'open_count'])
+        .where('id', '=', id)
+        .executeTakeFirstOrThrow(),
+    );
+
   it('one lookup as the vault, then only the link, at every step', async () => {
     const made = (
       await h.app.inject({
@@ -75,67 +114,113 @@ describe.skipIf(!testAdminUrl())('a share link asks as itself', () => {
     const token = made.link_token;
     const pin = made.pin as string;
     const wrong = pin === '0000' ? '1111' : '0000';
+    let cookie = '';
+    const unlock = (secret: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/shared/unlock',
+        payload: { token, secret },
+        ...peer(),
+      });
 
-    const steps: Array<[string, () => Promise<LightMyRequestResponse>, number]> = [
-      ['the preview', () => h.app.inject({ url: `/api/v1/shared/${token}`, ...peer() }), 200],
+    await run(
       [
-        'a wrong PIN',
-        () =>
-          h.app.inject({
-            method: 'POST',
-            url: `/api/v1/shared/${token}/open`,
-            payload: { pin: wrong },
-            ...peer(),
-          }),
-        401,
+        [
+          'the preview',
+          () =>
+            h.app.inject({
+              method: 'POST',
+              url: '/api/v1/shared/preview',
+              payload: { token },
+              ...peer(),
+            }),
+          200,
+        ],
+        ['a wrong PIN', () => unlock(wrong), 401],
+        [
+          'the right PIN',
+          async () => {
+            const res = await unlock(pin);
+            cookie = res.cookies.find((c) => c.name === 'fdv_share')?.value ?? '';
+            return res;
+          },
+          200,
+        ],
+        [
+          'what is open',
+          () =>
+            h.app.inject({
+              url: '/api/v1/shared/items',
+              cookies: { fdv_share: cookie },
+              ...peer(),
+            }),
+          200,
+        ],
+        [
+          'the file',
+          () =>
+            h.app.inject({
+              url: `/api/v1/shared/items/${lease}/content`,
+              cookies: { fdv_share: cookie },
+              ...peer(),
+            }),
+          200,
+        ],
       ],
-      [
-        'the right PIN',
-        () =>
-          h.app.inject({
-            method: 'POST',
-            url: `/api/v1/shared/${token}/open`,
-            payload: { pin },
-            ...peer(),
-          }),
-        200,
-      ],
-      [
-        'the file',
-        () => h.app.inject({ url: `/api/v1/shared/${token}/content?pin=${pin}`, ...peer() }),
-        200,
-      ],
-    ];
-
-    for (const [name, step, status] of steps) {
-      said.length = 0;
-      const res = await step();
-      expect(res.statusCode, name).toBe(status);
-      if (name === 'the file') expect(res.rawPayload.equals(PDF), name).toBe(true);
-
-      const [lookup, ...after] = said;
-      // Finding the share by the token's hash, as the vault: once.
-      expect(lookup, name).toEqual({ household: owner.household_id, actor: 'system', share: '' });
-      // Then the link, and only the link — this share, in this household.
-      expect(after.length, name).toBeGreaterThan(0);
-      expect(
-        after.filter(
-          (s) =>
-            s.actor !== 'link' || s.share !== made.share.id || s.household !== owner.household_id,
-        ),
-        name,
-      ).toEqual([]);
-    }
+      made.share.id,
+      // Inside a session there is no lookup as the vault at all: the
+      // cookie's own lookup is a function with the owner's rights (0037).
+      (name) => (name === 'what is open' || name === 'the file' ? 0 : 1),
+    );
 
     // Asking as the link, the wrong PIN was still counted on its own row,
     // and the right one counted as one open.
-    const row = await withSystem(h.db, owner.household_id, (trx) =>
+    expect(await counts(made.share.id)).toEqual({ attempts: 1, open_count: 1 });
+  });
+
+  it('a link made before 5.16 asks as itself on the old routes too', async () => {
+    const token = randomBytes(32).toString('base64url');
+    const me = (await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) })).json<{
+      account_id: string;
+    }>();
+    const pinHash = await argon2.hash('2468', { type: argon2.argon2id });
+    const { id } = await withSystem(h.db, owner.household_id, (trx) =>
       trx
-        .selectFrom('share_link')
-        .select(['attempts', 'open_count'])
-        .where('id', '=', made.share.id)
+        .insertInto('share_link')
+        .values({
+          household_id: owner.household_id,
+          document_id: lease,
+          token_hash: createHash('sha256').update(token, 'utf8').digest(),
+          pin_hash: pinHash,
+          created_by: me.account_id,
+          expires_at: new Date(Date.now() + 864e5),
+          flow: 'legacy',
+        })
+        .returning('id')
         .executeTakeFirstOrThrow(),
     );
-    expect(row).toEqual({ attempts: 1, open_count: 1 });
+    const open = (pin: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/shared/${token}/open`,
+        payload: { pin },
+        ...peer(),
+      });
+
+    await run(
+      [
+        ['the preview', () => h.app.inject({ url: `/api/v1/shared/${token}`, ...peer() }), 200],
+        ['a wrong PIN', () => open('1357'), 401],
+        ['the right PIN', () => open('2468'), 200],
+        [
+          'the file',
+          () => h.app.inject({ url: `/api/v1/shared/${token}/content?pin=2468`, ...peer() }),
+          200,
+        ],
+      ],
+      id,
+      () => 1,
+    );
+    expect(await counts(id)).toEqual({ attempts: 1, open_count: 1 });
   });
 });

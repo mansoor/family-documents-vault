@@ -33,6 +33,19 @@ describe('the activity log, in sentences', () => {
     expect(line?.text).toBe('Shared link (the letting agent) opened “Home insurance policy”');
   });
 
+  it('says once that a link locked itself, and who turned one back on (0.5.14)', () => {
+    const locked = describeEvent(
+      ev({ action: 'share.locked', actor: null, actor_label: 'shared link (the letting agent)' }),
+    );
+    expect(locked?.text).toBe(
+      'A link to “Home insurance policy” stopped working: its PIN was typed wrong ten times',
+    );
+    expect(locked?.notable).toBe(true);
+    expect(describeEvent(ev({ action: 'share.resumed' }))?.text).toBe(
+      'Sarah turned a link to “Home insurance policy” back on after a restore',
+    );
+  });
+
   it('never prints an id when it has no name', () => {
     const line = describeEvent(ev({ actor: null, actor_label: null, object_title: null }));
     expect(line?.text).toBe('Somebody downloaded a document');

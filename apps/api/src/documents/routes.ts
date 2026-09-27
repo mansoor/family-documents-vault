@@ -9,7 +9,15 @@ import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
-import { openBody, shareBody, type ShareService } from './shares.js';
+import {
+  openBody,
+  previewBody,
+  SHARE_COOKIE,
+  SHARE_COOKIE_PATH,
+  shareBody,
+  unlockBody,
+  type ShareService,
+} from './shares.js';
 
 const dateValue = z
   .object({
@@ -550,9 +558,76 @@ export async function registerDocuments(
     return reply.status(204).send();
   });
 
-  // The three the recipient calls. Nobody signs in for these, so they are
+  /**
+   * After a restore (5.16): what it paused that the caller may turn back
+   * on. Links today; 5.21 adds upload requests and 5.28 sign-ins.
+   */
+  app.get('/api/v1/after-restore', auth, async (req) => ({
+    links: await shares.paused(principal(req)),
+  }));
+
+  app.post<{ Params: { id: string } }>('/api/v1/shares/:id/resume', auth, async (req) => {
+    const id = parse(idParam, req.params).id;
+    // Who may, first; then, since a link turned back on opens its document
+    // without a sign-in again, what making it asked (SEC-17).
+    const documentId = await shares.resumable(principal(req), id);
+    const ask = stepUp ? await docs.stepUpForDocument(principal(req), documentId) : null;
+    if (stepUp && ask) await stepUp.require(principal(req), ask);
+    return shares.resume(principal(req), id, metaOf(req));
+  });
+
+  // What the recipient calls. Nobody signs in for these, so they are
   // rate-limited like the front door.
   const tight = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
+  // Inside an opened link: the page reloaded, the file fetched again.
+  const inSession = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
+
+  // ------------------------------------------------ the new flow (5.16)
+  //
+  // The token travels in a body, never a path; Open is a POST, so a link
+  // scanner that fetches the page opens nothing; and what Open gives is a
+  // cookie for this path alone, whose hash is all the vault keeps.
+
+  app.post('/api/v1/shared/preview', tight, async (req) =>
+    shares.previewLink(parse(previewBody, req.body ?? {}).token),
+  );
+
+  app.post('/api/v1/shared/unlock', tight, async (req, reply) => {
+    const opened = await shares.unlock(parse(unlockBody, req.body ?? {}), metaOf(req));
+    void reply.setCookie(SHARE_COOKIE, opened.cookie, {
+      path: SHARE_COOKIE_PATH,
+      httpOnly: true,
+      // Always: browsers keep a Secure cookie from http://localhost, and a
+      // vault that outsiders reach is reached over https (the public-only
+      // site, README). Over plain http elsewhere the page says why it
+      // cannot open.
+      secure: true,
+      sameSite: 'strict',
+      maxAge: opened.maxAge,
+    });
+    return opened.session;
+  });
+
+  app.get('/api/v1/shared/items', inSession, async (req) =>
+    shares.sessionItems(req.cookies[SHARE_COOKIE]),
+  );
+
+  app.get<{ Params: { doc: string } }>(
+    '/api/v1/shared/items/:doc/content',
+    inSession,
+    async (req, reply) => {
+      const doc = parse(z.object({ doc: z.string().uuid() }), req.params).doc;
+      const file = await shares.sessionContent(req.cookies[SHARE_COOKIE], doc, metaOf(req));
+      return sendShared(reply, file);
+    },
+  );
+
+  // ---------------------------------------------- the old routes (A25)
+  //
+  // For links made before 5.16 (`flow = 'legacy'`) and nothing else: a new
+  // link's token is 404 here whatever it carries. No new legacy link is
+  // made, so the last one lapses within 90 days; the routes are listed in
+  // the capability document's `deprecations`, and go in 0.9.0.
 
   app.get<{ Params: { token: string } }>('/api/v1/shared/:token', tight, async (req) =>
     shares.preview(parse(tokenParam, req.params).token),
@@ -568,22 +643,30 @@ export async function registerDocuments(
     async (req, reply) => {
       // The PIN comes on the query string because this is a plain link a
       // browser follows; the whole URL is already the secret.
-      const { stream, total, contentType, filename } = await shares.content(
+      const file = await shares.content(
         parse(tokenParam, req.params).token,
         parse(openBody, { ...(req.query.pin ? { pin: req.query.pin } : {}) }),
         metaOf(req),
       );
-      reply.header('content-type', contentType);
-      reply.header(
-        'content-disposition',
-        `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-      );
-      reply.header('content-length', String(total));
-      reply.header('cache-control', 'private, no-store');
-      // A shared document must never end up in somebody else's search
-      // results or a proxy's cache.
-      reply.header('x-robots-tag', 'noindex, nofollow');
-      return reply.send(stream);
+      return sendShared(reply, file);
     },
   );
+}
+
+/** A shared document's file, as the recipient's browser is given it. */
+function sendShared(
+  reply: FastifyReply,
+  file: { stream: NodeJS.ReadableStream; total: number; contentType: string; filename: string },
+) {
+  reply.header('content-type', file.contentType);
+  reply.header(
+    'content-disposition',
+    `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+  );
+  reply.header('content-length', String(file.total));
+  reply.header('cache-control', 'private, no-store');
+  // A shared document must never end up in somebody else's search
+  // results or a proxy's cache.
+  reply.header('x-robots-tag', 'noindex, nofollow');
+  return reply.send(file.stream);
 }

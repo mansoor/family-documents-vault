@@ -1,5 +1,7 @@
+import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { SHARE_COOKIE_PATH } from './documents/shares.js';
 import { requestForLog } from './log-redaction.js';
 import { registerOffline } from './offline/routes.js';
 import type { OfflineService } from './offline/service.js';
@@ -76,6 +78,19 @@ export interface AppDeps {
 }
 
 /**
+ * What every answer under /api/v1/shared carries (5.16), on top of the
+ * public pages' own (docker/nginx.conf): no referrer, no sniffing, never in
+ * a frame, and nothing in it runs — a shared HTML file opened by mistake is
+ * a sandboxed page with no script and no fetch.
+ */
+export const PUBLIC_API_HEADERS = {
+  'referrer-policy': 'no-referrer',
+  'x-content-type-options': 'nosniff',
+  'x-robots-tag': 'noindex, nofollow',
+  'content-security-policy': "default-src 'none'; frame-ancestors 'none'; sandbox",
+} as const;
+
+/**
  * The audit log records who did what from where, and the rate limiter
  * counts per address; both read `X-Forwarded-For`, so who may set it
  * matters. Trusting every caller would let anyone write their own address
@@ -118,7 +133,17 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     // Which version answered: an app notices an upgrade from what it
     // already asks, instead of asking for the capability document again.
     reply.header('x-fdv-server-version', deps.serverVersion);
+    // What a stranger's browser is sent (5.16): the share routes answer
+    // people outside the family, and whatever they are sent — a file of
+    // any kind included — is never framed, sniffed, run or passed on.
+    if (req.url.startsWith(`${SHARE_COOKIE_PATH}/`)) {
+      for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) reply.header(name, value);
+    }
   });
+
+  // The session a share link's Open gives (5.16). Unsigned: its value is 32
+  // random bytes the vault keeps only as a hash, so there is nothing to sign.
+  await app.register(cookie);
 
   app.setNotFoundHandler((req, reply) => {
     const err = notFound();

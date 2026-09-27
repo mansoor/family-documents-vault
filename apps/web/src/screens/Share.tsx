@@ -166,7 +166,10 @@ export function SharePanel(props: {
 }
 
 function HandOver(props: { created: CreatedShare; onDone: () => void }) {
-  const link = `${window.location.origin}/shared/${props.created.link_token}`;
+  // The secret after the #: a browser never sends it to a server, and the
+  // page it opens takes it out of the address bar (5.16). On the vault's
+  // public-only site when it has one, so the person it is for can reach it.
+  const link = props.created.link_url ?? `${window.location.origin}/s#${props.created.link_token}`;
   const [copied, setCopied] = useState(false);
   return (
     <section className="card stack">

@@ -204,6 +204,12 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} downloaded ${doc}`);
     case 'share.revoked':
       return line(`${who} took back a link to ${doc}`);
+    // 0.5.14: the tenth wrong PIN, written down once; the tries before it
+    // are counted, never logged.
+    case 'share.locked':
+      return line(`A link to ${doc} stopped working: its PIN was typed wrong ten times`, true);
+    case 'share.resumed':
+      return line(`${who} turned a link to ${doc} back on after a restore`, true);
 
     // ------------------------------------------------------- the vault
     case 'household.created':

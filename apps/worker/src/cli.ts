@@ -180,11 +180,12 @@ function summary(file: string, r: RestoreReport): string {
       '    an owner can ask again if it still stands, and everybody is told afresh.',
     );
   }
-  if (r.liveShareLinks > 0) {
+  if (r.linksPaused > 0) {
     lines.push(
-      `  - ${plural(r.liveShareLinks, 'share link')} ${r.liveShareLinks === 1 ? 'works' : 'work'} ` +
-        'again. Look at Shared links and revoke',
-      '    any you had revoked since.',
+      `  - ${plural(r.linksPaused, 'share link')} ${r.linksPaused === 1 ? 'is' : 'are'} paused, ` +
+        'so a link taken back since the backup',
+      '    does not work again. An owner turns back on the ones still wanted, in',
+      '    Settings → After a restore.',
     );
   }
   if (r.openInvitations > 0) {

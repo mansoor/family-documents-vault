@@ -402,9 +402,7 @@ describe('quick actions on every document (5.4)', () => {
     fireEvent.click(within(share).getByRole('button', { name: 'Make the link' }));
     await confirmItsMe();
     // Confirmed, the link is made and shown, in the sheet it was asked from.
-    expect(
-      await within(share).findByText(/\/shared\/share-secret-0123456789abcdef/),
-    ).toBeInTheDocument();
+    expect(await within(share).findByText(/\/s#share-secret-0123456789abcdef/)).toBeInTheDocument();
     expect(state.shares).toHaveLength(1);
   });
 
@@ -429,7 +427,7 @@ describe('quick actions on every document (5.4)', () => {
     // The link is made while the sheet is still there to show it: the one
     // place it is ever shown.
     held.open();
-    expect(await within(share).findByText(/\/shared\/share-secret/)).toBeInTheDocument();
+    expect(await within(share).findByText(/\/s#share-secret/)).toBeInTheDocument();
     expect(state.shares).toHaveLength(1);
   });
 

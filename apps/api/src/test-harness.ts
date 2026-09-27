@@ -93,6 +93,10 @@ export interface SetupBody {
 export interface HarnessOptions {
   /** Hears every query the API runs, as Kysely logs it: for a test that listens. */
   log?: (event: LogEvent) => void;
+  /** The API's own request log (pino options), for a test that reads it; off otherwise. */
+  logger?: object;
+  /** FDV_PUBLIC_URL: the public-only site share links start with (5.16). */
+  publicUrl?: string;
 }
 
 export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -178,7 +182,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     lists: new ListService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
-    shares: new ShareService(db, keys, vaults),
+    shares: new ShareService(db, keys, vaults, alert, opts.publicUrl ?? null),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(
@@ -200,7 +204,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     invitations,
     coOwners: new CoOwnerService(db, alert, push),
     suggestions: new SuggestionService(db),
-    logger: false,
+    logger: opts.logger ?? false,
   });
 
   return {

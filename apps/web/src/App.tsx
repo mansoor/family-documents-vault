@@ -6,6 +6,7 @@ import { DocumentScreen } from './screens/Document.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
+import { AfterRestoreScreen } from './screens/AfterRestore.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
@@ -232,6 +233,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <StorageScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/after-restore"
+            element={
+              <Gate need="signed-in">
+                <AfterRestoreScreen />
               </Gate>
             }
           />

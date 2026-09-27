@@ -122,6 +122,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['share.opened', BY_TYPE],
   ['share.downloaded', BY_TYPE],
   ['share.revoked', BY_TYPE],
+  // 5.16: a link locked by its tenth wrong PIN, and one turned back on
+  // after a restore paused it.
+  ['share.locked', BY_TYPE],
+  ['share.resumed', BY_TYPE],
   // people
   ['member.added', BY_TYPE],
   ['member.role_changed', BY_TYPE],

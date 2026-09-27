@@ -25,7 +25,8 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
-		Referrer-Policy same-origin
+		# A default: the pages outsiders open send no-referrer (nginx.conf), and keep it.
+		?Referrer-Policy same-origin
 		-Server
 	}
 }

@@ -140,8 +140,8 @@ describe.skipIf(!testAdminUrl())('the activity log', () => {
     const token = json<{ link_token: string }>(created).link_token;
     await h.app.inject({
       method: 'POST',
-      url: `/api/v1/shared/${token}/open`,
-      payload: {},
+      url: '/api/v1/shared/unlock',
+      payload: { token },
       remoteAddress: '10.4.4.4',
     });
 
