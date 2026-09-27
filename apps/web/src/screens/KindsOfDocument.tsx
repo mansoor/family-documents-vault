@@ -682,7 +682,10 @@ function KindEditor(props: {
     let chosen = d.chosen;
     if (chosen === FIRST) {
       if (keys.length === 0) return { ...d, reminding: true, from: null, leads: [] };
-      chosen = keys[0];
+      // The date it reminds from as saved, while shown: switched off and on
+      // again, a kind is as it was. Else Expires, or the first date shown.
+      const was = asSaved.reminding.from;
+      chosen = was !== null && keys.includes(was) ? was : keys[0];
     }
     const out = nextReminder(
       chosen === undefined
@@ -723,15 +726,20 @@ function KindEditor(props: {
     });
 
   /**
-   * A date field's name in Reminders' sentences: its label, or, beside
-   * another date of the same name, the chooser's — "Due date (your own)" —
-   * so the promise and "Only … reminds" never name two dates alike.
+   * A date field's name in what is said of reminders: its label, or, beside
+   * another date of the same name the draft shows, the chooser's — "Due
+   * date (your own)" — so no sentence names two dates alike. So too for a
+   * date just hidden, or one they came from as saved.
    */
   const spoken = (key: string, d: Draft) => {
     const label = fieldOf(key).label;
+    // Without the section, nothing is told apart, as before.
+    if (!dated) return label;
     const alike = (other: string) => other.trim().toLowerCase() === label.trim().toLowerCase();
-    const same = datesOf(d).filter((c) => c.key !== 'expires' && alike(fieldOf(c.key).label));
-    return same.length > 1 ? (same.find((c) => c.key === key)?.label ?? label) : label;
+    const beside = datesOf(d).some(
+      (c) => c.key !== 'expires' && c.key !== key && alike(fieldOf(c.key).label),
+    );
+    return beside ? ownName({ key, label }, library) : label;
   };
   /** "its due date", "it expires": the date, as the sentences say it. */
   const whenOf = (key: string, d: Draft) =>
@@ -758,7 +766,7 @@ function KindEditor(props: {
         ? review
           ? 'its review date'
           : 'its expiry date'
-        : itsName(fieldOf(key).label)
+        : itsName(spoken(key, draft))
     }.`;
 
   /** A field shown or hidden, or its Required changed. */
@@ -965,7 +973,9 @@ function KindEditor(props: {
           wordFor,
           fieldOf,
           labelOf,
-          wasWord: (key) => reminderWord(kind, key, library),
+          spoken: (key) => spoken(key, draft),
+          wasWord: (key) =>
+            key === 'expires' ? reminderWord(kind, key, library) : spoken(key, draft),
         })
       : [];
 
@@ -1623,7 +1633,12 @@ function warningsFor(
     fieldOf: (key: string) => { label: string };
     /** A date to remind from, as Reminders names it. */
     labelOf: (key: string) => string;
-    /** A date the kind reminds from as saved, in its words. */
+    /**
+     * A date field as what is said of reminders names it: "Due date (your
+     * own)" beside the built-in (the 5.16b review).
+     */
+    spoken: (key: string) => string;
+    /** A date the kind reminds from as saved, in its words, named apart as `spoken`. */
     wasWord: (key: string) => string;
   },
 ): Warning[] {
@@ -1675,13 +1690,13 @@ function warningsFor(
       // kind's or not (a field it dropped, kept under Other details): one
       // it does not list, none of them has.
       const counts = impact.fields.find((x) => x.key === f.key);
-      needsInfo(`f-${f.key}`, counts?.without_value ?? impact.documents, fieldOf(f.key).label);
+      needsInfo(`f-${f.key}`, counts?.without_value ?? impact.documents, ctx.spoken(f.key));
     }
   }
   for (const f of before.fields) {
     if (!draft.fields.some((x) => x.key === f.key)) {
       const counts = impact.fields.find((x) => x.key === f.key);
-      kept(`f-${f.key}`, counts?.with_value ?? 0, fieldOf(f.key).label, 'under Other details');
+      kept(`f-${f.key}`, counts?.with_value ?? 0, ctx.spoken(f.key), 'under Other details');
     }
   }
   const stop = (n: number, why: string) => {
@@ -1715,7 +1730,7 @@ function warningsFor(
       const r = about(was.from);
       if (asksForDate(draft, was.from)) stop(r, 'nobody is reminded about these documents');
       else if (was.from === 'expires') stop(r, 'its documents no longer expire');
-      else stop(r, `it no longer asks for ${itsName(fieldOf(was.from).label)}`);
+      else stop(r, `it no longer asks for ${itsName(ctx.spoken(was.from))}`);
     } else if (moved !== null) {
       // Moved to another date, or switched on: how many are reminded from
       // it, and how many will say they need it.

@@ -1146,6 +1146,19 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
       await nothingSaved(state);
     });
 
+    it('switched off and on again, a kind showing Expires and Due date keeps its saved date', async () => {
+      // A bill that shows Expires too, and reminds from its due date.
+      const both = { ...COUNCIL, expiry_driver: 'expires_on', core: core() };
+      const state = open('/settings/kinds/h_council1', 'owner', { types: [both] });
+      await screen.findByRole('heading', { name: 'Council tax', level: 1 });
+      fireEvent.click(theSwitch());
+      fireEvent.click(theSwitch());
+      expect(theDate()).toHaveValue('due_date');
+      expect(pressed()).toEqual(['1 day', '7 days']);
+      said('Reminders are on: 7 days and 1 day before its due date.');
+      await nothingSaved(state);
+    });
+
     it('switched on first, a date field of their own added after is the date, 30 days before', async () => {
       const state = open('/settings/kinds/h_allotment1');
       await screen.findByRole('heading', { name: 'Allotment tenancy', level: 1 });
@@ -1262,11 +1275,24 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
         remind_from: 'h_field9',
         remind_leads: [30],
       };
-      open('/settings/kinds/h_water1', 'owner', {
-        types: [WATER],
-        attributes: [...LIBRARY, mine],
+      // 4 bills, each with its own due date and 3 reminders from it; 1 has the built-in.
+      const impact = impactOf('h_water1', 4, {
+        fields: [
+          { key: 'h_field9', label: null, with_value: 4, without_value: 0 },
+          { key: 'due_date', label: null, with_value: 1, without_value: 3 },
+        ],
+        reminders: 3,
+        reminders_by_source: { h_field9: 3 },
       });
-      await screen.findByRole('heading', { name: 'Water bill', level: 1 });
+      const water = () => {
+        open('/settings/kinds/h_water1', 'owner', {
+          types: [WATER],
+          attributes: [...LIBRARY, mine],
+          impact: { h_water1: impact },
+        });
+        return screen.findByRole('heading', { name: 'Water bill', level: 1 });
+      };
+      await water();
       expect([...theDate().options].map((o) => o.text)).toEqual([
         'Due date (your own)',
         'Due date',
@@ -1291,6 +1317,28 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
           'Every document of this kind needs its due date: without one it reads Needs a due date.',
         ]),
       );
+      // Before saving, the reminders dropped are named as the chooser names their date.
+      expect(
+        await screen.findByText(
+          /^Its reminders move to Due date\. .* 3 reminders from Due date \(your own\) not dealt with yet are dropped\./,
+        ),
+      ).toBeInTheDocument();
+      cleanup();
+
+      // Their own hidden while the built-in is still asked: which one, said.
+      await water();
+      show('Due date (your own)');
+      said('Reminders are off: this kind no longer asks for its due date (your own).');
+      expect(
+        await screen.findByText(
+          'Its 3 reminders stop: it no longer asks for its due date (your own).',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          '4 documents have something in “Due date (your own)”. It stays, under Other details; the card just stops asking for it.',
+        ),
+      ).toBeInTheDocument();
     });
 
     it('switched off by hand on a kind reminding from its due date, remind_from: null is saved', async () => {
