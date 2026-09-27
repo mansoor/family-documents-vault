@@ -67,9 +67,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       custom_types: true,
       // 0.5.12: lists of documents, each reader given what they may see (5.14).
       lists: true,
-      // 0.5.15: a kind reminds from any date it shows (5.16a). The server
-      // has it; it says so when the web's editor ships (5.16b).
-      reminder_dates: false,
+      // 0.5.15: a kind reminds from any date it shows (5.16a); said since
+      // 0.5.16, when the web's editor for it shipped (5.16b).
+      reminder_dates: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

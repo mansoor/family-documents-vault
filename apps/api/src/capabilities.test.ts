@@ -61,8 +61,8 @@ describe('buildCapabilities', () => {
       // 0.5.12: lists of documents (5.14).
       lists: true,
       // 0.5.15: reminders from any date, on the server (5.16a); switched on
-      // with the web's editor for them (5.16b).
-      reminder_dates: false,
+      // with the web's editor for them (5.16b, 0.5.16).
+      reminder_dates: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25).

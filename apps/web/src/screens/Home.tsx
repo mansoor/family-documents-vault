@@ -47,7 +47,9 @@ export function HomeScreen() {
         ...due.items.map((r) => ({
           id: r.id,
           title: r.document_title ?? 'Untitled',
-          label: r.label,
+          // The date it is about, in its kind's words (0.5.15): "Due date:
+          // 10 Oct, in 7 days".
+          label: r.about ?? r.label,
           tone: 'danger' as const,
         })),
         ...docs.items

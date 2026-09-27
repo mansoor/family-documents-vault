@@ -1311,6 +1311,12 @@ link_not_valid` on each, whatever its options, and a legacy link's is
       `REMINDING_DATE_REQUIRED`, `ONE_SET_OF_LEADS`, `libraryHasName`);
       `dateReminderSentence`, `REMIND_ONCE` (`reminderSentence` is
       unchanged, word for word); `reminderAbout`, `aboutDate`, `lapsed`.
+  - Reminders from any date: the web (5.16b). **Changed:**
+    `features.reminder_dates` is `true` from 0.5.16, with the web's editor
+    for them; nothing else on the wire changes. `@fdv/shared`'s `Profile`
+    has `timezone`, which `GET /api/v1/profile` already answers to every
+    role: the web's snooze buttons count days on the household's calendar,
+    as the vault does.
 
 ## Deprecations in effect
 

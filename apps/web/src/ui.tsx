@@ -55,8 +55,14 @@ export function Field(props: {
   invalid?: boolean;
   inputMode?: 'text' | 'numeric' | 'decimal';
   maxLength?: number;
+  /**
+   * What is said about the value, directly under the field and heard with
+   * it (5.16b): "We'll remind you 7 days before its due date."
+   */
+  note?: ReactNode;
   onChange: (v: string) => void;
 }) {
+  const noteId = props.note ? `${props.id}-note` : undefined;
   return (
     <div className="field">
       <label htmlFor={props.id}>
@@ -75,8 +81,14 @@ export function Field(props: {
         required={props.required ?? true}
         aria-required={props.requiredMark || undefined}
         aria-invalid={props.invalid || undefined}
+        aria-describedby={noteId}
       />
       {props.hint && <span className="muted">{props.hint}</span>}
+      {props.note && (
+        <div id={noteId} className="field-note muted">
+          {props.note}
+        </div>
+      )}
     </div>
   );
 }
@@ -166,6 +178,8 @@ export function Select(props: {
   hint?: string | undefined;
   requiredMark?: boolean;
   invalid?: boolean;
+  /** The id of what is said about the choice, heard with it (5.16b). */
+  describedBy?: string | undefined;
 }) {
   return (
     <div className="field">
@@ -179,6 +193,7 @@ export function Select(props: {
         onChange={(e) => props.onChange(e.target.value)}
         aria-required={props.requiredMark || undefined}
         aria-invalid={props.invalid || undefined}
+        aria-describedby={props.describedBy}
       >
         {props.options.map((o) => (
           <option key={o.value} value={o.value}>

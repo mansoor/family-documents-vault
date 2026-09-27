@@ -1,8 +1,13 @@
 import {
+  aboutDate,
+  addDays,
   can,
+  localToday,
   roleLabel,
+  shortDate,
   type DocumentTypeView,
   type DocumentView,
+  type ReminderView,
   type Role,
   type SuggestionView,
 } from '@fdv/shared';
@@ -666,13 +671,16 @@ export function RemindersScreen() {
   const [error, setError] = useState<string | null>(null);
   const { data, reload } = useLoad(
     async (t) => {
-      const [due, upcoming, docs, suggestions, hidden, types] = await Promise.all([
+      const [due, upcoming, docs, suggestions, hidden, types, profile] = await Promise.all([
         api.reminders(t, 'due'),
         api.reminders(t, 'upcoming'),
         api.documents(t, { sort: 'expiring', limit: 100 }),
         api.suggestions(t),
         api.suggestions(t, true),
         api.documentTypes(t),
+        // The household's time zone, which every role reads: its day is the
+        // vault's "today" for a snooze. Unanswered, the vault's own default.
+        api.profile(t).catch(() => null),
       ]);
       const reminded = new Set([...due.items, ...upcoming.items].map((r) => r.document_id));
       return {
@@ -686,6 +694,7 @@ export function RemindersScreen() {
         profileAnswered: suggestions.profile_answered,
         hidden: hidden.items,
         types: types.items,
+        timezone: profile?.timezone ?? 'UTC',
       };
     },
     [authVersion],
@@ -700,12 +709,36 @@ export function RemindersScreen() {
       setError(describeError(err));
     }
   };
-  const today = new Date().toISOString().slice(0, 10);
-  const plusDays = (n: number) => {
-    const d = new Date(`${today}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + n);
-    return d.toISOString().slice(0, 10);
+  /**
+   * A week and a month later — but a reminder about a date field, a bill's
+   * due date, never waits past that date while it is ahead (the vault cuts
+   * it back, 0.5.15): a snooze that would is offered as "On the day", once.
+   * Ahead, and later, by the household's calendar, as the vault counts
+   * them — not the browser's, nor UTC's (the 5.16b review): on the due day
+   * itself, the vault refuses a snooze to it, and takes a week or a month.
+   */
+  const snoozes = (r: ReminderView): Array<{ label: string; until: string }> => {
+    const today = localToday(data?.timezone ?? 'UTC');
+    const about = r.source && r.source !== 'expires' ? aboutDate(r) : null;
+    const held = about !== null && about > today ? about : null;
+    const out: Array<{ label: string; until: string }> = [];
+    for (const [label, days] of [
+      ['A week', 7],
+      ['A month', 30],
+    ] as const) {
+      const until = addDays(today, days);
+      if (held === null || until <= held) out.push({ label, until });
+      else if (!out.some((s) => s.label === 'On the day')) {
+        out.push({ label: 'On the day', until: held });
+      }
+    }
+    return out;
   };
+  /** When a reminder coming up is next heard of: "Reminder on 3 Oct". */
+  const remindsOn = (r: ReminderView) =>
+    `Reminder on ${shortDate(
+      (r.status === 'snoozed' && r.snoozed_until ? r.snoozed_until : r.fire_at).slice(0, 10),
+    )}`;
 
   const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0);
   return (
@@ -730,23 +763,22 @@ export function RemindersScreen() {
               className="rowbtn"
               onClick={() => void navigate(`/documents/${r.document_id}`)}
             >
-              <span className="status status-danger">{r.label}</span>
+              {/* The date it is about, in its kind's words (0.5.15): never
+                  "Overdue by 3 days" above a due date still ahead. */}
+              <span className="status status-danger">{r.about ?? r.label}</span>
               <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
               {r.note && <span className="muted">{r.note}</span>}
             </button>
             <div className="row">
-              <Button
-                kind="quiet"
-                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(7)))}
-              >
-                A week
-              </Button>
-              <Button
-                kind="quiet"
-                onClick={() => void act((t) => api.snoozeReminder(t, r.id, plusDays(30)))}
-              >
-                A month
-              </Button>
+              {snoozes(r).map((s) => (
+                <Button
+                  key={s.label}
+                  kind="quiet"
+                  onClick={() => void act((t) => api.snoozeReminder(t, r.id, s.until))}
+                >
+                  {s.label}
+                </Button>
+              ))}
               <Button
                 kind="quiet"
                 onClick={() => void act((t) => api.acknowledgeReminder(t, r.id))}
@@ -780,8 +812,10 @@ export function RemindersScreen() {
                   onClick={() => void navigate(`/documents/${r.document_id}`)}
                 >
                   <span className="doc-title">{r.document_title ?? 'Untitled'}</span>
+                  {/* What it is about first, then when it comes (0.5.15). */}
+                  {r.about && <span>{r.about}</span>}
                   <span className="muted">
-                    {r.label}
+                    {r.about ? remindsOn(r) : r.label}
                     {r.recurrence ? ' · repeats' : ''}
                     {r.note ? ` · ${r.note}` : ''}
                   </span>

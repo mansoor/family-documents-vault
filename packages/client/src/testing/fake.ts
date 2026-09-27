@@ -606,9 +606,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           custom_types: true,
           // And lists of documents (0.5.12).
           lists: true,
-          // Reminders from any date (0.5.15): kept, and said off until the
-          // web's editor for them ships, as the vault says.
-          reminder_dates: false,
+          // Reminders from any date (0.5.15), said on since the web's
+          // editor for them shipped (0.5.16), as the vault says.
+          reminder_dates: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
