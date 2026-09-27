@@ -1481,12 +1481,28 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       document made or captured is when it says nothing about who sees it,
       and where the web's card starts; a teen who sends `visibility` as
       `household` gets Everyone, as before. A teen's documents are always
-      their own, so it is always theirs. Nobody else can open it, and who
-      sees it cannot be changed afterwards: `document.visibility` is an
-      owner's or an adult's, of a document they can open.
+      their own, so it is always theirs. Nobody else can open it, and only
+      they can change who sees it afterwards (next).
       `effectiveVisibility` in `@fdv/shared` says the same; a phone that
       sends the visibility its own copy preselected keeps sending Everyone
       until it is updated.
+    - **Changed:** a teen can change who sees their own documents, between
+      Only me and Everyone (A72). `POST /api/v1/documents/{id}/visibility`,
+      and `PATCH /api/v1/documents/{id}` with `visibility`, take `private`
+      or `household` from a teen, for a document whose `owner_member_id` is
+      theirs, and answer as they do anybody: out of Only me asks what
+      opening it asks (`step_up_required`, `open_private_document`), and
+      the activity log says it as any change of who can see a document.
+      Adults only is refused, `403 forbidden`: "Adults only would hide it
+      from you too. You can make your own documents Only me or Everyone."
+      Anybody else's document is refused as before, `403` "Only an adult
+      can change who is able to see a document.", and one they cannot see
+      is `404`, as it is for everybody (it was a `403` before the vault
+      looked). Owners, adults and viewers are unchanged; so is the role
+      matrix, whose `document.visibility` is still an owner's and an
+      adult's. `@fdv/shared`: `visibilityRefusal`, `visibilityChoices`,
+      `mayChangeVisibilityAtAll`, `PRIVATE_OWNER_ONLY`,
+      `TEEN_NOT_ADULTS_ONLY`.
     - The activity log says "Mansoor added a photo of Aisha", "Sara changed
       their photo", "Mansoor removed Aisha’s photo" (owners, adults, teens).
     - Nothing of a photo is in the capability document, an invitation's

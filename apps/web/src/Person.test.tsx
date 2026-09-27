@@ -1,4 +1,4 @@
-import { can, effectiveVisibility } from '@fdv/shared';
+import { effectiveVisibility, visibilityChoices } from '@fdv/shared';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -243,10 +243,22 @@ describe("a person's profile (5.17c)", () => {
     expect(effectiveVisibility({}, nationalId, 'adult')).toBe('adults');
     expect(ID_NUMBERS_NOTE).toContain('One a teen files is their Only me by default');
     expect(effectiveVisibility({}, nationalId, 'teen')).toBe('private');
-    expect(ID_NUMBERS_NOTE).toContain('Only owners and adults can change who sees a document');
-    expect(
-      (['owner', 'adult', 'teen', 'viewer'] as const).map((r) => can(r, 'document.visibility')),
-    ).toEqual([true, true, false, false]);
+    // Only they can open it, or make it Everyone (A72): nobody else may
+    // change a document of somebody else's that is Only me.
+    expect(ID_NUMBERS_NOTE).toContain('only they can open it, or make it Everyone');
+    expect(visibilityChoices('teen', true, 'private')).toEqual(['household', 'private']);
+    for (const role of ['owner', 'adult', 'viewer'] as const) {
+      expect(visibilityChoices(role, false, 'private'), role).toEqual([]);
+    }
+    expect(ID_NUMBERS_NOTE).toContain(
+      'Owners and adults can change who sees the documents they can open, and make their own Only me',
+    );
+    expect(visibilityChoices('adult', false, 'household')).toEqual(['household', 'adults']);
+    expect(visibilityChoices('adult', true, 'adults')).toEqual(['household', 'adults', 'private']);
+    expect(ID_NUMBERS_NOTE).toContain('teens can switch their own between Only me and Everyone');
+    expect(visibilityChoices('teen', true, 'household')).toEqual(['household', 'private']);
+    expect(visibilityChoices('teen', false, 'household')).toEqual([]);
+    expect(visibilityChoices('viewer', true, 'household')).toEqual([]);
     expect(ID_NUMBERS_NOTE).not.toMatch(/Whoever a document belongs to/);
   });
 
@@ -257,7 +269,7 @@ describe("a person's profile (5.17c)", () => {
     const { unmount } = render(<App />);
     expect(await screen.findByText(ID_NUMBERS_NOTE)).toBeInTheDocument();
     expect(ID_NUMBERS_NOTE).toBe(
-      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it. Only owners and adults can change who sees a document afterwards, and they can make their own documents Only me. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
+      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
     );
     unmount();
     for (const role of ['adult', 'teen', 'viewer'] as const) {

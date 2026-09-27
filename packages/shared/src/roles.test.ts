@@ -15,10 +15,15 @@ import {
   COLLECTION_HINT_TEENS,
   collectionItemHint,
   inCollectionAudience,
+  mayChangeVisibilityAtAll,
   PHOTO_REFUSAL,
+  PRIVATE_OWNER_ONLY,
   refusalFor,
   ROLES,
   rolesWith,
+  TEEN_NOT_ADULTS_ONLY,
+  visibilityChoices,
+  visibilityRefusal,
   type Capability,
 } from './roles.js';
 
@@ -235,5 +240,49 @@ describe("who may change a person's photo (A66)", () => {
     expect(PHOTO_REFUSAL).toBe(
       'Only an owner or the person themselves can change this photo. For someone without a sign-in, any adult can.',
     );
+  });
+});
+
+describe('who may change who sees a document (A72, 5.17c)', () => {
+  const V = ['household', 'adults', 'private'] as const;
+  it('a teen: their own, between Only me and Everyone, and nothing else', () => {
+    expect(visibilityRefusal('teen', true, 'private', 'household')).toBeNull();
+    expect(visibilityRefusal('teen', true, 'household', 'private')).toBeNull();
+    expect(visibilityRefusal('teen', true, 'household', 'adults')).toBe(TEEN_NOT_ADULTS_ONLY);
+    expect(visibilityRefusal('teen', true, 'private', 'adults')).toBe(TEEN_NOT_ADULTS_ONLY);
+    for (const from of V) {
+      for (const to of V) {
+        expect(visibilityRefusal('teen', false, from, to)).toBe(refusalFor('document.visibility'));
+      }
+    }
+    expect(mayChangeVisibilityAtAll('teen')).toBe(true);
+  });
+
+  it('owners and adults as before; viewers never', () => {
+    for (const role of ['owner', 'adult'] as const) {
+      expect(visibilityRefusal(role, false, 'household', 'adults')).toBeNull();
+      expect(visibilityRefusal(role, false, 'adults', 'household')).toBeNull();
+      expect(visibilityRefusal(role, false, 'household', 'private')).toBe(PRIVATE_OWNER_ONLY);
+      expect(visibilityRefusal(role, false, 'private', 'household')).toBe(PRIVATE_OWNER_ONLY);
+      for (const from of V)
+        for (const to of V) expect(visibilityRefusal(role, true, from, to)).toBeNull();
+    }
+    for (const from of V) {
+      for (const to of V) {
+        expect(visibilityRefusal('viewer', true, from, to)).toBe(refusalFor('document.visibility'));
+      }
+    }
+    expect(mayChangeVisibilityAtAll('viewer')).toBe(false);
+    // The matrix itself is unchanged: the teen's right lives with the document.
+    expect(can('teen', 'document.visibility')).toBe(false);
+  });
+
+  it('what a screen offers is what would not be refused, or nothing', () => {
+    expect(visibilityChoices('teen', true, 'private')).toEqual(['household', 'private']);
+    expect(visibilityChoices('teen', false, 'household')).toEqual([]);
+    expect(visibilityChoices('owner', false, 'household')).toEqual(['household', 'adults']);
+    expect(visibilityChoices('owner', false, 'private')).toEqual([]);
+    expect(visibilityChoices('adult', true, 'private')).toEqual(['household', 'adults', 'private']);
+    expect(visibilityChoices('viewer', true, 'household')).toEqual([]);
   });
 });

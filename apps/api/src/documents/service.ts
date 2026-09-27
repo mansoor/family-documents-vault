@@ -2,8 +2,10 @@ import {
   checkCaptureMetadata,
   effectiveVisibility,
   issuerCandidates,
+  mayChangeVisibilityAtAll,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
+  visibilityRefusal,
   type IssuerCount,
   type IssuerSuggestions,
   type KnownIssuer,
@@ -2020,7 +2022,7 @@ export class DocumentService {
     const unhides = change.visibility !== undefined && change.visibility !== 'private';
     const unmarks = change.is_essential === false;
     if (!unhides && !unmarks) return null;
-    if (change.visibility !== undefined && !allows(p, 'document.visibility')) return null;
+    if (change.visibility !== undefined && !mayChangeVisibilityAtAll(p.role)) return null;
     if (change.is_essential !== undefined && !allows(p, 'document.edit')) return null;
     return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
@@ -2032,6 +2034,20 @@ export class DocumentService {
       if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
       // A teen may change only their own: the rest is refused, not asked.
       if (p.role === 'teen' && row.owner_member_id !== p.memberId) return null;
+      // A visibility change that will be refused is refused, not asked
+      // (A72: a teen's own, between Only me and Everyone, is asked as
+      // anybody's is).
+      if (
+        change.visibility !== undefined &&
+        visibilityRefusal(
+          p.role,
+          row.owner_member_id !== null && row.owner_member_id === p.memberId,
+          row.visibility,
+          change.visibility,
+        )
+      ) {
+        return null;
+      }
       // Only its owner can see a private document, so only they are asked.
       if (unhides && row.visibility === 'private') return 'open_private_document';
       if (unmarks && row.is_essential) return 'open_essential';

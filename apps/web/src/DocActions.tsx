@@ -1,4 +1,4 @@
-import { can, type DocumentView, type Role } from '@fdv/shared';
+import { can, visibilityChoices, type DocumentView, type Role } from '@fdv/shared';
 import {
   useId,
   useLayoutEffect,
@@ -99,10 +99,9 @@ export function actionsFor(
   if (changes) actions.push('edit');
   // A link sends the file: with none yet, the vault has nothing to send.
   if (hasFile && can(role, 'document.share')) actions.push('share');
-  // Making something Only me, or taking it back, is its owner's alone.
-  if (can(role, 'document.visibility') && (doc.visibility !== 'private' || mine)) {
-    actions.push('visibility');
-  }
+  // Only what may be chosen: making something Only me, or taking it back,
+  // is its owner's alone; a teen's own, Only me or Everyone (A72).
+  if (visibilityChoices(role, mine, doc.visibility).length > 0) actions.push('visibility');
   // Whoever may see it may put it in a collection of their own: it widens nothing.
   if (collections.collections) actions.push('collect');
   if (collections.collections && collections.uncollect) actions.push('uncollect');

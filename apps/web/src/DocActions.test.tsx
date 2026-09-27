@@ -128,7 +128,7 @@ describe('quick actions on every document (5.4)', () => {
     await expectAccessible();
   });
 
-  it('a teen sees no Share or Who can see, and Edit and Move to Trash only on their own', async () => {
+  it('a teen sees no Share, and Who can see, Edit and Move to Trash only on their own', async () => {
     // The teen is member "me": the passport is theirs, the bill is not.
     home([{ ...PASSPORT }, { ...COUNCIL_TAX }], 'teen');
 
@@ -138,6 +138,8 @@ describe('quick actions on every document (5.4)', () => {
       'Download',
       'Read full size',
       'Edit details',
+      // Their own, between Only me and Everyone (A72).
+      'Who can see',
       'Stop it being Essential',
       'Add a new version',
       'Move to Trash',
@@ -594,6 +596,31 @@ describe('quick actions on every document (5.4)', () => {
     expect(await screen.findByText("“Mansoor's passport” is Essential now.")).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: STEP_UP })).not.toBeInTheDocument();
     expect(passport.is_essential).toBe(true);
+  });
+
+  it('a teen is offered exactly Only me and Everyone for their own document, and it is saved', async () => {
+    // A72: their own, between Only me and Everyone; Adults only would hide
+    // it from them too, so it is not offered.
+    const passport = { ...PASSPORT };
+    const state = home([passport, { ...COUNCIL_TAX }], 'teen');
+    const { menu } = await openMenu();
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Who can see' }));
+    const who = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    const choices = within(who)
+      .getAllByRole('button')
+      .map((b) => b.textContent)
+      .filter((t) => ['Everyone in the family', 'Adults only', 'Only me'].includes(t ?? ''));
+    expect(choices).toEqual(['Everyone in the family', 'Only me']);
+    await expectAccessible();
+    fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
+    fireEvent.click(within(who).getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(
+        state.calls.find(
+          (c) => c.method === 'POST' && c.url.endsWith('/documents/doc-1/visibility'),
+        )?.body,
+      ).toEqual({ visibility: 'private' }),
+    );
   });
 
   it('taking a document out of Only me from the ⋯ asks to confirm it’s you', async () => {

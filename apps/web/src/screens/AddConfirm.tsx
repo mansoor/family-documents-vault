@@ -12,6 +12,7 @@ import {
   REMIND_ONCE,
   reminderOf,
   reminderSentence,
+  visibilityChoices,
   type CaptureMetadata,
   type CoreField,
   type DateOrder,
@@ -575,10 +576,14 @@ export function ConfirmForm(props: {
   const teen = myRole === 'teen';
   // A teen cannot see Adults only documents, their own included.
   const adultsOnlyAllowed = !teen;
-  // A teen files their own documents, and cannot change who can see one
-  // already in the vault.
+  // A teen files their own documents, and may change who can see one
+  // already in the vault only between Only me and Everyone (A72).
   const people = teen ? members.filter((m) => m.is_me) : members;
-  const visibilityLocked = teen && !props.fileName;
+  const visibilityLocked =
+    teen &&
+    !props.fileName &&
+    visibilityChoices(myRole, base.owner !== '' && base.owner === me?.id, base.visibility)
+      .length === 0;
   const person = members.find((m) => m.id === owner);
   const editing = !props.fileName;
   const expiresShown = Boolean(type?.expiry_driver) || (editing && expires !== '');
