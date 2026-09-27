@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.16] - 2026-09-27 — iteration 5.16b
+
+Reminders from any date, on the web.
+
+### Added
+
+- Settings → Kinds of document → Reminders: switch reminders on, choose the date to remind from — Expires, Due date, or one of the family's own date fields the kind shows — and how long before, from "On the day" to "9 months". A sentence says exactly what will happen ("We'll remind you 7 days and 1 day before its due date"), and when a kind shows two dates it says which one reminds. Before saving, it says how many documents lack the date and which reminders move or stop — counting only the documents you can see.
+- On the card, the reminder sentence sits under the date it is about, and says a due date is reminded of once. On an Only me document it says the vault can read that one date so it can remind you.
+- Reminders say what they are about: "Council tax — Due date: 10 Oct, in 7 days", with the day you'll hear of it underneath in Coming up.
+
+### Changed
+
+- The lead-time choices moved from under Expires to the new Reminders section.
+- A snooze that would go past a due date becomes "On the day"; which day is "today" follows the household's time zone.
+
 ## [0.5.15] - 2026-09-27 — iteration 5.16a
 
 Reminders from any date, on the server: the editor's Reminders section comes in the next release.
