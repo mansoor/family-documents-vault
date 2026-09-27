@@ -1298,26 +1298,26 @@ a.btn {
   gap: 4px;
 }
 
-/* 5.15: lists of documents. Who a list is for, said under its choices. */
+/* 5.15: collections of documents. Who a collection is for, said under its choices. */
 .stack.audience {
   gap: 8px;
 }
 
 .audience-words,
-.list-about {
+.collection-about {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .audience-words p,
-.list-about p {
+.collection-about p {
   margin: 0;
 }
 
-/* For a list's maker: who in its audience is not given this one. Words,
+/* For a collection's maker: who in its audience is not given this one. Words,
    never colour alone. */
-.list-hint {
+.collection-hint {
   font-size: 14px;
   font-weight: 600;
   color: var(--warn);

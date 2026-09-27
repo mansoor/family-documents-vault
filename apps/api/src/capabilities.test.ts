@@ -58,8 +58,8 @@ describe('buildCapabilities', () => {
       unified_push: false,
       // 0.5.11: kinds of document of the household's own, and the editor (5.11, 5.12).
       custom_types: true,
-      // 0.5.12: lists of documents (5.14).
-      lists: true,
+      // 0.5.12: collections of documents (5.14).
+      collections: true,
       // 0.5.15: reminders from any date, on the server (5.16a); switched on
       // with the web's editor for them (5.16b, 0.5.16).
       reminder_dates: true,

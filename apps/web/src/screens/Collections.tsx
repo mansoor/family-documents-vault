@@ -1,4 +1,10 @@
-import { can, inListAudience, type ListItemView, type ListView, type Member } from '@fdv/shared';
+import {
+  can,
+  inCollectionAudience,
+  type CollectionItemView,
+  type CollectionView,
+  type Member,
+} from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
@@ -7,34 +13,34 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import {
   audienceLabel,
   audienceSentence,
+  CollectionForm,
+  type CollectionFields,
+  collectionsOffered,
   documentsWord,
-  ListForm,
-  type ListFields,
-  listsOffered,
-  mayChangeList,
+  mayChangeCollection,
   NEVER_WIDENS,
   VIEWERS_NEED_A_GRANT,
-} from '../lists.js';
+} from '../collections.js';
 import { storedRole } from '../session.js';
 import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '../ui.js';
 import { DocRow } from './Home.js';
 
 /**
- * Lists of documents (5.15): the Lists screen, and a list's own page.
+ * Collections of documents (5.15): the Collections screen, and a collection's own page.
  *
- * A list gathers documents for a purpose. It never widens who sees one:
- * whoever opens it is given the documents on it they could see already,
+ * A collection gathers documents for a purpose. It never widens who sees one:
+ * whoever opens it is given the documents in it they could see already,
  * and every count here is the vault's count of those (`item_count`). A
- * list somebody may not see is not there at all, not even as a number.
- * Only its maker changes a list (A18), while they are in its audience.
+ * collection somebody may not see is not there at all, not even as a number.
+ * Only its maker changes a collection (A18), while they are in its audience.
  */
 
-/** Said once a list has been made, changed or deleted: carried to the next screen. */
+/** Said once a collection has been made, changed or deleted: carried to the next screen. */
 type Arrived = { notice?: string } | null;
 
 /**
  * News carried here takes the focus as soon as the line that says it is on
- * the screen — a list's page draws it once the list has come — and leaves
+ * the screen — a collection's page draws it once the collection has come — and leaves
  * the history entry, so a reload does not say it again.
  */
 function useArrivedNotice() {
@@ -59,21 +65,23 @@ function useArrivedNotice() {
   return { notice, setNotice, status, statusRef };
 }
 
-// ------------------------------------------------------------------ the lists
+// ------------------------------------------------------------------ the collections
 
-export function ListsScreen() {
+export function CollectionsScreen() {
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
   const role = storedRole();
-  const offered = listsOffered(caps, role);
+  const offered = collectionsOffered(caps, role);
   const { data, error } = useLoad(
     async (t) => {
-      const [lists, members] = await Promise.all([
-        api.lists(t),
-        // Whose each list is, for those who make them. A viewer is not given the family.
-        can(role, 'list.manage') ? api.members(t) : Promise.resolve({ items: [] as Member[] }),
+      const [collections, members] = await Promise.all([
+        api.collections(t),
+        // Whose each collection is, for those who make them. A viewer is not given the family.
+        can(role, 'collection.manage')
+          ? api.members(t)
+          : Promise.resolve({ items: [] as Member[] }),
       ]);
-      return { lists: lists.items, members: members.items };
+      return { collections: collections.items, members: members.items };
     },
     [authVersion],
   );
@@ -81,21 +89,21 @@ export function ListsScreen() {
   const [making, setMaking] = useState(false);
   const makeButton = useRef<HTMLButtonElement>(null);
 
-  const make = async (fields: ListFields) => {
-    const made = await withToken((t) => api.createList(t, fields));
+  const make = async (fields: CollectionFields) => {
+    const made = await withToken((t) => api.createCollection(t, fields));
     if (!made) return;
-    void navigate(`/lists/${made.id}`, {
+    void navigate(`/collections/${made.id}`, {
       state: {
-        notice: `“${made.name}” is made. Put documents on it with Add to a list, in the ⋯ beside any document.`,
+        notice: `“${made.name}” is made. Put documents in it with Add to a collection, in the ⋯ beside any document.`,
       },
     });
   };
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title="Lists" back="/" />
+      <TopBar title="Collections" back="/" />
       <p className="lede">
-        A list gathers documents for a purpose: a trip, a mortgage, a move. {NEVER_WIDENS}
+        A collection gathers documents for a purpose: a trip, a mortgage, a move. {NEVER_WIDENS}
       </p>
       <p role="status" ref={statusRef} tabIndex={-1} className="notice status-line">
         {notice}
@@ -103,11 +111,11 @@ export function ListsScreen() {
       <ErrorNote message={error} />
       {offered &&
         (making ? (
-          <ListForm
-            id="new-list"
+          <CollectionForm
+            id="new-collection"
             withDescription
-            submitLabel="Make the list"
-            busyLabel="Making the list…"
+            submitLabel="Make the collection"
+            busyLabel="Making the collection…"
             onSubmit={make}
             onCancel={() => {
               setMaking(false);
@@ -121,13 +129,13 @@ export function ListsScreen() {
             className="btn btn-primary"
             onClick={() => setMaking(true)}
           >
-            Make a list
+            Make a collection
           </button>
         ))}
-      <ul className="list" aria-label="Lists">
-        {(data?.lists ?? []).map((l) => (
+      <ul className="list" aria-label="Collections">
+        {(data?.collections ?? []).map((l) => (
           <li key={l.id}>
-            <Link to={`/lists/${l.id}`} className="rowbtn">
+            <Link to={`/collections/${l.id}`} className="rowbtn">
               <span className="doc-title">{l.name}</span>
               <span className="muted">
                 {documentsWord(l.item_count)} · {audienceLabel(l.audience)}
@@ -136,8 +144,8 @@ export function ListsScreen() {
             </Link>
           </li>
         ))}
-        {data !== null && data.lists.length === 0 && (
-          <li className="muted">{offered ? 'No lists yet.' : VIEWERS_NEED_A_GRANT}</li>
+        {data !== null && data.collections.length === 0 && (
+          <li className="muted">{offered ? 'No collections yet.' : VIEWERS_NEED_A_GRANT}</li>
         )}
       </ul>
       <BottomNav />
@@ -146,39 +154,41 @@ export function ListsScreen() {
 }
 
 /** " · Yours", or who made it, when the reader is told who is in the family. */
-function whose(list: ListView, members: Member[]): string {
-  if (list.mine) return ' · Yours';
-  const maker = members.find((m) => m.id === list.owner_member_id);
+function whose(collection: CollectionView, members: Member[]): string {
+  if (collection.mine) return ' · Yours';
+  const maker = members.find((m) => m.id === collection.owner_member_id);
   return maker ? ` · Made by ${maker.display_name}` : '';
 }
 
-// ------------------------------------------------------------------ one list
+// ------------------------------------------------------------------ one collection
 
-export function ListScreen() {
+export function CollectionScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, authVersion } = useApp();
   const navigate = useNavigate();
   const role = storedRole();
   const first = useLoad(
     async (t) => {
-      const [list, types, members] = await Promise.all([
-        api.getList(t, id as string),
+      const [collection, types, members] = await Promise.all([
+        api.getCollection(t, id as string),
         api.documentTypes(t),
-        can(role, 'list.manage') ? api.members(t) : Promise.resolve({ items: [] as Member[] }),
+        can(role, 'collection.manage')
+          ? api.members(t)
+          : Promise.resolve({ items: [] as Member[] }),
       ]);
-      return { list, types: types.items, members: members.items };
+      return { collection, types: types.items, members: members.items };
     },
     [id, authVersion],
   );
   // Pages after the first, as "Show more" brings them; undefined until it is used.
-  const [older, setOlder] = useState<ListItemView[]>([]);
+  const [older, setOlder] = useState<CollectionItemView[]>([]);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [loadingMore, setLoadingMore] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  // The list is not there for the reader any more — deleted, or no longer
+  // The collection is not there for the reader any more — deleted, or no longer
   // for them — since the page was drawn: then that is all the page says,
   // as it would have been had it been so when the page opened.
   const [gone, setGone] = useState<{ id: string | undefined; message: string } | null>(null);
@@ -186,22 +196,25 @@ export function ListScreen() {
   const editButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
 
-  /** Whether `err` says the list is not there for the reader: then the page says only that. */
+  /**
+   * Whether `err` says the collection is not there for the reader: then the
+   * page says only that.
+   */
   const goneIf = (err: unknown): boolean => {
     if (!(err instanceof ApiRequestError && err.status === 404)) return false;
     setGone({ id, message: describeError(err) });
     return true;
   };
 
-  /** From the first page again: what is on it, or the list itself, has changed. */
+  /** From the first page again: what is in it, or the collection itself, has changed. */
   const again = async () => {
     setOlder([]);
     setCursor(undefined);
     // What went wrong before is said again only if it goes wrong again.
     setProblem(null);
     try {
-      const list = await withToken((t) => api.getList(t, id as string));
-      if (list) first.setData((d) => (d ? { ...d, list } : d));
+      const collection = await withToken((t) => api.getCollection(t, id as string));
+      if (collection) first.setData((d) => (d ? { ...d, collection } : d));
     } catch (err) {
       if (!goneIf(err)) setProblem(describeError(err));
     }
@@ -211,31 +224,34 @@ export function ListScreen() {
   if (!first.data || goneNow) {
     return (
       <main className="page page-top has-nav">
-        <TopBar title="List" back="/lists" />
+        <TopBar title="Collection" back="/collections" />
         <ErrorNote message={goneNow ?? first.error} />
         <BottomNav />
       </main>
     );
   }
 
-  const { list, types, members } = first.data;
-  const items = [...list.items, ...older];
-  const next = cursor === undefined ? (list.has_more ? list.next_cursor : null) : cursor;
-  const mayChange = mayChangeList(role, list);
-  const maker = members.find((m) => m.id === list.owner_member_id) ?? null;
+  const { collection, types, members } = first.data;
+  const items = [...collection.items, ...older];
+  const next =
+    cursor === undefined ? (collection.has_more ? collection.next_cursor : null) : cursor;
+  const mayChange = mayChangeCollection(role, collection);
+  const maker = members.find((m) => m.id === collection.owner_member_id) ?? null;
   // Nobody may change it any more — its maker is outside its audience now,
   // or has no sign-in — so an owner who sees it may delete it (5.14).
   const stranded =
-    !list.mine &&
+    !collection.mine &&
     role === 'owner' &&
-    (maker === null || maker.role === null || !inListAudience(maker.role, list.audience));
-  const mayDelete = list.mine || stranded;
+    (maker === null ||
+      maker.role === null ||
+      !inCollectionAudience(maker.role, collection.audience));
+  const mayDelete = collection.mine || stranded;
 
   const more = async (from: string) => {
     setLoadingMore(true);
     setProblem(null);
     try {
-      const page = await withToken((t) => api.getList(t, list.id, { cursor: from }));
+      const page = await withToken((t) => api.getCollection(t, collection.id, { cursor: from }));
       if (page) {
         setOlder((o) => [...o, ...page.items]);
         setCursor(page.has_more ? page.next_cursor : null);
@@ -243,7 +259,7 @@ export function ListScreen() {
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 422) {
         // The last one shown has gone since: from the top again.
-        setNotice('This list changed while you were looking, so it has been loaded again.');
+        setNotice('This collection changed while you were looking, so it has been loaded again.');
         await again();
       } else if (!goneIf(err)) {
         setProblem(describeError(err));
@@ -253,19 +269,19 @@ export function ListScreen() {
     }
   };
 
-  const save = async (fields: ListFields) => {
+  const save = async (fields: CollectionFields) => {
     try {
       const changed = await withToken((t) =>
-        api.updateList(
+        api.updateCollection(
           t,
-          list.id,
+          collection.id,
           { name: fields.name, audience: fields.audience, description: fields.description ?? null },
-          list.etag,
+          collection.etag,
         ),
       );
       if (!changed) return;
       flushSync(() => {
-        first.setData((d) => (d ? { ...d, list: changed } : d));
+        first.setData((d) => (d ? { ...d, collection: changed } : d));
         setOlder([]);
         setCursor(undefined);
         setEditing(false);
@@ -279,7 +295,7 @@ export function ListScreen() {
         flushSync(() => {
           setEditing(false);
           setNotice(
-            'This list was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
+            'This collection was changed somewhere else, so it has been loaded again. Try again if it still needs changing.',
           );
         });
         status.current?.focus();
@@ -293,11 +309,11 @@ export function ListScreen() {
   const remove = async () => {
     setDeleting(true);
     try {
-      await withToken((t) => api.deleteList(t, list.id));
-      void navigate('/lists', {
+      await withToken((t) => api.deleteCollection(t, collection.id));
+      void navigate('/collections', {
         replace: true,
         state: {
-          notice: `The list “${list.name}” is deleted. Its documents are still in the vault.`,
+          notice: `The collection “${collection.name}” is deleted. Its documents are still in the vault.`,
         },
       });
     } catch (err) {
@@ -308,12 +324,12 @@ export function ListScreen() {
     }
   };
 
-  const sentence = audienceSentence(list.audience);
+  const sentence = audienceSentence(collection.audience);
   return (
     <main className="page page-top has-nav">
       <TopBar
-        title={list.name}
-        back="/lists"
+        title={collection.name}
+        back="/collections"
         action={
           mayChange && !editing ? (
             <button
@@ -321,7 +337,7 @@ export function ListScreen() {
               type="button"
               className="btn btn-quiet"
               style={{ minHeight: 40 }}
-              aria-label={`Edit “${list.name}”`}
+              aria-label={`Edit “${collection.name}”`}
               onClick={() => setEditing(true)}
             >
               Edit
@@ -330,9 +346,13 @@ export function ListScreen() {
         }
       />
       {editing ? (
-        <ListForm
-          id="edit-list"
-          initial={{ name: list.name, description: list.description, audience: list.audience }}
+        <CollectionForm
+          id="edit-collection"
+          initial={{
+            name: collection.name,
+            description: collection.description,
+            audience: collection.audience,
+          }}
           withDescription
           submitLabel="Save"
           busyLabel="Saving…"
@@ -343,13 +363,13 @@ export function ListScreen() {
           }}
         />
       ) : (
-        <div className="stack list-about">
-          {list.description && <p className="keep-lines">{list.description}</p>}
+        <div className="stack collection-about">
+          {collection.description && <p className="keep-lines">{collection.description}</p>}
           <p className="muted">
-            Who it is for: <strong>{audienceLabel(list.audience)}</strong>. {sentence}
+            Who it is for: <strong>{audienceLabel(collection.audience)}</strong>. {sentence}
           </p>
           <MakerNote
-            mine={list.mine}
+            mine={collection.mine}
             mayChange={mayChange}
             stranded={stranded}
             maker={maker?.display_name ?? null}
@@ -360,14 +380,14 @@ export function ListScreen() {
         {notice}
       </p>
       <ErrorNote message={problem ?? first.error} />
-      <section aria-labelledby="list-items-h">
-        <h2 id="list-items-h" className="section-h">
-          On this list
+      <section aria-labelledby="collection-items-h">
+        <h2 id="collection-items-h" className="section-h">
+          In this collection
         </h2>
-        {/* What the list holds, as the vault counts it for this reader. Where
-            focus goes when a row leaves the list with it (5.4). */}
+        {/* What the collection holds, as the vault counts it for this reader. Where
+            focus goes when a row leaves the collection with it (5.4). */}
         <p className="muted" tabIndex={-1} data-landing>
-          {documentsWord(list.item_count)}
+          {documentsWord(collection.item_count)}
         </p>
         <ul className="list">
           {items.map((item) => (
@@ -376,15 +396,15 @@ export function ListScreen() {
               doc={item.document}
               types={types}
               hint={item.hint}
-              list={{ id: list.id, name: list.name, mayChange }}
+              collection={{ id: collection.id, name: collection.name, mayChange }}
               onOpen={() => void navigate(`/documents/${item.document.id}`)}
               onChanged={again}
             />
           ))}
           {items.length === 0 && (
             <li className="muted">
-              Nothing on this list yet.
-              {mayChange ? ' Use Add to a list, in the ⋯ beside any document.' : ''}
+              Nothing in this collection yet.
+              {mayChange ? ' Use Add to a collection, in the ⋯ beside any document.' : ''}
             </li>
           )}
         </ul>
@@ -402,13 +422,13 @@ export function ListScreen() {
           onClick={() => setConfirmDelete(true)}
         >
           <TrashIcon />
-          Delete this list
+          Delete this collection
         </button>
       )}
       {confirmDelete && (
         <ConfirmDialog
-          title="Delete this list?"
-          confirmLabel="Delete the list"
+          title="Delete this collection?"
+          confirmLabel="Delete the collection"
           busyLabel="Deleting…"
           icon={<TrashIcon />}
           danger
@@ -418,8 +438,8 @@ export function ListScreen() {
           onCancel={() => setConfirmDelete(false)}
         >
           <p>
-            “{list.name}” is gone for everybody who could see it. The documents on it stay in the
-            vault, and on any other list.
+            “{collection.name}” is gone for everybody who could see it. The documents in it stay in
+            the vault, and in any other collection.
           </p>
         </ConfirmDialog>
       )}
@@ -428,7 +448,7 @@ export function ListScreen() {
   );
 }
 
-/** Why the reader may not change this list, when they may not, in plain words. */
+/** Why the reader may not change this collection, when they may not, in plain words. */
 function MakerNote(props: {
   mine: boolean;
   mayChange: boolean;
@@ -439,24 +459,24 @@ function MakerNote(props: {
   if (props.mine) {
     return (
       <p className="muted">
-        This list is for people you are no longer one of. You can still delete it, but not change
-        it.
+        This collection is for people you are no longer one of. You can still delete it, but not
+        change it.
       </p>
     );
   }
   if (props.stranded) {
     return (
       <p className="muted">
-        Nobody can change this list any more: whoever made it is no longer one of the people it is
-        for, or can no longer sign in. As an owner, you can delete it.
+        Nobody can change this collection any more: whoever made it is no longer one of the people
+        it is for, or can no longer sign in. As an owner, you can delete it.
       </p>
     );
   }
   return (
     <p className="muted">
       {props.maker
-        ? `Only ${props.maker}, who made this list, can change it.`
-        : 'Only the person who made this list can change it.'}
+        ? `Only ${props.maker}, who made this collection, can change it.`
+        : 'Only the person who made this collection can change it.'}
     </p>
   );
 }

@@ -423,8 +423,13 @@ const GUARDS = [
   { name: 'owner_floor', table: 'account_household', fn: 'assert_owner_remains' },
   { name: 'share_link_link_writes', table: 'share_link', fn: 'share_link_link_writes' },
   { name: 'document_type_fixed', table: 'document_type', fn: 'document_type_fixed' },
-  // An owner marks deleted a list nobody can change any more, and nothing else (0036).
-  { name: 'doc_list_owner_writes', table: 'doc_list', fn: 'doc_list_owner_writes' },
+  // An owner marks deleted a collection nobody can change any more, and nothing else
+  // (0036; named so by 0039).
+  {
+    name: 'doc_collection_owner_writes',
+    table: 'doc_collection',
+    fn: 'doc_collection_owner_writes',
+  },
   // A link keeps the flow it was made with: a new one never opens on an old route (0037).
   { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
 ];
@@ -460,19 +465,21 @@ const ACTOR_GUARDED = [
   'document_type',
   'document_type_setting',
   'document_attribute',
-  // Lists of documents, and what is on them (0036).
-  'doc_list',
-  'doc_list_item',
+  // Collections of documents, and what is in them (0036).
+  'doc_collection',
+  'doc_collection_item',
   // What a share link's Open gives a browser (0037).
   'share_session',
 ];
 
 /**
  * The tables where a member's own is theirs alone, by a rule that asks who
- * the member is: an Only me list is its maker's (0036). Each must have such
+ * the member is: an Only me collection is its maker's (0036). Each must have such
  * a rule, and somebody signed in who made none is given none.
  */
-const MAKER_ONLY = [{ table: 'doc_list', where: "audience = 'only_me'", what: 'an Only me list' }];
+const MAKER_ONLY = [
+  { table: 'doc_collection', where: "audience = 'only_me'", what: 'an Only me collection' },
+];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
 const HOUSEHOLD_ROWS: Record<string, string> = {
@@ -698,7 +705,7 @@ export async function checkRestored(
         }
       }
       // Somebody signed in who is no member of it — so the maker of none —
-      // is given no Only me list (0036).
+      // is given no Only me collection (0036).
       for (const m of MAKER_ONLY) {
         const [open] = await asHousehold<{ n: number }>(
           h.id,

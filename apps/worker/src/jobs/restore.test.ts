@@ -159,22 +159,30 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
-    // Lists of documents, where the schema has them (0036): one for
-    // everyone and the first member's Only me, each with all three on it.
-    const lists = await c.query<{ has: boolean }>(
-      "select to_regclass('public.doc_list') is not null as has",
+    // Collections of documents, where the schema has them (0036): one for
+    // everyone and the first member's Only me, each with all three in it.
+    // A schema from before 0039 has them by their old names, as a backup
+    // made then does.
+    const schema = await c.query<{ collections: boolean; lists: boolean }>(
+      `select to_regclass('public.doc_collection') is not null as collections,
+              to_regclass('public.doc_list') is not null as lists`,
     );
-    if (lists.rows[0]?.has) {
+    const names = schema.rows[0]?.collections
+      ? { table: 'doc_collection', items: 'doc_collection_item', key: 'collection_id' }
+      : schema.rows[0]?.lists
+        ? { table: 'doc_list', items: 'doc_list_item', key: 'list_id' }
+        : null;
+    if (names) {
       await c.query(
-        `insert into doc_list (household_id, name, audience, owner_member_id)
+        `insert into ${names.table} (household_id, name, audience, owner_member_id)
          values ($1, 'For the broker', 'everyone', $2), ($1, 'Divorce', 'only_me', $2)`,
         [hh, m.rows[0]?.id],
       );
       await c.query(
-        `insert into doc_list_item (list_id, document_id, household_id, position)
-         select l.id, d.id, $1, (row_number() over (partition by l.id order by d.id))::int
-           from doc_list l join document d on d.household_id = l.household_id
-          where l.household_id = $1`,
+        `insert into ${names.items} (${names.key}, document_id, household_id, position)
+         select c.id, d.id, $1, (row_number() over (partition by c.id order by d.id))::int
+           from ${names.table} c join document d on d.household_id = c.household_id
+          where c.household_id = $1`,
         [hh],
       );
     }
@@ -600,7 +608,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
-  it('notices an Only me list open to the whole family, or lists that lost their rule (0036)', async () => {
+  it('notices an Only me collection open to the whole family, or collections that lost their rule (0036)', async () => {
     const ruleOf = async (name: string) =>
       (
         await sql(
@@ -608,15 +616,21 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
           `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
         )
       ).rows[0]?.rule as string;
-    const onlyMe = await ruleOf('doc_list_only_me');
+    const onlyMe = await ruleOf('doc_collection_only_me');
     const restoreRule = () =>
-      sql(vault.adminUrl, `alter policy doc_list_only_me on public.doc_list using (${onlyMe})`);
+      sql(
+        vault.adminUrl,
+        `alter policy doc_collection_only_me on public.doc_collection using (${onlyMe})`,
+      );
 
     // Opened up in place: nothing asks which member is asking.
-    await sql(vault.adminUrl, 'alter policy doc_list_only_me on public.doc_list using (true)');
+    await sql(
+      vault.adminUrl,
+      'alter policy doc_collection_only_me on public.doc_collection using (true)',
+    );
     try {
       await expect(checkRestored(target())).rejects.toThrow(
-        /no rule keeps a member's own to them on doc_list/,
+        /no rule keeps a member's own to them on doc_collection/,
       );
     } finally {
       await restoreRule();
@@ -624,36 +638,45 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     // Still asking, but letting somebody who made none through.
     await sql(
       vault.adminUrl,
-      `alter policy doc_list_only_me on public.doc_list using ((${onlyMe}) or app_member() is null)`,
+      `alter policy doc_collection_only_me on public.doc_collection using ((${onlyMe}) or app_member() is null)`,
     );
     try {
       await expect(checkRestored(target())).rejects.toThrow(
-        /an Only me list is open to everybody in the family/,
+        /an Only me collection is open to everybody in the family/,
       );
     } finally {
       await restoreRule();
     }
 
     // The items' rule for each kind of caller, gone.
-    const items = await ruleOf('doc_list_item_actor');
-    await sql(vault.adminUrl, 'drop policy doc_list_item_actor on public.doc_list_item');
+    const items = await ruleOf('doc_collection_item_actor');
+    await sql(
+      vault.adminUrl,
+      'drop policy doc_collection_item_actor on public.doc_collection_item',
+    );
     try {
       await expect(checkRestored(target())).rejects.toThrow(
-        /no rule for each kind of caller on doc_list_item/,
+        /no rule for each kind of caller on doc_collection_item/,
       );
     } finally {
       await sql(
         vault.adminUrl,
-        `create policy doc_list_item_actor on public.doc_list_item as restrictive using (${items})`,
+        `create policy doc_collection_item_actor on public.doc_collection_item as restrictive using (${items})`,
       );
     }
-    // The guard that keeps an owner to marking deleted a list nobody can
+    // The guard that keeps an owner to marking deleted a collection nobody can
     // change any more, and to nothing else, turned off.
-    await sql(vault.adminUrl, 'alter table public.doc_list disable trigger doc_list_owner_writes');
+    await sql(
+      vault.adminUrl,
+      'alter table public.doc_collection disable trigger doc_collection_owner_writes',
+    );
     try {
       await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
     } finally {
-      await sql(vault.adminUrl, 'alter table public.doc_list enable trigger doc_list_owner_writes');
+      await sql(
+        vault.adminUrl,
+        'alter table public.doc_collection enable trigger doc_collection_owner_writes',
+      );
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
@@ -906,7 +929,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     expect(reached).toBe(0);
   }, 60_000);
 
-  it("a household's lists come back, and an Only me list is still its maker's alone (0036)", async () => {
+  it("a household's collections come back, and an Only me collection is still its maker's alone (0036)", async () => {
     const t = await empty();
     await restoreBackup(file, KEY, into(t), quiet, KEYS);
     const { rows: members } = await sql(
@@ -915,7 +938,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     );
     const [first, second] = members as Array<{ id: string; household_id: string }>;
     // As the vault will ask, signed in as each member in turn.
-    const lists = await withClient(t.appUrl, async (c) => {
+    const collections = await withClient(t.appUrl, async (c) => {
       const as = async (member: { id: string; household_id: string } | undefined) => {
         await c.query('begin');
         await c.query(
@@ -924,23 +947,23 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
           [member?.household_id, member?.id],
         );
         const { rows } = await c.query<{ name: string; items: number }>(
-          `select l.name, (select count(*)::int from doc_list_item i where i.list_id = l.id) as items
-             from doc_list l order by l.name`,
+          `select l.name, (select count(*)::int from doc_collection_item i where i.collection_id = l.id) as items
+             from doc_collection l order by l.name`,
         );
         await c.query('commit');
         return rows;
       };
       return { first: await as(first), second: await as(second) };
     });
-    expect(lists).toEqual({
+    expect(collections).toEqual({
       first: [
         { name: 'Divorce', items: 3 },
         { name: 'For the broker', items: 3 },
       ],
       second: [{ name: 'For the broker', items: 3 }],
     });
-    // And a list is still marked deleted, never taken away, by the vault.
-    await expect(sql(t.appUrl, 'delete from doc_list')).rejects.toThrow(/permission denied/);
+    // And a collection is still marked deleted, never taken away, by the vault.
+    await expect(sql(t.appUrl, 'delete from doc_collection')).rejects.toThrow(/permission denied/);
   }, 60_000);
 
   it('refuses a database that is not empty, and leaves it as it was', async () => {
@@ -1140,6 +1163,103 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
             source: r.kind === 'derived' ? 'expires' : null,
             sent: 1,
           })),
+      );
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a backup from before 0039 restores and migrates to collections', async () => {
+    // 0.5.16: collections were lists, in doc_list and doc_list_item.
+    const older = await empty();
+    const migrations = await migrationsUpTo(38);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0038-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      await seed(older.adminUrl);
+      const { rows: lists } = await sql(
+        older.adminUrl,
+        'select id, name, audience, owner_member_id from doc_list order by name',
+      );
+      const { rows: items } = await sql(
+        older.adminUrl,
+        'select list_id, document_id, position from doc_list_item order by list_id, position',
+      );
+      expect(lists).toHaveLength(2);
+      expect(items).toHaveLength(6);
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      // The restore's own check passes: its guards, rules and privileges are
+      // found under their new names.
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, households: 1, documents: 3 });
+
+      // Every row, by its own id, and every item in its place.
+      expect(
+        (
+          await sql(
+            t.adminUrl,
+            'select id, name, audience, owner_member_id from doc_collection order by name',
+          )
+        ).rows,
+      ).toEqual(lists);
+      expect(
+        (
+          await sql(
+            t.adminUrl,
+            `select collection_id as list_id, document_id, position
+               from doc_collection_item order by collection_id, position`,
+          )
+        ).rows,
+      ).toEqual(items);
+      const { rows: gone } = await sql(
+        t.adminUrl,
+        `select to_regclass('public.doc_list') as list, to_regclass('public.doc_list_item') as item,
+                (select count(*)::int from pg_policy where polname like 'doc\\_list%') as policies`,
+      );
+      expect(gone).toEqual([{ list: null, item: null, policies: 0 }]);
+
+      // As the vault will ask: the Only me one is still its maker's alone,
+      // and a collection is still never taken away.
+      const { rows: members } = await sql(
+        t.adminUrl,
+        'select id, household_id from member order by display_name',
+      );
+      const seenBy = async (member: { id: string; household_id: string }) =>
+        withClient(t.appUrl, async (c) => {
+          await c.query('begin');
+          await c.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.member_id', $2, true)`,
+            [member.household_id, member.id],
+          );
+          const { rows } = await c.query<{ name: string }>(
+            'select name from doc_collection order by name',
+          );
+          await c.query('commit');
+          return rows.map((r) => r.name);
+        });
+      const [first, second] = members as Array<{ id: string; household_id: string }>;
+      expect(await seenBy(first as { id: string; household_id: string })).toEqual([
+        'Divorce',
+        'For the broker',
+      ]);
+      expect(await seenBy(second as { id: string; household_id: string })).toEqual([
+        'For the broker',
+      ]);
+      await expect(sql(t.appUrl, 'delete from doc_collection')).rejects.toThrow(
+        /permission denied/,
       );
     } finally {
       await rm(migrations, { recursive: true, force: true });

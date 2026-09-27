@@ -66,12 +66,12 @@ export interface CapabilityFeatures {
    */
   custom_types?: boolean;
   /**
-   * Lists of documents (0.5.12): /lists, their items and
-   * GET /documents/{id}/lists. Owners, adults and teens make them; each
-   * reader is given only the documents on a list they could see anyway.
+   * Collections of documents (0.5.12): /collections, their items and
+   * GET /documents/{id}/collections. Owners, adults and teens make them; each
+   * reader is given only the documents in a collection they could see anyway.
    * Absent from older vaults.
    */
-  lists?: boolean;
+  collections?: boolean;
   /**
    * A kind reminds from any date it shows (0.5.15): `remind_from` and
    * `remind_leads` on kinds, `source` and `about` on reminders,

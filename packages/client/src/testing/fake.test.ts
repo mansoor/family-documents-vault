@@ -63,7 +63,7 @@ describe('the fake vault, for somebody who is not an owner', () => {
     expect(refused).toMatchObject({ status: 404, code: 'not_found' });
   });
 
-  it('lists as the real vault keeps them for each role (0.5.12): a viewer sees none', async () => {
+  it('collections as the real vault keeps them for each role (0.5.12): a viewer sees none', async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
     const { access_token: token } = await api.setup({
@@ -75,35 +75,35 @@ describe('the fake vault, for somebody who is not an owner', () => {
     const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
     const everyday = await api.createDocument(token, { title: 'Bill' });
     const adults = await api.createDocument(token, { title: 'Will', visibility: 'adults' });
-    const family = await api.createList(token, { name: 'Family', audience: 'everyone' });
-    await api.addToList(token, family.id, [everyday.id, adults.id]);
-    const grown = await api.createList(token, { name: 'Grown-ups', audience: 'adults' });
+    const family = await api.createCollection(token, { name: 'Family', audience: 'everyone' });
+    await api.addToCollection(token, family.id, [everyday.id, adults.id]);
+    const grown = await api.createCollection(token, { name: 'Grown-ups', audience: 'adults' });
     // Made by somebody else, an adult: the fake signs in as one member only.
     vault.state.members.push({ id: 'sam', display_name: 'Sam', role: 'adult', is_me: false });
-    for (const l of vault.state.lists) l.owner_member_id = 'sam';
+    for (const l of vault.state.collections) l.owner_member_id = 'sam';
 
-    // A teen is given the list for everyone, and on it only what a teen may see.
+    // A teen is given the collection for everyone, and in it only what a teen may see.
     vault.state.role = 'teen';
-    expect((await api.lists(token)).items.map((l) => l.name)).toEqual(['Family']);
-    const seen = await api.getList(token, family.id);
+    expect((await api.collections(token)).items.map((l) => l.name)).toEqual(['Family']);
+    const seen = await api.getCollection(token, family.id);
     expect(seen.items.map((i) => i.document.id)).toEqual([everyday.id]);
     expect(seen.item_count).toBe(1);
-    expect(await refusal(api.getList(token, grown.id))).toMatchObject({ status: 404 });
+    expect(await refusal(api.getCollection(token, grown.id))).toMatchObject({ status: 404 });
     expect(
-      await refusal(api.createList(token, { name: 'For the adults', audience: 'adults' })),
+      await refusal(api.createCollection(token, { name: 'For the adults', audience: 'adults' })),
     ).toMatchObject({ status: 403, code: 'forbidden' });
 
     // A viewer, none at all, and makes none.
     vault.state.role = 'viewer';
-    expect((await api.lists(token)).items).toEqual([]);
-    expect(await refusal(api.getList(token, family.id))).toMatchObject({ status: 404 });
-    expect((await api.documentLists(token, everyday.id)).items).toEqual([]);
+    expect((await api.collections(token)).items).toEqual([]);
+    expect(await refusal(api.getCollection(token, family.id))).toMatchObject({ status: 404 });
+    expect((await api.documentCollections(token, everyday.id)).items).toEqual([]);
     expect(
-      await refusal(api.createList(token, { name: 'Mine', audience: 'everyone' })),
+      await refusal(api.createCollection(token, { name: 'Mine', audience: 'everyone' })),
     ).toMatchObject({ status: 403, code: 'forbidden' });
   });
 
-  it('a maker made a teen keeps their list to see and delete, not change; an owner deletes one nobody can change (the 5.14 review)', async () => {
+  it('a maker made a teen keeps their collection to see and delete, not change; an owner deletes one nobody can change (the 5.14 review)', async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
     const { access_token: token } = await api.setup({
@@ -115,57 +115,60 @@ describe('the fake vault, for somebody who is not an owner', () => {
     const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
     const everyday = await api.createDocument(token, { title: 'Bill' });
     const adults = await api.createDocument(token, { title: 'Will', visibility: 'adults' });
-    const grown = await api.createList(token, { name: 'Grown-ups', audience: 'adults' });
-    await api.addToList(token, grown.id, [everyday.id, adults.id]);
-    const family = await api.createList(token, { name: 'Family', audience: 'everyone' });
+    const grown = await api.createCollection(token, { name: 'Grown-ups', audience: 'adults' });
+    await api.addToCollection(token, grown.id, [everyday.id, adults.id]);
+    const family = await api.createCollection(token, { name: 'Family', audience: 'everyone' });
 
-    // Its maker, made a teen: sees it, with what a teen may see on it.
+    // Its maker, made a teen: sees it, with what a teen may see in it.
     vault.state.role = 'teen';
-    const seen = await api.getList(token, grown.id);
+    const seen = await api.getCollection(token, grown.id);
     expect(seen).toMatchObject({ mine: true, item_count: 1 });
     expect(seen.items.map((i) => i.document.id)).toEqual([everyday.id]);
-    expect((await api.lists(token)).items.map((l) => l.name)).toEqual(['Family', 'Grown-ups']);
+    expect((await api.collections(token)).items.map((l) => l.name)).toEqual([
+      'Family',
+      'Grown-ups',
+    ]);
     // Changes it no more, while the one for everyone is still theirs to change.
     for (const change of [
-      api.updateList(token, grown.id, { name: 'Taken back' }),
-      api.addToList(token, grown.id, [everyday.id]),
-      api.removeFromList(token, grown.id, everyday.id),
+      api.updateCollection(token, grown.id, { name: 'Taken back' }),
+      api.addToCollection(token, grown.id, [everyday.id]),
+      api.removeFromCollection(token, grown.id, everyday.id),
     ]) {
       expect(await refusal(change)).toMatchObject({ status: 403, code: 'forbidden' });
     }
-    expect(await api.updateList(token, family.id, { name: 'Our family' })).toMatchObject({
+    expect(await api.updateCollection(token, family.id, { name: 'Our family' })).toMatchObject({
       name: 'Our family',
     });
     // Made a viewer, deletes it all the same.
     vault.state.role = 'viewer';
-    await api.deleteList(token, grown.id);
-    expect(await refusal(api.getList(token, grown.id))).toMatchObject({ status: 404 });
+    await api.deleteCollection(token, grown.id);
+    expect(await refusal(api.getCollection(token, grown.id))).toMatchObject({ status: 404 });
 
-    // An owner deletes a list whose maker has no sign-in, or is outside its
+    // An owner deletes a collection whose maker has no sign-in, or is outside its
     // audience; never one whose maker can still change it.
     vault.state.role = 'owner';
     vault.state.members.push({ id: 'kim', display_name: 'Kim', role: 'teen', is_me: false });
     const theirs = async (name: string, maker: string, audience: 'adults' | 'everyone') => {
-      const l = await api.createList(token, { name, audience });
-      const kept = vault.state.lists.find((x) => x.id === l.id);
+      const l = await api.createCollection(token, { name, audience });
+      const kept = vault.state.collections.find((x) => x.id === l.id);
       if (kept) kept.owner_member_id = maker;
       return l.id;
     };
     const gone = await theirs('Gone', 'nobody-now', 'everyone');
     const outside = await theirs('Outside', 'kim', 'adults');
     const inside = await theirs('Inside', 'kim', 'everyone');
-    await api.deleteList(token, gone);
-    await api.deleteList(token, outside);
-    expect(await refusal(api.deleteList(token, inside))).toMatchObject({
+    await api.deleteCollection(token, gone);
+    await api.deleteCollection(token, outside);
+    expect(await refusal(api.deleteCollection(token, inside))).toMatchObject({
       status: 403,
       code: 'forbidden',
     });
-    expect(await refusal(api.updateList(token, outside, { name: 'Mine' }))).toMatchObject({
+    expect(await refusal(api.updateCollection(token, outside, { name: 'Mine' }))).toMatchObject({
       status: 404,
     });
   });
 
-  it("pages a list's documents as the real vault does", async () => {
+  it("pages a collection's documents as the real vault does", async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
     const { access_token: token } = await api.setup({
@@ -178,15 +181,20 @@ describe('the fake vault, for somebody who is not an owner', () => {
     for (const title of ['One', 'Two', 'Three']) {
       ids.push((await api.createDocument(token, { title })).id);
     }
-    const list = await api.createList(token, { name: 'Three', audience: 'everyone' });
-    await api.addToList(token, list.id, ids);
-    const first = await api.getList(token, list.id, { limit: 2 });
+    const collection = await api.createCollection(token, { name: 'Three', audience: 'everyone' });
+    await api.addToCollection(token, collection.id, ids);
+    const first = await api.getCollection(token, collection.id, { limit: 2 });
     expect(first).toMatchObject({ item_count: 3, has_more: true });
     expect(first.items.map((i) => i.document.id)).toEqual(ids.slice(0, 2));
-    const rest = await api.getList(token, list.id, { limit: 2, cursor: first.next_cursor });
+    const rest = await api.getCollection(token, collection.id, {
+      limit: 2,
+      cursor: first.next_cursor,
+    });
     expect(rest).toMatchObject({ item_count: 3, has_more: false, next_cursor: null });
     expect(rest.items.map((i) => i.document.id)).toEqual(ids.slice(2));
-    const bad = await api.getList(token, list.id, { cursor: 'nonsense' }).catch((e: unknown) => e);
+    const bad = await api
+      .getCollection(token, collection.id, { cursor: 'nonsense' })
+      .catch((e: unknown) => e);
     expect(bad).toMatchObject({ status: 422, code: 'validation_failed' });
   });
 });

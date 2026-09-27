@@ -1,19 +1,19 @@
 import { createHash } from 'node:crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
-  inListAudience,
-  LIST_AUDIENCES,
-  LIST_DESCRIPTION_MAX,
-  LIST_ITEMS_PAGE,
-  LIST_ITEMS_PAGE_MAX,
-  LIST_NAME_MAX,
-  listItemHint,
+  COLLECTION_AUDIENCES,
+  COLLECTION_DESCRIPTION_MAX,
+  COLLECTION_ITEMS_PAGE,
+  COLLECTION_ITEMS_PAGE_MAX,
+  COLLECTION_NAME_MAX,
+  collectionItemHint,
+  inCollectionAudience,
+  type CollectionAudience,
+  type CollectionDetail,
+  type CollectionInput,
+  type CollectionItemView,
+  type CollectionView,
   type DocumentView,
-  type ListAudience,
-  type ListDetail,
-  type ListInput,
-  type ListItemView,
-  type ListView,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -22,55 +22,55 @@ import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
 
 /**
- * Lists of documents (5.14).
+ * Collections of documents (5.14).
  *
- * A list is a name, a few words, who it is for, and the documents on it.
+ * A collection is a name, a few words, who it is for, and the documents in it.
  * Four rules, each the privacy wall's:
  *
- *  - **Who it is for decides whether it exists** (A17, `canSeeList`): a
- *    list outside the reader's audience is 404, exactly as one that never
+ *  - **Who it is for decides whether it exists** (A17, `canSeeCollection`): a
+ *    collection outside the reader's audience is 404, exactly as one that never
  *    was — its name ("Divorce") is information. A viewer sees none. The
  *    database keeps Only me itself (0036), whatever is asked here.
  *  - **It never widens who sees a document.** Each reader is given the
- *    documents on it they could see anyway, by the one visibility rule
+ *    documents in it they could see anyway, by the one visibility rule
  *    (`seenDocument`), out of the Trash; `item_count` is how many that is.
  *    Nothing — a count, a hint, an ETag, an order — says how many are
  *    hidden. A document taken to the Trash, or made somebody else's Only
  *    me, drops out for them at once; brought back, it is there again.
  *  - **Only its maker changes it** (A18): its name, words and audience,
- *    and what is on it, while they are in its audience. Anybody else in
+ *    and what is in it, while they are in its audience. Anybody else in
  *    its audience who asks is refused; anybody outside it is told there is
- *    no such list.
+ *    no such collection.
  *  - **Its maker keeps it** (the 5.14 review): made a teen or a viewer, a
- *    maker still sees the list they made — the documents on it as they may
+ *    maker still sees the collection they made — the documents in it as they may
  *    see them now — and may delete it, but no longer change it. When
- *    nobody may change a list any more (its maker is outside its audience,
+ *    nobody may change a collection any more (its maker is outside its audience,
  *    or has no sign-in here), an owner who can see it may delete it: never
  *    change it, and never be given more of it than they see anyway. The
  *    database holds both (0036).
  *  - **You add only what you can see**: a document the maker is not given
  *    is answered as one that does not exist.
  *
- * Every change is checked against the list as it is, held (FOR UPDATE),
- * and the documents put on it are held while they are checked; everything
+ * Every change is checked against the collection as it is, held (FOR UPDATE),
+ * and the documents put in it are held while they are checked; everything
  * is written against the rows' own ids, never the address's. The answer is
  * read once the change is made and let go, so the household's activity log
- * and the rows are held for the write alone, not while a long list renders.
+ * and the rows are held for the write alone, not while a long collection renders.
  */
 
-type ListRow = {
+type CollectionRow = {
   id: string;
   name: string;
   description: string | null;
-  audience: ListAudience;
+  audience: CollectionAudience;
   owner_member_id: string | null;
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
 };
 
-/** A list's columns, as a read selects them. */
-const LIST_COLUMNS = [
+/** A collection's columns, as a read selects them. */
+const COLLECTION_COLUMNS = [
   'l.id',
   'l.name',
   'l.description',
@@ -82,27 +82,27 @@ const LIST_COLUMNS = [
 ] as const;
 
 /**
- * "This caller may see list `l`", as SQL: `canSeeList` for every audience
+ * "This caller may see collection `l`", as SQL: `canSeeCollection` for every audience
  * there is, and not deleted. Its maker always may; Only me, its maker
  * alone. An audience it does not name is nobody's.
  */
-export const seenList = (p: Principal) => {
+export const seenCollection = (p: Principal) => {
   const maker = sql<boolean>`coalesce(l.owner_member_id = ${p.memberId}::uuid, false)`;
   return sql<boolean>`(l.deleted_at is null and case l.audience ${sql.join(
-    LIST_AUDIENCES.map((a) =>
+    COLLECTION_AUDIENCES.map((a) =>
       a === 'only_me'
         ? sql`when ${sql.lit(a)} then ${maker}`
-        : sql`when ${sql.lit(a)} then ${sql.lit(inListAudience(p.role, a))} or ${maker}`,
+        : sql`when ${sql.lit(a)} then ${sql.lit(inCollectionAudience(p.role, a))} or ${maker}`,
     ),
     sql` `,
   )} else false end)`;
 };
 
-/** The caller made this list. */
+/** The caller made this collection. */
 const isMaker = (p: Principal, row: { owner_member_id: string | null }) =>
   row.owner_member_id !== null && row.owner_member_id === p.memberId;
 
-/** Which page of a list's documents: after the document a page ended with. */
+/** Which page of a collection's documents: after the document a page ended with. */
 export interface ItemsPage {
   limit?: number | undefined;
   cursor?: string | undefined;
@@ -110,7 +110,7 @@ export interface ItemsPage {
 
 /**
  * A page's cursor names the last document the reader was given, and
- * nothing else: not where it stands on the list, which would count the
+ * nothing else: not where it stands in the collection, which would count the
  * ones before it they were not given.
  */
 const encodeCursor = (documentId: string) =>
@@ -127,46 +127,49 @@ function cursorDocument(cursor: string): string {
   throw badCursor();
 }
 
-/** How many of list `l`'s documents the caller may see, out of the Trash. */
+/** How many of collection `l`'s documents the caller may see, out of the Trash. */
 const seenCount = (p: Principal) =>
   sql<number>`(select count(*)::int
-                 from doc_list_item i
+                 from doc_collection_item i
                  join document d on d.id = i.document_id
-                where i.list_id = l.id and d.deleted_at is null and ${seenDocument(p)})`;
+                where i.collection_id = l.id and d.deleted_at is null and ${seenDocument(p)})`;
 
 /**
- * A list's ETag: its name, words and audience as they are now, never what
- * is on it — every reader is given the same one, and one that moved when a
- * document they cannot see went on would say that it had.
+ * A collection's ETag: its name, words and audience as they are now, never what
+ * is in it — every reader is given the same one, and one that moved when a
+ * document they cannot see went in would say that it had.
  */
-function listEtag(row: { id: string; updated_at: Date }): string {
-  const seed = `list:${row.id}:${row.updated_at.toISOString()}`;
+function collectionEtag(row: { id: string; updated_at: Date }): string {
+  const seed = `collection:${row.id}:${row.updated_at.toISOString()}`;
   return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
 }
 
-const notFound = () => new ApiError(404, 'not_found', 'That list does not exist.');
+const notFound = () => new ApiError(404, 'not_found', 'That collection does not exist.');
 const noDocument = () => new ApiError(404, 'not_found', 'That document is not in the vault.');
 const invalid = (message: string, detail: string) =>
   new ApiError(422, 'validation_failed', message, { detail });
 
-/** Only its maker changes a list (A18). */
+/** Only its maker changes a collection (A18). */
 const notYours = () =>
-  new ApiError(403, 'forbidden', 'Only the person who made this list can change it.');
+  new ApiError(403, 'forbidden', 'Only the person who made this collection can change it.');
 
 /** Its maker, no longer in its audience: they keep it to see and delete (the 5.14 review). */
 const noLongerYours = () =>
   new ApiError(
     403,
     'forbidden',
-    'This list is for people you are no longer one of. You can still delete it, but not change it.',
+    'This collection is for people you are no longer one of. You can still delete it, but not change it.',
   );
 
 /** A name as the person typed it, spaces tidied; blank is none. */
 function nameOf(v: string): string {
   const tidy = v.trim().replace(/\s+/g, ' ');
-  if (!tidy) throw invalid('Give the list a name.', 'name');
-  if (tidy.length > LIST_NAME_MAX) {
-    throw invalid(`A list’s name is too long: ${LIST_NAME_MAX} characters at most.`, 'name');
+  if (!tidy) throw invalid('Give the collection a name.', 'name');
+  if (tidy.length > COLLECTION_NAME_MAX) {
+    throw invalid(
+      `A collection’s name is too long: ${COLLECTION_NAME_MAX} characters at most.`,
+      'name',
+    );
   }
   return tidy;
 }
@@ -174,9 +177,9 @@ function nameOf(v: string): string {
 /** Its few words, trimmed; blank is none. */
 function descriptionOf(v: string | null): string | null {
   const trimmed = v?.trim() ?? '';
-  if (trimmed.length > LIST_DESCRIPTION_MAX) {
+  if (trimmed.length > COLLECTION_DESCRIPTION_MAX) {
     throw invalid(
-      `What a list is for is too long: ${LIST_DESCRIPTION_MAX} characters at most.`,
+      `What a collection is for is too long: ${COLLECTION_DESCRIPTION_MAX} characters at most.`,
       'description',
     );
   }
@@ -184,17 +187,17 @@ function descriptionOf(v: string | null): string | null {
 }
 
 /**
- * Who a list may be for, from its maker: an audience they are in. A teen's
- * list for the adults would be one they could not see as they made it.
+ * Who a collection may be for, from its maker: an audience they are in. A teen's
+ * collection for the adults would be one they could not see as they made it.
  */
-function audienceFor(p: Principal, audience: ListAudience): ListAudience {
-  if (!inListAudience(p.role, audience)) {
-    throw new ApiError(403, 'forbidden', 'Only an adult can make a list for the adults.');
+function audienceFor(p: Principal, audience: CollectionAudience): CollectionAudience {
+  if (!inCollectionAudience(p.role, audience)) {
+    throw new ApiError(403, 'forbidden', 'Only an adult can make a collection for the adults.');
   }
   return audience;
 }
 
-export class ListService {
+export class CollectionService {
   constructor(
     private readonly db: Db,
     private readonly documents: DocumentService,
@@ -202,39 +205,39 @@ export class ListService {
 
   // ---------------------------------------------------------------- reading
 
-  /** Every list the caller may see, by name. A viewer is given none (A17). */
-  async lists(p: Principal): Promise<ListView[]> {
+  /** Every collection the caller may see, by name. A viewer is given none (A17). */
+  async collections(p: Principal): Promise<CollectionView[]> {
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
-        .selectFrom('doc_list as l')
-        .select(LIST_COLUMNS)
+        .selectFrom('doc_collection as l')
+        .select(COLLECTION_COLUMNS)
         .select(seenCount(p).as('item_count'))
-        .where(seenList(p))
+        .where(seenCollection(p))
         .orderBy(sql`lower(l.name)`)
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      return rows.map((r) => this.view(p, r as ListRow, r.item_count));
+      return rows.map((r) => this.view(p, r as CollectionRow, r.item_count));
     });
   }
 
   /**
-   * One list, and a page of the documents on it the caller may see: 50
+   * One collection, and a page of the documents in it the caller may see: 50
    * unless fewer or more are asked for, 200 at most, after the document
    * the last page ended with.
    */
-  async get(p: Principal, id: string, page: ItemsPage = {}): Promise<ListDetail> {
+  async get(p: Principal, id: string, page: ItemsPage = {}): Promise<CollectionDetail> {
     return withPrincipal(this.db, p, async (trx) =>
       this.detail(trx, p, await this.find(trx, p, id), page),
     );
   }
 
   /**
-   * The lists a document is on, of those the caller may see. A document
-   * they are not given is not there; one in the Trash is on no list until
+   * The collections a document is in, of those the caller may see. A document
+   * they are not given is not there; one in the Trash is in no collection until
    * it is brought back.
    */
-  async ofDocument(p: Principal, documentId: string): Promise<ListView[]> {
+  async ofDocument(p: Principal, documentId: string): Promise<CollectionView[]> {
     return withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document as d')
@@ -245,34 +248,34 @@ export class ListService {
       if (!doc) throw noDocument();
       if (doc.deleted_at) return [];
       const rows = await trx
-        .selectFrom('doc_list as l')
-        .innerJoin('doc_list_item as on_it', 'on_it.list_id', 'l.id')
-        .select(LIST_COLUMNS)
+        .selectFrom('doc_collection as l')
+        .innerJoin('doc_collection_item as on_it', 'on_it.collection_id', 'l.id')
+        .select(COLLECTION_COLUMNS)
         .select(seenCount(p).as('item_count'))
         .where('on_it.document_id', '=', doc.id)
-        .where(seenList(p))
+        .where(seenCollection(p))
         .orderBy(sql`lower(l.name)`)
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      return rows.map((r) => this.view(p, r as ListRow, r.item_count));
+      return rows.map((r) => this.view(p, r as CollectionRow, r.item_count));
     });
   }
 
   // --------------------------------------------------------------- changing
 
-  async create(p: Principal, input: ListInput, meta: RequestMeta): Promise<ListDetail> {
-    requireCapability(p, 'list.manage');
-    if (input.name === undefined) throw invalid('Give the list a name.', 'name');
+  async create(p: Principal, input: CollectionInput, meta: RequestMeta): Promise<CollectionDetail> {
+    requireCapability(p, 'collection.manage');
+    if (input.name === undefined) throw invalid('Give the collection a name.', 'name');
     if (input.audience === undefined) {
-      throw invalid('Say who the list is for.', 'audience');
+      throw invalid('Say who the collection is for.', 'audience');
     }
     const name = nameOf(input.name);
     const description = descriptionOf(input.description ?? null);
     const audience = audienceFor(p, input.audience);
     const made = await withPrincipal(this.db, p, async (trx) => {
       const row = await trx
-        .insertInto('doc_list')
+        .insertInto('doc_collection')
         .values({
           household_id: p.householdId,
           name,
@@ -286,8 +289,8 @@ export class ListService {
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
-        action: 'list.created',
-        objectType: 'list',
+        action: 'collection.created',
+        objectType: 'collection',
         objectId: row.id,
         ip: meta.ip,
       });
@@ -297,22 +300,22 @@ export class ListService {
   }
 
   /**
-   * Its name, words or audience, by its maker, made to the list as they
-   * saw it: a stale If-Match is `409 conflict`, with the list as it now is.
-   * A new name is `list.renamed` in the log; words or audience,
-   * `list.updated`. Neither says what they now are.
+   * Its name, words or audience, by its maker, made to the collection as they
+   * saw it: a stale If-Match is `409 conflict`, with the collection as it now is.
+   * A new name is `collection.renamed` in the log; words or audience,
+   * `collection.updated`. Neither says what they now are.
    */
   async update(
     p: Principal,
     id: string,
-    input: ListInput,
+    input: CollectionInput,
     ifMatch: string | undefined,
     meta: RequestMeta,
-  ): Promise<ListDetail> {
-    requireCapability(p, 'list.manage');
+  ): Promise<CollectionDetail> {
+    requireCapability(p, 'collection.manage');
     const outcome = await withPrincipal(this.db, p, async (trx) => {
       const current = await this.mine(trx, p, id);
-      if (ifMatch && ifMatch !== listEtag(current)) return { id: current.id, stale: true };
+      if (ifMatch && ifMatch !== collectionEtag(current)) return { id: current.id, stale: true };
       const name = input.name !== undefined ? nameOf(input.name) : current.name;
       const description =
         input.description !== undefined ? descriptionOf(input.description) : current.description;
@@ -323,17 +326,17 @@ export class ListService {
       if (!renamed && !changed) return { id: current.id, stale: false };
 
       await trx
-        .updateTable('doc_list')
+        .updateTable('doc_collection')
         .set({ name, description, audience, updated_at: new Date() })
         .where('id', '=', current.id)
         .execute();
-      for (const action of [renamed && 'list.renamed', changed && 'list.updated']) {
+      for (const action of [renamed && 'collection.renamed', changed && 'collection.updated']) {
         if (!action) continue;
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
           action,
-          objectType: 'list',
+          objectType: 'collection',
           objectId: current.id,
           ip: meta.ip,
         });
@@ -346,7 +349,7 @@ export class ListService {
       throw new ApiError(
         409,
         'conflict',
-        'This list was changed since you opened it. Reload and try again.',
+        'This collection was changed since you opened it. Reload and try again.',
         { detail: JSON.stringify(now) },
       );
     }
@@ -357,25 +360,25 @@ export class ListService {
    * Gone for everybody: by its maker, whatever their role now, or by an
    * owner when nobody may change it any more (`deletable`). The row is
    * kept, marked deleted: its lines in the log find their audience through
-   * it. The documents on it are untouched.
+   * it. The documents in it are untouched.
    */
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     await withPrincipal(this.db, p, async (trx) => {
       const current = await this.deletable(trx, p, id);
       const marked = await trx
-        .updateTable('doc_list')
+        .updateTable('doc_collection')
         .set({ deleted_at: new Date() })
         .where('id', '=', current.id)
         .executeTakeFirst();
       // The database's rules decide as the row is written: a maker's
-      // sign-in given back meanwhile means the list is no longer an
+      // sign-in given back meanwhile means the collection is no longer an
       // owner's to clear. Nothing was deleted, so nothing is logged.
       if (marked.numUpdatedRows === 0n) throw notYours();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
-        action: 'list.deleted',
-        objectType: 'list',
+        action: 'collection.deleted',
+        objectType: 'collection',
         objectId: current.id,
         ip: meta.ip,
       });
@@ -383,10 +386,10 @@ export class ListService {
   }
 
   /**
-   * Documents put on a list by its maker, at the end, in the order given.
+   * Documents put in a collection by its maker, at the end, in the order given.
    * Each must be one they can see, out of the Trash: if any is not, none
-   * is put on, and the answer is the one a document that does not exist
-   * gets. One already on it stays where it is. Each document put on is a
+   * is put in, and the answer is the one a document that does not exist
+   * gets. One already in it stays where it is. Each document put in is a
    * line of its own in the log, about the document.
    */
   async addItems(
@@ -394,13 +397,13 @@ export class ListService {
     id: string,
     documentIds: string[],
     meta: RequestMeta,
-  ): Promise<ListDetail> {
-    requireCapability(p, 'list.manage');
-    const listId = await withPrincipal(this.db, p, async (trx) => {
-      const list = await this.mine(trx, p, id);
+  ): Promise<CollectionDetail> {
+    requireCapability(p, 'collection.manage');
+    const collectionId = await withPrincipal(this.db, p, async (trx) => {
+      const collection = await this.mine(trx, p, id);
       const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
       if (asked.length === 0)
-        throw invalid('Choose a document to put on the list.', 'document_ids');
+        throw invalid('Choose a document to put in the collection.', 'document_ids');
       // Held while they are checked, in one order: made somebody else's
       // Only me, or taken to the Trash, meanwhile, one is not added.
       const found = await trx
@@ -418,22 +421,22 @@ export class ListService {
       const ordered = asked.map((a) => byId.get(a) as string);
 
       const last = await trx
-        .selectFrom('doc_list_item')
+        .selectFrom('doc_collection_item')
         .select((eb) => eb.fn.max('position').as('position'))
-        .where('list_id', '=', list.id)
+        .where('collection_id', '=', collection.id)
         .executeTakeFirst();
       let position = Number(last?.position ?? 0);
       for (const documentId of ordered) {
         const added = await trx
-          .insertInto('doc_list_item')
+          .insertInto('doc_collection_item')
           .values({
-            list_id: list.id,
+            collection_id: collection.id,
             document_id: documentId,
             household_id: p.householdId,
             added_by: p.accountId,
             position: position + 1,
           })
-          .onConflict((oc) => oc.columns(['list_id', 'document_id']).doNothing())
+          .onConflict((oc) => oc.columns(['collection_id', 'document_id']).doNothing())
           .returning('document_id')
           .executeTakeFirst();
         if (!added) continue;
@@ -441,27 +444,27 @@ export class ListService {
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
-          action: 'list.item_added',
+          action: 'collection.item_added',
           objectType: 'document',
           objectId: documentId,
-          detail: { list_id: list.id },
+          detail: { collection_id: collection.id },
           ip: meta.ip,
         });
       }
-      return list.id;
+      return collection.id;
     });
     // Read afresh, the change made and let go.
-    return this.get(p, listId);
+    return this.get(p, collectionId);
   }
 
   /**
-   * A document taken off a list by its maker: one they can see, on it, out
-   * of the Trash — as the list shows it. Anything else is not on it.
+   * A document taken out of a collection by its maker: one they can see, in it, out
+   * of the Trash — as the collection shows it. Anything else is not in it.
    */
   async removeItem(p: Principal, id: string, documentId: string, meta: RequestMeta): Promise<void> {
-    requireCapability(p, 'list.manage');
+    requireCapability(p, 'collection.manage');
     await withPrincipal(this.db, p, async (trx) => {
-      const list = await this.mine(trx, p, id);
+      const collection = await this.mine(trx, p, id);
       const doc = await trx
         .selectFrom('document as d')
         .select('d.id')
@@ -471,19 +474,19 @@ export class ListService {
         .executeTakeFirst();
       if (!doc) throw noDocument();
       const taken = await trx
-        .deleteFrom('doc_list_item')
-        .where('list_id', '=', list.id)
+        .deleteFrom('doc_collection_item')
+        .where('collection_id', '=', collection.id)
         .where('document_id', '=', doc.id)
         .returning('document_id')
         .executeTakeFirst();
-      if (!taken) throw new ApiError(404, 'not_found', 'That document is not on this list.');
+      if (!taken) throw new ApiError(404, 'not_found', 'That document is not in this collection.');
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
-        action: 'list.item_removed',
+        action: 'collection.item_removed',
         objectType: 'document',
         objectId: doc.id,
-        detail: { list_id: list.id },
+        detail: { collection_id: collection.id },
         ip: meta.ip,
       });
     });
@@ -492,43 +495,48 @@ export class ListService {
   // -------------------------------------------------------------- internals
 
   /**
-   * A list the caller may see, or null. Held (FOR UPDATE), it is given only
+   * A collection the caller may see, or null. Held (FOR UPDATE), it is given only
    * to somebody the database lets change it (0036): its maker, or an owner
    * while nobody else may.
    */
-  private async seen(trx: Db, p: Principal, id: string, hold = false): Promise<ListRow | null> {
+  private async seen(
+    trx: Db,
+    p: Principal,
+    id: string,
+    hold = false,
+  ): Promise<CollectionRow | null> {
     let q = trx
-      .selectFrom('doc_list as l')
-      .select(LIST_COLUMNS)
+      .selectFrom('doc_collection as l')
+      .select(COLLECTION_COLUMNS)
       .where('l.id', '=', id)
-      .where(seenList(p));
+      .where(seenCollection(p));
     if (hold) q = q.forUpdate();
     return (await q.executeTakeFirst()) ?? null;
   }
 
-  /** A list the caller may see, or 404 — exactly as one that never was. */
-  private async find(trx: Db, p: Principal, id: string): Promise<ListRow> {
+  /** A collection the caller may see, or 404 — exactly as one that never was. */
+  private async find(trx: Db, p: Principal, id: string): Promise<CollectionRow> {
     const row = await this.seen(trx, p, id);
     if (!row) throw notFound();
     return row;
   }
 
   /**
-   * A list the caller may change — they made it, and are in its audience —
+   * A collection the caller may change — they made it, and are in its audience —
    * held until the transaction ends: every change is checked against it as
    * it is. Outside its audience it is 404; in it, but not its maker, 403;
    * its maker, outside it now, 403 too: theirs to see and delete, not to
    * change.
    *
-   * Looked at, then held and looked at again: the database holds a list
+   * Looked at, then held and looked at again: the database holds a collection
    * only for somebody who may change it, and anybody else in its audience
    * is told why not, rather than that it is not there.
    */
-  private async mine(trx: Db, p: Principal, id: string): Promise<ListRow> {
-    const refusal = (row: ListRow | null) => {
+  private async mine(trx: Db, p: Principal, id: string): Promise<CollectionRow> {
+    const refusal = (row: CollectionRow | null) => {
       if (!row) return notFound();
       if (!isMaker(p, row)) return notYours();
-      if (!inListAudience(p.role, row.audience)) return noLongerYours();
+      if (!inCollectionAudience(p.role, row.audience)) return noLongerYours();
       return null;
     };
     const first = refusal(await this.seen(trx, p, id));
@@ -536,20 +544,20 @@ export class ListService {
     const held = await this.seen(trx, p, id, true);
     const then = refusal(held);
     if (then) throw then;
-    return held as ListRow;
+    return held as CollectionRow;
   }
 
   /**
-   * A list the caller may delete, held: one they made, whatever their role
+   * A collection the caller may delete, held: one they made, whatever their role
    * now — made a viewer, they may still take back what they named — or,
    * for an owner, one they can see that nobody may change any more
-   * (`stranded`). Anybody else without `list.manage` is told so, whether or
-   * not there is a list; outside its audience it is 404; in it, 403.
+   * (`stranded`). Anybody else without `collection.manage` is told so, whether or
+   * not there is a collection; outside its audience it is 404; in it, 403.
    */
-  private async deletable(trx: Db, p: Principal, id: string): Promise<ListRow> {
+  private async deletable(trx: Db, p: Principal, id: string): Promise<CollectionRow> {
     const first = await this.seen(trx, p, id);
     if (!first || !isMaker(p, first)) {
-      requireCapability(p, 'list.manage');
+      requireCapability(p, 'collection.manage');
       if (!first) throw notFound();
       // The database asks the same of app_role() (0036).
       if (p.role !== 'owner') throw notYours();
@@ -563,23 +571,23 @@ export class ListService {
   }
 
   /**
-   * Whether nobody may change a list any more: its maker has no sign-in in
+   * Whether nobody may change a collection any more: its maker has no sign-in in
    * the household, or is no longer in its audience. Their membership is
    * held while it is looked at, so a role given back meanwhile waits.
    */
-  private async stranded(trx: Db, p: Principal, list: ListRow): Promise<boolean> {
-    if (list.owner_member_id === null) return true;
+  private async stranded(trx: Db, p: Principal, collection: CollectionRow): Promise<boolean> {
+    if (collection.owner_member_id === null) return true;
     const maker = await trx
       .selectFrom('account_household')
       .select('role')
       .where('household_id', '=', p.householdId)
-      .where('member_id', '=', list.owner_member_id)
+      .where('member_id', '=', collection.owner_member_id)
       .forShare()
       .executeTakeFirst();
-    return !maker || !inListAudience(maker.role, list.audience);
+    return !maker || !inCollectionAudience(maker.role, collection.audience);
   }
 
-  private view(p: Principal, row: ListRow, itemCount: number): ListView {
+  private view(p: Principal, row: CollectionRow, itemCount: number): CollectionView {
     return {
       id: row.id,
       name: row.name,
@@ -590,34 +598,37 @@ export class ListService {
       item_count: itemCount,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
-      etag: listEtag(row),
+      etag: collectionEtag(row),
     };
   }
 
   /**
-   * A list with a page of the documents on it the caller may see, in the
+   * A collection with a page of the documents in it the caller may see, in the
    * order they were put there, and how many of them there are in all.
    */
   private async detail(
     trx: Db,
     p: Principal,
-    list: ListRow,
+    collection: CollectionRow,
     page: ItemsPage = {},
-  ): Promise<ListDetail> {
-    const limit = Math.min(Math.max(page.limit ?? LIST_ITEMS_PAGE, 1), LIST_ITEMS_PAGE_MAX);
-    // The documents on it the caller may see, out of the Trash: those they
+  ): Promise<CollectionDetail> {
+    const limit = Math.min(
+      Math.max(page.limit ?? COLLECTION_ITEMS_PAGE, 1),
+      COLLECTION_ITEMS_PAGE_MAX,
+    );
+    // The documents in it the caller may see, out of the Trash: those they
     // are given, and all they are counted.
     const given = () =>
       trx
-        .selectFrom('doc_list_item as i')
+        .selectFrom('doc_collection_item as i')
         .innerJoin('document as d', 'd.id', 'i.document_id')
-        .where('i.list_id', '=', list.id)
+        .where('i.collection_id', '=', collection.id)
         .where('d.deleted_at', 'is', null)
         .where(seenDocument(p));
-    let q = given().selectAll('d').select('i.added_at as on_list_since');
+    let q = given().selectAll('d').select('i.added_at as on_collection_since');
     if (page.cursor) {
       // After the one the last page ended with, found as the caller sees
-      // the list: one they are not given is a cursor that is not valid,
+      // the collection: one they are not given is a cursor that is not valid,
       // exactly as one that names nothing.
       const after = await given()
         .select(['i.position', 'i.document_id'])
@@ -640,16 +651,16 @@ export class ListService {
     const documents: DocumentView[] = await this.documents.listed(trx, shown);
     // Its maker is told who in its audience is not given each one; nobody
     // else is told anything a document they cannot see would leave behind.
-    const maker = isMaker(p, list);
-    const items: ListItemView[] = shown.map((r, i) => ({
+    const maker = isMaker(p, collection);
+    const items: CollectionItemView[] = shown.map((r, i) => ({
       document: documents[i] as DocumentView,
-      added_at: r.on_list_since.toISOString(),
-      hint: maker ? listItemHint(list.audience, r) : null,
+      added_at: r.on_collection_since.toISOString(),
+      hint: maker ? collectionItemHint(collection.audience, r) : null,
     }));
     const last = shown[shown.length - 1];
     const more = rows.length > limit;
     return {
-      ...this.view(p, list, n),
+      ...this.view(p, collection, n),
       items,
       next_cursor: more && last ? encodeCursor(last.id) : null,
       has_more: more,

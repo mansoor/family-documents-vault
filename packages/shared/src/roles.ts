@@ -66,8 +66,11 @@ export type Capability =
   | 'types.manage'
   /** Let more people see a kind of document by default: Adults only to Everyone (5.11). */
   | 'types.widen_visibility'
-  /** Make lists of documents, and change your own (5.14). Only a list's maker changes it (A18). */
-  | 'list.manage'
+  /**
+   * Make collections of documents, and change your own (5.14). Only a
+   * collection's maker changes it (A18).
+   */
+  | 'collection.manage'
   /**
    * Turn back on what a restore paused (A55): every link to a document the
    * owner can see (5.16). Without it, nothing — not even a link you made
@@ -179,13 +182,13 @@ const MATRIX: Record<Capability, Rule> = {
     roles: ['owner'],
     refusal: 'Only an owner can let more people see a kind of document from now on.',
   },
-  'list.manage': {
+  'collection.manage': {
     // Gathering papers for a purpose — for the mortgage broker, before a
     // trip — is filing, which everybody who files does. A teen may make a
-    // list, and will never share one outside the family (A18, 5.19). A
-    // viewer is given documents, not the family's lists (A17).
+    // collection, and will never share one outside the family (A18, 5.19). A
+    // viewer is given documents, not the family's collections (A17).
     roles: ['owner', 'adult', 'teen'],
-    refusal: 'Viewers can open and download documents, but not make lists of them.',
+    refusal: 'Viewers can open and download documents, but not make collections of them.',
   },
   'restore.review': {
     // A backup brings back links taken back since it was made, so after a
@@ -268,18 +271,18 @@ export function canSee(
   }
 }
 
-/** Who a list of documents is for (5.14). */
-export const LIST_AUDIENCES = ['everyone', 'teens', 'adults', 'only_me'] as const;
-export type ListAudience = (typeof LIST_AUDIENCES)[number];
+/** Who a collection of documents is for (5.14). */
+export const COLLECTION_AUDIENCES = ['everyone', 'teens', 'adults', 'only_me'] as const;
+export type CollectionAudience = (typeof COLLECTION_AUDIENCES)[number];
 
 /**
  * The roles in each audience (A17). "Everyone" is the family that files:
  * owners, adults and teens. A viewer — an accountant or an attorney with a
- * sign-in — is in none of them, and sees a list only when it is granted to
- * them (5.33): a list called "For the divorce lawyer" is not theirs to
+ * sign-in — is in none of them, and sees a collection only when it is granted to
+ * them (5.33): a collection called "For the divorce lawyer" is not theirs to
  * know about. Only me is its maker's alone, whatever their role.
  */
-const LIST_READERS: ReadonlyMap<string, readonly Role[]> = new Map<string, readonly Role[]>([
+const COLLECTION_READERS: ReadonlyMap<string, readonly Role[]> = new Map<string, readonly Role[]>([
   ['everyone', ['owner', 'adult', 'teen']],
   ['teens', ['owner', 'adult', 'teen']],
   ['adults', ['owner', 'adult']],
@@ -288,55 +291,60 @@ const LIST_READERS: ReadonlyMap<string, readonly Role[]> = new Map<string, reado
 
 /**
  * Whether a role is in an audience. For Only me that is only half of it:
- * the reader must also be the list's maker (`canSeeList`). An audience
- * this code has never heard of is nobody's. A list's maker changes it only
+ * the reader must also be the collection's maker (`canSeeCollection`). An audience
+ * this code has never heard of is nobody's. A collection's maker changes it only
  * while they are in its audience (A18); the database's own copy of these
- * roles is list_audience_has (0036).
+ * roles is collection_audience_has (0036).
  */
-export function inListAudience(role: Role, audience: string): boolean {
-  return LIST_READERS.get(audience)?.includes(role) ?? false;
+export function inCollectionAudience(role: Role, audience: string): boolean {
+  return COLLECTION_READERS.get(audience)?.includes(role) ?? false;
 }
 
 /**
- * Whether someone may see a list — that it exists, its name, and what of
- * it they can see. The API asks this in SQL (lists/service.ts) and of each
+ * Whether someone may see a collection — that it exists, its name, and what of
+ * it they can see. The API asks this in SQL (collections/service.ts) and of each
  * line in the activity log; the database itself keeps Only me (0036).
  *
  * Its maker always may, whatever their role now (the 5.14 review): an
- * adult made a teen, or a viewer, still sees the list they made for the
- * adults — the documents on it as a teen or a viewer sees them — and may
+ * adult made a teen, or a viewer, still sees the collection they made for the
+ * adults — the documents in it as a teen or a viewer sees them — and may
  * delete it, but no longer change it. Everybody else, by its audience.
  */
-export function canSeeList(
+export function canSeeCollection(
   reader: { role: Role; memberId: string | null },
-  list: { audience: string; owner_member_id: string | null },
+  collection: { audience: string; owner_member_id: string | null },
 ): boolean {
-  if (!LIST_READERS.has(list.audience)) return false;
-  if (reader.memberId !== null && list.owner_member_id === reader.memberId) return true;
-  return list.audience !== 'only_me' && inListAudience(reader.role, list.audience);
+  if (!COLLECTION_READERS.has(collection.audience)) return false;
+  if (reader.memberId !== null && collection.owner_member_id === reader.memberId) return true;
+  return (
+    collection.audience !== 'only_me' && inCollectionAudience(reader.role, collection.audience)
+  );
 }
 
-/** A list's maker is told, beside a document on it, who of its audience is not given it (5.14). */
-export const LIST_HINT_TEENS = 'Teens in this list’s audience can’t see this one.';
-export const LIST_HINT_PRIVATE = 'Only you can see this one. It is private.';
-export const LIST_HINT_SOME = 'Some people in this list’s audience can’t see this one.';
+/**
+ * A collection's maker is told, beside a document in it, who of its audience
+ * is not given it (5.14).
+ */
+export const COLLECTION_HINT_TEENS = 'Teens in this collection’s audience can’t see this one.';
+export const COLLECTION_HINT_PRIVATE = 'Only you can see this one. It is private.';
+export const COLLECTION_HINT_SOME = 'Some people in this collection’s audience can’t see this one.';
 
 /**
- * The hint beside a document on a list, for its maker alone: who in the
- * list's audience the visibility rule keeps it from, or null when every one
+ * The hint beside a document in a collection, for its maker alone: who in the
+ * collection's audience the visibility rule keeps it from, or null when every one
  * of them sees it. Nobody else is told — a hint would say that a document
  * they are not given is there.
  */
-export function listItemHint(
+export function collectionItemHint(
   audience: string,
   doc: { visibility: string; owner_member_id: string | null },
 ): string | null {
   if (audience === 'only_me') return null;
   // Anybody of each role but the document's owner, whom a private one is for.
   const shut = ROLES.filter(
-    (role) => inListAudience(role, audience) && !canSee({ role, memberId: null }, doc),
+    (role) => inCollectionAudience(role, audience) && !canSee({ role, memberId: null }, doc),
   );
   if (shut.length === 0) return null;
-  if (doc.visibility === 'private') return LIST_HINT_PRIVATE;
-  return shut.every((role) => role === 'teen') ? LIST_HINT_TEENS : LIST_HINT_SOME;
+  if (doc.visibility === 'private') return COLLECTION_HINT_PRIVATE;
+  return shut.every((role) => role === 'teen') ? COLLECTION_HINT_TEENS : COLLECTION_HINT_SOME;
 }

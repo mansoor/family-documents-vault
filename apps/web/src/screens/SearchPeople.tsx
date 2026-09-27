@@ -16,8 +16,8 @@ import { flushSync } from 'react-dom';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
 import { DocActions } from '../DocActions.js';
-import { AddToList, documentsWord, listsOffered } from '../lists.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -33,7 +33,7 @@ import {
 } from '../ui.js';
 import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 
-/** The most documents put on a list at once, as the vault takes them. */
+/** The most documents put in a collection at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices, RoleControls } from './Roles.js';
@@ -50,7 +50,7 @@ const ISSUER_CHIPS = 8;
 export function SearchScreen() {
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
-  const select = useSelect(listsOffered(caps, storedRole()));
+  const select = useSelect(collectionsOffered(caps, storedRole()));
   const unpick = select.drop;
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
@@ -340,10 +340,10 @@ export function SearchScreen() {
 }
 
 /**
- * Search's Select (5.15): a box beside each result, and those chosen put on
- * a list at once — all of them, or, if one has gone meanwhile, none. Only
- * where lists are offered; what is chosen stays chosen from one search to
- * the next, until it is put on a list or Select is cancelled.
+ * Search's Select (5.15): a box beside each result, and those chosen put in
+ * a collection at once — all of them, or, if one has gone meanwhile, none. Only
+ * where collections are offered; what is chosen stays chosen from one search to
+ * the next, until it is put in a collection or Select is cancelled.
  */
 function useSelect(offered: boolean) {
   const [on, setOn] = useState(false);
@@ -351,7 +351,7 @@ function useSelect(offered: boolean) {
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
-  // What the sheet said it put on a list, for when it closes.
+  // What the sheet said it put in a collection, for when it closes.
   const added = useRef<string | null>(null);
   const start = useRef<HTMLButtonElement>(null);
   const add = useRef<HTMLButtonElement>(null);
@@ -405,7 +405,7 @@ function useSelect(offered: boolean) {
       setBusy(false);
       return;
     }
-    // Put on a list: done with these. What the sheet said stays said here.
+    // Put in a collection: done with these. What the sheet said stays said here.
     flushSync(() => {
       setAdding(false);
       setBusy(false);
@@ -432,7 +432,7 @@ function useSelect(offered: boolean) {
               disabled={picked.size === 0 || tooMany}
               onClick={() => setAdding(true)}
             >
-              Add to a list
+              Add to a collection
             </button>
             <Button kind="quiet" onClick={stop}>
               Cancel
@@ -444,7 +444,7 @@ function useSelect(offered: boolean) {
           </button>
         )}
       </div>
-      {tooMany && <p className="muted">Up to {MOST_AT_ONCE} can go on a list at once.</p>}
+      {tooMany && <p className="muted">Up to {MOST_AT_ONCE} can go in a collection at once.</p>}
       <p className="notice status-line" role="status">
         {said}
       </p>
@@ -453,12 +453,12 @@ function useSelect(offered: boolean) {
 
   const sheet = adding ? (
     <Sheet
-      label={`Add ${documentsWord(picked.size)} to a list`}
+      label={`Add ${documentsWord(picked.size)} to a collection`}
       busy={busy}
       returnFocus={add}
       onClose={close}
     >
-      <AddToList
+      <AddToCollection
         documentIds={[...picked]}
         what={documentsWord(picked.size)}
         onClose={close}

@@ -1371,6 +1371,67 @@ invitation_not_valid` — where each used to read the count and all were
       path forms, kept for those vaults. A pasted `/join#…` or `/reset#…` link gives the
       phone its vault's origin, the fragment dropped, as every other pasted
       link does; an older phone does the same.
+  - Lists are called collections (5.17b). **Changed (breaking,
+    deliberately):** lists of documents are collections now, on the wire as
+    on the screens. The owner chose the word (A70): "list" reads as a list
+    of names, or a to-do list, and a document can be in several
+    collections. The routes, the feature flag, the capability and the wire
+    names change with **no aliases**. This is the one deliberate exception
+    to rule 2's window of four minor releases, for the owner's reason:
+    nobody but the owner uses the vault yet, and no released phone reads
+    lists (the phone gains them later, as collections). The earlier entries
+    about lists stay as they are, since they say what shipped then.
+    Everything else is as it was: the same shapes, answers and refusals,
+    with each sentence saying "collection".
+    - `GET`/`POST /api/v1/lists` → `/api/v1/collections`;
+      `GET`/`PATCH`/`DELETE /api/v1/lists/{id}` → `/api/v1/collections/{id}`;
+      `POST /api/v1/lists/{id}/items` and
+      `DELETE /api/v1/lists/{id}/items/{documentId}` →
+      `/api/v1/collections/{id}/items…`; and
+      `GET /api/v1/documents/{id}/lists` →
+      `GET /api/v1/documents/{id}/collections`. The old paths are gone:
+      `404 not_found`, as for any path that does not exist.
+    - `features.lists` → `features.collections` in
+      `GET /api/v1/capabilities`. Absent from older vaults, which say
+      `features.lists`.
+    - The capability `list.manage` → `collection.manage`. Its refusal is
+      "Viewers can open and download documents, but not make collections
+      of them.", and every other refusal says "collection" too: "That
+      collection does not exist.", "Only the person who made this
+      collection can change it.", "This collection is for people you are no
+      longer one of. You can still delete it, but not change it.", "That
+      document is not in this collection.", "Only an adult can make a
+      collection for the adults." and the rest.
+    - The activity log writes `collection.created`, `collection.renamed`,
+      `collection.updated`, `collection.deleted`, `collection.item_added`
+      and `collection.item_removed`, with `object_type: "collection"` (a
+      document's line keeps `detail.collection_id`). Its sentences say
+      "collection": "Sam made the collection “Holiday”", "Sam added
+      “Passport” to the collection “Holiday”", "Sam took “Passport” out of
+      the collection “Holiday”". Lines already written about a list are
+      never rewritten, since the log is hash-chained and still verifies;
+      with no rule left for `list.*`, they are shown to nobody.
+    - A collection's `ETag` is seeded with its new name, so one read before
+      the upgrade is stale once: a change made with it is `409 conflict`,
+      with the collection as it now is in `detail`.
+    - `@fdv/shared`: `CollectionView`, `CollectionItemView`,
+      `CollectionDetail`, `CollectionInput`, `CollectionAudience`,
+      `COLLECTION_AUDIENCES`, `COLLECTION_NAME_MAX`,
+      `COLLECTION_DESCRIPTION_MAX`, `COLLECTION_ITEMS_PAGE`,
+      `COLLECTION_ITEMS_PAGE_MAX`, `canSeeCollection`,
+      `inCollectionAudience`, `collectionItemHint`,
+      `COLLECTION_HINT_TEENS`, `COLLECTION_HINT_PRIVATE`,
+      `COLLECTION_HINT_SOME` and `CapabilityFeatures.collections`.
+      `@fdv/client`: `collections`, `createCollection`, `getCollection`,
+      `updateCollection`, `deleteCollection`, `addToCollection`,
+      `removeFromCollection` and `documentCollections`; the fake keeps
+      `state.collections`. The old names are gone, with no deprecated
+      aliases.
+    - The database: 0039 renames `doc_list`, `doc_list_item` and `list_id`
+      to `doc_collection`, `doc_collection_item` and `collection_id`, with
+      their rules, trigger, functions, keys and indexes, in place. Every row
+      keeps its id and every item its place, and a backup made before 0039
+      restores and is brought up to date.
 
 ## Deprecations in effect
 

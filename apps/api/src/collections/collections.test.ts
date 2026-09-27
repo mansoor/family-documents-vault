@@ -1,37 +1,49 @@
 import { randomUUID } from 'node:crypto';
-import { createDb, createPool, withPrincipal, withScope, type Db } from '@fdv/db';
+import {
+  appendAudit,
+  createDb,
+  createPool,
+  verifyAuditChain,
+  withPrincipal,
+  withScope,
+  withSystem,
+  type Db,
+} from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
-  inListAudience,
-  LIST_AUDIENCES,
-  LIST_HINT_PRIVATE,
-  LIST_HINT_TEENS,
+  capabilitiesFor,
+  COLLECTION_AUDIENCES,
+  COLLECTION_HINT_PRIVATE,
+  COLLECTION_HINT_TEENS,
+  inCollectionAudience,
+  refusalFor,
   ROLES,
   type ActivityLine,
+  type Capabilities,
+  type CollectionDetail,
+  type CollectionView,
   type DocumentView,
-  type ListDetail,
-  type ListView,
   type Tokens,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DocumentService } from '../documents/service.js';
-import { ListService } from './service.js';
+import { CollectionService } from './service.js';
 import { createHarness, type Harness } from '../test-harness.js';
 
 /**
- * Lists of documents (5.14), through the API as each role, and in the
+ * Collections of documents (5.14), through the API as each role, and in the
  * database as the application role.
  *
- * A list never widens who sees a document: each reader is given the
- * documents on it they could see anyway, counted as they see them. Who a
- * list is for decides whether it exists for them at all (A17), and only
+ * A collection never widens who sees a document: each reader is given the
+ * documents in it they could see anyway, counted as they see them. Who a
+ * collection is for decides whether it exists for them at all (A17), and only
  * its maker changes it (A18).
  */
 
 type Person = 'owner' | 'adult' | 'teen' | 'viewer';
 
-describe.skipIf(!testAdminUrl())('lists of documents', () => {
+describe.skipIf(!testAdminUrl())('collections of documents', () => {
   let h: Harness;
   const people = {} as Record<Person, Tokens>;
   const accounts = {} as Record<Person, string>;
@@ -64,27 +76,27 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       remoteAddress: `10.14.${(++nth >> 8) & 0xff}.${nth & 0xff}`,
       ...(payload ? { payload } : {}),
     });
-  const makeList = async (
+  const makeCollection = async (
     who: Person | Tokens,
     name: string,
     audience: string,
     documentIds: string[] = [],
-  ): Promise<ListDetail> => {
-    const made = await call(who, 'POST', '/api/v1/lists', { name, audience });
+  ): Promise<CollectionDetail> => {
+    const made = await call(who, 'POST', '/api/v1/collections', { name, audience });
     expect(made.statusCode, made.body).toBe(201);
-    const list = json<ListDetail>(made);
-    if (documentIds.length === 0) return list;
-    const added = await call(who, 'POST', `/api/v1/lists/${list.id}/items`, {
+    const collection = json<CollectionDetail>(made);
+    if (documentIds.length === 0) return collection;
+    const added = await call(who, 'POST', `/api/v1/collections/${collection.id}/items`, {
       document_ids: documentIds,
     });
     expect(added.statusCode, added.body).toBe(200);
-    return json<ListDetail>(added);
+    return json<CollectionDetail>(added);
   };
   const seen = async (who: Person | Tokens, id: string) => {
-    const res = await call(who, 'GET', `/api/v1/lists/${id}`);
-    return res.statusCode === 200 ? json<ListDetail>(res) : null;
+    const res = await call(who, 'GET', `/api/v1/collections/${id}`);
+    return res.statusCode === 200 ? json<CollectionDetail>(res) : null;
   };
-  const itemIds = (l: ListDetail | null) => l?.items.map((i) => i.document.id) ?? [];
+  const itemIds = (l: CollectionDetail | null) => l?.items.map((i) => i.document.id) ?? [];
   /** An error's body as anybody could compare it: without the request it answered. */
   const refusal = (r: { json: () => unknown; statusCode: number }): Record<string, unknown> => {
     const { error } = json<{ error: Record<string, unknown> }>(r);
@@ -100,17 +112,17 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     people.owner = await h.setup();
     people.adult = await h.join(people.owner, {
       name: 'Sam',
-      email: 'lists-adult@example.test',
+      email: 'collections-adult@example.test',
       role: 'adult',
     });
     people.teen = await h.join(people.owner, {
       name: 'Teen',
-      email: 'lists-teen@example.test',
+      email: 'collections-teen@example.test',
       role: 'teen',
     });
     people.viewer = await h.join(people.owner, {
       name: 'Viewer',
-      email: 'lists-viewer@example.test',
+      email: 'collections-viewer@example.test',
       role: 'viewer',
     });
     for (const who of Object.keys(people) as Person[]) {
@@ -138,27 +150,27 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
   }, 120_000);
   afterAll(() => h.close());
 
-  it('a list is 404, not 403, outside its audience', async () => {
-    const adults = await makeList('owner', 'For the accountant', 'adults', [docs.household]);
-    const onlyMe = await makeList('owner', 'Divorce', 'only_me', [docs.household]);
+  it('a collection is 404, not 403, outside its audience', async () => {
+    const adults = await makeCollection('owner', 'For the accountant', 'adults', [docs.household]);
+    const onlyMe = await makeCollection('owner', 'Divorce', 'only_me', [docs.household]);
     const nowhere = randomUUID();
 
-    // Every way of asking about a list outside the reader's audience is
+    // Every way of asking about a collection outside the reader's audience is
     // answered exactly as one that never was: the same code, words and all.
     const attempts = (id: string) =>
       [
-        ['GET', `/api/v1/lists/${id}`, undefined],
-        ['PATCH', `/api/v1/lists/${id}`, { name: 'Mine now' }],
-        ['DELETE', `/api/v1/lists/${id}`, undefined],
-        ['POST', `/api/v1/lists/${id}/items`, { document_ids: [docs.household] }],
-        ['DELETE', `/api/v1/lists/${id}/items/${docs.household}`, undefined],
+        ['GET', `/api/v1/collections/${id}`, undefined],
+        ['PATCH', `/api/v1/collections/${id}`, { name: 'Mine now' }],
+        ['DELETE', `/api/v1/collections/${id}`, undefined],
+        ['POST', `/api/v1/collections/${id}/items`, { document_ids: [docs.household] }],
+        ['DELETE', `/api/v1/collections/${id}/items/${docs.household}`, undefined],
       ] as const;
-    for (const [who, list] of [
+    for (const [who, collection] of [
       ['teen', adults],
       ['adult', onlyMe],
       ['teen', onlyMe],
     ] as const) {
-      const hidden = attempts(list.id);
+      const hidden = attempts(collection.id);
       const absent = attempts(nowhere);
       for (let i = 0; i < hidden.length; i++) {
         const [method, url, body] = hidden[i] as (typeof hidden)[number];
@@ -169,13 +181,15 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           refusal(await call(who, method, other, body)),
         );
       }
-      // Nor is it among their lists, or the document's.
-      const theirs = json<{ items: ListView[] }>(await call(who, 'GET', '/api/v1/lists')).items;
-      expect(theirs.map((l) => l.id)).not.toContain(list.id);
-      const ofDoc = json<{ items: ListView[] }>(
-        await call(who, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      // Nor is it among their collections, or the document's.
+      const theirs = json<{ items: CollectionView[] }>(
+        await call(who, 'GET', '/api/v1/collections'),
       ).items;
-      expect(ofDoc.map((l) => l.id)).not.toContain(list.id);
+      expect(theirs.map((l) => l.id)).not.toContain(collection.id);
+      const ofDoc = json<{ items: CollectionView[] }>(
+        await call(who, 'GET', `/api/v1/documents/${docs.household}/collections`),
+      ).items;
+      expect(ofDoc.map((l) => l.id)).not.toContain(collection.id);
     }
     // And nothing was changed by any of it.
     expect(await seen('owner', adults.id)).toMatchObject({
@@ -185,69 +199,73 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     expect(await seen('owner', onlyMe.id)).toMatchObject({ name: 'Divorce', item_count: 1 });
   });
 
-  it('only its maker changes a list; the rest of its audience is told so (A18)', async () => {
-    const list = await makeList('owner', 'Car papers', 'everyone', [docs.household]);
+  it('only its maker changes a collection; the rest of its audience is told so (A18)', async () => {
+    const collection = await makeCollection('owner', 'Car papers', 'everyone', [docs.household]);
     for (const who of ['adult', 'teen'] as const) {
-      expect((await seen(who, list.id))?.mine).toBe(false);
+      expect((await seen(who, collection.id))?.mine).toBe(false);
       for (const [method, url, body] of [
-        ['PATCH', `/api/v1/lists/${list.id}`, { name: 'Mine now' }],
-        ['DELETE', `/api/v1/lists/${list.id}`, undefined],
-        ['POST', `/api/v1/lists/${list.id}/items`, { document_ids: [docs.household] }],
-        ['DELETE', `/api/v1/lists/${list.id}/items/${docs.household}`, undefined],
+        ['PATCH', `/api/v1/collections/${collection.id}`, { name: 'Mine now' }],
+        ['DELETE', `/api/v1/collections/${collection.id}`, undefined],
+        ['POST', `/api/v1/collections/${collection.id}/items`, { document_ids: [docs.household] }],
+        ['DELETE', `/api/v1/collections/${collection.id}/items/${docs.household}`, undefined],
       ] as const) {
         const res = await call(who, method, url, body);
         expect(res.statusCode, `${who} ${method} ${url}`).toBe(403);
         expect(refusal(res)).toMatchObject({
           code: 'forbidden',
-          message: 'Only the person who made this list can change it.',
+          message: 'Only the person who made this collection can change it.',
         });
       }
     }
-    expect(await seen('owner', list.id)).toMatchObject({
+    expect(await seen('owner', collection.id)).toMatchObject({
       name: 'Car papers',
       mine: true,
       item_count: 1,
     });
   });
 
-  it('a viewer sees no list', async () => {
-    const list = await makeList('owner', 'Everybody’s papers', 'everyone', [docs.household]);
-    const teens = await makeList('owner', 'For the teens', 'teens', [docs.household]);
-    const lists = await call('viewer', 'GET', '/api/v1/lists');
-    expect(lists.statusCode).toBe(200);
-    expect(json<{ items: ListView[] }>(lists).items).toEqual([]);
-    for (const id of [list.id, teens.id]) {
-      const res = await call('viewer', 'GET', `/api/v1/lists/${id}`);
+  it('a viewer sees no collection', async () => {
+    const collection = await makeCollection('owner', 'Everybody’s papers', 'everyone', [
+      docs.household,
+    ]);
+    const teens = await makeCollection('owner', 'For the teens', 'teens', [docs.household]);
+    const collections = await call('viewer', 'GET', '/api/v1/collections');
+    expect(collections.statusCode).toBe(200);
+    expect(json<{ items: CollectionView[] }>(collections).items).toEqual([]);
+    for (const id of [collection.id, teens.id]) {
+      const res = await call('viewer', 'GET', `/api/v1/collections/${id}`);
       expect(refusal(res)).toEqual(
-        refusal(await call('viewer', 'GET', `/api/v1/lists/${randomUUID()}`)),
+        refusal(await call('viewer', 'GET', `/api/v1/collections/${randomUUID()}`)),
       );
     }
-    // A document they are given is on no list, as far as they are told.
-    const ofDoc = await call('viewer', 'GET', `/api/v1/documents/${docs.household}/lists`);
+    // A document they are given is in no collection, as far as they are told.
+    const ofDoc = await call('viewer', 'GET', `/api/v1/documents/${docs.household}/collections`);
     expect(ofDoc.statusCode).toBe(200);
-    expect(json<{ items: ListView[] }>(ofDoc).items).toEqual([]);
+    expect(json<{ items: CollectionView[] }>(ofDoc).items).toEqual([]);
     // And they make none.
-    const make = await call('viewer', 'POST', '/api/v1/lists', {
+    const make = await call('viewer', 'POST', '/api/v1/collections', {
       name: 'Mine',
       audience: 'everyone',
     });
     expect(refusal(make)).toMatchObject({
       status: 403,
       code: 'forbidden',
-      message: 'Viewers can open and download documents, but not make lists of them.',
+      message: 'Viewers can open and download documents, but not make collections of them.',
     });
     // Everybody else in the family sees it.
     for (const who of ['owner', 'adult', 'teen'] as const) {
-      const theirs = json<{ items: ListView[] }>(await call(who, 'GET', '/api/v1/lists')).items;
+      const theirs = json<{ items: CollectionView[] }>(
+        await call(who, 'GET', '/api/v1/collections'),
+      ).items;
       expect(
         theirs.map((l) => l.id),
         who,
-      ).toEqual(expect.arrayContaining([list.id, teens.id]));
+      ).toEqual(expect.arrayContaining([collection.id, teens.id]));
     }
   });
 
   it('a teen sees only the items a teen may see, and the count agrees', async () => {
-    const list = await makeList('owner', 'Everything for the move', 'everyone', [
+    const collection = await makeCollection('owner', 'Everything for the move', 'everyone', [
       docs.household,
       docs.adults,
       docs.ownerPrivate,
@@ -258,16 +276,18 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       teen: [docs.household],
     };
     for (const who of ['owner', 'adult', 'teen'] as const) {
-      const l = await seen(who, list.id);
+      const l = await seen(who, collection.id);
       expect(itemIds(l), who).toEqual(expected[who]);
       expect(l?.item_count, who).toBe(expected[who].length);
-      // The same count in the list of lists, and in the document's lists.
-      const all = json<{ items: ListView[] }>(await call(who, 'GET', '/api/v1/lists')).items;
-      expect(all.find((x) => x.id === list.id)?.item_count, who).toBe(expected[who].length);
-      const ofDoc = json<{ items: ListView[] }>(
-        await call(who, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      // The same count in the list of collections, and in the document's collections.
+      const all = json<{ items: CollectionView[] }>(
+        await call(who, 'GET', '/api/v1/collections'),
       ).items;
-      expect(ofDoc.find((x) => x.id === list.id)?.item_count, who).toBe(expected[who].length);
+      expect(all.find((x) => x.id === collection.id)?.item_count, who).toBe(expected[who].length);
+      const ofDoc = json<{ items: CollectionView[] }>(
+        await call(who, 'GET', `/api/v1/documents/${docs.household}/collections`),
+      ).items;
+      expect(ofDoc.find((x) => x.id === collection.id)?.item_count, who).toBe(expected[who].length);
       // Nothing says how many are hidden: no field but these, anywhere.
       expect(Object.keys(l ?? {}).sort()).toEqual(
         [
@@ -290,104 +310,121 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const hints = l?.items.map((i) => i.hint);
       expect(hints, who).toEqual(
         who === 'owner'
-          ? [null, LIST_HINT_TEENS, LIST_HINT_PRIVATE]
+          ? [null, COLLECTION_HINT_TEENS, COLLECTION_HINT_PRIVATE]
           : expected[who].map(() => null),
       );
     }
     // Every reader is given the same ETag, whatever they can see of it.
     const tags = await Promise.all(
-      (['owner', 'adult', 'teen'] as const).map(async (who) => (await seen(who, list.id))?.etag),
+      (['owner', 'adult', 'teen'] as const).map(
+        async (who) => (await seen(who, collection.id))?.etag,
+      ),
     );
     expect(new Set(tags).size).toBe(1);
   });
 
-  it('a private document in a household list is seen only by its owner', async () => {
-    const list = await makeList('adult', 'Sam’s health', 'everyone', [
+  it('a private document in a household collection is seen only by its owner', async () => {
+    const collection = await makeCollection('adult', 'Sam’s health', 'everyone', [
       docs.household,
       docs.adultPrivate,
     ]);
-    expect(itemIds(await seen('adult', list.id))).toEqual([docs.household, docs.adultPrivate]);
+    expect(itemIds(await seen('adult', collection.id))).toEqual([
+      docs.household,
+      docs.adultPrivate,
+    ]);
     for (const who of ['owner', 'teen'] as const) {
-      const l = await seen(who, list.id);
+      const l = await seen(who, collection.id);
       expect(itemIds(l), who).toEqual([docs.household]);
       expect(l?.item_count, who).toBe(1);
-      // The document itself is not there for them, list or no list.
-      const ofDoc = await call(who, 'GET', `/api/v1/documents/${docs.adultPrivate}/lists`);
+      // The document itself is not there for them, collection or no collection.
+      const ofDoc = await call(who, 'GET', `/api/v1/documents/${docs.adultPrivate}/collections`);
       expect(refusal(ofDoc)).toEqual(
-        refusal(await call(who, 'GET', `/api/v1/documents/${randomUUID()}/lists`)),
+        refusal(await call(who, 'GET', `/api/v1/documents/${randomUUID()}/collections`)),
       );
     }
-    const mine = json<{ items: ListView[] }>(
-      await call('adult', 'GET', `/api/v1/documents/${docs.adultPrivate}/lists`),
+    const mine = json<{ items: CollectionView[] }>(
+      await call('adult', 'GET', `/api/v1/documents/${docs.adultPrivate}/collections`),
     ).items;
-    expect(mine.map((l) => l.id)).toEqual([list.id]);
+    expect(mine.map((l) => l.id)).toEqual([collection.id]);
   });
 
   it('you cannot add what you cannot see', async () => {
-    const list = await makeList('adult', 'Sam’s pile', 'everyone', [docs.household]);
+    const collection = await makeCollection('adult', 'Sam’s pile', 'everyone', [docs.household]);
     const nowhere = randomUUID();
     const add = (who: Person, id: string, ids: string[]) =>
-      call(who, 'POST', `/api/v1/lists/${id}/items`, { document_ids: ids });
+      call(who, 'POST', `/api/v1/collections/${id}/items`, { document_ids: ids });
 
     // The owner's Only me document is answered as one that does not exist,
     // alone or beside one Sam can see — and then nothing is added at all.
-    const hidden = await add('adult', list.id, [docs.ownerPrivate]);
+    const hidden = await add('adult', collection.id, [docs.ownerPrivate]);
     expect(hidden.statusCode).toBe(404);
-    expect(refusal(hidden)).toEqual(refusal(await add('adult', list.id, [nowhere])));
-    const mixed = await add('adult', list.id, [docs.adults, docs.ownerPrivate]);
-    expect(refusal(mixed)).toEqual(refusal(await add('adult', list.id, [docs.adults, nowhere])));
-    expect(itemIds(await seen('adult', list.id))).toEqual([docs.household]);
+    expect(refusal(hidden)).toEqual(refusal(await add('adult', collection.id, [nowhere])));
+    const mixed = await add('adult', collection.id, [docs.adults, docs.ownerPrivate]);
+    expect(refusal(mixed)).toEqual(
+      refusal(await add('adult', collection.id, [docs.adults, nowhere])),
+    );
+    expect(itemIds(await seen('adult', collection.id))).toEqual([docs.household]);
 
-    // A teen cannot put the adults' document on a list of their own.
-    const teens = await makeList('teen', 'My stuff', 'everyone', [docs.teenOwn]);
+    // A teen cannot put the adults' document in a collection of their own.
+    const teens = await makeCollection('teen', 'My stuff', 'everyone', [docs.teenOwn]);
     const adultsDoc = await add('teen', teens.id, [docs.adults]);
     expect(refusal(adultsDoc)).toEqual(refusal(await add('teen', teens.id, [nowhere])));
-    // Nor make a list for the adults, which they could not see.
-    const forAdults = await call('teen', 'POST', '/api/v1/lists', {
+    // Nor make a collection for the adults, which they could not see.
+    const forAdults = await call('teen', 'POST', '/api/v1/collections', {
       name: 'For the adults',
       audience: 'adults',
     });
     expect(refusal(forAdults)).toMatchObject({ status: 403, code: 'forbidden' });
 
-    // What Sam can see goes on, in the order asked, once however often asked.
-    const added = await add('adult', list.id, [docs.adults, docs.adultPrivate, docs.adults]);
+    // What Sam can see goes in, in the order asked, once however often asked.
+    const added = await add('adult', collection.id, [docs.adults, docs.adultPrivate, docs.adults]);
     expect(added.statusCode, added.body).toBe(200);
-    expect(itemIds(json<ListDetail>(added))).toEqual([
+    expect(itemIds(json<CollectionDetail>(added))).toEqual([
       docs.household,
       docs.adults,
       docs.adultPrivate,
     ]);
-    const again = await add('adult', list.id, [docs.household]);
-    expect(itemIds(json<ListDetail>(again))).toEqual([
+    const again = await add('adult', collection.id, [docs.household]);
+    expect(itemIds(json<CollectionDetail>(again))).toEqual([
       docs.household,
       docs.adults,
       docs.adultPrivate,
     ]);
 
-    // Taken off: once. A second time, it is not on it.
-    const off = await call('adult', 'DELETE', `/api/v1/lists/${list.id}/items/${docs.adults}`);
-    expect(off.statusCode).toBe(204);
-    const twice = await call('adult', 'DELETE', `/api/v1/lists/${list.id}/items/${docs.adults}`);
+    // Taken out: once. A second time, it is not in it.
+    const out = await call(
+      'adult',
+      'DELETE',
+      `/api/v1/collections/${collection.id}/items/${docs.adults}`,
+    );
+    expect(out.statusCode).toBe(204);
+    const twice = await call(
+      'adult',
+      'DELETE',
+      `/api/v1/collections/${collection.id}/items/${docs.adults}`,
+    );
     expect(refusal(twice)).toMatchObject({ status: 404, code: 'not_found' });
     // The owner's Only me one is not in the vault, as far as Sam is told.
     const theirs = await call(
       'adult',
       'DELETE',
-      `/api/v1/lists/${list.id}/items/${docs.ownerPrivate}`,
+      `/api/v1/collections/${collection.id}/items/${docs.ownerPrivate}`,
     );
     expect(refusal(theirs)).toEqual(
-      refusal(await call('adult', 'DELETE', `/api/v1/lists/${list.id}/items/${nowhere}`)),
+      refusal(
+        await call('adult', 'DELETE', `/api/v1/collections/${collection.id}/items/${nowhere}`),
+      ),
     );
   });
 
-  it('trash takes an item out of every list; Bring it back returns it', async () => {
+  it('trash takes an item out of every collection; Bring it back returns it', async () => {
     const made = await call('owner', 'POST', '/api/v1/documents', {
       title: 'Boiler warranty',
       type_key: 'utility_bill',
     });
     const boiler = json<DocumentView>(made).id;
-    const one = await makeList('owner', 'House', 'everyone', [docs.household, boiler]);
-    const two = await makeList('adult', 'Repairs', 'teens', [boiler, docs.household]);
+    const one = await makeCollection('owner', 'House', 'everyone', [docs.household, boiler]);
+    const two = await makeCollection('adult', 'Repairs', 'teens', [boiler, docs.household]);
     const view = async (who: Person, id: string) => itemIds(await seen(who, id));
 
     expect(await view('teen', one.id)).toEqual([docs.household, boiler]);
@@ -397,10 +434,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       expect(await view(who, two.id), who).toEqual([docs.household]);
       expect((await seen(who, two.id))?.item_count, who).toBe(1);
     }
-    // In the Trash it is on no list, and cannot be put on one.
-    const ofTrashed = await call('owner', 'GET', `/api/v1/documents/${boiler}/lists`);
-    expect(json<{ items: ListView[] }>(ofTrashed).items).toEqual([]);
-    const add = await call('owner', 'POST', `/api/v1/lists/${one.id}/items`, {
+    // In the Trash it is in no collection, and cannot be put in one.
+    const ofTrashed = await call('owner', 'GET', `/api/v1/documents/${boiler}/collections`);
+    expect(json<{ items: CollectionView[] }>(ofTrashed).items).toEqual([]);
+    const add = await call('owner', 'POST', `/api/v1/collections/${one.id}/items`, {
       document_ids: [boiler],
     });
     expect(add.statusCode).toBe(404);
@@ -412,8 +449,8 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       expect(await view(who, one.id), who).toEqual([docs.household, boiler]);
       expect(await view(who, two.id), who).toEqual([boiler, docs.household]);
     }
-    const ofBack = json<{ items: ListView[] }>(
-      await call('teen', 'GET', `/api/v1/documents/${boiler}/lists`),
+    const ofBack = json<{ items: CollectionView[] }>(
+      await call('teen', 'GET', `/api/v1/documents/${boiler}/collections`),
     ).items;
     expect(ofBack.map((l) => l.id).sort()).toEqual([one.id, two.id].sort());
   });
@@ -425,22 +462,22 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       owner_member_id: people.owner.member_id,
     });
     const letter = json<DocumentView>(made).id;
-    const list = await makeList('owner', 'Money', 'everyone', [letter]);
+    const collection = await makeCollection('owner', 'Money', 'everyone', [letter]);
     const visibility = (to: string) =>
       call('owner', 'POST', `/api/v1/documents/${letter}/visibility`, { visibility: to });
     expect((await visibility('private')).statusCode).toBe(200);
     for (const who of ['adult', 'teen'] as const) {
-      expect(await seen(who, list.id), who).toMatchObject({ item_count: 0, items: [] });
+      expect(await seen(who, collection.id), who).toMatchObject({ item_count: 0, items: [] });
     }
-    expect(await seen('owner', list.id)).toMatchObject({ item_count: 1 });
+    expect(await seen('owner', collection.id)).toMatchObject({ item_count: 1 });
     expect((await visibility('household')).statusCode).toBe(200);
     for (const who of ['adult', 'teen'] as const) {
-      expect(itemIds(await seen(who, list.id)), who).toEqual([letter]);
+      expect(itemIds(await seen(who, collection.id)), who).toEqual([letter]);
     }
   });
 
-  it('a name is tidied and 80 characters at most; a change is made to the list as it was seen', async () => {
-    const make = (body: object) => call('owner', 'POST', '/api/v1/lists', body);
+  it('a name is tidied and 80 characters at most; a change is made to the collection as it was seen', async () => {
+    const make = (body: object) => call('owner', 'POST', '/api/v1/collections', body);
     expect(refusal(await make({ name: '   ', audience: 'everyone' }))).toMatchObject({
       status: 422,
       detail: 'name',
@@ -453,7 +490,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       status: 422,
       detail: 'audience',
     });
-    const made = json<ListDetail>(
+    const made = json<CollectionDetail>(
       await make({ name: '  School   forms ', audience: 'teens', description: '  For Sept  ' }),
     );
     expect(made).toMatchObject({
@@ -468,7 +505,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     const renamed = await call(
       'owner',
       'PATCH',
-      `/api/v1/lists/${made.id}`,
+      `/api/v1/collections/${made.id}`,
       { name: 'School forms 2027' },
       { 'if-match': made.etag },
     );
@@ -477,7 +514,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     const stale = await call(
       'owner',
       'PATCH',
-      `/api/v1/lists/${made.id}`,
+      `/api/v1/collections/${made.id}`,
       { audience: 'adults' },
       { 'if-match': made.etag },
     );
@@ -488,40 +525,45 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     });
 
     // Narrowed to Only me, it is gone for everybody else.
-    const narrowed = await call('owner', 'PATCH', `/api/v1/lists/${made.id}`, {
+    const narrowed = await call('owner', 'PATCH', `/api/v1/collections/${made.id}`, {
       audience: 'only_me',
     });
-    expect(json<ListDetail>(narrowed).audience).toBe('only_me');
+    expect(json<CollectionDetail>(narrowed).audience).toBe('only_me');
     expect(await seen('adult', made.id)).toBeNull();
 
     // Deleted, it is gone for its maker too; its documents are untouched.
-    const withDoc = await makeList('owner', 'Short-lived', 'everyone', [docs.household]);
-    expect((await call('owner', 'DELETE', `/api/v1/lists/${withDoc.id}`)).statusCode).toBe(204);
+    const withDoc = await makeCollection('owner', 'Short-lived', 'everyone', [docs.household]);
+    expect((await call('owner', 'DELETE', `/api/v1/collections/${withDoc.id}`)).statusCode).toBe(
+      204,
+    );
     for (const who of ['owner', 'adult'] as const) expect(await seen(who, withDoc.id)).toBeNull();
     expect((await call('owner', 'GET', `/api/v1/documents/${docs.household}`)).statusCode).toBe(
       200,
     );
-    expect((await call('owner', 'DELETE', `/api/v1/lists/${withDoc.id}`)).statusCode).toBe(404);
+    expect((await call('owner', 'DELETE', `/api/v1/collections/${withDoc.id}`)).statusCode).toBe(
+      404,
+    );
   });
 
-  it("a list's activity lines never name a document the reader cannot see", async () => {
-    const list = await makeList('owner', 'Holiday', 'everyone', [
+  it("a collection's activity lines never name a document the reader cannot see", async () => {
+    const collection = await makeCollection('owner', 'Holiday', 'everyone', [
       docs.household,
       docs.adults,
       docs.ownerPrivate,
     ]);
-    await makeList('owner', 'Secret plans', 'only_me', [docs.household]);
-    const adultsOnly = await makeList('owner', 'Grown-up things', 'adults', [docs.household]);
-    const added = (title: string, name: string) => `Owner added “${title}” to the list “${name}”`;
+    await makeCollection('owner', 'Secret plans', 'only_me', [docs.household]);
+    const adultsOnly = await makeCollection('owner', 'Grown-up things', 'adults', [docs.household]);
+    const added = (title: string, name: string) =>
+      `Owner added “${title}” to the collection “${name}”`;
 
     const lines = {
       owner: await activity('owner'),
       adult: await activity('adult'),
       teen: await activity('teen'),
     };
-    // The list itself, to all three.
+    // The collection itself, to all three.
     for (const who of ['owner', 'adult', 'teen'] as const) {
-      expect(lines[who], who).toContain('Owner made the list “Holiday”');
+      expect(lines[who], who).toContain('Owner made the collection “Holiday”');
       expect(lines[who], who).toContain(added(titles.household, 'Holiday'));
     }
     // Each document's line, to whoever may see the document.
@@ -531,42 +573,42 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     for (const who of ['adult', 'teen'] as const) {
       const text = lines[who].join('\n');
       expect(text, who).not.toContain(titles.ownerPrivate);
-      // Nor anything of the Only me list: not its name, not a line
-      // about a document on it, not a line with no name at all.
+      // Nor anything of the Only me collection: not its name, not a line
+      // about a document in it, not a line with no name at all.
       expect(text, who).not.toContain('Secret plans');
       expect(text, who).not.toContain('Divorce');
-      expect(text, who).not.toMatch(/a list$/m);
+      expect(text, who).not.toMatch(/a collection$/m);
     }
-    // A list for the adults, and what is on it, is the adults'.
+    // A collection for the adults, and what is in it, is the adults'.
     expect(lines.adult).toContain(added(titles.household, 'Grown-up things'));
     expect(lines.teen.join('\n')).not.toContain(titles.adults);
     expect(lines.teen.join('\n')).not.toContain('Grown-up things');
     expect(lines.owner).toContain(added(titles.household, 'Secret plans'));
 
-    // Taken off, one line about the document, to the same people.
-    await call('owner', 'DELETE', `/api/v1/lists/${list.id}/items/${docs.adults}`);
+    // Taken out, one line about the document, to the same people.
+    await call('owner', 'DELETE', `/api/v1/collections/${collection.id}/items/${docs.adults}`);
     expect(await activity('adult')).toContain(
-      `Owner took “${titles.adults}” off the list “Holiday”`,
+      `Owner took “${titles.adults}” out of the collection “Holiday”`,
     );
     expect((await activity('teen')).join('\n')).not.toContain(titles.adults);
-    await call('owner', 'DELETE', `/api/v1/lists/${adultsOnly.id}`);
-    expect(await activity('adult')).toContain('Owner deleted the list “Grown-up things”');
+    await call('owner', 'DELETE', `/api/v1/collections/${adultsOnly.id}`);
+    expect(await activity('adult')).toContain('Owner deleted the collection “Grown-up things”');
     expect((await activity('teen')).join('\n')).not.toContain('Grown-up things');
 
-    // The log itself keeps ids and nothing else about a list: no name.
+    // The log itself keeps ids and nothing else about a collection: no name.
     const admin = createPool(h.adminUrl, 1);
     try {
       const { rows } = await admin.query<{ action: string; object_type: string; detail: object }>(
-        "select action, object_type, detail from audit_event where action like 'list.%'",
+        "select action, object_type, detail from audit_event where action like 'collection.%'",
       );
       expect(rows.length).toBeGreaterThan(0);
       for (const r of rows) {
         expect(
-          Object.keys(r.detail).every((k) => k === 'list_id'),
+          Object.keys(r.detail).every((k) => k === 'collection_id'),
           r.action,
         ).toBe(true);
         expect(r.object_type, r.action).toBe(
-          r.action.startsWith('list.item_') ? 'document' : 'list',
+          r.action.startsWith('collection.item_') ? 'document' : 'collection',
         );
       }
       expect(JSON.stringify(rows)).not.toMatch(/Holiday|Secret plans|Grown-up/);
@@ -575,25 +617,114 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     }
   });
 
+  it('no /lists route answers any more (404), and the capability document says collections', async () => {
+    // Lists became collections with no aliases (A70): nobody but the owner
+    // used them. Every route they had is a route that does not exist, even
+    // to the maker of the collection it names, and nothing is done.
+    const kept = await makeCollection('owner', 'Still a collection', 'everyone', [docs.household]);
+    const before = await seen('owner', kept.id);
+    const nowhere = refusal(await call('owner', 'GET', '/api/v1/no-such-route'));
+    for (const [method, url, body] of [
+      ['GET', '/api/v1/lists', undefined],
+      ['POST', '/api/v1/lists', { name: 'Old words', audience: 'everyone' }],
+      ['GET', `/api/v1/lists/${kept.id}`, undefined],
+      ['PATCH', `/api/v1/lists/${kept.id}`, { name: 'Old words' }],
+      ['DELETE', `/api/v1/lists/${kept.id}`, undefined],
+      ['POST', `/api/v1/lists/${kept.id}/items`, { document_ids: [docs.adults] }],
+      ['DELETE', `/api/v1/lists/${kept.id}/items/${docs.household}`, undefined],
+      ['GET', `/api/v1/documents/${docs.household}/lists`, undefined],
+    ] as const) {
+      const res = await call('owner', method, url, body);
+      expect(res.statusCode, `${method} ${url}`).toBe(404);
+      expect(refusal(res), `${method} ${url}`).toEqual(nowhere);
+    }
+    expect(await seen('owner', kept.id)).toEqual(before);
+
+    const caps = json<Capabilities>(await h.app.inject({ url: '/api/v1/capabilities' }));
+    expect(caps.features.collections).toBe(true);
+    expect(Object.keys(caps.features).filter((k) => /list/i.test(k))).toEqual([]);
+    // The capability is collection.manage, and says so when it refuses.
+    for (const role of ['owner', 'adult', 'teen'] as const) {
+      expect(capabilitiesFor(role), role).toContain('collection.manage');
+    }
+    expect(ROLES.flatMap(capabilitiesFor).filter((c) => /list/.test(c))).toEqual([]);
+    expect(refusalFor('collection.manage')).toBe(
+      'Viewers can open and download documents, but not make collections of them.',
+    );
+  });
+
+  it('the audit chain still verifies after the rename; a line written about a list is nobody’s', async () => {
+    const hh = people.owner.household_id;
+    const kept = await makeCollection('owner', 'Before the rename', 'everyone', [docs.household]);
+    // Lines as 0.5.12 to 0.5.16 wrote them, about a list. They stay as they
+    // were written: the log is hash-chained, and nothing rewrites a row.
+    await withSystem(h.db, hh, async (trx) => {
+      await appendAudit(trx, {
+        householdId: hh,
+        actorAccountId: accounts.owner,
+        action: 'list.created',
+        objectType: 'list',
+        objectId: kept.id,
+      });
+      await appendAudit(trx, {
+        householdId: hh,
+        actorAccountId: accounts.owner,
+        action: 'list.item_added',
+        objectType: 'document',
+        objectId: docs.household,
+        detail: { list_id: kept.id },
+      });
+    });
+    const renamed = await call('owner', 'PATCH', `/api/v1/collections/${kept.id}`, {
+      name: 'After the rename',
+    });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+
+    // No rule is left for a list's line, so the log shows it to nobody; the
+    // collection's own lines are there as ever.
+    for (const who of ['owner', 'adult', 'teen'] as const) {
+      const text = (await activity(who)).join('\n');
+      expect(text, who).toContain('Owner renamed a collection, now “After the rename”');
+      expect(text, who).not.toMatch(/\blist\b/i);
+    }
+    const chain = await withSystem(h.db, hh, (trx) => verifyAuditChain(trx, hh));
+    expect(chain.ok, JSON.stringify(chain)).toBe(true);
+    const old = await withSystem(h.db, hh, (trx) =>
+      trx
+        .selectFrom('audit_event')
+        .select(['action', 'object_type'])
+        .where('action', 'like', 'list.%')
+        .orderBy('id')
+        .execute(),
+    );
+    expect(old).toEqual([
+      { action: 'list.created', object_type: 'list' },
+      { action: 'list.item_added', object_type: 'document' },
+    ]);
+  });
+
   // Two of these are long scenarios, some sixty requests each: 4 s on their
   // own, so the default 5 s timed them out while the machine was busy (5.15).
-  describe('a list whose maker is moved or loses their sign-in (the 5.14 review)', () => {
+  describe('a collection whose maker is moved or loses their sign-in (the 5.14 review)', () => {
     const nowhere = randomUUID();
     const setRole = async (member: string, role: string) => {
       const res = await call('owner', 'POST', `/api/v1/members/${member}/role`, { role });
       expect(res.statusCode, res.body).toBe(200);
       expect(json<{ applied: boolean }>(res).applied).toBe(true);
     };
-    /** Everything somebody outside a list's audience reads that a list could leave a mark on. */
+    /**
+     * Everything somebody outside a collection's audience reads that a
+     * collection could leave a mark on.
+     */
     const outsiderSees = async (who: Person) => ({
-      lists: json<{ items: ListView[] }>(await call(who, 'GET', '/api/v1/lists')).items.map(
-        (l) => l.id,
-      ),
-      ofDoc: json<{ items: ListView[] }>(
-        await call(who, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      collections: json<{ items: CollectionView[] }>(
+        await call(who, 'GET', '/api/v1/collections'),
+      ).items.map((l) => l.id),
+      ofDoc: json<{ items: CollectionView[] }>(
+        await call(who, 'GET', `/api/v1/documents/${docs.household}/collections`),
       ).items.map((l) => l.id),
     });
-    /** Every way of asking about a list, answered as for one that never was. */
+    /** Every way of asking about a collection, answered as for one that never was. */
     const asNowhere = async (who: Person | Tokens, id: string, label: string) => {
       for (const [method, path, body] of [
         ['GET', '', undefined],
@@ -602,62 +733,64 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         ['POST', '/items', { document_ids: [docs.household] }],
         ['DELETE', `/items/${docs.household}`, undefined],
       ] as const) {
-        const res = await call(who, method, `/api/v1/lists/${id}${path}`, body);
+        const res = await call(who, method, `/api/v1/collections/${id}${path}`, body);
         expect(refusal(res), `${label} ${method} ${path}`).toEqual(
-          refusal(await call(who, method, `/api/v1/lists/${nowhere}${path}`, body)),
+          refusal(await call(who, method, `/api/v1/collections/${nowhere}${path}`, body)),
         );
       }
     };
     const changes = (id: string) =>
       [
-        ['PATCH', `/api/v1/lists/${id}`, { name: 'Taken back' }],
-        ['POST', `/api/v1/lists/${id}/items`, { document_ids: [docs.household] }],
-        ['DELETE', `/api/v1/lists/${id}/items/${docs.household}`, undefined],
+        ['PATCH', `/api/v1/collections/${id}`, { name: 'Taken back' }],
+        ['POST', `/api/v1/collections/${id}/items`, { document_ids: [docs.household] }],
+        ['DELETE', `/api/v1/collections/${id}/items/${docs.household}`, undefined],
       ] as const;
     const notYours = {
       status: 403,
       code: 'forbidden',
-      message: 'Only the person who made this list can change it.',
+      message: 'Only the person who made this collection can change it.',
     };
 
     it('its maker, made a teen and then a viewer, still sees it and deletes it, but no longer changes it; nobody else may', async () => {
       const alex = await h.join(people.owner, {
         name: 'Alex',
-        email: 'lists-alex@example.test',
+        email: 'collections-alex@example.test',
         role: 'adult',
       });
-      const lawyer = await makeList(alex, 'ZZ For the lawyer', 'adults', [
+      const lawyer = await makeCollection(alex, 'ZZ For the lawyer', 'adults', [
         docs.household,
         docs.adults,
       ]);
-      const car = await makeList(alex, 'Alex’s car', 'everyone', [docs.household]);
-      const second = await makeList(alex, 'ZZ Second thoughts', 'adults', [docs.household]);
-      const ownersOwn = await makeList('owner', 'Owner’s own', 'everyone');
+      const car = await makeCollection(alex, 'Alex’s car', 'everyone', [docs.household]);
+      const second = await makeCollection(alex, 'ZZ Second thoughts', 'adults', [docs.household]);
+      const ownersOwn = await makeCollection('owner', 'Owner’s own', 'everyone');
       const before = { teen: await outsiderSees('teen'), viewer: await outsiderSees('viewer') };
 
       await setRole(alex.member_id, 'teen');
 
-      // Its maker sees it, with only what a teen may see on it, counted so.
+      // Its maker sees it, with only what a teen may see in it, counted so.
       const theirs = await seen(alex, lawyer.id);
       expect(theirs).toMatchObject({ mine: true, item_count: 1 });
       expect(itemIds(theirs)).toEqual([docs.household]);
-      const listed = json<{ items: ListView[] }>(await call(alex, 'GET', '/api/v1/lists')).items;
+      const listed = json<{ items: CollectionView[] }>(
+        await call(alex, 'GET', '/api/v1/collections'),
+      ).items;
       expect(listed.find((l) => l.id === lawyer.id)).toMatchObject({ item_count: 1 });
-      const ofDoc = json<{ items: ListView[] }>(
-        await call(alex, 'GET', `/api/v1/documents/${docs.household}/lists`),
+      const ofDoc = json<{ items: CollectionView[] }>(
+        await call(alex, 'GET', `/api/v1/documents/${docs.household}/collections`),
       ).items;
       expect(ofDoc.map((l) => l.id)).toEqual(expect.arrayContaining([lawyer.id, car.id]));
-      // …and changes it no more: not its name, not what is on it.
+      // …and changes it no more: not its name, not what is in it.
       for (const [method, url, body] of changes(lawyer.id)) {
         expect(refusal(await call(alex, method, url, body)), `${method} ${url}`).toMatchObject({
           status: 403,
           code: 'forbidden',
           message:
-            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+            'This collection is for people you are no longer one of. You can still delete it, but not change it.',
         });
       }
-      // A list for everyone is still theirs to change: a teen is in it.
-      const renamed = await call(alex, 'PATCH', `/api/v1/lists/${car.id}`, {
+      // A collection for everyone is still theirs to change: a teen is in it.
+      const renamed = await call(alex, 'PATCH', `/api/v1/collections/${car.id}`, {
         name: 'Alex’s bike',
       });
       expect(renamed.statusCode, renamed.body).toBe(200);
@@ -671,52 +804,54 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           );
         }
       }
-      expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${lawyer.id}`))).toMatchObject(
-        notYours,
-      );
+      expect(
+        refusal(await call('adult', 'DELETE', `/api/v1/collections/${lawyer.id}`)),
+      ).toMatchObject(notYours);
       // An owner may not delete one its maker can still change.
-      expect(refusal(await call('owner', 'DELETE', `/api/v1/lists/${car.id}`))).toMatchObject(
+      expect(refusal(await call('owner', 'DELETE', `/api/v1/collections/${car.id}`))).toMatchObject(
         notYours,
       );
-      // Outside its audience it is still a list that never was.
+      // Outside its audience it is still a collection that never was.
       await asNowhere('teen', lawyer.id, 'teen');
       await asNowhere('viewer', lawyer.id, 'viewer');
 
       // Its maker takes it back; those in its audience are told, as for any
-      // list, and its maker too.
-      expect((await call(alex, 'DELETE', `/api/v1/lists/${lawyer.id}`)).statusCode).toBe(204);
+      // collection, and its maker too.
+      expect((await call(alex, 'DELETE', `/api/v1/collections/${lawyer.id}`)).statusCode).toBe(204);
       for (const who of ['owner', 'adult', 'teen'] as const) {
         expect(await seen(who, lawyer.id), who).toBeNull();
       }
       expect(await seen(alex, lawyer.id)).toBeNull();
       for (const who of ['owner', 'adult', alex] as const) {
-        expect(await activity(who)).toContain('Alex deleted the list “ZZ For the lawyer”');
+        expect(await activity(who)).toContain('Alex deleted the collection “ZZ For the lawyer”');
       }
 
-      // Made a viewer, who may make and change no list: sees their own, and deletes it.
+      // Made a viewer, who may make and change no collection: sees their own, and deletes it.
       await setRole(alex.member_id, 'viewer');
       const asViewer = await seen(alex, second.id);
       expect(asViewer).toMatchObject({ mine: true, item_count: 1 });
       expect(
-        refusal(await call(alex, 'PATCH', `/api/v1/lists/${second.id}`, { name: 'x' })),
+        refusal(await call(alex, 'PATCH', `/api/v1/collections/${second.id}`, { name: 'x' })),
       ).toMatchObject({
         status: 403,
-        message: 'Viewers can open and download documents, but not make lists of them.',
+        message: 'Viewers can open and download documents, but not make collections of them.',
       });
-      // Their own lists, and nobody else's: somebody else's is still, to a
-      // viewer, a list that never was, asked any way.
-      const asViewerLists = json<{ items: ListView[] }>(await call(alex, 'GET', '/api/v1/lists'));
-      expect(asViewerLists.items.map((l) => l.id).sort()).toEqual([car.id, second.id].sort());
+      // Their own collections, and nobody else's: somebody else's is still, to a
+      // viewer, a collection that never was, asked any way.
+      const asViewerCollections = json<{ items: CollectionView[] }>(
+        await call(alex, 'GET', '/api/v1/collections'),
+      );
+      expect(asViewerCollections.items.map((l) => l.id).sort()).toEqual([car.id, second.id].sort());
       await asNowhere(alex, ownersOwn.id, 'Alex, a viewer');
-      expect((await call(alex, 'DELETE', `/api/v1/lists/${second.id}`)).statusCode).toBe(204);
+      expect((await call(alex, 'DELETE', `/api/v1/collections/${second.id}`)).statusCode).toBe(204);
       expect(await seen('owner', second.id)).toBeNull();
 
-      // Nothing reached anybody outside the lists' audience: no list they
+      // Nothing reached anybody outside the collections' audience: no collection they
       // did not have before, not a name in a teen's activity (a viewer is
       // given none).
       for (const who of ['teen', 'viewer'] as const) {
         const now = await outsiderSees(who);
-        for (const key of ['lists', 'ofDoc'] as const) {
+        for (const key of ['collections', 'ofDoc'] as const) {
           expect(
             now[key].filter((id) => !before[who][key].includes(id)),
             `${who} ${key}`,
@@ -726,13 +861,16 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       expect((await activity('teen')).join('\n')).not.toMatch(/ZZ /);
     }, 20_000);
 
-    it('an owner deletes a list whose maker is no longer in its audience, never changes it; the log says so as for its maker', async () => {
+    it('an owner deletes a collection whose maker is no longer in its audience, never changes it; the log says so as for its maker', async () => {
       const jo = await h.join(people.owner, {
         name: 'Jo',
-        email: 'lists-jo@example.test',
+        email: 'collections-jo@example.test',
         role: 'adult',
       });
-      const papers = await makeList(jo, 'ZZ Jo’s papers', 'adults', [docs.household, docs.adults]);
+      const papers = await makeCollection(jo, 'ZZ Jo’s papers', 'adults', [
+        docs.household,
+        docs.adults,
+      ]);
       await setRole(jo.member_id, 'teen');
 
       // Seen by the owner as ever, never changed by them.
@@ -741,63 +879,74 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         expect(refusal(await call('owner', method, url, body)), method).toMatchObject(notYours);
       }
       // An adult who is not an owner may not delete it.
-      expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${papers.id}`))).toMatchObject(
-        notYours,
+      expect(
+        refusal(await call('adult', 'DELETE', `/api/v1/collections/${papers.id}`)),
+      ).toMatchObject(notYours);
+      expect((await call('owner', 'DELETE', `/api/v1/collections/${papers.id}`)).statusCode).toBe(
+        204,
       );
-      expect((await call('owner', 'DELETE', `/api/v1/lists/${papers.id}`)).statusCode).toBe(204);
       for (const who of ['owner', 'adult', jo] as const) {
         expect(await seen(who, papers.id)).toBeNull();
-        expect(await activity(who)).toContain('Owner deleted the list “ZZ Jo’s papers”');
+        expect(await activity(who)).toContain('Owner deleted the collection “ZZ Jo’s papers”');
       }
       expect((await activity('teen')).join('\n')).not.toContain('ZZ Jo’s papers');
     });
 
-    it('a maker whose sign-in is taken away: an owner deletes their lists, never changes them; their Only me list is nobody’s', async () => {
+    it('a maker whose sign-in is taken away: an owner deletes their collections, never changes them; their Only me collection is nobody’s', async () => {
       const kim = await h.join(people.owner, {
         name: 'Kim',
-        email: 'lists-kim@example.test',
+        email: 'collections-kim@example.test',
         role: 'adult',
       });
-      const forms = await makeList(kim, 'ZZ Kim’s school forms', 'everyone', [docs.household]);
-      const remortgage = await makeList(kim, 'ZZ Kim’s remortgage', 'adults', [
+      const forms = await makeCollection(kim, 'ZZ Kim’s school forms', 'everyone', [
+        docs.household,
+      ]);
+      const remortgage = await makeCollection(kim, 'ZZ Kim’s remortgage', 'adults', [
         docs.household,
         docs.adults,
       ]);
-      const own = await makeList(kim, 'ZZ Kim’s own', 'only_me', [docs.household]);
+      const own = await makeCollection(kim, 'ZZ Kim’s own', 'only_me', [docs.household]);
       const before = await outsiderSees('teen');
 
       const removed = await call('owner', 'DELETE', `/api/v1/members/${kim.member_id}/sign-in`);
       expect(removed.statusCode, removed.body).toBe(204);
-      expect((await call(kim, 'GET', `/api/v1/lists/${forms.id}`)).statusCode).toBe(401);
+      expect((await call(kim, 'GET', `/api/v1/collections/${forms.id}`)).statusCode).toBe(401);
 
-      for (const list of [forms, remortgage]) {
+      for (const collection of [forms, remortgage]) {
         // Seen as ever by those in its audience; changed by none of them.
         for (const who of ['owner', 'adult'] as const) {
-          expect(await seen(who, list.id), `${who} ${list.name}`).not.toBeNull();
-          for (const [method, url, body] of changes(list.id)) {
+          expect(await seen(who, collection.id), `${who} ${collection.name}`).not.toBeNull();
+          for (const [method, url, body] of changes(collection.id)) {
             expect(refusal(await call(who, method, url, body)), `${who} ${method}`).toMatchObject(
               notYours,
             );
           }
         }
-        expect(refusal(await call('adult', 'DELETE', `/api/v1/lists/${list.id}`))).toMatchObject(
-          notYours,
-        );
+        expect(
+          refusal(await call('adult', 'DELETE', `/api/v1/collections/${collection.id}`)),
+        ).toMatchObject(notYours);
       }
-      // Outside its audience, a list that never was — before an owner deletes it, and after.
+      // Outside its audience, a collection that never was — before an owner
+      // deletes it, and after.
       await asNowhere('teen', remortgage.id, 'teen');
-      for (const list of [forms, remortgage]) {
-        expect((await call('owner', 'DELETE', `/api/v1/lists/${list.id}`)).statusCode).toBe(204);
+      for (const collection of [forms, remortgage]) {
+        expect(
+          (await call('owner', 'DELETE', `/api/v1/collections/${collection.id}`)).statusCode,
+        ).toBe(204);
         for (const who of ['owner', 'adult', 'teen'] as const) {
-          expect(await seen(who, list.id), `${who} ${list.name}`).toBeNull();
+          expect(await seen(who, collection.id), `${who} ${collection.name}`).toBeNull();
         }
       }
       await asNowhere('teen', remortgage.id, 'teen, after');
-      expect(await activity('adult')).toContain('Owner deleted the list “ZZ Kim’s remortgage”');
-      expect(await activity('teen')).toContain('Owner deleted the list “ZZ Kim’s school forms”');
+      expect(await activity('adult')).toContain(
+        'Owner deleted the collection “ZZ Kim’s remortgage”',
+      );
+      expect(await activity('teen')).toContain(
+        'Owner deleted the collection “ZZ Kim’s school forms”',
+      );
       expect((await activity('teen')).join('\n')).not.toContain('remortgage');
 
-      // Their Only me list is nobody's, an owner's no more than anybody's:
+      // Their Only me collection is nobody's, an owner's no more than anybody's:
       // it stays, unseen and unchanged.
       for (const who of ['owner', 'adult', 'teen'] as const) {
         await asNowhere(who, own.id, `${who}, Only me`);
@@ -806,16 +955,16 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const admin = createPool(h.adminUrl, 1);
       try {
         const { rows } = await admin.query<{ deleted: boolean }>(
-          'select deleted_at is not null as deleted from doc_list where id = $1',
+          'select deleted_at is not null as deleted from doc_collection where id = $1',
           [own.id],
         );
         expect(rows).toEqual([{ deleted: false }]);
       } finally {
         await admin.end();
       }
-      // And nothing reached the teen: no list they did not have before.
+      // And nothing reached the teen: no collection they did not have before.
       const now = await outsiderSees('teen');
-      expect(now.lists.filter((id) => !before.lists.includes(id))).toEqual([]);
+      expect(now.collections.filter((id) => !before.collections.includes(id))).toEqual([]);
       expect(now.ofDoc.filter((id) => !before.ofDoc.includes(id))).toEqual([]);
     }, 20_000);
   });
@@ -823,10 +972,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
   it('an owner’s delete that meets the maker’s sign-in given back meanwhile deletes nothing, and logs nothing', async () => {
     const jo = await h.join(people.owner, {
       name: 'Jo',
-      email: 'lists-jo-returns@example.test',
+      email: 'collections-jo-returns@example.test',
       role: 'adult',
     });
-    const list = await makeList(jo, 'ZZ Jo’s papers', 'everyone', [docs.household]);
+    const collection = await makeCollection(jo, 'ZZ Jo’s papers', 'everyone', [docs.household]);
     const admin = createPool(h.adminUrl, 1);
     try {
       const { rows } = await admin.query<Record<string, unknown>>(
@@ -837,9 +986,9 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const removed = await call('owner', 'DELETE', `/api/v1/members/${jo.member_id}/sign-in`);
       expect(removed.statusCode, removed.body).toBe(204);
 
-      // The owner's delete finds the list stranded; before it is marked,
+      // The owner's delete finds the collection stranded; before it is marked,
       // Jo's sign-in is given back (as an accepted invitation would).
-      const proto = ListService.prototype as unknown as {
+      const proto = CollectionService.prototype as unknown as {
         stranded: (...args: unknown[]) => Promise<boolean>;
       };
       const stranded = proto.stranded;
@@ -858,16 +1007,16 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       });
       let answer;
       try {
-        answer = await call('owner', 'DELETE', `/api/v1/lists/${list.id}`);
+        answer = await call('owner', 'DELETE', `/api/v1/collections/${collection.id}`);
       } finally {
         spy.mockRestore();
       }
       // Not the owner's to clear any more: refused, still there, not logged.
       expect(answer.statusCode, answer.body).toBe(403);
-      expect(await seen('owner', list.id)).not.toBeNull();
+      expect(await seen('owner', collection.id)).not.toBeNull();
       const logged = await admin.query<{ n: number }>(
-        "select count(*)::int as n from audit_event where action = 'list.deleted' and object_id = $1",
-        [list.id],
+        "select count(*)::int as n from audit_event where action = 'collection.deleted' and object_id = $1",
+        [collection.id],
       );
       expect(logged.rows[0]?.n).toBe(0);
     } finally {
@@ -875,21 +1024,21 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     }
   });
 
-  it("a list's documents come a page at a time; item_count is all the reader sees; a cursor names nothing hidden", async () => {
-    const list = await makeList('owner', 'Everything, paged', 'everyone', [
+  it("a collection's documents come a page at a time; item_count is all the reader sees; a cursor names nothing hidden", async () => {
+    const collection = await makeCollection('owner', 'Everything, paged', 'everyone', [
       docs.household,
       docs.adults,
       docs.ownerPrivate,
       docs.teenOwn,
     ]);
     const all = async (who: Person, limit: number) => {
-      const pages: ListDetail[] = [];
+      const pages: CollectionDetail[] = [];
       let cursor: string | null = null;
       do {
         const q: string = `?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
-        const res = await call(who, 'GET', `/api/v1/lists/${list.id}${q}`);
+        const res = await call(who, 'GET', `/api/v1/collections/${collection.id}${q}`);
         expect(res.statusCode, res.body).toBe(200);
-        const page: ListDetail = json<ListDetail>(res);
+        const page: CollectionDetail = json<CollectionDetail>(res);
         pages.push(page);
         cursor = page.next_cursor;
       } while (cursor && pages.length < 10);
@@ -913,17 +1062,17 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         who,
       ).toEqual(expected[who].map((_, i) => i < expected[who].length - 1));
       // Unasked, a page holds up to 50: all of these.
-      const whole = await seen(who, list.id);
+      const whole = await seen(who, collection.id);
       expect(itemIds(whole), who).toEqual(expected[who]);
       expect(whole, who).toMatchObject({ has_more: false, next_cursor: null });
     }
 
-    // A cursor that names a document the reader is not given — on the list
+    // A cursor that names a document the reader is not given — in the collection
     // or not, theirs to see elsewhere or not — is one that is not valid,
     // exactly as one naming nothing.
     const naming = (id: string) => Buffer.from(JSON.stringify({ after: id })).toString('base64url');
     const page = (who: Person, cursor: string) =>
-      call(who, 'GET', `/api/v1/lists/${list.id}?cursor=${encodeURIComponent(cursor)}`);
+      call(who, 'GET', `/api/v1/collections/${collection.id}?cursor=${encodeURIComponent(cursor)}`);
     const invalid = refusal(await page('teen', naming(randomUUID())));
     expect(invalid).toMatchObject({ status: 422, code: 'validation_failed' });
     for (const hidden of [docs.adults, docs.ownerPrivate, docs.adultPrivate]) {
@@ -936,17 +1085,17 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     // Pages hold 1 to 200.
     for (const limit of [0, 201]) {
       expect(
-        refusal(await call('owner', 'GET', `/api/v1/lists/${list.id}?limit=${limit}`)),
+        refusal(await call('owner', 'GET', `/api/v1/collections/${collection.id}?limit=${limit}`)),
       ).toMatchObject({ status: 422 });
     }
   });
 
-  it('a change is made and let go before the list is read back: the log and the rows are not held while it renders', async () => {
-    const list = await makeList('owner', 'Held while drawn?', 'everyone');
-    const target = { list: list.id, documents: [docs.household, docs.adults] };
+  it('a change is made and let go before the collection is read back: the log and the rows are not held while it renders', async () => {
+    const collection = await makeCollection('owner', 'Held while drawn?', 'everyone');
+    const target = { collection: collection.id, documents: [docs.household, docs.adults] };
     const admin = createPool(h.adminUrl, 2);
     const hh = people.owner.household_id;
-    const held: Array<{ audit: boolean; list: boolean; documents: boolean }> = [];
+    const held: Array<{ audit: boolean; collection: boolean; documents: boolean }> = [];
     const locked = async (q: string, params: unknown[]) =>
       admin.query(q, params).then(
         () => false,
@@ -971,8 +1120,8 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       );
       held.push({
         audit: free.rows[0]?.free !== true,
-        list: await locked('select id from doc_list where id = $1 for update nowait', [
-          target.list,
+        collection: await locked('select id from doc_collection where id = $1 for update nowait', [
+          target.collection,
         ]),
         documents: await locked(
           'select id from document where id = any($1::uuid[]) for update nowait',
@@ -982,26 +1131,26 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       return listed.call(this, trx, rows);
     });
     try {
-      const added = await call('owner', 'POST', `/api/v1/lists/${list.id}/items`, {
+      const added = await call('owner', 'POST', `/api/v1/collections/${collection.id}/items`, {
         document_ids: [docs.household, docs.adults],
       });
       expect(added.statusCode, added.body).toBe(200);
-      const renamed = await call('owner', 'PATCH', `/api/v1/lists/${list.id}`, {
+      const renamed = await call('owner', 'PATCH', `/api/v1/collections/${collection.id}`, {
         name: 'Not held',
       });
       expect(renamed.statusCode, renamed.body).toBe(200);
       const stale = await call(
         'owner',
         'PATCH',
-        `/api/v1/lists/${list.id}`,
+        `/api/v1/collections/${collection.id}`,
         { name: 'Stale' },
-        { 'if-match': list.etag },
+        { 'if-match': collection.etag },
       );
       expect(stale.statusCode).toBe(409);
       expect(held).toEqual([
-        { audit: false, list: false, documents: false },
-        { audit: false, list: false, documents: false },
-        { audit: false, list: false, documents: false },
+        { audit: false, collection: false, documents: false },
+        { audit: false, collection: false, documents: false },
+        { audit: false, collection: false, documents: false },
       ]);
     } finally {
       spy.mockRestore();
@@ -1011,7 +1160,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
 
   describe('in the database, as the application role', () => {
     let one: Db;
-    let divorce: ListDetail;
+    let divorce: CollectionDetail;
     const principal = (who: Person) => ({
       householdId: people[who].household_id,
       accountId: accounts[who],
@@ -1020,7 +1169,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
     });
 
     beforeAll(async () => {
-      divorce = await makeList('owner', 'Divorce lawyer', 'only_me', [docs.household, docs.adults]);
+      divorce = await makeCollection('owner', 'Divorce lawyer', 'only_me', [
+        docs.household,
+        docs.adults,
+      ]);
       // One connection: a transaction that sets nothing is given one another
       // has used, where an unset setting reads '' rather than null.
       one = createDb(createPool(h.appUrl, 1));
@@ -1029,29 +1181,29 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       await one.destroy();
     });
 
-    it('an Only me list is invisible to a query with no WHERE clause', async () => {
+    it('an Only me collection is invisible to a query with no WHERE clause', async () => {
       const everything = (trx: Db) =>
         Promise.all([
-          trx.selectFrom('doc_list').selectAll().execute(),
-          trx.selectFrom('doc_list_item').selectAll().execute(),
-          sql<{ n: number }>`select count(*)::int as n from doc_list`.execute(trx),
+          trx.selectFrom('doc_collection').selectAll().execute(),
+          trx.selectFrom('doc_collection_item').selectAll().execute(),
+          sql<{ n: number }>`select count(*)::int as n from doc_collection`.execute(trx),
         ]);
-      // A second adult, asking for every list and every item there is.
-      const [lists, items, count] = await withPrincipal(one, principal('adult'), everything);
-      expect(lists.map((l) => l.id)).not.toContain(divorce.id);
+      // A second adult, asking for every collection and every item there is.
+      const [collections, items, count] = await withPrincipal(one, principal('adult'), everything);
+      expect(collections.map((l) => l.id)).not.toContain(divorce.id);
       expect(
-        lists.every(
+        collections.every(
           (l) => l.audience !== 'only_me' || l.owner_member_id === people.adult.member_id,
         ),
       ).toBe(true);
-      expect(items.map((i) => i.list_id)).not.toContain(divorce.id);
-      expect(count.rows[0]?.n).toBe(lists.length);
-      expect(JSON.stringify(lists)).not.toContain('Divorce lawyer');
+      expect(items.map((i) => i.collection_id)).not.toContain(divorce.id);
+      expect(count.rows[0]?.n).toBe(collections.length);
+      expect(JSON.stringify(collections)).not.toContain('Divorce lawyer');
 
-      // Its maker, asking the same way, is given it and what is on it.
+      // Its maker, asking the same way, is given it and what is in it.
       const [own, ownItems] = await withPrincipal(one, principal('owner'), everything);
       expect(own.map((l) => l.id)).toContain(divorce.id);
-      expect(ownItems.filter((i) => i.list_id === divorce.id)).toHaveLength(2);
+      expect(ownItems.filter((i) => i.collection_id === divorce.id)).toHaveLength(2);
 
       // Signed in with no member said, after the connection was used: none.
       const unset = await withScope(
@@ -1060,12 +1212,12 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           householdId: people.owner.household_id,
           actor: { kind: 'account', accountId: accounts.owner, memberId: '', role: 'owner' },
         },
-        (trx) => trx.selectFrom('doc_list').select(['id', 'audience']).execute(),
+        (trx) => trx.selectFrom('doc_collection').select(['id', 'audience']).execute(),
       );
       expect(unset.map((l) => l.id)).not.toContain(divorce.id);
       expect(unset.some((l) => l.audience === 'only_me')).toBe(false);
 
-      // Nobody said, anonymous, an upload link or a share link: no list at all.
+      // Nobody said, anonymous, an upload link or a share link: no collection at all.
       for (const actor of [
         { kind: 'anonymous' } as const,
         { kind: 'upload', requestId: randomUUID() } as const,
@@ -1080,26 +1232,26 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       }
     });
 
-    it('a second adult cannot change, empty or add to an Only me list they are not given', async () => {
+    it('a second adult cannot change, empty or add to an Only me collection they are not given', async () => {
       await withPrincipal(one, principal('adult'), async (trx) => {
         const renamed = await trx
-          .updateTable('doc_list')
+          .updateTable('doc_collection')
           .set({ name: 'Taken' })
           .where('id', '=', divorce.id)
           .executeTakeFirst();
         expect(renamed.numUpdatedRows).toBe(0n);
         const emptied = await trx
-          .deleteFrom('doc_list_item')
-          .where('list_id', '=', divorce.id)
+          .deleteFrom('doc_collection_item')
+          .where('collection_id', '=', divorce.id)
           .executeTakeFirst();
         expect(emptied.numDeletedRows).toBe(0n);
       });
       await expect(
         withPrincipal(one, principal('adult'), (trx) =>
           trx
-            .insertInto('doc_list_item')
+            .insertInto('doc_collection_item')
             .values({
-              list_id: divorce.id,
+              collection_id: divorce.id,
               document_id: docs.adultPrivate,
               household_id: people.adult.household_id,
               position: 99,
@@ -1107,10 +1259,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
             .execute(),
         ),
       ).rejects.toThrow(/row-level security/);
-      // Nor may anybody take a list away outright: it is marked deleted.
+      // Nor may anybody take a collection away outright: it is marked deleted.
       await expect(
         withPrincipal(one, principal('owner'), (trx) =>
-          trx.deleteFrom('doc_list').where('id', '=', divorce.id).execute(),
+          trx.deleteFrom('doc_collection').where('id', '=', divorce.id).execute(),
         ),
       ).rejects.toThrow(/permission denied/);
       expect(await seen('owner', divorce.id)).toMatchObject({
@@ -1123,14 +1275,14 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const admin = createPool(h.adminUrl, 1);
       try {
         for (const role of [...ROLES, '', 'root', null]) {
-          for (const audience of [...LIST_AUDIENCES, 'public', '']) {
+          for (const audience of [...COLLECTION_AUDIENCES, 'public', '']) {
             const { rows } = await admin.query<{ has: boolean }>(
-              'select list_audience_has($1, $2) as has',
+              'select collection_audience_has($1, $2) as has',
               [role, audience],
             );
             const known = ROLES.find((r) => r === role);
             expect(rows[0]?.has, `${role} ${audience}`).toBe(
-              known ? inListAudience(known, audience) : false,
+              known ? inCollectionAudience(known, audience) : false,
             );
           }
         }
@@ -1139,10 +1291,10 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       }
     });
 
-    it('only its maker changes a list; an owner only marks deleted one nobody can change any more', async () => {
+    it('only its maker changes a collection; an owner only marks deleted one nobody can change any more', async () => {
       const hh = people.owner.household_id;
       // Sam's, for everyone: Sam is in it, so it is Sam's alone to change.
-      const sams = await makeList('adult', 'Sam’s, in the database', 'everyone');
+      const sams = await makeCollection('adult', 'Sam’s, in the database', 'everyone');
       // And one whose maker is somebody with no sign-in at all.
       const admin = createPool(h.adminUrl, 1);
       let nobodys = '';
@@ -1152,7 +1304,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           [hh],
         );
         const made = await admin.query<{ id: string }>(
-          `insert into doc_list (household_id, name, audience, owner_member_id)
+          `insert into doc_collection (household_id, name, audience, owner_member_id)
            values ($1, 'Nobody’s now', 'everyone', $2) returning id`,
           [hh, gone.rows[0]?.id],
         );
@@ -1163,8 +1315,13 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       const update = (who: Person, id: string, set: Record<string, unknown>) =>
         withPrincipal(one, principal(who), async (trx) =>
           Number(
-            (await trx.updateTable('doc_list').set(set).where('id', '=', id).executeTakeFirst())
-              .numUpdatedRows,
+            (
+              await trx
+                .updateTable('doc_collection')
+                .set(set)
+                .where('id', '=', id)
+                .executeTakeFirst()
+            ).numUpdatedRows,
           ),
         );
       const held = (who: Person, id: string) =>
@@ -1174,7 +1331,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           async (trx) =>
             (
               await trx
-                .selectFrom('doc_list')
+                .selectFrom('doc_collection')
                 .select('id')
                 .where('id', '=', id)
                 .forUpdate()
@@ -1204,7 +1361,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         { name: 'Renamed', deleted_at: new Date() },
       ]) {
         await expect(update('owner', nobodys, set), JSON.stringify(set)).rejects.toThrow(
-          /only its maker changes a list|keeps its maker/,
+          /only its maker changes a collection|keeps its maker/,
         );
       }
       // …and not with no role said, after the connection was used.
@@ -1222,14 +1379,14 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
         async (trx) =>
           (
             await trx
-              .updateTable('doc_list')
+              .updateTable('doc_collection')
               .set({ deleted_at: new Date() })
               .where('id', '=', nobodys)
               .executeTakeFirst()
           ).numUpdatedRows,
       );
       expect(unsaid).toBe(0n);
-      // An owner with no member said is nobody's maker: a list whose maker
+      // An owner with no member said is nobody's maker: a collection whose maker
       // is gone does not become theirs to change (the fix check, F514-1).
       await expect(
         withScope(
@@ -1245,14 +1402,14 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
           },
           (trx) =>
             trx
-              .updateTable('doc_list')
+              .updateTable('doc_collection')
               .set({ name: 'Taken by nobody' })
               .where('id', '=', nobodys)
               .execute(),
         ),
-      ).rejects.toThrow(/only its maker changes a list/);
-      // And an owner's own list is theirs to change, not to hand on (F514-3).
-      const owners = await makeList('owner', 'The owner’s, in the database', 'everyone');
+      ).rejects.toThrow(/only its maker changes a collection/);
+      // And an owner's own collection is theirs to change, not to hand on (F514-3).
+      const owners = await makeCollection('owner', 'The owner’s, in the database', 'everyone');
       expect(await update('owner', owners.id, { name: 'Still the owner’s' })).toBe(1);
       for (const set of [
         { owner_member_id: people.adult.member_id },
@@ -1266,7 +1423,7 @@ describe.skipIf(!testAdminUrl())('lists of documents', () => {
       expect(await update('owner', nobodys, { deleted_at: new Date() })).toBe(1);
       for (const set of [{ deleted_at: new Date() }, { deleted_at: null }]) {
         await expect(update('owner', nobodys, set), JSON.stringify(set)).rejects.toThrow(
-          /only its maker changes a list/,
+          /only its maker changes a collection/,
         );
       }
     });

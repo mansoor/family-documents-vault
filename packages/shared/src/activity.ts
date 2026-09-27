@@ -33,11 +33,11 @@ export interface ActivityEvent {
   /** The document's title, when the event is about one and it can be named. */
   object_title: string | null;
   /**
-   * The list's name as it is now, when the event is about a list or a
-   * document on one (5.14). The line is shown only to whoever may see the
-   * list, so its name is theirs to read; the log itself keeps only its id.
+   * The collection's name as it is now, when the event is about a collection or a
+   * document in one (5.14). The line is shown only to whoever may see the
+   * collection, so its name is theirs to read; the log itself keeps only its id.
    */
-  list_name?: string | null;
+  collection_name?: string | null;
   detail: Record<string, unknown>;
 }
 
@@ -64,8 +64,8 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
   const detail = e.detail ?? {};
   /** A kind of document or a field, by the name it had then (0.5.10). */
   const kind = text(detail.label) ? `“${text(detail.label)}”` : null;
-  /** A list, by the name it has now (0.5.12). */
-  const list = e.list_name ? `the list “${e.list_name}”` : 'a list';
+  /** A collection, by the name it has now (0.5.12). */
+  const collection = e.collection_name ? `the collection “${e.collection_name}”` : 'a collection';
   const documentId = e.object_type === 'document' ? e.object_id : null;
   const line = (text: string, notable = false): ActivityLine => ({
     id: e.id,
@@ -146,24 +146,26 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           : `${who} added a field a kind of document can ask for`,
       );
 
-    // ------------------------------------------ lists of documents (0.5.12)
-    // Said only to whoever may see the list, and a document's line only to
+    // ------------------------------------------ collections of documents (0.5.12)
+    // Said only to whoever may see the collection, and a document's line only to
     // whoever may also see the document: one line per document, so none
     // names a document its reader is not given.
-    case 'list.created':
-      return line(`${who} made ${list}`);
-    case 'list.renamed':
+    case 'collection.created':
+      return line(`${who} made ${collection}`);
+    case 'collection.renamed':
       return line(
-        e.list_name ? `${who} renamed a list, now “${e.list_name}”` : `${who} renamed a list`,
+        e.collection_name
+          ? `${who} renamed a collection, now “${e.collection_name}”`
+          : `${who} renamed a collection`,
       );
-    case 'list.updated':
-      return line(`${who} changed ${list}`);
-    case 'list.deleted':
-      return line(`${who} deleted ${list}`);
-    case 'list.item_added':
-      return line(`${who} added ${doc} to ${list}`);
-    case 'list.item_removed':
-      return line(`${who} took ${doc} off ${list}`);
+    case 'collection.updated':
+      return line(`${who} changed ${collection}`);
+    case 'collection.deleted':
+      return line(`${who} deleted ${collection}`);
+    case 'collection.item_added':
+      return line(`${who} added ${doc} to ${collection}`);
+    case 'collection.item_removed':
+      return line(`${who} took ${doc} out of ${collection}`);
 
     // ---------------------------------------------------------- people
     case 'member.added':

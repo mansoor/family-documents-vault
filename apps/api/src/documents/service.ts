@@ -696,7 +696,7 @@ export class DocumentService {
 
   /**
    * Documents as every list of them gives them, for rows the caller's own
-   * query has already found — the documents on a list (5.14). An Only me
+   * query has already found — the documents in a collection (5.14). An Only me
    * one's notes and details stay sealed, as in any list.
    */
   async listed(trx: Db, rows: DocRow[]): Promise<DocumentView[]> {

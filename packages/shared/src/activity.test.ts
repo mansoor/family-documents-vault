@@ -232,41 +232,53 @@ describe('kinds of document (0.5.10)', () => {
   });
 });
 
-describe('lists of documents (0.5.12)', () => {
-  const about = (action: string, list_name: string | null, over: Partial<ActivityEvent> = {}) =>
-    describeEvent(ev({ action, list_name, ...over }));
+describe('collections of documents (0.5.12)', () => {
+  const about = (
+    action: string,
+    collection_name: string | null,
+    over: Partial<ActivityEvent> = {},
+  ) => describeEvent(ev({ action, collection_name, ...over }));
 
-  it("names the list as it is called now, and a document on it by the document's title", () => {
-    const listLine = { object_type: 'list', object_id: 'list-1', object_title: null };
-    expect(about('list.created', 'Holiday', listLine)).toMatchObject({
-      text: 'Sarah made the list “Holiday”',
+  it("names the collection as it is called now, and a document in it by the document's title", () => {
+    const collectionLine = {
+      object_type: 'collection',
+      object_id: 'collection-1',
+      object_title: null,
+    };
+    expect(about('collection.created', 'Holiday', collectionLine)).toMatchObject({
+      text: 'Sarah made the collection “Holiday”',
       notable: false,
       document_id: null,
     });
-    expect(about('list.renamed', 'Holiday 2027', listLine)?.text).toBe(
-      'Sarah renamed a list, now “Holiday 2027”',
+    expect(about('collection.renamed', 'Holiday 2027', collectionLine)?.text).toBe(
+      'Sarah renamed a collection, now “Holiday 2027”',
     );
-    expect(about('list.updated', 'Holiday', listLine)?.text).toBe(
-      'Sarah changed the list “Holiday”',
+    expect(about('collection.updated', 'Holiday', collectionLine)?.text).toBe(
+      'Sarah changed the collection “Holiday”',
     );
-    expect(about('list.deleted', 'Holiday', listLine)?.text).toBe(
-      'Sarah deleted the list “Holiday”',
+    expect(about('collection.deleted', 'Holiday', collectionLine)?.text).toBe(
+      'Sarah deleted the collection “Holiday”',
     );
-    // A document put on one, or taken off, points at the document.
-    expect(about('list.item_added', 'Holiday')).toMatchObject({
-      text: 'Sarah added “Home insurance policy” to the list “Holiday”',
+    // A document put in one, or taken out, points at the document.
+    expect(about('collection.item_added', 'Holiday')).toMatchObject({
+      text: 'Sarah added “Home insurance policy” to the collection “Holiday”',
       document_id: 'doc-1',
     });
-    expect(about('list.item_removed', 'Holiday')?.text).toBe(
-      'Sarah took “Home insurance policy” off the list “Holiday”',
+    expect(about('collection.item_removed', 'Holiday')?.text).toBe(
+      'Sarah took “Home insurance policy” out of the collection “Holiday”',
     );
   });
 
-  it('with no name to give, says "a list" rather than an id', () => {
-    for (const action of ['list.created', 'list.renamed', 'list.updated', 'list.deleted']) {
-      const line = about(action, null, { object_type: 'list', object_id: 'list-1' });
-      expect(line?.text, action).toMatch(/a list$/);
-      expect(line?.text, action).not.toContain('list-1');
+  it('with no name to give, says "a collection" rather than an id', () => {
+    for (const action of [
+      'collection.created',
+      'collection.renamed',
+      'collection.updated',
+      'collection.deleted',
+    ]) {
+      const line = about(action, null, { object_type: 'collection', object_id: 'collection-1' });
+      expect(line?.text, action).toMatch(/a collection$/);
+      expect(line?.text, action).not.toContain('collection-1');
     }
   });
 });

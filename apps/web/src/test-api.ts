@@ -1,8 +1,8 @@
 import {
   canSee,
-  canSeeList,
-  inListAudience,
-  listItemHint,
+  canSeeCollection,
+  collectionItemHint,
+  inCollectionAudience,
   nextReminder,
   reminderOf,
   type DocumentTypeView,
@@ -16,15 +16,15 @@ import { vi } from 'vitest';
  * Each test starts from `fresh()` and can tweak the state before rendering.
  */
 
-/** A list of documents as the vault keeps it (0.5.12). The signed-in member is "me". */
-export interface FakeList {
+/** A collection of documents as the vault keeps it (0.5.12). The signed-in member is "me". */
+export interface FakeCollection {
   id: string;
   name: string;
   description: string | null;
   audience: 'everyone' | 'teens' | 'adults' | 'only_me';
   owner_member_id: string | null;
   etag: string;
-  /** The documents on it, by id, in the order they were put there. */
+  /** The documents in it, by id, in the order they were put there. */
   items: string[];
 }
 
@@ -137,13 +137,13 @@ export interface FakeState {
   /** Every capture that arrived: its form fields in order, and its details. */
   captures?: Array<{ fields: string[]; metadata: Record<string, unknown> | null }>;
   /**
-   * Lists of documents (5.15), kept as the vault keeps them (0.5.12).
-   * Given, the vault has lists (`features.lists`); left out, it is a vault
-   * from before them, and every list route is unanswered.
+   * Collections of documents (5.15), kept as the vault keeps them (0.5.12).
+   * Given, the vault has collections (`features.collections`); left out, it is a vault
+   * from before them, and every collection route is unanswered.
    */
-  lists?: FakeList[];
-  /** Answer GET /lists/{id} in pages of this many, with a cursor. */
-  listPageSize?: number;
+  collections?: FakeCollection[];
+  /** Answer GET /collections/{id} in pages of this many, with a cursor. */
+  collectionPageSize?: number;
   /**
    * GET /documents/{id}/issuer-suggestions, by document id: who its pages
    * say issued it. A document not here answers 'unavailable'.
@@ -427,7 +427,7 @@ export function installFakeApi(state: FakeState) {
         features: {
           passkeys: true,
           custom_types: true,
-          ...(state.lists ? { lists: true } : {}),
+          ...(state.collections ? { collections: true } : {}),
           reminder_dates: state.reminderDates ?? true,
         },
         limits: {},
@@ -1123,13 +1123,13 @@ export function installFakeApi(state: FakeState) {
       }
     }
     if (
-      state.lists &&
-      (path === '/api/v1/lists' ||
-        path.startsWith('/api/v1/lists/') ||
-        /^\/api\/v1\/documents\/[^/]+\/lists$/.test(path))
+      state.collections &&
+      (path === '/api/v1/collections' ||
+        path.startsWith('/api/v1/collections/') ||
+        /^\/api\/v1\/documents\/[^/]+\/collections$/.test(path))
     ) {
       const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
-      return answerLists(state, method, path, query, body, ifMatch);
+      return answerCollections(state, method, path, query, body, ifMatch);
     }
     if (path === '/api/v1/documents/counts') {
       return json({
@@ -1460,15 +1460,15 @@ export function installFakeApi(state: FakeState) {
 }
 
 /**
- * Lists of documents, as the vault answers them (0.5.12): each reader is
- * given the lists their role and the list's audience allow — a viewer
- * none but their own — and, on each, the documents they could see anyway,
- * counted so. Only a list's maker changes it, while in its audience (A18);
+ * Collections of documents, as the vault answers them (0.5.12): each reader is
+ * given the collections their role and the collection's audience allow — a viewer
+ * none but their own — and, in each, the documents they could see anyway,
+ * counted so. Only a collection's maker changes it, while in its audience (A18);
  * its maker deletes it, or an owner once nobody may change it. A page's
- * cursor names the last document given. Several put on at once — up to
- * 200 — go on together or not at all.
+ * cursor names the last document given. Several put in at once — up to
+ * 200 — go in together or not at all.
  */
-function answerLists(
+function answerCollections(
   state: FakeState,
   method: string,
   path: string,
@@ -1480,12 +1480,12 @@ function answerLists(
   const done = () => Promise.resolve(new Response(null, { status: 204 }));
   const refuse = (status: number, code: string, message: string, more: object = {}) =>
     json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
-  const noList = () => refuse(404, 'not_found', 'That list does not exist.');
+  const noCollection = () => refuse(404, 'not_found', 'That collection does not exist.');
   const noDocument = () => refuse(404, 'not_found', 'That document is not in the vault.');
   const role = storedRole() as Role;
   const reader = { role, memberId: 'me' };
-  const all = state.lists ?? [];
-  const seesList = (l: FakeList) => canSeeList(reader, l);
+  const all = state.collections ?? [];
+  const seesCollection = (l: FakeCollection) => canSeeCollection(reader, l);
   const seesDoc = (d: Record<string, unknown> | undefined): d is Record<string, unknown> =>
     d !== undefined &&
     !d.deleted_at &&
@@ -1493,9 +1493,9 @@ function answerLists(
       visibility: String(d.visibility),
       owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
     });
-  const docsOn = (l: FakeList) =>
+  const docsOn = (l: FakeCollection) =>
     l.items.map((id) => state.documents.find((d) => d.id === id)).filter(seesDoc);
-  const view = (l: FakeList) => ({
+  const view = (l: FakeCollection) => ({
     id: l.id,
     name: l.name,
     description: l.description,
@@ -1507,7 +1507,7 @@ function answerLists(
     updated_at: '2026-09-26T10:00:00Z',
     etag: l.etag,
   });
-  const detail = (l: FakeList, from = 0, limit = state.listPageSize ?? 50) => {
+  const detail = (l: FakeCollection, from = 0, limit = state.collectionPageSize ?? 50) => {
     const docs = docsOn(l);
     const more = from + limit < docs.length;
     const shown = docs.slice(from, from + limit);
@@ -1519,7 +1519,7 @@ function answerLists(
         added_at: '2026-09-26T10:00:00Z',
         hint:
           l.owner_member_id === 'me'
-            ? listItemHint(l.audience, {
+            ? collectionItemHint(l.audience, {
                 visibility: String(d.visibility),
                 owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
               })
@@ -1533,10 +1533,10 @@ function answerLists(
   };
   /**
    * Where the page after `cursor` starts: after the document it names, as
-   * the reader is given the list now. One they are not given now — taken
-   * off, moved to the Trash — is a cursor that is not valid.
+   * the reader is given the collection now. One they are not given now — taken
+   * out, moved to the Trash — is a cursor that is not valid.
    */
-  const startAfter = (l: FakeList, cursor: string): number | null => {
+  const startAfter = (l: FakeCollection, cursor: string): number | null => {
     let after: unknown;
     try {
       after = (JSON.parse(atob(cursor)) as { after?: unknown }).after;
@@ -1547,81 +1547,83 @@ function answerLists(
     return at === -1 ? null : at + 1;
   };
   /**
-   * An owner may delete somebody else's list only when nobody may change
+   * An owner may delete somebody else's collection only when nobody may change
    * it any more: its maker has no sign-in, or is not one of its audience.
    */
-  const stranded = (l: FakeList) => {
+  const stranded = (l: FakeCollection) => {
     const maker = state.members.find((m) => m.id === l.owner_member_id);
     const makerRole = maker?.role as Role | null | undefined;
-    return !makerRole || !inListAudience(makerRole, l.audience);
+    return !makerRole || !inCollectionAudience(makerRole, l.audience);
   };
   const manage = () =>
     role === 'viewer'
       ? refuse(
           403,
           'forbidden',
-          'Viewers can open and download documents, but not make lists of them.',
+          'Viewers can open and download documents, but not make collections of them.',
         )
       : null;
-  /** Only its maker, in its audience, changes a list (A18). */
-  const refusedChange = (l: FakeList) =>
+  /** Only its maker, in its audience, changes a collection (A18). */
+  const refusedChange = (l: FakeCollection) =>
     manage() ??
     (l.owner_member_id !== 'me'
-      ? refuse(403, 'forbidden', 'Only the person who made this list can change it.')
-      : !inListAudience(role, l.audience)
+      ? refuse(403, 'forbidden', 'Only the person who made this collection can change it.')
+      : !inCollectionAudience(role, l.audience)
         ? refuse(
             403,
             'forbidden',
-            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+            'This collection is for people you are no longer one of. You can still delete it, but not change it.',
           )
         : null);
   const tidy = (name: unknown) =>
     typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
 
-  const onDocument = /^\/api\/v1\/documents\/([^/]+)\/lists$/.exec(path);
+  const onDocument = /^\/api\/v1\/documents\/([^/]+)\/collections$/.exec(path);
   if (onDocument) {
     const id = onDocument[1] as string;
     if (!seesDoc(state.documents.find((d) => d.id === id))) return noDocument();
-    return json({ items: all.filter((l) => seesList(l) && l.items.includes(id)).map(view) });
+    return json({ items: all.filter((l) => seesCollection(l) && l.items.includes(id)).map(view) });
   }
-  if (path === '/api/v1/lists' && method === 'GET') {
-    const seen = all.filter(seesList).sort((a, b) => a.name.localeCompare(b.name));
+  if (path === '/api/v1/collections' && method === 'GET') {
+    const seen = all.filter(seesCollection).sort((a, b) => a.name.localeCompare(b.name));
     return json({ items: seen.map(view) });
   }
-  if (path === '/api/v1/lists' && method === 'POST') {
+  if (path === '/api/v1/collections' && method === 'POST') {
     const b = body as {
       name?: unknown;
-      audience?: FakeList['audience'];
+      audience?: FakeCollection['audience'];
       description?: string | null;
     };
     const refused = manage();
     if (refused) return refused;
     const name = tidy(b.name);
     if (!name) {
-      return refuse(422, 'validation_failed', 'Give the list a name.', { detail: 'name' });
+      return refuse(422, 'validation_failed', 'Give the collection a name.', { detail: 'name' });
     }
     if (!b.audience) {
-      return refuse(422, 'validation_failed', 'Say who the list is for.', { detail: 'audience' });
+      return refuse(422, 'validation_failed', 'Say who the collection is for.', {
+        detail: 'audience',
+      });
     }
-    if (!inListAudience(role, b.audience)) {
-      return refuse(403, 'forbidden', 'Only an adult can make a list for the adults.');
+    if (!inCollectionAudience(role, b.audience)) {
+      return refuse(403, 'forbidden', 'Only an adult can make a collection for the adults.');
     }
-    const made: FakeList = {
-      id: `list-${all.length + 1}`,
+    const made: FakeCollection = {
+      id: `collection-${all.length + 1}`,
       name,
       description: b.description?.trim() || null,
       audience: b.audience,
       owner_member_id: 'me',
-      etag: `"list-${all.length + 1}.1"`,
+      etag: `"collection-${all.length + 1}.1"`,
       items: [],
     };
     // Never pushed: the array may be another test's.
-    state.lists = [...all, made];
+    state.collections = [...all, made];
     return json(detail(made), 201);
   }
-  const at = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+  const at = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
   if (at?.[2] && !at[3] && method === 'POST') {
-    // As the vault's route takes them, before it looks for the list: one
+    // As the vault's route takes them, before it looks for the collection: one
     // at least, and at most 200.
     const refused = manage();
     if (refused) return refused;
@@ -1633,81 +1635,91 @@ function answerLists(
       return refuse(422, 'validation_failed', 'Too big: expected array to have <=200 items');
     }
   }
-  const list = at ? all.find((l) => l.id === at[1]) : undefined;
-  if (!at || !list || !seesList(list)) return noList();
-  const replace = (next: FakeList) => {
-    state.lists = (state.lists ?? []).map((l) => (l.id === list.id ? next : l));
+  const collection = at ? all.find((l) => l.id === at[1]) : undefined;
+  if (!at || !collection || !seesCollection(collection)) return noCollection();
+  const replace = (next: FakeCollection) => {
+    state.collections = (state.collections ?? []).map((l) => (l.id === collection.id ? next : l));
     return next;
   };
   if (!at[2]) {
     if (method === 'GET') {
       const cursor = query.get('cursor');
-      const from = cursor === null ? 0 : startAfter(list, cursor);
+      const from = cursor === null ? 0 : startAfter(collection, cursor);
       if (from === null) {
         return refuse(422, 'validation_failed', 'That page cursor is not valid.');
       }
       const limit = query.get('limit');
-      return json(detail(list, from, limit ? Number(limit) : undefined));
+      return json(detail(collection, from, limit ? Number(limit) : undefined));
     }
     if (method === 'PATCH') {
-      const refused = refusedChange(list);
+      const refused = refusedChange(collection);
       if (refused) return refused;
-      if (ifMatch && ifMatch !== list.etag) {
-        return refuse(409, 'conflict', 'Someone else changed this list. Reload and try again.', {
-          detail: JSON.stringify(view(list)),
-        });
+      if (ifMatch && ifMatch !== collection.etag) {
+        return refuse(
+          409,
+          'conflict',
+          'Someone else changed this collection. Reload and try again.',
+          {
+            detail: JSON.stringify(view(collection)),
+          },
+        );
       }
       const b = body as {
         name?: unknown;
-        audience?: FakeList['audience'];
+        audience?: FakeCollection['audience'];
         description?: string | null;
       };
-      const name = b.name === undefined ? list.name : tidy(b.name);
+      const name = b.name === undefined ? collection.name : tidy(b.name);
       if (!name)
-        return refuse(422, 'validation_failed', 'Give the list a name.', { detail: 'name' });
+        return refuse(422, 'validation_failed', 'Give the collection a name.', { detail: 'name' });
       const changed = replace({
-        ...list,
+        ...collection,
         name,
-        audience: b.audience ?? list.audience,
-        description: b.description === undefined ? list.description : b.description?.trim() || null,
-        etag: `"${list.id}.${state.calls.length}"`,
+        audience: b.audience ?? collection.audience,
+        description:
+          b.description === undefined ? collection.description : b.description?.trim() || null,
+        etag: `"${collection.id}.${state.calls.length}"`,
       });
       return json(detail(changed));
     }
     if (method === 'DELETE') {
       // Its maker, whatever their role now; an owner, only when stranded.
-      if (list.owner_member_id !== 'me') {
+      if (collection.owner_member_id !== 'me') {
         const refused = manage();
         if (refused) return refused;
-        if (role !== 'owner' || !stranded(list)) {
-          return refuse(403, 'forbidden', 'Only the person who made this list can change it.');
+        if (role !== 'owner' || !stranded(collection)) {
+          return refuse(
+            403,
+            'forbidden',
+            'Only the person who made this collection can change it.',
+          );
         }
       }
-      state.lists = (state.lists ?? []).filter((l) => l.id !== list.id);
+      state.collections = (state.collections ?? []).filter((l) => l.id !== collection.id);
       return done();
     }
   }
-  const refused = refusedChange(list);
+  const refused = refusedChange(collection);
   if (refused) return refused;
   if (!at[3] && method === 'POST') {
     const ids = (body as { document_ids: string[] }).document_ids;
     // All of them, or none.
     if (!ids.every((id) => seesDoc(state.documents.find((d) => d.id === id)))) return noDocument();
     const changed = replace({
-      ...list,
+      ...collection,
       items: [
-        ...list.items,
-        ...ids.filter((id, i) => !list.items.includes(id) && ids.indexOf(id) === i),
+        ...collection.items,
+        ...ids.filter((id, i) => !collection.items.includes(id) && ids.indexOf(id) === i),
       ],
     });
     return json(detail(changed));
   }
   if (at[3] && method === 'DELETE') {
     const id = decodeURIComponent(at[3]);
-    if (!list.items.includes(id)) {
-      return refuse(404, 'not_found', 'That document is not on this list.');
+    if (!collection.items.includes(id)) {
+      return refuse(404, 'not_found', 'That document is not in this collection.');
     }
-    replace({ ...list, items: list.items.filter((d) => d !== id) });
+    replace({ ...collection, items: collection.items.filter((d) => d !== id) });
     return done();
   }
   return Promise.reject(new Error(`unmocked ${method} ${path}`));

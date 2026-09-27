@@ -1,7 +1,7 @@
 import { withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
 import {
   canSee,
-  canSeeList,
+  canSeeCollection,
   describeEvents,
   type ActivityEvent,
   type ActivityLine,
@@ -38,8 +38,8 @@ export interface Reader {
 
 /**
  * What a rule is told about a row: what happened, to what, the document's
- * live row, and the live row of the list it was about or on (5.14) — null
- * when the reader is not given it (another member's Only me list), or when
+ * live row, and the live row of the collection it was about or in (5.14) — null
+ * when the reader is not given it (another member's Only me collection), or when
  * there is none.
  */
 export interface Line {
@@ -47,8 +47,8 @@ export interface Line {
   object_type: string | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
-  list_audience?: string | null;
-  list_owner?: string | null;
+  collection_audience?: string | null;
+  collection_owner?: string | null;
 }
 
 type Audience = (reader: Reader, line: Line) => boolean;
@@ -66,22 +66,25 @@ const seesTheDocument: Audience = (reader, line) =>
   canSee(reader, { visibility: line.document_visibility, owner_member_id: line.document_owner });
 
 /**
- * A list's lines follow the list (5.14): whoever is in its audience now, as
- * its live row says — Only me, its maker alone. A list the reader is not
- * given (the database keeps another member's Only me list from them) is
+ * A collection's lines follow the collection (5.14): whoever is in its audience now, as
+ * its live row says — Only me, its maker alone. A collection the reader is not
+ * given (the database keeps another member's Only me collection from them) is
  * nobody's line, like a document with no row.
  */
-const seesTheList: Audience = (reader, line) =>
-  line.list_audience != null &&
-  canSeeList(reader, { audience: line.list_audience, owner_member_id: line.list_owner ?? null });
+const seesTheCollection: Audience = (reader, line) =>
+  line.collection_audience != null &&
+  canSeeCollection(reader, {
+    audience: line.collection_audience,
+    owner_member_id: line.collection_owner ?? null,
+  });
 
 /**
- * A document put on a list, or taken off: one line per document, written
- * about the document, so the document's rule applies — and the list's too,
- * or the line would say that a list the reader may not know of exists.
+ * A document put in a collection, or taken out: one line per document, written
+ * about the document, so the document's rule applies — and the collection's too,
+ * or the line would say that a collection the reader may not know of exists.
  */
-const seesTheDocumentOnTheList: Audience = (reader, line) =>
-  seesTheDocument(reader, line) && seesTheList(reader, line);
+const seesTheDocumentInTheCollection: Audience = (reader, line) =>
+  seesTheDocument(reader, line) && seesTheCollection(reader, line);
 
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
@@ -162,15 +165,15 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['document_type.restored', everyone],
   ['document_type.deleted', everyone],
   ['document_attribute.created', everyone],
-  // lists of documents (5.14): a list's name is information ("Divorce"),
+  // collections of documents (5.14): a collection's name is information ("Divorce"),
   // so its lines are its audience's, and carry its id and no name. A
-  // document put on it or taken off is a line about the document.
-  ['list.created', seesTheList],
-  ['list.renamed', seesTheList],
-  ['list.updated', seesTheList],
-  ['list.deleted', seesTheList],
-  ['list.item_added', seesTheDocumentOnTheList],
-  ['list.item_removed', seesTheDocumentOnTheList],
+  // document put in it or taken out is a line about the document.
+  ['collection.created', seesTheCollection],
+  ['collection.renamed', seesTheCollection],
+  ['collection.updated', seesTheCollection],
+  ['collection.deleted', seesTheCollection],
+  ['collection.item_added', seesTheDocumentInTheCollection],
+  ['collection.item_removed', seesTheDocumentInTheCollection],
 ]);
 
 /**
@@ -226,9 +229,9 @@ interface Row {
   document_visibility: Visibility | null;
   document_owner: string | null;
   member_name: string | null;
-  list_name: string | null;
-  list_audience: string | null;
-  list_owner: string | null;
+  collection_name: string | null;
+  collection_audience: string | null;
+  collection_owner: string | null;
 }
 
 export class AuditService {
@@ -259,9 +262,9 @@ export class AuditService {
                d.visibility              as document_visibility,
                d.owner_member_id         as document_owner,
                object_member.display_name as member_name,
-               l.name                    as list_name,
-               l.audience                as list_audience,
-               l.owner_member_id         as list_owner
+               l.name                    as collection_name,
+               l.audience                as collection_audience,
+               l.owner_member_id         as collection_owner
           from audit_event e
           left join account_household ah
             on ah.account_id = e.actor_account_id
@@ -271,12 +274,12 @@ export class AuditService {
             on e.object_type = 'document' and d.id = e.object_id
           left join member object_member
             on e.object_type = 'member' and object_member.id = e.object_id
-          -- A list's own lines name it; a document's line on a list keeps
-          -- the list's id in its detail (5.14).
-          left join doc_list l
-            on l.id = case when e.object_type = 'list' then e.object_id
-                           when e.action in ('list.item_added', 'list.item_removed')
-                             then (e.detail->>'list_id')::uuid
+          -- A collection's own lines name it; a line about a document put in one,
+          -- or taken out, keeps the collection's id in its detail (5.14).
+          left join doc_collection l
+            on l.id = case when e.object_type = 'collection' then e.object_id
+                           when e.action in ('collection.item_added', 'collection.item_removed')
+                             then (e.detail->>'collection_id')::uuid
                       end
          where e.household_id = ${p.householdId}
            ${opts.before ? sql`and e.id < ${opts.before}` : sql``}
@@ -300,7 +303,7 @@ export class AuditService {
           object_type: r.object_type,
           object_id: r.object_id,
           object_title: r.document_title ?? r.member_name,
-          list_name: r.list_name,
+          collection_name: r.collection_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
         });
       }

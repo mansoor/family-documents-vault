@@ -1,22 +1,22 @@
 import {
   can,
   canSee,
-  canSeeList,
+  canSeeCollection,
   CATEGORY_LABELS,
   checkCaptureMetadata,
   checkExtra,
+  COLLECTION_AUDIENCES,
+  COLLECTION_DESCRIPTION_MAX,
+  COLLECTION_ITEMS_PAGE,
+  COLLECTION_ITEMS_PAGE_MAX,
+  COLLECTION_NAME_MAX,
+  collectionItemHint,
   CORE_FIELDS,
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
-  inListAudience,
+  inCollectionAudience,
   libraryHasName,
-  LIST_AUDIENCES,
-  LIST_DESCRIPTION_MAX,
-  LIST_ITEMS_PAGE,
-  LIST_ITEMS_PAGE_MAX,
-  LIST_NAME_MAX,
-  listItemHint,
   missingFields,
   nextReminder,
   PREVIEW_MAX_PAGES,
@@ -28,6 +28,9 @@ import {
   UNSEEN_DOCUMENTS,
   type Capabilities,
   type CaptureMetadata,
+  type CollectionAudience,
+  type CollectionDetail,
+  type CollectionView,
   type CoreField,
   type CoreFieldRule,
   type DateValue,
@@ -37,9 +40,6 @@ import {
   type TypeField,
   type DocumentView,
   type IssuerSuggestions,
-  type ListAudience,
-  type ListDetail,
-  type ListView,
   type OfflineGrant,
   type OfflineItem,
   type ReminderView,
@@ -120,12 +120,12 @@ export interface FakeVaultState {
    */
   offlineEssentials: { items: OfflineItem[]; received: Set<string> };
   /**
-   * Lists of documents (0.5.12), as the real vault keeps them: each made by
+   * Collections of documents (0.5.12), as the real vault keeps them: each made by
    * the one member the fake signs in as — or, put here by a test, by one of
    * `state.members`, or by somebody with no sign-in there — and marked
    * deleted, never removed.
    */
-  lists: FakeList[];
+  collections: FakeCollection[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -137,19 +137,19 @@ type FakeDocument = { id: string; title: string | null; revision?: number } & Om
   'title'
 >;
 
-/** A list of documents, as the fake keeps one (0.5.12). */
-export interface FakeList {
+/** A collection of documents, as the fake keeps one (0.5.12). */
+export interface FakeCollection {
   id: string;
   name: string;
   description: string | null;
-  audience: ListAudience;
+  audience: CollectionAudience;
   owner_member_id: string;
   created_at: string;
   updated_at: string;
   /** Moved by a change to its name, words or audience — never its items — as its ETag says. */
   revision: number;
   deleted: boolean;
-  /** In the order they were put on it. */
+  /** In the order they were put in it. */
   items: Array<{ document_id: string; added_at: string }>;
 }
 
@@ -391,7 +391,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     role: 'owner',
-    lists: [],
+    collections: [],
     calls: [],
     offline: false,
   };
@@ -604,8 +604,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           offline_essentials: true,
           // As the real vault (0.5.11): the household's own kinds of document.
           custom_types: true,
-          // And lists of documents (0.5.12).
-          lists: true,
+          // And collections of documents (0.5.12).
+          collections: true,
           // Reminders from any date (0.5.15), said on since the web's
           // editor for them shipped (0.5.16), as the vault says.
           reminder_dates: true,
@@ -1448,20 +1448,20 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         return ok(impact);
       }
     }
-    // Lists of documents (0.5.12), as the real vault keeps them: a list
+    // Collections of documents (0.5.12), as the real vault keeps them: a collection
     // exists only for its maker and whoever is in its audience (a viewer is
-    // in none); each reader is given the documents on it they can see,
+    // in none); each reader is given the documents in it they can see,
     // counted as they see them; only its maker changes it, while they are
     // in its audience, and deletes it whatever their role; an owner deletes
     // one nobody may change any more.
     const me = { role: state.role, memberId: 'fake-member' };
-    const listAt = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
-    const docLists = /^\/api\/v1\/documents\/([^/]+)\/lists$/.exec(path);
-    if (path === '/api/v1/lists' || listAt || docLists) {
+    const collectionAt = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+    const docCollections = /^\/api\/v1\/documents\/([^/]+)\/collections$/.exec(path);
+    if (path === '/api/v1/collections' || collectionAt || docCollections) {
       const s = session();
       if (!('id' in s)) return s;
-      const shown = (l: FakeList) => !l.deleted && canSeeList(me, l);
-      const onIt = (l: FakeList) =>
+      const shown = (l: FakeCollection) => !l.deleted && canSeeCollection(me, l);
+      const onIt = (l: FakeCollection) =>
         l.items
           .map((i) => ({ ...i, doc: state.documents.find((d) => d.id === i.document_id) }))
           .filter(
@@ -1472,8 +1472,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
                 owner_member_id: i.doc.owner_member_id ?? null,
               }),
           );
-      const listTag = (l: FakeList) => `"${l.id}.${l.revision}"`;
-      const listView = (l: FakeList): ListView => ({
+      const collectionTag = (l: FakeCollection) => `"${l.id}.${l.revision}"`;
+      const collectionView = (l: FakeCollection): CollectionView => ({
         id: l.id,
         name: l.name,
         description: l.description,
@@ -1483,22 +1483,26 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         item_count: onIt(l).length,
         created_at: l.created_at,
         updated_at: l.updated_at,
-        etag: listTag(l),
+        etag: collectionTag(l),
       });
-      /** A list and a page of what is on it: its first, unless asked. */
-      const detail = (l: FakeList, from = 0, limit = LIST_ITEMS_PAGE): ListDetail => {
+      /** A collection and a page of what is in it: its first, unless asked. */
+      const detail = (
+        l: FakeCollection,
+        from = 0,
+        limit = COLLECTION_ITEMS_PAGE,
+      ): CollectionDetail => {
         const all = onIt(l);
         const shown = all.slice(from, from + limit);
         const more = from + limit < all.length;
         const last = shown[shown.length - 1];
         return {
-          ...listView(l),
+          ...collectionView(l),
           items: shown.map((i) => ({
             document: listedOf(i.doc),
             added_at: i.added_at,
             hint:
               l.owner_member_id === me.memberId
-                ? listItemHint(l.audience, {
+                ? collectionItemHint(l.audience, {
                     visibility: i.doc.visibility ?? 'household',
                     owner_member_id: i.doc.owner_member_id ?? null,
                   })
@@ -1509,14 +1513,14 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         };
       };
       /**
-       * The page GET /lists/{id} asks for: 50 unless `limit` says (200 at
+       * The page GET /collections/{id} asks for: 50 unless `limit` says (200 at
        * most), after the document `cursor` names — one the reader is given
-       * on it, or the cursor is not valid.
+       * in it, or the cursor is not valid.
        */
-      const paged = (l: FakeList): ListDetail | ResponseLike => {
+      const paged = (l: FakeCollection): CollectionDetail | ResponseLike => {
         const asked = param(url, 'limit');
-        const limit = asked === undefined ? LIST_ITEMS_PAGE : Number(asked);
-        if (!Number.isInteger(limit) || limit < 1 || limit > LIST_ITEMS_PAGE_MAX) {
+        const limit = asked === undefined ? COLLECTION_ITEMS_PAGE : Number(asked);
+        if (!Number.isInteger(limit) || limit < 1 || limit > COLLECTION_ITEMS_PAGE_MAX) {
           return fail(422, 'validation_failed', 'That page size is not valid.');
         }
         const cursor = param(url, 'cursor');
@@ -1526,36 +1530,41 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         if (at < 0) return fail(422, 'validation_failed', 'That page cursor is not valid.');
         return detail(l, at + 1, limit);
       };
-      /** Whose role now, of the member who made a list: the fake's own, or one of `state.members`. */
+      /**
+       * Whose role now, of the member who made a collection: the fake's own,
+       * or one of `state.members`.
+       */
       const roleOf = (memberId: string): Role | undefined =>
         memberId === me.memberId
           ? state.role
           : (state.members.find((m) => m.id === memberId)?.role as Role | undefined);
       /** Nobody may change it any more: its maker has no sign-in, or is outside its audience. */
-      const stranded = (l: FakeList) => {
+      const stranded = (l: FakeCollection) => {
         const role = roleOf(l.owner_member_id);
-        return role === undefined || !inListAudience(role, l.audience);
+        return role === undefined || !inCollectionAudience(role, l.audience);
       };
       // By name, whatever the case; made first, first (a stable sort).
-      const byName = (a: FakeList, b: FakeList) => {
+      const byName = (a: FakeCollection, b: FakeCollection) => {
         const [x, y] = [a.name.toLowerCase(), b.name.toLowerCase()];
         return x < y ? -1 : x > y ? 1 : 0;
       };
       const manage = () =>
-        can(state.role, 'list.manage') ? null : fail(403, 'forbidden', refusalFor('list.manage'));
+        can(state.role, 'collection.manage')
+          ? null
+          : fail(403, 'forbidden', refusalFor('collection.manage'));
       /** The name, words and audience asked for, as the real vault takes them; or a refusal. */
       const fields = (
-        l: Pick<FakeList, 'name' | 'description' | 'audience'>,
-      ): ResponseLike | Pick<FakeList, 'name' | 'description' | 'audience'> => {
+        l: Pick<FakeCollection, 'name' | 'description' | 'audience'>,
+      ): ResponseLike | Pick<FakeCollection, 'name' | 'description' | 'audience'> => {
         const out = { ...l };
         if (body.name !== undefined) {
           const name = tidy(body.name as string);
-          if (!name) return fail(422, 'validation_failed', 'Give the list a name.', 'name');
-          if (name.length > LIST_NAME_MAX) {
+          if (!name) return fail(422, 'validation_failed', 'Give the collection a name.', 'name');
+          if (name.length > COLLECTION_NAME_MAX) {
             return fail(
               422,
               'validation_failed',
-              `A list’s name is too long: ${LIST_NAME_MAX} characters at most.`,
+              `A collection’s name is too long: ${COLLECTION_NAME_MAX} characters at most.`,
               'name',
             );
           }
@@ -1563,46 +1572,46 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         }
         if (body.description !== undefined) {
           const words = (body.description as string | null)?.trim() || null;
-          if ((words?.length ?? 0) > LIST_DESCRIPTION_MAX) {
+          if ((words?.length ?? 0) > COLLECTION_DESCRIPTION_MAX) {
             return fail(
               422,
               'validation_failed',
-              `What a list is for is too long: ${LIST_DESCRIPTION_MAX} characters at most.`,
+              `What a collection is for is too long: ${COLLECTION_DESCRIPTION_MAX} characters at most.`,
               'description',
             );
           }
           out.description = words;
         }
         if (body.audience !== undefined) {
-          const audience = body.audience as ListAudience;
-          if (!LIST_AUDIENCES.includes(audience)) {
-            return fail(422, 'validation_failed', 'Say who the list is for.', 'audience');
+          const audience = body.audience as CollectionAudience;
+          if (!COLLECTION_AUDIENCES.includes(audience)) {
+            return fail(422, 'validation_failed', 'Say who the collection is for.', 'audience');
           }
-          if (!inListAudience(state.role, audience)) {
-            return fail(403, 'forbidden', 'Only an adult can make a list for the adults.');
+          if (!inCollectionAudience(state.role, audience)) {
+            return fail(403, 'forbidden', 'Only an adult can make a collection for the adults.');
           }
           out.audience = audience;
         }
         return out;
       };
 
-      if (path === '/api/v1/lists' && init.method === 'GET') {
-        return ok({ items: state.lists.filter(shown).sort(byName).map(listView) });
+      if (path === '/api/v1/collections' && init.method === 'GET') {
+        return ok({ items: state.collections.filter(shown).sort(byName).map(collectionView) });
       }
-      if (path === '/api/v1/lists' && init.method === 'POST') {
+      if (path === '/api/v1/collections' && init.method === 'POST') {
         const refused = manage();
         if (refused) return refused;
         if (body.name === undefined) {
-          return fail(422, 'validation_failed', 'Give the list a name.', 'name');
+          return fail(422, 'validation_failed', 'Give the collection a name.', 'name');
         }
         if (body.audience === undefined) {
-          return fail(422, 'validation_failed', 'Say who the list is for.', 'audience');
+          return fail(422, 'validation_failed', 'Say who the collection is for.', 'audience');
         }
         const asked = fields({ name: '', description: null, audience: 'only_me' });
         if (isResponse(asked)) return asked;
         const at = new Date().toISOString();
-        const l: FakeList = {
-          id: next('list'),
+        const l: FakeCollection = {
+          id: next('collection'),
           ...asked,
           owner_member_id: me.memberId,
           created_at: at,
@@ -1611,29 +1620,33 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           deleted: false,
           items: [],
         };
-        state.lists.push(l);
-        return respond(201, detail(l), { etag: listTag(l) });
+        state.collections.push(l);
+        return respond(201, detail(l), { etag: collectionTag(l) });
       }
-      if (docLists && init.method === 'GET') {
-        const doc = state.documents.find((d) => d.id === decodeURIComponent(docLists[1] as string));
+      if (docCollections && init.method === 'GET') {
+        const doc = state.documents.find(
+          (d) => d.id === decodeURIComponent(docCollections[1] as string),
+        );
         if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
-        const on = state.lists.filter(
+        const on = state.collections.filter(
           (l) => shown(l) && l.items.some((i) => i.document_id === doc.id),
         );
-        return ok({ items: on.sort(byName).map(listView) });
+        return ok({ items: on.sort(byName).map(collectionView) });
       }
-      if (listAt) {
-        const found = state.lists.find((x) => x.id === decodeURIComponent(listAt[1] as string));
+      if (collectionAt) {
+        const found = state.collections.find(
+          (x) => x.id === decodeURIComponent(collectionAt[1] as string),
+        );
         const l = found && shown(found) ? found : undefined;
         const mine = l !== undefined && l.owner_member_id === me.memberId;
         const notYours = () =>
-          fail(403, 'forbidden', 'Only the person who made this list can change it.');
+          fail(403, 'forbidden', 'Only the person who made this collection can change it.');
         // Its maker deletes it whatever their role now; anybody else needs
-        // list.manage, and then an owner only one nobody may change any more.
-        if (!listAt[2] && init.method === 'DELETE') {
+        // collection.manage, and then an owner only one nobody may change any more.
+        if (!collectionAt[2] && init.method === 'DELETE') {
           const refused = mine ? null : manage();
           if (refused) return refused;
-          if (!l) return fail(404, 'not_found', 'That list does not exist.');
+          if (!l) return fail(404, 'not_found', 'That collection does not exist.');
           if (!mine && (state.role !== 'owner' || !stranded(l))) return notYours();
           l.deleted = true;
           return empty();
@@ -1641,26 +1654,26 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         const changing = init.method !== 'GET';
         const refused = changing ? manage() : null;
         if (refused) return refused;
-        if (!l) return fail(404, 'not_found', 'That list does not exist.');
-        if (!listAt[2] && init.method === 'GET') {
+        if (!l) return fail(404, 'not_found', 'That collection does not exist.');
+        if (!collectionAt[2] && init.method === 'GET') {
           const page = paged(l);
-          return isResponse(page) ? page : respond(200, page, { etag: listTag(l) });
+          return isResponse(page) ? page : respond(200, page, { etag: collectionTag(l) });
         }
         if (changing && !mine) return notYours();
-        if (changing && !inListAudience(state.role, l.audience)) {
+        if (changing && !inCollectionAudience(state.role, l.audience)) {
           return fail(
             403,
             'forbidden',
-            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+            'This collection is for people you are no longer one of. You can still delete it, but not change it.',
           );
         }
-        if (!listAt[2] && init.method === 'PATCH') {
+        if (!collectionAt[2] && init.method === 'PATCH') {
           const ifMatch = init.headers['if-match'];
-          if (ifMatch && ifMatch !== listTag(l)) {
+          if (ifMatch && ifMatch !== collectionTag(l)) {
             return fail(
               409,
               'conflict',
-              'This list was changed since you opened it. Reload and try again.',
+              'This collection was changed since you opened it. Reload and try again.',
               JSON.stringify(detail(l)),
             );
           }
@@ -1674,14 +1687,14 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             Object.assign(l, asked, { updated_at: new Date().toISOString() });
             l.revision += 1;
           }
-          return respond(200, detail(l), { etag: listTag(l) });
+          return respond(200, detail(l), { etag: collectionTag(l) });
         }
-        if (listAt[2] && !listAt[3] && init.method === 'POST') {
+        if (collectionAt[2] && !collectionAt[3] && init.method === 'POST') {
           const ids = [...new Set((body.document_ids as string[] | undefined) ?? [])];
           if (ids.length === 0) {
-            return fail(422, 'validation_failed', 'Choose a document to put on the list.');
+            return fail(422, 'validation_failed', 'Choose a document to put in the collection.');
           }
-          // Each one the maker can see, or none is put on.
+          // Each one the maker can see, or none is put in.
           const seen = (id: string) => {
             const d = state.documents.find((x) => x.id === id);
             return (
@@ -1697,15 +1710,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             if (l.items.some((i) => i.document_id === id)) continue;
             l.items.push({ document_id: id, added_at: new Date().toISOString() });
           }
-          return respond(200, detail(l), { etag: listTag(l) });
+          return respond(200, detail(l), { etag: collectionTag(l) });
         }
-        if (listAt[3] && init.method === 'DELETE') {
-          const id = decodeURIComponent(listAt[3]);
+        if (collectionAt[3] && init.method === 'DELETE') {
+          const id = decodeURIComponent(collectionAt[3]);
           if (!state.documents.some((d) => d.id === id)) {
             return fail(404, 'not_found', 'That document is not in the vault.');
           }
           const at = l.items.findIndex((i) => i.document_id === id);
-          if (at < 0) return fail(404, 'not_found', 'That document is not on this list.');
+          if (at < 0) return fail(404, 'not_found', 'That document is not in this collection.');
           l.items.splice(at, 1);
           return empty();
         }

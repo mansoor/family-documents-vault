@@ -10,6 +10,12 @@ export default defineConfig({
   // they go one after another, in file order.
   workers: 1,
   fullyParallel: false,
+  // first-run.spec.ts makes that household, so it goes first by name, not
+  // by where its name happens to sort (collections.spec.ts sorts before it).
+  projects: [
+    { name: 'first run', testMatch: 'first-run.spec.ts' },
+    { name: 'on its vault', testIgnore: 'first-run.spec.ts', dependencies: ['first run'] },
+  ],
   timeout: 60_000,
   expect: { timeout: 10_000 },
   retries: process.env.CI ? 1 : 0,

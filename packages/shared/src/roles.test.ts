@@ -3,15 +3,15 @@ import {
   CAPABILITIES,
   can,
   canSee,
-  canSeeList,
+  canSeeCollection,
   capabilitiesFor,
   capabilityToInvite,
-  inListAudience,
-  LIST_AUDIENCES,
-  LIST_HINT_PRIVATE,
-  LIST_HINT_SOME,
-  LIST_HINT_TEENS,
-  listItemHint,
+  COLLECTION_AUDIENCES,
+  COLLECTION_HINT_PRIVATE,
+  COLLECTION_HINT_SOME,
+  COLLECTION_HINT_TEENS,
+  collectionItemHint,
+  inCollectionAudience,
   refusalFor,
   ROLES,
   rolesWith,
@@ -102,69 +102,82 @@ describe('the role matrix', () => {
   });
 });
 
-describe('who sees a list (5.14)', () => {
+describe('who sees a collection (5.14)', () => {
   const me = 'member-me';
-  const list = (audience: string, owner: string | null = 'someone-else') => ({
+  const collection = (audience: string, owner: string | null = 'someone-else') => ({
     audience,
     owner_member_id: owner,
   });
 
   it('everyone is the family that files; the adults are the adults; Only me is its maker', () => {
-    const who = (l: ReturnType<typeof list>) =>
-      ROLES.filter((role) => canSeeList({ role, memberId: me }, l));
-    expect(who(list('everyone'))).toEqual(['owner', 'adult', 'teen']);
-    expect(who(list('teens'))).toEqual(['owner', 'adult', 'teen']);
-    expect(who(list('adults'))).toEqual(['owner', 'adult']);
-    expect(who(list('only_me'))).toEqual([]);
+    const who = (l: ReturnType<typeof collection>) =>
+      ROLES.filter((role) => canSeeCollection({ role, memberId: me }, l));
+    expect(who(collection('everyone'))).toEqual(['owner', 'adult', 'teen']);
+    expect(who(collection('teens'))).toEqual(['owner', 'adult', 'teen']);
+    expect(who(collection('adults'))).toEqual(['owner', 'adult']);
+    expect(who(collection('only_me'))).toEqual([]);
     // Its maker, whatever their role now.
-    expect(who(list('only_me', me))).toEqual(['owner', 'adult', 'teen', 'viewer']);
+    expect(who(collection('only_me', me))).toEqual(['owner', 'adult', 'teen', 'viewer']);
   });
 
-  it('a viewer sees no list, not even one made for everyone (A17)', () => {
-    for (const audience of LIST_AUDIENCES) {
-      expect(canSeeList({ role: 'viewer', memberId: me }, list(audience)), audience).toBe(false);
+  it('a viewer sees no collection, not even one made for everyone (A17)', () => {
+    for (const audience of COLLECTION_AUDIENCES) {
+      expect(
+        canSeeCollection({ role: 'viewer', memberId: me }, collection(audience)),
+        audience,
+      ).toBe(false);
     }
   });
 
-  it('its maker still sees a list outside its audience now, and nobody else does (the 5.14 review)', () => {
-    // An adult made a teen, or a viewer: the list they made for the adults
+  it('its maker still sees a collection outside its audience now, and nobody else does (the 5.14 review)', () => {
+    // An adult made a teen, or a viewer: the collection they made for the adults
     // is theirs to see (and delete), and still nobody else's outside it.
     for (const role of ['teen', 'viewer'] as const) {
-      for (const audience of LIST_AUDIENCES) {
-        expect(canSeeList({ role, memberId: me }, list(audience, me)), `${role} ${audience}`).toBe(
-          true,
-        );
+      for (const audience of COLLECTION_AUDIENCES) {
+        expect(
+          canSeeCollection({ role, memberId: me }, collection(audience, me)),
+          `${role} ${audience}`,
+        ).toBe(true);
       }
-      expect(canSeeList({ role, memberId: me }, list('adults'))).toBe(false);
-      expect(inListAudience(role, 'adults')).toBe(false);
+      expect(canSeeCollection({ role, memberId: me }, collection('adults'))).toBe(false);
+      expect(inCollectionAudience(role, 'adults')).toBe(false);
     }
-    // Nobody is the maker of a list whose maker is gone.
-    expect(canSeeList({ role: 'owner', memberId: null }, list('adults', null))).toBe(true);
-    expect(canSeeList({ role: 'teen', memberId: null }, list('adults', null))).toBe(false);
+    // Nobody is the maker of a collection whose maker is gone.
+    expect(canSeeCollection({ role: 'owner', memberId: null }, collection('adults', null))).toBe(
+      true,
+    );
+    expect(canSeeCollection({ role: 'teen', memberId: null }, collection('adults', null))).toBe(
+      false,
+    );
   });
 
   it('an audience never heard of, or nobody at all, is closed', () => {
     for (const audience of ['public', 'constructor', '__proto__', '']) {
-      expect(canSeeList({ role: 'owner', memberId: me }, list(audience, me)), audience).toBe(false);
-      expect(inListAudience('owner', audience), audience).toBe(false);
+      expect(
+        canSeeCollection({ role: 'owner', memberId: me }, collection(audience, me)),
+        audience,
+      ).toBe(false);
+      expect(inCollectionAudience('owner', audience), audience).toBe(false);
     }
-    // Nobody without a member matches an Only me list with no maker.
-    expect(canSeeList({ role: 'owner', memberId: null }, list('only_me', null))).toBe(false);
+    // Nobody without a member matches an Only me collection with no maker.
+    expect(canSeeCollection({ role: 'owner', memberId: null }, collection('only_me', null))).toBe(
+      false,
+    );
   });
 
-  it("tells a list's maker who of its audience is not given a document on it", () => {
+  it("tells a collection's maker who of its audience is not given a document in it", () => {
     const doc = (visibility: string) => ({ visibility, owner_member_id: me });
-    expect(listItemHint('everyone', doc('household'))).toBeNull();
-    expect(listItemHint('everyone', doc('adults'))).toBe(LIST_HINT_TEENS);
-    expect(listItemHint('teens', doc('adults'))).toBe(LIST_HINT_TEENS);
-    expect(listItemHint('adults', doc('adults'))).toBeNull();
-    expect(listItemHint('everyone', doc('private'))).toBe(LIST_HINT_PRIVATE);
-    expect(listItemHint('adults', doc('private'))).toBe(LIST_HINT_PRIVATE);
+    expect(collectionItemHint('everyone', doc('household'))).toBeNull();
+    expect(collectionItemHint('everyone', doc('adults'))).toBe(COLLECTION_HINT_TEENS);
+    expect(collectionItemHint('teens', doc('adults'))).toBe(COLLECTION_HINT_TEENS);
+    expect(collectionItemHint('adults', doc('adults'))).toBeNull();
+    expect(collectionItemHint('everyone', doc('private'))).toBe(COLLECTION_HINT_PRIVATE);
+    expect(collectionItemHint('adults', doc('private'))).toBe(COLLECTION_HINT_PRIVATE);
     // Only me is for its maker alone: there is nobody else to tell.
     for (const visibility of ['household', 'adults', 'private']) {
-      expect(listItemHint('only_me', doc(visibility)), visibility).toBeNull();
+      expect(collectionItemHint('only_me', doc(visibility)), visibility).toBeNull();
     }
     // A visibility never heard of is shut to everybody.
-    expect(listItemHint('adults', doc('sealed'))).toBe(LIST_HINT_SOME);
+    expect(collectionItemHint('adults', doc('sealed'))).toBe(COLLECTION_HINT_SOME);
   });
 });

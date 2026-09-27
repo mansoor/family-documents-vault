@@ -9,9 +9,9 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
-import { AddToList, audienceLabel, listsOffered } from '../lists.js';
 import {
   BottomNav,
   Button,
@@ -403,8 +403,8 @@ export function DocumentScreen() {
           <p className="keep-lines">{doc.notes}</p>
         </section>
       )}
-      {listsOffered(caps, storedRole()) && (
-        <DocumentLists documentId={doc.id} title={doc.title ?? 'Needs a name'} />
+      {collectionsOffered(caps, storedRole()) && (
+        <DocumentCollections documentId={doc.id} title={doc.title ?? 'Needs a name'} />
       )}
       {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
       {doc.latest_version_id !== null && (
@@ -436,13 +436,13 @@ export function DocumentScreen() {
 }
 
 /**
- * The lists this document is on, of those the reader may see, and "Add to
- * a list" (5.15). A list the reader may not see is not mentioned at all.
+ * The collections this document is in, of those the reader may see, and "Add to
+ * a collection" (5.15). A collection the reader may not see is not mentioned at all.
  */
-function DocumentLists(props: { documentId: string; title: string }) {
+function DocumentCollections(props: { documentId: string; title: string }) {
   const { authVersion } = useApp();
   const { data, error, reload } = useLoad(
-    async (t) => (await api.documentLists(t, props.documentId)).items,
+    async (t) => (await api.documentCollections(t, props.documentId)).items,
     [props.documentId, authVersion],
   );
   const [open, setOpen] = useState(false);
@@ -459,16 +459,16 @@ function DocumentLists(props: { documentId: string; title: string }) {
   };
 
   return (
-    <section aria-labelledby="doc-lists-h">
-      <h2 id="doc-lists-h" className="section-h">
-        Lists
+    <section aria-labelledby="doc-collections-h">
+      <h2 id="doc-collections-h" className="section-h">
+        Collections
       </h2>
       <ErrorNote message={error} />
       {data && data.length > 0 && (
         <ul className="list">
           {data.map((l) => (
             <li key={l.id}>
-              <Link to={`/lists/${l.id}`} className="rowbtn">
+              <Link to={`/collections/${l.id}`} className="rowbtn">
                 <span className="doc-title">{l.name}</span>
                 <span className="muted">{audienceLabel(l.audience)}</span>
               </Link>
@@ -477,16 +477,16 @@ function DocumentLists(props: { documentId: string; title: string }) {
         </ul>
       )}
       <button ref={button} type="button" className="btn btn-quiet" onClick={() => setOpen(true)}>
-        Add to a list
+        Add to a collection
       </button>
       {open && (
         <Sheet
-          label={`Add “${props.title}” to a list`}
+          label={`Add “${props.title}” to a collection`}
           busy={busy}
           returnFocus={button}
           onClose={close}
         >
-          <AddToList
+          <AddToCollection
             documentIds={[props.documentId]}
             what={`“${props.title}”`}
             onClose={close}
