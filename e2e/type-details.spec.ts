@@ -16,7 +16,7 @@ const PASSWORD = 'correct horse battery staple';
 
 /**
  * Signed in through the page, once for this file. Signing in is limited to
- * 10 a minute, and the suite signs in up to seven times a run: once in each
+ * 10 a minute, and the suite signs in up to eight times a run: once in each
  * file, first-run.spec.ts only when it is run again. So wait a minute
  * between local runs. The access token it was given too, to ask the API
  * what it holds.

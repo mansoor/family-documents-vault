@@ -29,7 +29,7 @@ interface Made {
 
 /**
  * Signed in once for the file, through the API. Signing in is limited to
- * 10 a minute, and the suite signs in up to seven times a run: once in each
+ * 10 a minute, and the suite signs in up to eight times a run: once in each
  * file, first-run.spec.ts only when it is run again. So wait a minute
  * between local runs.
  */
