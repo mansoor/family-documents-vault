@@ -10,6 +10,10 @@ All notable changes to Family Document Vault. The format follows
 
 Invitation and password-reset links the same way as share links.
 
+### Added
+
+- `FDV_RATE_LIMIT_PER_MINUTE` (300 by default): how many requests one address may make in a minute, beyond the tighter limits on signing in and opening links. Raise it when many devices share one address.
+
 ### Changed
 
 - New invitation and password-reset links look like `/join#…` and `/reset#…`: the part after `#` never reaches a server or a proxy on the way, and the page takes it out of the address bar and this tab's history as soon as it has read it, then sends it in the request itself. The browser's own history may still keep the link; what protects it is that it works once and expires — an hour for a reset — and an invitation also needs its code.

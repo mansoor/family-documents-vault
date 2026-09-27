@@ -197,6 +197,10 @@ jobs:
       - name: Start the stack exactly as a self-hoster would
         run: |
           node scripts/gen-env.mjs
+          # Every spec runs from this one address, well over a family's pace:
+          # the per-address ceiling is raised as a household on one address
+          # would (the tighter sign-in and link limits stay as they are).
+          echo "FDV_RATE_LIMIT_PER_MINUTE=3000" >> .env
           docker compose up -d --build
           for i in $(seq 1 60); do
             curl -sf http://localhost:8080/readyz && break

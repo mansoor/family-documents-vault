@@ -259,6 +259,24 @@ describe('loadConfig', () => {
     expect(c.PORT).toBe(3000);
     expect(c.FDV_EDITION).toBe('self_hosted');
     expect(c.FDV_MAX_UPLOAD_BYTES).toBe(104857600);
+    expect(c.FDV_RATE_LIMIT_PER_MINUTE).toBe(300);
+  });
+
+  it('one address gets FDV_RATE_LIMIT_PER_MINUTE requests a minute, then 429', async () => {
+    const withLimit = (v: string) =>
+      loadConfig({
+        DATABASE_URL: 'x',
+        FDV_MASTER_KEY: config.FDV_MASTER_KEY,
+        FDV_RATE_LIMIT_PER_MINUTE: v,
+      });
+    expect(withLimit('').FDV_RATE_LIMIT_PER_MINUTE).toBe(300);
+    expect(() => withLimit('59')).toThrow(/FDV_RATE_LIMIT_PER_MINUTE/);
+    await make(undefined, { FDV_RATE_LIMIT_PER_MINUTE: 60 });
+    const ask = () => app!.inject({ method: 'GET', url: '/api/v1/capabilities' });
+    for (let i = 0; i < 60; i++) expect((await ask()).statusCode).toBe(200);
+    const refused = await ask();
+    expect(refused.statusCode).toBe(429);
+    expect(refused.json()).toMatchObject({ error: { code: 'rate_limited' } });
   });
 
   it('treats a variable set to nothing as one that is not set', () => {
