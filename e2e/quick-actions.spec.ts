@@ -52,8 +52,13 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(page).toHaveURL(/\/$/);
 
   // The ⋯ is the next stop after the row's own button: beside it, not in it.
-  const more = page.getByRole('button', { name: `Actions for “${title}”` });
-  const row = page.getByRole('listitem').filter({ has: more });
+  // Looked for in Home's Recently added, so nothing is pressed until Home is
+  // drawn: until then Search, which lists the same row, is still on screen,
+  // and a focus given to its row was lost when Home replaced it.
+  const recent = page.getByRole('region', { name: 'Recently added' });
+  const more = recent.getByRole('button', { name: `Actions for “${title}”` });
+  const row = recent.getByRole('listitem').filter({ has: more });
+  await expect(more).toBeVisible();
   await row.getByRole('button').first().focus();
   await page.keyboard.press('Tab');
   await expect(more).toBeFocused();
