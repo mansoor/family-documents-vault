@@ -1,5 +1,12 @@
+import { pagesNotSharedNote } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
-import { api, ApiRequestError, type SharedSession, type ShareLinkPreview } from '../api.js';
+import {
+  api,
+  ApiRequestError,
+  type SharedItem,
+  type SharedSession,
+  type ShareLinkPreview,
+} from '../api.js';
 import { describeError } from '../app-context.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
@@ -90,7 +97,10 @@ export function SharePage({ token }: { token: string | null }) {
       setPhase({ kind: 'open', session });
       setPin('');
     } catch (err) {
-      if (err instanceof ApiRequestError && err.code === 'link_not_valid') {
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'link_not_valid' || err.code === 'link_used_up')
+      ) {
         setPhase({ kind: 'dead', message: err.message });
       } else {
         setError(describeError(err));
@@ -132,7 +142,13 @@ export function SharePage({ token }: { token: string | null }) {
         />
       )}
 
-      {phase.kind === 'open' && <Opened session={phase.session} heading={heading} />}
+      {phase.kind === 'open' && (
+        <Opened
+          session={phase.session}
+          heading={heading}
+          onSession={(session) => setPhase({ kind: 'open', session })}
+        />
+      )}
     </main>
   );
 }
@@ -169,6 +185,19 @@ function Preview({
           {preview.household_name}
           {needsPin ? ', and put a PIN on it.' : '.'}
         </p>
+        {(preview.permission === 'view' || preview.opens_left != null) && (
+          <ul className="share-terms">
+            {preview.permission === 'view' && (
+              <li>You can look at its pages here. It is not shared to download.</li>
+            )}
+            {preview.opens_left != null && (
+              <li>
+                It can be opened {moreTimes(preview.opens_left)}. Each press of Open counts;
+                reloading the page it opens does not.
+              </li>
+            )}
+          </ul>
+        )}
         {needsPin && (
           <Field
             id="share-pin"
@@ -208,15 +237,41 @@ function Preview({
   );
 }
 
+/** How often to ask again while a view-only link's pages are being drawn, and for how long. */
+const DRAWING_POLL_MS = 4000;
+const DRAWING_PATIENCE = 45;
+
 function Opened({
   session,
   heading,
+  onSession,
 }: {
   session: SharedSession;
   heading: RefObject<HTMLHeadingElement | null>;
+  onSession: (session: SharedSession) => void;
 }) {
   const from = session.shared_by ? <strong>{session.shared_by}</strong> : 'Somebody';
   const single = session.items.length === 1 ? session.items[0] : undefined;
+  const viewOnly = session.permission === 'view';
+  const drawing = session.items.some((i) => i.pages?.state === 'drawing');
+  const [asked, setAsked] = useState(0);
+
+  // Pages still being drawn: asked again, inside the session (which counts
+  // nothing), until they are there — for a few minutes at most.
+  useEffect(() => {
+    if (!drawing || asked >= DRAWING_PATIENCE) return;
+    const timer = window.setTimeout(() => {
+      void api.linkItems().then(
+        (next) => {
+          setAsked((n) => n + 1);
+          onSession(next);
+        },
+        () => setAsked(DRAWING_PATIENCE),
+      );
+    }, DRAWING_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [drawing, asked, onSession]);
+
   return (
     <>
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
@@ -224,21 +279,41 @@ function Opened({
       </h1>
       <section className="card stack" aria-labelledby="share-h">
         <p>
-          {from} shared {single ? 'this' : 'these'} with you from {session.household_name}.
+          {from} shared {single ? 'this' : 'these'} with you from {session.household_name}
+          {viewOnly ? ', to look at here.' : '.'}
         </p>
+        {viewOnly && (
+          <p className="status status-warn" role="note">
+            This page cannot stop screenshots or photos of the screen. Every page shows who it was
+            shared with and when.
+          </p>
+        )}
+        {!viewOnly && session.downloads_left != null && (
+          <p className="muted">
+            {session.downloads_left > 0
+              ? `It can be downloaded ${moreTimes(session.downloads_left)}. Downloading it again from this page does not count.`
+              : 'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.'}
+          </p>
+        )}
         <ul className="list" aria-label="What was shared">
           {session.items.map((item) => (
             <li key={item.id} className="place">
               {!single && <strong>{item.title ?? 'A document'}</strong>}
               {item.type_label && <span className="muted">{item.type_label}</span>}
-              <a
-                className="btn btn-primary"
-                href={api.linkItemContentUrl(item.id)}
-                download={item.filename}
-              >
-                Download {item.filename}
-              </a>
-              <span className="muted">{sizeOf(item.byte_size)}</span>
+              {viewOnly ? (
+                <SharedPages item={item} />
+              ) : session.downloads_left === 0 ? null : (
+                <>
+                  <a
+                    className="btn btn-primary"
+                    href={api.linkItemContentUrl(item.id)}
+                    download={item.filename}
+                  >
+                    Download {item.filename}
+                  </a>
+                  <span className="muted">{sizeOf(item.byte_size)}</span>
+                </>
+              )}
             </li>
           ))}
         </ul>
@@ -253,6 +328,60 @@ function Opened({
       </section>
     </>
   );
+}
+
+/**
+ * A view-only link's pages of one document (5.18): the ones the vault drew
+ * for this link, with whom it is for across each, one under another. Each
+ * is fetched inside the session, which counts nothing; the first is
+ * written down once as looked at.
+ */
+function SharedPages({ item }: { item: SharedItem }) {
+  const pages = item.pages;
+  const [broken, setBroken] = useState<number[]>([]);
+  if (!pages || pages.state === 'failed') {
+    return (
+      <p className="muted" role="note">
+        The vault could not draw this document&rsquo;s pages. Ask whoever sent the link to send it
+        another way.
+      </p>
+    );
+  }
+  if (pages.state === 'drawing' || !pages.shown) {
+    return (
+      <p className="status status-warn" role="status">
+        The pages are still being drawn. They will appear here in a minute.
+      </p>
+    );
+  }
+  const title = item.title ?? 'the document';
+  const cut = pagesNotSharedNote(pages);
+  return (
+    <>
+      <ol className="shared-pages" aria-label={`The pages of ${title}`}>
+        {Array.from({ length: pages.shown }, (_, i) => i + 1).map((n) => (
+          <li key={n}>
+            {broken.includes(n) ? (
+              <p className="muted">Page {n} could not be shown. Reload the page to try again.</p>
+            ) : (
+              <img
+                src={api.linkItemPageUrl(item.id, n)}
+                alt={`Page ${n} of ${pages.total ?? pages.shown}`}
+                loading={n > 2 ? 'lazy' : 'eager'}
+                onError={() => setBroken((b) => [...b, n])}
+              />
+            )}
+          </li>
+        ))}
+      </ol>
+      {cut && <p className="muted">{cut}</p>}
+    </>
+  );
+}
+
+/** "once more", "twice more", "3 more times". */
+function moreTimes(n: number): string {
+  return n === 1 ? 'once more' : n === 2 ? 'twice more' : `${n} more times`;
 }
 
 function sizeOf(bytes: number): string {

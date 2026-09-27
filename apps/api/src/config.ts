@@ -79,6 +79,16 @@ const schema = z.object({
       'How many requests one address may make in a minute, beyond the tighter limits on ' +
         'signing in and opening links. Raise it when many devices share one address.',
     ),
+  FDV_SHARE_MAX_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(90)
+    .default(90)
+    .describe(
+      'The longest a share link may last, in days (1 to 90). A link always ends: ' +
+        'this only shortens the longest end the vault accepts.',
+    ),
   FDV_OFFLINE_MAX_DAYS: z.coerce
     .number()
     .int()

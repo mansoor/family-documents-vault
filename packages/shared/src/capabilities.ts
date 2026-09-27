@@ -89,6 +89,15 @@ export interface CapabilityFeatures {
    * own. Absent from older vaults, where a client shows initials.
    */
   member_photos?: boolean;
+  /**
+   * A link's options (5.18): POST /documents/{id}/share takes `expires_at`
+   * (a date and time), `permission` (`view` or `download`), `max_opens` and
+   * `max_downloads`; a link to view serves its pages at
+   * /shared/items/{id}/pages/{n} and never the file. Absent from older
+   * vaults, which take `expires_in_days` only; send the rest only when this
+   * is true.
+   */
+  share_options?: boolean;
 }
 
 export interface CapabilityLimits {

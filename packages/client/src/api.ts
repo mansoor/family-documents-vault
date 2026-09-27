@@ -48,6 +48,7 @@ import type {
   Share,
   SharedDocument,
   SharedSession,
+  ShareInput,
   ShareLinkPreview,
   SharePreview,
   SmtpInput,
@@ -614,11 +615,11 @@ export function createApi(http: Http) {
       }),
 
     // ------------------------------------------------------------- sharing
-    share: (
-      token: string,
-      documentId: string,
-      body: { expires_in_days?: number; recipient_label?: string; with_pin?: boolean },
-    ) =>
+    /**
+     * `expires_at`, `permission`, `max_opens` and `max_downloads` only to a
+     * vault with `features.share_options` (5.18); `expires_in_days` to any.
+     */
+    share: (token: string, documentId: string, body: ShareInput) =>
       request<CreatedShare>(`/api/v1/documents/${documentId}/share`, {
         method: 'POST',
         body,
@@ -654,6 +655,9 @@ export function createApi(http: Http) {
     linkItems: () => request<SharedSession>('/api/v1/shared/items'),
     linkItemContentUrl: (documentId: string) =>
       http.url(`/api/v1/shared/items/${enc(documentId)}/content`),
+    /** A view-only link's page (5.18): a JPEG drawn with whom the link is for. */
+    linkItemPageUrl: (documentId: string, n: number) =>
+      http.url(`/api/v1/shared/items/${enc(documentId)}/pages/${n}`),
 
     // ------------------------------------------- after a restore (0.5.14)
     /**

@@ -611,6 +611,112 @@ export function cropBox(
   return { x, y, w, h };
 }
 
+let fontFound: Promise<string | null> | null = null;
+
+/**
+ * A font file to write with: whichever fontconfig gives for sans-serif
+ * (DejaVu Sans in the worker image). Named by its file, so ImageMagick
+ * never falls back to a font it cannot find, which it reports as a
+ * failure on some systems.
+ */
+function sansFont(): Promise<string | null> {
+  fontFound ??= run('fc-match', ['-f', '%{file}', 'sans-serif'], { timeout: 10_000 })
+    .then(async ({ stdout }) => {
+      const file = stdout.trim();
+      if (!file) return null;
+      await access(file);
+      return file;
+    })
+    .catch(() => null);
+  return fontFound;
+}
+
+/**
+ * What ImageMagick is given to write, as it will write it: one line, no
+ * control characters, not too long, and with its own escapes (`%` and `\`)
+ * made plain — a label is the family's text, and `%[…]` in it would
+ * otherwise be read as a question about the image, `@file` as a file.
+ */
+export function magickText(text: string): string {
+  const line = text
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  const escaped = line.replace(/\\/g, '\\\\').replace(/%/g, '%%');
+  return escaped.startsWith('@') ? ` ${escaped}` : escaped;
+}
+
+/**
+ * A view-only link's page (5.18): one of the vault's drawn pages, with
+ * `text` — whom the link is for, and the day it was made — written across
+ * it three times on the slant, faint enough to read the page through, and
+ * once more on a white band added at its foot, where a crop that keeps the
+ * page keeps the line too. JPEG, as the previews are, and nothing but the
+ * picture.
+ */
+export async function watermarkPage(input: string, output: string, text: string): Promise<void> {
+  const bin = await MAGICK();
+  const identify = bin === 'magick' ? ['magick', ['identify']] : ['identify', []];
+  const { stdout } = await run(
+    identify[0] as string,
+    [...(identify[1] as string[]), ...MAGICK_LIMITS, '-format', '%w %h', `jpeg:${input}`],
+    { timeout: 60_000 },
+  );
+  const [width = PREVIEW_EDGE, height = PREVIEW_EDGE] = stdout.trim().split(/\s+/).map(Number);
+  const words = magickText(text);
+  const clamp = (n: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, n)));
+  // Across the page on the slant, as wide as the page allows; three lines
+  // a little under a third of the page apart, so the outer two stay on it.
+  const slant = clamp((width * 0.9) / (0.87 * 0.55 * Math.max(words.length, 12)), 16, 80);
+  const foot = clamp(width / 48, 14, 40);
+  const band = Math.round(foot * 2.4);
+  const step = Math.round(height * 0.28);
+  const font = await sansFont();
+  await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      `jpeg:${input}`,
+      ...(font ? ['-font', font] : []),
+      '-gravity',
+      'center',
+      '-fill',
+      'rgba(170,40,40,0.24)',
+      '-pointsize',
+      String(slant),
+      '-annotate',
+      `330x330+0-${step}`,
+      words,
+      '-annotate',
+      '330x330+0+0',
+      words,
+      '-annotate',
+      `330x330+0+${step}`,
+      words,
+      '-background',
+      'white',
+      '-gravity',
+      'south',
+      '-splice',
+      `0x${band}`,
+      '-fill',
+      '#1f1f1f',
+      '-pointsize',
+      String(foot),
+      '-annotate',
+      `+0+${Math.round((band - foot) / 2)}`,
+      words,
+      '-quality',
+      String(PREVIEW_QUALITY),
+      '-strip',
+      `jpeg:${output}`,
+    ],
+    { timeout: 120_000 },
+  );
+  await access(output);
+}
+
 /** OCR of one page image. Returns the text, possibly empty. */
 export async function ocrImage(file: string, lang = 'eng'): Promise<string> {
   const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3'], {

@@ -1,3 +1,4 @@
+import { shareQuickPicks, zonedParts } from '@fdv/shared';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
@@ -172,6 +173,188 @@ describe('the page a link opens', () => {
     expect(state.calls.map((c) => c.url)).toEqual(['/api/v1/shared/preview']);
     expect(state.shareOpens).toBe(0);
     await expectAccessible();
+  });
+});
+
+/**
+ * A link's options (5.18), at both ends: the share sheet's date and time,
+ * View or View and download, and so many opens; and what the page at /s
+ * does with each.
+ */
+describe('until a date and time, view or download, so many opens', () => {
+  const openSheet = async (over: Parameters<typeof fresh>[0] = {}) => {
+    const state = fresh({ timezone: 'Europe/London', ...over });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    await screen.findByRole('group', { name: 'Stops working' });
+    return state;
+  };
+  const shareBody = (state: ReturnType<typeof fresh>) =>
+    state.calls.find((c) => c.method === 'POST' && c.url.endsWith('/share'))?.body as
+      Record<string, unknown> | undefined;
+
+  it('the share sheet: an end on the household clock, View, and so many opens', async () => {
+    const state = await openSheet();
+    // A week, unless somebody says otherwise; the picks one tap away.
+    const picks = shareQuickPicks('Europe/London');
+    const friday = picks.find((p) => p.key === 'friday') as { at: Date };
+    expect(screen.getByRole('button', { name: 'In a week' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Friday 5 pm' }));
+    expect(screen.getByRole('button', { name: 'Friday 5 pm' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByLabelText('Time')).toHaveValue('17:00');
+    expect(screen.getByText(/^Until Friday \d+ \w+ at 17:00/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    expect(screen.getByRole('button', { name: 'View' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/Nothing can stop a screenshot/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Can be opened'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('Who is it for?'), {
+      target: { value: 'the letting agent' },
+    });
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+
+    await screen.findByText(/\/s#share-secret-0123456789abcdef$/);
+    expect(shareBody(state)).toEqual({
+      recipient_label: 'the letting agent',
+      expires_at: friday.at.toISOString(),
+      permission: 'view',
+      max_opens: 5,
+      with_pin: false,
+    });
+    // Said back: until when, what they can do, how often, and the pages.
+    expect(screen.getByText(/^Until Friday \d+ \w+ at 17:00\.$/)).toBeInTheDocument();
+    expect(screen.getByText(/^To view: they see its pages/)).toBeInTheDocument();
+    expect(screen.getByText('It can be opened 5 times.')).toBeInTheDocument();
+    expect(
+      screen.getByText('The pages are still being drawn; the link works in a minute.'),
+    ).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('an end in the past or under 5 minutes is refused before it is sent', async () => {
+    const state = await openSheet();
+    const soon = zonedParts(new Date(Date.now() + 2 * 60_000), 'Europe/London');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: soon.date } });
+    fireEvent.change(screen.getByLabelText('Time'), { target: { value: soon.time } });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Choose a time at least 5 minutes from now.',
+    );
+    expect(screen.getByRole('button', { name: 'Make the link' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Can be opened'), { target: { value: '0' } });
+    expect(screen.getByText(/A number from 1 to 1000/)).toBeInTheDocument();
+    expect(shareBody(state)).toBeUndefined();
+  });
+
+  it('a Word file cannot be shared view-only', async () => {
+    await openSheet({
+      versionMime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'View' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'View and download' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      screen.getByText(/Word and Excel files can only be shared with download/),
+    ).toBeInTheDocument();
+  });
+
+  it('a 42-page document: the sharer is told they will see 30', async () => {
+    await openSheet({ pageCount: 42 });
+    fireEvent.click(screen.getByRole('button', { name: 'View' }));
+    expect(await screen.findByText('They will see the first 30 of 42 pages.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'View and download' }));
+    expect(screen.queryByText(/first 30 of 42/)).not.toBeInTheDocument();
+  });
+
+  it("a view-only link shows its pages, says it can't stop screenshots, and offers no download", async () => {
+    const state = fresh({ sharePermission: 'view', shareOpensLeft: 2 });
+    installFakeApi(state);
+    render(<SharePage token={TOKEN} />);
+
+    await screen.findByText(/It can be opened twice more/);
+    expect(screen.getByText(/It is not shared to download/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    const pages = await screen.findByRole('list', {
+      name: 'The pages of Flat 3 tenancy agreement',
+    });
+    const images = within(pages).getAllByRole('img');
+    expect(images.map((i) => i.getAttribute('src'))).toEqual([
+      '/api/v1/shared/items/doc-shared/pages/1',
+      '/api/v1/shared/items/doc-shared/pages/2',
+    ]);
+    expect(images[0]).toHaveAccessibleName('Page 1 of 2');
+    expect(screen.getByText(/cannot stop screenshots/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument();
+    expect(state.calls.some((c) => c.url.endsWith('/content'))).toBe(false);
+    await expectAccessible();
+  });
+
+  it('a 42-page document: the recipient gets 30 pages and the sentence', async () => {
+    installFakeApi(
+      fresh({
+        sharePermission: 'view',
+        shareSession: true,
+        sharePages: { state: 'ready', shown: 30, total: 42 },
+      }),
+    );
+    render(<SharePage token={null} />);
+    const pages = await screen.findByRole('list', { name: /The pages of/ });
+    expect(within(pages).getAllByRole('img')).toHaveLength(30);
+    expect(screen.getByText('Pages after 30 were not shared.')).toBeInTheDocument();
+  });
+
+  it('a link opened before its pages are drawn says so, then shows them', async () => {
+    const state = fresh({
+      sharePermission: 'view',
+      shareSession: true,
+      sharePages: { state: 'drawing', shown: 2, total: 2 },
+    });
+    installFakeApi(state);
+    render(<SharePage token={null} />);
+    await screen.findByText(/The pages are still being drawn/);
+    state.sharePages = { state: 'ready', shown: 2, total: 2 };
+    await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
+    // Asked again inside the session, which counts nothing.
+    expect(state.shareOpens).toBe(0);
+  });
+
+  it('a link opened as many times as it allows says so', async () => {
+    installFakeApi(fresh({ shareOpensLeft: 0 }));
+    render(<SharePage token={TOKEN} />);
+    await screen.findByRole('heading', { name: 'This link cannot be opened' });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      /opened as many times as it allows, so it cannot be opened again/,
+    );
+    await expectAccessible();
+  });
+
+  it('the last open used by somebody else between the preview and Open says so too', async () => {
+    const state = fresh({ shareOpensLeft: 1 });
+    installFakeApi(state);
+    render(<SharePage token={TOKEN} />);
+    await screen.findByText(/It can be opened once more/);
+    state.shareOpensLeft = 0;
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await screen.findByRole('heading', { name: 'This link cannot be opened' });
+    expect(screen.getByRole('alert')).toHaveTextContent(/as many times as it allows/);
+  });
+
+  it('downloads used up: no download is offered, and why', async () => {
+    installFakeApi(fresh({ shareSession: true, shareDownloadsLeft: 0 }));
+    render(<SharePage token={null} />);
+    await screen.findByText(/downloaded from as many times as it allows/);
+    expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument();
   });
 });
 

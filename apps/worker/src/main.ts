@@ -14,6 +14,7 @@ import {
 } from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
 import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
+import { drawSharePages, pruneSharePages, type SharePagesJob } from './jobs/share-pages.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
@@ -137,6 +138,41 @@ async function main(): Promise<void> {
       }
     },
   );
+
+  // A view-only link's pages (5.18): one job per link queued or running,
+  // drawn one at a time like the previews they are drawn from.
+  await boss.createQueue(JOBS.sharePages, { policy: 'exclusive', retryLimit: 2, retryDelay: 30 });
+  await boss.work(
+    JOBS.sharePages,
+    { batchSize: 1, includeMetadata: true },
+    async (jobs: JobWithMetadata<SharePagesJob>[]) => {
+      for (const job of jobs) {
+        await drawSharePages(processDeps, job.data, {
+          final: job.retryCount >= job.retryLimit,
+        });
+      }
+    },
+  );
+  // And removed when their link ends: one link's at once when it is taken
+  // back, and whatever else has ended each night.
+  const pruneDeps = {
+    admin: dbs.admin,
+    app: dbs.app,
+    credentialsKey: processDeps.credentialsKey,
+    localRoot: processDeps.localRoot,
+    log,
+  };
+  await boss.createQueue(JOBS.sharePagesPrune, { retryLimit: 3, retryDelay: 300 });
+  await boss.work<Partial<SharePagesJob>>(JOBS.sharePagesPrune, async (jobs) => {
+    for (const job of jobs) {
+      const one =
+        job.data?.household_id && job.data.share_id
+          ? { household_id: job.data.household_id, share_id: job.data.share_id }
+          : undefined;
+      await pruneSharePages(pruneDeps, one);
+    }
+  });
+  await boss.schedule(JOBS.sharePagesPrune, '35 4 * * *');
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

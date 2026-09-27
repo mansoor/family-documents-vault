@@ -626,6 +626,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           reminder_dates: true,
           // People's photos (0.5.19).
           member_photos: true,
+          // A link's options (5.18): an end at a time, to view, so many opens.
+          share_options: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],

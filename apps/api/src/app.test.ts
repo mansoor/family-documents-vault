@@ -280,6 +280,20 @@ describe('loadConfig', () => {
     expect(refused.json()).toMatchObject({ error: { code: 'rate_limited' } });
   });
 
+  it('FDV_SHARE_MAX_DAYS shortens the longest link, and never lengthens it past 90 (5.18, A20)', () => {
+    const withDays = (v: string) =>
+      loadConfig({
+        DATABASE_URL: 'x',
+        FDV_MASTER_KEY: config.FDV_MASTER_KEY,
+        FDV_SHARE_MAX_DAYS: v,
+      });
+    expect(withDays('').FDV_SHARE_MAX_DAYS).toBe(90);
+    expect(withDays('14').FDV_SHARE_MAX_DAYS).toBe(14);
+    for (const bad of ['0', '91', 'forever']) {
+      expect(() => withDays(bad), bad).toThrow(/FDV_SHARE_MAX_DAYS/);
+    }
+  });
+
   it('treats a variable set to nothing as one that is not set', () => {
     // Compose writes `FDV_RP_ID: ${FDV_RP_ID:-}` for everything optional,
     // so the container is handed an empty string rather than nothing at

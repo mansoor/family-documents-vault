@@ -65,6 +65,8 @@ describe('buildCapabilities', () => {
       reminder_dates: true,
       // 0.5.19: people's photos (5.17c).
       member_photos: true,
+      // 5.18: a link until a date and time, to view or to download, so many opens.
+      share_options: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

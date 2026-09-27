@@ -12,6 +12,7 @@ export * from './titles.js';
 export * from './documents.js';
 export * from './reminders.js';
 export * from './roles.js';
+export * from './shares.js';
 export * from './suggestions.js';
 export * from './text-search.js';
 export * from './wire.js';

@@ -31,6 +31,7 @@ import { processVersion } from './jobs/process-version.js';
 import { pushDepsOf, sendPushJob } from './jobs/push.js';
 import { deliver, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { sealPrivateValues } from './jobs/seal.js';
+import { drawSharePages, pruneSharePages } from './jobs/share-pages.js';
 import { regenerateTypeReminders } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
 import { verifyAllAuditChains } from './jobs/verify-audit.js';
@@ -583,6 +584,49 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
             [ids.document],
           );
           expect(made.rows.map((r) => r.lead_days)).toEqual([180, 270]);
+        },
+      ],
+      [
+        'share.pages',
+        async () => {
+          const { rows } = await admin.query<{ id: string }>(
+            `insert into share_link (household_id, document_id, token_hash, created_by, expires_at, permission)
+             values ($1, $2, $3, $4, now() + interval '1 day', 'view') returning id`,
+            [hh, ids.document, randomBytes(32), ids.account],
+          );
+          // Drawn where the tools are installed; where not, the previews it
+          // is drawn from failed above, and there is nothing to draw. Either
+          // way the job reached its outcome, as the vault.
+          const drawn = await drawSharePages(processDeps, {
+            household_id: hh,
+            share_id: rows[0]?.id as string,
+          });
+          const pages = await admin.query<{ n: number }>(
+            'select count(*)::int as n from share_page where share_id = $1',
+            [rows[0]?.id],
+          );
+          expect(pages.rows[0]?.n).toBe(drawn.drawn);
+          expect([0, 1]).toContain(drawn.drawn);
+        },
+      ],
+      [
+        'share.pages.prune',
+        async () => {
+          // A link taken back, with a page left behind.
+          const { rows } = await admin.query<{ id: string }>(
+            `insert into share_link (household_id, document_id, token_hash, created_by, expires_at,
+                                     permission, revoked_at, revoked_by)
+             values ($1, $2, $3, $4, now() + interval '1 day', 'view', now(), $4) returning id`,
+            [hh, ids.document, randomBytes(32), ids.account],
+          );
+          await admin.query(
+            `insert into share_page (household_id, share_id, document_id, version_id, n, storage_key)
+             values ($1, $2, $3, $4, 1, $5)`,
+            [hh, rows[0]?.id, ids.document, ids.version, `${hh}/left-behind.enc`],
+          );
+          expect(
+            await pruneSharePages({ admin, app, credentialsKey, localRoot: vaultDir }),
+          ).toEqual({ removed: 1 });
         },
       ],
     ];

@@ -487,6 +487,10 @@ const ACTOR_GUARDED = [
   'share_session',
   // People's photos: the family's, and a viewer's own (0040).
   'member_photo',
+  // What a session has had of each document, and a view-only link's own
+  // pages (0041).
+  'share_session_use',
+  'share_page',
 ];
 
 /**

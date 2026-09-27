@@ -216,13 +216,16 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     // ---------------------------------------------------------- shares
     case 'share.created':
       return line(
-        `${who} made a link to ${doc}${text(detail.recipient_label) ? ` for ${text(detail.recipient_label)}` : ''}`,
+        `${who} made a ${detail.permission === 'view' ? 'view-only ' : ''}link to ${doc}${text(detail.recipient_label) ? ` for ${text(detail.recipient_label)}` : ''}`,
         true,
       );
     case 'share.opened':
       return line(`${who} opened ${doc}`);
     case 'share.downloaded':
       return line(`${who} downloaded ${doc}`);
+    // 5.18: a view-only link's pages, looked at; once a session, as a download is.
+    case 'share.viewed':
+      return line(`${who} looked at the pages of ${doc}`);
     case 'share.revoked':
       return line(`${who} took back a link to ${doc}`);
     // 0.5.14: the tenth wrong PIN, written down once; the tries before it

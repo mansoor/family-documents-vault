@@ -9,6 +9,10 @@ import { expect, test, type APIRequestContext } from '@playwright/test';
  * a session cookie for the share routes alone, and the file is downloaded
  * inside it. This runs after first-run.spec.ts, on the vault it made.
  *
+ * Since 5.18 a link can be for viewing only — its pages, drawn by the
+ * worker with whom it is for, and never the file — and opened so many
+ * times.
+ *
  * FDV_E2E_SHOTS names a folder to keep screenshots of the page in.
  */
 
@@ -19,10 +23,38 @@ const PDF = Buffer.from(
 );
 const SHOTS = process.env.FDV_E2E_SHOTS;
 
+/** A one-page PDF the worker can draw, built by hand: a tenancy agreement's first page. */
+function onePagePdf(): Buffer {
+  const text = [
+    'BT /F1 30 Tf 72 700 Td (TENANCY AGREEMENT) Tj ET',
+    'BT /F1 14 Tf 72 650 Td (This agreement is made between the landlord and the tenant.) Tj ET',
+    'BT /F1 14 Tf 72 625 Td (The rent is payable monthly in advance.) Tj ET',
+  ].join('\n');
+  const objs = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${text.length} >>\nstream\n${text}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let out = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objs.forEach((o, i) => {
+    offsets.push(out.length);
+    out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
 interface Made {
   token: string;
   pin: string;
   shareId: string;
+  documentId: string;
   title: string;
   auth: { authorization: string };
 }
@@ -56,8 +88,15 @@ async function signIn(request: APIRequestContext): Promise<string> {
   return ((await res.json()) as { access_token: string }).access_token;
 }
 
-/** A document with a file on it, and a link with a PIN to it, made through the API. */
-async function makeLink(request: APIRequestContext): Promise<Made> {
+/**
+ * A document with a file on it, and a link to it made through the API: by
+ * default with a PIN; with `options`, 5.18's instead.
+ */
+async function makeLink(
+  request: APIRequestContext,
+  options: Record<string, unknown> = { with_pin: true },
+  pdf: Buffer = PDF,
+): Promise<Made> {
   const auth = { authorization: `Bearer ${await (signedIn ??= signIn(request))}` };
   const title = `Tenancy agreement ${Date.now()}`;
   const doc = await request.post('/api/v1/documents', {
@@ -68,20 +107,27 @@ async function makeLink(request: APIRequestContext): Promise<Made> {
   const { id } = (await doc.json()) as { id: string };
   const file = await request.post(`/api/v1/documents/${id}/versions`, {
     headers: { ...auth, 'idempotency-key': randomUUID() },
-    multipart: { file: { name: 'tenancy.pdf', mimeType: 'application/pdf', buffer: PDF } },
+    multipart: { file: { name: 'tenancy.pdf', mimeType: 'application/pdf', buffer: pdf } },
   });
   expect(file.ok()).toBe(true);
   const shared = await request.post(`/api/v1/documents/${id}/share`, {
     headers: auth,
-    data: { recipient_label: 'the letting agent', with_pin: true },
+    data: { recipient_label: 'the letting agent', ...options },
   });
-  expect(shared.ok()).toBe(true);
+  expect(shared.ok(), await shared.text()).toBe(true);
   const made = (await shared.json()) as {
     link_token: string;
     pin: string;
     share: { id: string };
   };
-  return { token: made.link_token, pin: made.pin, shareId: made.share.id, title, auth };
+  return {
+    token: made.link_token,
+    pin: made.pin,
+    shareId: made.share.id,
+    documentId: id,
+    title,
+    auth,
+  };
 }
 
 async function opens(request: APIRequestContext, made: Made): Promise<number> {
@@ -176,4 +222,79 @@ test('a link opens only when Open is pressed, with its PIN, and the file comes i
   await request.delete(`/api/v1/shares/${made.shareId}`, { headers: made.auth });
   await page.reload();
   await expect(page.getByRole('heading', { name: 'This link cannot be opened' })).toBeVisible();
+});
+
+test('a view-only link shows its pages, drawn with whom it is for, and never the file (5.18)', async ({
+  page,
+  request,
+}) => {
+  // The worker draws the pages: its own previews first, then the link's.
+  test.setTimeout(150_000);
+  const made = await makeLink(
+    request,
+    {
+      permission: 'view',
+      max_opens: 2,
+      expires_at: new Date(Date.now() + 2 * 864e5).toISOString(),
+    },
+    onePagePdf(),
+  );
+
+  await page.goto(`/s#${made.token}`);
+  await expect(page.getByText(/It can be opened twice more/)).toBeVisible();
+  await expect(page.getByText(/It is not shared to download/)).toBeVisible();
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('heading', { name: made.title })).toBeVisible();
+  await expect(page.getByText(/cannot stop screenshots/)).toBeVisible();
+
+  // Drawn in a minute or so; the page asks again by itself meanwhile.
+  const first = page.getByRole('img', { name: 'Page 1 of 1' });
+  await expect(first).toBeVisible({ timeout: 120_000 });
+  // And it is a picture that loaded, not a broken one.
+  await expect
+    .poll(
+      () =>
+        page.evaluate<number>(
+          `(() => { const i = document.querySelector('img[alt="Page 1 of 1"]'); return i && i.complete ? i.naturalWidth : 0; })()`,
+        ),
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThan(0);
+  await expect(page.getByRole('link', { name: /Download/ })).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/3-view-only.png`, fullPage: true });
+
+  // The file itself is refused inside the session, whatever asks for it.
+  const refused = await page.evaluate(
+    (url) => fetch(url).then(async (r) => ({ status: r.status, body: await r.text() })),
+    `/api/v1/shared/items/${made.documentId}/content`,
+  );
+  expect(refused.status).toBe(403);
+  expect(refused.body).toContain('view_only');
+  expect(refused.body).not.toContain('%PDF');
+  // Opened once; reloading, and its pages, cost nothing.
+  await page.reload();
+  await expect(page.getByRole('img', { name: 'Page 1 of 1' })).toBeVisible();
+  expect(await opens(request, made)).toBe(1);
+});
+
+test('a link opened as many times as it allows says so (5.18)', async ({ page, request }) => {
+  const made = await makeLink(request, { max_opens: 1 });
+  await page.goto(`/s#${made.token}`);
+  await expect(page.getByText(/It can be opened once more/)).toBeVisible();
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('link', { name: 'Download tenancy.pdf' })).toBeVisible();
+  expect(await opens(request, made)).toBe(1);
+
+  // Anybody else with the link — or the same person, arriving afresh — is told.
+  await page.goto('about:blank');
+  await page.goto(`/s#${made.token}`);
+  await expect(page.getByRole('heading', { name: 'This link cannot be opened' })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText(
+    'opened as many times as it allows, so it cannot be opened again',
+  );
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/4-used-up.png`, fullPage: true });
+  expect(await opens(request, made)).toBe(1);
+  const res = await request.get('/api/v1/shares', { headers: made.auth });
+  const { items } = (await res.json()) as { items: Array<{ id: string; state: string }> };
+  expect(items.find((s) => s.id === made.shareId)?.state).toBe('used_up');
 });
