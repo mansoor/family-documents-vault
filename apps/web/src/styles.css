@@ -326,14 +326,19 @@ h3 {
   gap: 10px;
 }
 
+/* A link, not a button, so it centres its mark itself; a touch target (NFR-09). */
 .back {
-  width: 40px;
-  height: 40px;
-  border-radius: 20px;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: calc(var(--tap) / 2);
   background: var(--surface);
   border: 1px solid var(--border);
   font-size: 24px;
   line-height: 1;
+  text-decoration: none;
   cursor: pointer;
   color: var(--ink);
 }

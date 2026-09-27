@@ -66,13 +66,15 @@ export function SearchScreen() {
   // Bumped when a row's ⋯ changed something (5.4): the same search again.
   const [changed, setChanged] = useState(0);
   const again = () => setChanged((n) => n + 1);
-  // The rows whose own ⋯ changed something, until the search has run
-  // again: one that has left the results with it — moved to the Trash,
-  // made somebody else's Only me — is chosen no longer (5.15). What was
-  // chosen in an earlier search is not in these results either, and stays.
-  const acted = useRef(new Set<string>());
+  // The rows whose own ⋯ changed something, each with the search it was
+  // in, until that search has run again: one that has left the results
+  // with it — moved to the Trash, made somebody else's Only me — is chosen
+  // no longer (5.15). What was chosen in an earlier search is not in these
+  // results either, and stays.
+  const acted = useRef(new Map<string, { search: string }>());
+  const search = JSON.stringify([q, category, memberId, issuer]);
   const actedOn = (id: string) => () => {
-    acted.current.add(id);
+    acted.current.set(id, { search });
     again();
   };
   // What the last search asked. The same search again keeps the second
@@ -98,14 +100,19 @@ export function SearchScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    // The rows whose ⋯ asked for this search again, if one did. Should it
-    // be overtaken by another search, they are not asked about there.
+    // The rows whose ⋯ asked for this search again, if one did; one acted
+    // on in another search is not asked about in this one. Each is let go
+    // of once it has been judged, and not before: a run overtaken by the
+    // next, when a second ⋯ asks before the first is answered, leaves its
+    // rows to that one, with the second's.
+    for (const [id, act] of acted.current) if (act.search !== search) acted.current.delete(id);
     const actedNow = [...acted.current];
-    acted.current.clear();
     /** Those of them the whole of the results, both passes, no longer hold. */
     const left = (shown: string[]) => {
       const here = new Set(shown);
-      unpick(actedNow.filter((id) => !here.has(id)));
+      // Acted on again since this run began: the next run judges that.
+      for (const [id, act] of actedNow) if (acted.current.get(id) === act) acted.current.delete(id);
+      unpick(actedNow.map(([id]) => id).filter((id) => !here.has(id)));
     };
     const run = async () => {
       try {
@@ -119,9 +126,8 @@ export function SearchScreen() {
             }),
           );
           if (!cancelled && r) {
-            const asking = JSON.stringify([q, category, memberId, issuer]);
-            const same = asked.current === asking;
-            asked.current = asking;
+            const same = asked.current === search;
+            asked.current = search;
             setHits(r.items);
             setBrowse(null);
             const found = r.items.map((h) => h.document_id);
@@ -172,7 +178,7 @@ export function SearchScreen() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [q, category, memberId, issuer, withToken, changed, unpick]);
+  }, [q, category, memberId, issuer, search, withToken, changed, unpick]);
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);

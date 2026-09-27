@@ -197,6 +197,8 @@ export function ListScreen() {
   const again = async () => {
     setOlder([]);
     setCursor(undefined);
+    // What went wrong before is said again only if it goes wrong again.
+    setProblem(null);
     try {
       const list = await withToken((t) => api.getList(t, id as string));
       if (list) first.setData((d) => (d ? { ...d, list } : d));

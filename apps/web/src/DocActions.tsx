@@ -313,12 +313,14 @@ export function DocActions(props: {
     try {
       await withToken(go);
       // The row goes when the list is loaded again, and its ⋯ with it, so
-      // focus goes to the next row (or the one before) rather than nowhere.
-      // The only row in its list leaves it to the list's heading (landing).
+      // focus goes to the next row (or the one before) rather than nowhere:
+      // to its own part, the button that opens it, or in search's Select
+      // its box (5.15). The only row in its list leaves it to the list's
+      // heading (landing).
       const row = more.current?.closest('li');
-      const neighbour = (row?.nextElementSibling ?? row?.previousElementSibling)?.querySelector(
-        'button',
-      );
+      const neighbour = (
+        row?.nextElementSibling ?? row?.previousElementSibling
+      )?.querySelector<HTMLElement>('input.pick, button');
       flushSync(() => {
         setLeaving(false);
         setSheet(null);
@@ -482,8 +484,11 @@ export function DocActions(props: {
             onClose={closeSheet}
             onBusy={setSheetBusy}
             onAdded={() => {
-              // What a list holds has changed, and counts of it with it.
-              changedInSheet.current = true;
+              // What a list holds has changed, and counts of it with it
+              // (Home's tiles). Not on a list's page, where nothing drawn
+              // has: the row is on this list already, and which others it
+              // is on is shown nowhere here, so the page stays as it is.
+              if (!props.list) changedInSheet.current = true;
             }}
           />
         </Sheet>

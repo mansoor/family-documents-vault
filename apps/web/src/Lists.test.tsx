@@ -608,6 +608,10 @@ describe('lists on the web (5.15)', () => {
       ).not.toBeInTheDocument(),
     );
     expect(await screen.findByText('2 selected')).toBeInTheDocument();
+    // Focus went to the row before it, and in Select a row is its box.
+    expect(
+      screen.getByRole('checkbox', { name: 'Select “Barclays statement, September 2026”' }),
+    ).toHaveFocus();
 
     // Another search: what was chosen in the last one stays chosen.
     fireEvent.change(screen.getByLabelText('Search everything'), {
@@ -660,14 +664,19 @@ describe('lists on the web (5.15)', () => {
     const sheet = await screen.findByRole('dialog', { name: "Add “Mansoor's passport” to a list" });
     await within(sheet).findByRole('button', { name: 'Add to “Holiday”' });
     state.lists = state.lists?.filter((l) => l.id !== 'list-h');
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Add to “Holiday”' }));
+    // Pressed as a person presses it: the focus is on it.
+    const holiday = within(sheet).getByRole('button', { name: 'Add to “Holiday”' });
+    holiday.focus();
+    fireEvent.click(holiday);
     expect(await within(sheet).findByRole('alert')).toHaveTextContent(
       '“Holiday” is not there any more, so nothing went on it.',
     );
     expect(
       within(sheet).queryByRole('button', { name: 'Add to “Holiday”' }),
     ).not.toBeInTheDocument();
+    // Its Add button went, and the focus with it: to the next list's, in the sheet.
     expect(within(sheet).getByRole('button', { name: 'Add to “Trip”' })).toBeEnabled();
+    expect(within(sheet).getByRole('button', { name: 'Add to “Trip”' })).toHaveFocus();
   });
 
   it('Home’s lists are counted again after a row’s ⋯ changes what is on them', async () => {
@@ -728,6 +737,26 @@ describe('lists on the web (5.15)', () => {
     reopen(state, '/');
     expect(await screen.findByRole('alert')).toHaveTextContent(UNREACHABLE);
     expect(screen.getByRole('heading', { name: 'Lists' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All lists' })).toHaveAttribute('href', '/lists');
+
+    // Nothing to be had at all: Home says so once, not once more for the
+    // lists. They fail first here, and Home's own loads after them.
+    let fail = () => {};
+    const home = new Promise<void>((_, reject) => {
+      fail = () => reject(new TypeError('Failed to fetch'));
+    });
+    state.hold = (method, path) =>
+      method === 'GET' && path === '/api/v1/lists'
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : method === 'GET' && path === '/api/v1/members'
+          ? home
+          : undefined;
+    reopen(state, '/');
+    const lists = await screen.findByRole('region', { name: 'Lists' });
+    expect(await within(lists).findByRole('alert')).toHaveTextContent(UNREACHABLE);
+    fail();
+    await waitFor(() => expect(within(lists).queryByRole('alert')).not.toBeInTheDocument());
+    expect(screen.getAllByRole('alert').map((a) => a.textContent)).toEqual([UNREACHABLE]);
     expect(screen.getByRole('link', { name: 'All lists' })).toHaveAttribute('href', '/lists');
   });
 
@@ -862,39 +891,175 @@ describe('lists on the web (5.15)', () => {
     expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
   });
 
+  it('a chosen row its ⋯ took out stays unchosen when another row’s ⋯ asks again meanwhile', async () => {
+    const state = at('/search', {
+      documents: [{ ...PASSPORT }, { ...STATEMENT }, { ...COUNCIL_TAX }],
+      lists: [{ ...HOLIDAY }],
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Select' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: "Select “Mansoor's passport”" }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select “Council tax bill”' }));
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+
+    // The documents are slow to come back from now on.
+    let release = () => {};
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    state.hold = (method, path) =>
+      method === 'GET' && path === '/api/v1/documents' ? slow : undefined;
+    const browses = () =>
+      state.calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === '/api/v1/documents')
+        .length;
+    const before = browses();
+
+    // The bill to the Trash: the results are asked for again...
+    const bill = await openMenu('Actions for “Council tax bill”');
+    fireEvent.click(within(bill.menu).getByRole('menuitem', { name: 'Move to Trash' }));
+    const sure = await screen.findByRole('alertdialog', { name: 'Move to Trash?' });
+    fireEvent.click(within(sure).getByRole('button', { name: 'Move to Trash' }));
+    await waitFor(() => expect(browses()).toBe(before + 1));
+
+    // ...and before they come, the statement made Essential asks again.
+    const statement = await openMenu('Actions for “Barclays statement, September 2026”');
+    fireEvent.click(within(statement.menu).getByRole('menuitem', { name: 'Make it Essential' }));
+    expect(
+      await screen.findByText('“Barclays statement, September 2026” is Essential now.'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(browses()).toBe(before + 2));
+
+    // The second asking answers for both: the bill has left, and its pick with it.
+    release();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('checkbox', { name: 'Select “Council tax bill”' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText('1 selected')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: "Select “Mansoor's passport”" })).toBeChecked();
+  });
+
+  it('a row put on another list from a list’s page leaves the page as it was', async () => {
+    const state = at('/lists/list-h', {
+      documents: [{ ...PASSPORT }, { ...COUNCIL_TAX }],
+      lists: [
+        { ...HOLIDAY, items: ['doc-1', 'doc-3'] },
+        { ...HOLIDAY, id: 'list-t', name: 'Trip', etag: '"t"' },
+      ],
+      listPageSize: 1,
+    });
+    expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByRole('button', { name: /^Council tax bill/ })).toBeInTheDocument();
+
+    // Already on this one, and put on another from its ⋯.
+    const { more, menu } = await openMenu('Actions for “Council tax bill”');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Add to a list' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Add “Council tax bill” to a list' });
+    fireEvent.click(await within(sheet).findByRole('button', { name: 'Add to “Trip”' }));
+    expect(await within(sheet).findByText('“Council tax bill” is on “Trip” now.')).toHaveFocus();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Done' }));
+    expect(state.lists?.map((l) => l.items)).toEqual([['doc-1', 'doc-3'], ['doc-3']]);
+    // Nothing on this page changed: what Show more brought is still here,
+    // and focus is back on the ⋯ that opened the sheet.
+    expect(more).toHaveFocus();
+    expect(screen.getByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Council tax bill/ })).toBeInTheDocument();
+  });
+
+  it('a list’s page says the vault is out of reach only while it is', async () => {
+    const state = at('/lists/list-h', {
+      documents: [{ ...PASSPORT }],
+      lists: [{ ...HOLIDAY, items: ['doc-1'] }],
+    });
+    expect(await screen.findByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
+
+    // Out of reach when the list is loaded again after its row's ⋯.
+    state.hold = (method, path) =>
+      method === 'GET' && path === '/api/v1/lists/list-h'
+        ? Promise.reject(new TypeError('Failed to fetch'))
+        : undefined;
+    const first = await openMenu();
+    fireEvent.click(within(first.menu).getByRole('menuitem', { name: 'Stop it being Essential' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(UNREACHABLE);
+
+    // Back, and loaded again: the page says nothing of it any more.
+    delete state.hold;
+    const second = await openMenu();
+    fireEvent.click(within(second.menu).getByRole('menuitem', { name: 'Make it Essential' }));
+    expect(await screen.findByText("“Mansoor's passport” is Essential now.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Holiday', level: 1 })).toBeInTheDocument();
+  });
+
+  it('a list’s page says a viewer needs a grant under Everyone alone', async () => {
+    const lists: FakeList[] = [
+      { ...HOLIDAY, id: 'list-e', name: 'For everyone' },
+      { ...HOLIDAY, id: 'list-a', name: 'For adults', audience: 'adults' },
+      { ...HOLIDAY, id: 'list-t', name: 'For teens and up', audience: 'teens' },
+      { ...HOLIDAY, id: 'list-m', name: 'For me', audience: 'only_me' },
+    ];
+    const said = {
+      'list-e': `Who it is for: Everyone in the family. Owners, adults and teens: everyone in the family who files documents here. ${VIEWERS_NEED_A_GRANT}`,
+      'list-a': 'Who it is for: Adults. Owners and adults. Teens won’t see it, or know it is here.',
+      'list-t': `Who it is for: Teens and up. ${TEENS_AND_UP}`,
+      'list-m':
+        'Who it is for: Only me. Only you. Nobody else will see it, or know it is here, not even an owner.',
+    };
+    const state = at('/lists/list-e', { lists });
+    for (const [id, line] of Object.entries(said)) {
+      if (id !== 'list-e') reopen(state, `/lists/${id}`);
+      const name = lists.find((l) => l.id === id)?.name as string;
+      expect(await screen.findByRole('heading', { name, level: 1 })).toBeInTheDocument();
+      // All of the line, exactly: the grant sentence is in it, or not at all.
+      expect(screen.getByText(/^Who it is for:/).textContent).toBe(line);
+    }
+  });
+
   it('Select puts at most 200 on a list at once', async () => {
-    // 201 receipts from eleven shops, chosen a shop at a time: what is
-    // chosen stays chosen from one search to the next, and a search of a
-    // few rows is quicker to draw again with each tick than all of them.
-    const shops = ['Apple', 'Birch', 'Cedar', 'Daisy', 'Elm', 'Fern'];
-    shops.push('Grove', 'Heath', 'Iris', 'Juniper', 'Kale');
+    // Search asks the vault a quarter of a second after the last key; here
+    // at once, so the 26 searches cost only the drawing of their rows.
+    const later = globalThis.setTimeout;
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation((run: () => void, ms?: number) =>
+      later(run, ms === 250 ? 0 : ms),
+    );
+    // 201 receipts from 26 shops, chosen a shop at a time: what is chosen
+    // stays chosen from one search to the next, and each tick draws again
+    // only the few rows of one shop.
+    const shops = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].map((letter) => `Shop ${letter}`);
     const receipts = Array.from({ length: 201 }, (_, i) => ({
       ...COUNCIL_TAX,
       id: `doc-r${i + 1}`,
-      title: `${shops[i % shops.length]} receipt ${i + 1}`,
+      title: `Receipt ${i + 1} from ${shops[i % shops.length]}`,
       etag: `"r${i + 1}"`,
     }));
-    const state = at('/search', { documents: receipts, lists: [{ ...HOLIDAY }] });
+    // Straight to the first shop's receipts: the browse of all 201 is never drawn.
+    const state = at(`/search?q=${encodeURIComponent(shops[0] as string)}`, {
+      documents: receipts,
+      lists: [{ ...HOLIDAY }],
+    });
     fireEvent.click(await screen.findByRole('button', { name: 'Select' }));
     const box = (title: string) =>
       document.querySelector<HTMLInputElement>(`input[aria-label="Select “${title}”"]`);
+    const picks = () => document.querySelectorAll<HTMLInputElement>('input.pick');
     for (const [i, shop] of shops.entries()) {
-      fireEvent.change(screen.getByLabelText('Search everything'), { target: { value: shop } });
-      // Its first receipt is on screen, and no other shop's.
-      await waitFor(() => expect(box(`${shop} receipt ${i + 1}`)).not.toBeNull());
-      await waitFor(() =>
-        expect(document.querySelectorAll('input.pick')).toHaveLength(i < 3 ? 19 : 18),
-      );
-      for (const pick of document.querySelectorAll<HTMLInputElement>('input.pick')) {
-        fireEvent.click(pick);
+      if (i > 0) {
+        fireEvent.change(screen.getByLabelText('Search everything'), { target: { value: shop } });
       }
+      // Its receipts are on screen, and no other shop's.
+      const theirs = receipts.filter((r) => r.title.endsWith(` from ${shop}`)).length;
+      await waitFor(() => {
+        expect(box(`Receipt ${i + 1} from ${shop}`)).not.toBeNull();
+        expect(picks()).toHaveLength(theirs);
+      });
+      for (const pick of picks()) fireEvent.click(pick);
     }
     expect(screen.getByText('201 selected')).toBeInTheDocument();
     expect(screen.getByText('Up to 200 can go on a list at once.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add to a list' })).toBeDisabled();
 
     // One fewer, and they go on, all 200 in one request.
-    fireEvent.click(box('Kale receipt 198') as HTMLInputElement);
+    fireEvent.click(box('Receipt 182 from Shop Z') as HTMLInputElement);
     expect(screen.getByText('200 selected')).toBeInTheDocument();
     expect(screen.queryByText('Up to 200 can go on a list at once.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add to a list' }));
@@ -903,5 +1068,6 @@ describe('lists on the web (5.15)', () => {
     expect(await within(sheet).findByText('200 documents added to “Holiday”.')).toBeInTheDocument();
     expect(posts(state)).toHaveLength(1);
     expect(state.lists?.[0]?.items).toHaveLength(200);
-  }, 60_000);
+    expect(state.lists?.[0]?.items).not.toContain('doc-r182');
+  }, 30_000);
 });

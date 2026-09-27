@@ -153,7 +153,7 @@ export function HomeScreen() {
 
       {/* The way to the family's lists (5.15): only where the vault has
           them, and for those who make them. A viewer is given none. */}
-      {listsOffered(caps, storedRole()) && <ListsOnHome version={changes} />}
+      {listsOffered(caps, storedRole()) && <ListsOnHome version={changes} quiet={error !== null} />}
 
       <section aria-labelledby="recent-h">
         <h2 id="recent-h" className="section-h">

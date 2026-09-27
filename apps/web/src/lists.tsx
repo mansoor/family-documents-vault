@@ -9,6 +9,7 @@ import {
   type Role,
 } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
+import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -268,6 +269,7 @@ export function AddToList(props: {
   const [error, setError] = useState<string | null>(null);
   const status = useRef<HTMLParagraphElement>(null);
   const newList = useRef<HTMLButtonElement>(null);
+  const card = useRef<HTMLDivElement>(null);
 
   const mine = (data?.lists ?? []).filter((l) => mayChangeList(role, l));
   // Lists the reader made, for people they are no longer one of (A18).
@@ -301,8 +303,30 @@ export function AddToList(props: {
       : `${none}. ${err.message}`;
   };
 
+  /**
+   * Where the focus goes after a refusal: never out of the sheet. It stays
+   * on the Add button that was pressed, or goes back to it (switched off
+   * while it was asked, it let go of the focus); when its list has gone,
+   * and the button with it, to the next list's, or the one before, or to
+   * Make a new list — as a row that leaves its list gives it to the next.
+   */
+  const refocus = (pressed: string, order: string[]) => {
+    const box = card.current;
+    if (!box || box.contains(document.activeElement)) return;
+    const buttons = new Map(
+      [...box.querySelectorAll<HTMLElement>('li[data-list]')].map((li) => [
+        li.dataset.list,
+        li.querySelector('button'),
+      ]),
+    );
+    const at = order.indexOf(pressed);
+    const near = [pressed, ...order.slice(at + 1), ...order.slice(0, Math.max(at, 0)).reverse()];
+    (near.map((id) => buttons.get(id)).find((b) => b) ?? newList.current)?.focus();
+  };
+
   const add = async (list: ListView) => {
     if (adding) return;
+    const order = mine.map((l) => l.id);
     working(list.id);
     setError(null);
     setNote(null);
@@ -327,7 +351,13 @@ export function AddToList(props: {
       // Its Add button goes: the news has the focus, so it is heard.
       status.current?.focus();
     } catch (err) {
-      setError(await refusal(list, err));
+      const said = await refusal(list, err);
+      // Drawn at once, with the buttons back on, so one can take the focus.
+      flushSync(() => {
+        setError(said);
+        working(null);
+      });
+      refocus(list.id, order);
     } finally {
       working(null);
     }
@@ -352,7 +382,7 @@ export function AddToList(props: {
 
   const titleId = `add-to-list-h`;
   return (
-    <div className="card stack">
+    <div ref={card} className="card stack">
       <h2 id={titleId} style={{ fontSize: 20 }}>
         Add {props.what} to a list
       </h2>
@@ -377,7 +407,7 @@ export function AddToList(props: {
       {mine.length > 0 && (
         <ul className="list" aria-labelledby={titleId}>
           {mine.map((l) => (
-            <li key={l.id}>
+            <li key={l.id} data-list={l.id}>
               <span>
                 <strong>{l.name}</strong>
                 <span className="muted">
@@ -444,9 +474,11 @@ export function AddToList(props: {
  * see, as the vault counts them. The way there is always drawn — while
  * they load, and when they cannot be loaded — and the tiles fill in when
  * they come. `version` goes up when something on Home may have changed
- * what is on a list (a row's ⋯), and they are counted again.
+ * what is on a list (a row's ⋯), and they are counted again. `quiet`:
+ * Home has said already that the vault cannot be reached, and once is
+ * enough — a screen reader would read the same alert twice.
  */
-export function ListsOnHome(props: { version: number }) {
+export function ListsOnHome(props: { version: number; quiet: boolean }) {
   const { authVersion } = useApp();
   const { data, error } = useLoad(
     async (t) => (await api.lists(t)).items,
@@ -458,7 +490,7 @@ export function ListsOnHome(props: { version: number }) {
       <h2 id="lists-h" className="section-h">
         Lists
       </h2>
-      <ErrorNote message={error} />
+      <ErrorNote message={props.quiet ? null : error} />
       {data !== null && (
         <div className="tiles">
           {data.slice(0, 4).map((l) => (
