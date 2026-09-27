@@ -167,12 +167,33 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { email },
       }),
+    /**
+     * The path form, deprecated since 0.5.17 (removed in 0.9.0): the token
+     * in the address, where a proxy on the way sees it. Use `lookupReset`.
+     */
     resetPreview: (linkToken: string) =>
       request<ResetPreview>(`/api/v1/password-resets/${enc(linkToken)}`),
+    /** The path form, deprecated since 0.5.17 (removed in 0.9.0). Use `completeReset`. */
     resetPassword: (linkToken: string, password: string) =>
       request<{ email: string }>(`/api/v1/password-resets/${enc(linkToken)}`, {
         method: 'POST',
         body: { password },
+      }),
+    // A reset link since 0.5.17 reads /reset#<token>: the page reads the
+    // token from the fragment, which no server is sent, and it goes in a
+    // body, never a path. A vault older than 0.5.17 refuses these: it reads
+    // "lookup" and "complete" as a path form's token, too short (422).
+    /** Whose account the link is for, before a new password is typed. */
+    lookupReset: (linkToken: string) =>
+      request<ResetPreview>('/api/v1/password-resets/lookup', {
+        method: 'POST',
+        body: { token: linkToken },
+      }),
+    /** Spends the link: the new password is set, and nobody is signed in. */
+    completeReset: (linkToken: string, password: string) =>
+      request<{ email: string }>('/api/v1/password-resets/complete', {
+        method: 'POST',
+        body: { token: linkToken, password },
       }),
 
     // -------------------------------------------------------------- storage
@@ -242,12 +263,35 @@ export function createApi(http: Http) {
     ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
     revokeInvitation: (token: string, id: string) =>
       request<void>(`/api/v1/invitations/${id}`, { method: 'DELETE', token }),
+    /**
+     * The path form, deprecated since 0.5.17 (removed in 0.9.0): the token
+     * in the address, where a proxy on the way sees it. Use `lookupInvitation`.
+     */
     invitationPreview: (linkToken: string) =>
       request<InvitationPreview>(`/api/v1/invitations/${enc(linkToken)}`),
+    /** The path form, deprecated since 0.5.17 (removed in 0.9.0). Use `acceptInvitationLink`. */
     acceptInvitation: (
       linkToken: string,
       body: { code: string; password: string; email?: string },
     ) => request<Tokens>(`/api/v1/invitations/${enc(linkToken)}/accept`, { method: 'POST', body }),
+    // An invitation link since 0.5.17 reads /join#<token>: the page reads
+    // the token from the fragment, which no server is sent, and it goes in
+    // a body, never a path. A vault older than 0.5.17 answers these 404.
+    /** Whose vault, who invited them and as what, before anything is typed. */
+    lookupInvitation: (linkToken: string) =>
+      request<InvitationPreview>('/api/v1/invitations/lookup', {
+        method: 'POST',
+        body: { token: linkToken },
+      }),
+    /** The code and a password of their own: a signed-in account, as a sign-in gives. */
+    acceptInvitationLink: (
+      linkToken: string,
+      body: { code: string; password: string; email?: string },
+    ) =>
+      request<Tokens>('/api/v1/invitations/accept', {
+        method: 'POST',
+        body: { ...body, token: linkToken },
+      }),
 
     // ------------------------------------------------------------- documents
     /**

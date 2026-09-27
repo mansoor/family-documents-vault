@@ -65,11 +65,16 @@ describe('buildCapabilities', () => {
       reminder_dates: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
-    // four minor releases on (5.16, A25).
+    // four minor releases on (5.16, A25). A reset's and an invitation's
+    // token in a path go with them: the body forms took over in 5.17.
     expect(caps.deprecations).toEqual([
       { field: 'GET /api/v1/shared/{token}', removed_in: '0.9.0' },
       { field: 'POST /api/v1/shared/{token}/open', removed_in: '0.9.0' },
       { field: 'GET /api/v1/shared/{token}/content', removed_in: '0.9.0' },
+      { field: 'GET /api/v1/password-resets/{token}', removed_in: '0.9.0' },
+      { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
+      { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
+      { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
     ]);
   });
 

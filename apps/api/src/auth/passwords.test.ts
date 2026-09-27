@@ -277,7 +277,16 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
     return undefined;
   };
 
-  const tokenOf = (link: string) => link.slice(link.lastIndexOf('/') + 1);
+  /** The secret after the `#` (5.17). */
+  const tokenOf = (link: string) => link.slice(link.lastIndexOf('#') + 1);
+
+  const lookup = (token: unknown) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/password-resets/lookup',
+      payload: { token },
+      ...peer(),
+    });
 
   beforeAll(async () => {
     h = await createHarness();
@@ -309,7 +318,77 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
     // point the household's at themselves and read the link.
     expect((last as { via?: string }).via).toBe('operator');
     expect(last.url_label).toBe('Set a new password');
-    expect(last.url).toMatch(/\/reset\/[A-Za-z0-9_-]{20,}$/);
+    // The secret after the #, which a browser sends to no server (5.17).
+    expect(last.url).toMatch(/^http:\/\/localhost:8080\/reset#[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('a reset link works from its fragment: the token goes in a body, and answers as the path form does', async () => {
+    await forgot('sam@example.test');
+    const token = tokenOf(lastLink() as string);
+    const byBody = await lookup(token);
+    const byPath = await h.app.inject({ url: `/api/v1/password-resets/${token}`, ...peer() });
+    expect(byBody.statusCode).toBe(200);
+    expect(byBody.json()).toEqual(byPath.json());
+    expect(byBody.json()).toMatchObject({
+      email: 'sam@example.test',
+      household_name: 'The Test family',
+      issued_by_operator: false,
+    });
+
+    // Refused as the path form refuses: a link nobody issued, and a token
+    // too short to be one, in the same words.
+    const nobody = 'n'.repeat(43);
+    const [deadBody, deadPath] = [
+      await lookup(nobody),
+      await h.app.inject({ url: `/api/v1/password-resets/${nobody}`, ...peer() }),
+    ];
+    expect([deadBody.statusCode, deadPath.statusCode]).toEqual([404, 404]);
+    expect(json<{ error: { code: string } }>(deadBody).error.code).toBe('reset_not_valid');
+    expect(json<{ error: { message: string } }>(deadBody).error.message).toBe(
+      json<{ error: { message: string } }>(deadPath).error.message,
+    );
+    const [shortBody, shortPath] = [
+      await lookup('short'),
+      await h.app.inject({ url: '/api/v1/password-resets/short', ...peer() }),
+    ];
+    expect([shortBody.statusCode, shortPath.statusCode]).toEqual([422, 422]);
+    // A body with no token, or with something else beside it, is refused too.
+    expect((await lookup(undefined)).statusCode).toBe(422);
+    expect(
+      (
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/password-resets/lookup',
+          payload: { token, password: 'not asked for here' },
+          ...peer(),
+        })
+      ).statusCode,
+    ).toBe(422);
+  });
+
+  it('an old /reset/ link still works until it expires', async () => {
+    // A link emailed before 0.5.17 reads /reset/<token>; the page it opens
+    // may be one loaded before the upgrade, which asks the path forms.
+    await forgot('sam@example.test');
+    const token = tokenOf(lastLink() as string);
+    const byPath = () => h.app.inject({ url: `/api/v1/password-resets/${token}`, ...peer() });
+    expect((await byPath()).statusCode).toBe(200);
+    await h.db
+      .updateTable('password_reset')
+      .set({ expires_at: new Date(Date.now() - 1000) })
+      .where('used_at', 'is', null)
+      .execute();
+    for (const res of [await byPath(), await lookup(token)]) {
+      expect(res.statusCode).toBe(404);
+      expect(json<{ error: { code: string } }>(res).error.code).toBe('reset_not_valid');
+    }
+    const spend = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/password-resets/${token}`,
+      payload: { password: 'too late for this one' },
+      ...peer(),
+    });
+    expect(spend.statusCode).toBe(404);
   });
 
   it('shows whose account it is before anything is typed', async () => {
@@ -384,6 +463,36 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
       ),
     );
     expect(key).toBeInstanceOf(Buffer);
+  });
+
+  it('the link is spent from the body too, once, and a password too short spends nothing', async () => {
+    await forgot('sam@example.test');
+    const token = tokenOf(lastLink() as string);
+    const complete = (password: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/password-resets/complete',
+        payload: { token, password },
+        ...peer(),
+      });
+    const short = await complete('short');
+    expect(short.statusCode).toBe(422);
+    expect(json<{ error: { message: string } }>(short).error.message).toMatch(/10 characters/);
+    expect((await lookup(token)).statusCode).toBe(200);
+
+    const done = await complete('sam set this from the body');
+    expect(done.statusCode).toBe(200);
+    // No session, as from the path form.
+    expect(json<Record<string, unknown>>(done)).toEqual({ email: 'sam@example.test' });
+    expect((await complete('and again from the body')).statusCode).toBe(404);
+    expect((await lookup(token)).statusCode).toBe(404);
+    const back = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'sam@example.test', password: 'sam set this from the body' },
+      ...peer(),
+    });
+    expect(back.statusCode).toBe(200);
   });
 
   it('a reset removes every passkey, and nothing else', async () => {

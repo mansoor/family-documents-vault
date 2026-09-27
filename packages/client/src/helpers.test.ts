@@ -149,6 +149,27 @@ describe('a vault address, from whatever was typed or pasted', () => {
     }
   });
 
+  it('a pasted /join# or /reset# link gives the phone its vault; the fragment is dropped', () => {
+    // An invitation's or a reset's link since 0.5.17: the secret after the
+    // #, with or without a slash before it, on a port of its own, or with
+    // the scheme left off.
+    for (const [link, origin] of [
+      ['https://vault.example/join#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://vault.example/reset#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://vault.example/join/#abcdefSECRETtoken', 'https://vault.example'],
+      ['https://vault.example:8443/reset#abcdefSECRETtoken', 'https://vault.example:8443'],
+      ['http://192.168.1.20:8080/join#abcdefSECRETtoken', 'http://192.168.1.20:8080'],
+      ['vault.example/reset#abcdefSECRETtoken', 'https://vault.example'],
+      // And a link made before 0.5.17, the secret in its path.
+      ['https://vault.example/reset/abcdefSECRETtoken', 'https://vault.example'],
+    ] as const) {
+      const got = serverOriginFrom(link);
+      expect(got?.origin, link).toBe(origin);
+      expect(got?.trimmed, link).toBe(true);
+      expect(JSON.stringify(got), link).not.toContain('SECRET');
+    }
+  });
+
   it('refuses what is not an address, or would mislead about one', () => {
     for (const bad of [
       '',

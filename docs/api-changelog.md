@@ -1317,6 +1317,54 @@ link_not_valid` on each, whatever its options, and a legacy link's is
     has `timezone`, which `GET /api/v1/profile` already answers to every
     role: the web's snooze buttons count days on the household's calendar,
     as the vault does.
+  - Invitation and reset links the same way (5.17). A new link is
+    `{origin}/join#{link_token}` or `{origin}/reset#{token}`: the token is
+    in the fragment, which no server is sent — not the vault, not a proxy
+    on the way — and the page reads it, takes it out of the address bar
+    and that tab's history, and posts it in a body. The browser's own
+    history of visited pages may still hold the link, which no page can
+    change; what protects it there is that it works once and expires — an
+    hour for a reset, the invitation's own days for an invitation, which
+    also needs its code. The reset email and `cli.mjs reset-password` give
+    `/reset#…`; the web's invitation hand-over, and its Copy, `/join#…`.
+    A link made before 0.5.17 (`/reset/{token}`, `/join/{token}`) still
+    opens the page, which takes the token out of the address the same way
+    and posts it in the same bodies.
+    - **Added:** `POST /api/v1/password-resets/lookup` `{ token }` →
+      `ResetPreview`, as `GET /api/v1/password-resets/{token}` answers; and
+      `POST /api/v1/password-resets/complete` `{ token, password }` →
+      `200 { email }`, as `POST /api/v1/password-resets/{token}` does — no
+      session, every session ended, the link spent. The same refusals:
+      `404 reset_not_valid` for every dead link, `422 validation_failed`
+      for a token under 16 characters, a missing one, or (for `lookup`) a
+      field beside it. Unauthenticated; 10 a minute per address, each, as
+      the path forms.
+    - **Added:** `POST /api/v1/invitations/lookup` `{ token }` →
+      `InvitationPreview`, as `GET /api/v1/invitations/{token}` answers;
+      and `POST /api/v1/invitations/accept` `{ token, code, password,
+email? }` → `201` with tokens, as
+      `POST /api/v1/invitations/{token}/accept` does, a wrong code using
+      one of the same five tries. The same refusals: `404
+invitation_not_valid`, `401 invitation_code_wrong`, `422
+validation_failed`. Unauthenticated; 10 a minute per address, each.
+    - The request log names the four routes, and keeps no token, code or
+      password from them, as for every other route; a body that is not
+      JSON is `400 bad_request`, and its line keeps nothing of it either.
+    - **Deprecated:** the path forms — `GET /api/v1/password-resets/{token}`,
+      `POST /api/v1/password-resets/{token}`,
+      `GET /api/v1/invitations/{token}` and
+      `POST /api/v1/invitations/{token}/accept` — listed in `deprecations`
+      (`removed_in: "0.9.0"`). They keep working, for any link, until then:
+      a page loaded before an upgrade asks them, and the links made before
+      0.5.17 last an hour, or the invitation's days.
+    - `@fdv/client`: `lookupReset`, `completeReset(token, password)`,
+      `lookupInvitation`, `acceptInvitationLink(token, body)`, which a vault
+      older than 0.5.17 refuses (`404`; `422` for the reset ones, whose
+      names it reads as a path form's token); `resetPreview`,
+      `resetPassword`, `invitationPreview` and `acceptInvitation` are the
+      path forms, kept for those vaults. A pasted `/join#…` or `/reset#…` link gives the
+      phone its vault's origin, the fragment dropped, as every other pasted
+      link does; an older phone does the same.
 
 ## Deprecations in effect
 
@@ -1325,3 +1373,9 @@ link_not_valid` on each, whatever its options, and a legacy link's is
   They answer only links made before 0.5.14, the last of which lapses
   within 90 days of that release. Use `POST /api/v1/shared/preview`,
   `POST /api/v1/shared/unlock` and `GET /api/v1/shared/items` instead.
+- `GET /api/v1/password-resets/{token}`, `POST /api/v1/password-resets/{token}`,
+  `GET /api/v1/invitations/{token}` and
+  `POST /api/v1/invitations/{token}/accept` (since 0.5.17; removed in
+  0.9.0). Use `POST /api/v1/password-resets/lookup` and `/complete`, and
+  `POST /api/v1/invitations/lookup` and `/accept`, with the token in the
+  body.

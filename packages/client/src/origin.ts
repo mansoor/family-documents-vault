@@ -2,9 +2,11 @@
  * Turning what somebody typed or pasted into the address of a vault.
  *
  * People paste whatever they have: `vault.local`, an IP address, or a link
- * from an invitation or a reset email. The last one carries a secret in its
- * path, so only the origin is kept and the rest is dropped on the floor —
- * never stored, never logged, never sent anywhere.
+ * from an invitation, a reset email or a share. The last ones carry a
+ * secret — after the `#` since 0.5.14 (`/s#…`) and 0.5.17 (`/join#…`,
+ * `/reset#…`), in the path before then — so only the origin is kept and the
+ * rest is dropped on the floor: never stored, never logged, never sent
+ * anywhere.
  *
  * Parsed by hand rather than with `URL`, which React Native has only ever
  * partly implemented.

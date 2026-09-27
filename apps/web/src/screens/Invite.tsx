@@ -174,7 +174,11 @@ function InviteForm(props: {
 
 /** The one moment the two secrets exist outside the invitee's head. */
 function HandOver(props: { created: CreatedInvitation; onDone: () => void }) {
-  const link = `${window.location.origin}/join/${props.created.link_token}`;
+  // The secret after the #: a browser sends it to no server, and the page
+  // it opens takes it out of the address bar and that tab's history (5.17).
+  // The browser's own history of pages visited keeps it: the link works
+  // once, only with the code, and for seven days.
+  const link = `${window.location.origin}/join#${props.created.link_token}`;
   const [copied, setCopied] = useState<'link' | 'code' | null>(null);
 
   const copy = (what: 'link' | 'code', text: string) => {

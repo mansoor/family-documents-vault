@@ -7,7 +7,9 @@ import type { PasskeyService } from './passkeys.js';
 import type { StepUpService } from './step-up.js';
 import {
   changeBody,
+  completeBody,
   forgotBody,
+  lookupBody,
   resetBody,
   type PasswordService,
   type ResetPreview,
@@ -283,6 +285,28 @@ export function registerAuth(
     });
   });
 
+  // A link's token in a body, never a path (5.17). A link reads
+  // /reset#<token>, and no server is sent what follows the #; the page
+  // reads it and posts it here. The same answers and refusals as the path
+  // forms below, and the same limit.
+  app.post(
+    '/api/v1/password-resets/lookup',
+    tight,
+    async (req) =>
+      passwords.preview(parse(lookupBody, req.body ?? {}).token) satisfies Promise<ResetPreview>,
+  );
+
+  app.post('/api/v1/password-resets/complete', tight, async (req, reply) => {
+    const body = parse(completeBody, req.body ?? {});
+    const { email } = await passwords.reset(body.token, body.password, metaOf(req));
+    // No session, as below.
+    return reply.status(200).send({ email });
+  });
+
+  // The path forms, which links made before 0.5.17 (/reset/<token>) were
+  // looked up and spent with. They keep working — a reset link lives an
+  // hour — and are listed in the capability document's `deprecations`, to
+  // go in 0.9.0.
   app.get<{ Params: { token: string } }>('/api/v1/password-resets/:token', tight, async (req) => {
     const { token } = parse(z.object({ token: z.string().min(16).max(256) }), req.params);
     return passwords.preview(token) satisfies Promise<ResetPreview>;

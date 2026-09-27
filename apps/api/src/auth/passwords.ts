@@ -64,6 +64,19 @@ export const forgotBody = z
 
 export const resetBody = z.object({ password }).strict();
 
+/** A reset link's secret: base64url of 32 bytes, or what an old link carried. */
+const linkToken = z.string().min(16).max(256);
+
+/**
+ * What the page sends to show whose account it is (5.17): the token it read
+ * from the link's fragment, in a body — never in a path, where a proxy on
+ * the way would see it.
+ */
+export const lookupBody = z.object({ token: linkToken }).strict();
+
+/** Spending the link (5.17): its token and the new password, both in the body. */
+export const completeBody = z.object({ token: linkToken, password }).strict();
+
 export interface ResetPreview {
   household_name: string | null;
   email: string;
@@ -428,9 +441,17 @@ export class PasswordService {
     return { email: account.email };
   }
 
-  /** The address a reset link points at. */
+  /**
+   * The address a reset link points at, in the email and from the command
+   * line: `/reset#<token>` (5.17). What follows the `#` is sent to no
+   * server, so neither the vault nor a proxy on the way sees the secret; the
+   * page reads it, takes it out of the address bar and this tab's history,
+   * and posts it. The browser's own history of visited pages still records
+   * the link as it arrived, and no page can take it out of that: what keeps
+   * a reset link safe is that it works once, and for an hour.
+   */
   linkFor(token: string): string {
-    return `${this.baseUrl.replace(/\/$/, '')}/reset/${token}`;
+    return `${this.baseUrl.replace(/\/$/, '')}/reset#${token}`;
   }
 
   private async live(token: string) {

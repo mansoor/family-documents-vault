@@ -233,8 +233,12 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
     const reset = await h.app.inject({
       ...peer(),
       method: 'POST',
-      url: `/api/v1/password-resets/${link.slice(link.lastIndexOf('/') + 1)}`,
-      payload: { password: 'sam has a new password now' },
+      url: '/api/v1/password-resets/complete',
+      // The secret after the # (5.17).
+      payload: {
+        token: link.slice(link.lastIndexOf('#') + 1),
+        password: 'sam has a new password now',
+      },
     });
     expect(reset.statusCode, reset.body).toBe(200);
     expect(await rows(samPhone)).toEqual([]);

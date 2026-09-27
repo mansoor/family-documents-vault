@@ -84,8 +84,10 @@ export function App() {
           />
           {/* An invitation is followed while signed out, but signing in
               first should not throw the link away either, so this is
-              outside both gates. */}
-          <Route path="/join/:token" element={<JoinScreen />} />
+              outside both gates. Its token is not in the address: it was
+              after the # (or, in a link made before 0.5.17, in the path),
+              and was taken out before the router saw it (link-token.ts). */}
+          <Route path="/join" element={<JoinScreen />} />
           {/* Both outside the gates: somebody who cannot sign in is
               exactly who these are for. */}
           <Route
@@ -96,7 +98,9 @@ export function App() {
               </Gate>
             }
           />
-          <Route path="/reset/:token" element={<ResetPasswordScreen />} />
+          {/* The same for a reset link: /reset#<token>, or /reset/<token>
+              before 0.5.17, is /reset by now. */}
+          <Route path="/reset" element={<ResetPasswordScreen />} />
           {/* Outside the gates entirely: whoever opens this has no
               account and is not going to make one. */}
           <Route path="/shared/:token" element={<SharedScreen />} />

@@ -45,6 +45,89 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
   const preview = (token: string) =>
     h.app.inject({ url: `/api/v1/invitations/${token}`, ...peer() });
 
+  /** The page's calls since 5.17: the token in a body, never a path. */
+  const lookup = (token: unknown) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations/lookup',
+      payload: { token },
+      ...peer(),
+    });
+  const acceptByBody = (token: string, body: Record<string, unknown>) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations/accept',
+      payload: { token, ...body },
+      ...peer(),
+    });
+
+  it('an invitation link works from its fragment: the token goes in a body, and answers as the path form does', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Robin', email: 'robin@example.test', role: 'teen' }),
+    );
+    const byBody = await lookup(created.link_token);
+    const byPath = await preview(created.link_token);
+    expect(byBody.statusCode).toBe(200);
+    expect(byBody.json()).toEqual(byPath.json());
+    expect(json<InvitationPreview>(byBody)).toMatchObject({
+      household_name: 'The Test family',
+      display_name: 'Robin',
+      role: 'teen',
+      invited_by: 'Owner',
+    });
+
+    // A wrong code from the body counts against the link as from the path.
+    const wrong = await acceptByBody(created.link_token, {
+      code: 'ZZZZ-ZZZZ',
+      password: 'robin chose this',
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(json<{ error: { message: string } }>(wrong).error.message).toContain('4 tries left');
+    const path = await accept(created.link_token, {
+      code: 'ZZZZ-ZZZZ',
+      password: 'robin chose this',
+    });
+    expect(json<{ error: { message: string } }>(path).error.message).toContain('3 tries left');
+
+    const joined = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'robin chose this',
+    });
+    expect(joined.statusCode).toBe(201);
+    expect(json<Tokens>(joined).role).toBe('teen');
+    // Good once, whichever form spends it.
+    expect((await lookup(created.link_token)).statusCode).toBe(404);
+    expect((await preview(created.link_token)).statusCode).toBe(404);
+    const again = await accept(created.link_token, {
+      code: created.code,
+      password: 'robin chose this',
+    });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('the body forms refuse what the path forms refuse, in the same words', async () => {
+    const nobody = 'n'.repeat(43);
+    const [deadBody, deadPath] = [await lookup(nobody), await preview(nobody)];
+    expect([deadBody.statusCode, deadPath.statusCode]).toEqual([404, 404]);
+    expect(json<{ error: { code: string } }>(deadBody).error.code).toBe('invitation_not_valid');
+    expect(json<{ error: { message: string } }>(deadBody).error.message).toBe(
+      json<{ error: { message: string } }>(deadPath).error.message,
+    );
+    const [notJoined, notJoinedPath] = [
+      await acceptByBody(nobody, { code: 'ABCD-EFGH', password: 'a long password' }),
+      await accept(nobody, { code: 'ABCD-EFGH', password: 'a long password' }),
+    ];
+    expect([notJoined.statusCode, notJoinedPath.statusCode]).toEqual([404, 404]);
+    // Too short to be a token, or no token at all.
+    expect([(await lookup('short')).statusCode, (await preview('short')).statusCode]).toEqual([
+      422, 422,
+    ]);
+    expect((await lookup(undefined)).statusCode).toBe(422);
+    expect(
+      (await acceptByBody('short', { code: 'ABCD-EFGH', password: 'a long password' })).statusCode,
+    ).toBe(422);
+  });
+
   it('invites someone who is not in the household yet, and says who it is for', async () => {
     const res = await invite({ display_name: 'Sam', email: 'sam@example.test', role: 'adult' });
     expect(res.statusCode).toBe(201);

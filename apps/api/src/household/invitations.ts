@@ -69,6 +69,19 @@ export const acceptBody = z.object({
   email: z.string().trim().toLowerCase().email().max(254).optional(),
 });
 
+/** An invitation link's secret: base64url of 32 bytes. */
+const linkToken = z.string().min(16).max(256);
+
+/**
+ * What the page sends to show whose vault this is (5.17): the token it read
+ * from the link's fragment, in a body — never in a path, where a proxy on
+ * the way would see it.
+ */
+export const lookupBody = z.object({ token: linkToken }).strict();
+
+/** Accepting (5.17): the token in the body, beside the code and the password. */
+export const acceptByBody = acceptBody.extend({ token: linkToken });
+
 export interface InvitationView {
   id: string;
   member_id: string;
