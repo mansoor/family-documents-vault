@@ -388,6 +388,7 @@ export function ConfirmScreen() {
       back={`/documents/${doc.id}`}
       lede="Change anything that is wrong. Everything else can wait."
       documentId={doc.id}
+      filedByMe={doc.filed_by_me === true}
       types={types}
       members={members}
       initial={cardFor(doc)}
@@ -530,6 +531,8 @@ export function ConfirmForm(props: {
   fileName?: string;
   /** The document this card is about, when it is already in the vault. */
   documentId?: string;
+  /** Whether the reader filed that document (a teen changes who sees only those: A72). */
+  filedByMe?: boolean;
   types: DocumentTypeView[];
   members: Member[];
   initial: CardValues;
@@ -577,13 +580,20 @@ export function ConfirmForm(props: {
   // A teen cannot see Adults only documents, their own included.
   const adultsOnlyAllowed = !teen;
   // A teen files their own documents, and may change who can see one
-  // already in the vault only between Only me and Everyone (A72).
+  // already in the vault only if they filed it, between Only me and
+  // Everyone (A72).
   const people = teen ? members.filter((m) => m.is_me) : members;
   const visibilityLocked =
     teen &&
     !props.fileName &&
-    visibilityChoices(myRole, base.owner !== '' && base.owner === me?.id, base.visibility)
-      .length === 0;
+    visibilityChoices(
+      {
+        role: myRole,
+        mine: base.owner !== '' && base.owner === me?.id,
+        filedByMe: props.filedByMe === true,
+      },
+      base.visibility,
+    ).length === 0;
   const person = members.find((m) => m.id === owner);
   const editing = !props.fileName;
   const expiresShown = Boolean(type?.expiry_driver) || (editing && expires !== '');

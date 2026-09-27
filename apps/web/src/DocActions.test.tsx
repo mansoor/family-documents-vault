@@ -623,6 +623,15 @@ describe('quick actions on every document (5.4)', () => {
     );
   });
 
+  it('a teen is not offered Who can see on a document an owner filed for them', async () => {
+    // Theirs, but filed by an owner: not theirs to hide from the family
+    // (the 5.17c review). Edit and Move to Trash stay, as for their own.
+    home([{ ...PASSPORT, filed_by_me: false }], 'teen');
+    const { menu } = await openMenu();
+    expect(offered(menu)).toContain('Edit details');
+    expect(within(menu).queryByRole('menuitem', { name: 'Who can see' })).not.toBeInTheDocument();
+  });
+
   it('taking a document out of Only me from the ⋯ asks to confirm it’s you', async () => {
     const passport = { ...PASSPORT, visibility: 'private' };
     home([passport], 'owner', { stepUpNeeded: true });

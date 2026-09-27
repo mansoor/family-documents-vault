@@ -78,7 +78,7 @@ export function roleLine(m: Member): string {
  * ownVisibility, and visibilityRefusal (A72) for who changes it.
  */
 export const ID_NUMBERS_NOTE =
-  "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.";
+  "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own documents that they filed between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.";
 
 /** How long a new photo is waited for, and how often it is asked about. */
 export const PHOTO_POLL_MS = 2000;
@@ -393,6 +393,10 @@ function PhotoControls(props: {
       // review: it fell to the page).
       (change.current ?? status.current)?.focus();
     } catch (err) {
+      // The dialog closes, as the app's others do on a refusal: focus goes
+      // back to "Remove photo", and the reason is said on the page, not
+      // behind the dialog (the 5.17c review).
+      setRemoving(false);
       setError(describeError(err));
     } finally {
       setBusy(false);

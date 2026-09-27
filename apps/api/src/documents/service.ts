@@ -65,6 +65,7 @@ import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
+import { askerOf } from './visibility.js';
 import { allows, requireCapability } from '../authz.js';
 import { canSee, PREVIEW_MAX_PAGES } from '@fdv/shared';
 
@@ -179,6 +180,8 @@ export type DocRow = {
   notes_sealed: Buffer | null;
   extra_sealed: Buffer | null;
   sealed_details: string[];
+  /** The account that filed it; the view says only whether it was the caller's. */
+  created_by: string | null;
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
@@ -641,6 +644,7 @@ export class DocumentService {
    */
   private async view(
     trx: Db,
+    p: Principal,
     row: DocRow,
     typeOf: TypeLookup = typeLookup(trx),
     opened: PrivateValues | null = null,
@@ -692,6 +696,9 @@ export class DocumentService {
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
       deleted_at: row.deleted_at?.toISOString() ?? null,
+      // Whether the caller filed it: a teen changes who sees only the ones
+      // they filed (A72). Their own fact, never who else did.
+      filed_by_me: row.created_by !== null && row.created_by === p.accountId,
       etag: etagOf(row.id, row.updated_at),
     };
   }
@@ -701,9 +708,9 @@ export class DocumentService {
    * query has already found — the documents in a collection (5.14). An Only me
    * one's notes and details stay sealed, as in any list.
    */
-  async listed(trx: Db, rows: DocRow[]): Promise<DocumentView[]> {
+  async listed(trx: Db, p: Principal, rows: DocRow[]): Promise<DocumentView[]> {
     const typeOf = typeLookup(trx);
-    return Promise.all(rows.map((r) => this.view(trx, r, typeOf)));
+    return Promise.all(rows.map((r) => this.view(trx, p, r, typeOf)));
   }
 
   // ---------------------------------------------------------------- CRUD
@@ -771,7 +778,7 @@ export class DocumentService {
         detail: { title: row.title, type_key: row.type_key },
         ip: meta.ip,
       });
-      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
     });
   }
 
@@ -818,7 +825,7 @@ export class DocumentService {
   async get(p: Principal, id: string): Promise<DocumentView> {
     return withPrincipal(this.db, p, async (trx) => {
       const row = await this.fetch(trx, p, id, true);
-      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
     });
   }
 
@@ -845,7 +852,7 @@ export class DocumentService {
           'Someone else changed this document. Reload and try again.',
           {
             detail: JSON.stringify(
-              await this.view(trx, current, typeLookup(trx), await this.opened(trx, p, current)),
+              await this.view(trx, p, current, typeLookup(trx), await this.opened(trx, p, current)),
             ),
           },
         );
@@ -929,7 +936,7 @@ export class DocumentService {
           .executeTakeFirst();
         drawNow = latest?.id ?? null;
       }
-      return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+      return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
     });
     if (drawNow) {
       await this.enqueue(
@@ -969,7 +976,7 @@ export class DocumentService {
       const row = await this.fetch(trx, p, id, true);
       this.mustOwnIfTeen(p, row);
       if (!row.deleted_at) {
-        return this.view(trx, row, typeLookup(trx), await this.opened(trx, p, row));
+        return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
       }
       const restored = await trx
         .updateTable('document')
@@ -992,7 +999,7 @@ export class DocumentService {
         objectId: id,
         ip: meta.ip,
       });
-      return this.view(trx, restored, typeLookup(trx), opened);
+      return this.view(trx, p, restored, typeLookup(trx), opened);
     });
   }
 
@@ -1043,7 +1050,7 @@ export class DocumentService {
       // An Only me document's notes and details stay sealed in a list
       // (0.5.8): `has_notes` says whether it has notes, and its status was
       // worked out when its owner last wrote them.
-      const items = await Promise.all(page.map((r) => this.view(trx, r, typeOf)));
+      const items = await Promise.all(page.map((r) => this.view(trx, p, r, typeOf)));
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
       const next =
@@ -2027,7 +2034,7 @@ export class DocumentService {
     return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('document')
-        .select(['visibility', 'is_essential', 'owner_member_id'])
+        .select(['visibility', 'is_essential', 'owner_member_id', 'created_by'])
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
@@ -2035,16 +2042,11 @@ export class DocumentService {
       // A teen may change only their own: the rest is refused, not asked.
       if (p.role === 'teen' && row.owner_member_id !== p.memberId) return null;
       // A visibility change that will be refused is refused, not asked
-      // (A72: a teen's own, between Only me and Everyone, is asked as
-      // anybody's is).
+      // (A72: a teen's own that they filed, between Only me and Everyone, is
+      // asked as anybody's is).
       if (
         change.visibility !== undefined &&
-        visibilityRefusal(
-          p.role,
-          row.owner_member_id !== null && row.owner_member_id === p.memberId,
-          row.visibility,
-          change.visibility,
-        )
+        visibilityRefusal(askerOf(p, row), row.visibility, change.visibility)
       ) {
         return null;
       }
@@ -2130,7 +2132,7 @@ export class DocumentService {
           .limit(1)
           .executeTakeFirstOrThrow();
         items.push({
-          document: await this.view(trx, row),
+          document: await this.view(trx, p, row),
           version: {
             id: v.id,
             mime: v.mime,

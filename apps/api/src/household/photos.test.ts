@@ -372,7 +372,9 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
       await refusedAs(
         Buffer.concat([
           Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00]),
-          randomBytes(64),
+          // An empty directory: random bytes here read as some other TIFF
+          // dialect, or none, about once in a hundred and fifty runs.
+          Buffer.alloc(64),
         ]),
         'scan.jpg',
       ),

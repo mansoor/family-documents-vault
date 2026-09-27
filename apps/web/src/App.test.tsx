@@ -1557,6 +1557,31 @@ describe('App', () => {
     ]);
   });
 
+  it("a teen's edit card offers Only me and Everyone on what they filed, and nothing on what was filed for them", async () => {
+    // A72, narrowed in the 5.17c review: their own documents that they filed.
+    const pills = () =>
+      ['Everyone', 'Adults only', 'Only me'].map(
+        (name) => !screen.getByRole<HTMLButtonElement>('button', { name }).disabled,
+      );
+    for (const [filed, offered] of [
+      [true, [true, false, true]],
+      [false, [true, false, false]],
+    ] as const) {
+      const state = fresh({
+        members: [{ ...ME, role: 'teen' }],
+        documents: [{ ...PASSPORT, filed_by_me: filed }],
+      });
+      installFakeApi(state);
+      signedIn('teen');
+      window.history.replaceState({}, '', `/documents/${PASSPORT.id}/confirm`);
+      const { unmount } = render(<App />);
+      await screen.findByRole('button', { name: 'Everyone' });
+      // Filed for them, only the choice it has now stays: nothing to change.
+      expect(pills(), String(filed)).toEqual(offered);
+      unmount();
+    }
+  });
+
   it("a teen's retry after a lost answer changes only what changed, never who can see it", async () => {
     const state = fresh({ members: [{ ...ME, role: 'teen' }, AISHA], captureAnswersLost: 1 });
     installFakeApi(state);

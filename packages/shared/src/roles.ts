@@ -287,48 +287,61 @@ export function canSee(
 export const PRIVATE_OWNER_ONLY =
   'Only the person a document belongs to can make it private, or un-private it.';
 
-/** Said to a teen who asks to make their own document Adults only (A72). */
+/** Said to a teen who asks to make a document they filed Adults only (A72). */
 export const TEEN_NOT_ADULTS_ONLY =
-  'Adults only would hide it from you too. You can make your own documents Only me or Everyone.';
+  'Adults only would hide it from you too. You can make the documents you filed Only me or Everyone.';
 
 type Visibility = 'household' | 'adults' | 'private';
 const VISIBILITIES: readonly Visibility[] = ['household', 'adults', 'private'];
 
 /**
+ * Who is asking to change who sees a document: their role; whether the
+ * document belongs to them (`owner_member_id` is their member); and
+ * whether they filed it (`created_by` is their account; `filed_by_me` on
+ * the wire).
+ */
+export interface VisibilityAsker {
+  role: Role;
+  mine: boolean;
+  filedByMe: boolean;
+}
+
+/**
  * Whether someone may change who sees a document, from `from` to `to`:
- * null if they may, else the sentence that refuses it. `mine` is whether
- * the document belongs to them. The API asks the rows it holds; the web
- * asks what it may offer (`visibilityChoices`).
+ * null if they may, else the sentence that refuses it. The API asks the
+ * rows it holds; the web asks what it may offer (`visibilityChoices`).
  *
  *  - Owners and adults: `document.visibility`, as always; Only me, into it
  *    or out of it, only on their own.
- *  - A teen (A72, 5.17c): their own documents, between Only me and
- *    Everyone, and nothing else. Not Adults only, which would hide it from
- *    them too; not anybody else's.
+ *  - A teen (A72, 5.17c): their own documents that they filed, between
+ *    Only me and Everyone, and nothing else. Not Adults only, which would
+ *    hide it from them too; not anybody else's; and not one an owner or
+ *    adult filed for them, which made Only me the family would lose with
+ *    no trace (the 5.17c review).
  *  - Viewers: never.
  *
  * A document the caller cannot see is not asked about: it is not there.
  */
 export function visibilityRefusal(
-  role: Role,
-  mine: boolean,
+  who: VisibilityAsker,
   from: Visibility,
   to: Visibility,
 ): string | null {
-  if (role === 'teen') {
-    if (!mine) return refusalFor('document.visibility');
+  if (who.role === 'teen') {
+    if (!who.mine || !who.filedByMe) return refusalFor('document.visibility');
     if (to === 'adults') return TEEN_NOT_ADULTS_ONLY;
     if (from === 'adults') return refusalFor('document.visibility');
     return null;
   }
-  if (!can(role, 'document.visibility')) return refusalFor('document.visibility');
-  if ((from === 'private' || to === 'private') && !mine) return PRIVATE_OWNER_ONLY;
+  if (!can(who.role, 'document.visibility')) return refusalFor('document.visibility');
+  if ((from === 'private' || to === 'private') && !who.mine) return PRIVATE_OWNER_ONLY;
   return null;
 }
 
 /**
  * Whether this role could ever change who sees a document: asked before a
- * document is looked up, so a viewer is refused as they always were.
+ * document is looked up, so a viewer is refused as they always were. A
+ * teen may, on the ones they filed; which, the document says.
  */
 export function mayChangeVisibilityAtAll(role: Role): boolean {
   return can(role, 'document.visibility') || role === 'teen';
@@ -337,10 +350,11 @@ export function mayChangeVisibilityAtAll(role: Role): boolean {
 /**
  * What a screen offers for who sees a document now `current`: the choices
  * `visibilityRefusal` allows, in the usual order, or none when there is
- * nothing to change it to. A teen, on their own, gets Everyone and Only me.
+ * nothing to change it to. A teen, on their own that they filed, gets
+ * Everyone and Only me.
  */
-export function visibilityChoices(role: Role, mine: boolean, current: Visibility): Visibility[] {
-  const allowed = VISIBILITIES.filter((to) => visibilityRefusal(role, mine, current, to) === null);
+export function visibilityChoices(who: VisibilityAsker, current: Visibility): Visibility[] {
+  const allowed = VISIBILITIES.filter((to) => visibilityRefusal(who, current, to) === null);
   return allowed.length > 1 ? allowed : [];
 }
 

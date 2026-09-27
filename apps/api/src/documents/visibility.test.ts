@@ -336,7 +336,7 @@ describe.skipIf(!testAdminUrl())('a teen and who sees their own documents (A72)'
     expect(refusal(await show(teen, letter.id, 'adults'))).toMatchObject({
       code: 'forbidden',
       message:
-        'Adults only would hide it from you too. You can make your own documents Only me or Everyone.',
+        'Adults only would hide it from you too. You can make the documents you filed Only me or Everyone.',
     });
     // Nor by an edit.
     const edited = await h.app.inject({
@@ -384,6 +384,66 @@ describe.skipIf(!testAdminUrl())('a teen and who sees their own documents (A72)'
       'Only an adult can change who is able to see a document.',
     );
     expect((await show(viewer, randomUUID(), 'adults')).statusCode).toBe(403);
+  });
+
+  it('a teen cannot make a document an owner filed for them Only me, and the owner keeps it', async () => {
+    // Filed by an owner, for the teen: theirs, but not theirs to hide from
+    // the family, who would lose it with no trace (the 5.17c review).
+    const letter = await make(owner, {
+      title: 'Tess school report',
+      type_key: 'utility_bill',
+      owner_member_id: teen.member_id,
+      visibility: 'household',
+    });
+    expect(letter.filed_by_me).toBe(true);
+    const asTeen = await get(teen, `/api/v1/documents/${letter.id}`);
+    expect(asTeen.json<DocumentView>()).toMatchObject({
+      owner_member_id: teen.member_id,
+      filed_by_me: false,
+    });
+    for (const to of ['private', 'adults'] as const) {
+      expect(refusal(await show(teen, letter.id, to)), to).toMatchObject({
+        code: 'forbidden',
+        message: 'Only an adult can change who is able to see a document.',
+      });
+    }
+    const edited = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${letter.id}`,
+      headers: h.as(teen),
+      payload: { visibility: 'private' },
+    });
+    expect(refusal(edited).message).toBe('Only an adult can change who is able to see a document.');
+    // The owner keeps it, and the family still sees it.
+    expect(await visibilityOf(letter.id)).toBe('household');
+    expect((await get(owner, `/api/v1/documents/${letter.id}`)).statusCode).toBe(200);
+    expect((await get(viewer, `/api/v1/documents/${letter.id}`)).statusCode).toBe(200);
+    // One the teen filed says so, to them alone.
+    const own = await make(teen, { title: 'Tess bus pass', type_key: 'utility_bill' });
+    expect(own.filed_by_me).toBe(true);
+    expect((await get(owner, `/api/v1/documents/${own.id}`)).json<DocumentView>().filed_by_me).toBe(
+      false,
+    );
+  });
+
+  it('GET, PATCH and POST visibility with an id that is not one are 404, not 500', async () => {
+    for (const as of [owner, teen]) {
+      const answers = [
+        await get(as, '/api/v1/documents/abc'),
+        await h.app.inject({
+          method: 'PATCH',
+          url: '/api/v1/documents/abc',
+          headers: h.as(as),
+          payload: { title: 'x' },
+        }),
+        await show(as, 'abc', 'private'),
+        await show(as, 'abc', 'household'),
+      ];
+      for (const res of answers) {
+        expect(res.statusCode, res.body).toBe(404);
+        expect(res.json<{ error: { code: string } }>().error.code).toBe('not_found');
+      }
+    }
   });
 
   it("an owner still cannot change a teen's Only me document, which they cannot see", async () => {

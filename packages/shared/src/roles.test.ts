@@ -25,6 +25,7 @@ import {
   visibilityChoices,
   visibilityRefusal,
   type Capability,
+  type Role,
 } from './roles.js';
 
 describe('the role matrix', () => {
@@ -245,14 +246,34 @@ describe("who may change a person's photo (A66)", () => {
 
 describe('who may change who sees a document (A72, 5.17c)', () => {
   const V = ['household', 'adults', 'private'] as const;
-  it('a teen: their own, between Only me and Everyone, and nothing else', () => {
-    expect(visibilityRefusal('teen', true, 'private', 'household')).toBeNull();
-    expect(visibilityRefusal('teen', true, 'household', 'private')).toBeNull();
-    expect(visibilityRefusal('teen', true, 'household', 'adults')).toBe(TEEN_NOT_ADULTS_ONLY);
-    expect(visibilityRefusal('teen', true, 'private', 'adults')).toBe(TEEN_NOT_ADULTS_ONLY);
+  /** Somebody asking; their own documents are ones they filed unless said otherwise. */
+  const asker = (role: Role, mine: boolean, filedByMe = mine) => ({ role, mine, filedByMe });
+
+  it('a teen: not one an owner or adult filed for them, which would hide it from the family', () => {
     for (const from of V) {
       for (const to of V) {
-        expect(visibilityRefusal('teen', false, from, to)).toBe(refusalFor('document.visibility'));
+        expect(visibilityRefusal(asker('teen', true, false), from, to)).toBe(
+          refusalFor('document.visibility'),
+        );
+      }
+    }
+    expect(visibilityChoices(asker('teen', true, false), 'household')).toEqual([]);
+    // Owners and adults are as they were, whoever filed it.
+    expect(visibilityRefusal(asker('owner', true, false), 'household', 'private')).toBeNull();
+  });
+
+  it('a teen: their own, between Only me and Everyone, and nothing else', () => {
+    expect(visibilityRefusal(asker('teen', true), 'private', 'household')).toBeNull();
+    expect(visibilityRefusal(asker('teen', true), 'household', 'private')).toBeNull();
+    expect(visibilityRefusal(asker('teen', true), 'household', 'adults')).toBe(
+      TEEN_NOT_ADULTS_ONLY,
+    );
+    expect(visibilityRefusal(asker('teen', true), 'private', 'adults')).toBe(TEEN_NOT_ADULTS_ONLY);
+    for (const from of V) {
+      for (const to of V) {
+        expect(visibilityRefusal(asker('teen', false), from, to)).toBe(
+          refusalFor('document.visibility'),
+        );
       }
     }
     expect(mayChangeVisibilityAtAll('teen')).toBe(true);
@@ -260,16 +281,22 @@ describe('who may change who sees a document (A72, 5.17c)', () => {
 
   it('owners and adults as before; viewers never', () => {
     for (const role of ['owner', 'adult'] as const) {
-      expect(visibilityRefusal(role, false, 'household', 'adults')).toBeNull();
-      expect(visibilityRefusal(role, false, 'adults', 'household')).toBeNull();
-      expect(visibilityRefusal(role, false, 'household', 'private')).toBe(PRIVATE_OWNER_ONLY);
-      expect(visibilityRefusal(role, false, 'private', 'household')).toBe(PRIVATE_OWNER_ONLY);
+      expect(visibilityRefusal(asker(role, false), 'household', 'adults')).toBeNull();
+      expect(visibilityRefusal(asker(role, false), 'adults', 'household')).toBeNull();
+      expect(visibilityRefusal(asker(role, false), 'household', 'private')).toBe(
+        PRIVATE_OWNER_ONLY,
+      );
+      expect(visibilityRefusal(asker(role, false), 'private', 'household')).toBe(
+        PRIVATE_OWNER_ONLY,
+      );
       for (const from of V)
-        for (const to of V) expect(visibilityRefusal(role, true, from, to)).toBeNull();
+        for (const to of V) expect(visibilityRefusal(asker(role, true), from, to)).toBeNull();
     }
     for (const from of V) {
       for (const to of V) {
-        expect(visibilityRefusal('viewer', true, from, to)).toBe(refusalFor('document.visibility'));
+        expect(visibilityRefusal(asker('viewer', true), from, to)).toBe(
+          refusalFor('document.visibility'),
+        );
       }
     }
     expect(mayChangeVisibilityAtAll('viewer')).toBe(false);
@@ -278,11 +305,15 @@ describe('who may change who sees a document (A72, 5.17c)', () => {
   });
 
   it('what a screen offers is what would not be refused, or nothing', () => {
-    expect(visibilityChoices('teen', true, 'private')).toEqual(['household', 'private']);
-    expect(visibilityChoices('teen', false, 'household')).toEqual([]);
-    expect(visibilityChoices('owner', false, 'household')).toEqual(['household', 'adults']);
-    expect(visibilityChoices('owner', false, 'private')).toEqual([]);
-    expect(visibilityChoices('adult', true, 'private')).toEqual(['household', 'adults', 'private']);
-    expect(visibilityChoices('viewer', true, 'household')).toEqual([]);
+    expect(visibilityChoices(asker('teen', true), 'private')).toEqual(['household', 'private']);
+    expect(visibilityChoices(asker('teen', false), 'household')).toEqual([]);
+    expect(visibilityChoices(asker('owner', false), 'household')).toEqual(['household', 'adults']);
+    expect(visibilityChoices(asker('owner', false), 'private')).toEqual([]);
+    expect(visibilityChoices(asker('adult', true), 'private')).toEqual([
+      'household',
+      'adults',
+      'private',
+    ]);
+    expect(visibilityChoices(asker('viewer', true), 'household')).toEqual([]);
   });
 });

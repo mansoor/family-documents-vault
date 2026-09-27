@@ -1486,21 +1486,30 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       `effectiveVisibility` in `@fdv/shared` says the same; a phone that
       sends the visibility its own copy preselected keeps sending Everyone
       until it is updated.
-    - **Changed:** a teen can change who sees their own documents, between
-      Only me and Everyone (A72). `POST /api/v1/documents/{id}/visibility`,
-      and `PATCH /api/v1/documents/{id}` with `visibility`, take `private`
-      or `household` from a teen, for a document whose `owner_member_id` is
-      theirs, and answer as they do anybody: out of Only me asks what
-      opening it asks (`step_up_required`, `open_private_document`), and
-      the activity log says it as any change of who can see a document.
-      Adults only is refused, `403 forbidden`: "Adults only would hide it
-      from you too. You can make your own documents Only me or Everyone."
-      Anybody else's document is refused as before, `403` "Only an adult
-      can change who is able to see a document.", and one they cannot see
-      is `404`, as it is for everybody (it was a `403` before the vault
+    - **Changed:** a teen can change who sees their own documents that they
+      filed, between Only me and Everyone (A72).
+      `POST /api/v1/documents/{id}/visibility`, and
+      `PATCH /api/v1/documents/{id}` with `visibility`, take `private` or
+      `household` from a teen, for a document whose `owner_member_id` is
+      theirs and that they filed, and answer as they do anybody: out of
+      Only me asks what opening it asks (`step_up_required`,
+      `open_private_document`), and the activity log says it as any change
+      of who can see a document. Adults only is refused, `403 forbidden`:
+      "Adults only would hide it from you too. You can make the documents
+      you filed Only me or Everyone." Anybody else's document, and one an
+      owner or adult filed for them (which, made Only me, the family would
+      lose with no trace), is refused as before, `403` "Only an adult can
+      change who is able to see a document."; one they cannot see is
+      `404`, as it is for everybody (it was a `403` before the vault
       looked). Owners, adults and viewers are unchanged; so is the role
       matrix, whose `document.visibility` is still an owner's and an
-      adult's. `@fdv/shared`: `visibilityRefusal`, `visibilityChoices`,
+      adult's.
+    - **Added:** `DocumentView.filed_by_me`: whether the one asking filed
+      the document, so a screen offers a teen the change only where it is
+      theirs to make. Only ever about the caller, never who else did.
+      Absent from older vaults (read it as false).
+    - `@fdv/shared`: `visibilityRefusal`, `visibilityChoices` (both take
+      `{ role, mine, filedByMe }`), `VisibilityAsker`,
       `mayChangeVisibilityAtAll`, `PRIVATE_OWNER_ONLY`,
       `TEEN_NOT_ADULTS_ONLY`.
     - The activity log says "Mansoor added a photo of Aisha", "Sara changed
@@ -1520,6 +1529,12 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       middle name's ("MA" and "MU"); letters are whole graphemes, never
       two people's in different cases, and shared only by the same name.
       `graphemesOf` splits a word as a reader sees its letters.
+  - An id that is not one, for every route (5.17c review). **Fixed:** a
+    path given something that is not a uuid where one belongs —
+    `GET /api/v1/documents/abc`, a `PATCH` of it, `POST .../visibility` —
+    reached the database and could answer `500 internal_error`. It is now
+    `404 not_found`, "Nothing in the vault has that id.", as for any id
+    that names nothing. A valid id is answered as before.
   - The activity log's chain, for every route (5.17c review). **Fixed:** an
     id sent in capitals — a `DELETE` of `/api/v1/auth/sessions/{ID}`, a
     `PATCH` of `/documents/{ID}`, any route — was hashed as sent, while the

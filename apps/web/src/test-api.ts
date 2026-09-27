@@ -217,6 +217,8 @@ export const PASSPORT = {
   created_at: '2026-09-20T09:14:00Z',
   updated_at: '2026-09-20T09:14:00Z',
   deleted_at: null,
+  // Filed by whoever is signed in (A72: a teen changes who sees only these).
+  filed_by_me: true,
   etag: '"abc"',
 };
 

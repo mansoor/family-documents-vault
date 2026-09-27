@@ -175,6 +175,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(422).send(refused.toBody(req.id));
       return;
     }
+    // An id that is no id at all — `/documents/abc` — reached the database
+    // as one: there is nothing by it, so it is answered as nothing there, on
+    // every route, never as the server's fault (the 5.17c review). A valid
+    // id never raises this.
+    if (pgCode === '22P02' && /\btype uuid\b/.test((err as Error).message ?? '')) {
+      const nothing = new ApiError(404, 'not_found', 'Nothing in the vault has that id.');
+      void reply.status(404).send(nothing.toBody(req.id));
+      return;
+    }
     const status =
       typeof (err as { statusCode?: number }).statusCode === 'number'
         ? (err as { statusCode: number }).statusCode

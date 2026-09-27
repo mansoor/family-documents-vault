@@ -31,6 +31,8 @@ export function VisibilityControl(props: {
   documentId: string;
   current: Visibility;
   isMine: boolean;
+  /** Whether the reader filed it: a teen changes only the ones they filed (A72). */
+  filedByMe: boolean;
   onChanged: () => Promise<void>;
   /**
    * Opened from a row's ⋯ (5.4): it starts at the choice, and Cancel, a
@@ -52,9 +54,12 @@ export function VisibilityControl(props: {
 
   // What this reader may change it to (visibilityChoices, @fdv/shared):
   // making something private, or taking it back, belongs to the person it
-  // is about, so the button does not pretend; a teen, on their own, has
-  // Only me and Everyone (A72); nothing to choose, no button.
-  const allowed = visibilityChoices(storedRole(), props.isMine, props.current);
+  // is about, so the button does not pretend; a teen, on their own that
+  // they filed, has Only me and Everyone (A72); nothing to choose, no button.
+  const allowed = visibilityChoices(
+    { role: storedRole(), mine: props.isMine, filedByMe: props.filedByMe },
+    props.current,
+  );
   if (allowed.length === 0) return null;
   const choices = CHOICES.filter((c) => allowed.includes(c.value));
 

@@ -12,7 +12,12 @@ import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
-import { canSee, mayChangeVisibilityAtAll, visibilityRefusal } from '@fdv/shared';
+import {
+  canSee,
+  mayChangeVisibilityAtAll,
+  visibilityRefusal,
+  type VisibilityAsker,
+} from '@fdv/shared';
 
 /**
  * Changing a document's visibility (SEC-13, FND-07, decision 2).
@@ -60,6 +65,7 @@ export class VisibilityService {
           'id',
           'visibility',
           'owner_member_id',
+          'created_by',
           'notes',
           'extra',
           'notes_sealed',
@@ -79,14 +85,10 @@ export class VisibilityService {
       // reader opens by the row's own (5.9 review).
       documentId = doc.id;
       // Only the owning member may see a private document, so only they may
-      // move one in or out of private; a teen, only their own, between Only
-      // me and Everyone (A72). The rule and its sentences: roles.ts.
-      const refusal = visibilityRefusal(
-        p.role,
-        doc.owner_member_id !== null && doc.owner_member_id === p.memberId,
-        doc.visibility,
-        to,
-      );
+      // move one in or out of private; a teen, only their own that they
+      // filed, between Only me and Everyone (A72). The rule and its
+      // sentences: roles.ts.
+      const refusal = visibilityRefusal(askerOf(p, doc), doc.visibility, to);
       if (refusal) throw new ApiError(403, 'forbidden', refusal);
       if (doc.visibility === to) return { notice: null };
       // Made private, it leaves every export somebody else asked for:
@@ -247,6 +249,21 @@ export class VisibilityService {
       return { notice: VisibilityService.PRIVATE_NOTICE };
     });
   }
+}
+
+/**
+ * Who is asking, as the visibility rule reads them (roles.ts): whether the
+ * document is theirs, and whether they filed it.
+ */
+export function askerOf(
+  p: Principal,
+  doc: { owner_member_id: string | null; created_by: string | null },
+): VisibilityAsker {
+  return {
+    role: p.role,
+    mine: doc.owner_member_id !== null && doc.owner_member_id === p.memberId,
+    filedByMe: doc.created_by !== null && doc.created_by === p.accountId,
+  };
 }
 
 /** The details as the database hands them over: an object, or nothing. */

@@ -246,19 +246,32 @@ describe("a person's profile (5.17c)", () => {
     // Only they can open it, or make it Everyone (A72): nobody else may
     // change a document of somebody else's that is Only me.
     expect(ID_NUMBERS_NOTE).toContain('only they can open it, or make it Everyone');
-    expect(visibilityChoices('teen', true, 'private')).toEqual(['household', 'private']);
+    const who = (role: 'owner' | 'adult' | 'teen' | 'viewer', mine: boolean, filedByMe = mine) => ({
+      role,
+      mine,
+      filedByMe,
+    });
+    expect(visibilityChoices(who('teen', true), 'private')).toEqual(['household', 'private']);
     for (const role of ['owner', 'adult', 'viewer'] as const) {
-      expect(visibilityChoices(role, false, 'private'), role).toEqual([]);
+      expect(visibilityChoices(who(role, false), 'private'), role).toEqual([]);
     }
     expect(ID_NUMBERS_NOTE).toContain(
       'Owners and adults can change who sees the documents they can open, and make their own Only me',
     );
-    expect(visibilityChoices('adult', false, 'household')).toEqual(['household', 'adults']);
-    expect(visibilityChoices('adult', true, 'adults')).toEqual(['household', 'adults', 'private']);
-    expect(ID_NUMBERS_NOTE).toContain('teens can switch their own between Only me and Everyone');
-    expect(visibilityChoices('teen', true, 'household')).toEqual(['household', 'private']);
-    expect(visibilityChoices('teen', false, 'household')).toEqual([]);
-    expect(visibilityChoices('viewer', true, 'household')).toEqual([]);
+    expect(visibilityChoices(who('adult', false), 'household')).toEqual(['household', 'adults']);
+    expect(visibilityChoices(who('adult', true), 'adults')).toEqual([
+      'household',
+      'adults',
+      'private',
+    ]);
+    expect(ID_NUMBERS_NOTE).toContain(
+      'teens can switch their own documents that they filed between Only me and Everyone',
+    );
+    expect(visibilityChoices(who('teen', true), 'household')).toEqual(['household', 'private']);
+    // One an owner filed for them is not theirs to hide (the 5.17c review).
+    expect(visibilityChoices(who('teen', true, false), 'household')).toEqual([]);
+    expect(visibilityChoices(who('teen', false), 'household')).toEqual([]);
+    expect(visibilityChoices(who('viewer', true), 'household')).toEqual([]);
     expect(ID_NUMBERS_NOTE).not.toMatch(/Whoever a document belongs to/);
   });
 
@@ -269,7 +282,7 @@ describe("a person's profile (5.17c)", () => {
     const { unmount } = render(<App />);
     expect(await screen.findByText(ID_NUMBERS_NOTE)).toBeInTheDocument();
     expect(ID_NUMBERS_NOTE).toBe(
-      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
+      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own documents that they filed between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
     );
     unmount();
     for (const role of ['adult', 'teen', 'viewer'] as const) {
@@ -438,6 +451,47 @@ describe("a person's photo (5.17c)", () => {
     );
     // Its button went with the photo: focus is on Add a photo, not the page.
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add a photo' }));
+  });
+
+  it('when removing fails, the dialog closes and the reason is on the page', async () => {
+    const state = fresh({ members: [ME, { ...AISHA_KHAN, photo: { id: 'p-1' } }] });
+    installFakeApi(state);
+    const fake = globalThis.fetch;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (init?.method === 'DELETE' && url.endsWith('/photo')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'internal_error',
+                message: 'Something went wrong on the server. It has been logged.',
+                retriable: true,
+                request_id: 'r',
+              },
+            }),
+            { status: 500, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      return fake(input, init);
+    });
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const button = await screen.findByRole('button', { name: 'Remove photo' });
+    button.focus();
+    fireEvent.click(button);
+    const asked = await screen.findByRole('alertdialog', { name: 'Remove Aisha’s photo?' });
+    fireEvent.click(within(asked).getByRole('button', { name: 'Remove photo' }));
+    // Not behind a dialog left open: closed, and said on the page.
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Something went wrong on the server. It has been logged.',
+    );
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove photo' })),
+    );
   });
 
   it('a viewer may remove their own photo, and set none', async () => {

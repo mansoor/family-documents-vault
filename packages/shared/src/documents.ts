@@ -60,6 +60,12 @@ export interface DocumentView {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /**
+   * Whether the one asking filed it (5.17c, A72): a teen may change who
+   * sees their own documents that they filed, between Only me and
+   * Everyone. Only ever about the caller. Absent from older vaults.
+   */
+  filed_by_me?: boolean;
   etag: string;
 }
 

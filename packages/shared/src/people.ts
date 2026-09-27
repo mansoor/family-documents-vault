@@ -139,7 +139,8 @@ export function initialsFor(members: ReadonlyArray<Named>): Map<string, string> 
   // Everybody sharing their letters takes the next place's letter, together,
   // until each is somebody's alone.
   let open = people.filter(clashes);
-  places(people).forEach((letterAt, i) => {
+  const at = places(people);
+  at.forEach((letterAt, i) => {
     if (open.length === 0) return;
     for (const p of open) {
       const letter = letterAt(p);
@@ -150,6 +151,52 @@ export function initialsFor(members: ReadonlyArray<Named>): Map<string, string> 
     }
     open = open.filter(clashes);
   });
+
+  // Rarely, somebody's letters are still somebody else's: a name that ran
+  // out landed on a code another took further on (Ann Ali and Anna Ali, Sam
+  // Ali and Sam Alia; the 5.17c review). A last pass gives each person
+  // letters of their own wherever the family's names allow it, choosing, in
+  // order, the letters they have now, the first steps', then their first
+  // letter with each place's letter of theirs, then their first letter
+  // alone: a matching, so one person's choice never takes the only letters
+  // another could have (whose letters were already their own keep them
+  // unless that is the only way).
+  if (people.some(clashes)) {
+    const choices = (p: Person): string[] => {
+      const initial = p.first[0] === undefined ? null : upper(p.first[0]);
+      const list = [p.code, p.natural];
+      if (initial !== null) {
+        for (const letterAt of at) {
+          const letter = letterAt(p);
+          if (letter !== null) list.push(`${initial}${letter}`);
+        }
+        list.push(initial);
+      }
+      const seen = new Set<string>();
+      return list.filter((c) => !seen.has(fold(c)) && Boolean(seen.add(fold(c))));
+    };
+    const holder = new Map<string, Person>();
+    const chosen = new Map<Person, string>();
+    const take = (p: Person, tried: Set<string>): boolean => {
+      for (const c of choices(p)) {
+        const key = fold(c);
+        if (tried.has(key)) continue;
+        tried.add(key);
+        const other = holder.get(key);
+        if (!other || take(other, tried)) {
+          holder.set(key, p);
+          chosen.set(p, c);
+          return true;
+        }
+      }
+      return false;
+    };
+    // Whose letters are their own first, so they keep them.
+    for (const p of [...people.filter((q) => !clashes(q)), ...people.filter(clashes)]) {
+      take(p, new Set());
+    }
+    for (const p of people) p.code = chosen.get(p) ?? p.code;
+  }
 
   // The same letters, however cased, are written the same.
   const written = new Map<string, string>();

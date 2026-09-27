@@ -1895,6 +1895,8 @@ function documentView(
     notes: sealed ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,
     extra: sealed ? {} : (doc.extra ?? {}),
+    // The fake's one signed-in person files every document it holds.
+    filed_by_me: true,
     etag: etagOf(doc),
     status: deriveStatus(
       {

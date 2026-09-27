@@ -80,7 +80,10 @@ export function mayChange(
 export function actionsFor(
   role: Role,
   memberId: string | null | undefined,
-  doc: Pick<DocumentView, 'owner_member_id' | 'visibility' | 'latest_version_id'> | null,
+  doc: Pick<
+    DocumentView,
+    'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me'
+  > | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
     uncollect: false,
@@ -101,7 +104,12 @@ export function actionsFor(
   if (hasFile && can(role, 'document.share')) actions.push('share');
   // Only what may be chosen: making something Only me, or taking it back,
   // is its owner's alone; a teen's own, Only me or Everyone (A72).
-  if (visibilityChoices(role, mine, doc.visibility).length > 0) actions.push('visibility');
+  if (
+    visibilityChoices({ role, mine, filedByMe: doc.filed_by_me === true }, doc.visibility).length >
+    0
+  ) {
+    actions.push('visibility');
+  }
   // Whoever may see it may put it in a collection of their own: it widens nothing.
   if (collections.collections) actions.push('collect');
   if (collections.collections && collections.uncollect) actions.push('uncollect');
@@ -469,6 +477,7 @@ export function DocActions(props: {
             documentId={props.documentId}
             current={doc.visibility}
             isMine={doc.owner_member_id !== null && doc.owner_member_id === memberId}
+            filedByMe={doc.filed_by_me === true}
             onChanged={async () => {
               changedInSheet.current = true;
             }}
