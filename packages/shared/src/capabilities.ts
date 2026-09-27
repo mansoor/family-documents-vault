@@ -76,8 +76,9 @@ export interface CapabilityFeatures {
    * A kind reminds from any date it shows (0.5.15): `remind_from` and
    * `remind_leads` on kinds, `source` and `about` on reminders,
    * `reminders_by_source` on a kind's impact, the built-in Due date. The
-   * server has them from 0.5.15 and says `false` until the web's editor for
-   * them ships (0.5.16); a client offers them only when this is true.
+   * server has them from 0.5.15, where it says `false`, and says `true`
+   * from 0.5.16, when the web's editor for them shipped; a client offers
+   * them only when this is true.
    * Absent from older vaults.
    */
   reminder_dates?: boolean;

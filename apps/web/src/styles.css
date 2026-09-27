@@ -208,6 +208,17 @@ h3 {
   font-weight: 500;
 }
 
+/* What is said about a field's value, under it (5.16b): when its reminders come. */
+.field-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-note p {
+  margin: 0;
+}
+
 /* A yes or a no (5.10): a switch, which says which in words as well — or,
    alone in a row, its own word ("Hide", 5.12). The only switch there is. */
 .switch {
@@ -1244,6 +1255,26 @@ a.btn {
   border-radius: var(--radius-m);
   font-size: 14px;
   font-weight: 600;
+}
+
+/* What a kind's reminders promise, under its chips (5.16b): one short block. */
+.stack.kind-rem-says {
+  gap: 8px;
+}
+
+.kind-rem-says p {
+  margin: 0;
+}
+
+/* The date reminders come from, with the promise under it (5.16b). */
+.kind-preview li.kind-preview-remind {
+  flex-wrap: wrap;
+  padding: 10px 14px;
+}
+
+.kind-preview-remind p {
+  flex-basis: 100%;
+  font-weight: 400;
 }
 
 /* What saving would do to the documents already filed. Always there, so a

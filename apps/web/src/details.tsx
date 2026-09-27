@@ -12,7 +12,7 @@ import {
   type DocumentTypeView,
   type TypeField,
 } from '@fdv/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { api } from './api.js';
 import { useApp } from './app-context.js';
 import { Field, Select, Switch, TextArea } from './ui.js';
@@ -219,6 +219,8 @@ export function DetailField(props: {
   choices: string[];
   value: DetailInput | undefined;
   invalid: boolean;
+  /** Said under a date its kind reminds from, and heard with it (5.16b). */
+  note?: ReactNode;
   onChange: (v: DetailInput) => void;
 }) {
   const { id, field, value, invalid, onChange } = props;
@@ -267,6 +269,7 @@ export function DetailField(props: {
           required={false}
           placeholder="14 Mar 2031"
           hint="A date, a month (March 2031) or a year"
+          note={props.note}
         />
       );
     case 'year':

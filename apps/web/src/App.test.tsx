@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { whenExactly } from '@fdv/shared';
+import { REMIND_ONCE, shortDate, whenExactly } from '@fdv/shared';
 import { App } from './App.js';
+import { ONLY_ME_REMINDING } from './screens/AddConfirm.js';
 import {
   AISHA,
   fresh,
@@ -1795,5 +1796,185 @@ describe('the quick fixes (5.1)', () => {
     expect(await screen.findByText('Old policy')).toBeInTheDocument();
     // The end: no button to come round again.
     expect(screen.queryByRole('button', { name: 'Show older' })).not.toBeInTheDocument();
+  });
+});
+
+describe('reminders from any date, on the web (5.16b)', () => {
+  /** A household's own bill, reminded 7 days and 1 day before its due date (0.5.15). */
+  const COUNCIL_TAX = {
+    key: 'h_council1',
+    label: 'Council tax',
+    category: 'financial',
+    fields: [{ key: 'due_date', label: 'Due date', kind: 'date', required: true }],
+    expiry_driver: null,
+    reminder_leads: [],
+    remind_from: 'due_date',
+    remind_leads: [7, 1],
+    usually_essential: false,
+    default_visibility: 'household',
+    issued_by_label: null,
+    core: { expires: { shown: false, required: false, label: null } },
+  };
+
+  /** The Add card for a file, as a Council tax bill. */
+  const councilCard = async () => {
+    const state = fresh({ types: [...TYPES, COUNCIL_TAX] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/add');
+    render(<App />);
+    const input = await screen.findByLabelText<HTMLInputElement>('Choose a file');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose a file/i })).toBeEnabled(),
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(['%PDF-1.4'], 'bill.pdf', { type: 'application/pdf' })] },
+    });
+    await screen.findByRole('heading', { name: 'Is this right?' });
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'h_council1' } });
+    return state;
+  };
+  /** What is said under a field, and heard with it. */
+  const noteOf = (field: HTMLElement) => {
+    const id = field.getAttribute('aria-describedby');
+    const note = id ? document.getElementById(id) : null;
+    expect(note).not.toBeNull();
+    // Directly under the date, in its own place on the card.
+    expect(field.closest('.field')).toContainElement(note);
+    return note as HTMLElement;
+  };
+
+  it("the card says We'll remind you 7 days and 1 day before its due date, under the due date, and that it reminds once", async () => {
+    const state = await councilCard();
+    const due = screen.getByLabelText(/^Due date/);
+    // The date reminders come from is asked for.
+    expect(due).toHaveAttribute('aria-required', 'true');
+    const note = noteOf(due);
+    expect(
+      within(note).getByText("We'll remind you 7 days and 1 day before its due date."),
+    ).toBeInTheDocument();
+    expect(within(note).getByText(REMIND_ONCE)).toBeInTheDocument();
+    expect(due).toHaveAccessibleDescription(
+      /^We'll remind you 7 days and 1 day before its due date\./,
+    );
+    await expectAccessible();
+
+    // Save waits for it, and Skip stays.
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Still needed: Due date. Fill it in, or skip for now.',
+    );
+    expect(screen.getByRole('button', { name: 'Skip for now' })).toBeEnabled();
+    fireEvent.change(due, { target: { value: '14 Oct 2026' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
+    expect(state.captures?.[0]?.metadata).toMatchObject({
+      type_key: 'h_council1',
+      extra: { due_date: { date: '2026-10-14', precision: 'day' } },
+    });
+  });
+
+  it('the Expires sentence moves under Expires, word for word', async () => {
+    await councilCard();
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    const expires = screen.getByLabelText(/^Expires/);
+    expect(noteOf(expires)).toHaveTextContent(
+      "We'll remind you 9 months and 6 months before it expires.",
+    );
+    // Nothing is said of a date nobody is reminded of.
+    expect(screen.queryByText(REMIND_ONCE)).toBeNull();
+  });
+
+  it('an Only me card says the vault can read the due date, and nothing else', async () => {
+    await councilCard();
+    const due = screen.getByLabelText(/^Due date/);
+    expect(screen.queryByText(ONLY_ME_REMINDING)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    // Under the due date, and only there.
+    expect(screen.getAllByText(ONLY_ME_REMINDING)).toHaveLength(1);
+    expect(within(noteOf(due)).getByText(ONLY_ME_REMINDING)).toBeInTheDocument();
+    // The rest of what it holds stays sealed, as the notes say.
+    expect(
+      screen.getByText('Sealed with the document, so only you can read them.'),
+    ).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }));
+    expect(screen.queryByText(ONLY_ME_REMINDING)).toBeNull();
+
+    // An Only me passport's expiry date was never sealed: nothing to say.
+    fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'passport' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Only me' }));
+    expect(screen.queryByText(ONLY_ME_REMINDING)).toBeNull();
+  });
+
+  it("a reminder row's chip and Home's strip read Due date: 10 Oct, in 7 days", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const plus = (n: number) => {
+      const d = new Date(`${today}T00:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const reminder = {
+      document_id: 'doc-1',
+      kind: 'derived',
+      lead_days: 7,
+      note: null,
+      recurrence: null,
+      snoozed_until: null,
+      source: 'due_date',
+    };
+    const state = fresh({
+      reminders: [
+        // Due today, seven days before the bill is.
+        {
+          ...reminder,
+          id: 'r-1',
+          document_title: 'Council tax, March',
+          fire_at: today,
+          status: 'due',
+          label: 'Due today',
+          about: 'Due date: 10 Oct, in 7 days',
+        },
+        {
+          ...reminder,
+          id: 'r-2',
+          document_title: 'Council tax, April',
+          fire_at: plus(20),
+          status: 'scheduled',
+          label: 'In 20 days',
+          about: 'Due date: 3 Nov, in 27 days',
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    const home = render(<App />);
+    const strip = (await screen.findByText('Council tax, March')).closest('a') as HTMLElement;
+    expect(within(strip).getByText('Due date: 10 Oct, in 7 days')).toHaveClass('status-danger');
+    expect(within(strip).queryByText('Due today')).toBeNull();
+    home.unmount();
+
+    window.history.replaceState({}, '', '/reminders');
+    render(<App />);
+    const chip = await screen.findByText('Due date: 10 Oct, in 7 days');
+    expect(chip).toHaveClass('status', 'status-danger');
+    expect(screen.queryByText('Due today')).toBeNull();
+    // Coming up: what it is about, then when it comes.
+    const upcoming = screen.getByRole('region', { name: 'Coming up' });
+    expect(within(upcoming).getByText('Due date: 3 Nov, in 27 days')).toBeInTheDocument();
+    expect(within(upcoming).getByText(`Reminder on ${shortDate(plus(20))}`)).toHaveClass('muted');
+    // A month would wait past the bill's due date: the day itself is offered instead.
+    const row = chip.closest('li') as HTMLElement;
+    expect(
+      within(row)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Due date: 10 Oct, in 7 daysCouncil tax, March', 'A week', 'On the day', 'Done']);
+    fireEvent.click(within(row).getByRole('button', { name: 'On the day' }));
+    await waitFor(() =>
+      expect(state.calls.find((c) => c.url.endsWith('/reminders/r-1/snooze'))?.body).toEqual({
+        until: plus(7),
+      }),
+    );
   });
 });

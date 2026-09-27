@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { takeOver } from './session-handoff.js';
 
 /**
  * Lists on the web (5.15), on the real stack: a list is made with who it
@@ -12,11 +13,11 @@ const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
 
 /**
- * Signed in through the page, once for this file (sign-in is limited to 10
- * a minute, and the specs before and after this one sign in too: the suite
- * signs in up to six times a run, so wait a minute between local runs); the
- * access token it was given too, to make this file's documents and to
- * tidy up after it.
+ * Signed in through the page, once for this file, when first-run.spec.ts
+ * left no session to take over (sign-in is limited to 10 a minute, and the
+ * specs after this one sign in too: the suite signs in five times a run at
+ * most, so two runs back to back stay within it); the access token it was
+ * given too, to make this file's documents and to tidy up after it.
  */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
@@ -55,9 +56,10 @@ let token: string;
 let listId = '';
 const made: string[] = [];
 
-test.beforeAll(async ({ browser, request }) => {
+test.beforeAll(async ({ browser, request }, testInfo) => {
   page = await browser.newPage();
-  token = await signIn(page, request);
+  // The session first-run.spec.ts left, or one of its own.
+  token = (await takeOver(page, testInfo)) ?? (await signIn(page, request));
   for (const title of [PASS, HOTEL]) {
     const doc = await request.post('/api/v1/documents', {
       headers: { authorization: `Bearer ${token}` },

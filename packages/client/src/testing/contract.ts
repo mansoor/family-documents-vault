@@ -845,8 +845,8 @@ export const contractScenarios: Scenario[] = [
     name: 'GET /document-types answers remind_from beside the old fields',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
-      // Kept, and said off until the web's editor for it ships (0.5.15).
-      expect((await api.capabilities()).features.reminder_dates).toBe(false);
+      // Kept since 0.5.15, and said on since the web's editor for it (0.5.16).
+      expect((await api.capabilities()).features.reminder_dates).toBe(true);
       const { items } = await api.documentTypes(token, { all: true });
       for (const t of items) {
         expect(t, t.key).toHaveProperty('remind_from');

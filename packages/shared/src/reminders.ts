@@ -188,7 +188,8 @@ export function reminderLabel(
   return `In ${d} day${d === 1 ? '' : 's'} · ${shortDate(fireAt)}`;
 }
 
-function shortDate(iso: string): string {
+/** A calendar day as the reminder rows say it: "3 Oct" (the web's "Reminder on 3 Oct", 0.5.16). */
+export function shortDate(iso: string): string {
   const [y, m, d] = iso.split('-').map(Number) as [number, number, number];
   return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
     day: 'numeric',

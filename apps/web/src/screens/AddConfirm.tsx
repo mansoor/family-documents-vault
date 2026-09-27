@@ -1,6 +1,7 @@
 import {
   autoTitle,
   can,
+  dateReminderSentence,
   effectiveVisibility,
   formatDate,
   issuedByLabel,
@@ -8,6 +9,8 @@ import {
   issuerKey,
   missingFields,
   parseDateInput,
+  REMIND_ONCE,
+  reminderOf,
   reminderSentence,
   type CaptureMetadata,
   type CoreField,
@@ -41,6 +44,14 @@ import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /** The longest a note may be (POST /documents' limit). */
 const NOTES_MAX = 10_000;
+
+/**
+ * Said under the date an Only me document is reminded from (5.16b): the
+ * vault opens that one sealed detail to remind its owner, and nothing else
+ * (A62).
+ */
+export const ONLY_ME_REMINDING =
+  'The vault can read this date, so it can remind you. Your other details stay sealed.';
 
 /**
  * The order a numeric date is read in, from the browser's locale: 14/03 or
@@ -823,7 +834,23 @@ export function ConfirmForm(props: {
     await run(() => props.onSubmit(details));
   };
 
+  // The promise, under the date it is about and heard with it (5.16b):
+  // Expires's in its own words, as always; a date field its kind reminds
+  // from, with the 'once' line, and on an Only me document, what the vault
+  // can read of it.
   const reminder = reminderSentence(type);
+  const reminding = type ? reminderOf(type) : null;
+  const dateNote = (f: { key: string; label: string }) => {
+    if (!reminding || reminding.from !== f.key || reminding.from === 'expires') return undefined;
+    const promise = dateReminderSentence(f.label, reminding.leads);
+    return promise ? (
+      <>
+        <p>{promise}</p>
+        <p>{REMIND_ONCE}</p>
+        {visibility === 'private' && <p>{ONLY_ME_REMINDING}</p>}
+      </>
+    ) : undefined;
+  };
 
   return (
     <main className="page page-top">
@@ -968,6 +995,7 @@ export function ConfirmForm(props: {
             invalid={invalid('f-expires')}
             placeholder="14 Mar 2031"
             hint="A date, a month (March 2031) or a year"
+            note={reminder ?? undefined}
           />
         )}
         {identifierShown && (
@@ -993,7 +1021,6 @@ export function ConfirmForm(props: {
             placeholder="Bedroom safe, top shelf"
           />
         )}
-        {reminder && <p className="muted">{reminder}</p>}
         {ownFields.map((f) => (
           <DetailField
             key={f.key}
@@ -1002,6 +1029,7 @@ export function ConfirmForm(props: {
             choices={choicesOf(f, library)}
             value={detailValues[f.key]}
             invalid={invalid(detailId(f.key))}
+            note={dateNote(f)}
             onChange={(v) => {
               setDetailValues((was) => ({ ...was, [f.key]: v }));
               changed(detailId(f.key));

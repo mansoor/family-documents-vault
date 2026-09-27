@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { handOver } from './session-handoff.js';
 
 /**
  * Quick actions on every document (5.4), with the keyboard alone: Tab
@@ -10,6 +11,9 @@ import { expect, test } from '@playwright/test';
 
 const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
+
+// Its session goes on to reminder-dates.spec.ts, which then signs in no more.
+test.afterEach(async ({ page }, testInfo) => handOver(page, testInfo));
 
 test('the ⋯ on a row works from the keyboard alone', async ({ page, request }) => {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {

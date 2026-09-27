@@ -1,4 +1,14 @@
-import { canSee, canSeeList, inListAudience, listItemHint, type Role } from '@fdv/shared';
+import {
+  canSee,
+  canSeeList,
+  inListAudience,
+  listItemHint,
+  nextReminder,
+  reminderOf,
+  type DocumentTypeView,
+  type ReminderProblem,
+  type Role,
+} from '@fdv/shared';
 import { vi } from 'vitest';
 
 /**
@@ -64,6 +74,17 @@ export interface FakeState {
   attributes?: Array<Record<string, unknown>>;
   /** GET /document-types/{key}/impact, by key; a kind not here has no documents (5.12). */
   impact?: Record<string, Record<string, unknown>>;
+  /**
+   * `features.reminder_dates` (0.5.16): a kind reminds from any date it
+   * shows. Left out, the vault says it has them, as every vault since.
+   */
+  reminderDates?: boolean;
+  /**
+   * The reminders the vault holds, as GET /reminders gives them
+   * (ReminderView): `due` ones by `?state=due`, `scheduled` and `snoozed`
+   * ones by `?state=upcoming`. Left out, there are none.
+   */
+  reminders?: Array<Record<string, unknown>>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -398,7 +419,12 @@ export function installFakeApi(state: FakeState) {
         edition: 'self_hosted',
         protection_mode: 'standard',
         setup_required: state.setupRequired,
-        features: { passkeys: true, custom_types: true, ...(state.lists ? { lists: true } : {}) },
+        features: {
+          passkeys: true,
+          custom_types: true,
+          ...(state.lists ? { lists: true } : {}),
+          reminder_dates: state.reminderDates ?? true,
+        },
         limits: {},
         deprecations: [],
         branding: { display_name: state.displayName },
@@ -494,7 +520,29 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/auth/step-up') return json({ verified_at: null, expires_in: 0 });
     if (path === '/api/v1/exports') return json({ items: [] });
-    if (path === '/api/v1/reminders') return json({ items: [] });
+    if (path === '/api/v1/reminders') {
+      // As the vault lists them: due, or coming up (scheduled, snoozed).
+      const want = query.get('state') ?? 'all';
+      const items = (state.reminders ?? []).filter((r) =>
+        want === 'due'
+          ? r.status === 'due'
+          : want === 'upcoming'
+            ? r.status === 'scheduled' || r.status === 'snoozed'
+            : ['scheduled', 'due', 'snoozed'].includes(String(r.status)),
+      );
+      return json({ items });
+    }
+    const reminderAt = /^\/api\/v1\/reminders\/([^/]+)\/(snooze|acknowledge)$/.exec(path);
+    if (reminderAt && method === 'POST') {
+      const r = (state.reminders ?? []).find((x) => x.id === reminderAt[1]);
+      if (!r) return refuse(404, 'not_found', 'That reminder does not exist.');
+      if (reminderAt[2] === 'acknowledge') Object.assign(r, { status: 'acknowledged' });
+      else {
+        const until = (body as { until: string }).until;
+        Object.assign(r, { status: 'snoozed', snoozed_until: until, label: `Later · ${until}` });
+      }
+      return json(r);
+    }
     if (path === '/api/v1/suggestions') {
       const dismissed = query.get('dismissed') === 'true';
       const items = state.suggestions.filter((x) => Boolean(x.dismissed) === dismissed);
@@ -955,6 +1003,8 @@ export function installFakeApi(state: FakeState) {
           fields: [],
           expiry_driver: null,
           reminder_leads: [],
+          remind_from: null,
+          remind_leads: [],
           usually_essential: false,
           default_visibility: 'household',
           issued_by_label: null,
@@ -964,9 +1014,15 @@ export function installFakeApi(state: FakeState) {
         },
         body as Record<string, unknown>,
         state.attributes ?? [],
+        true,
       );
+      if ('problem' in made) {
+        return refuse(422, 'validation_failed', made.problem.message, {
+          detail: made.problem.detail,
+        });
+      }
       // Never pushed: `types` may be the shared TYPES of another test.
-      state.types = [...state.types, { ...made, etag: `"${String(made.key)}.1"` }];
+      state.types = [...state.types, { ...made.kind, etag: `"${String(made.kind.key)}.1"` }];
       return json(state.types[state.types.length - 1], 201);
     }
     const kindAt = /^\/api\/v1\/document-types\/([^/]+)(\/archive|\/restore|\/impact)?$/.exec(path);
@@ -997,6 +1053,7 @@ export function installFakeApi(state: FakeState) {
             ),
             fields: [],
             reminders: 0,
+            reminders_by_source: {},
             unseen: "Documents you can't see may also be affected.",
           },
         );
@@ -1026,7 +1083,18 @@ export function installFakeApi(state: FakeState) {
           }
           if (state.stepUpNeeded) return stepUp('widen_type_visibility');
         }
-        return keep(changedKind(kind, body as Record<string, unknown>, state.attributes ?? []));
+        const next = changedKind(
+          kind,
+          body as Record<string, unknown>,
+          state.attributes ?? [],
+          false,
+        );
+        if ('problem' in next) {
+          return refuse(422, 'validation_failed', next.problem.message, {
+            detail: next.problem.detail,
+          });
+        }
+        return keep(next.kind);
       }
     }
     if (
@@ -1632,22 +1700,19 @@ function listed(d: Record<string, unknown>): Record<string, unknown> {
 /**
  * A kind of document with a change made to it, as the vault makes it
  * (0.5.10): each fixed field key by key (Expires shown is whether it
- * expires), its own fields from the library by key.
+ * expires), its own fields from the library by key. Then the date it
+ * reminds from and how long before, by the vault's own rules (nextReminder,
+ * 0.5.15): answered as the vault answers them, `reminder_leads` Expires's
+ * alone, and the reminding field always required — or the refusal.
  */
 function changedKind(
   kind: Record<string, unknown>,
   change: Record<string, unknown>,
   library: Array<Record<string, unknown>>,
-): Record<string, unknown> {
+  made: boolean,
+): { kind: Record<string, unknown> } | { problem: ReminderProblem } {
   const next: Record<string, unknown> = { ...kind };
-  for (const k of [
-    'label',
-    'category',
-    'reminder_leads',
-    'default_visibility',
-    'usually_essential',
-    'hidden',
-  ]) {
+  for (const k of ['label', 'category', 'default_visibility', 'usually_essential', 'hidden']) {
     if (change[k] !== undefined) next[k] = change[k];
   }
   type Rule = { shown?: boolean; required?: boolean; label?: string | null };
@@ -1657,12 +1722,9 @@ function changedKind(
   }
   next.core = core;
   if (core.expires?.shown !== undefined) {
-    // One that expires requires its expiry, and is reminded 30 days before
-    // unless it says otherwise (the 5.11 review).
+    // One that expires requires its expiry (the 5.11 review).
     core.expires = { ...core.expires, required: core.expires.shown };
     next.expiry_driver = core.expires.shown ? (kind.expiry_driver ?? 'expires_on') : null;
-    const leads = (next.reminder_leads ?? []) as number[];
-    if (core.expires.shown && leads.length === 0) next.reminder_leads = [30];
   }
   if (core.issued_by?.label !== undefined) next.issued_by_label = core.issued_by.label;
   if (Array.isArray(change.fields)) {
@@ -1678,7 +1740,30 @@ function changedKind(
       };
     });
   }
-  return next;
+  // What it reminds from, worked out on the kind as it will be.
+  const view = kind as unknown as DocumentTypeView;
+  const fields = (next.fields ?? []) as Array<{ key: string; kind: string; required?: boolean }>;
+  const out = nextReminder(
+    {
+      remind_from: change.remind_from as string | null | undefined,
+      remind_leads: change.remind_leads as number[] | undefined,
+      reminder_leads: change.reminder_leads as number[] | undefined,
+      fields: change.fields as Array<{ key: string; required?: boolean }> | undefined,
+    },
+    made ? null : { reminding: reminderOf(view), expires: view.expiry_driver !== null },
+    {
+      expires: next.expiry_driver !== null,
+      dates: fields.filter((f) => f.kind === 'date').map((f) => f.key),
+    },
+  );
+  if ('problem' in out) return out;
+  next.remind_from = out.from;
+  next.remind_leads = out.leads;
+  next.reminder_leads = out.from !== null && out.from !== 'expires' ? [] : out.leads;
+  if (out.from !== null && out.from !== 'expires') {
+    next.fields = fields.map((f) => (f.key === out.from ? { ...f, required: true } : f));
+  }
+  return { kind: next };
 }
 
 /** One issuer however it was written, as the server compares them. */
