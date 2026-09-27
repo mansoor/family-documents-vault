@@ -1286,8 +1286,9 @@ export function installFakeApi(state: FakeState) {
  * given the lists their role and the list's audience allow — a viewer
  * none but their own — and, on each, the documents they could see anyway,
  * counted so. Only a list's maker changes it, while in its audience (A18);
- * its maker, or an owner, deletes it. Several put on at once go on
- * together or not at all.
+ * its maker deletes it, or an owner once nobody may change it. A page's
+ * cursor names the last document given. Several put on at once — up to
+ * 200 — go on together or not at all.
  */
 function answerLists(
   state: FakeState,
@@ -1331,9 +1332,11 @@ function answerLists(
   const detail = (l: FakeList, from = 0, limit = state.listPageSize ?? 50) => {
     const docs = docsOn(l);
     const more = from + limit < docs.length;
+    const shown = docs.slice(from, from + limit);
+    const last = shown[shown.length - 1];
     return {
       ...view(l),
-      items: docs.slice(from, from + limit).map((d) => ({
+      items: shown.map((d) => ({
         document: listed(d),
         added_at: '2026-09-26T10:00:00Z',
         hint:
@@ -1344,9 +1347,35 @@ function answerLists(
               })
             : null,
       })),
-      next_cursor: more ? String(from + limit) : null,
+      // As the vault's: the last document given, and nothing about where
+      // it stands among those the reader is not given.
+      next_cursor: more && last ? btoa(JSON.stringify({ after: last.id })) : null,
       has_more: more,
     };
+  };
+  /**
+   * Where the page after `cursor` starts: after the document it names, as
+   * the reader is given the list now. One they are not given now — taken
+   * off, moved to the Trash — is a cursor that is not valid.
+   */
+  const startAfter = (l: FakeList, cursor: string): number | null => {
+    let after: unknown;
+    try {
+      after = (JSON.parse(atob(cursor)) as { after?: unknown }).after;
+    } catch {
+      return null;
+    }
+    const at = docsOn(l).findIndex((d) => d.id === after);
+    return at === -1 ? null : at + 1;
+  };
+  /**
+   * An owner may delete somebody else's list only when nobody may change
+   * it any more: its maker has no sign-in, or is not one of its audience.
+   */
+  const stranded = (l: FakeList) => {
+    const maker = state.members.find((m) => m.id === l.owner_member_id);
+    const makerRole = maker?.role as Role | null | undefined;
+    return !makerRole || !inListAudience(makerRole, l.audience);
   };
   const manage = () =>
     role === 'viewer'
@@ -1413,6 +1442,19 @@ function answerLists(
     return json(detail(made), 201);
   }
   const at = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+  if (at?.[2] && !at[3] && method === 'POST') {
+    // As the vault's route takes them, before it looks for the list: one
+    // at least, and at most 200.
+    const refused = manage();
+    if (refused) return refused;
+    const ids = (body as { document_ids?: unknown } | undefined)?.document_ids;
+    if (!Array.isArray(ids) || ids.length < 1) {
+      return refuse(422, 'validation_failed', 'Too small: expected array to have >=1 items');
+    }
+    if (ids.length > 200) {
+      return refuse(422, 'validation_failed', 'Too big: expected array to have <=200 items');
+    }
+  }
   const list = at ? all.find((l) => l.id === at[1]) : undefined;
   if (!at || !list || !seesList(list)) return noList();
   const replace = (next: FakeList) => {
@@ -1422,8 +1464,8 @@ function answerLists(
   if (!at[2]) {
     if (method === 'GET') {
       const cursor = query.get('cursor');
-      const from = cursor === null ? 0 : Number(cursor);
-      if (Number.isNaN(from) || from > docsOn(list).length) {
+      const from = cursor === null ? 0 : startAfter(list, cursor);
+      if (from === null) {
         return refuse(422, 'validation_failed', 'That page cursor is not valid.');
       }
       const limit = query.get('limit');
@@ -1455,8 +1497,13 @@ function answerLists(
       return json(detail(changed));
     }
     if (method === 'DELETE') {
-      if (list.owner_member_id !== 'me' && role !== 'owner') {
-        return refuse(403, 'forbidden', 'Only the person who made this list can change it.');
+      // Its maker, whatever their role now; an owner, only when stranded.
+      if (list.owner_member_id !== 'me') {
+        const refused = manage();
+        if (refused) return refused;
+        if (role !== 'owner' || !stranded(list)) {
+          return refuse(403, 'forbidden', 'Only the person who made this list can change it.');
+        }
       }
       state.lists = (state.lists ?? []).filter((l) => l.id !== list.id);
       return done();

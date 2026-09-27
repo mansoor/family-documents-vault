@@ -1302,14 +1302,28 @@ a.btn {
   margin: 0;
 }
 
-/* A row with a box to choose it: the box, the row's button, its ⋯. */
-.list li.docrow-pick {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+/* In Select, a row is the label of the box that chooses it, beside its ⋯:
+   pressed anywhere, it ticks the box and never opens the document. The box
+   has a column a thumb wide (--tap) in a row at least that tall. */
+.rowbtn.rowpick {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+}
+
+.rowpick-words {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  gap: 3px;
+  min-width: 0;
 }
 
 .pick {
+  flex: none;
   width: 24px;
   height: 24px;
-  margin: 10px 8px 10px 0;
+  margin: 0 calc(var(--tap) - 24px) 0 0;
   accent-color: var(--accent);
+  cursor: pointer;
 }

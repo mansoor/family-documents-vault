@@ -190,8 +190,8 @@ export function DocActions(props: {
   );
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
-  // Who can see it was changed in the sheet: the list is loaded again when
-  // the sheet closes, not under it.
+  // Who can see it was changed in the sheet, or it was put on a list: the
+  // list is loaded again when the sheet closes, not under it.
   const changedInSheet = useRef(false);
   // Moving to the Trash, or off this list: the row is on its way out.
   const [leaving, setLeaving] = useState(false);
@@ -481,6 +481,10 @@ export function DocActions(props: {
             what={`“${props.title}”`}
             onClose={closeSheet}
             onBusy={setSheetBusy}
+            onAdded={() => {
+              // What a list holds has changed, and counts of it with it.
+              changedInSheet.current = true;
+            }}
           />
         </Sheet>
       )}

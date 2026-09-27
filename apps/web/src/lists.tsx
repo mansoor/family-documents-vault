@@ -10,7 +10,7 @@ import {
 } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
-import { api } from './api.js';
+import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
 import { Button, ErrorNote, Field, Pills, TextArea } from './ui.js';
@@ -44,7 +44,10 @@ export const AUDIENCE_CHOICES: ReadonlyArray<{
   {
     value: 'teens',
     label: 'Teens and up',
-    sentence: 'Owners, adults and teens: anyone from a teen up.',
+    // The same people as Everyone: what tells them apart is that only an
+    // Everyone list may ever be granted to a viewer (A17, 5.33).
+    sentence:
+      'The same people as Everyone in the family: owners, adults and teens. Unlike Everyone, it can never be granted to a viewer.',
   },
   {
     value: 'only_me',
@@ -53,7 +56,10 @@ export const AUDIENCE_CHOICES: ReadonlyArray<{
   },
 ];
 
-/** Said under every audience: a viewer is in none of them (A17). */
+/**
+ * Said under Everyone in the family alone: no viewer is in any audience,
+ * and only an Everyone list may be granted to one (A17, 5.33).
+ */
 export const VIEWERS_NEED_A_GRANT = 'Viewers see a list only when it is granted to them.';
 
 /** A list never widens who sees a document (5.14). */
@@ -64,8 +70,10 @@ export function audienceLabel(audience: string): string {
   return AUDIENCE_CHOICES.find((c) => c.value === audience)?.label ?? 'Some of the family';
 }
 
+/** What an audience means, and for Everyone in the family, that a viewer needs a grant. */
 export function audienceSentence(audience: string): string | null {
-  return AUDIENCE_CHOICES.find((c) => c.value === audience)?.sentence ?? null;
+  const sentence = AUDIENCE_CHOICES.find((c) => c.value === audience)?.sentence ?? null;
+  return sentence && audience === 'everyone' ? `${sentence} ${VIEWERS_NEED_A_GRANT}` : sentence;
 }
 
 /** "1 document", "3 documents": a number the vault gave, never one worked out here. */
@@ -93,8 +101,8 @@ export function mayChangeList(role: Role, list: Pick<ListView, 'mine' | 'audienc
 
 /**
  * Who a list is for: the four choices as pills — only those the maker is in
- * themselves, as the vault allows — with what the chosen one means, and
- * that a viewer is never in any of them.
+ * themselves, as the vault allows — with what the chosen one means. It is
+ * asked for, never assumed, so it is marked as the name is.
  */
 export function AudiencePicker(props: {
   value: ListAudience | null;
@@ -107,13 +115,14 @@ export function AudiencePicker(props: {
     <div className="stack audience">
       <Pills
         label="Who it is for"
+        requiredMark
         value={props.value}
         options={choices.map((c) => ({ value: c.value, label: c.label }))}
         onChange={props.onChange}
       />
       <div className="muted audience-words">
         {chosen && <p>{chosen.sentence}</p>}
-        <p>{VIEWERS_NEED_A_GRANT}</p>
+        {chosen?.value === 'everyone' && <p>{VIEWERS_NEED_A_GRANT}</p>}
         <p>{NEVER_WIDENS}</p>
       </div>
     </div>
@@ -152,6 +161,7 @@ export function ListForm(props: {
   const [error, setError] = useState<{ message: string; field: 'name' | 'audience' | null } | null>(
     null,
   );
+  const form = useRef<HTMLFormElement>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -162,6 +172,8 @@ export function ListForm(props: {
     }
     if (!audience) {
       setError({ message: 'Say who the list is for.', field: 'audience' });
+      // Where the answer is given: the first of the choices.
+      form.current?.querySelector<HTMLButtonElement>('.audience .pill')?.focus();
       return;
     }
     setBusy(true);
@@ -180,7 +192,7 @@ export function ListForm(props: {
   };
 
   return (
-    <form className="card stack" onSubmit={(e) => void submit(e)} noValidate>
+    <form ref={form} className="card stack" onSubmit={(e) => void submit(e)} noValidate>
       <Field
         id={`${props.id}-name`}
         label="Name"
@@ -258,11 +270,35 @@ export function AddToList(props: {
   const newList = useRef<HTMLButtonElement>(null);
 
   const mine = (data?.lists ?? []).filter((l) => mayChangeList(role, l));
+  // Lists the reader made, for people they are no longer one of (A18).
+  const outgrown = (data?.lists ?? []).filter((l) => l.mine).length;
   const on = new Set(data?.on ?? []);
 
   const working = (list: string | null) => {
     setAdding(list);
     props.onBusy(list !== null);
+  };
+
+  /**
+   * What a refusal means, in words. Several go on together or not at all,
+   * so a refusal of several says none went on. A list that is not there
+   * any more leaves the sheet: the reader's lists as they are now say
+   * whether it was the list that had gone, or a document.
+   */
+  const refusal = async (list: ListView, err: unknown): Promise<string> => {
+    if (!(err instanceof ApiRequestError)) return describeError(err);
+    if (err.status === 404) {
+      const now = await withToken((t) => api.lists(t)).catch(() => null);
+      if (now) setData((d) => (d ? { ...d, lists: now.items } : d));
+      if (now && !now.items.some((l) => l.id === list.id)) {
+        return `“${list.name}” is not there any more, so nothing went on it.`;
+      }
+    }
+    if (one || (err.status !== 404 && err.status !== 403)) return describeError(err);
+    const none = `None of the ${props.documentIds.length} went on “${list.name}”`;
+    return err.status === 404
+      ? `${none}: one of them is no longer in the vault, or no longer yours to see.`
+      : `${none}. ${err.message}`;
   };
 
   const add = async (list: ListView) => {
@@ -291,7 +327,7 @@ export function AddToList(props: {
       // Its Add button goes: the news has the focus, so it is heard.
       status.current?.focus();
     } catch (err) {
-      setError(describeError(err));
+      setError(await refusal(list, err));
     } finally {
       working(null);
     }
@@ -331,7 +367,11 @@ export function AddToList(props: {
       )}
       {data !== null && mine.length === 0 && (
         <p className="muted">
-          You haven’t made a list yet. Only the person who made a list can put documents on it.
+          {outgrown === 1
+            ? 'The list you made is for people you are no longer one of: you can still delete it, but not put documents on it.'
+            : outgrown > 1
+              ? 'The lists you made are for people you are no longer one of: you can still delete them, but not put documents on them.'
+              : 'You haven’t made a list yet. Only the person who made a list can put documents on it.'}
         </p>
       )}
       {mine.length > 0 && (
@@ -401,33 +441,44 @@ export function AddToList(props: {
 /**
  * The family's lists on Home (5.15), the way to the Lists screen: the
  * first few as tiles, each with how many of its documents the reader can
- * see, as the vault counts them.
+ * see, as the vault counts them. The way there is always drawn — while
+ * they load, and when they cannot be loaded — and the tiles fill in when
+ * they come. `version` goes up when something on Home may have changed
+ * what is on a list (a row's ⋯), and they are counted again.
  */
-export function ListsOnHome() {
+export function ListsOnHome(props: { version: number }) {
   const { authVersion } = useApp();
-  const { data } = useLoad(async (t) => (await api.lists(t)).items, [authVersion]);
-  if (data === null) return null;
+  const { data, error } = useLoad(
+    async (t) => (await api.lists(t)).items,
+    [authVersion, props.version],
+  );
+  const none = data !== null && data.length === 0;
   return (
     <section aria-labelledby="lists-h">
       <h2 id="lists-h" className="section-h">
         Lists
       </h2>
-      <div className="tiles">
-        {data.slice(0, 4).map((l) => (
-          <Link key={l.id} to={`/lists/${l.id}`} className="tile">
-            <span className="tile-title">{l.name}</span>
-            <span className="muted">{documentsWord(l.item_count)}</span>
-          </Link>
-        ))}
-        {data.length === 0 && (
-          <Link to="/lists" className="tile tile-missing">
-            <span className="tile-title">Make a list</span>
-            <span className="muted">Gather papers for a purpose: a trip, a mortgage, a move.</span>
-            <span className="tile-cue">Start one</span>
-          </Link>
-        )}
-      </div>
-      {data.length > 0 && (
+      <ErrorNote message={error} />
+      {data !== null && (
+        <div className="tiles">
+          {data.slice(0, 4).map((l) => (
+            <Link key={l.id} to={`/lists/${l.id}`} className="tile">
+              <span className="tile-title">{l.name}</span>
+              <span className="muted">{documentsWord(l.item_count)}</span>
+            </Link>
+          ))}
+          {none && (
+            <Link to="/lists" className="tile tile-missing">
+              <span className="tile-title">Make a list</span>
+              <span className="muted">
+                Gather papers for a purpose: a trip, a mortgage, a move.
+              </span>
+              <span className="tile-cue">Start one</span>
+            </Link>
+          )}
+        </div>
+      )}
+      {!none && (
         <Link to="/lists" className="seeall">
           All lists
         </Link>

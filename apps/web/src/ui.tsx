@@ -1,5 +1,5 @@
 import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
 
@@ -224,16 +224,26 @@ export function ErrorNote({ message }: { message: string | null }) {
   );
 }
 
-/** A choice made of pills: the wizard's "We own it / We rent" pattern. */
+/**
+ * A choice made of pills: the wizard's "We own it / We rent" pattern. The
+ * group is named by what it shows, so one that must be answered before
+ * the card saves is "… required" to a screen reader too (5.10's mark).
+ */
 export function Pills<T extends string>(props: {
   label: string;
+  /** Asked for before the card saves, with nothing chosen for the person. */
+  requiredMark?: boolean;
   value: T | null;
   options: Array<{ value: T; label: string }>;
   onChange: (v: T) => void;
 }) {
+  const labelId = useId();
   return (
-    <div className="field" role="group" aria-label={props.label}>
-      <span className="field-label">{props.label}</span>
+    <div className="field" role="group" aria-labelledby={labelId}>
+      <span id={labelId} className="field-label">
+        {props.label}
+        {props.requiredMark && <RequiredMark />}
+      </span>
       <div className="pills">
         {props.options.map((o) => (
           <button

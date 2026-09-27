@@ -178,22 +178,39 @@ export function ListScreen() {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // The list is not there for the reader any more — deleted, or no longer
+  // for them — since the page was drawn: then that is all the page says,
+  // as it would have been had it been so when the page opened.
+  const [gone, setGone] = useState<{ id: string | undefined; message: string } | null>(null);
   const { notice, setNotice, status, statusRef } = useArrivedNotice();
   const editButton = useRef<HTMLButtonElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
+
+  /** Whether `err` says the list is not there for the reader: then the page says only that. */
+  const goneIf = (err: unknown): boolean => {
+    if (!(err instanceof ApiRequestError && err.status === 404)) return false;
+    setGone({ id, message: describeError(err) });
+    return true;
+  };
 
   /** From the first page again: what is on it, or the list itself, has changed. */
   const again = async () => {
     setOlder([]);
     setCursor(undefined);
-    await first.reload();
+    try {
+      const list = await withToken((t) => api.getList(t, id as string));
+      if (list) first.setData((d) => (d ? { ...d, list } : d));
+    } catch (err) {
+      if (!goneIf(err)) setProblem(describeError(err));
+    }
   };
 
-  if (!first.data) {
+  const goneNow = gone !== null && gone.id === id ? gone.message : null;
+  if (!first.data || goneNow) {
     return (
       <main className="page page-top has-nav">
         <TopBar title="List" back="/lists" />
-        <ErrorNote message={first.error} />
+        <ErrorNote message={goneNow ?? first.error} />
         <BottomNav />
       </main>
     );
@@ -226,7 +243,7 @@ export function ListScreen() {
         // The last one shown has gone since: from the top again.
         setNotice('This list changed while you were looking, so it has been loaded again.');
         await again();
-      } else {
+      } else if (!goneIf(err)) {
         setProblem(describeError(err));
       }
     } finally {

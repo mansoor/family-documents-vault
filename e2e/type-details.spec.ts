@@ -16,9 +16,9 @@ const PASSWORD = 'correct horse battery staple';
 
 /**
  * Signed in through the page, once for this file (sign-in is limited to 10
- * a minute, and the specs before this one sign in too: two runs of the
- * suite back to back must stay under it); the access token it was given
- * too, to ask the API what it holds.
+ * a minute, and the specs before this one sign in too: the suite signs in
+ * five times a run, so two runs back to back stay within it); the access
+ * token it was given too, to ask the API what it holds.
  */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {

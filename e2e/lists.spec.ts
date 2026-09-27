@@ -13,9 +13,10 @@ const PASSWORD = 'correct horse battery staple';
 
 /**
  * Signed in through the page, once for this file (sign-in is limited to 10
- * a minute, and the specs before and after this one sign in too: two runs
- * of the suite back to back must stay under it); the access token it was
- * given too, to make this file's documents and to tidy up after it.
+ * a minute, and the specs before and after this one sign in too: the suite
+ * signs in five times a run, so two runs back to back stay within it); the
+ * access token it was given too, to make this file's documents and to
+ * tidy up after it.
  */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
@@ -75,10 +76,18 @@ test.afterAll(async ({ request }) => {
   await page.close();
 });
 
-/** The search screen, with `words` in the field. */
+/**
+ * The search screen, with `words` in the field and their results on it.
+ * Until they come it lists everything, which goes when they do: a row
+ * pressed there, its sheet open, would go with it.
+ */
 async function search(words: string) {
   await page.getByRole('link', { name: 'Search' }).click();
-  await page.getByLabel('Search everything').fill(words);
+  await Promise.all([
+    page.waitForResponse((r) => r.url().includes('/api/v1/search?') && r.ok()),
+    page.getByLabel('Search everything').fill(words),
+  ]);
+  await expect(page.getByText(/searched inside the pages too$/)).toBeVisible();
 }
 
 test('a list is made from Home, and a search result goes on it from its ⋯', async () => {
@@ -91,12 +100,18 @@ test('a list is made from Home, and a search result goes on it from its ⋯', as
   await page.getByRole('button', { name: 'Make a list' }).click();
   await page.getByLabel(/^Name/).fill(LIST);
 
-  // Who it is for is chosen, never assumed, and said in words.
-  const who = page.getByRole('group', { name: 'Who it is for' });
+  // Who it is for is asked, never assumed, and said in words: only an
+  // Everyone list may ever be granted to a viewer.
+  const who = page.getByRole('group', { name: 'Who it is for required' });
   await expect(who.getByRole('button', { pressed: true })).toHaveCount(0);
+  const grant = page.getByText('Viewers see a list only when it is granted to them.');
+  await who.getByRole('button', { name: 'Everyone in the family' }).click();
+  await expect(grant).toBeVisible();
   await who.getByRole('button', { name: 'Teens and up' }).click();
-  await expect(page.getByText('Owners, adults and teens: anyone from a teen up.')).toBeVisible();
-  await expect(page.getByText('Viewers see a list only when it is granted to them.')).toBeVisible();
+  await expect(
+    page.getByText('The same people as Everyone in the family: owners, adults and teens.'),
+  ).toBeVisible();
+  await expect(grant).toHaveCount(0);
   await page.getByRole('button', { name: 'Make the list' }).click();
 
   await expect(page.getByRole('heading', { name: LIST, level: 1 })).toBeVisible();

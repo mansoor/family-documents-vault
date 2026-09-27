@@ -6,7 +6,7 @@ import {
   type Role,
   type SuggestionView,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
@@ -26,7 +26,7 @@ import {
   StatusBadge,
   TopBar,
 } from '../ui.js';
-import { addLink, DocRow, PickBox, rowLine, type RowPick } from './Home.js';
+import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 
 /** The most documents put on a list at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
@@ -46,6 +46,7 @@ export function SearchScreen() {
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
   const select = useSelect(listsOffered(caps, storedRole()));
+  const unpick = select.drop;
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const category = params.get('category') ?? '';
@@ -65,6 +66,15 @@ export function SearchScreen() {
   // Bumped when a row's ⋯ changed something (5.4): the same search again.
   const [changed, setChanged] = useState(0);
   const again = () => setChanged((n) => n + 1);
+  // The rows whose own ⋯ changed something, until the search has run
+  // again: one that has left the results with it — moved to the Trash,
+  // made somebody else's Only me — is chosen no longer (5.15). What was
+  // chosen in an earlier search is not in these results either, and stays.
+  const acted = useRef(new Set<string>());
+  const actedOn = (id: string) => () => {
+    acted.current.add(id);
+    again();
+  };
   // What the last search asked. The same search again keeps the second
   // pass's results on screen while it runs: emptied, each of their rows
   // would go, and the note and the focus on the row that acted with it.
@@ -88,6 +98,15 @@ export function SearchScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    // The rows whose ⋯ asked for this search again, if one did. Should it
+    // be overtaken by another search, they are not asked about there.
+    const actedNow = [...acted.current];
+    acted.current.clear();
+    /** Those of them the whole of the results, both passes, no longer hold. */
+    const left = (shown: string[]) => {
+      const here = new Set(shown);
+      unpick(actedNow.filter((id) => !here.has(id)));
+    };
     const run = async () => {
       try {
         setError(null);
@@ -105,9 +124,11 @@ export function SearchScreen() {
             asked.current = asking;
             setHits(r.items);
             setBrowse(null);
+            const found = r.items.map((h) => h.document_id);
             const handle = r.sealed_pending.token;
             if (!handle) {
               setSealed({ state: 'idle', items: [], searched: 0 });
+              left(found);
             } else {
               setSealed(
                 same
@@ -115,12 +136,14 @@ export function SearchScreen() {
                   : { state: 'searching', items: [], searched: 0 },
               );
               const more = await withToken((t) => api.searchSealed(t, handle));
-              if (!cancelled)
+              if (!cancelled) {
                 setSealed({
                   state: 'done',
                   items: more?.items ?? [],
                   searched: more?.searched ?? 0,
                 });
+                left([...found, ...(more?.items ?? []).map((h) => h.document_id)]);
+              }
             }
           }
         } else {
@@ -137,6 +160,7 @@ export function SearchScreen() {
             setBrowse(r.items);
             setHits(null);
             setSealed({ state: 'idle', items: [], searched: 0 });
+            left(r.items.map((d) => d.id));
           }
         }
       } catch (err) {
@@ -148,7 +172,7 @@ export function SearchScreen() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [q, category, memberId, issuer, withToken, changed]);
+  }, [q, category, memberId, issuer, withToken, changed, unpick]);
 
   const set = (k: string, v: string) => {
     const next = new URLSearchParams(params);
@@ -248,7 +272,7 @@ export function SearchScreen() {
                 types={types}
                 pick={select.pick(h.document_id)}
                 onOpen={() => void navigate(`/documents/${h.document_id}`)}
-                onChanged={again}
+                onChanged={actedOn(h.document_id)}
               />
             ))}
           </ul>
@@ -269,7 +293,7 @@ export function SearchScreen() {
                     types={types}
                     pick={select.pick(h.document_id)}
                     onOpen={() => void navigate(`/documents/${h.document_id}`)}
-                    onChanged={again}
+                    onChanged={actedOn(h.document_id)}
                   />
                 ))}
               </ul>
@@ -293,7 +317,7 @@ export function SearchScreen() {
               types={types}
               pick={select.pick(d.id)}
               onOpen={() => void navigate(`/documents/${d.id}`)}
-              onChanged={again}
+              onChanged={actedOn(d.id)}
             />
           ))}
         </ul>
@@ -334,6 +358,16 @@ function useSelect(offered: boolean) {
             }),
         }
       : undefined;
+
+  /** Chosen no longer: rows that have left the results by their own ⋯. */
+  const drop = useCallback((ids: string[]) => {
+    setPicked((was) => {
+      if (!ids.some((id) => was.has(id))) return was;
+      const now = new Set(was);
+      for (const id of ids) now.delete(id);
+      return now;
+    });
+  }, []);
 
   const begin = () => {
     flushSync(() => {
@@ -425,7 +459,7 @@ function useSelect(offered: boolean) {
     </Sheet>
   ) : null;
 
-  return { on, bar, sheet, pick };
+  return { on, bar, sheet, pick, drop };
 }
 
 /** One issuer however it was written: "barclays" is "Barclays". */
@@ -450,9 +484,8 @@ function HitRow({
 }) {
   const title = hit.title ?? 'Untitled';
   return (
-    <li className={pick ? 'docrow docrow-pick' : 'docrow'}>
-      {pick && <PickBox title={title} pick={pick} />}
-      <button type="button" className="rowbtn" onClick={onOpen}>
+    <li className="docrow">
+      <RowMain title={title} pick={pick} onOpen={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">{rowLine(hit, types)}</span>
         <span
@@ -460,7 +493,7 @@ function HitRow({
           dangerouslySetInnerHTML={{ __html: sanitiseSnippet(hit.snippet) }}
         />
         <StatusBadge status={hit.status} />
-      </button>
+      </RowMain>
       {/* A hit has no version or ETag: its ⋯ fetches the document on opening. */}
       <DocActions documentId={hit.document_id} title={title} onChanged={onChanged} />
     </li>
