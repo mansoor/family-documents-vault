@@ -1,3 +1,4 @@
+import { can, effectiveVisibility } from '@fdv/shared';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -179,6 +180,31 @@ describe("a person's profile (5.17c)", () => {
     expect(within(about).getByText(`2 April 2016 · ${age}`)).toBeInTheDocument();
   });
 
+  it('two people with the same first name are named in full on their screens', async () => {
+    // Home tells Sam Khan and Sam Malik apart; their screens did not (the
+    // 5.17c review): both were "Sam's documents", with "About Sam".
+    const samKhan = { ...AISHA_KHAN, id: 'm-1', display_name: 'Sam Khan', photo: { id: 'p-sam' } };
+    const samMalik = { ...AISHA_KHAN, id: 'm-2', display_name: 'Sam Malik' };
+    installFakeApi(fresh({ members: [ME, AISHA_KHAN, samKhan, samMalik] }));
+    signedIn();
+    at('/people/m-1/documents');
+    const { unmount } = render(<App />);
+    await screen.findByRole('heading', { name: 'Sam Khan’s documents', level: 1 });
+    fireEvent.click(screen.getByRole('link', { name: 'About Sam Khan' }));
+    await screen.findByRole('heading', { name: 'Sam Khan', level: 1 });
+    expect(screen.getByRole('heading', { name: 'Sam Khan’s documents' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }));
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Remove Sam Khan’s photo?' }),
+    ).toBeInTheDocument();
+    unmount();
+    // A first name nobody else has is still just that.
+    at('/people/m-0/documents');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Aisha’s documents', level: 1 });
+    expect(screen.getByRole('link', { name: 'About Aisha' })).toBeInTheDocument();
+  });
+
   it("a viewer sees no one else's birthday, relationship or photo", async () => {
     // As the vault answers a viewer: nobody's details but their own.
     const me = { ...ME, role: 'viewer', relationship: 'Our accountant', can_change_photo: false };
@@ -207,6 +233,23 @@ describe("a person's profile (5.17c)", () => {
     expect(screen.getByText('You · Viewer')).toBeInTheDocument();
   });
 
+  it('every sentence of the ID-numbers note is what the vault does', () => {
+    // The 5.17c review: it said teens and viewers could not open these, and
+    // a teen's was for Everyone, viewers included. A teen's own is now their
+    // Only me (the owner's decision), and the note says so.
+    const nationalId = { default_visibility: 'adults' as const };
+    expect(ID_NUMBERS_NOTE).toContain('One an owner or adult files is Adults only by default');
+    expect(effectiveVisibility({}, nationalId, 'owner')).toBe('adults');
+    expect(effectiveVisibility({}, nationalId, 'adult')).toBe('adults');
+    expect(ID_NUMBERS_NOTE).toContain('One a teen files is their Only me by default');
+    expect(effectiveVisibility({}, nationalId, 'teen')).toBe('private');
+    expect(ID_NUMBERS_NOTE).toContain('Only owners and adults can change who sees a document');
+    expect(
+      (['owner', 'adult', 'teen', 'viewer'] as const).map((r) => can(r, 'document.visibility')),
+    ).toEqual([true, true, false, false]);
+    expect(ID_NUMBERS_NOTE).not.toMatch(/Whoever a document belongs to/);
+  });
+
   it('only owners see the ID-numbers note', async () => {
     installFakeApi(fresh({ members: [ME, AISHA_KHAN] }));
     signedIn();
@@ -214,7 +257,7 @@ describe("a person's profile (5.17c)", () => {
     const { unmount } = render(<App />);
     expect(await screen.findByText(ID_NUMBERS_NOTE)).toBeInTheDocument();
     expect(ID_NUMBERS_NOTE).toBe(
-      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents, which are Adults only by default: owners and adults can open them, teens and viewers can't. Whoever a document belongs to can make it Only me, and in Kinds of document an owner can make Only me the default for new ones (one filed for somebody else still starts as Adults only).",
+      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it. Only owners and adults can change who sees a document afterwards, and they can make their own documents Only me. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
     );
     unmount();
     for (const role of ['adult', 'teen', 'viewer'] as const) {
@@ -293,6 +336,11 @@ describe("a person's photo (5.17c)", () => {
     expect(state.photoUploads).toEqual([
       { member: 'm-0', fields: ['crop', 'file'], crop: { x: 0, y: 0, w: 0.75, h: 1 } },
     ]);
+    // Focus is back on the button that began it, which waits, focusable,
+    // while the photo is made: not on the page (the 5.17c review).
+    const add = screen.getByRole('button', { name: 'Add a photo' });
+    expect(document.activeElement).toBe(add);
+    expect(add).toHaveAttribute('aria-disabled', 'true');
     expect(await screen.findByText('Photo updated.', {}, { timeout: 6000 })).toBeInTheDocument();
     await waitFor(() => expect(photo()?.getAttribute('src')).toMatch(/^blob:photo-/));
     expect(screen.getByRole('button', { name: 'Change photo' })).toBeInTheDocument();
@@ -373,7 +421,11 @@ describe("a person's photo (5.17c)", () => {
     await screen.findByText('Photo removed.');
     expect(state.calls.find((c) => c.method === 'DELETE')?.url).toBe('/api/v1/members/m-0/photo');
     expect(state.members.find((m) => m.id === 'm-0')?.photo).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Remove photo' })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Remove photo' })).not.toBeInTheDocument(),
+    );
+    // Its button went with the photo: focus is on Add a photo, not the page.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add a photo' }));
   });
 
   it('a viewer may remove their own photo, and set none', async () => {
@@ -387,9 +439,130 @@ describe("a person's photo (5.17c)", () => {
       screen.queryByRole('button', { name: /Add a photo|Change photo/ }),
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove photo' }));
-    expect(
-      await screen.findByRole('alertdialog', { name: 'Remove your photo?' }),
-    ).toHaveTextContent('Your initials will show instead.');
+    const asked = await screen.findByRole('alertdialog', { name: 'Remove your photo?' });
+    expect(asked).toHaveTextContent('Your initials will show instead.');
+    fireEvent.click(within(asked).getByRole('button', { name: 'Remove photo' }));
+    const said = await screen.findByText('Photo removed.');
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Remove photo' })).not.toBeInTheDocument(),
+    );
+    // No button is left: focus is on what was said, not the page.
+    expect(document.activeElement).toBe(said);
+    expect(said).toHaveAttribute('role', 'status');
+  });
+
+  it("a crop pushed to the picture's edge after zooming is inside it, as the vault counts", async () => {
+    // 800 by 600 at zoom 1.6, as far right as it goes: rounded each on its
+    // own, x and w came to 1.0001, and the vault refused it (the 5.17c review).
+    // A copy of her: the fake changes the people it is given.
+    const state = fresh({ members: [ME, { ...AISHA_KHAN }] });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    await choose(picture());
+    const sheet = await screen.findByRole('dialog', { name: 'Choose the part to show' });
+    await waitFor(() => expect(sheet.querySelector('img.crop-photo')).not.toBeNull());
+    fireEvent.change(within(sheet).getByLabelText('Zoom'), { target: { value: '1.6' } });
+    const frame = within(sheet).getByRole('group');
+    for (let i = 0; i < 20; i++) fireEvent.keyDown(frame, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Use this photo' }));
+    await screen.findByText('Getting the photo ready…');
+    const crop = state.photoUploads?.[0]?.crop as { x: number; y: number; w: number; h: number };
+    expect(crop).toEqual({ x: 0.5312, y: 0.1875, w: 0.4688, h: 0.625 });
+    // The vault's rule (parseCrop): fractions, inside the picture, 0.05 a side at least.
+    for (const v of Object.values(crop)) expect(v >= 0 && v <= 1).toBe(true);
+    expect(crop.x + crop.w).toBeLessThanOrEqual(1 + 1e-9);
+    expect(crop.y + crop.h).toBeLessThanOrEqual(1 + 1e-9);
+    expect(Math.min(crop.w, crop.h)).toBeGreaterThanOrEqual(0.05);
+  });
+
+  it('when sending fails, the reason is said in the sheet, and focus stays in it', async () => {
+    // A copy of her: the fake changes the people it is given.
+    const state = fresh({ members: [ME, { ...AISHA_KHAN }] });
+    installFakeApi(state);
+    // The vault refuses the picture as what its bytes are.
+    const fake = globalThis.fetch;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (init?.method === 'PUT' && url.endsWith('/photo')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'unsupported_type',
+                message: 'Choose a photo: JPEG, PNG, WebP or HEIC.',
+                retriable: false,
+                request_id: 'r',
+              },
+            }),
+            { status: 415, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      return fake(input, init);
+    });
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    await choose(picture());
+    const sheet = await screen.findByRole('dialog', { name: 'Choose the part to show' });
+    await waitFor(() => expect(sheet.querySelector('img.crop-photo')).not.toBeNull());
+    const use = within(sheet).getByRole('button', { name: 'Use this photo' });
+    use.focus();
+    fireEvent.click(use);
+    // Inside the sheet, which is still open, not behind it.
+    expect(await within(sheet).findByRole('alert')).toHaveTextContent(
+      'Choose a photo: JPEG, PNG, WebP or HEIC.',
+    );
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    await waitFor(() => expect(use).toHaveTextContent('Use this photo'));
+    expect(sheet.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(use);
+    await expectAccessible();
+    // Cancelled, the reason goes with the sheet.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('on a narrow screen the frame is as wide as the sheet has room for, and as tall', async () => {
+    // At 320 pixels the sheet has 254 for it: the frame was 254 wide and
+    // 280 tall, its guide an oval, and what was sent a square it never
+    // showed (the 5.17c review).
+    const room = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (
+      this: Element,
+    ) {
+      return this.classList.contains('crop-room') ? 254 : 0;
+    });
+    try {
+      // A copy of her: the fake changes the people it is given.
+      const state = fresh({ members: [ME, { ...AISHA_KHAN }] });
+      installFakeApi(state);
+      signedIn();
+      at('/people/m-0');
+      render(<App />);
+      await choose(picture());
+      const sheet = await screen.findByRole('dialog', { name: 'Choose the part to show' });
+      const img = await waitFor(() => {
+        const found = sheet.querySelector<HTMLImageElement>('img.crop-photo');
+        expect(found).not.toBeNull();
+        return found as HTMLImageElement;
+      });
+      const frame = within(sheet).getByRole('group');
+      expect(frame.style.width).toBe('254px');
+      expect(frame.style.height).toBe('254px');
+      // The picture covers that square: 600 tall is 254, 800 wide in proportion.
+      expect(parseFloat(img.style.height)).toBeCloseTo(254, 5);
+      expect(parseFloat(img.style.width)).toBeCloseTo((800 * 254) / 600, 5);
+      // As far left as it goes, the square shown is the one sent.
+      for (let i = 0; i < 20; i++) fireEvent.keyDown(frame, { key: 'ArrowLeft', shiftKey: true });
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Use this photo' }));
+      await screen.findByText('Getting the photo ready…');
+      expect(state.photoUploads?.[0]?.crop).toEqual({ x: 0.25, y: 0, w: 0.75, h: 1 });
+    } finally {
+      room.mockRestore();
+    }
   });
 
   it('photos are fetched with the token, kept in memory and forgotten at sign-out', async () => {

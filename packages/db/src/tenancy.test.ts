@@ -125,6 +125,30 @@ describe.skipIf(!testAdminUrl())('row-level security', () => {
       expect(result).toEqual({ ok: true, checked: 3 });
     });
 
+    it('an id in capitals, or detail JSON drops, is hashed as the table keeps it', async () => {
+      // The 5.17c review: the hash took the id as the caller spelled it and
+      // the uuid column keeps it lower case, so the row never verified.
+      const objectId = randomUUID();
+      await withSystem(app, A, async (trx) => {
+        await appendAudit(trx, {
+          householdId: A.toUpperCase(),
+          action: 'auth.session_revoked',
+          objectType: 'session',
+          objectId: objectId.toUpperCase(),
+          detail: { reason: 'revoked', dropped: undefined },
+        });
+      });
+      const row = await admin.query<{ household_id: string; object_id: string; detail: unknown }>(
+        'select household_id, object_id, detail from audit_event where object_id = $1',
+        [objectId],
+      );
+      expect(row.rows).toEqual([
+        { household_id: A, object_id: objectId, detail: { reason: 'revoked' } },
+      ]);
+      const result = await withSystem(app, A, (trx) => verifyAuditChain(trx, A));
+      expect(result).toEqual({ ok: true, checked: 4 });
+    });
+
     it('is invisible from another household', async () => {
       const rows = await withSystem(app, B, (trx) =>
         trx.selectFrom('audit_event').selectAll().execute(),

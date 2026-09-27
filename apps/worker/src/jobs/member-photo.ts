@@ -64,15 +64,30 @@ export async function makeMemberPhoto(
   job: MemberPhotoJob,
   attempt: { final: boolean } = { final: true },
 ): Promise<MemberPhotoOutcome> {
-  const { household_id: hh, member_id: memberId, photo_id: photoId } = job;
+  const { household_id: hh, photo_id: jobPhotoId } = job;
+  // The row's own ids from here on, as the database spells them: seals are
+  // made and opened by those, never by how a request spelled them (the
+  // 5.17c review; documents' are, since 5.9).
+  let memberId = job.member_id;
+  let photoId = jobPhotoId;
   const ctx = await withSystem(deps.db, hh, async (trx) => {
     const row = await trx
       .selectFrom('member_photo')
-      .select(['state', 'crop', 'source_key', 'source_vault_id', 'source_key_wrapped'])
-      .where('id', '=', photoId)
-      .where('member_id', '=', memberId)
+      .select([
+        'id',
+        'member_id',
+        'state',
+        'crop',
+        'source_key',
+        'source_vault_id',
+        'source_key_wrapped',
+      ])
+      .where('id', '=', jobPhotoId)
+      .where('member_id', '=', job.member_id)
       .executeTakeFirst();
     if (row?.state !== 'processing' || !row.source_key || !row.source_key_wrapped) return null;
+    memberId = row.member_id;
+    photoId = row.id;
     const vault = row.source_vault_id
       ? await trx
           .selectFrom('vault')

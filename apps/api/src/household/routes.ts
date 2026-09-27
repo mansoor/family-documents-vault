@@ -71,7 +71,9 @@ function registerPhotos(app: FastifyInstance, household: HouseholdService, photo
       throw orderRefusal(err);
     }
     const theFile = file;
-    await photos
+    // The person as the database spells them: the answer is theirs however
+    // the address spelled the id (the 5.17c review).
+    const memberId = await photos
       .accept(
         p,
         id,
@@ -97,7 +99,7 @@ function registerPhotos(app: FastifyInstance, household: HouseholdService, photo
         await drainRest();
         throw orderRefusal(err);
       });
-    return reply.status(202).send(await household.member(p, id));
+    return reply.status(202).send(await household.member(p, memberId));
   });
 
   app.delete('/api/v1/members/:id/photo', auth, async (req, reply) => {

@@ -1445,10 +1445,12 @@ invitation_not_valid` — where each used to read the count and all were
       photo. `Member.can_change_photo`. All absent from older vaults.
     - **Added:** `PUT /api/v1/members/{id}/photo`, multipart: an optional
       `crop` field (JSON `{ x, y, w, h }`, fractions of the upright picture,
-      each 0–1, inside it, at least 0.05 a side; none for the middle), then
+      each 0–1, inside it, at least 0.05 a side; none for the middle; up to
+      0.001 over an edge, as rounding leaves it, is taken as the edge), then
       the picture as `file`, and nothing else. `202` with the person
       (`photo_status: "processing"`); the worker makes a 512-pixel square
-      JPEG and GET /members says `photo` when it is ready. Refused, in this
+      JPEG, from a picture of up to 128 megapixels and 16,000 pixels a side,
+      and GET /members says `photo` when it is ready. Refused, in this
       order: a person the caller cannot see, `404`; `403 forbidden` (a
       viewer, in the matrix's words; anybody else not allowed, "Only an
       owner or the person themselves can change this photo. For someone
@@ -1466,8 +1468,25 @@ validation_failed` (`detail: "crop"`); a crop after the file, a
       `cache-control: private, no-store`, `x-content-type-options:
 nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       else: `404 no_photo`, the same every time.
+    - The three take the ids in any case, as every uuid in the API is
+      taken: a photo is filed, sealed and answered by the person's own id,
+      so the `202` is the person as `GET /members` gives them, and a photo
+      opens however its address is spelled.
     - **Changed:** `Member.relationship` follows the family's details, as
       `date_of_birth` has since 0.5.3: a viewer gets null, except their own.
+    - **Changed:** a teen's own document of a kind that is Adults only by
+      default — a social security card, a medical record — is their Only me
+      (`visibility: "private"`), where it was for Everyone, viewers
+      included (the owner's decision). This is only the default: what a
+      document made or captured is when it says nothing about who sees it,
+      and where the web's card starts; a teen who sends `visibility` as
+      `household` gets Everyone, as before. A teen's documents are always
+      their own, so it is always theirs. Nobody else can open it, and who
+      sees it cannot be changed afterwards: `document.visibility` is an
+      owner's or an adult's, of a document they can open.
+      `effectiveVisibility` in `@fdv/shared` says the same; a phone that
+      sends the visibility its own copy preselected keeps sending Everyone
+      until it is updated.
     - The activity log says "Mansoor added a photo of Aisha", "Sara changed
       their photo", "Mansoor removed Aisha’s photo" (owners, adults, teens).
     - Nothing of a photo is in the capability document, an invitation's
@@ -1479,6 +1498,21 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       `@fdv/client`: `setMemberPhoto` (the crop sent first),
       `removeMemberPhoto`, `memberPhoto`, `memberPhotoUrl`, `photoUpload`;
       the fake makes a photo by the next GET /members.
+    - `initialsFor` keeps going until two people's letters differ: after
+      the first letter, the second, and the last name's, the letter where
+      their first names part ("Sr" and "Sm" for Sara and Sam Khan), then a
+      middle name's ("MA" and "MU"); letters are whole graphemes, never
+      two people's in different cases, and shared only by the same name.
+      `graphemesOf` splits a word as a reader sees its letters.
+  - The activity log's chain, for every route (5.17c review). **Fixed:** an
+    id sent in capitals — a `DELETE` of `/api/v1/auth/sessions/{ID}`, a
+    `PATCH` of `/documents/{ID}`, any route — was hashed as sent, while the
+    table kept it in lower case, so the row never verified and the chain
+    read as tampered with from then on. Every row is now hashed as the
+    table keeps it (ids as the database's `uuid` gives them back, the
+    detail as `jsonb` does). Rows already written are unchanged, and so is
+    the rule that checks them; a chain broken this way before stays broken
+    at that row.
 
 ## Deprecations in effect
 

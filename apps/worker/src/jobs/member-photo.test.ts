@@ -24,7 +24,7 @@ import { LocalAdapter, memberPhotoUploadKey } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { makeMemberPhoto, type MemberPhotoJob } from './member-photo.js';
-import { detectTools, jpegSize, type PhotoCrop } from './tools.js';
+import { detectTools, jpegSize, photoPlan, PHOTO_DECODE_PIXELS, type PhotoCrop } from './tools.js';
 
 const run = promisify(execFile);
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -364,6 +364,100 @@ describe.skipIf(!testAdminUrl() || !tools.magick)('making a person’s photo', (
     120_000,
   );
 
+  it('a 64-megapixel photo, and a 48-megapixel one taken upright, are made within the limits', async () => {
+    // The 5.17c review: decoded whole, and again to turn it upright, a
+    // phone's 48 or 64 megapixel photo ran out of room ('cache resources
+    // exhausted') long before the 128 megapixel limit. Four quadrants:
+    // red, lime / blue, yellow.
+    const quadrants = (w: number, h: number) => [
+      '-size',
+      `${w}x${h}`,
+      'xc:yellow',
+      '-fill',
+      'red',
+      '-draw',
+      `rectangle 0,0 ${w / 2 - 1},${h / 2 - 1}`,
+      '-fill',
+      'lime',
+      '-draw',
+      `rectangle ${w / 2},0 ${w - 1},${h / 2 - 1}`,
+      '-fill',
+      'blue',
+      '-draw',
+      `rectangle 0,${h / 2} ${w / 2 - 1},${h - 1}`,
+      '-quality',
+      '90',
+    ];
+    const big = await draw(quadrants(9248, 6936), `jpeg:${file('64mp.jpg')}`);
+    expect(jpegSize(big)).toEqual({ width: 9248, height: 6936 });
+    // Its top right quarter: lime.
+    const wide = await v.send(big, { x: 0.5, y: 0, w: 0.5, h: 0.5 });
+    const started = Date.now();
+    expect(await makeMemberPhoto(v.deps(), wide.job)).toBe('ready');
+    const w = await v.square(wide.photoId);
+    expect(jpegSize(w)).toEqual({ width: 512, height: 512 });
+    for (const [x, y] of [
+      [20, 20],
+      [256, 256],
+      [490, 490],
+    ] as const) {
+      expect(near(await pixel(w, x, y), [0, 255, 0]), `${x},${y}`).toBe(true);
+    }
+    // Turned a quarter by its Exif, as a phone held upright writes it: its
+    // upright bottom right quarter is what was stored top right, lime; had
+    // it not been turned, it would be yellow.
+    const tall = withExif(await draw(quadrants(8064, 6048), `jpeg:${file('48mp.jpg')}`));
+    const upright = await v.send(tall, { x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
+    expect(await makeMemberPhoto(v.deps(), upright.job)).toBe('ready');
+    const t = await v.square(upright.photoId);
+    for (const [x, y] of [
+      [20, 20],
+      [256, 256],
+      [490, 490],
+    ] as const) {
+      expect(near(await pixel(t, x, y), [0, 255, 0]), `${x},${y}`).toBe(true);
+    }
+    // Decoded small, both are quick.
+    expect(Date.now() - started).toBeLessThan(60_000);
+  }, 240_000);
+
+  it('a picture placed off its canvas is cut where it is seen', async () => {
+    // The 5.17c review: a PNG whose oFFs puts it at +300+300 was cut on
+    // the canvas, not the picture — a blue corner, or a white square —
+    // and still marked ready. Red, with a blue top left quarter.
+    const placed = await draw(
+      [
+        '-size',
+        '400x400',
+        'xc:red',
+        '-fill',
+        'blue',
+        '-draw',
+        'rectangle 0,0 199,199',
+        '-repage',
+        '+300+300',
+      ],
+      `png:${file('placed.png')}`,
+    );
+    const quarter = await v.send(placed, { x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(await makeMemberPhoto(v.deps(), quarter.job)).toBe('ready');
+    const q = await v.square(quarter.photoId);
+    for (const [x, y] of [
+      [20, 20],
+      [256, 256],
+      [490, 490],
+    ] as const) {
+      expect(near(await pixel(q, x, y), [0, 0, 255]), `${x},${y}`).toBe(true);
+    }
+    // The middle: the whole picture, its blue quarter where it is.
+    const whole = await v.send(placed);
+    expect(await makeMemberPhoto(v.deps(), whole.job)).toBe('ready');
+    const m = await v.square(whole.photoId);
+    expect(near(await pixel(m, 100, 100), [0, 0, 255])).toBe(true);
+    expect(near(await pixel(m, 400, 400), [255, 0, 0])).toBe(true);
+    expect(near(await pixel(m, 400, 100), [255, 0, 0])).toBe(true);
+  }, 120_000);
+
   it('a transparent PNG is flattened onto white', async () => {
     const clear = await draw(['-size', '300x300', 'xc:none'], `png32:${file('clear.png')}`);
     const sent = await v.send(clear);
@@ -399,4 +493,50 @@ describe.skipIf(!testAdminUrl() || !tools.magick)('making a person’s photo', (
       expect(await v.exists(sent.key)).toBe(false);
     }
   }, 120_000);
+});
+
+describe('how a photo is decoded, and what of it is cut', () => {
+  it('a JPEG as small as keeps the part 512 pixels a side, and no more than PHOTO_DECODE_PIXELS', () => {
+    // The middle of a 64 megapixel photo: decoded at an eighth, its short
+    // side is 867, and the middle square of it is cut.
+    const middle = photoPlan({ w: 9248, h: 6936 }, 'TopLeft', null, true);
+    expect(middle.shrink).toBe(8);
+    expect(middle.part).toEqual({ x: 1156 / 9248, y: 0, w: 6936 / 9248, h: 1 });
+    // A quarter of it: decoded at a quarter, that part is 1156 across.
+    expect(
+      photoPlan({ w: 9248, h: 6936 }, 'TopLeft', { x: 0.5, y: 0, w: 0.5, h: 0.5 }, true),
+    ).toEqual({ part: { x: 0.5, y: 0, w: 0.5, h: 0.5 }, shrink: 4 });
+    // A small part of a huge one: decoded at a half, never whole.
+    const tiny = photoPlan(
+      { w: 12000, h: 9000 },
+      'TopLeft',
+      { x: 0, y: 0, w: 0.05, h: 0.05 },
+      true,
+    );
+    expect(tiny.shrink).toBe(2);
+    expect((12000 * 9000) / tiny.shrink ** 2).toBeLessThanOrEqual(PHOTO_DECODE_PIXELS);
+    // Not a JPEG: decoded whole, as nothing else can be shrunk as it is read.
+    expect(photoPlan({ w: 9248, h: 6936 }, 'TopLeft', null, false).shrink).toBe(1);
+    // A photo already small is not shrunk.
+    expect(photoPlan({ w: 600, h: 400 }, 'Undefined', null, true)).toEqual({
+      part: { x: 100 / 600, y: 0, w: 400 / 600, h: 1 },
+      shrink: 1,
+    });
+  });
+
+  it('the part of the upright picture is found where it is stored, for every EXIF turn', () => {
+    // The upright top left quarter of a picture 400 wide and 200 tall.
+    const quarter = { x: 0, y: 0, w: 0.5, h: 0.5 };
+    const at = (o: string, stored = { w: 400, h: 200 }) => photoPlan(stored, o, quarter, true).part;
+    expect(at('TopLeft')).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(at('TopRight')).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 });
+    expect(at('BottomRight')).toEqual({ x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
+    expect(at('BottomLeft')).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 });
+    // Turned a quarter: stored 200 wide and 400 tall.
+    const tall = { w: 200, h: 400 };
+    expect(at('LeftTop', tall)).toEqual({ x: 0, y: 0, w: 0.5, h: 0.5 });
+    expect(at('RightTop', tall)).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 });
+    expect(at('RightBottom', tall)).toEqual({ x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
+    expect(at('LeftBottom', tall)).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 });
+  });
 });

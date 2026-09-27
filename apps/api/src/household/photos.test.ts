@@ -13,7 +13,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { appendAudit, createPool, withSystem } from '@fdv/db';
+import { appendAudit, createPool, verifyAuditChain, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   PHOTO_REFUSAL,
@@ -27,6 +27,7 @@ import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { parseCrop } from './photos.js';
 
 /**
  * A person's photo (5.17c), from the API's side: who may set whose (A66),
@@ -695,6 +696,94 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
     expect((await personAs(teen, child)).photo_status).toBeNull();
   });
 
+  it("an address in capitals files, seals and answers by the person's own id", async () => {
+    // The 5.17c review: the upload's key, its seal, the lock, the job and
+    // the answer were the address's spelling, so a PUT in capitals made a
+    // photo that never opened, and answered 404 after the work was done.
+    const CHILD = child.toUpperCase();
+    const res = await put(owner, CHILD);
+    expect(res.statusCode, res.body).toBe(202);
+    expect(res.json<Member>()).toMatchObject({ id: child, photo_status: 'processing' });
+    const [on] = (await rows(child)).filter((r) => r.state === 'processing');
+    expect(h.jobs.filter((j) => j.name === 'member.photo').at(-1)?.data).toEqual({
+      household_id: owner.household_id,
+      member_id: child,
+      photo_id: on?.id,
+    });
+    // Filed under the person's own folder, as the database spells it.
+    expect(await incoming(child)).toContain(`${on?.id}.enc`);
+    // The worker opens the upload by the person's own id, and seals by it.
+    const { id } = await finish(child);
+    // It opens, however the address spells the ids; nothing is logged as
+    // unreadable, which is kept for a seal moved or altered.
+    logged.length = 0;
+    for (const [as, m, ph] of [
+      [owner, child, id],
+      [teen, CHILD, id.toUpperCase()],
+      [adult, CHILD, id],
+    ] as const) {
+      const got = await fetchPhoto(as, m, ph);
+      expect(got.statusCode, `${m} ${ph}`).toBe(200);
+      expect(Buffer.compare(got.rawPayload, SQUARE)).toBe(0);
+    }
+    expect(logged.some((l) => l.includes('photo_unreadable'))).toBe(false);
+    // A viewer's own, in capitals, is theirs; somebody else's is not.
+    expect((await put(owner, viewer.member_id)).statusCode).toBe(202);
+    const mine = await finish(viewer.member_id);
+    const upper = viewer.member_id.toUpperCase();
+    expect((await fetchPhoto(viewer, upper, mine.id.toUpperCase())).statusCode).toBe(200);
+    expect((await fetchPhoto(viewer, CHILD, id)).statusCode).toBe(404);
+    // Taken away in capitals: the log's line is the person's own.
+    expect((await remove(viewer, upper)).statusCode).toBe(204);
+    expect(await rows(viewer.member_id)).toEqual([]);
+    const said = await admin.query<{ object_id: string }>(
+      "select object_id from audit_event where action = 'member.photo_removed' order by id desc limit 1",
+    );
+    expect(said.rows[0]?.object_id).toBe(viewer.member_id);
+  });
+
+  it('a route given an upper-case id writes an audit row that still verifies', async () => {
+    // The 5.17c review: appendAudit hashed the id as given, and the table
+    // keeps a uuid in lower case, so the chain read as tampered with for
+    // ever after. The sessions route, from another device of Vic's…
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'vic@example.test', password: 'another correct horse' },
+      remoteAddress: '10.9.0.17',
+    });
+    expect(again.statusCode, again.body).toBe(200);
+    const sessions = (
+      await h.app.inject({ url: '/api/v1/auth/sessions', headers: h.as(viewer) })
+    ).json<{ items: Array<{ id: string; current: boolean }> }>().items;
+    const other = sessions.find((s) => !s.current) as { id: string };
+    const ended = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/auth/sessions/${other.id.toUpperCase()}`,
+      headers: h.as(viewer),
+    });
+    expect(ended.statusCode, ended.body).toBe(204);
+    // …and a photo route: a photo put and taken away in capitals.
+    expect((await put(owner, adult.member_id.toUpperCase())).statusCode).toBe(202);
+    await finish(adult.member_id);
+    expect((await remove(owner, adult.member_id.toUpperCase())).statusCode).toBe(204);
+    const written = await admin.query<{ object_id: string; action: string }>(
+      `select object_id, action from audit_event
+        where household_id = $1 and action in ('auth.session_revoked', 'member.photo_removed')
+        order by id desc limit 2`,
+      [owner.household_id],
+    );
+    expect(written.rows).toEqual([
+      { object_id: adult.member_id, action: 'member.photo_removed' },
+      { object_id: other.id, action: 'auth.session_revoked' },
+    ]);
+    // The whole chain still verifies.
+    const result = await withSystem(h.db, owner.household_id, (trx) =>
+      verifyAuditChain(trx, owner.household_id),
+    );
+    expect(result).toMatchObject({ ok: true });
+  });
+
   describe('as the application role, past the application (0040)', () => {
     /** A query as the vault's own role would run it, saying who is asking, with no WHERE of ours. */
     const asCaller = async (settings: Record<string, string>, query: string) => {
@@ -777,5 +866,25 @@ describe.skipIf(!testAdminUrl())("a person's photo (5.17c)", () => {
       }
       expect((await fetchPhoto(owner, child, ready?.id as string)).statusCode).toBe(200);
     });
+  });
+});
+
+describe('the crop field', () => {
+  it("a crop at the picture's edge a ten-thousandth over it, from rounding, is the edge", () => {
+    // What the web sent for an 800 by 600 picture at zoom 1.6, pushed right,
+    // before its rounding was mended (the 5.17c review): refused, then.
+    const crop = parseCrop(JSON.stringify({ x: 0.5313, y: 0.1875, w: 0.4688, h: 0.625 }));
+    expect(crop?.w).toBe(0.4688);
+    expect(crop?.x).toBeCloseTo(0.5312, 12);
+    expect((crop?.x ?? 0) + (crop?.w ?? 0)).toBeLessThanOrEqual(1 + 1e-12);
+    // A crop that is really outside is still refused.
+    for (const outside of [
+      { x: 0.6, y: 0, w: 0.5, h: 0.5 },
+      { x: 0, y: 0.52, w: 0.5, h: 0.5 },
+    ]) {
+      expect(() => parseCrop(JSON.stringify(outside)), JSON.stringify(outside)).toThrow(
+        'must be inside it',
+      );
+    }
   });
 });

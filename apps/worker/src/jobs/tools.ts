@@ -294,14 +294,44 @@ export interface PhotoCrop {
 }
 
 /**
+ * The most pixels, and the longest side, a photo may have: MAGICK_LIMITS'
+ * area and width, asked of the picture's header before anything is
+ * decoded. A JPEG decoded smaller than it is (below) is not counted at its
+ * full size by ImageMagick, so these are checked here.
+ */
+export const PHOTO_MAX_PIXELS = 128_000_000;
+export const PHOTO_MAX_SIDE = 16_000;
+/**
+ * The most pixels a JPEG photo is decoded at, however small the part
+ * chosen: a phone's 64, 108 or 128 megapixel picture fits the memory
+ * MAGICK_LIMITS allow, and is never spilled to disk whole. A part the web
+ * can choose, a quarter of the picture's side or more, is decoded far
+ * smaller than this.
+ */
+export const PHOTO_DECODE_PIXELS = 32_000_000;
+
+/**
  * A person's photo, made from one picture (5.17c): read with the coder
- * named (`coder:file[0]`, the first frame only) under MAGICK_LIMITS, turned
- * upright, the part chosen cut out — or the middle — and made one
+ * named (`coder:file[0]`, the first frame only) under MAGICK_LIMITS, the
+ * part chosen cut out — or the middle — turned upright, and made one
  * 512-pixel square JPEG, flattened onto white, with nothing but its pixels
- * (`-strip`: no EXIF, no GPS, no profile). Two runs: the first says how big
- * the picture is once upright, which is what the crop's fractions are of.
- * The result is checked, and anything but a 512×512 JPEG of at most 256 KiB
- * is refused. ImageMagick's own spill goes into the folder `output` is in.
+ * (`-strip`: no EXIF, no GPS, no profile).
+ *
+ * The picture is decoded once, and as small as will do (the 5.17c review:
+ * a phone's 64 megapixel photo ran out of room decoded whole, and again
+ * turned upright). Its header says how big it is and which way up (`-ping`,
+ * which decodes nothing): more than PHOTO_MAX_PIXELS, or a side over
+ * PHOTO_MAX_SIDE, is refused there. A JPEG is then decoded by libjpeg at a
+ * half, a quarter or an eighth of its size (`jpeg:size`, asked for as
+ * exactly that, which ImageMagick 6 and 7 both give): the smallest that
+ * keeps the part chosen 512 pixels a side, and no more than
+ * PHOTO_DECODE_PIXELS. Any page offset is dropped (`+repage`), so a picture
+ * placed off its canvas is cut where it is seen. The part is cut as
+ * fractions of whatever was decoded, before anything else: only it is
+ * turned upright and resized. The square is kept as a PNG, and only that
+ * is made a JPEG: at the second quality, if the first is over 256 KiB. The
+ * result is checked, and anything but a 512×512 JPEG of at most 256 KiB is
+ * refused. ImageMagick's own spill goes into the folder `output` is in.
  */
 export async function squarePhoto(
   input: string,
@@ -316,45 +346,71 @@ export async function squarePhoto(
   const env = { ...process.env, MAGICK_TEMPORARY_PATH: path.dirname(output) };
   const { stdout } = await run(
     bin,
-    [...MAGICK_LIMITS, src, '-auto-orient', '-format', '%w %h', 'info:'],
-    {
-      timeout: 60_000,
-      env,
-    },
+    [...MAGICK_LIMITS, '-ping', src, '-format', '%w %h %[orientation]', 'info:'],
+    { timeout: 60_000, env },
   );
-  const [width, height] = stdout.trim().split(/\s+/).map(Number);
-  if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height)) {
+  const [w, h, orientation = ''] = stdout.trim().split(/\s+/);
+  const stored = { w: Number(w), h: Number(h) };
+  if (!(stored.w > 0 && stored.h > 0 && Number.isFinite(stored.w) && Number.isFinite(stored.h))) {
     throw new Error('the picture has no size');
   }
-  const box = cropBox(width, height, crop);
+  if (
+    stored.w * stored.h > PHOTO_MAX_PIXELS ||
+    stored.w > PHOTO_MAX_SIDE ||
+    stored.h > PHOTO_MAX_SIDE
+  ) {
+    throw new Error('the picture is bigger than a photo may be');
+  }
+  const plan = photoPlan(stored, orientation, crop, coder === 'jpeg');
+  const { part, shrink } = plan;
+  /** A fraction as ImageMagick's percentage geometry. */
+  const pc = (f: number) => `${Math.min(100, f * 100).toFixed(4)}%`;
+  const square = path.join(path.dirname(output), 'square.png');
+  await run(
+    bin,
+    [
+      ...MAGICK_LIMITS,
+      ...(shrink > 1
+        ? ['-define', `jpeg:size=${Math.floor(stored.w / shrink)}x${Math.floor(stored.h / shrink)}`]
+        : []),
+      src,
+      '+repage',
+      // The part, as fractions of the picture however big it was decoded:
+      // everything up to its far corner, then its own share of that.
+      '-gravity',
+      'NorthWest',
+      '-crop',
+      `${pc(part.x + part.w)}x${pc(part.y + part.h)}+0+0`,
+      '+repage',
+      '-gravity',
+      'SouthEast',
+      '-crop',
+      `${pc(part.w / (part.x + part.w))}x${pc(part.h / (part.y + part.h))}+0+0`,
+      '+repage',
+      '-auto-orient',
+      '+repage',
+      '-resize',
+      `${PHOTO_EDGE}x${PHOTO_EDGE}^`,
+      '-gravity',
+      'center',
+      '-extent',
+      `${PHOTO_EDGE}x${PHOTO_EDGE}`,
+      // A transparent picture on white, not on black.
+      '-background',
+      'white',
+      '-alpha',
+      'remove',
+      '-alpha',
+      'off',
+      '-strip',
+      `png:${square}`,
+    ],
+    { timeout: 60_000, env },
+  );
   for (const quality of PHOTO_QUALITIES) {
     await run(
       bin,
-      [
-        ...MAGICK_LIMITS,
-        src,
-        '-auto-orient',
-        '-crop',
-        `${box.w}x${box.h}+${box.x}+${box.y}`,
-        '+repage',
-        '-resize',
-        `${PHOTO_EDGE}x${PHOTO_EDGE}^`,
-        '-gravity',
-        'center',
-        '-extent',
-        `${PHOTO_EDGE}x${PHOTO_EDGE}`,
-        // A transparent picture on white, not on black.
-        '-background',
-        'white',
-        '-alpha',
-        'remove',
-        '-alpha',
-        'off',
-        '-quality',
-        String(quality),
-        '-strip',
-        `jpeg:${output}`,
-      ],
+      [...MAGICK_LIMITS, `png:${square}`, '-quality', String(quality), '-strip', `jpeg:${output}`],
       { timeout: 60_000, env },
     );
     const jpeg = await readFile(output);
@@ -365,6 +421,63 @@ export async function squarePhoto(
     if (jpeg.length <= PHOTO_MAX_JPEG) return jpeg;
   }
   throw new Error('the photo came out too big');
+}
+
+/** An EXIF orientation's way from the picture as stored to it upright. */
+type Orienting = (r: { x: number; y: number; w: number; h: number }) => {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+/**
+ * For each EXIF orientation, where a part of the upright picture is in the
+ * picture as stored, all in fractions: 2 to 4 mirror or turn it half way,
+ * 5 to 8 turn it a quarter (so its width is the stored height).
+ */
+const STORED_PART: Record<string, Orienting> = {
+  TopRight: (r) => ({ x: 1 - r.x - r.w, y: r.y, w: r.w, h: r.h }),
+  BottomRight: (r) => ({ x: 1 - r.x - r.w, y: 1 - r.y - r.h, w: r.w, h: r.h }),
+  BottomLeft: (r) => ({ x: r.x, y: 1 - r.y - r.h, w: r.w, h: r.h }),
+  LeftTop: (r) => ({ x: r.y, y: r.x, w: r.h, h: r.w }),
+  RightTop: (r) => ({ x: r.y, y: 1 - r.x - r.w, w: r.h, h: r.w }),
+  RightBottom: (r) => ({ x: 1 - r.y - r.h, y: 1 - r.x - r.w, w: r.h, h: r.w }),
+  LeftBottom: (r) => ({ x: 1 - r.y - r.h, y: r.x, w: r.h, h: r.w }),
+};
+
+/**
+ * How a picture `stored` pixels big, which its EXIF says to turn by
+ * `orientation`, is made a photo: the part to cut, as fractions of the
+ * picture as stored — the crop, or the largest square in the middle of the
+ * upright picture — and, for a JPEG, how much to shrink it as it is
+ * decoded (1, 2, 4 or 8): the most that keeps that part PHOTO_EDGE a side,
+ * and at least enough to decode no more than PHOTO_DECODE_PIXELS.
+ */
+export function photoPlan(
+  stored: { w: number; h: number },
+  orientation: string,
+  crop: PhotoCrop | null,
+  jpeg: boolean,
+): { part: { x: number; y: number; w: number; h: number }; shrink: 1 | 2 | 4 | 8 } {
+  const turn = STORED_PART[orientation];
+  const quarter = ['LeftTop', 'RightTop', 'RightBottom', 'LeftBottom'].includes(orientation);
+  const upright = quarter ? { w: stored.h, h: stored.w } : stored;
+  const box = cropBox(upright.w, upright.h, crop);
+  const shown = {
+    x: box.x / upright.w,
+    y: box.y / upright.h,
+    w: box.w / upright.w,
+    h: box.h / upright.h,
+  };
+  const part = turn ? turn(shown) : shown;
+  if (!jpeg) return { part, shrink: 1 };
+  const side = Math.min(box.w, box.h);
+  const sharp = ([8, 4, 2, 1] as const).find((s) => side / s >= PHOTO_EDGE) ?? 1;
+  const fits =
+    ([1, 2, 4, 8] as const).find((s) => (stored.w * stored.h) / (s * s) <= PHOTO_DECODE_PIXELS) ??
+    8;
+  return { part, shrink: Math.max(sharp, fits) as 1 | 2 | 4 | 8 };
 }
 
 /**

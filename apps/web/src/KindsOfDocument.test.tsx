@@ -361,6 +361,10 @@ describe('Settings → Kinds of document (5.12)', () => {
         'Only an owner can let more people see a kind of document from now on.',
       ),
     ).toBeInTheDocument();
+    // What Adults only means for a teen's own, as the vault files it (5.17c).
+    expect(
+      within(who).getByText('Teens can’t open one, so one a teen files starts as their Only me.'),
+    ).toBeInTheDocument();
     // A review date, reminded on the day, as a will is.
     expect(group('Review by')).toBeInTheDocument();
     expect(

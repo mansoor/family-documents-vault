@@ -1424,7 +1424,7 @@ describe('App', () => {
     expect(passport.visibility).toBe('household');
   });
 
-  it('a teen is never offered Adults only, and a type that defaults to it starts as Everyone', async () => {
+  it('a teen is never offered Adults only, and a type that defaults to it starts as their Only me', async () => {
     const medical = {
       ...TYPES[0],
       key: 'medical_record',
@@ -1441,6 +1441,15 @@ describe('App', () => {
     await toCard();
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'medical_record' } });
     expect(screen.getByRole('button', { name: 'Adults only' })).toBeDisabled();
+    // Their own, and for them alone (5.17c, the owner's decision): it
+    // started as Everyone, viewers included.
+    expect(screen.getByRole('button', { name: 'Only me' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    // Everyone is still theirs to choose, and is what is sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }));
     expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
       'aria-pressed',
       'true',

@@ -559,12 +559,19 @@ h3 {
 }
 
 /* The crop sheet: the photo in a square, a round guide over it, and the
-   rest of the frame dimmed. */
+   rest of the frame dimmed. The room around it is measured, and the frame
+   is as wide as that allows and as tall (Person.tsx): square on any screen. */
+.crop-room {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+}
+
 .crop-frame {
   position: relative;
   overflow: hidden;
-  align-self: center;
-  max-width: 100%;
+  flex: none;
   border-radius: var(--radius-m);
   background: var(--ink);
   touch-action: none;

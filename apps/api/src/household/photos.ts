@@ -101,6 +101,9 @@ const storageUnreachable = (detail: string) =>
     { detail, retriable: true, retryAfter: 30 },
   );
 
+/** How far over the edge a crop's rounding may take it. */
+const CROP_SLACK = 1e-3;
+
 /**
  * The crop, as sent in the `crop` field: fractions of the upright picture,
  * each from 0 to 1, inside it, at least 0.05 a side. Empty is the middle.
@@ -124,9 +127,11 @@ export function parseCrop(raw: unknown): PhotoCrop | null {
   const fraction = (n: unknown): n is number =>
     typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 1;
   if (!fraction(x) || !fraction(y) || !fraction(w) || !fraction(h)) throw badCrop();
-  // A hair over 1 from adding fractions is still inside.
-  if (w < 0.05 || h < 0.05 || x + w > 1 + 1e-9 || y + h > 1 + 1e-9) throw badCrop();
-  return { x, y, w, h };
+  // A hair over 1, from fractions each rounded, is the edge: taken as that,
+  // not refused (the 5.17c review: a crop at the picture's edge could be
+  // sent a ten-thousandth over it).
+  if (w < 0.05 || h < 0.05 || x + w > 1 + CROP_SLACK || y + h > 1 + CROP_SLACK) throw badCrop();
+  return { x: Math.min(x, 1 - w), y: Math.min(y, 1 - h), w, h };
 }
 
 const badCrop = () =>
@@ -192,23 +197,26 @@ export class PhotoService {
    * PUT /members/{id}/photo: the upload sealed as it arrives, one row on its
    * way for the person (replacing whatever was unfinished), and the worker
    * asked to make it. Refused on its type (415) or its size (413), nothing
-   * is kept.
+   * is kept. Returns the person's id as the database spells it: the one
+   * everything here is filed under and bound to, however the address
+   * spelled it (the 5.17c review).
    */
   async accept(
     p: Principal,
-    memberId: string,
+    requested: string,
     upload: PhotoUpload,
     // Nothing is audited until the photo is made (the worker writes it).
     _meta: RequestMeta,
-  ): Promise<void> {
+  ): Promise<string> {
     const photoId = randomUUID();
     const hh = p.householdId;
     const ctx = await withPrincipal(this.db, p, async (trx) => {
-      await this.changeable(trx, p, memberId);
+      const person = await this.changeable(trx, p, requested);
       const active = await this.vaults.activeAdapter(trx, hh);
       const scope = await this.keys.unwrap(trx, { householdId: hh, kind: 'household' });
-      return { active, scopeKey: scope.key };
+      return { memberId: person.id, active, scopeKey: scope.key };
     });
+    const memberId = ctx.memberId;
     const key = memberPhotoUploadKey({ householdId: hh, memberId, photoId });
     const fileKey = newKey();
     const { adapter, vaultId } = ctx.active;
@@ -318,6 +326,7 @@ export class PhotoService {
         { detail: (err as Error).message, retriable: true, retryAfter: 30 },
       );
     }
+    return memberId;
   }
 
   /**
@@ -325,11 +334,14 @@ export class PhotoService {
    * and its upload. By whoever may change it, or the person themselves;
    * nothing there is no refusal.
    */
-  async remove(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
+  async remove(p: Principal, requested: string, meta: RequestMeta): Promise<void> {
     const uploads: Array<{ key: string; vaultId: string }> = [];
     await withPrincipal(this.db, p, async (trx) => {
-      const person = await this.person(trx, memberId);
+      const person = await this.person(trx, requested);
       if (!canRemovePhoto({ role: p.role, memberId: p.memberId }, person)) throw refused();
+      // Their own id, as the database spells it: the lock and the log's line
+      // are theirs however the address spelled it.
+      const memberId = person.id;
       await lockPerson(trx, p.householdId, memberId);
       const gone = await trx
         .deleteFrom('member_photo')
@@ -360,7 +372,9 @@ export class PhotoService {
    * GET /members/{id}/photo/{photoId}: the ready photo, opened, for the
    * family or the person themselves. Anything else — not allowed, no photo,
    * an old id — is null; a seal that does not open is 'unreadable', which
-   * the route logs and answers the same.
+   * the route logs and answers the same. The seal is opened by the row's
+   * own ids, so an address in capitals opens the same photo, and only a
+   * seal moved or altered is unreadable (the 5.17c review).
    */
   async photo(
     p: Principal,
@@ -368,11 +382,11 @@ export class PhotoService {
     photoId: string,
   ): Promise<Buffer | 'unreadable' | null> {
     if (!UUID.test(memberId) || !UUID.test(photoId)) return null;
-    if (!allows(p, 'family.details') && memberId !== p.memberId) return null;
+    if (!allows(p, 'family.details') && memberId.toLowerCase() !== p.memberId) return null;
     return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
         .selectFrom('member_photo')
-        .select('sealed')
+        .select(['id', 'member_id', 'sealed'])
         .where('id', '=', photoId)
         .where('member_id', '=', memberId)
         .where('state', '=', 'ready')
@@ -383,7 +397,7 @@ export class PhotoService {
         return openBytes(
           scope.key,
           row.sealed,
-          memberPhotoBinding(p.householdId, memberId, photoId),
+          memberPhotoBinding(p.householdId, row.member_id, row.id),
         );
       } catch {
         return 'unreadable';
@@ -410,10 +424,15 @@ export class PhotoService {
   }
 
   /** 404 for a person not given, then `member.photo`, then whose: in that order. */
-  private async changeable(trx: Db, p: Principal, memberId: string): Promise<void> {
+  private async changeable(
+    trx: Db,
+    p: Principal,
+    memberId: string,
+  ): Promise<{ id: string; role: Role | null }> {
     const person = await this.person(trx, memberId);
     requireCapability(p, 'member.photo');
     if (!canChangePhoto({ role: p.role, memberId: p.memberId }, person)) throw refused();
+    return person;
   }
 
   private async dropObject(p: Principal, at: { key: string; vaultId: string }) {

@@ -109,9 +109,21 @@ describe('the rules a capture keeps', () => {
       status: 403,
     });
     const medical = { ...passport, key: 'medical_record', default_visibility: 'adults' as const };
-    expect(effectiveVisibility({}, medical, 'teen')).toBe('household');
+    // A teen's own is their Only me (5.17c, the owner's decision): it was
+    // for Everyone, viewers included.
+    expect(effectiveVisibility({}, medical, 'teen')).toBe('private');
     expect(effectiveVisibility({}, medical, 'adult')).toBe('adults');
+    expect(effectiveVisibility({}, medical, 'owner')).toBe('adults');
     expect(effectiveVisibility({ visibility: 'private' }, medical, 'teen')).toBe('private');
+    // What a teen chooses is what they get.
+    expect(effectiveVisibility({ visibility: 'household' }, medical, 'teen')).toBe('household');
+    // And a capture of their own that says nothing passes the phone's check.
+    expect(
+      checkCaptureMetadata(
+        { type_key: 'medical_record' },
+        { ...ctx('teen'), types: [passport, bill, medical] },
+      ),
+    ).toBeNull();
   });
 
   it('text fits the limits the server keeps', () => {

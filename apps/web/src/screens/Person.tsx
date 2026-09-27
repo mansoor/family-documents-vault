@@ -4,12 +4,14 @@ import {
   PHOTO_MAX_BYTES,
   PHOTO_TYPES,
   roleLabel,
+  shortName,
   type PhotoCrop,
   type Role,
 } from '@fdv/shared';
 import {
   Fragment,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -22,7 +24,7 @@ import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
+import { BottomNav, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
 import { DocRow } from './Home.js';
 import { RoleControls } from './Roles.js';
 
@@ -36,8 +38,14 @@ interface Came {
   from?: string;
 }
 
-/** "Aisha", or "Your" for yourself: whose documents these are. */
-const firstName = (m: Member) => m.display_name.trim().split(/\s+/)[0] ?? m.display_name;
+/**
+ * What a screen calls somebody: their first name, or their whole name when
+ * somebody else in the family has the same first name (`shortName`: Sam
+ * Khan and Sam Malik are not both "Sam").
+ */
+const nameOf = (m: Member, family: ReadonlyArray<Member>) =>
+  shortName(family.length > 0 ? family : [m]).get(m.id) ??
+  (m.display_name.trim().split(/\s+/)[0] || m.display_name);
 
 /** "12 March 2012 · 14"; no age once they have died. */
 export function bornLine(dateOfBirth: string, deceased: boolean, today = new Date()): string {
@@ -63,9 +71,14 @@ export function roleLine(m: Member): string {
   return 'No sign-in';
 }
 
-/** The owners' note about ID numbers, until identity records land (A69, 5.26/5.27). */
+/**
+ * The owners' note about ID numbers, until identity records land (A69,
+ * 5.26/5.27). Every sentence is what the vault does (the 5.17c review):
+ * AddConfirm's startingVisibility, effectiveVisibility and the API's
+ * ownVisibility, and `document.visibility` for who changes it.
+ */
 export const ID_NUMBERS_NOTE =
-  "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents, which are Adults only by default: owners and adults can open them, teens and viewers can't. Whoever a document belongs to can make it Only me, and in Kinds of document an owner can make Only me the default for new ones (one filed for somebody else still starts as Adults only).";
+  "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it. Only owners and adults can change who sees a document afterwards, and they can make their own documents Only me. In Kinds of document an owner can make Only me the default for the ones people file for themselves.";
 
 /** How long a new photo is waited for, and how often it is asked about. */
 export const PHOTO_POLL_MS = 2000;
@@ -97,6 +110,7 @@ export function ProfileScreen() {
     [id, authVersion],
   );
   const member = data?.member ?? null;
+  const name = member ? nameOf(member, data?.members ?? []) : '';
   const myRole: Role = session.info?.role ?? storedRole();
 
   if (data && !member) {
@@ -134,7 +148,7 @@ export function ProfileScreen() {
               size={96}
             />
             <p className="profile-line">{roleLine(member)}</p>
-            <PhotoControls member={member} onChanged={reload} />
+            <PhotoControls member={member} name={name} onChanged={reload} />
           </div>
 
           {about.length > 0 && (
@@ -164,7 +178,7 @@ export function ProfileScreen() {
 
           <section aria-labelledby="their-docs-h">
             <h2 id="their-docs-h" className="section-h">
-              {member.is_me ? 'Your documents' : `${firstName(member)}’s documents`}
+              {member.is_me ? 'Your documents' : `${name}’s documents`}
             </h2>
             <ul className="list">
               {(data?.docs ?? []).map((d) => (
@@ -215,6 +229,7 @@ export function PersonDocumentsScreen() {
         api.documentTypes(t),
       ]);
       return {
+        members: members.items,
         member: members.items.find((m) => m.id === id) ?? null,
         docs: docs.items,
         types: types.items,
@@ -223,11 +238,8 @@ export function PersonDocumentsScreen() {
     [id, authVersion],
   );
   const member = data?.member ?? null;
-  const title = member
-    ? member.is_me
-      ? 'Your documents'
-      : `${firstName(member)}’s documents`
-    : 'Documents';
+  const name = member ? nameOf(member, data?.members ?? []) : '';
+  const title = member ? (member.is_me ? 'Your documents' : `${name}’s documents`) : 'Documents';
   return (
     <main className="page page-top has-nav">
       <TopBar title={title} back={back} />
@@ -235,7 +247,7 @@ export function PersonDocumentsScreen() {
       {data && !member && <p className="lede">We can’t find that person.</p>}
       {member && (
         <Link to={`/people/${member.id}`} className="muted quiet-link">
-          About {member.is_me ? 'you' : firstName(member)}
+          About {member.is_me ? 'you' : name}
         </Link>
       )}
       <ul className="list">
@@ -261,11 +273,17 @@ export function PersonDocumentsScreen() {
  * here, and sent only when "Use this photo" is pressed; the vault makes it,
  * and this asks every 2 seconds whether it has.
  */
-function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }) {
+function PhotoControls(props: {
+  member: Member;
+  /** What the screen calls them (`nameOf`). */
+  name: string;
+  onChanged: () => Promise<void>;
+}) {
   const { member } = props;
   const { withToken, session } = useApp();
   const input = useRef<HTMLInputElement>(null);
   const change = useRef<HTMLButtonElement>(null);
+  const status = useRef<HTMLParagraphElement>(null);
   const [chosen, setChosen] = useState<File | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -338,7 +356,7 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
 
   const send = async (crop: PhotoCrop | null) => {
     const file = chosen;
-    if (!file) return;
+    if (!file || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -348,8 +366,13 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
         setSaid('Getting the photo ready…');
         setWaiting({ since: Date.now(), before: member.photo?.id ?? null });
       });
+      // Back on the button that began it, which stays focusable while the
+      // photo is made (the 5.17c review: it was switched off, and focus fell
+      // to the page).
       change.current?.focus();
     } catch (err) {
+      // Said in the sheet, which stays open for another try: behind it,
+      // nobody would see it (the 5.17c review).
       setError(describeError(err));
     } finally {
       setBusy(false);
@@ -357,6 +380,7 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
   };
 
   const remove = async () => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -364,6 +388,10 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
       setRemoving(false);
       setSaid('Photo removed.');
       await props.onChanged();
+      // "Remove photo" goes with the photo: focus goes to Add a photo, or,
+      // for somebody who may not add one, to what was said (the 5.17c
+      // review: it fell to the page).
+      (change.current ?? status.current)?.focus();
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -371,7 +399,7 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
     }
   };
 
-  const who = member.is_me ? 'your' : `${firstName(member)}’s`;
+  const who = member.is_me ? 'your' : `${props.name}’s`;
   return (
     <div className="stack photo-controls">
       {may && (
@@ -391,36 +419,52 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
       )}
       {(may || mayRemove) && (
         <div className="row">
+          {/* aria-disabled, not disabled, while a photo is sent or made: a
+              disabled button drops the focus it holds (as ConfirmDialog's). */}
           {may && (
             <button
               ref={change}
               type="button"
               className="btn btn-quiet"
-              disabled={busy || waiting !== null}
-              onClick={() => input.current?.click()}
+              aria-disabled={busy || waiting !== null}
+              onClick={() => {
+                if (!busy && waiting === null) input.current?.click();
+              }}
             >
               {member.photo ? 'Change photo' : 'Add a photo'}
             </button>
           )}
           {mayRemove && (
-            <Button kind="quiet" disabled={busy} onClick={() => setRemoving(true)}>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busy) setRemoving(true);
+              }}
+            >
               Remove photo
-            </Button>
+            </button>
           )}
         </div>
       )}
       {(may || mayRemove) && <p className="muted">{PHOTO_SEEN}</p>}
-      <ErrorNote message={error} />
-      <p className="notice status-line" role="status">
+      {/* While the sheet is open, what goes wrong is said in it. */}
+      {!chosen && <ErrorNote message={error} />}
+      <p ref={status} className="notice status-line" role="status" tabIndex={-1}>
         {said}
       </p>
       {chosen && (
         <CropSheet
           file={chosen}
           busy={busy}
+          error={error}
           returnFocus={change}
           onUse={(crop) => void send(crop)}
-          onCancel={() => setChosen(null)}
+          onCancel={() => {
+            setChosen(null);
+            setError(null);
+          }}
         />
       )}
       {removing && (
@@ -430,6 +474,7 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
           busyLabel="Removing…"
           danger
           busy={busy}
+          returnFocus={change}
           onConfirm={() => void remove()}
           onCancel={() => setRemoving(false)}
         >
@@ -443,7 +488,11 @@ function PhotoControls(props: { member: Member; onChanged: () => Promise<void> }
   );
 }
 
-/** The square the photo is framed in, on screen, in CSS pixels. */
+/**
+ * The square the photo is framed in, on screen, in CSS pixels: this, or
+ * the room the sheet has if that is less (a 320-pixel screen, or zoomed
+ * in), and always square.
+ */
 const FRAME = 280;
 /** How far one arrow key press moves the photo, in CSS pixels. */
 const STEP = 12;
@@ -459,6 +508,8 @@ const MAX_ZOOM = 4;
 function CropSheet(props: {
   file: File;
   busy: boolean;
+  /** Why the last "Use this photo" did not go, said here, where it is seen. */
+  error: string | null;
   returnFocus: RefObject<HTMLElement | null>;
   onUse: (crop: PhotoCrop | null) => void;
   onCancel: () => void;
@@ -467,8 +518,35 @@ function CropSheet(props: {
   const [src, setSrc] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const [frame, setFrame] = useState(FRAME);
+  const framed = useRef(FRAME);
+  const room = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; from: { x: number; y: number } } | null>(null);
   const use = useRef<HTMLButtonElement>(null);
+  const unreadable = size === 'unreadable';
+  // The frame is as wide as the sheet has room for, up to FRAME, and as
+  // tall: what the round guide shows is what is sent (the 5.17c review: at
+  // 320 pixels it was 254 wide and 280 tall). Measured once laid out, and
+  // again when the room changes; a page with no layout (a test's) measures
+  // nothing, and keeps FRAME.
+  useLayoutEffect(() => {
+    const el = room.current;
+    if (!el) return;
+    const measure = () => {
+      const width = el.clientWidth;
+      const next = width > 0 ? Math.min(FRAME, Math.floor(width)) : FRAME;
+      if (next === framed.current) return;
+      framed.current = next;
+      setFrame(next);
+      // A new frame, a new middle: where it was is in the old one's pixels.
+      setAt(null);
+    };
+    measure();
+    if (typeof ResizeObserver !== 'function') return;
+    const watching = new ResizeObserver(measure);
+    watching.observe(el);
+    return () => watching.disconnect();
+  }, [unreadable]);
   // A photo this browser cannot draw has no frame to hold the focus: it
   // goes to the one thing left to do.
   useEffect(() => {
@@ -505,7 +583,7 @@ function CropSheet(props: {
   const drawn = size && size !== 'unreadable' ? size : null;
   // The photo covers the frame at zoom 1; its side never smaller than a
   // twentieth of the picture, which is what the vault takes.
-  const base = drawn ? FRAME / Math.min(drawn.w, drawn.h) : 1;
+  const base = drawn ? frame / Math.min(drawn.w, drawn.h) : 1;
   const most = drawn
     ? Math.max(
         1,
@@ -516,12 +594,12 @@ function CropSheet(props: {
   const clamp = (p: { x: number; y: number }, s = scale) =>
     drawn
       ? {
-          x: Math.min(0, Math.max(FRAME - drawn.w * s, p.x)),
-          y: Math.min(0, Math.max(FRAME - drawn.h * s, p.y)),
+          x: Math.min(0, Math.max(frame - drawn.w * s, p.x)),
+          y: Math.min(0, Math.max(frame - drawn.h * s, p.y)),
         }
       : p;
   const middle = drawn
-    ? { x: (FRAME - drawn.w * scale) / 2, y: (FRAME - drawn.h * scale) / 2 }
+    ? { x: (frame - drawn.w * scale) / 2, y: (frame - drawn.h * scale) / 2 }
     : { x: 0, y: 0 };
   const pos = at ?? middle;
 
@@ -541,11 +619,11 @@ function CropSheet(props: {
   };
   const onZoom = (next: number) => {
     // Zoomed about the middle of the frame.
-    const cx = (FRAME / 2 - pos.x) / scale;
-    const cy = (FRAME / 2 - pos.y) / scale;
+    const cx = (frame / 2 - pos.x) / scale;
+    const cy = (frame / 2 - pos.y) / scale;
     const s = base * next;
     setZoom(next);
-    setAt(clamp({ x: FRAME / 2 - cx * s, y: FRAME / 2 - cy * s }, s));
+    setAt(clamp({ x: frame / 2 - cx * s, y: frame / 2 - cy * s }, s));
   };
   const onDown = (e: PointerEvent<HTMLDivElement>) => {
     drag.current = { x: e.clientX, y: e.clientY, from: pos };
@@ -560,15 +638,20 @@ function CropSheet(props: {
     drag.current = null;
   };
 
-  /** The part shown, as fractions of the upright picture. */
+  /**
+   * The part shown, as fractions of the upright picture. Its size is
+   * rounded first, and where it starts after, never past the edge that
+   * leaves: rounded each on its own, a crop at the edge could come to
+   * 1.0001 wide, which the vault refused (the 5.17c review).
+   */
   const crop = (): PhotoCrop | null => {
     if (!drawn) return null;
     const round = (n: number) => Math.round(n * 10_000) / 10_000;
-    const w = Math.min(1, Math.max(0.05, FRAME / scale / drawn.w));
-    const h = Math.min(1, Math.max(0.05, FRAME / scale / drawn.h));
-    const x = Math.min(1 - w, Math.max(0, -pos.x / scale / drawn.w));
-    const y = Math.min(1 - h, Math.max(0, -pos.y / scale / drawn.h));
-    return { x: round(x), y: round(y), w: round(w), h: round(h) };
+    const w = round(Math.min(1, Math.max(0.05, frame / scale / drawn.w)));
+    const h = round(Math.min(1, Math.max(0.05, frame / scale / drawn.h)));
+    const x = Math.max(0, Math.min(round(1 - w), round(-pos.x / scale / drawn.w)));
+    const y = Math.max(0, Math.min(round(1 - h), round(-pos.y / scale / drawn.h)));
+    return { x, y, w, h };
   };
 
   return (
@@ -580,38 +663,40 @@ function CropSheet(props: {
     >
       <div className="card stack">
         <h2 style={{ fontSize: 20 }}>Choose the part to show</h2>
-        {size === 'unreadable' ? (
+        {unreadable ? (
           <p className="muted">
             This browser can’t show this photo, so we’ll use the middle of it.
           </p>
         ) : (
           <>
-            <div
-              className="crop-frame"
-              role="group"
-              tabIndex={0}
-              aria-label="The photo in its frame. Drag it, or move it with the arrow keys."
-              style={{ width: FRAME, height: FRAME }}
-              onKeyDown={onKey}
-              onPointerDown={onDown}
-              onPointerMove={onMove}
-              onPointerUp={onUp}
-              onPointerCancel={onUp}
-            >
-              {src && drawn && (
-                <img
-                  className="crop-photo"
-                  src={src}
-                  alt=""
-                  draggable={false}
-                  style={{
-                    width: drawn.w * scale,
-                    height: drawn.h * scale,
-                    transform: `translate(${Math.round(pos.x)}px, ${Math.round(pos.y)}px)`,
-                  }}
-                />
-              )}
-              <span className="crop-guide" aria-hidden="true" />
+            <div ref={room} className="crop-room">
+              <div
+                className="crop-frame"
+                role="group"
+                tabIndex={0}
+                aria-label="The photo in its frame. Drag it, or move it with the arrow keys."
+                style={{ width: frame, height: frame }}
+                onKeyDown={onKey}
+                onPointerDown={onDown}
+                onPointerMove={onMove}
+                onPointerUp={onUp}
+                onPointerCancel={onUp}
+              >
+                {src && drawn && (
+                  <img
+                    className="crop-photo"
+                    src={src}
+                    alt=""
+                    draggable={false}
+                    style={{
+                      width: drawn.w * scale,
+                      height: drawn.h * scale,
+                      transform: `translate(${Math.round(pos.x)}px, ${Math.round(pos.y)}px)`,
+                    }}
+                  />
+                )}
+                <span className="crop-guide" aria-hidden="true" />
+              </div>
             </div>
             <div className="field">
               <label htmlFor="crop-zoom">Zoom</label>
@@ -628,19 +713,32 @@ function CropSheet(props: {
             </div>
           </>
         )}
+        <ErrorNote message={props.error} />
+        {/* aria-disabled while it is sent, not disabled: a disabled button
+            drops the focus it holds, and a refusal would find it gone. */}
         <div className="row">
           <button
             ref={use}
             type="button"
             className="btn btn-primary"
-            disabled={props.busy || size === null}
-            onClick={() => props.onUse(crop())}
+            disabled={size === null}
+            aria-disabled={props.busy}
+            onClick={() => {
+              if (!props.busy) props.onUse(crop());
+            }}
           >
             {props.busy ? 'Sending…' : 'Use this photo'}
           </button>
-          <Button kind="quiet" disabled={props.busy} onClick={props.onCancel}>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-disabled={props.busy}
+            onClick={() => {
+              if (!props.busy) props.onCancel();
+            }}
+          >
             Cancel
-          </Button>
+          </button>
         </div>
       </div>
     </Sheet>

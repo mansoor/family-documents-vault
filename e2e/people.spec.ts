@@ -12,7 +12,13 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
 
-/** Signed in through the page, once for this file (see lists.spec.ts), and its token. */
+/**
+ * Signed in through the page, once for this file, and its token. Signing in
+ * is limited to 10 a minute, and the suite signs in up to nine times a run:
+ * once in each file, first-run.spec.ts only when it is run again. So wait a
+ * minute between local runs. The rest of what the suite asks, from its one
+ * address, is under FDV_RATE_LIMIT_PER_MINUTE, which CI raises (0.5.17).
+ */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
     setup_required: boolean;
@@ -93,12 +99,6 @@ test.afterAll(async ({ request }) => {
     });
   }
   await page.close();
-  // The whole suite reaches the vault from one address, which may ask 300
-  // times a minute (app.ts). This file's screens — Home three times, a
-  // profile, a photo waited for — take a good share of that: the files
-  // after it start in a minute of their own.
-  test.setTimeout(120_000);
-  await new Promise((resolve) => setTimeout(resolve, 61_000));
 });
 
 test('Home to documents, People to a profile; add a photo and see it on Home', async () => {

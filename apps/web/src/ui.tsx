@@ -1,4 +1,4 @@
-import { avatarColour, can, statusTone, type Status } from '@fdv/shared';
+import { avatarColour, can, graphemesOf, statusTone, type Status } from '@fdv/shared';
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
@@ -298,7 +298,7 @@ export function Avatar({
   photo?: string | null | undefined;
 }) {
   const [failed, setFailed] = useState<string | null>(null);
-  const letters = initials ?? Array.from(name.trim()).slice(0, 1).join('').toLocaleUpperCase();
+  const letters = initials ?? (graphemesOf(name.trim())[0] ?? '').toLocaleUpperCase();
   const shown = photo && failed !== photo ? photo : null;
   return (
     <span
@@ -308,7 +308,8 @@ export function Avatar({
         width: size,
         height: size,
         background: avatarColour(colour),
-        fontSize: size * (Array.from(letters).length > 1 ? 0.36 : 0.42),
+        // Two letters as a reader counts them: "सी" is one.
+        fontSize: size * (graphemesOf(letters).length > 1 ? 0.36 : 0.42),
       }}
     >
       {shown ? (

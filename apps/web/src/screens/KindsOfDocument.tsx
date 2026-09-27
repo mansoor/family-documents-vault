@@ -1218,6 +1218,11 @@ function KindEditor(props: {
               Saving asks you to confirm it’s you.
             </span>
           )}
+          {draft.visibility === 'adults' && (
+            <span className="muted">
+              Teens can’t open one, so one a teen files starts as their Only me.
+            </span>
+          )}
           {draft.visibility === 'private' && (
             <span className="muted">
               Only the person it belongs to can open one. One filed for somebody else starts as

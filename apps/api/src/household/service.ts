@@ -221,7 +221,7 @@ export class HouseholdService {
 
   /** One person, as `members` gives them; 404 when the caller is not given them. */
   async member(p: Principal, id: string): Promise<MemberView> {
-    const found = (await this.members(p)).find((m) => m.id === id);
+    const found = (await this.members(p)).find((m) => m.id === id.toLowerCase());
     if (!found) throw new ApiError(404, 'not_found', 'That person is not in the family.');
     return found;
   }

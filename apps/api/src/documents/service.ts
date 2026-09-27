@@ -777,7 +777,11 @@ export class DocumentService {
    * A new document's visibility, for a role that cannot see Adults only
    * documents (a teen): never Adults only, whether asked for or left to
    * the type's default — their own document would vanish from them as they
-   * filed it. Asking is refused; the default becomes Everyone.
+   * filed it. Asking is refused. Left to the default, it is their Only me
+   * (5.17c, the owner's decision; until then Everyone, viewers included),
+   * as effectiveVisibility says for a capture: a teen's documents are
+   * always their own. One that somehow is not stays Everyone, since Only me
+   * is only ever the filer's own.
    */
   private async ownVisibility(trx: Db, p: Principal, input: DocumentInput): Promise<DocumentInput> {
     if (allows(p, 'document.see_adults')) return input;
@@ -786,7 +790,9 @@ export class DocumentService {
     }
     if (input.visibility !== undefined || !input.type_key) return input;
     const t = await this.typeOrThrow(input.type_key, trx);
-    return t.default_visibility === 'adults' ? { ...input, visibility: 'household' } : input;
+    if (t.default_visibility !== 'adults') return input;
+    const own = input.owner_member_id != null && input.owner_member_id === p.memberId;
+    return { ...input, visibility: own ? 'private' : 'household' };
   }
 
   /**

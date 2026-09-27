@@ -35,6 +35,7 @@ describe('a capture that knows what it is', () => {
   let owner: Tokens;
   let adult: Tokens;
   let teen: Tokens;
+  let viewer: Tokens;
   let admin: ReturnType<typeof createPool>;
 
   const json = <T>(r: { json: () => unknown }) => r.json() as T;
@@ -126,6 +127,11 @@ describe('a capture that knows what it is', () => {
       name: 'Sam',
       email: `sam-${randomUUID()}@example.test`,
       role: 'teen',
+    });
+    viewer = await h.join(owner, {
+      name: 'Vic',
+      email: `vic-${randomUUID()}@example.test`,
+      role: 'viewer',
     });
     admin = createPool(h.adminUrl, 2);
   }, 120_000);
@@ -361,14 +367,15 @@ describe('a capture that knows what it is', () => {
     ]);
 
   it('a teen never files a document as Adults only, which they could not then see', async () => {
-    // Medical records are Adults only by default: a teen's is theirs, for everyone.
+    // Medical records are Adults only by default: a teen's is theirs, Only
+    // me (5.17c, the owner's decision; it was for everyone until then).
     const res = await capture(teen, { type_key: 'medical_record' });
     expect(res.statusCode).toBe(201);
     const id = json<{ document_id: string }>(res).document_id;
     const d = await doc(teen, id);
     expect(d.statusCode).toBe(200);
     expect(json<DocumentView>(d)).toMatchObject({
-      visibility: 'household',
+      visibility: 'private',
       owner_member_id: teen.member_id,
     });
 
@@ -386,7 +393,7 @@ describe('a capture that knows what it is', () => {
       payload: { title: 'Allergy letter', type_key: 'medical_record' },
     });
     expect(made.statusCode).toBe(201);
-    expect(json<DocumentView>(made).visibility).toBe('household');
+    expect(json<DocumentView>(made).visibility).toBe('private');
     const refused = await h.app.inject({
       method: 'POST',
       url: '/api/v1/documents',
@@ -394,6 +401,56 @@ describe('a capture that knows what it is', () => {
       payload: { title: 'Allergy letter', visibility: 'adults' },
     });
     expect(refused.statusCode).toBe(403);
+  });
+
+  it('a teen filing their own ID document gets Only me by default, and a viewer gets 404', async () => {
+    // A social security card is Adults only by default, which a teen cannot
+    // open: theirs is their Only me, not Everyone's, viewers included.
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(teen),
+      payload: { title: 'Sam social security card', type_key: 'national_id' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const card = json<DocumentView>(made);
+    expect(card).toMatchObject({ visibility: 'private', owner_member_id: teen.member_id });
+    // Scanned, and sent with the card skipped: the same.
+    const scanned = await capture(teen, { type_key: 'national_id' });
+    expect(scanned.statusCode, scanned.body).toBe(201);
+    const scan = json<{ document_id: string }>(scanned).document_id;
+    for (const id of [card.id, scan]) {
+      expect(json<DocumentView>(await doc(teen, id)).visibility).toBe('private');
+      // Nobody else can open it: not a viewer, and not an owner either.
+      expect((await doc(viewer, id)).statusCode).toBe(404);
+      expect((await doc(owner, id)).statusCode).toBe(404);
+      expect(await listed(viewer)).not.toContain(id);
+    }
+    // Told what Only me means, as a card's own choice is recorded.
+    const told = await admin.query(
+      'select 1 from private_notice where document_id = $1 and member_id = $2',
+      [card.id, teen.member_id],
+    );
+    expect(told.rowCount).toBe(1);
+  });
+
+  it('a teen who chooses Everyone on the card still gets Everyone', async () => {
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(teen),
+      payload: { title: 'Sam ID card', type_key: 'national_id', visibility: 'household' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const scanned = await capture(teen, { type_key: 'national_id', visibility: 'household' });
+    expect(scanned.statusCode, scanned.body).toBe(201);
+    for (const id of [
+      json<DocumentView>(made).id,
+      json<{ document_id: string }>(scanned).document_id,
+    ]) {
+      expect(json<DocumentView>(await doc(teen, id)).visibility).toBe('household');
+      expect((await doc(viewer, id)).statusCode).toBe(200);
+    }
   });
 
   it('an Only me capture records that its owner was told what that means', async () => {

@@ -28,7 +28,7 @@ test('reloading Settings keeps you signed in, with one refresh', async ({ page, 
   }
 
   // Signed in through the page, the one sign-in this file makes. Signing
-  // in is limited to 10 a minute, and the suite signs in up to eight times
+  // in is limited to 10 a minute, and the suite signs in up to nine times
   // a run: once in each file, first-run.spec.ts only when it is run again.
   // So wait a minute between local runs.
   await page.goto('/welcome');
