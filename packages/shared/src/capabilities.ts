@@ -106,6 +106,12 @@ export interface CapabilityLimits {
   max_members: number | null;
   /** `null` means unlimited, which is the self-hosted default. */
   max_storage_bytes: number | null;
+  /**
+   * The longest a share link may last, in days (5.18: FDV_SHARE_MAX_DAYS,
+   * 90 unless the operator shortens it). An `expires_at` past it is refused.
+   * Absent from older vaults, which take 90.
+   */
+  share_max_days?: number;
 }
 
 export interface Deprecation {

@@ -239,7 +239,7 @@ function Preview({
 
 /** How often to ask again while a view-only link's pages are being drawn, and for how long. */
 const DRAWING_POLL_MS = 4000;
-const DRAWING_PATIENCE = 45;
+const DRAWING_PATIENCE_MS = 3 * 60_000;
 
 function Opened({
   session,
@@ -255,22 +255,37 @@ function Opened({
   const viewOnly = session.permission === 'view';
   const drawing = session.items.some((i) => i.pages?.state === 'drawing');
   const [asked, setAsked] = useState(0);
+  const [since, setSince] = useState(() => Date.now());
+  const [gaveUp, setGaveUp] = useState(false);
 
   // Pages still being drawn: asked again, inside the session (which counts
-  // nothing), until they are there — for a few minutes at most.
+  // nothing, and asks the worker for them again each time), until they are
+  // there — for a few minutes. After that the page says they could not be
+  // prepared, rather than "in a minute" for ever, and offers to try again.
   useEffect(() => {
-    if (!drawing || asked >= DRAWING_PATIENCE) return;
+    if (!drawing || gaveUp) return;
     const timer = window.setTimeout(() => {
+      if (Date.now() - since > DRAWING_PATIENCE_MS) {
+        setGaveUp(true);
+        return;
+      }
       void api.linkItems().then(
         (next) => {
           setAsked((n) => n + 1);
           onSession(next);
         },
-        () => setAsked(DRAWING_PATIENCE),
+        () => setGaveUp(true),
       );
     }, DRAWING_POLL_MS);
     return () => window.clearTimeout(timer);
-  }, [drawing, asked, onSession]);
+  }, [drawing, asked, gaveUp, since, onSession]);
+  const tryAgain = () => {
+    setSince(Date.now());
+    setGaveUp(false);
+    setAsked((n) => n + 1);
+  };
+  const downloadedAll =
+    session.downloads_left === 0 && session.items.some((i) => i.downloaded === true);
 
   return (
     <>
@@ -292,7 +307,9 @@ function Opened({
           <p className="muted">
             {session.downloads_left > 0
               ? `It can be downloaded ${moreTimes(session.downloads_left)}. Downloading it again from this page does not count.`
-              : 'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.'}
+              : downloadedAll
+                ? 'This link has been downloaded from as many times as it allows. What this page has downloaded already, it can download again.'
+                : 'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.'}
           </p>
         )}
         <ul className="list" aria-label="What was shared">
@@ -301,8 +318,8 @@ function Opened({
               {!single && <strong>{item.title ?? 'A document'}</strong>}
               {item.type_label && <span className="muted">{item.type_label}</span>}
               {viewOnly ? (
-                <SharedPages item={item} />
-              ) : session.downloads_left === 0 ? null : (
+                <SharedPages item={item} gaveUp={gaveUp} onTryAgain={tryAgain} />
+              ) : session.downloads_left === 0 && !item.downloaded ? null : (
                 <>
                   <a
                     className="btn btn-primary"
@@ -336,7 +353,16 @@ function Opened({
  * is fetched inside the session, which counts nothing; the first is
  * written down once as looked at.
  */
-function SharedPages({ item }: { item: SharedItem }) {
+function SharedPages({
+  item,
+  gaveUp,
+  onTryAgain,
+}: {
+  item: SharedItem;
+  /** Waited long enough for pages still being drawn. */
+  gaveUp: boolean;
+  onTryAgain: () => void;
+}) {
   const pages = item.pages;
   const [broken, setBroken] = useState<number[]>([]);
   if (!pages || pages.state === 'failed') {
@@ -345,6 +371,18 @@ function SharedPages({ item }: { item: SharedItem }) {
         The vault could not draw this document&rsquo;s pages. Ask whoever sent the link to send it
         another way.
       </p>
+    );
+  }
+  if ((pages.state === 'drawing' || !pages.shown) && gaveUp) {
+    return (
+      <div className="stack" style={{ gap: 8 }}>
+        <p className="status status-danger" role="alert">
+          The pages could not be prepared. Ask whoever sent the link, or try again in a while.
+        </p>
+        <Button kind="quiet" onClick={onTryAgain}>
+          Try again
+        </Button>
+      </div>
     );
   }
   if (pages.state === 'drawing' || !pages.shown) {

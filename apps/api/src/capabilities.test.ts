@@ -99,6 +99,11 @@ describe('buildCapabilities', () => {
     expect(caps.limits.max_storage_bytes).toBeNull();
   });
 
+  it('says the longest a share link may last, so a client offers only what the vault takes (5.18 review)', () => {
+    expect(buildCapabilities(config).limits.share_max_days).toBe(90);
+    expect(buildCapabilities({ ...config, shareMaxDays: 3 }).limits.share_max_days).toBe(3);
+  });
+
   it('the minimum client version is a valid semver the server itself satisfies', () => {
     expect(meetsMinimum(config.serverVersion, MIN_CLIENT_VERSION)).toBe(true);
   });

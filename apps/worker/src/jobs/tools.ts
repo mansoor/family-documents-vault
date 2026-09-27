@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, readdir, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -197,8 +197,10 @@ export async function renderPreviews(
   } else {
     const coder = IMAGE_CODERS[mime];
     if (!coder) return [];
-    // The first frame: a TIFF may hold several, and a phone's is one page.
-    sources = [`${coder}:${input}[0]`];
+    // A scanner's TIFF holds a page in each frame (5.18 review): each is
+    // drawn, up to `maxPages`. Any other image is one page, its first frame.
+    const frames = coder === 'tiff' ? Math.min(await imageFrames(input, mime), maxPages) : 1;
+    sources = Array.from({ length: frames }, (_, i) => `${coder}:${input}[${i}]`);
   }
   const out: string[] = [];
   for (const [i, src] of sources.entries()) {
@@ -611,13 +613,49 @@ export function cropBox(
   return { x, y, w, h };
 }
 
+/** `identify`, as whichever ImageMagick is installed names it. */
+async function identify(args: string[], timeout = 60_000): Promise<string> {
+  const bin = await MAGICK();
+  const [cmd, ...pre] = bin === 'magick' ? ['magick', 'identify'] : ['identify'];
+  const { stdout } = await run(cmd, [...pre, ...MAGICK_LIMITS, ...args], { timeout });
+  return stdout;
+}
+
+/**
+ * How many pages an image holds: a TIFF from a document scanner has one a
+ * frame; every other kind the vault takes is one page. At least 1.
+ */
+export async function imageFrames(file: string, mime: string): Promise<number> {
+  const coder = IMAGE_CODERS[mime];
+  if (coder !== 'tiff') return 1;
+  // `%n` is the number of frames, said once for each frame.
+  const out = await identify(['-format', '%n\n', `tiff:${file}`]);
+  const n = Number(out.trim().split(/\s+/)[0]);
+  return Number.isInteger(n) && n > 0 ? n : 1;
+}
+
+let pangoFound: Promise<boolean> | null = null;
+
+/**
+ * Whether ImageMagick can lay text out with pango (the worker image's
+ * imagemagick-pango): fontconfig then finds each character a font that has
+ * it — Chinese, Arabic, Devanagari, emoji — and shapes and orders it, where
+ * one font file would leave a gap for every character it lacks.
+ */
+export function hasPango(): Promise<boolean> {
+  pangoFound ??= MAGICK()
+    .then((bin) => run(bin, ['-list', 'format'], { timeout: 30_000 }))
+    .then(({ stdout }) => /^\s*PANGO\*?\s/m.test(stdout))
+    .catch(() => false);
+  return pangoFound;
+}
+
 let fontFound: Promise<string | null> | null = null;
 
 /**
- * A font file to write with: whichever fontconfig gives for sans-serif
- * (DejaVu Sans in the worker image). Named by its file, so ImageMagick
- * never falls back to a font it cannot find, which it reports as a
- * failure on some systems.
+ * A font file to write with where there is no pango: whichever fontconfig
+ * gives for sans-serif. Named by its file, so ImageMagick never falls back
+ * to a font it cannot find, which it reports as a failure on some systems.
  */
 function sansFont(): Promise<string | null> {
   fontFound ??= run('fc-match', ['-f', '%{file}', 'sans-serif'], { timeout: 10_000 })
@@ -632,88 +670,227 @@ function sansFont(): Promise<string | null> {
 }
 
 /**
- * What ImageMagick is given to write, as it will write it: one line, no
- * control characters, not too long, and with its own escapes (`%` and `\`)
- * made plain — a label is the family's text, and `%[…]` in it would
- * otherwise be read as a question about the image, `@file` as a file.
+ * A line of the family's text, fit to be drawn: one line, no control
+ * characters, not too long. The bidirectional isolates (U+2066–U+2069) are
+ * kept — they are how a label in Arabic keeps to its own place in the line
+ * — and every other format character goes.
  */
-export function magickText(text: string): string {
-  const line = text
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+export function watermarkLine(text: string): string {
+  return text
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/(?![⁦-⁩])\p{Cf}/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 120);
+    .slice(0, 160);
+}
+
+/**
+ * What ImageMagick is given to write where it reads its own escapes (the
+ * `label:` coder, without pango): `%` and `\` made plain — a label is the
+ * family's text, and `%[…]` in it would otherwise be read as a question
+ * about the image — and never an `@file`. Pango is given its text in a
+ * file, which it draws as it is.
+ */
+export function magickText(text: string): string {
+  const line = watermarkLine(text).replace(/[⁦-⁩]/g, '');
   const escaped = line.replace(/\\/g, '\\\\').replace(/%/g, '%%');
   return escaped.startsWith('@') ? ` ${escaped}` : escaped;
 }
 
 /**
+ * The mark across a page: dark red with a pale halo, laid over the page at
+ * about half strength — read on a white page and on a dark photo alike,
+ * and the page still read through it.
+ */
+export const MARK_FILL = '#8c1c1c';
+const MARK_HALO = 'white';
+const MARK_OPACITY = 0.5;
+
+/**
  * A view-only link's page (5.18): one of the vault's drawn pages, with
  * `text` — whom the link is for, and the day it was made — written across
- * it three times on the slant, faint enough to read the page through, and
- * once more on a white band added at its foot, where a crop that keeps the
- * page keeps the line too. JPEG, as the previews are, and nothing but the
+ * the whole of it on the slant, again and again in a grid, so that any part
+ * of the page cut out still carries it, corners included: dark red with a
+ * pale halo, to be read on a white page and on a dark photo alike, and
+ * light enough to read the page through. Once more, plainly, on a white
+ * band added below the page (a crop to the page's own edges drops that
+ * line, never the grid). JPEG, as the previews are, and nothing but the
  * picture.
+ *
+ * With pango the text is laid out as the family wrote it, in any script,
+ * from a file (no ImageMagick escapes); without it, with the one sans-serif
+ * font fontconfig gives, which draws Latin, Greek and Cyrillic.
  */
-export async function watermarkPage(input: string, output: string, text: string): Promise<void> {
+export async function watermarkPage(
+  input: string,
+  output: string,
+  text: string,
+  opts: { pango?: boolean } = {},
+): Promise<void> {
   const bin = await MAGICK();
-  const identify = bin === 'magick' ? ['magick', ['identify']] : ['identify', []];
-  const { stdout } = await run(
-    identify[0] as string,
-    [...(identify[1] as string[]), ...MAGICK_LIMITS, '-format', '%w %h', `jpeg:${input}`],
-    { timeout: 60_000 },
-  );
-  const [width = PREVIEW_EDGE, height = PREVIEW_EDGE] = stdout.trim().split(/\s+/).map(Number);
-  const words = magickText(text);
+  const [width = PREVIEW_EDGE, height = PREVIEW_EDGE] = (
+    await identify(['-format', '%w %h', `jpeg:${input}`])
+  )
+    .trim()
+    .split(/\s+/)
+    .map(Number);
   const clamp = (n: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, n)));
-  // Across the page on the slant, as wide as the page allows; three lines
-  // a little under a third of the page apart, so the outer two stay on it.
-  const slant = clamp((width * 0.9) / (0.87 * 0.55 * Math.max(words.length, 12)), 16, 80);
-  const foot = clamp(width / 48, 14, 40);
-  const band = Math.round(foot * 2.4);
-  const step = Math.round(height * 0.28);
-  const font = await sansFont();
-  await run(
-    bin,
-    [
-      ...MAGICK_LIMITS,
-      `jpeg:${input}`,
-      ...(font ? ['-font', font] : []),
-      '-gravity',
-      'center',
-      '-fill',
-      'rgba(170,40,40,0.24)',
-      '-pointsize',
-      String(slant),
-      '-annotate',
-      `330x330+0-${step}`,
-      words,
-      '-annotate',
-      '330x330+0+0',
-      words,
-      '-annotate',
-      `330x330+0+${step}`,
-      words,
-      '-background',
-      'white',
-      '-gravity',
-      'south',
-      '-splice',
-      `0x${band}`,
-      '-fill',
-      '#1f1f1f',
-      '-pointsize',
-      String(foot),
-      '-annotate',
-      `+0+${Math.round((band - foot) / 2)}`,
-      words,
-      '-quality',
-      String(PREVIEW_QUALITY),
-      '-strip',
-      `jpeg:${output}`,
-    ],
-    { timeout: 120_000 },
-  );
+  const markSize = clamp(width / 44, 14, 44);
+  const footSize = clamp(width / 48, 12, 40);
+  const band = Math.round(footSize * 2.4);
+  const pango = opts.pango ?? (await hasPango());
+  const dir = await mkdtemp(path.join(path.dirname(output), 'wm-'));
+  try {
+    // The words, as the coder in use reads them.
+    const textFile = path.join(dir, 'text.txt');
+    await writeFile(textFile, watermarkLine(text), 'utf8');
+    const font = pango ? null : await sansFont();
+    const words = (size: number, fill: string): string[] =>
+      pango
+        ? [
+            '-font',
+            'Noto Sans',
+            '-pointsize',
+            String(size),
+            '-fill',
+            fill,
+            '-define',
+            'pango:markup=false',
+            `pango:@${textFile}`,
+          ]
+        : [
+            ...(font ? ['-font', font] : []),
+            '-pointsize',
+            String(size),
+            '-fill',
+            fill,
+            `label:${magickText(text)}`,
+          ];
+
+    // One mark: the words with their halo, at half strength, turned to rise
+    // to the right, with a little room around it. Laid edge to edge, marks
+    // run on into slanted lines across the page; a second set, shifted half
+    // a mark along, lies between them, so no part of the page a few
+    // centimetres across is without one.
+    const mark = path.join(dir, 'mark.png');
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        '-background',
+        'none',
+        ...words(markSize, MARK_FILL),
+        '(',
+        '+clone',
+        '-background',
+        MARK_HALO,
+        '-shadow',
+        '100x1.3+0+0',
+        ')',
+        '+swap',
+        '-background',
+        'none',
+        '-layers',
+        'merge',
+        '+repage',
+        '-channel',
+        'A',
+        '-evaluate',
+        'multiply',
+        String(MARK_OPACITY),
+        '+channel',
+        '-rotate',
+        '-30',
+        '-bordercolor',
+        'none',
+        '-border',
+        `${Math.round(markSize * 0.5)}x${Math.round(markSize * 0.5)}`,
+        `png:${mark}`,
+      ],
+      { timeout: 60_000 },
+    );
+    const [markWidth = 0] = (await identify(['-format', '%w %h', `png:${mark}`]))
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    const tile = path.join(dir, 'tile.png');
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        `png:${mark}`,
+        '(',
+        '+clone',
+        '-roll',
+        `+${Math.round(markWidth / 2)}+0`,
+        ')',
+        '-background',
+        'none',
+        '-compose',
+        'over',
+        '-composite',
+        `png:${tile}`,
+      ],
+      { timeout: 60_000 },
+    );
+    // The line at the foot, never wider than the page.
+    const footLine = path.join(dir, 'foot.png');
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        '-background',
+        'white',
+        ...words(footSize, '#1f1f1f'),
+        '-resize',
+        `${Math.max(1, width - 2 * footSize)}x>`,
+        `png:${footLine}`,
+      ],
+      { timeout: 60_000 },
+    );
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        `jpeg:${input}`,
+        // A page of black and white is kept as grey, which would turn the
+        // mark grey too: in colour, always.
+        '-colorspace',
+        'sRGB',
+        '-type',
+        'TrueColor',
+        '(',
+        '-size',
+        `${width}x${height}`,
+        `tile:png:${tile}`,
+        ')',
+        '-compose',
+        'over',
+        '-composite',
+        '-background',
+        'white',
+        '-gravity',
+        'south',
+        '-splice',
+        `0x${band}`,
+        `png:${footLine}`,
+        '-gravity',
+        'south',
+        '-geometry',
+        `+0+${Math.round((band - footSize * 1.4) / 2)}`,
+        '-composite',
+        '-type',
+        'TrueColor',
+        '-quality',
+        String(PREVIEW_QUALITY),
+        '-strip',
+        `jpeg:${output}`,
+      ],
+      { timeout: 120_000 },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
   await access(output);
 }
 

@@ -195,9 +195,24 @@ export interface ShareQuickPick {
 /**
  * Tonight is 11 pm today, while there is time before it; Friday 5 pm is
  * this Friday's, or next week's once this one has gone by; In a week is
- * this time next week. All on the household's clock.
+ * this time next week. All on the household's clock, and only those within
+ * the vault's longest (`maxDays`, the capability document's
+ * `limits.share_max_days`).
  */
-export function shareQuickPicks(timezone: string, now = new Date()): ShareQuickPick[] {
+export function shareQuickPicks(
+  timezone: string,
+  now = new Date(),
+  maxDays = SHARE_MAX_DAYS,
+): ShareQuickPick[] {
+  return quickPicks(timezone, now).filter((p) => p.at.getTime() <= now.getTime() + maxDays * 864e5);
+}
+
+/** The longest end the vault takes, on the household's clock, to the minute below it. */
+export function latestShareEnd(timezone: string, now = new Date(), maxDays = SHARE_MAX_DAYS) {
+  return zonedParts(new Date(now.getTime() + maxDays * 864e5), timezone);
+}
+
+function quickPicks(timezone: string, now: Date): ShareQuickPick[] {
   const soonest = now.getTime() + SHARE_MIN_MINUTES * 60_000;
   const today = zonedParts(now, timezone);
   const picks: ShareQuickPick[] = [];

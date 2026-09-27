@@ -1008,14 +1008,18 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       await drawnAlready(doc, 2);
       const created = await made(doc, { permission: 'view', recipient_label: 'the mediator' });
       expect(created.share).toMatchObject({ permission: 'view', max_downloads: null });
-      // Asked of the worker as it was made, once for the link.
-      expect(jobsFor('share.pages', created.share.id)).toEqual([
-        {
+      // Asked of the worker as it was made, for the link and its version:
+      // asked as often as it may be, one key, so the queue draws it once.
+      const v1 = (await newestOf(doc)).id;
+      const asked = jobsFor('share.pages', created.share.id);
+      expect(asked.length).toBeGreaterThan(0);
+      for (const job of asked) {
+        expect(job).toEqual({
           name: 'share.pages',
-          data: { household_id: owner.household_id, share_id: created.share.id },
-          options: { singletonKey: `share-pages:${created.share.id}`, priority: 10 },
-        },
-      ]);
+          data: { household_id: owner.household_id, share_id: created.share.id, version_id: v1 },
+          options: { singletonKey: `share-pages:${created.share.id}:${v1}`, priority: 10 },
+        });
+      }
       await drawAsWorker(created.share.id, doc, 2);
 
       const shown = json<ShareLinkPreview>(await preview(created.link_token));
@@ -1166,7 +1170,8 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(sharePagesNote(created.share.pages)).toMatch(
         /The pages are still being drawn; the link works in a minute\./,
       );
-      expect(jobsFor('share.pages', created.share.id)).toHaveLength(1);
+      const asked = jobsFor('share.pages', created.share.id).length;
+      expect(asked).toBeGreaterThan(0);
 
       // Opened meanwhile: the page says so, and asks the worker again.
       const { res, cookie } = await opened(created.link_token);
@@ -1176,7 +1181,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(code(waiting)).toBe('preview_pending');
       expect(json<{ error: { retriable: boolean } }>(waiting).error.retriable).toBe(true);
       expect(waiting.headers['retry-after']).toBe('3');
-      expect(jobsFor('share.pages', created.share.id).length).toBeGreaterThan(1);
+      expect(jobsFor('share.pages', created.share.id).length).toBeGreaterThan(asked);
 
       // The worker draws them (its own and then the link's), and it works.
       await drawnAlready(fresh, 1);
@@ -1224,8 +1229,8 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       );
     });
 
-    it('an operator who shortens FDV_SHARE_MAX_DAYS is held to it', async () => {
-      const short = await createHarness({ shareMaxDays: 14 });
+    it("under a limit shorter than a week, the default and an older client's days are cut to it, and the limit is said (5.18 review)", async () => {
+      const short = await createHarness({ shareMaxDays: 3 });
       try {
         const who = await short.setup();
         const res = await short.app.inject({
@@ -1250,15 +1255,25 @@ describe.skipIf(!testAdminUrl())('share links', () => {
             headers: short.as(who),
             payload,
           });
-        for (const payload of [
-          { expires_in_days: 15 },
-          { expires_at: new Date(Date.now() + 15 * 864e5).toISOString() },
-        ]) {
-          const refused = await ask(payload);
-          expect(refused.statusCode, JSON.stringify(payload)).toBe(422);
-          expect(refused.body).toMatch(/14 days at most/);
+        // Said in the capability document, for a client to offer only what
+        // the vault takes.
+        const caps = await short.app.inject({ url: '/api/v1/capabilities' });
+        expect(caps.json<{ limits: { share_max_days: number } }>().limits.share_max_days).toBe(3);
+        // Nothing said (the API's default, a week) and an older client's
+        // seven days both make a link, to the longest the vault allows.
+        for (const payload of [{}, { recipient_label: 'the agent' }, { expires_in_days: 7 }]) {
+          const before = Date.now();
+          const res = await ask(payload);
+          expect(res.statusCode, JSON.stringify(payload)).toBe(201);
+          const end = Date.parse(res.json<CreatedShare>().share.expires_at);
+          expect(end, JSON.stringify(payload)).toBeGreaterThanOrEqual(before + 3 * 864e5);
+          expect(end, JSON.stringify(payload)).toBeLessThanOrEqual(Date.now() + 3 * 864e5);
         }
-        expect((await ask({ expires_in_days: 14 })).statusCode).toBe(201);
+        // A client that says a date and time knows the limit: past it is refused.
+        const refused = await ask({ expires_at: new Date(Date.now() + 4 * 864e5).toISOString() });
+        expect(refused.statusCode).toBe(422);
+        expect(code(refused)).toBe('expiry_out_of_range');
+        expect(refused.body).toMatch(/3 days at most/);
       } finally {
         await short.close();
       }
@@ -1302,6 +1317,101 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(code(muddled)).toBe('validation_failed');
     });
 
+    it('a newer version is drawn again for a page that only asks what is open (5.18 review)', async () => {
+      const doc = await make('Lease, unsigned', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view', recipient_label: 'the tenant' });
+      await drawAsWorker(created.share.id, doc, 1);
+      const { cookie } = await opened(created.link_token);
+      const v1 = (await newestOf(doc)).id;
+
+      // The signed copy is added, and its own pages drawn.
+      const form = new FormData();
+      form.append('file', PDF, { filename: 'signed.pdf', contentType: 'application/pdf' });
+      const added = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${doc}/versions`,
+        headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+        payload: form.getBuffer(),
+      });
+      expect(added.statusCode, added.body).toBe(201);
+      await drawnAlready(doc, 1);
+      const v2 = (await newestOf(doc)).id;
+      expect(v2).not.toBe(v1);
+
+      // The recipient's page asks only what is open, as it does while it
+      // waits: that alone asks the worker for the new version's pages.
+      const forV2 = () =>
+        jobsFor('share.pages', created.share.id).filter((j) => j.data.version_id === v2);
+      expect(forV2()).toEqual([]);
+      const polled = json<SharedSession>(await items(cookie));
+      expect(polled.items[0]?.pages?.state).toBe('drawing');
+      expect(forV2()).toEqual([
+        {
+          name: 'share.pages',
+          data: { household_id: owner.household_id, share_id: created.share.id, version_id: v2 },
+          options: { singletonKey: `share-pages:${created.share.id}:${v2}`, priority: 10 },
+        },
+      ]);
+      // And so do the page before Open, and the family's own list.
+      await preview(created.link_token);
+      await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) });
+      expect(forV2()).toHaveLength(3);
+      // Drawn, the page shows them.
+      await drawAsWorker(created.share.id, doc, 1);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('ready');
+    });
+
+    it('pages the worker could not draw are said to both ends, and not asked for again (5.18 review)', async () => {
+      const doc = await make('Scanned badly', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view' });
+      const { cookie } = await opened(created.link_token);
+      // The worker's last try failed, for this version.
+      await withSystem(h.db, owner.household_id, async (trx) =>
+        trx
+          .updateTable('share_link')
+          .set({ pages_failed_version: (await newestOf(doc)).id })
+          .where('id', '=', created.share.id)
+          .execute(),
+      );
+      const before = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id);
+      expect(listed?.pages?.state).toBe('failed');
+      expect(sharePagesNote(listed?.pages)).toMatch(/could not draw the pages/);
+      expect(code(await page(cookie, doc, 1))).toBe('no_preview');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+      // A link cannot clear it for itself.
+      await expect(
+        withScopeOfLink(created.share.id, (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ pages_failed_version: null })
+            .where('id', '=', created.share.id)
+            .execute(),
+        ),
+      ).rejects.toThrow(/only count its opens|row-level security/);
+    });
+
+    it('a document this page has downloaded stays downloadable here once downloads are used up (5.18 review)', async () => {
+      const created = await made(lease, { max_downloads: 1 });
+      const { res, cookie } = await opened(created.link_token);
+      expect(json<SharedSession>(res).items[0]?.downloaded).toBe(false);
+      expect((await content(cookie, lease)).statusCode).toBe(200);
+      // Reloaded: none left for anybody, and this page may have it again.
+      const after = json<SharedSession>(await items(cookie));
+      expect(after.downloads_left).toBe(0);
+      expect(after.items[0]?.downloaded).toBe(true);
+      expect((await content(cookie, lease)).statusCode).toBe(200);
+      // Another page opened with it has had nothing, and is refused.
+      const other = await opened(created.link_token);
+      expect(json<SharedSession>(other.res).items[0]?.downloaded).toBe(false);
+      expect(code(await content(other.cookie, lease))).toBe('downloads_used_up');
+    });
+
     it('turned back on after a restore, a view-only link has its pages drawn again', async () => {
       const doc = await make('Restored lease', 'household');
       await drawnAlready(doc, 1);
@@ -1312,6 +1422,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(jobsFor('share.pages', created.share.id).at(-1)?.data).toEqual({
         household_id: owner.household_id,
         share_id: created.share.id,
+        version_id: (await newestOf(doc)).id,
         redraw: true,
       });
       // A page whose file is gone since is drawn again rather than broken.

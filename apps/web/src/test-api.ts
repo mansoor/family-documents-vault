@@ -73,6 +73,12 @@ export interface FakeState {
   };
   /** The newest version's kind of file, as GET /documents/{id}/versions says: a PDF when left out. */
   versionMime?: string;
+  /** limits.share_max_days in the capability document (5.18 review); left out, not said. */
+  shareMaxDays?: number;
+  /** Whether this session has downloaded the shared document already (SharedItem.downloaded). */
+  shareDownloaded?: boolean;
+  /** How many times /api/v1/shared/items was asked. */
+  shareItemsAsked?: number;
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
@@ -461,8 +467,9 @@ export function installFakeApi(state: FakeState) {
           custom_types: true,
           ...(state.collections ? { collections: true } : {}),
           reminder_dates: state.reminderDates ?? true,
+          share_options: true,
         },
-        limits: {},
+        limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
         branding: { display_name: state.displayName },
       });
@@ -813,6 +820,10 @@ export function installFakeApi(state: FakeState) {
       if (end.getTime() < Date.now() + 5 * 60_000) {
         return refuse(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
       }
+      const maxDays = state.shareMaxDays ?? 90;
+      if (end.getTime() > Date.now() + maxDays * 864e5) {
+        return refuse(422, 'expiry_out_of_range', `A link can last ${maxDays} days at most.`);
+      }
       if (b.permission === 'view' && state.versionMime && state.versionMime !== 'application/pdf') {
         return refuse(
           422,
@@ -902,6 +913,7 @@ export function installFakeApi(state: FakeState) {
           content_type: 'application/pdf',
           byte_size: 1024,
           pages: view ? (state.sharePages ?? { state: 'ready', shown: 2, total: 2 }) : null,
+          downloaded: Boolean(state.shareDownloaded),
         },
       ],
       permission: state.sharePermission ?? 'download',
@@ -943,6 +955,7 @@ export function installFakeApi(state: FakeState) {
       return json(linkSession());
     }
     if (path === '/api/v1/shared/items' && method === 'GET') {
+      state.shareItemsAsked = (state.shareItemsAsked ?? 0) + 1;
       if (!state.shareSession) {
         return refuse(
           401,

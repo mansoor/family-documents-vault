@@ -629,7 +629,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           // A link's options (5.18): an end at a time, to view, so many opens.
           share_options: true,
         },
-        limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
+        limits: {
+          max_upload_bytes: 104_857_600,
+          max_members: null,
+          max_storage_bytes: null,
+          share_max_days: 90,
+        },
         deprecations: [],
         branding: { display_name: 'A fake family' },
         instance_id: FAKE_INSTANCE_ID,

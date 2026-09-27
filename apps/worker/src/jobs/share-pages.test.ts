@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -12,13 +12,87 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { previewKey } from './previews.js';
-import { decryptToBuffer } from './process-version.js';
+import { previewKey, renderVersionPreviews } from './previews.js';
+import { decryptToBuffer, processVersion } from './process-version.js';
 import { drawSharePages, pruneSharePages, sharePageKey, watermarkText } from './share-pages.js';
-import { detectTools, magickText } from './tools.js';
+import { detectTools, hasPango, magickText, watermarkLine, watermarkPage } from './tools.js';
 
 const run = promisify(execFile);
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
+
+const magickBin = async () =>
+  run('magick', ['-version'])
+    .then(() => 'magick')
+    .catch(() => 'convert');
+
+/**
+ * How much of a region of the page the mark changed, 0 to 1: the page as
+ * the vault drew it against the page as the link shows it, the band at the
+ * foot cut off — so only what lies across the page itself counts.
+ */
+async function markedShare(
+  own: string,
+  shown: string,
+  region: { x: number; y: number; w: number; h: number },
+): Promise<number> {
+  const { stdout } = await run(await magickBin(), [
+    own,
+    shown,
+    '-compose',
+    'difference',
+    '-composite',
+    '-crop',
+    `${region.w}x${region.h}+${region.x}+${region.y}`,
+    '+repage',
+    '-colorspace',
+    'gray',
+    '-threshold',
+    '10%',
+    '-format',
+    '%[fx:mean]',
+    'info:',
+  ]);
+  return Number(stdout.trim());
+}
+
+/** The four corners of a page: a third of its width, a fifth of its height. */
+const corners = (width: number, height: number) => {
+  const w = Math.floor(width / 3);
+  const h = Math.floor(height / 5);
+  return {
+    'top left': { x: 0, y: 0, w, h },
+    'top right': { x: width - w, y: 0, w, h },
+    'bottom left': { x: 0, y: height - h, w, h },
+    'bottom right': { x: width - w, y: height - h, w, h },
+  };
+};
+
+/** How much of an image's foot band is ink (anything not near white), 0 to 1. */
+async function footInk(file: string, band: number): Promise<number> {
+  const { stdout } = await run(await magickBin(), [
+    file,
+    '-gravity',
+    'south',
+    '-crop',
+    `0x${band}+0+0`,
+    '+repage',
+    '-colorspace',
+    'gray',
+    '-threshold',
+    '85%',
+    '-negate',
+    '-format',
+    '%[fx:mean]',
+    'info:',
+  ]);
+  return Number(stdout.trim());
+}
+
+/** Whether fontconfig has a font for a language: what drawing a label in it needs. */
+const fontFor = (lang: string) =>
+  run('fc-list', [`:lang=${lang}`, 'family'])
+    .then(({ stdout }) => stdout.trim().length > 0)
+    .catch(() => false);
 
 /** A PDF of `pages` US-letter pages, each saying which it is, built by hand. */
 function pagesPdf(pages: number): Buffer {
@@ -63,6 +137,18 @@ function jpegSize(b: Buffer): { width: number; height: number } {
 
 const tools = await detectTools();
 const drawing = Boolean(testAdminUrl()) && tools.pdftoppm && tools.magick;
+/**
+ * Every script a label is drawn in (5.18 review): with pango, and the
+ * worker image's fonts for Chinese, Japanese and Korean, Devanagari,
+ * Arabic and emoji. Elsewhere those tests are skipped: a machine without
+ * the fonts draws what it can.
+ */
+const everyScript =
+  tools.magick &&
+  (await hasPango()) &&
+  (await fontFor('zh')) &&
+  (await fontFor('hi')) &&
+  (await fontFor('ar'));
 
 /**
  * A view-only link's pages (5.18, A22): the vault's drawn pages, drawn
@@ -219,15 +305,21 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
     // Half past midnight in London: the household's day, not the server's.
     expect(
       watermarkText({ recipient_label: 'the letting agent', created_at: made }, 'Europe/London'),
-    ).toBe('Shared with the letting agent · 28 September 2026');
+    ).toBe('Shared with ⁨the letting agent⁩ · 28 September 2026');
     expect(watermarkText({ recipient_label: null, created_at: made }, 'UTC')).toBe(
       'Shared by link · 27 September 2026',
     );
+    // A label is set apart, so a name in Arabic keeps the date after it; and
+    // what it carries of its own to turn the line about is taken out.
+    expect(watermarkText({ recipient_label: 'أحمد ‮⁩علي', created_at: made }, 'UTC')).toBe(
+      'Shared with ⁨أحمد علي⁩ · 27 September 2026',
+    );
+    expect(watermarkLine('a⁨b⁩ ‮c\u0007\nd')).toBe('a⁨b⁩ c d');
     expect(magickText('100% %[fx:1] \\n and\u0007 more\nlines')).toBe(
       '100%% %%[fx:1] \\\\n and more lines',
     );
     expect(magickText('@/etc/passwd')).toBe(' @/etc/passwd');
-    expect(magickText('x'.repeat(500))).toHaveLength(120);
+    expect(magickText('x'.repeat(500))).toHaveLength(160);
   });
 
   it.skipIf(!drawing)(
@@ -256,14 +348,49 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
           expect(b.width, `page ${r.n}`).toBe(a.width);
           expect(b.height, `page ${r.n}`).toBeGreaterThan(a.height);
           expect(marked.includes(Buffer.from('Exif'))).toBe(false);
-          // And it says whom it is for, where a reader — or a machine — can see.
+          // The page itself, the band at its foot cut off: what a crop to the
+          // page's own edges keeps (5.18 review). The mark is across all of
+          // it, corners included ...
+          const ownFile = path.join(scratch, `own${r.n}.jpg`);
+          const pageFile = path.join(scratch, `page${r.n}.png`);
+          await writeFile(ownFile, own);
+          await writeFile(path.join(scratch, `marked${r.n}.jpg`), marked);
+          await run(await magickBin(), [
+            `jpeg:${path.join(scratch, `marked${r.n}.jpg`)}`,
+            '-crop',
+            `${a.width}x${a.height}+0+0`,
+            '+repage',
+            `png:${pageFile}`,
+          ]);
+          for (const [where, region] of Object.entries(corners(a.width, a.height))) {
+            expect(
+              await markedShare(`jpeg:${ownFile}`, `png:${pageFile}`, region),
+              `page ${r.n}, ${where}`,
+            ).toBeGreaterThan(0.002);
+          }
+          // ... and says whom it is for, where a reader — or a machine — can
+          // see: read level (the mark rises at 30 degrees), in its own colour.
           if (tools.tesseract) {
-            const file = path.join(scratch, `p${r.n}.jpg`);
-            await writeFile(file, marked);
-            const { stdout } = await run('tesseract', [file, '-', '--psm', '3'], {
+            const level = path.join(scratch, `level${r.n}.png`);
+            await run(await magickBin(), [
+              `png:${pageFile}`,
+              '-rotate',
+              '30',
+              '-colorspace',
+              'HSL',
+              '-channel',
+              'G',
+              '-separate',
+              '+channel',
+              '-threshold',
+              '45%',
+              '-negate',
+              `png:${level}`,
+            ]);
+            const { stdout } = await run('tesseract', [level, '-', '--psm', '6'], {
               timeout: 120_000,
             });
-            expect(stdout, `page ${r.n}`).toMatch(/letting\s+agent/i);
+            expect(stdout, `page ${r.n}`).toMatch(/letting\W{0,3}agent/i);
             expect(stdout, `page ${r.n}`).toMatch(/2026/);
           }
         }
@@ -291,6 +418,199 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
       });
     },
     180_000,
+  );
+
+  it.skipIf(!drawing)(
+    'the mark is seen across a dark photo too, in every corner (5.18 review)',
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-dark-'));
+      try {
+        // A dark, landscape photo: navy, the colour the old mark vanished on.
+        const src = path.join(scratch, 'dark.jpg');
+        await run(bin, ['-size', '2000x1200', 'xc:#1a2340', `jpeg:${src}`]);
+        const v = await store(await readFile(src), 'image/jpeg');
+        const id = await link(v.documentId, { label: 'the letting agent' });
+        expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({
+          drawn: 1,
+        });
+        const own = await decryptToBuffer(adapter(), previewKey(v.storageKey, 1), v.fileKey);
+        const [row] = await pagesOf(id);
+        const marked = await decryptToBuffer(adapter(), row?.storage_key ?? '', v.fileKey);
+        const a = jpegSize(own);
+        await writeFile(path.join(scratch, 'own.jpg'), own);
+        await writeFile(path.join(scratch, 'marked.jpg'), marked);
+        await run(bin, [
+          `jpeg:${path.join(scratch, 'marked.jpg')}`,
+          '-crop',
+          `${a.width}x${a.height}+0+0`,
+          '+repage',
+          `png:${path.join(scratch, 'page.png')}`,
+        ]);
+        for (const [where, region] of Object.entries(corners(a.width, a.height))) {
+          expect(
+            await markedShare(
+              `jpeg:${path.join(scratch, 'own.jpg')}`,
+              `png:${path.join(scratch, 'page.png')}`,
+              region,
+            ),
+            where,
+          ).toBeGreaterThan(0.002);
+        }
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!everyScript)(
+    'a label in Chinese, Korean, Devanagari, Arabic or with emoji is drawn, not left out (5.18 review)',
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-scripts-'));
+      try {
+        const page = path.join(scratch, 'page.jpg');
+        await run(bin, ['-size', '1236x1600', 'xc:white', `jpeg:${page}`]);
+        const made = new Date('2026-09-27T10:00:00Z');
+        /** How much ink the foot line has, with this label. */
+        const inkWith = async (label: string | null, name: string) => {
+          const out = path.join(scratch, `${name}.jpg`);
+          await watermarkPage(
+            page,
+            out,
+            watermarkText({ recipient_label: label, created_at: made }, 'UTC'),
+          );
+          const { height } = jpegSize(await readFile(out));
+          return footInk(out, height - 1600);
+        };
+        // The foot line with a one-letter label, beside it with the name:
+        // a name drawn is more ink; a name left out as blanks is not.
+        const bare = await inkWith('x', 'bare');
+        for (const [name, label] of [
+          ['chinese', '王小明 王小明 王小明'],
+          ['korean', '김민수 김민수 김민수'],
+          ['devanagari', 'राम शर्मा राम शर्मा'],
+          ['arabic', 'أحمد علي أحمد علي'],
+          ['emoji', 'x 🏠 🔑 🏠 🔑 🏠'],
+        ] as const) {
+          expect(await inkWith(label, name), name).toBeGreaterThan(bare * 1.25);
+        }
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
+    "a scanner's TIFF is shared page by page, and counted, up to 30 (5.18 review)",
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-tiff-'));
+      try {
+        const three = path.join(scratch, 'three.tif');
+        await run(bin, ['-size', '600x800', 'xc:white', 'xc:gray90', 'xc:gray80', `tiff:${three}`]);
+        const v = await store(await readFile(three), 'image/tiff');
+        await processVersion(deps(), { household_id: hh, version_id: v.versionId });
+        const id = await link(v.documentId);
+        expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({
+          drawn: 3,
+        });
+        const counted = await admin.query<{ page_count: number; preview_pages: number }>(
+          'select page_count, preview_pages from document_version where id = $1',
+          [v.versionId],
+        );
+        expect(counted.rows[0]).toEqual({ page_count: 3, preview_pages: 3 });
+
+        // Thirty-five frames: thirty drawn, and thirty-five counted, so
+        // both ends are told "the first 30 of 35".
+        const many = path.join(scratch, 'many.tif');
+        await run(bin, ['-size', '200x260', 'xc:white', '-duplicate', '34', `tiff:${many}`]);
+        const w = await store(await readFile(many), 'image/tiff');
+        await processVersion(deps(), { household_id: hh, version_id: w.versionId });
+        await renderVersionPreviews(deps(), { household_id: hh, version_id: w.versionId });
+        const cut = await admin.query<{ page_count: number; preview_pages: number }>(
+          'select page_count, preview_pages from document_version where id = $1',
+          [w.versionId],
+        );
+        expect(cut.rows[0]).toEqual({ page_count: 35, preview_pages: 30 });
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+    180_000,
+  );
+
+  it.skipIf(!drawing)(
+    'a drawing that fails part-way leaves nothing behind, and its last try says so (5.18 review)',
+    async () => {
+      const v = await store(pagesPdf(3), 'application/pdf');
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: v.versionId });
+      // The vault's own page 2 is gone: the drawing stops there.
+      await adapter().delete(previewKey(v.storageKey, 2));
+      const id = await link(v.documentId);
+      const job = { household_id: hh, share_id: id };
+      await expect(drawSharePages(deps(), job, { final: false })).rejects.toThrow();
+      // Page 1 was written before it stopped, and is not left behind: no row
+      // names it, so nothing else would ever remove it.
+      expect(await exists(sharePageKey(v.storageKey, id, 1))).toBe(false);
+      expect(await pagesOf(id)).toEqual([]);
+      const failed = async () =>
+        (
+          await admin.query<{ pages_failed_version: string | null }>(
+            'select pages_failed_version from share_link where id = $1',
+            [id],
+          )
+        ).rows[0]?.pages_failed_version;
+      // Not the last try: the queue will try again.
+      expect(await failed()).toBeNull();
+      await expect(drawSharePages(deps(), job, { final: true })).rejects.toThrow();
+      expect(await exists(sharePageKey(v.storageKey, id, 1))).toBe(false);
+      // The last: said on the link, for this version, rather than "being
+      // drawn" for ever.
+      expect(await failed()).toBe(v.versionId);
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
+    'a link taken back while its pages are drawn keeps none of them (5.18 review)',
+    async () => {
+      const v = await store(pagesPdf(2), 'application/pdf');
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: v.versionId });
+      const id = await link(v.documentId);
+      // Taken back as the drawing runs: the revoke holds the link's row
+      // until it is done, so the drawing starts on the link as it was ...
+      const revoker = new pg.Client({ connectionString: tdb.adminUrl });
+      await revoker.connect();
+      try {
+        await revoker.query('begin');
+        await revoker.query(
+          'update share_link set revoked_at = now(), revoked_by = created_by where id = $1',
+          [id],
+        );
+        const underway = drawSharePages(deps(), { household_id: hh, share_id: id });
+        // ... and, its pages written, waits to keep them until the revoke is in.
+        for (let i = 0; i < 300; i += 1) {
+          const waiting = await admin.query<{ n: number }>(
+            `select count(*)::int as n from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock'`,
+          );
+          if ((waiting.rows[0]?.n ?? 0) > 0) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        await revoker.query('commit');
+        expect(await underway).toEqual({ drawn: 0 });
+      } finally {
+        await revoker.end();
+      }
+      expect(await pagesOf(id)).toEqual([]);
+      for (const n of [1, 2]) {
+        expect(await exists(sharePageKey(v.storageKey, id, n)), `page ${n}`).toBe(false);
+      }
+    },
+    120_000,
   );
 
   it('a link to download, or one that has ended, has nothing drawn', async () => {

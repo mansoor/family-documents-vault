@@ -1564,9 +1564,13 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       for a file the vault cannot draw (Word, Excel: "Word and Excel files
       can only be shared to download…"); `422 validation_failed` for both
       `expires_at` and `expires_in_days`, or `max_downloads` on a link to
-      view. **Kept:** `expires_in_days` (1 to 90, and never past
-      `FDV_SHARE_MAX_DAYS`) for older clients; with neither, a week, as
-      before.
+      view. **Kept:** `expires_in_days` (1 to 90) for older clients; with
+      neither, a week, as before. Neither of those is refused for being
+      past `FDV_SHARE_MAX_DAYS`, which an older client cannot know: they
+      are cut to it, and the answer's `expires_at` says when the link ends.
+    - **Added:** `limits.share_max_days` in the capability document: the
+      longest a link may last (`FDV_SHARE_MAX_DAYS`). A client offers only
+      ends within it. Absent from older vaults, which take 90.
     - **Added:** `Share` gains `permission`, `max_opens`, `max_downloads`,
       `downloads_used` and `pages` (`{ state: 'drawing' | 'ready' |
 'failed', shown, total }` for a link to view, else null), and `state`
@@ -1576,12 +1580,23 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       at 17:00.", the time on the household's clock.
     - **Added:** `ShareLinkPreview` gains `permission` and `opens_left`
       (null for no limit); `SharedSession` gains `permission` and
-      `downloads_left`; `SharedItem` gains `pages`. All absent from older
-      vaults, where every link downloads and has no limits.
+      `downloads_left`; `SharedItem` gains `pages` and `downloaded` (this
+      session has had the file, and may again, free, once the link's
+      downloads are used up). All absent from older vaults, where every
+      link downloads and has no limits.
+    - A view-only link's pages still to be drawn are asked of the worker
+      whenever the link is looked at — the preview, Open, `GET
+/shared/items`, a page, and the family's `GET /shares` — once for each
+      link and version however often it is asked, so a newer version, a
+      lost job or a worker that started after the API never leaves a link
+      "being drawn" for ever. Pages the worker could not draw, on its last
+      try, are `pages.state: "failed"` for that version (a newer version,
+      or an owner turning the link back on, tries again).
     - **Added:** `GET /api/v1/shared/items/{document_id}/pages/{n}` (the
       cookie) → a JPEG: page `n` of a view-only link's document, drawn by
       the worker from the vault's page previews with the link's
-      recipient label and the day it was made written across it. The
+      recipient label and the day it was made written across the whole
+      page in a slanted grid, and once more below it, in any script. The
       first 30 pages; past them `404 no_preview` ("Pages after 30 were not
       shared."); not drawn yet `404 preview_pending` (retriable,
       `Retry-After: 3`), and the worker is asked to draw them. On a link
@@ -1619,8 +1634,11 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       `shareEndWords`, `shareEndProblem`; `CapabilityFeatures.share_options`.
       `@fdv/client`: `share` takes a `ShareInput`; `linkItemPageUrl`. The
       fake says `share_options: true`.
+    - A multi-page TIFF (a document scanner's) is a page a frame: its
+      `page_count` counts them, and its previews, and so a view-only link,
+      draw up to 30.
     - The database: 0041 adds `share_link.permission`, `max_opens`,
-      `max_downloads` and `downloads_used`, each 5.18 option checked to a
+      `max_downloads`, `downloads_used` and `pages_failed_version`, each 5.18 option checked to a
       v2 link (`flow = 'v2' or …`), the counts held within their limits,
       and a link's own writes to the counts alone; `share_session_use`
       (what each session has had) and `share_page` (a view-only link's

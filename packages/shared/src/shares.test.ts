@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canShareToView,
+  latestShareEnd,
   pagesNotSharedNote,
   shareEndProblem,
   shareEndWords,
@@ -59,6 +60,21 @@ describe("a link's options", () => {
     // Five to eleven at night: too late for Tonight.
     const late = new Date('2026-09-27T21:57:00Z');
     expect(shareQuickPicks('Europe/London', late).map((p) => p.key)).toEqual(['friday', 'week']);
+  });
+
+  it("offers only the picks within the vault's longest, and says what that is (5.18 review)", () => {
+    const sunday = new Date('2026-09-27T09:00:00Z');
+    expect(shareQuickPicks('Europe/London', sunday, 3).map((p) => p.key)).toEqual(['tonight']);
+    expect(shareQuickPicks('Europe/London', sunday, 7).map((p) => p.key)).toEqual([
+      'tonight',
+      'friday',
+      'week',
+    ]);
+    // The longest end, to the minute below it: always one the vault takes.
+    const latest = latestShareEnd('Europe/London', sunday, 3);
+    expect(latest).toEqual({ date: '2026-09-30', time: '10:00', weekday: 3 });
+    const at = zonedTime(latest.date, latest.time, 'Europe/London') as Date;
+    expect(shareEndProblem(at, { now: sunday, maxDays: 3 })).toBeNull();
   });
 
   it('refuses an end in the past, under 5 minutes, or past the longest', () => {

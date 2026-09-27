@@ -1,8 +1,10 @@
 import {
   can,
   canShareToView,
+  latestShareEnd,
   PREVIEW_MAX_PAGES,
   SHARE_LIMIT_MAX,
+  SHARE_MAX_DAYS,
   shareEndProblem,
   shareEndWords,
   sharePagesNote,
@@ -45,7 +47,7 @@ export function SharePanel(props: {
    */
   onBusy?: (busy: boolean) => void;
 }) {
-  const { guarded, authVersion } = useApp();
+  const { guarded, authVersion, caps } = useApp();
   const [made, setMade] = useState<CreatedShare | null>(null);
   const [label, setLabel] = useState('');
   /** The end as chosen, on the family's clock; null is the default, In a week. */
@@ -82,17 +84,25 @@ export function SharePanel(props: {
   const listed = (data?.shares ?? []).filter((s) => s.state === 'active' || s.state === 'used_up');
   const timezone = data?.timezone ?? 'UTC';
   const now = new Date();
-  const picks = shareQuickPicks(timezone, now);
+  // The longest the vault takes (FDV_SHARE_MAX_DAYS, 90 unless its operator
+  // shortened it): only picks within it are offered, and the default is a
+  // week or, when that is too long, the longest it allows.
+  const maxDays = caps?.limits.share_max_days ?? SHARE_MAX_DAYS;
+  const picks = shareQuickPicks(timezone, now, maxDays);
   const week = picks.find((p) => p.key === 'week');
-  const chosen = end ?? (week ? zonedParts(week.at, timezone) : zonedParts(now, timezone));
+  const chosen =
+    end ?? (week ? zonedParts(week.at, timezone) : latestShareEnd(timezone, now, maxDays));
   const endAt = zonedTime(chosen.date, chosen.time, timezone);
-  const endProblem = endAt ? shareEndProblem(endAt, { now }) : 'Choose a date and a time.';
+  const endProblem = endAt ? shareEndProblem(endAt, { now, maxDays }) : 'Choose a date and a time.';
   const viewable = !data?.newest || canShareToView(data.newest.mime);
   const long =
     data?.newest?.page_count && data.newest.page_count > PREVIEW_MAX_PAGES
       ? data.newest.page_count
       : null;
-  const opensCount = opens.trim() === '' ? null : Number(opens);
+  // Read as typed (a text field): a number field reads "5e" as nothing at
+  // all, and a limit typed wrong would have become no limit (5.18 review).
+  const opensTyped = opens.trim();
+  const opensCount = opensTyped === '' ? null : /^\d+$/.test(opensTyped) ? Number(opensTyped) : NaN;
   const opensProblem =
     opensCount !== null &&
     (!Number.isInteger(opensCount) || opensCount < 1 || opensCount > SHARE_LIMIT_MAX)
@@ -167,14 +177,31 @@ export function SharePanel(props: {
 
       {listed.length > 0 && (
         <ul className="list">
-          {listed.map((s) => (
-            <li key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
-              <span className="muted">{s.summary}</span>
-              <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
-                Take it back
-              </Button>
-            </li>
-          ))}
+          {listed.map((s) => {
+            // A view-only link's pages, when there is something to say
+            // about them: still being drawn, cut at 30, or not drawable at
+            // all — told here as well as when the link was made.
+            const pagesNote = sharePagesNote(s.pages);
+            return (
+              <li key={s.id} className="row" style={{ justifyContent: 'space-between' }}>
+                <span className="stack" style={{ gap: 4 }}>
+                  <span className="muted">{s.summary}</span>
+                  {pagesNote && (
+                    <span
+                      className={
+                        s.pages?.state === 'failed' ? 'status status-danger' : 'status status-warn'
+                      }
+                    >
+                      {pagesNote}
+                    </span>
+                  )}
+                </span>
+                <Button kind="quiet" disabled={busy !== null} onClick={() => void revoke(s)}>
+                  Take it back
+                </Button>
+              </li>
+            );
+          })}
         </ul>
       )}
 
@@ -217,6 +244,7 @@ export function SharePanel(props: {
                   type="date"
                   value={chosen.date}
                   min={zonedParts(now, timezone).date}
+                  max={latestShareEnd(timezone, now, maxDays).date}
                   onChange={(e) => setEnd({ date: e.target.value, time: chosen.time })}
                   aria-describedby="share-until-note"
                 />
@@ -270,7 +298,7 @@ export function SharePanel(props: {
               {!viewable
                 ? 'Word and Excel files can only be shared with download: the vault cannot draw their pages.'
                 : permission === 'view'
-                  ? 'They see its pages, with who it is for written across each, and cannot save the file. Nothing can stop a screenshot.'
+                  ? 'They see its pages, with who it is for written across each, and cannot save the file. They can keep pictures of the pages, each marked; nothing can stop a screenshot.'
                   : 'They can save the file itself.'}
             </span>
             {viewable && permission === 'view' && long !== null && (
@@ -285,10 +313,10 @@ export function SharePanel(props: {
             <div className="row" style={{ gap: 8, alignItems: 'center' }}>
               <input
                 id="share-opens"
-                type="number"
+                type="text"
                 inputMode="numeric"
-                min={1}
-                max={SHARE_LIMIT_MAX}
+                autoComplete="off"
+                maxLength={6}
                 value={opens}
                 onChange={(e) => setOpens(e.target.value)}
                 aria-describedby="share-opens-hint"

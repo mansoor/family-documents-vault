@@ -33,14 +33,20 @@ alter table share_link
   add column max_downloads int
     constraint share_link_max_downloads check (max_downloads between 1 and 1000),
   add column downloads_used int not null default 0
-    constraint share_link_downloads_used check (downloads_used >= 0);
+    constraint share_link_downloads_used check (downloads_used >= 0),
+  -- A view-only link whose pages the worker could not draw, for this version
+  -- of its document (the queue's last try failed): said to both ends rather
+  -- than "being drawn" for ever. A newer version, or an owner turning the
+  -- link back on, tries again; drawing them clears it.
+  add column pages_failed_version uuid references document_version(id) on delete set null;
 
 alter table share_link
   add constraint share_link_permission_v2 check (flow = 'v2' or permission = 'download'),
   add constraint share_link_max_opens_v2 check (flow = 'v2' or max_opens is null),
   add constraint share_link_max_downloads_v2 check (flow = 'v2' or max_downloads is null),
-  -- A link to view has nothing to download.
+  -- A link to view has nothing to download, and only it has pages.
   add constraint share_link_view_downloads check (permission = 'download' or max_downloads is null),
+  add constraint share_link_pages_view_only check (permission = 'view' or pages_failed_version is null),
   -- And a limit holds, however many ask at once: the counts are each moved
   -- by one guarded statement (shares.ts), and this is the floor under it.
   add constraint share_link_opens_within check (max_opens is null or open_count <= max_opens),

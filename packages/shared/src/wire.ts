@@ -260,9 +260,10 @@ export interface Share {
 
 /**
  * `POST /documents/{id}/share`. `expires_at` (5.18) is the end: at least 5
- * minutes ahead and at most FDV_SHARE_MAX_DAYS (90) days. Send it, and the
- * rest of 5.18's options, only to a vault with `features.share_options`;
- * `expires_in_days` is what older vaults take. Neither: seven days.
+ * minutes ahead and at most `limits.share_max_days` (FDV_SHARE_MAX_DAYS, 90)
+ * days. Send it, and the rest of 5.18's options, only to a vault with
+ * `features.share_options`; `expires_in_days` is what older vaults take.
+ * Neither: seven days. Days past the vault's longest are cut to it.
  */
 export interface ShareInput {
   expires_at?: string;
@@ -326,6 +327,11 @@ export interface SharedItem {
    * download.
    */
   pages?: SharePages | null;
+  /**
+   * This session has downloaded it already (5.18): downloading it again
+   * here is free, even once the link's downloads are used up.
+   */
+  downloaded?: boolean;
 }
 
 /**
