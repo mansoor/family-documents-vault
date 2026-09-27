@@ -1,11 +1,14 @@
-import { randomUUID } from 'node:crypto';
-import { createDb, createPool, regenerateDerived, withSystem, type Db } from '@fdv/db';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { EnvKeyProvider, ScopeKeys, sealPrivate } from '@fdv/crypto';
+import { createDb, createPool, regenerateDerived, typeEtag, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { addDays, localToday } from '@fdv/shared';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { deliver, refreshStatus, tick, type Digest, type Notifier } from './reminders.js';
 import { regenerateTypeReminders } from './types.js';
+
+const MASTER = 'reminders-test-master-secret-at-least-32-bytes';
 
 /**
  * The reminder clockwork against real tables, with a fake clock.
@@ -72,6 +75,7 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
             household_id: hh,
             document_id: d.id,
             kind: 'derived',
+            source: 'expires',
             fire_at: fire,
             lead_days: 180,
           })
@@ -103,10 +107,19 @@ describe.skipIf(!testAdminUrl())('reminders tick / deliver / catch-up', () => {
   it('deliver sends one digest at 9am local and records the ledger; a second run sends nothing', async () => {
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 1 });
     expect(sent).toHaveLength(1);
+    // Two days late, but about a passport that expires next March: it says
+    // what it is about, and nothing has lapsed (0.5.15).
     expect(sent[0]).toMatchObject({
       kind: 'catch_up',
       local_date: '2026-09-22',
-      items: [{ title: 'Passport', overdue: true }],
+      items: [
+        {
+          title: 'Passport',
+          label: 'Overdue by 2 days',
+          about: 'Expires: 19 Mar 2027, in 6 months',
+          overdue: false,
+        },
+      ],
     });
     expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 0 });
     expect(sent).toHaveLength(1);
@@ -283,7 +296,9 @@ describe.skipIf(!testAdminUrl())('a type changed reminds of what is ahead', () =
     return by;
   };
   const setting = (sql: string) => admin.query(sql, [hh]);
-  const regenerate = () => regenerateTypeReminders(db, { household_id: hh, type_key: 'passport' });
+  const keys = new ScopeKeys(new EnvKeyProvider(MASTER));
+  const regenerate = () =>
+    regenerateTypeReminders({ app: db, keys }, { household_id: hh, type_key: 'passport' });
 
   beforeAll(async () => {
     tdb = await createTestDatabase();
@@ -332,7 +347,8 @@ describe.skipIf(!testAdminUrl())('a type changed reminds of what is ahead', () =
 
   it('a lead time added makes no reminder whose day has passed', async () => {
     const before = await reminders();
-    expect(before['Expired 1500']).toEqual(['270:acknowledged', '180:acknowledged']);
+    // Filed with both lead days gone by, only the nearer was made due (0.5.15).
+    expect(before['Expired 1500']).toEqual(['180:acknowledged']);
     expect(before['In 400 days']).toEqual(['270:scheduled', '180:scheduled']);
     await setting(
       `insert into document_type_setting (household_id, type_key, reminder_leads)
@@ -340,10 +356,10 @@ describe.skipIf(!testAdminUrl())('a type changed reminds of what is ahead', () =
     );
     expect(await regenerate()).toEqual({ documents: 5, failed: 0 });
     expect(await reminders()).toEqual({
-      'Expired 1500': ['270:acknowledged', '180:acknowledged'],
-      'Expired 2500': ['270:acknowledged', '180:acknowledged'],
-      'Expired 3500': ['270:acknowledged', '180:acknowledged'],
-      'In 100 days': ['270:acknowledged', '180:acknowledged', '30:scheduled'],
+      'Expired 1500': ['180:acknowledged'],
+      'Expired 2500': ['180:acknowledged'],
+      'Expired 3500': ['180:acknowledged'],
+      'In 100 days': ['180:acknowledged', '30:scheduled'],
       'In 400 days': ['270:scheduled', '180:scheduled', '30:scheduled'],
     });
     expect(await digest()).toEqual({ digests: 0 });
@@ -370,15 +386,16 @@ describe.skipIf(!testAdminUrl())('a type changed reminds of what is ahead', () =
     expect(sent).toEqual([]);
   });
 
-  it('a document edited is reminded as before: a lead whose day has passed is due', async () => {
+  it('a document edited is reminded as before: the nearest lead whose day has passed is due', async () => {
     const { rows } = await admin.query<{ id: string }>(
       "select id from document where household_id = $1 and title = 'In 100 days'",
       [hh],
     );
     await withSystem(db, hh, (trx) => regenerateDerived(trx, hh, rows[0]?.id as string));
-    expect((await reminders())['In 100 days']).toEqual(['270:due', '180:due', '30:scheduled']);
+    // 270 and 180 days before have both passed: the nearer is due, once (0.5.15).
+    expect((await reminders())['In 100 days']).toEqual(['180:due', '30:scheduled']);
     expect(await digest()).toEqual({ digests: 1 });
-    expect(sent[0]?.items).toHaveLength(2);
+    expect(sent[0]?.items).toHaveLength(1);
   });
 });
 
@@ -511,5 +528,241 @@ describe.skipIf(!testAdminUrl())('the digest, while reminders change under it', 
     const again: Digest[] = [];
     expect(await run({ digest: async (d) => (again.push(d), ['test']) })).toEqual({ digests: 1 });
     expect(again.map((d) => d.household_id)).toEqual([first]);
+  });
+});
+
+/**
+ * types.regenerate when a kind reminds from a date field (0.5.15), against
+ * real tables. On an Only me document that date is sealed under its
+ * owner's key: the job opens it, that date alone, in the document's own
+ * transaction — the one exception to the seal (A62) — and nothing else.
+ */
+describe.skipIf(!testAdminUrl())('types.regenerate and the date a kind reminds from', () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  let hh: string;
+  let member: string;
+  const KIND = 'h_counciltax';
+  const today = localToday('UTC');
+  const keys = new ScopeKeys(new EnvKeyProvider(MASTER));
+  /** Whose member key each unwrap asked for, while a test listens. */
+  const unwrapped: Array<string | null | undefined> = [];
+  const listening = new (class extends ScopeKeys {
+    override async unwrap(trx: Db, ref: Parameters<ScopeKeys['unwrap']>[1]) {
+      unwrapped.push(ref.memberId);
+      return super.unwrap(trx, ref);
+    }
+  })(new EnvKeyProvider(MASTER));
+  const ids: Record<string, string> = {};
+  const day = (n: number) => ({ date: addDays(today, n), precision: 'day' });
+  const regenerate = (k: ScopeKeys = keys) =>
+    regenerateTypeReminders({ app: db, keys: k }, { household_id: hh, type_key: KIND });
+
+  /**
+   * A bill, filed as the API files one: Only me ones with their details
+   * sealed under their owner's key, and reminded from what was written.
+   */
+  const bill = async (
+    title: string,
+    extra: Record<string, unknown>,
+    opts: { sealed?: boolean; owner?: string; trashed?: boolean } = {},
+  ) => {
+    const id = randomUUID();
+    const owner = opts.owner ?? member;
+    await withSystem(db, hh, async (trx) => {
+      const sealed = opts.sealed
+        ? sealPrivate(
+            opts.owner && opts.owner !== member
+              ? randomBytes(32)
+              : (await keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: member })).key,
+            id,
+            { notes: null, extra },
+          )
+        : null;
+      await trx
+        .insertInto('document')
+        .values({
+          id,
+          household_id: hh,
+          title,
+          type_key: KIND,
+          owner_member_id: owner,
+          visibility: sealed ? 'private' : 'household',
+          expires_on: addDays(today, 100),
+          expires_precision: 'day',
+          extra: JSON.stringify(sealed ? {} : extra),
+          ...(sealed ?? {}),
+          deleted_at: opts.trashed ? new Date() : null,
+        })
+        .execute();
+      if (!opts.owner || opts.owner === member) {
+        await regenerateDerived(trx, hh, id, sealed ? { details: extra } : {});
+      }
+    });
+    ids[title] = id;
+    return id;
+  };
+  /** Each bill's derived reminders: the date each is about, its lead, its day, its state. */
+  const reminders = async (title: string) =>
+    (
+      await admin.query<{ line: string }>(
+        `select source || ':' || lead_days || ':' || (fire_at - current_date) || ':' || status as line
+           from reminder where document_id = $1 and kind = 'derived' order by fire_at`,
+        [ids[title]],
+      )
+    ).rows.map((r) => r.line);
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    const made = await household(admin, 'Bills');
+    hh = made.id;
+    member = made.member;
+    await withSystem(db, hh, async (trx) => {
+      await keys.mintHouseholdKeys(trx, hh);
+      await keys.mintMemberKey(trx, hh, member, null);
+    });
+    // Council tax: it expires, and asks for its due date; it reminds, for
+    // now, 30 days before it expires.
+    await admin.query(
+      `insert into document_type
+         (key, household_id, label, category, fields, expiry_driver, reminder_leads, remind_from)
+       values ($1, $2, 'Council tax', 'bills',
+               '[{"key": "due_date", "label": "Due date", "kind": "date", "required": true},
+                 {"key": "account", "label": "Account", "kind": "text", "required": false}]',
+               'expires_on', '{30}', 'expires')`,
+      [KIND, hh],
+    );
+    await bill('Flat', { due_date: day(20) });
+    await bill('Mine, sealed', { due_date: day(25), account: 'CT-1' }, { sealed: true });
+    await bill('Nearly due', { due_date: day(3) });
+    // The family dealt with the flat's already.
+    await admin.query("update reminder set status = 'acknowledged' where document_id = $1", [
+      ids.Flat,
+    ]);
+  }, 60_000);
+  afterAll(async () => {
+    await db?.destroy();
+    await admin?.end();
+    await tdb?.drop();
+  });
+
+  it('moving a kind to Due date makes only reminders still ahead, and drops the old ones, even done ones', async () => {
+    expect(await reminders('Flat')).toEqual(['expires:30:70:acknowledged']);
+    expect(await reminders('Mine, sealed')).toEqual(['expires:30:70:scheduled']);
+    await admin.query(
+      "update document_type set remind_from = 'due_date', reminder_leads = '{7,1}' where key = $1",
+      [KIND],
+    );
+    expect(await regenerate()).toEqual({ documents: 3, failed: 0 });
+    expect(await reminders('Flat')).toEqual(['due_date:7:13:scheduled', 'due_date:1:19:scheduled']);
+    // Its date sealed, opened by the vault for this alone.
+    expect(await reminders('Mine, sealed')).toEqual([
+      'due_date:7:18:scheduled',
+      'due_date:1:24:scheduled',
+    ]);
+    // 7 days before has gone by: only what is still ahead.
+    expect(await reminders('Nearly due')).toEqual(['due_date:1:2:scheduled']);
+  });
+
+  it('types.regenerate opens only the one date it needs, and nothing in the Trash', async () => {
+    await bill('Binned, sealed', { due_date: day(40) }, { sealed: true, trashed: true });
+    // Only me, with a detail sealed, but not the due date: nothing to open.
+    await bill('Account only, sealed', { account: 'CT-2' }, { sealed: true });
+    unwrapped.length = 0;
+    expect(await regenerate(listening)).toEqual({ documents: 4, failed: 0 });
+    // One key, once: the owner's, for the one Only me bill whose due date is sealed.
+    expect(unwrapped).toEqual([member]);
+    expect(await reminders('Binned, sealed')).toEqual([]);
+    expect(await reminders('Account only, sealed')).toEqual([]);
+    expect(await reminders('Mine, sealed')).toEqual([
+      'due_date:7:18:scheduled',
+      'due_date:1:24:scheduled',
+    ]);
+  });
+
+  it("a document whose owner's key cannot be opened counts as failed, and the others are done", async () => {
+    // Somebody whose member key is not there: their bill cannot be opened.
+    const { rows } = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name) values ($1, 'Lodger') returning id",
+      [hh],
+    );
+    const lodgers = await bill(
+      'Lodger, sealed',
+      { due_date: day(12) },
+      { sealed: true, owner: rows[0]?.id as string },
+    );
+    await admin.query('delete from reminder where document_id = $1', [ids.Flat]);
+    const r = await regenerate();
+    // Counts and ids, never a value.
+    expect(r).toEqual({ documents: 4, failed: 1, failed_ids: [lodgers] });
+    expect(await reminders('Flat')).toEqual(['due_date:7:13:scheduled', 'due_date:1:19:scheduled']);
+    expect(await reminders('Lodger, sealed')).toEqual([]);
+    await admin.query('delete from document where id = $1', [lodgers]);
+  });
+
+  it('the job leaves updated_at, the etag and the audit alone', async () => {
+    const state = async () => ({
+      documents: (
+        await admin.query<{ id: string; updated_at: Date }>(
+          'select id, updated_at from document where household_id = $1 order by id',
+          [hh],
+        )
+      ).rows.map((d) => `${d.id}:${d.updated_at.toISOString()}`),
+      audit: (
+        await admin.query<{ n: number }>(
+          'select count(*)::int as n from audit_event where household_id = $1',
+          [hh],
+        )
+      ).rows[0]?.n,
+      kind: typeEtag(
+        await withSystem(db, hh, (trx) =>
+          trx
+            .selectFrom('effective_document_type')
+            .selectAll()
+            .where('key', '=', KIND)
+            .executeTakeFirstOrThrow(),
+        ),
+      ),
+    });
+    // A lead time added: every bill reminded anew, and nobody edited anything.
+    await admin.query("update document_type set reminder_leads = '{7,1,3}' where key = $1", [KIND]);
+    const before = await state();
+    expect(await regenerate()).toEqual({ documents: 4, failed: 0 });
+    expect(await reminders('Flat')).toContain('due_date:3:17:scheduled');
+    expect(await state()).toEqual(before);
+  });
+
+  it('a reminder unchanged by a move is not delivered twice', async () => {
+    const sent: Digest[] = [];
+    const notifier: Notifier = { digest: async (d) => (sent.push(d), ['test']) };
+    const run = (now: Date) =>
+      deliver({ admin, app: db, notifier, log: () => undefined, digestHour: 0, now: () => now });
+    // Due in 2 days, filed today: its 3-day reminder is due now.
+    await bill('Due soon', { due_date: day(2) });
+    expect(await reminders('Due soon')).toEqual(['due_date:3:-1:due', 'due_date:1:1:scheduled']);
+    const first = await admin.query<{ id: string }>(
+      'select id from reminder where document_id = $1 and lead_days = 3',
+      [ids['Due soon']],
+    );
+    expect(await run(new Date())).toEqual({ digests: 1 });
+    expect(sent[0]?.items.map((i) => [i.title, i.about, i.overdue])).toEqual([
+      ['Due soon', expect.stringMatching(/^Due date: .*, in 2 days$/), false],
+    ]);
+    // The kind's lead times move; the 3-day reminder is exactly as it was.
+    await admin.query("update document_type set reminder_leads = '{14,3,1}' where key = $1", [
+      KIND,
+    ]);
+    await regenerate();
+    const after = await admin.query<{ id: string }>(
+      'select id from reminder where document_id = $1 and lead_days = 3',
+      [ids['Due soon']],
+    );
+    expect(after.rows).toEqual(first.rows);
+    // Tomorrow's digest has nothing new to say of it.
+    expect(await run(new Date(Date.now() + 86_400_000))).toEqual({ digests: 0 });
+    expect(sent).toHaveLength(1);
   });
 });

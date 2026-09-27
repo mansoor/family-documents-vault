@@ -258,13 +258,37 @@ export function reminderSentence(
 ): string | null {
   if (!type?.expiry_driver || type.reminder_leads.length === 0) return null;
   const when = type.expiry_driver === 'review_on' ? "it's due for review" : 'it expires';
-  const leads = [...new Set(type.reminder_leads)].filter((d) => d > 0).sort((a, b) => b - a);
-  const onTheDay = type.reminder_leads.includes(0);
-  if (leads.length === 0) return `We'll remind you on the day ${when}.`;
+  return leadSentence(type.reminder_leads, when, `on the day ${when}`);
+}
+
+/**
+ * The same promise for a date field a kind reminds from (0.5.15): "We'll
+ * remind you 7 days and 1 day before its due date." The field's name is
+ * lower case, unless it starts with an abbreviation: "before its MOT".
+ * Null with no lead times.
+ */
+export function dateReminderSentence(label: string, leads: ReadonlyArray<number>): string | null {
+  if (leads.length === 0) return null;
+  const trimmed = label.trim().replace(/\s+/g, ' ');
+  const name = /^[A-Z0-9]{2,}\b/.test(trimmed)
+    ? trimmed
+    : trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+  return leadSentence(leads, `its ${name}`, `on its ${name}`);
+}
+
+/** Said under a date field a kind reminds from (0.5.15): a reminder is for one date. */
+export const REMIND_ONCE =
+  'We remind you once for this date: nothing repeats. When the next one is due, change the date or add the next one.';
+
+/** "We'll remind you 9 months and 6 months before <when>", and on the day where 0 is one. */
+function leadSentence(all: ReadonlyArray<number>, before: string, onTheDayOnly: string): string {
+  const leads = [...new Set(all)].filter((d) => d > 0).sort((a, b) => b - a);
+  const onTheDay = all.includes(0);
+  if (leads.length === 0) return `We'll remind you ${onTheDayOnly}.`;
   const words = leads.map(leadWords);
   const list =
     words.length === 1
       ? words[0]
       : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
-  return `We'll remind you ${list} before ${when}${onTheDay ? ', and on the day' : ''}.`;
+  return `We'll remind you ${list} before ${before}${onTheDay ? ', and on the day' : ''}.`;
 }

@@ -55,25 +55,37 @@ export function subject(d: Digest): string {
 /**
  * What an email may say about an item. Email goes through the household's
  * mail server, which an owner can point anywhere, so a private document is
- * named only as that — its title and note stay for push and the app.
+ * named only as that — its title, its note, and the date it is about
+ * (0.5.15), stay for push and the app: "One of your private documents —
+ * Due today".
  */
 export function forEmail(i: Digest['items'][number]): {
   title: string;
   label: string;
+  about: string | null;
   note: string | null;
   overdue: boolean;
 } {
   // Field by field, never the whole item: a field added to digest items
   // later stays out of email until somebody decides it may go.
   return i.private
-    ? { title: 'One of your private documents', label: i.label, note: null, overdue: i.overdue }
-    : { title: i.title, label: i.label, note: i.note, overdue: i.overdue };
+    ? {
+        title: 'One of your private documents',
+        label: i.label,
+        about: null,
+        note: null,
+        overdue: i.overdue,
+      }
+    : { title: i.title, label: i.label, about: i.about, note: i.note, overdue: i.overdue };
 }
+
+/** An item's line after its title: what it is about (0.5.15), else when it fell due. */
+const lineOf = (i: { label: string; about: string | null }) => i.about ?? i.label;
 
 export function textBody(d: Digest, baseUrl: string): string {
   const lines = d.items.map((item) => {
     const i = forEmail(item);
-    return `• ${i.title} — ${i.label}${i.note ? ` (${i.note})` : ''}`;
+    return `• ${i.title} — ${lineOf(i)}${i.note ? ` (${i.note})` : ''}`;
   });
   const intro =
     d.kind === 'catch_up'
@@ -94,7 +106,7 @@ export function htmlBody(d: Digest, baseUrl: string): string {
     .map((item) => forEmail(item))
     .map(
       (i) =>
-        `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(i.label)}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,
+        `<tr><td style="padding:8px 0;border-bottom:1px solid #e6e0d6"><strong>${esc(i.title)}</strong><br><span style="color:${i.overdue ? '#b3261e' : '#5e574e'}">${esc(lineOf(i))}</span>${i.note ? `<br><span style="color:#5e574e">${esc(i.note)}</span>` : ''}</td></tr>`,
     )
     .join('');
   return `<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#faf8f4;color:#1c1a17;padding:24px">
@@ -209,7 +221,7 @@ async function sendPush(deps: NotifyDeps, d: Digest): Promise<number> {
     title: subject(d),
     body: d.items
       .slice(0, 3)
-      .map((i) => `${i.title} — ${i.label}`)
+      .map((i) => `${i.title} — ${lineOf(i)}`)
       .join('\n'),
     url: `${deps.baseUrl}/reminders`,
     tag: `fdv-digest-${d.local_date}`,

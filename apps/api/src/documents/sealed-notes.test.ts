@@ -1,6 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EnvKeyProvider, openPrivate, ScopeKeys } from '@fdv/crypto';
-import { createPool, withPrincipal, withSystem } from '@fdv/db';
+import {
+  createPool,
+  regenerateDerived,
+  SealedDateNeeded,
+  withPrincipal,
+  withSystem,
+} from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -404,5 +410,179 @@ describe.skipIf(!testAdminUrl())("an Only me document's notes and details", () =
     });
     expect(renamed.statusCode, renamed.body).toBe(200);
     expect((await stored(doc.id)).notes).toBeNull();
+  });
+
+  // ------------------------------- the one exception to the seal (0.5.15, A62)
+
+  /** A bill of the household's own kind, reminded 7 days and 1 day before its Due date. */
+  let billKind = '';
+  const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+  const dueIn = (n: number) => ({ due_date: { date: inDays(n), precision: 'day' } });
+  const remindersOf = async (who: Tokens, id: string) =>
+    (await get(who, '/api/v1/reminders?state=all'))
+      .json<{
+        items: Array<{
+          document_id: string;
+          lead_days: number;
+          fire_at: string;
+          source: string;
+          about: string;
+        }>;
+      }>()
+      .items.filter((r) => r.document_id === id)
+      .map((r) => `${r.source}:${r.lead_days}:${r.fire_at}`);
+  const billKindKey = async () => {
+    if (billKind) return billKind;
+    const made = await send(owner, 'POST', '/api/v1/document-types', {
+      label: 'Council tax',
+      category: 'bills',
+      fields: [{ key: 'due_date' }, { key: 'account' }],
+      remind_from: 'due_date',
+      remind_leads: [7, 1],
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    billKind = made.json<{ key: string }>().key;
+    return billKind;
+  };
+
+  it('an Only me bill is reminded from its sealed due date — created, edited, captured, brought back from the Trash — and only its owner hears of it', async () => {
+    const type_key = await billKindKey();
+    // Created: sealed as it is written, its due date read before it was.
+    const bill = await made({
+      type_key,
+      title: 'Council tax, flat',
+      visibility: 'private',
+      extra: { ...dueIn(20), account: 'CT-99' },
+    });
+    const row = await stored(bill.id);
+    expect(row).toMatchObject({ extra: {} });
+    expect([...row.sealed_details].sort()).toEqual(['account', 'due_date']);
+    expect(await remindersOf(owner, bill.id)).toEqual([
+      `due_date:7:${inDays(13)}`,
+      `due_date:1:${inDays(19)}`,
+    ]);
+
+    // Edited: the date moves, and the reminders with it; still sealed.
+    const moved = await send(owner, 'PATCH', `/api/v1/documents/${bill.id}`, { extra: dueIn(30) });
+    expect(moved.statusCode, moved.body).toBe(200);
+    expect(await remindersOf(owner, bill.id)).toEqual([
+      `due_date:7:${inDays(23)}`,
+      `due_date:1:${inDays(29)}`,
+    ]);
+    expect((await stored(bill.id)).open().extra).toEqual({ ...dueIn(30), account: 'CT-99' });
+
+    // Captured: sealed at the claim, reminded at the commit.
+    const form = new FormData();
+    form.append(
+      'metadata',
+      JSON.stringify({
+        type_key,
+        title: 'Council tax, scanned',
+        owner_member_id: owner.member_id,
+        visibility: 'private',
+        extra: dueIn(10),
+      }),
+    );
+    form.append('file', PDF, { filename: 'bill.pdf', contentType: 'application/pdf' });
+    const key = randomUUID();
+    const captured = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/capture',
+      headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': key },
+      payload: form.getBuffer(),
+    });
+    expect(captured.statusCode, captured.body).toBe(201);
+    const scanned = captured.json<{ document_id: string }>().document_id;
+    expect(await remindersOf(owner, scanned)).toEqual([
+      `due_date:7:${inDays(3)}`,
+      `due_date:1:${inDays(9)}`,
+    ]);
+    expect((await stored(scanned)).extra).toEqual({});
+    // Its key's record says what it made, and nothing of what was sent.
+    const claim = await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('upload_idempotency')
+        .selectAll()
+        .where('idempotency_key', '=', key)
+        .executeTakeFirstOrThrow(),
+    );
+    expect(JSON.stringify(claim)).not.toContain(inDays(10));
+
+    // Into the Trash: none. Brought back by its owner: made again.
+    expect(
+      (
+        await h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/documents/${bill.id}`,
+          headers: h.as(owner),
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(await remindersOf(owner, bill.id)).toEqual([]);
+    const back = await send(owner, 'POST', `/api/v1/documents/${bill.id}/restore`, {});
+    expect(back.statusCode, back.body).toBe(200);
+    expect(await remindersOf(owner, bill.id)).toEqual([
+      `due_date:7:${inDays(23)}`,
+      `due_date:1:${inDays(29)}`,
+    ]);
+
+    // Only its owner hears of it: another adult is given no line at all.
+    const sanas = (await get(other, '/api/v1/reminders?state=all')).json<{
+      items: Array<{ document_id: string }>;
+    }>().items;
+    expect(sanas.map((r) => r.document_id)).not.toContain(bill.id);
+    expect(sanas.map((r) => r.document_id)).not.toContain(scanned);
+  });
+
+  it('a write that reaches the reminders without the sealed date fails and saves nothing', async () => {
+    const type_key = await billKindKey();
+    const bill = await made({
+      type_key,
+      title: 'Council tax, garage',
+      visibility: 'private',
+      extra: dueIn(40),
+    });
+    const before = await remindersOf(owner, bill.id);
+    expect(before).toHaveLength(2);
+    // A path that forgot to pass the date: it is refused, loudly, and its
+    // write with it — the owner's reminders are never quietly dropped.
+    const accountId = await withSystem(h.db, owner.household_id, async (trx) =>
+      trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', owner.member_id)
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.account_id);
+    const asOwner = {
+      householdId: owner.household_id,
+      accountId,
+      memberId: owner.member_id,
+      role: 'owner' as const,
+    };
+    await expect(
+      withPrincipal(h.db, asOwner, async (trx) => {
+        await trx
+          .updateTable('document')
+          .set({ title: 'Renamed, then lost' })
+          .where('id', '=', bill.id)
+          .execute();
+        await regenerateDerived(trx, owner.household_id, bill.id);
+      }),
+    ).rejects.toThrow(SealedDateNeeded);
+    const got = (await get(owner, `/api/v1/documents/${bill.id}`)).json<DocumentView>();
+    expect(got.title).toBe('Council tax, garage');
+    expect(await remindersOf(owner, bill.id)).toEqual(before);
+    // In the Trash it needs no date: there is nothing to remind of.
+    await expect(
+      withPrincipal(h.db, asOwner, async (trx) => {
+        await trx
+          .updateTable('document')
+          .set({ deleted_at: new Date() })
+          .where('id', '=', bill.id)
+          .execute();
+        await regenerateDerived(trx, owner.household_id, bill.id);
+        throw new Error('rolled back on purpose');
+      }),
+    ).rejects.toThrow('rolled back on purpose');
   });
 });

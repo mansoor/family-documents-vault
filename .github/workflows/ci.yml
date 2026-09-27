@@ -105,6 +105,12 @@ jobs:
       # release; a server change that would break it fails here (5.2).
       - name: The client an older phone carries still works (app 0.2.0)
         run: pnpm test:older-client
+      # App 0.2.1 carries the client of v0.5.11: its type scenarios hold
+      # expiry_driver and reminder_leads to what it reads (5.16a).
+      - name: The client an older phone carries still works (app 0.2.1)
+        run: pnpm test:older-client
+        env:
+          OLDER_CLIENT_REF: v0.5.11
       - run: pnpm build
 
   images:

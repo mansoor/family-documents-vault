@@ -10,6 +10,7 @@ import {
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
   inListAudience,
+  libraryHasName,
   LIST_AUDIENCES,
   LIST_DESCRIPTION_MAX,
   LIST_ITEMS_PAGE,
@@ -17,6 +18,7 @@ import {
   LIST_NAME_MAX,
   listItemHint,
   missingFields,
+  nextReminder,
   PREVIEW_MAX_PAGES,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
@@ -272,7 +274,22 @@ const FAKE_ATTRIBUTES: DocumentAttributeView[] = [
     builtin: true,
   },
   { key: 'tax_year', label: 'Tax year', kind: 'year', choices: null, builtin: true },
+  // What a bill reminds from, when its household says so (0.5.15).
+  { key: 'due_date', label: 'Due date', kind: 'date', choices: null, builtin: true },
 ];
+
+/**
+ * The date a kind reminds from, as the real vault answers it (0038): the
+ * one it keeps, while it shows that date and has lead times; else null.
+ * The fake keeps a kind's date in `remind_from` and its lead times in
+ * `reminder_leads`, and answers both as the vault does (`typeAnswer`).
+ */
+function remindingFrom(t: DocumentTypeView): string | null {
+  const from = t.remind_from ?? null;
+  if (from === null || t.reminder_leads.length === 0) return null;
+  if (from === 'expires') return t.expiry_driver !== null ? from : null;
+  return t.fields.some((f) => f.key === from && f.kind === 'date') ? from : null;
+}
 
 /**
  * One part of a multipart body: a field's value, or a file (value null)
@@ -365,7 +382,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     issuerSuggestions: new Map(),
     pages: new Map(),
     offlineEssentials: { items: [], received: new Set() },
-    types: FAKE_TYPES.map((t) => ({ ...t })),
+    // Each reminds from Expires where it expires and has lead times, as
+    // every kind did before 0.5.15.
+    types: FAKE_TYPES.map((t) => ({
+      ...t,
+      remind_from: t.expiry_driver !== null && t.reminder_leads.length > 0 ? 'expires' : null,
+    })),
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     role: 'owner',
@@ -386,15 +408,68 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
   const bump = (t: DocumentTypeView) => revisions.set(t.key, (revisions.get(t.key) ?? 1) + 1);
   /**
    * A kind as the real vault answers it: its ETag, and an expiry required
-   * exactly when it expires, whatever its rule once said (0.5.10).
+   * exactly when it expires, whatever its rule once said (0.5.10). The date
+   * it reminds from and its lead times (0.5.15); `reminder_leads` is
+   * Expires's alone, `[]` while a date field reminds, as an older phone
+   * reads it; and the reminding field always required.
    */
-  const typeAnswer = (t: DocumentTypeView): DocumentTypeView => ({
-    ...t,
-    ...(t.core
-      ? { core: { ...t.core, expires: { ...t.core.expires, required: t.expiry_driver !== null } } }
-      : {}),
-    etag: typeTag(t),
-  });
+  const typeAnswer = (t: DocumentTypeView): DocumentTypeView => {
+    const from = remindingFrom(t);
+    return {
+      ...t,
+      fields: t.fields.map((f) => (f.key === from ? { ...f, required: true } : f)),
+      reminder_leads: t.remind_from && t.remind_from !== 'expires' ? [] : [...t.reminder_leads],
+      remind_from: from,
+      remind_leads: [...t.reminder_leads],
+      ...(t.core
+        ? {
+            core: {
+              ...t.core,
+              expires: { ...t.core.expires, required: t.expiry_driver !== null },
+            },
+          }
+        : {}),
+      etag: typeTag(t),
+    };
+  };
+  /**
+   * What a kind reminds from after a change, by the rules the real vault
+   * keeps (`nextReminder`, 0.5.15), worked out on `next`, the kind as it
+   * will be: a refusal, or null with `next` changed.
+   */
+  const remind = (
+    before: DocumentTypeView | null,
+    next: DocumentTypeView,
+    body: Record<string, unknown>,
+  ): ResponseLike | null => {
+    const out = nextReminder(
+      {
+        remind_from: body.remind_from as string | null | undefined,
+        remind_leads: body.remind_leads as number[] | undefined,
+        reminder_leads: body.reminder_leads as number[] | undefined,
+        fields: body.fields as TypeChange['fields'],
+      },
+      before
+        ? {
+            reminding: { from: remindingFrom(before), leads: leadsOf(before.reminder_leads) },
+            expires: before.expiry_driver !== null,
+          }
+        : null,
+      {
+        expires: next.expiry_driver !== null,
+        dates: next.fields.filter((f) => f.kind === 'date').map((f) => f.key),
+      },
+    );
+    if ('problem' in out) {
+      return fail(422, 'validation_failed', out.problem.message, out.problem.detail);
+    }
+    next.remind_from = out.from;
+    next.reminder_leads = out.leads;
+    if (out.from !== null && out.from !== 'expires') {
+      next.fields = next.fields.map((f) => (f.key === out.from ? { ...f, required: true } : f));
+    }
+    return null;
+  };
   /**
    * A change to a kind's fixed fields and its own fields, as the real vault
    * makes it: each fixed field key by key (Expires on or off is whether it
@@ -531,6 +606,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           custom_types: true,
           // And lists of documents (0.5.12).
           lists: true,
+          // Reminders from any date (0.5.15): kept, and said off until the
+          // web's editor for them ships, as the vault says.
+          reminder_dates: false,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -1125,6 +1203,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (long) return long;
       const label = tidy(body.label as string | undefined);
       if (!label) return fail(422, 'validation_failed', 'Give the field a name.', 'label');
+      // A name the library has, a built-in's included, in any case (0.5.15).
+      const same = state.attributes.find((a) => a.label.toLowerCase() === label.toLowerCase());
+      if (same) return fail(422, 'validation_failed', libraryHasName(same.label), 'label');
       const kind = body.kind as DocumentAttributeView['kind'];
       const answers = [
         ...new Set(((body.choices as string[] | null | undefined) ?? []).map(tidy)),
@@ -1189,9 +1270,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         category,
         fields: [],
         expiry_driver: expires ? 'expires_on' : null,
-        reminder_leads: leadsOf(
-          (body.reminder_leads as number[] | undefined) ?? (expires ? [30] : []),
-        ),
+        // What it reminds from is worked out below, on the kind as made.
+        reminder_leads: [],
+        remind_from: null,
         usually_essential: (body.usually_essential as boolean | undefined) ?? false,
         default_visibility: (body.default_visibility as Visibility | undefined) ?? 'household',
         issued_by_label: null,
@@ -1201,7 +1282,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         short_label: tidy(body.short_label as string | null | undefined),
         issuer_noun: tidy(body.issuer_noun as string | null | undefined),
       };
-      const problem = changeType(t, { core: sent, fields: body.fields as TypeChange['fields'] });
+      const problem =
+        changeType(t, { core: sent, fields: body.fields as TypeChange['fields'] }) ??
+        remind(null, t, body);
       if (problem) return problem;
       state.types.push(t);
       return ok(typeAnswer(t), 201);
@@ -1272,16 +1355,6 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           next.short_label = tidy(body.short_label as string | null);
         if (body.issuer_noun !== undefined)
           next.issuer_noun = tidy(body.issuer_noun as string | null);
-        if (body.reminder_leads !== undefined) {
-          next.reminder_leads = leadsOf(body.reminder_leads as number[]);
-        } else if (
-          t.expiry_driver === null &&
-          (body.core as TypeChange['core'])?.expires?.shown === true &&
-          t.reminder_leads.length === 0
-        ) {
-          // Expires switched on with no lead times: 30 days, as a new kind.
-          next.reminder_leads = [30];
-        }
         if (body.default_visibility !== undefined) {
           next.default_visibility = body.default_visibility as Visibility;
         }
@@ -1289,10 +1362,14 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           next.usually_essential = body.usually_essential as boolean;
         }
         if (body.hidden !== undefined) next.hidden = body.hidden as boolean;
-        const problem = changeType(next, {
-          core: body.core as TypeChange['core'],
-          fields: body.fields as TypeChange['fields'],
-        });
+        // Its fields and Expires, then what it reminds from on the kind as
+        // it will be — Expires switched on with no lead times: 30 days, as
+        // a new kind (0.5.15: `nextReminder`, as the vault).
+        const problem =
+          changeType(next, {
+            core: body.core as TypeChange['core'],
+            fields: body.fields as TypeChange['fields'],
+          }) ?? remind(t, next, body);
         if (problem) return problem;
         Object.assign(t, next);
         bump(t);
@@ -1328,6 +1405,18 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           v !== null &&
           !(typeof v === 'string' && v.trim() === '') &&
           !(Array.isArray(v) && v.length === 0);
+        // Its reminders not dealt with yet, and by the date each is about (0.5.15).
+        const open = state.reminders.filter(
+          (r) =>
+            r.kind === 'derived' &&
+            ['scheduled', 'due', 'snoozed'].includes(r.status) &&
+            used.some((d) => d.id === r.document_id),
+        );
+        const bySource: Record<string, number> = {};
+        for (const r of open) {
+          const source = r.source ?? 'expires';
+          bySource[source] = (bySource[source] ?? 0) + 1;
+        }
         const impact: DocumentTypeImpact = {
           key: t.key,
           documents: used.length,
@@ -1352,12 +1441,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
               .sort()
               .map((key) => ({ key, label: null, ...count((d) => given(d.extra?.[key])) })),
           ],
-          reminders: state.reminders.filter(
-            (r) =>
-              r.kind === 'derived' &&
-              ['scheduled', 'due', 'snoozed'].includes(r.status) &&
-              used.some((d) => d.id === r.document_id),
-          ).length,
+          reminders: open.length,
+          reminders_by_source: bySource,
           unseen: UNSEEN_DOCUMENTS,
         };
         return ok(impact);

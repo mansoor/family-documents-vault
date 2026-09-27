@@ -321,6 +321,11 @@ export interface Schema {
      * (0035): kept only as the name of those documents.
      */
     deleted_at: Timestamp | null;
+    /**
+     * The date it reminds from (0038): 'expires', or one of its own date
+     * fields' keys, with 1 to 8 lead times in reminder_leads; null, none.
+     */
+    remind_from: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /** A household's changes to a built-in type; null keeps the built-in's own (0031). */
@@ -335,6 +340,8 @@ export interface Schema {
     usually_essential: boolean | null;
     updated_at: GeneratedTimestamp;
     updated_by: string | null;
+    /** As the built-in (null), 'none', 'expires' or a date field's key (0038). */
+    remind_from: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /** The fields a type can ask for: built-in (no household) or a household's own (0031). */
@@ -376,6 +383,13 @@ export interface Schema {
     updated_at: Date;
     /** Deleted, kept for the documents that use it (0035); see document_type. */
     deleted_at: Date | null;
+    /**
+     * The date it reminds from while it shows that date and has lead times
+     * (0038): 'expires' or a date field's key; null, no reminders. Its lead
+     * times are remind_leads; reminder_leads is [] while a detail reminds.
+     */
+    remind_from: string | null;
+    remind_leads: number[];
   };
 
   document: {
@@ -536,6 +550,8 @@ export interface Schema {
     kind: 'derived' | 'manual';
     fire_at: ColumnType<string, string, string>;
     lead_days: number | null;
+    /** A derived reminder's date: 'expires' or a date field's key; null for a manual one (0038). */
+    source: ColumnType<string | null, string | null | undefined, string | null>;
     note: string | null;
     recurrence: string | null;
     channel: Generated<string[]>;

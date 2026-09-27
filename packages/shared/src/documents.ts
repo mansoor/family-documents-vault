@@ -161,6 +161,19 @@ export interface DocumentTypeView {
    * one (`409 conflict`). Absent from older vaults.
    */
   etag?: string;
+  /**
+   * The date its reminders count back from (0.5.15): `'expires'` (Review
+   * by on the Will), or the key of one of its own `date` fields, such as
+   * `'due_date'`; null, no reminders. Only a date the kind shows, with lead
+   * times. Absent from older vaults: read it with `reminderOf`.
+   */
+  remind_from?: string | null;
+  /**
+   * That date's lead times, in days (0.5.15). While nothing reminds, the
+   * times Expires kept. `reminder_leads` is Expires's alone, as older
+   * phones read it: `[]` while a date field reminds.
+   */
+  remind_leads?: number[];
 }
 
 /** The longest a kind of document's name, or one of its fields' names, may be (0.5.10). */
@@ -189,8 +202,20 @@ export interface DocumentTypeInput {
    * the library's, its label the library's unless given.
    */
   fields?: Array<{ key: string; label?: string; required?: boolean }>;
-  /** Days before it expires to remind, at most eight of them. */
+  /**
+   * The lead times of the date it reminds from, at most eight of them: as
+   * before 0.5.15, Expires's, and `[]` is no reminders. Never with
+   * `remind_leads`.
+   */
   reminder_leads?: number[];
+  /**
+   * The date to remind from (0.5.15): `'expires'` or one of its `date`
+   * fields shown, or null for no reminders. Left out, a kind that reminds
+   * nobody starts reminding from Expires as before (`nextReminder`).
+   */
+  remind_from?: string | null;
+  /** That date's lead times (0.5.15), one to eight; left out, the date's default. */
+  remind_leads?: number[];
   default_visibility?: Visibility;
   usually_essential?: boolean;
   /** A built-in, no longer offered (or offered again). */
@@ -237,6 +262,11 @@ export interface DocumentTypeImpact {
   fields: FieldImpact[];
   /** Reminders made from its lead times, not done yet, on those documents. */
   reminders: number;
+  /**
+   * The same reminders by the date each is about (0.5.15): `{ expires: 3,
+   * due_date: 2 }`. A date none is about is left out. Absent from older vaults.
+   */
+  reminders_by_source?: Record<string, number>;
   /** "Documents you can't see may also be affected." */
   unseen: string;
 }
@@ -259,6 +289,236 @@ export const TYPE_IN_USE =
  */
 export const EXPIRY_ALWAYS_REQUIRED =
   'A kind of document that expires always needs its expiry date. Switch Expires off instead.';
+
+// ------------------------------------------------ reminders from any date
+
+/**
+ * A kind reminds from one date it shows (0.5.15, A61): Expires (Review by
+ * on the Will), or one of its own `date` fields — a bill's Due date, a
+ * car's MOT. Issued and a year are never offered: they have happened by
+ * the time a document is filed. Nothing repeats.
+ */
+
+/** `remind_from` refused (422, `detail: 'remind_from'`): a date the kind does not ask for. */
+export const REMIND_FROM_NOT_ASKED =
+  'Reminders can only count back from a date this kind asks for: Expires, or one of its date fields.';
+
+/** A date to remind from with no lead times (422, `detail: 'remind_leads'`). */
+export const REMIND_NEEDS_LEADS = 'Choose how long before to remind, or switch reminders off.';
+
+/** Lead times sent with reminders switched off (422, `detail: 'remind_leads'`). */
+export const REMIND_OFF_NO_LEADS =
+  'Reminders are off, so there is nothing to remind before. Choose a date to remind from first.';
+
+/** The reminding date made optional (422, `detail`: the field's key). */
+export const REMINDING_DATE_REQUIRED =
+  'Reminders come from this date, so every document of this kind needs it. Choose another date, or switch reminders off, first.';
+
+/** `reminder_leads` and `remind_leads` sent together (422). */
+export const ONE_SET_OF_LEADS =
+  'Send the lead times once: remind_leads, or reminder_leads as before, not both.';
+
+/** A new field named like one the library has (422, `detail: 'label'`). */
+export const libraryHasName = (label: string): string =>
+  `The library already has “${label}”. Ask for that one instead of adding another.`;
+
+/** The built-in library field a bill reminds from (0038). */
+export const DUE_DATE = 'due_date';
+
+/** A date to remind from, and how long before it. */
+export interface Reminding {
+  /** `'expires'` or a date field's key; null, no reminders. */
+  from: string | null;
+  /** Days before, each once, furthest first. */
+  leads: number[];
+}
+
+/** Lead times each once, furthest first, as the vault keeps them. */
+export const leadTimes = (leads: ReadonlyArray<number>): number[] =>
+  [...new Set(leads)].sort((a, b) => b - a);
+
+/**
+ * What a kind reminds from, and how long before; while nothing reminds,
+ * `from` is null and `leads` are the times Expires kept. A vault older
+ * than 0.5.15 says no `remind_from`: its kinds remind from Expires while
+ * they expire and have lead times, as every vault has since 0.4.10.
+ */
+export function reminderOf(
+  type: Pick<DocumentTypeView, 'expiry_driver' | 'reminder_leads' | 'remind_from' | 'remind_leads'>,
+): Reminding {
+  if (type.remind_from !== undefined) {
+    return {
+      from: type.remind_from,
+      leads: leadTimes(type.remind_leads ?? (type.remind_from ? type.reminder_leads : [])),
+    };
+  }
+  return type.expiry_driver && type.reminder_leads.length > 0
+    ? { from: 'expires', leads: leadTimes(type.reminder_leads) }
+    : { from: null, leads: [] };
+}
+
+/**
+ * The lead times a date starts with when it is chosen with none: 7 days
+ * for a due date, 30 for any other. Expires takes back the times it kept
+ * while it was switched off (`kept`), the only ones ever kept then — so a
+ * passport's nine and six months never carry over to a bill.
+ */
+export function defaultLeads(source: string, kept: ReadonlyArray<number> = []): number[] {
+  if (source === 'expires') return kept.length > 0 ? leadTimes(kept) : [30];
+  return source === DUE_DATE ? [7] : [30];
+}
+
+/** What `reminderWord` and `reminderChoices` read of a kind. */
+export interface ReminderWords {
+  expiry_driver: string | null;
+  core?: Partial<Record<CoreField, Partial<CoreFieldRule>>> | null | undefined;
+  fields?: ReadonlyArray<Pick<TypeField, 'key' | 'label' | 'kind'>> | null | undefined;
+}
+
+/**
+ * The kind's word for the date a reminder is about: its name for Expires,
+ * else "Review by" (the Will) or "Expires"; or its date field's label.
+ * `library` names a field the kind no longer asks for.
+ */
+export function reminderWord(
+  type: ReminderWords | null | undefined,
+  source: string,
+  library: ReadonlyArray<Pick<DocumentAttributeView, 'key' | 'label'>> = [],
+): string {
+  if (source === 'expires') {
+    return (
+      type?.core?.expires?.label ?? (type?.expiry_driver === 'review_on' ? 'Review by' : 'Expires')
+    );
+  }
+  return (
+    type?.fields?.find((f) => f.key === source)?.label ??
+    library.find((a) => a.key === source)?.label ??
+    source
+  );
+}
+
+/**
+ * The dates a kind can remind from, in its own words and in the order its
+ * card asks for them: Expires (or Review by) while shown, then each of its
+ * `date` fields. A household's own field named like a built-in one reads
+ * "Due date (your own)".
+ */
+export function reminderChoices(
+  type: ReminderWords,
+  library: ReadonlyArray<Pick<DocumentAttributeView, 'key' | 'label' | 'builtin'>> = [],
+): Array<{ key: string; label: string }> {
+  const out: Array<{ key: string; label: string }> = [];
+  if (type.expiry_driver !== null)
+    out.push({ key: 'expires', label: reminderWord(type, 'expires') });
+  for (const f of type.fields ?? []) {
+    if (f.kind !== 'date') continue;
+    const own = library.find((a) => a.key === f.key)?.builtin === false;
+    const clash =
+      own &&
+      library.some(
+        (a) => a.builtin && a.label.trim().toLowerCase() === f.label.trim().toLowerCase(),
+      );
+    out.push({ key: f.key, label: clash ? `${f.label} (your own)` : f.label });
+  }
+  return out;
+}
+
+/** What `nextReminder` reads of a change to a kind. */
+export interface ReminderChange {
+  remind_from?: string | null | undefined;
+  remind_leads?: number[] | undefined;
+  reminder_leads?: number[] | undefined;
+  fields?: ReadonlyArray<{ key: string; required?: boolean | undefined }> | undefined;
+}
+
+/** A change refused: the sentence, and the field it is about. */
+export interface ReminderProblem {
+  message: string;
+  detail: string;
+}
+
+/**
+ * What a kind reminds from after a change, worked out on the kind as it
+ * will be — the same rules on the server and in the fakes (0.5.15):
+ *
+ *  - The date must be one the kind asks for: Expires while shown, or a
+ *    `date` field it shows. Anything else is refused (REMIND_FROM_NOT_ASKED).
+ *  - Reminders on need lead times (REMIND_NEEDS_LEADS). A date chosen with
+ *    none sent gets its default (`defaultLeads`); the date it already
+ *    reminds from keeps its own.
+ *  - `remind_from` left out, the rule every vault has kept: a kind that
+ *    reminds nobody starts reminding from Expires when Expires is switched
+ *    on, when it is made showing Expires, or when lead times are sent while
+ *    it shows Expires — with the times sent, else those kept, else 30
+ *    days. `reminder_leads` sets the reminding date's times, and `[]` is
+ *    no reminders, as it always was. A kind that reminds from another date
+ *    keeps it.
+ *  - Hiding the date reminders come from switches them off. Expires keeps
+ *    its lead times, as it always has; any other date's are cleared, and
+ *    so are they when `remind_from` is null.
+ *  - The reminding date is always required: a change that makes it
+ *    optional is refused (REMINDING_DATE_REQUIRED, naming it).
+ *
+ * `before` is the kind as it is (null for a new one); `after`, whether it
+ * will show Expires and the keys of the `date` fields it will show.
+ */
+export function nextReminder(
+  sent: ReminderChange,
+  before: { reminding: Reminding; expires: boolean } | null,
+  after: { expires: boolean; dates: ReadonlyArray<string> },
+): Reminding | { problem: ReminderProblem } {
+  if (sent.remind_leads !== undefined && sent.reminder_leads !== undefined) {
+    return { problem: { message: ONE_SET_OF_LEADS, detail: 'remind_leads' } };
+  }
+  const leadsSent = sent.remind_leads ?? sent.reminder_leads;
+  const dates = after.expires ? ['expires', ...after.dates] : [...after.dates];
+  let from = before?.reminding.from ?? null;
+  let leads = before?.reminding.leads ?? [];
+  if (sent.remind_from === null) {
+    if (leadsSent?.length)
+      return { problem: { message: REMIND_OFF_NO_LEADS, detail: 'remind_leads' } };
+    from = null;
+    leads = [];
+  } else if (sent.remind_from !== undefined) {
+    if (!dates.includes(sent.remind_from)) {
+      return { problem: { message: REMIND_FROM_NOT_ASKED, detail: 'remind_from' } };
+    }
+    if (leadsSent !== undefined) {
+      if (leadsSent.length === 0) {
+        return { problem: { message: REMIND_NEEDS_LEADS, detail: 'remind_leads' } };
+      }
+      leads = leadsSent;
+    } else if (sent.remind_from !== from) {
+      // Only Expires keeps its times while off: another date's are gone.
+      leads = defaultLeads(sent.remind_from, from === null ? leads : []);
+    }
+    from = sent.remind_from;
+  } else {
+    // The date reminders come from, hidden by this change: switched off.
+    if (from !== null && !dates.includes(from)) {
+      if (from !== 'expires') leads = [];
+      from = null;
+    }
+    if (leadsSent !== undefined) {
+      if (leadsSent.length === 0) {
+        from = null;
+        leads = [];
+      } else {
+        leads = leadsSent;
+        if (from === null && after.expires) from = 'expires';
+      }
+    } else if (from === null && after.expires && !before?.expires) {
+      from = 'expires';
+      if (leads.length === 0) leads = [30];
+    }
+  }
+  if (from !== null && from !== 'expires') {
+    if (sent.fields?.some((f) => f.key === from && f.required === false)) {
+      return { problem: { message: REMINDING_DATE_REQUIRED, detail: from } };
+    }
+  }
+  return { from, leads: leadTimes(leads) };
+}
 
 /** Who a visibility reaches, fewest first. An unknown one reaches nobody. */
 const REACH: Record<string, number> = { private: 1, adults: 2, household: 3 };

@@ -55,6 +55,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
         document_id: randomUUID(),
         title: 'My own private title',
         label: 'Due today',
+        about: null,
         note: null,
         overdue: false,
         private: false,

@@ -1218,6 +1218,99 @@ link_not_valid` on each, whatever its options, and a legacy link's is
       `linkItems`, `linkItemContentUrl`, `afterRestore`, `resumeShare`. A
       pasted `/s#…` link gives the phone its vault's origin, the fragment
       dropped, as other pasted links do.
+  - Reminders from any date: the server (5.16a). A kind reminds from one
+    date it shows: Expires (Review by on the Will), or one of its own
+    `date` fields — a bill's Due date, a car's MOT. Issued and years are
+    never offered. Nothing repeats: a bill's next due date is a new date.
+    Built-ins keep reminding from Expires, and a document's status is
+    still about Expires only.
+    - **Added:** `features.reminder_dates` in the capability document. It
+      is present and `false` in 0.5.15, and turned on with the web's editor
+      (5.16b). A client offers what follows only when it is `true`.
+    - **Added:** `due_date` ("Due date", a `date`) in every household's
+      library (`GET /api/v1/document-attributes`, `builtin: true`). A
+      household's own field of that name keeps its key and its data.
+    - **Added:** `DocumentTypeView.remind_from` — `'expires'`, a date
+      field's key, or `null` for no reminders — and `remind_leads`, that
+      date's lead times (while nothing reminds, the times Expires kept).
+      `DocumentTypeInput` takes both, on `POST` and `PATCH
+/document-types`. `remind_from` must be a date the kind shows: a
+      `date` field it asks for, or `'expires'` while Expires is shown. With
+      no `remind_leads`, a date chosen starts with its default: 7 days for
+      `due_date`, 30 for any other, and Expires takes back the times it
+      kept while switched off. A kind's ETag moves with `remind_from` and
+      `remind_leads` only while a date field reminds, so every existing
+      kind kept its ETag at the upgrade.
+    - **Added:** `DocumentTypeImpact.reminders_by_source` — the reminders
+      not dealt with yet, on documents the caller can see, by the date each
+      is about: `{ "expires": 3, "due_date": 2 }`. `reminders` is their
+      total, as before.
+    - **Added:** `ReminderView.source` (`'expires'`, a field's key, or null
+      for a manual reminder) and `about`, the date it is about in the
+      kind's words and how far off it is: "Due date: 10 Oct, in 7 days".
+      `label` is unchanged.
+    - **Changed:** `reminder_leads` is Expires's alone: `[]` while a date
+      field reminds, so an older phone never says "before it expires" of a
+      bill's due date, and its offline status agrees with the vault's. It
+      is `[]` too while nothing reminds and Expires is shown, as after
+      `remind_from: null` (it always was after `reminder_leads: []`).
+    - **Changed:** `reminder_leads` in a body sets the lead times of the
+      date the kind reminds from, whichever it is; `[]` is still "no
+      reminders". Left out with `remind_from`, the rule every vault has
+      kept: a kind that reminds nobody starts reminding from Expires when
+      Expires is switched on, when it is made showing Expires, or when lead
+      times are sent while it shows Expires — the times sent, else those
+      kept, else `[30]`. A kind reminding from another date keeps it.
+    - **Changed:** new `422 validation_failed` refusals, each with its
+      sentence: a `remind_from` the kind does not ask for (`detail:
+"remind_from"`); reminders on with no lead times, or lead times with
+      `remind_from: null` (`detail: "remind_leads"`); `remind_leads` and
+      `reminder_leads` together; the reminding field made optional
+      (`detail`: its key) — the reminding field is kept `required: true`,
+      which is how an older phone asks for it; and `POST
+/document-attributes` with a `label` the library has already, a
+      built-in's included, in any case (`detail: "label"`), which only the
+      web checked before.
+    - **Changed:** hiding the date reminders come from — Expires switched
+      off, or the field taken off the kind — switches them off, audited
+      with `remind_from` in the line's `fields`. Expires keeps its lead
+      times for when it is switched on again; a field's are cleared.
+    - **Changed:** a document's reminders are made again when an edit sets
+      or takes away the detail its kind reminds from, as for `expires` and
+      `type_key`; any other detail leaves them as they are.
+    - **Changed:** a due date (any date field) that has already passed
+      makes no reminders when a document is filed or edited, and takes
+      none away: an edit after the due day never deletes a reminder nobody
+      has dealt with. Taking the date away takes its reminders, as for
+      Expires. An expiry that has passed still makes one.
+    - **Changed:** of the reminders whose day has already passed when a
+      document is filed or edited, only the one nearest the date is made
+      `due`, and none if a nearer one is held: a passport filed with two
+      months left is one line, not two. This is so for Expires too.
+    - **Changed:** snoozing a derived reminder `until: "expiry"` waits for
+      the date it is about (its expiry, or its due date). A snooze of a
+      reminder about a date field never goes past that date while it is
+      ahead: a later day is cut back to it, so an older phone's "A month"
+      on a bill due in 9 days waits 9 days.
+    - **Changed:** in the digest (email, web push), a derived reminder
+      "has lapsed" only once the date it is about has passed, not when the
+      reminder itself is late; its line says `about` where there is one.
+      An Only me item's email says neither its title nor its date: "One of
+      your private documents — Due today".
+    - **Changed:** an Only me document's reminding date is readable to the
+      vault, as its expiry date always was: its owner's own writes, and the
+      vault's `types.regenerate` job, open that one sealed date (never in
+      the Trash, never logged or kept) to make its reminders. Everything
+      else in its details stays sealed. Its only plain trace is the
+      reminder rows, as an Only me expiry date's already is.
+    - `@fdv/shared`: `remind_from`, `remind_leads`, `reminders_by_source`,
+      `source`, `about`, `reminder_dates`; `reminderOf`, `reminderChoices`,
+      `reminderWord`, `defaultLeads`, `nextReminder` (the rules above, which
+      the fake keeps too), `leadTimes`, `DUE_DATE`, the sentences
+      (`REMIND_FROM_NOT_ASKED`, `REMIND_NEEDS_LEADS`, `REMIND_OFF_NO_LEADS`,
+      `REMINDING_DATE_REQUIRED`, `ONE_SET_OF_LEADS`, `libraryHasName`);
+      `dateReminderSentence`, `REMIND_ONCE` (`reminderSentence` is
+      unchanged, word for word); `reminderAbout`, `aboutDate`, `lapsed`.
 
 ## Deprecations in effect
 

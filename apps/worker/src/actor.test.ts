@@ -190,6 +190,7 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
           household_id: hh,
           document_id: doc.id,
           kind: 'derived',
+          source: 'expires',
           fire_at: '2026-09-20',
           lead_days: 180,
         })
@@ -495,7 +496,10 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
             [ids.document],
           );
           expect(
-            await regenerateTypeReminders(app, { household_id: hh, type_key: 'passport' }),
+            await regenerateTypeReminders(
+              { app, keys },
+              { household_id: hh, type_key: 'passport' },
+            ),
           ).toEqual({ documents: 1, failed: 0 });
           const made = await admin.query<{ lead_days: number }>(
             "select lead_days from reminder where document_id = $1 and kind = 'derived' order by lead_days",

@@ -167,6 +167,7 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
       document_id: randomUUID(),
       title: `Anna Example passport ${n}`,
       label: 'Due today',
+      about: null,
       note: null,
       overdue: false,
       private: false,

@@ -142,8 +142,11 @@ async function main(): Promise<void> {
   });
   await boss.send(JOBS.sealPrivate, {});
 
-  // A type's lead times changed, or its Expires switched on or off: each of
-  // its documents reminded anew, as the vault, one per transaction (0.5.10).
+  // A type's reminding date or lead times changed, or its reminders switched
+  // on or off: each of its documents reminded anew, as the vault, one per
+  // transaction (0.5.10). An Only me document's reminding date is opened
+  // with its owner's key for that alone (0.5.15, A62), as private.seal
+  // opens with it: the log says counts and ids, never a value.
   await boss.createQueue(JOBS.regenerateTypes, {
     policy: 'stately',
     retryLimit: 3,
@@ -151,7 +154,7 @@ async function main(): Promise<void> {
   });
   await boss.work<RegenerateTypeJob>(JOBS.regenerateTypes, { batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
-      const r = await regenerateTypeReminders(dbs.app, job.data);
+      const r = await regenerateTypeReminders({ app: dbs.app, keys: processDeps.keys }, job.data);
       log('info', "a type's reminders made again", { type_key: job.data.type_key, ...r });
       if (r.failed) throw new Error(`${r.failed} documents' reminders could not be made again`);
     }

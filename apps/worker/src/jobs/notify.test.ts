@@ -5,7 +5,7 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createNotifier, htmlBody, subject, textBody } from './notify.js';
-import { weekly, type Digest } from './reminders.js';
+import { deliver, weekly, type Digest } from './reminders.js';
 
 const MASTER = 'notify-test-master-secret-at-least-32-bytes';
 const MAILPIT = process.env.MAILPIT_URL ?? 'http://localhost:8025';
@@ -49,6 +49,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       document_id: 'd1',
       title: "Sana's passport",
       label: 'Overdue by 3 days',
+      about: null,
       note: null,
       overdue: true,
       private: false,
@@ -58,6 +59,7 @@ const digest = (over: Partial<Digest> = {}): Digest => ({
       document_id: 'd2',
       title: 'Car registration',
       label: 'In 12 days · 2 Oct',
+      about: null,
       note: 'Renew online',
       overdue: false,
       private: false,
@@ -103,6 +105,25 @@ describe('digest copy', () => {
       expect(body).not.toContain('Bring the letter');
       expect(body).toContain('One of your private documents');
     }
+  });
+
+  it("an Only me item's email has no date words", () => {
+    const secret = {
+      ...(digest().items[0] as Digest['items'][number]),
+      title: 'Payday loan',
+      label: 'Due today',
+      about: 'Due date: 10 Oct, in 7 days',
+      private: true,
+    };
+    const d = digest({ items: [secret] });
+    for (const body of [textBody(d, 'x'), htmlBody(d, 'x')]) {
+      for (const words of ['Payday', 'Due date', '10 Oct', 'in 7 days']) {
+        expect(body).not.toContain(words);
+      }
+      expect(body).toContain('One of your private documents');
+      expect(body).toContain('Due today');
+    }
+    expect(textBody(d, 'x')).toContain('• One of your private documents — Due today');
   });
 
   it('the catch-up wording differs from the daily one', () => {
@@ -154,6 +175,7 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
           household_id: hh,
           document_id: d.id,
           kind: 'derived',
+          source: 'expires',
           fire_at: '2026-10-10',
           lead_days: 45,
           status: 'scheduled',
@@ -313,4 +335,119 @@ describe.skipIf(!testAdminUrl())('notifier and the weekly summary', () => {
     },
     30_000,
   );
+});
+
+/**
+ * What a reminder is about, in the digest (0.5.15): the date its kind
+ * reminds from, in the kind's words, and "lapsed" only once that date has
+ * passed — not when a reminder for it is late.
+ */
+describe.skipIf(!testAdminUrl())('the digest says what each reminder is about', () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  const hh = randomUUID();
+  const KIND = 'h_counciltax';
+  const sent: Digest[] = [];
+  const notifier = { digest: async (d: Digest) => (sent.push(d), ['test']) };
+  const run = (iso: string) =>
+    deliver({
+      admin,
+      app: db,
+      notifier,
+      log: () => undefined,
+      digestHour: 9,
+      now: () => new Date(iso),
+    });
+  /** A bill due on `due`, with its 7-day reminder due now. */
+  const bill = async (title: string, due: string, fireAt: string) =>
+    withSystem(db, hh, async (trx) => {
+      const d = await trx
+        .insertInto('document')
+        .values({
+          household_id: hh,
+          title,
+          type_key: KIND,
+          owner_member_id: member,
+          extra: JSON.stringify({ due_date: { date: due, precision: 'day' } }),
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('reminder')
+        .values({
+          household_id: hh,
+          document_id: d.id,
+          kind: 'derived',
+          source: 'due_date',
+          fire_at: fireAt,
+          lead_days: 7,
+          status: 'due',
+        })
+        .execute();
+    });
+  let member = '';
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    await admin.query("insert into household (id, name, timezone) values ($1, 'Bills', 'UTC')", [
+      hh,
+    ]);
+    member = (
+      await admin.query<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'M') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const a = await admin.query<{ id: string }>(
+      "insert into account (email) values ('bills@example.test') returning id",
+    );
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [a.rows[0]?.id, hh, member],
+    );
+    await admin.query(
+      `insert into document_type
+         (key, household_id, label, category, fields, reminder_leads, remind_from)
+       values ($1, $2, 'Council tax', 'bills',
+               '[{"key": "due_date", "label": "Due date", "kind": "date", "required": true}]',
+               '{7}', 'due_date')`,
+      [KIND, hh],
+    );
+  });
+  afterAll(async () => {
+    await db?.destroy();
+    await admin?.end();
+    await tdb?.drop();
+  });
+
+  it('the digest line reads Council tax — Due date: 10 Oct, in 7 days', async () => {
+    await bill('Council tax', '2026-10-10', '2026-10-03');
+    expect(await run('2026-10-03T10:00:00Z')).toEqual({ digests: 1 });
+    const d = sent[0] as Digest;
+    expect(d.items).toMatchObject([
+      { title: 'Council tax', label: 'Due today', about: 'Due date: 10 Oct, in 7 days' },
+    ]);
+    expect(textBody(d, 'x')).toContain('• Council tax — Due date: 10 Oct, in 7 days');
+    expect(htmlBody(d, 'x')).toContain('Due date: 10 Oct, in 7 days');
+  });
+
+  it('a late reminder for a bill still ahead does not say lapsed', async () => {
+    // Its 7-day reminder fell due on the 3rd; nobody was told until the 5th.
+    await bill('Water', '2026-10-10', '2026-10-03');
+    expect(await run('2026-10-05T10:00:00Z')).toEqual({ digests: 1 });
+    const d = sent[1] as Digest;
+    expect(d.items).toMatchObject([
+      {
+        title: 'Water',
+        label: 'Overdue by 2 days',
+        about: 'Due date: 10 Oct, in 5 days',
+        overdue: false,
+      },
+    ]);
+    expect(subject(d)).toBe('1 thing needs attention');
+    expect(textBody(d, 'x')).not.toMatch(/lapsed|Overdue/);
+  });
 });

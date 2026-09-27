@@ -3,8 +3,10 @@ import {
   autoTitle,
   CAPTURE_FIELDS,
   checkCaptureMetadata,
+  dateReminderSentence,
   effectiveVisibility,
   PRIVATE_BY_DEFAULT,
+  REMIND_ONCE,
   reminderSentence,
   type CaptureContext,
 } from './capture.js';
@@ -283,5 +285,50 @@ describe('what the card writes for you', () => {
     );
     expect(reminderSentence(bill)).toBeNull();
     expect(reminderSentence(null)).toBeNull();
+  });
+
+  it('reminderSentence is unchanged; the date sentence says before its due date, before its MOT', () => {
+    // Older phones carry their own copy of reminderSentence: every word of
+    // it stays as it was (0.5.15), whatever it shares with the new one.
+    const expiring = [
+      [
+        { expiry_driver: 'expires_on', reminder_leads: [270, 180] },
+        '9 months and 6 months before it expires.',
+      ],
+      [
+        { expiry_driver: 'expires_on', reminder_leads: [7, 1] },
+        '7 days and 1 day before it expires.',
+      ],
+      [
+        { expiry_driver: 'expires_on', reminder_leads: [60, 60, 14] },
+        '2 months and 14 days before it expires.',
+      ],
+      [
+        { expiry_driver: 'review_on', reminder_leads: [30, 0] },
+        "30 days before it's due for review, and on the day.",
+      ],
+    ] as const;
+    for (const [type, words] of expiring) {
+      expect(reminderSentence({ ...type, reminder_leads: [...type.reminder_leads] })).toBe(
+        `We'll remind you ${words}`,
+      );
+    }
+    expect(reminderSentence({ expiry_driver: 'expires_on', reminder_leads: [] })).toBeNull();
+    expect(reminderSentence({ expiry_driver: null, reminder_leads: [30] })).toBeNull();
+
+    // A date field's name lower case, an abbreviation as it is written.
+    expect(dateReminderSentence('Due date', [7, 1])).toBe(
+      "We'll remind you 7 days and 1 day before its due date.",
+    );
+    expect(dateReminderSentence('MOT', [30])).toBe("We'll remind you 30 days before its MOT.");
+    expect(dateReminderSentence('  Renewal   date ', [270, 30, 0])).toBe(
+      "We'll remind you 9 months and 30 days before its renewal date, and on the day.",
+    );
+    expect(dateReminderSentence('Due date', [0])).toBe("We'll remind you on its due date.");
+    expect(dateReminderSentence('Due date', [])).toBeNull();
+    // A reminder is for one date: nothing repeats.
+    expect(REMIND_ONCE).toBe(
+      'We remind you once for this date: nothing repeats. When the next one is due, change the date or add the next one.',
+    );
   });
 });
