@@ -13,7 +13,7 @@ A person's profile, and their photo.
 ### Added
 
 - A name on People opens that person's profile: their photo, relationship and birthday, their documents, and — for owners — their sign-in. A name on Home still opens their documents, which now link back to "About" them.
-- Profile photos: choose one, frame it, and it is made into a small square with the location and camera details taken out; the photo as sent is not kept. You can set your own; an owner can set anyone's; an adult can set it for someone without a sign-in. Viewers see initials.
+- Profile photos: choose one, frame it, and it is made into a small square with the location and camera details taken out; the photo as sent is not kept. JPEG photos up to 128 megapixels work; HEIC, WebP and PNG up to about 50 (an iPhone's largest). You can set your own; an owner can set anyone's; an adult can set it for someone without a sign-in. Viewers see initials.
 - Initials tell people apart: Aisha and Ahmed become "Ai" and "Ah", Sam Khan and Sam Malik "SK" and "SM", Sara and Sam Khan "Sr" and "Sm".
 - "Add someone" asks for a relationship (optional).
 - Owners see a note on each profile about where SSNs and other ID numbers are kept until they get their own sealed place.
