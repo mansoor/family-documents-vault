@@ -465,30 +465,38 @@ export class InvitationService {
     // not the one asking.
     const scope = { householdId, actor: ANONYMOUS };
 
-    // The attempt counter has to survive the failure it is counting, so a
-    // wrong code is recorded in its own transaction and thrown afterwards.
-    const invitationId = await withScope(
-      this.db,
-      scope,
-      async (trx) => (await this.live(trx, token)).id,
-    );
-    const stored = await withScope(this.db, scope, (trx) =>
-      trx
-        .selectFrom('invitation')
-        .select(['code_hash'])
-        .where('id', '=', invitationId)
-        .executeTakeFirstOrThrow(),
-    );
-    if (!(await argon2.verify(stored.code_hash, normaliseCode(input.code)))) {
-      const left = await withScope(this.db, scope, async (trx) => {
-        const row = await trx
-          .updateTable('invitation')
-          .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
-          .where('id', '=', invitationId)
-          .returning('attempts')
-          .executeTakeFirstOrThrow();
-        return MAX_ATTEMPTS - row.attempts;
-      });
+    // One try of the code (5.17 review, as a share link's PIN since 5.16).
+    // The try is reserved before the code is checked — `attempts + 1 where
+    // attempts < 5`, which takes the row — so tries made at the same moment,
+    // by either way in, queue behind it, and no more than five are ever made
+    // however many arrive at once. Until then each one read the count, and
+    // twenty at once were twenty tries. A right code gives its try back (the
+    // reservation is rolled back to its savepoint, which also lets the next
+    // try in), so a refusal after it — an address taken, say — costs none. A
+    // wrong one keeps it: the count has to survive the failure it is
+    // counting, so the transaction commits and the refusal is thrown after.
+    const left = await withScope(this.db, scope, async (trx) => {
+      const { id, code_hash } = await this.live(trx, token);
+      await sql`savepoint fdv_code_attempt`.execute(trx);
+      const reserved = await trx
+        .updateTable('invitation')
+        .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
+        .where('id', '=', id)
+        .where('attempts', '<', MAX_ATTEMPTS)
+        .where('accepted_at', 'is', null)
+        .where('revoked_at', 'is', null)
+        .returning('attempts')
+        .executeTakeFirst();
+      // Used up, taken or taken back while this one waited: the one refusal.
+      if (!reserved) throw gone();
+      if (await argon2.verify(code_hash, normaliseCode(input.code))) {
+        await sql`rollback to savepoint fdv_code_attempt`.execute(trx);
+        return null;
+      }
+      await sql`release savepoint fdv_code_attempt`.execute(trx);
+      return MAX_ATTEMPTS - reserved.attempts;
+    });
+    if (left !== null) {
       throw new ApiError(
         401,
         'invitation_code_wrong',

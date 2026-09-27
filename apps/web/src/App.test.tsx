@@ -935,6 +935,53 @@ describe('App', () => {
     await expectAccessible();
   });
 
+  it('Back after a finished reset never asks for the used link again (5.17 review)', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    // The link opened in this tab after a page of the app, so Back has
+    // somewhere in the app to go.
+    window.history.replaceState({}, '', '/welcome');
+    window.history.pushState({}, '', `/reset#${RESET_TOKEN}`);
+    holdAccountLinkToken();
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a brand new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Set my new password' }));
+    await screen.findByRole('heading', { name: 'That is done' });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/sign-in'));
+    await screen.findByLabelText('Email');
+
+    // Signing in took the reset page's place: Back is the page before the
+    // link, not a page asking for a link that opens nothing now.
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.pathname).toBe('/welcome'));
+    await screen.findByRole('button', { name: 'Sign in' });
+    expect(screen.queryByText(/Open your link again|Open it again/)).not.toBeInTheDocument();
+
+    // And the reset page opened again in this page load says what is true:
+    // the link was used.
+    act(() => {
+      window.history.pushState({}, '', '/reset');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { name: 'That link has been used' });
+    expect(screen.getByText(/Sign in with your new\s+password/)).toBeInTheDocument();
+    expect(screen.queryByText(/Open your link again|Open it again/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Ask for a new one' })).not.toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/sign-in'));
+    // One lookup and one spend, and nothing asked of the vault since.
+    expect(carrying(state, RESET_TOKEN)).toEqual([
+      'POST /api/v1/password-resets/lookup',
+      'POST /api/v1/password-resets/complete',
+    ]);
+  });
+
   it('a link pasted into a tab already at its page starts the page again from it', async () => {
     // Only the fragment changes, and a browser loads nothing for that: the
     // page is loaded again, to read the link as a new tab would.
@@ -1007,6 +1054,55 @@ describe('App', () => {
       code: 'ABCD-EFGH',
       password: 'a long enough password',
     });
+  });
+
+  it('Back after joining never asks for the used invitation again (5.17 review)', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/welcome');
+    window.history.pushState({}, '', `/join#${JOIN_TOKEN}`);
+    holdAccountLinkToken();
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'ABCD-EFGH' },
+    });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'a long enough password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(window.location.pathname).toBe('/');
+
+    // Home took the invitation page's place: Back is the page before the
+    // link (which, signed in now, sends them Home again), never the
+    // invitation.
+    const popped = new Promise((r) => window.addEventListener('popstate', r, { once: true }));
+    act(() => window.history.back());
+    await act(() => popped);
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(screen.queryByText(/Open the invitation link again/)).not.toBeInTheDocument();
+
+    // And the invitation page opened again in this page load says what is
+    // true: it was used.
+    act(() => {
+      window.history.pushState({}, '', '/join');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { name: 'That invitation has been used' });
+    expect(
+      screen.getByText(/You joined with it, so the link opens nothing now/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Open the invitation link again/)).not.toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Go to the vault' }));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(carrying(state, JOIN_TOKEN)).toEqual([
+      'POST /api/v1/invitations/lookup',
+      'POST /api/v1/invitations/accept',
+    ]);
   });
 
   it('an old /join/ link still works', async () => {

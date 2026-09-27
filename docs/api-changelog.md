@@ -1347,6 +1347,12 @@ email? }` → `201` with tokens, as
       one of the same five tries. The same refusals: `404
 invitation_not_valid`, `401 invitation_code_wrong`, `422
 validation_failed`. Unauthenticated; 10 a minute per address, each.
+    - **Changed:** an invitation's code tries are reserved before the code
+      is checked, as a share link's PIN tries are (5.16): tries made at
+      once, by either way in, never get past five — the rest are `404
+invitation_not_valid` — where each used to read the count and all were
+      tried. A right code uses no try, as before, even when it is then
+      refused for something else (`409 email_taken`).
     - The request log names the four routes, and keeps no token, code or
       password from them, as for every other route; a body that is not
       JSON is `400 bad_request`, and its line keeps nothing of it either.

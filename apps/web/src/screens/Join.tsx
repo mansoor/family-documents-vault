@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type InvitationPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
-import { forgetLinkToken, heldLinkToken } from '../link-token.js';
+import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
@@ -27,6 +27,8 @@ export function JoinScreen() {
   // Read, not taken: reading it twice, as a check in development does,
   // gives the same token.
   const [token] = useState(() => heldLinkToken('join'));
+  // Used in this page load already, and the page opened again (5.17 review).
+  const [spent] = useState(() => linkSpent('join'));
   const { session, markAuthChanged } = useApp();
   const navigate = useNavigate();
   const [preview, setPreview] = useState<InvitationPreview | null>(null);
@@ -66,14 +68,33 @@ export function JoinScreen() {
           ...(email && email.trim() ? { email: email.trim() } : {}),
         }),
       );
-      forgetLinkToken();
+      markLinkSpent();
       markAuthChanged();
+      // In place of this page, so Back does not come back to it.
       await navigate('/', { replace: true });
     } catch (err) {
       setError(describeError(err));
       setBusy(false);
     }
   };
+
+  if (spent) {
+    // They joined from this page, in this page load, and it is open again:
+    // asking for the link would send them to one that opens nothing.
+    return (
+      <main className="page">
+        <Logo />
+        <section className="card stack">
+          <h1 style={{ fontSize: 24 }}>That invitation has been used</h1>
+          <p className="muted">
+            You joined with it, so the link opens nothing now. From here on, your way in is the
+            email and password you chose.
+          </p>
+          <Button onClick={() => void navigate('/', { replace: true })}>Go to the vault</Button>
+        </section>
+      </main>
+    );
+  }
 
   if (!token || loadError) {
     return (

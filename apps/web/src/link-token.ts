@@ -47,7 +47,14 @@ export function takeLinkToken(): string | null {
 /** The pages an invitation's link and a reset's open (5.17). */
 export type AccountLinkPage = 'join' | 'reset';
 
-let held: { page: AccountLinkPage; token: string } | null = null;
+/**
+ * What this page load knows of its link: the token, until the link is
+ * used; then only that it was, so a page opened again in the same load —
+ * Back, say — tells the truth about it rather than asking for it again.
+ * A reload knows neither.
+ */
+let held: { page: AccountLinkPage; token: string } | { page: AccountLinkPage; spent: true } | null =
+  null;
 
 /**
  * At start-up, before the app is drawn (main.tsx): the token of an
@@ -80,14 +87,22 @@ export function holdAccountLinkToken(): void {
   if (raw) held = { page, token: decoded(raw) };
 }
 
-/** The token the page was opened with, or null: none, or another page's. */
+/** The token the page was opened with, or null: none, another page's, or used. */
 export function heldLinkToken(page: AccountLinkPage): string | null {
-  return held?.page === page ? held.token : null;
+  return held?.page === page && 'token' in held ? held.token : null;
 }
 
-/** Drops it once the link is spent: the person has joined, or set their password. */
-export function forgetLinkToken(): void {
-  held = null;
+/** Whether this page's link was used in this page load (5.17 review). */
+export function linkSpent(page: AccountLinkPage): boolean {
+  return held?.page === page && 'spent' in held;
+}
+
+/**
+ * Once the link is used — the person has joined, or set their password —
+ * the token is dropped, and only the fact that it was used is kept.
+ */
+export function markLinkSpent(): void {
+  if (held) held = { page: held.page, spent: true };
 }
 
 /**

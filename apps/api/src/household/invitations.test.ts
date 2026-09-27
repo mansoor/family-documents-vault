@@ -200,6 +200,95 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
     expect(dead.statusCode).toBe(404);
   });
 
+  it('twenty wrong codes at once, by both ways in, get five tries between them (5.17 review)', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Raced', email: 'raced@example.test', role: 'viewer' }),
+    );
+    // From one address: each way in has ten a minute of its own, so the
+    // limiter lets all twenty through and only the count stands in the way.
+    const from = { remoteAddress: '10.99.17.1' };
+    const wrong = { code: 'WXYZ-WXYZ', password: 'a long password' };
+    const answers = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        i % 2 === 0
+          ? h.app.inject({
+              method: 'POST',
+              url: '/api/v1/invitations/accept',
+              payload: { token: created.link_token, ...wrong },
+              ...from,
+            })
+          : h.app.inject({
+              method: 'POST',
+              url: `/api/v1/invitations/${created.link_token}/accept`,
+              payload: wrong,
+              ...from,
+            }),
+      ),
+    );
+    const said = (r: { json: () => unknown }) =>
+      json<{ error: { code: string; message: string } }>(r).error;
+    const guessed = answers.filter((r) => r.statusCode === 401);
+    const refused = answers.filter((r) => r.statusCode === 404);
+    expect(guessed).toHaveLength(5);
+    expect(refused).toHaveLength(15);
+    // Each of the five tries is counted once, in the words a try always had.
+    expect(guessed.map((r) => said(r).message).sort()).toEqual(
+      [
+        'That code is not right. 4 tries left.',
+        'That code is not right. 3 tries left.',
+        'That code is not right. 2 tries left.',
+        'That code is not right. 1 try left.',
+        'That code was wrong too many times. Ask whoever invited you for a new invitation.',
+      ].sort(),
+    );
+    for (const r of refused) expect(said(r).code).toBe('invitation_not_valid');
+
+    // The right code, afterwards, opens nothing: the invitation is dead.
+    const late = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'a long password',
+    });
+    expect(late.statusCode).toBe(404);
+    const listed = json<{ items: InvitationView[] }>(
+      await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+    ).items.find((i) => i.id === created.invitation.id);
+    expect(listed).toMatchObject({ state: 'locked', attempts_left: 0 });
+  });
+
+  it('a right code on the fifth try still works, and a right code uses no try', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Fifth', email: 'fifth@example.test', role: 'viewer' }),
+    );
+    for (const left of ['4 tries', '3 tries', '2 tries', '1 try']) {
+      const res = await acceptByBody(created.link_token, {
+        code: 'WXYZ-WXYZ',
+        password: 'a long password',
+      });
+      expect(res.statusCode).toBe(401);
+      expect(json<{ error: { message: string } }>(res).error.message).toContain(`${left} left`);
+    }
+    // The right code, refused for something else — an address that signs in
+    // here already — gives its try back.
+    const taken = await accept(created.link_token, {
+      code: created.code,
+      password: 'a long password',
+      email: 'owner@example.test',
+    });
+    expect(taken.statusCode).toBe(409);
+    const attemptsLeft = async () =>
+      json<{ items: InvitationView[] }>(
+        await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+      ).items.find((i) => i.id === created.invitation.id)?.attempts_left;
+    expect(await attemptsLeft()).toBe(1);
+
+    const joined = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'fifth time lucky',
+    });
+    expect(joined.statusCode).toBe(201);
+    expect(json<Tokens>(joined).role).toBe('viewer');
+  });
+
   it('accepting makes a real account with the role it was offered', async () => {
     const created = json<CreatedInvitation>(
       await invite({ display_name: 'Alex', email: 'alex@example.test', role: 'adult' }),

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type ResetPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
-import { forgetLinkToken, heldLinkToken } from '../link-token.js';
+import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
@@ -180,7 +180,12 @@ export function ResetPasswordScreen() {
   // Read, not taken: reading it twice, as a check in development does,
   // gives the same token.
   const [token] = useState(() => heldLinkToken('reset'));
+  // Used in this page load already, and the page opened again (5.17 review).
+  const [spent] = useState(() => linkSpent('reset'));
   const navigate = useNavigate();
+  // To signing in, in place of this page: Back does not come back to a page
+  // whose link is used (5.17 review).
+  const toSignIn = () => void navigate('/sign-in', { replace: true });
   const [preview, setPreview] = useState<ResetPreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [password, setPassword] = useState('');
@@ -211,7 +216,7 @@ export function ResetPasswordScreen() {
     setError(null);
     try {
       await api.completeReset(token, password);
-      forgetLinkToken();
+      markLinkSpent();
       setDone(true);
     } catch (err) {
       setError(describeError(err));
@@ -219,10 +224,30 @@ export function ResetPasswordScreen() {
     }
   };
 
+  if (spent) {
+    // The link was used from this page, in this page load, and the page is
+    // open again: asking for the link would send them to one that opens
+    // nothing.
+    return (
+      <main className="page">
+        <Logo />
+        <section className="card stack">
+          <h1 style={{ fontSize: 22 }}>That link has been used</h1>
+          <p className="muted">
+            Your new password is set, and the link opens nothing now. Sign in with your new
+            password.
+          </p>
+          <Button onClick={toSignIn}>Sign in</Button>
+        </section>
+      </main>
+    );
+  }
+
   if (!token) {
     // Opened without its link, or reloaded once the link had been taken out
     // of the address: the link itself still works until it is used or its
-    // hour is up.
+    // hour is up. (After a reload nothing is known of a link used before
+    // it.)
     return (
       <main className="page">
         <Logo />
@@ -263,7 +288,7 @@ export function ResetPasswordScreen() {
           <p className="muted">
             The link is used up: it opens nothing now, even from this browser's history.
           </p>
-          <Button onClick={() => void navigate('/sign-in')}>Sign in</Button>
+          <Button onClick={toSignIn}>Sign in</Button>
         </section>
       </main>
     );
