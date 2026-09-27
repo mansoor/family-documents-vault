@@ -72,6 +72,11 @@ export type Capability =
    */
   | 'collection.manage'
   /**
+   * Give a person a photo, or change theirs (5.17c). Whose, is
+   * `canChangePerson` (A66); anybody may remove a photo of themselves.
+   */
+  | 'member.photo'
+  /**
    * Turn back on what a restore paused (A55): every link to a document the
    * owner can see (5.16). Without it, nothing — not even a link you made
    * to your own Only me document, which no owner can see: that one stays
@@ -190,6 +195,13 @@ const MATRIX: Record<Capability, Rule> = {
     roles: ['owner', 'adult', 'teen'],
     refusal: 'Viewers can open and download documents, but not make collections of them.',
   },
+  'member.photo': {
+    // The family's own faces, set by the family: whose is canChangePerson.
+    // A viewer is given documents, not the family (A65), and sets none —
+    // not even their own; they may take their own away.
+    roles: ['owner', 'adult', 'teen'],
+    refusal: 'Viewers can open and download documents, but not add photos.',
+  },
   'restore.review': {
     // A backup brings back links taken back since it was made, so after a
     // restore every link waits for an owner to say it still stands (A55).
@@ -269,6 +281,54 @@ export function canSee(
     default:
       return false;
   }
+}
+
+/** Said to whoever may not change somebody's photo, who may (A66). */
+export const PHOTO_REFUSAL =
+  'Only an owner or the person themselves can change this photo. For someone without a sign-in, any adult can.';
+
+/**
+ * Whether someone may change a person (A66): their photo (5.17c), and their
+ * details (5.25). An owner, anybody's; an adult, their own and those of the
+ * people with no sign-in (a child, a late parent); a teen, their own; a
+ * viewer, nobody's. A person with no sign-in is one whose `role` is null.
+ */
+export function canChangePerson(
+  viewer: { role: Role; memberId: string | null },
+  person: { id: string; role: Role | null },
+): boolean {
+  const self = viewer.memberId !== null && viewer.memberId === person.id;
+  switch (viewer.role) {
+    case 'owner':
+      return true;
+    case 'adult':
+      return self || person.role === null;
+    case 'teen':
+      return self;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether someone may give a person a photo, or change it: `member.photo`,
+ * and the person theirs to change (A66).
+ */
+export function canChangePhoto(
+  viewer: { role: Role; memberId: string | null },
+  person: { id: string; role: Role | null },
+): boolean {
+  return can(viewer.role, 'member.photo') && canChangePerson(viewer, person);
+}
+
+/** Whether someone may take a person's photo away: who may change it, or the person themselves. */
+export function canRemovePhoto(
+  viewer: { role: Role; memberId: string | null },
+  person: { id: string; role: Role | null },
+): boolean {
+  return (
+    canChangePhoto(viewer, person) || (viewer.memberId !== null && viewer.memberId === person.id)
+  );
 }
 
 /** Who a collection of documents is for (5.14). */

@@ -123,6 +123,10 @@ export interface Member {
   id: string;
   display_name: string;
   date_of_birth: string | null;
+  /**
+   * Mum, Son, Grandad. Since 0.5.19 the family's own detail, as a birthday
+   * is: null to a viewer, but for their own.
+   */
   relationship: string | null;
   is_deceased: boolean;
   colour: number;
@@ -132,6 +136,41 @@ export interface Member {
   document_count: number;
   /** Their sign-in was taken away and can be given back — never re-invited. */
   sign_in_removed?: boolean;
+  /**
+   * Their photo, when one is ready (0.5.19): fetch it from
+   * GET /members/{id}/photo/{photo.id} with a sign-in. Null for no photo,
+   * and for everybody but themselves to a viewer. Absent from older vaults.
+   */
+  photo?: { id: string } | null;
+  /**
+   * A new photo on its way, or refused (0.5.19): told only to whoever may
+   * change their photo. Null otherwise. Absent from older vaults.
+   */
+  photo_status?: 'processing' | 'failed' | null;
+  /** Whether the caller may give them a photo, or change it (A66; 0.5.19). */
+  can_change_photo?: boolean;
+}
+
+/** The largest photo a person's picture is made from (5.17c): 20 MiB. */
+export const PHOTO_MAX_BYTES = 20 * 1024 * 1024;
+
+/** A person's photo is a square JPEG this many pixels a side (5.17c). */
+export const PHOTO_EDGE = 512;
+
+/** What a person's photo can be made from (5.17c): JPEG, PNG, WebP, HEIC and HEIF. */
+export const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+
+/**
+ * The part of a picture a photo shows (5.17c), as fractions of the upright
+ * picture's width and height: from `x`, `y`, `w` across and `h` down. Each
+ * from 0 to 1, inside the picture, and at least 0.05 a side. None is the
+ * middle.
+ */
+export interface PhotoCrop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
 export interface Invitation {

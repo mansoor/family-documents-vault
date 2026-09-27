@@ -35,6 +35,12 @@ export interface ContractContext {
    * which have no call for it, can still hide one.
    */
   hideType: (householdId: string, key: string) => Promise<void>;
+  /**
+   * Makes the photos on their way (0.5.19), as the vault's worker does: the
+   * real API's run stands in for the worker, which is not there; the fake
+   * makes them itself at the next GET /members, and needs nothing here.
+   */
+  makePhotos?: () => Promise<void>;
 }
 
 export interface Scenario {
@@ -43,6 +49,10 @@ export interface Scenario {
 }
 
 const PDF = new TextEncoder().encode('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
+/** A JPEG, as far as its first bytes say (0.5.19): the vault's worker makes the square. */
+const JPEG = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9,
+]);
 const CAPTURE_KEY = '4f1c2b3a-9d8e-4c7b-8a6f-5e4d3c2b1a09';
 const RACE_KEY = '8e7d6c5b-4a39-4281-9f0e-1d2c3b4a5f6e';
 const NEVER_USED = 'c0ffee00-1234-4567-89ab-cdef01234567';
@@ -1051,6 +1061,65 @@ export const contractScenarios: Scenario[] = [
       expect((await api.collections(token)).items.map((l) => l.id)).not.toContain(made.id);
       expect((await api.documentCollections(token, everyday.id)).items).toEqual([]);
       expect((await api.document(token, everyday.id)).title).toBe('Contract council tax');
+    },
+  },
+  {
+    name: "a person's photo: PUT answers 202 processing, members then carry photo, DELETE clears it",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.member_photos).toBe(true);
+      const me = await api.me(token);
+      const mine = async () => (await api.members(token)).items.find((m) => m.id === me.member_id);
+      expect(await mine()).toMatchObject({
+        photo: null,
+        photo_status: null,
+        can_change_photo: true,
+      });
+
+      const sent = await api.setMemberPhoto(token, me.member_id, {
+        file: { kind: 'bytes', filename: 'me.jpg', contentType: 'image/jpeg', bytes: JPEG },
+        crop: { x: 0.25, y: 0, w: 0.5, h: 1 },
+      });
+      expect(sent).toMatchObject({ id: me.member_id, photo: null, photo_status: 'processing' });
+      // Not a photo: refused, as what it is, and what was on its way stays.
+      const pdf = await refusal(
+        api.setMemberPhoto(token, me.member_id, {
+          file: { kind: 'bytes', filename: 'me.pdf', contentType: 'application/pdf', bytes: PDF },
+        }),
+      );
+      expect(pdf).toMatchObject({ status: 415, code: 'unsupported_type' });
+      // The crop after the photo: refused.
+      const late = multipartBody([
+        { name: 'file', filename: 'me.jpg', contentType: 'image/jpeg', bytes: JPEG },
+        { name: 'crop', value: JSON.stringify({ x: 0, y: 0, w: 1, h: 1 }) },
+      ]);
+      const order = await refusal(
+        api.http.request(`/api/v1/members/${me.member_id}/photo`, {
+          method: 'PUT',
+          upload: { kind: 'bytes', bytes: late.bytes, contentType: late.contentType },
+          token,
+        }),
+      );
+      expect(order).toMatchObject({ status: 422, code: 'validation_failed' });
+
+      await ctx.makePhotos?.();
+      const made = await mine();
+      expect(typeof made?.photo?.id).toBe('string');
+      expect(made?.photo_status).toBeNull();
+      const photoId = (made?.photo as { id: string }).id;
+      const res = await api.memberPhoto(token, me.member_id, photoId);
+      expect(res.headers.get('content-type')).toBe('image/jpeg');
+      expect(res.headers.get('cache-control')).toBe('private, no-store');
+      expect(api.memberPhotoUrl(me.member_id, photoId)).toMatch(
+        new RegExp(`/api/v1/members/${me.member_id}/photo/${photoId}$`),
+      );
+
+      await api.removeMemberPhoto(token, me.member_id);
+      expect(await mine()).toMatchObject({ photo: null, photo_status: null });
+      const gone = await refusal(api.memberPhoto(token, me.member_id, photoId));
+      expect(gone).toMatchObject({ status: 404, code: 'no_photo' });
+      // Nothing there to take away is not a refusal.
+      await api.removeMemberPhoto(token, me.member_id);
     },
   },
   {

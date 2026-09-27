@@ -188,6 +188,13 @@ function summary(file: string, r: RestoreReport): string {
       '    Settings → After a restore.',
     );
   }
+  if (r.photosUnfinished > 0) {
+    lines.push(
+      `  - ${plural(r.photosUnfinished, 'photo')} still being made when the backup was taken ` +
+        `${r.photosUnfinished === 1 ? 'was' : 'were'} not finished;`,
+      '    choose it again on the person’s profile.',
+    );
+  }
   if (r.openInvitations > 0) {
     lines.push(
       `  - ${plural(r.openInvitations, 'invitation')} ${r.openInvitations === 1 ? 'is' : 'are'} ` +

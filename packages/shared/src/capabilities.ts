@@ -82,6 +82,13 @@ export interface CapabilityFeatures {
    * Absent from older vaults.
    */
   reminder_dates?: boolean;
+  /**
+   * People have photos (0.5.19): `photo`, `photo_status` and
+   * `can_change_photo` on members, and PUT, DELETE and GET
+   * /members/{id}/photo. The family sees everyone's, a viewer only their
+   * own. Absent from older vaults, where a client shows initials.
+   */
+  member_photos?: boolean;
 }
 
 export interface CapabilityLimits {

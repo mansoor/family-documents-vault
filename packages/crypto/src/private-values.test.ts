@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { openPrivate, sealPrivate } from './private-values.js';
+import { openBytes, openPrivate, SEAL_OVERHEAD, sealBytes, sealPrivate } from './private-values.js';
 import { newKey } from './wrap.js';
 
 describe("an Only me document's notes and details", () => {
@@ -36,5 +36,24 @@ describe("an Only me document's notes and details", () => {
     expect(() => openPrivate(key, id, { notes_sealed: altered, extra_sealed: null })).toThrow(
       /failed authentication/,
     );
+  });
+});
+
+describe('bytes sealed (5.17c)', () => {
+  const key = newKey();
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+
+  it('open again as they were, under the key and binding they were sealed with, and nothing else', () => {
+    const sealed = sealBytes(key, jpeg, 'member-photo:h:m:p');
+    expect(sealed.length).toBe(jpeg.length + SEAL_OVERHEAD);
+    expect(sealed.includes(Buffer.from([0xff, 0xd8, 0xff]))).toBe(false);
+    expect(openBytes(key, sealed, 'member-photo:h:m:p').equals(jpeg)).toBe(true);
+    // Another person's, another photo's, another key.
+    expect(() => openBytes(key, sealed, 'member-photo:h:m2:p')).toThrow(/failed authentication/);
+    expect(() => openBytes(key, sealed, 'member-photo:h:m:p2')).toThrow(/failed authentication/);
+    expect(() => openBytes(newKey(), sealed, 'member-photo:h:m:p')).toThrow(
+      /failed authentication/,
+    );
+    expect(() => openBytes(key, sealed.subarray(0, 10), 'member-photo:h:m:p')).toThrow(/too short/);
   });
 });

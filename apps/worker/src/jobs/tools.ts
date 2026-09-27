@@ -230,6 +230,168 @@ export async function renderPreviews(
   return out;
 }
 
+/** A person's photo (5.17c): a square this many pixels a side… */
+export const PHOTO_EDGE = 512;
+/** …of at most this many bytes… */
+export const PHOTO_MAX_JPEG = 256 * 1024;
+/** …at this quality, or, for a picture too busy to fit, the second. */
+const PHOTO_QUALITIES = [82, 65];
+
+/**
+ * What a person's photo is, from its first bytes: JPEG, PNG, WebP, or
+ * HEIC/HEIF. The worker reads the bytes it is about to decode itself,
+ * rather than taking anybody's word for what they are, and names the coder
+ * from that. Null for anything else — TIFF, a PDF, a document — which is
+ * refused, not decoded.
+ */
+export function photoType(
+  head: Buffer,
+): 'image/jpeg' | 'image/png' | 'image/webp' | 'image/heic' | null {
+  const at = (offset: number, ascii: string) =>
+    head.length >= offset + ascii.length &&
+    head.subarray(offset, offset + ascii.length).toString('latin1') === ascii;
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (at(0, '\x89PNG\r\n\x1a\n')) return 'image/png';
+  if (at(0, 'RIFF') && at(8, 'WEBP')) return 'image/webp';
+  if (at(4, 'ftyp')) {
+    const brand = head.subarray(8, 12).toString('latin1');
+    if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(brand)) {
+      return 'image/heic';
+    }
+  }
+  return null;
+}
+
+/** The coders a photo may be read with: IMAGE_CODERS', but never TIFF's. */
+function photoCoderFor(mime: string): string | null {
+  return mime === 'image/tiff' ? null : (IMAGE_CODERS[mime] ?? null);
+}
+
+/** A JPEG's width and height, from its first start-of-frame marker; null if it has none. */
+export function jpegSize(b: Buffer): { width: number; height: number } | null {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
+  let i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) return null;
+    const marker = b[i + 1] as number;
+    const len = b.readUInt16BE(i + 2);
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+/** The part of a photo to show, as fractions of the upright picture (the crop field). */
+export interface PhotoCrop {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * A person's photo, made from one picture (5.17c): read with the coder
+ * named (`coder:file[0]`, the first frame only) under MAGICK_LIMITS, turned
+ * upright, the part chosen cut out — or the middle — and made one
+ * 512-pixel square JPEG, flattened onto white, with nothing but its pixels
+ * (`-strip`: no EXIF, no GPS, no profile). Two runs: the first says how big
+ * the picture is once upright, which is what the crop's fractions are of.
+ * The result is checked, and anything but a 512×512 JPEG of at most 256 KiB
+ * is refused. ImageMagick's own spill goes into the folder `output` is in.
+ */
+export async function squarePhoto(
+  input: string,
+  mime: string,
+  crop: PhotoCrop | null,
+  output: string,
+): Promise<Buffer> {
+  const coder = photoCoderFor(mime);
+  if (!coder) throw new Error(`a photo is not made from ${mime}`);
+  const bin = await MAGICK();
+  const src = `${coder}:${input}[0]`;
+  const env = { ...process.env, MAGICK_TEMPORARY_PATH: path.dirname(output) };
+  const { stdout } = await run(
+    bin,
+    [...MAGICK_LIMITS, src, '-auto-orient', '-format', '%w %h', 'info:'],
+    {
+      timeout: 60_000,
+      env,
+    },
+  );
+  const [width, height] = stdout.trim().split(/\s+/).map(Number);
+  if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height)) {
+    throw new Error('the picture has no size');
+  }
+  const box = cropBox(width, height, crop);
+  for (const quality of PHOTO_QUALITIES) {
+    await run(
+      bin,
+      [
+        ...MAGICK_LIMITS,
+        src,
+        '-auto-orient',
+        '-crop',
+        `${box.w}x${box.h}+${box.x}+${box.y}`,
+        '+repage',
+        '-resize',
+        `${PHOTO_EDGE}x${PHOTO_EDGE}^`,
+        '-gravity',
+        'center',
+        '-extent',
+        `${PHOTO_EDGE}x${PHOTO_EDGE}`,
+        // A transparent picture on white, not on black.
+        '-background',
+        'white',
+        '-alpha',
+        'remove',
+        '-alpha',
+        'off',
+        '-quality',
+        String(quality),
+        '-strip',
+        `jpeg:${output}`,
+      ],
+      { timeout: 60_000, env },
+    );
+    const jpeg = await readFile(output);
+    const size = jpegSize(jpeg);
+    if (!size || size.width !== PHOTO_EDGE || size.height !== PHOTO_EDGE) {
+      throw new Error('the photo did not come out square');
+    }
+    if (jpeg.length <= PHOTO_MAX_JPEG) return jpeg;
+  }
+  throw new Error('the photo came out too big');
+}
+
+/**
+ * The pixels a crop names, inside a picture `width` by `height`; with none,
+ * the largest square in the middle.
+ */
+export function cropBox(
+  width: number,
+  height: number,
+  crop: PhotoCrop | null,
+): { x: number; y: number; w: number; h: number } {
+  if (!crop) {
+    const side = Math.min(width, height);
+    return {
+      x: Math.floor((width - side) / 2),
+      y: Math.floor((height - side) / 2),
+      w: side,
+      h: side,
+    };
+  }
+  const x = Math.min(width - 1, Math.max(0, Math.round(crop.x * width)));
+  const y = Math.min(height - 1, Math.max(0, Math.round(crop.y * height)));
+  const w = Math.max(1, Math.min(width - x, Math.round(crop.w * width)));
+  const h = Math.max(1, Math.min(height - y, Math.round(crop.h * height)));
+  return { x, y, w, h };
+}
+
 /** OCR of one page image. Returns the text, possibly empty. */
 export async function ocrImage(file: string, lang = 'eng'): Promise<string> {
   const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3'], {

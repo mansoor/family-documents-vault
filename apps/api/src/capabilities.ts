@@ -76,6 +76,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.5.15: a kind reminds from any date it shows (5.16a); said since
       // 0.5.16, when the web's editor for it shipped (5.16b).
       reminder_dates: true,
+      // 0.5.19: people's photos, made by the worker; the family sees
+      // everyone's, a viewer only their own (5.17c).
+      member_photos: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

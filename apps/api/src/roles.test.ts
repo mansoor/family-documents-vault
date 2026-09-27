@@ -346,6 +346,24 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
           payload: { name: 'Papers for the move', audience: 'everyone' },
         }),
     },
+    {
+      capability: 'member.photo',
+      // Whose, beyond the matrix, is household/photos.test.ts (A66).
+      what: 'give themselves a photo',
+      call: (t) => {
+        const form = new FormData();
+        form.append('file', Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0xff, 0xd9]), {
+          filename: 'me.jpg',
+          contentType: 'image/jpeg',
+        });
+        return h.app.inject({
+          method: 'PUT',
+          url: `/api/v1/members/${t.member_id}/photo`,
+          headers: { ...h.as(t), ...form.getHeaders() },
+          payload: form.getBuffer(),
+        });
+      },
+    },
   ];
 
   for (const probe of probes) {

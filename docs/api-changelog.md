@@ -1432,6 +1432,53 @@ invitation_not_valid` — where each used to read the count and all were
       their rules, trigger, functions, keys and indexes, in place. Every row
       keeps its id and every item its place, and a backup made before 0039
       restores and is brought up to date.
+  - A person's profile, and their photo (5.17c). The family sees
+    everyone's photo; a viewer sees only their own, and initials for
+    everybody else (A65). Owners set anyone's; adults their own and those
+    of people without a sign-in; teens their own; viewers none; anybody may
+    remove a photo of themselves (A66).
+    - **Added:** `features.member_photos` in the capability document, `true`.
+    - **Added:** `Member.photo` — `{ id }` once a photo is ready, else null;
+      null for everybody but themselves to a viewer. `Member.photo_status` —
+      `'processing'` while one is being made, `'failed'` when the vault
+      could not use it, else null; told only to whoever may change their
+      photo. `Member.can_change_photo`. All absent from older vaults.
+    - **Added:** `PUT /api/v1/members/{id}/photo`, multipart: an optional
+      `crop` field (JSON `{ x, y, w, h }`, fractions of the upright picture,
+      each 0–1, inside it, at least 0.05 a side; none for the middle), then
+      the picture as `file`, and nothing else. `202` with the person
+      (`photo_status: "processing"`); the worker makes a 512-pixel square
+      JPEG and GET /members says `photo` when it is ready. Refused, in this
+      order: a person the caller cannot see, `404`; `403 forbidden` (a
+      viewer, in the matrix's words; anybody else not allowed, "Only an
+      owner or the person themselves can change this photo. For someone
+      without a sign-in, any adult can."); a crop that is not one, `422
+validation_failed` (`detail: "crop"`); a crop after the file, a
+      second file or any other part, `422` "Send the crop first, then the
+      photo."; anything but JPEG, PNG, WebP or HEIC/HEIF by its bytes,
+      whatever it is called or declared, `415 unsupported_type`; over 20 MB
+      (or the vault's `max_upload_bytes`, if smaller), `413 too_large`.
+      Nothing of a refused photo is kept. No step-up and no idempotency
+      key: the newest photo sent wins, and one still being made is dropped.
+    - **Added:** `DELETE /api/v1/members/{id}/photo` → `204`, also when
+      there was none; by whoever may change it, or the person themselves.
+    - **Added:** `GET /api/v1/members/{id}/photo/{photo_id}` → the JPEG,
+      `cache-control: private, no-store`, `x-content-type-options:
+nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
+      else: `404 no_photo`, the same every time.
+    - **Changed:** `Member.relationship` follows the family's details, as
+      `date_of_birth` has since 0.5.3: a viewer gets null, except their own.
+    - The activity log says "Mansoor added a photo of Aisha", "Sara changed
+      their photo", "Mansoor removed Aisha’s photo" (owners, adults, teens).
+    - Nothing of a photo is in the capability document, an invitation's
+      page, a link's preview, an email, a push or the digest.
+    - `@fdv/shared`: capability `member.photo`, `canChangePerson`,
+      `canChangePhoto`, `canRemovePhoto`, `PHOTO_REFUSAL`; `initialsFor`
+      and `shortName` (people.ts); `PHOTO_MAX_BYTES`, `PHOTO_EDGE`,
+      `PHOTO_TYPES`, `PhotoCrop`; `ActivityEvent.actor_member_id`.
+      `@fdv/client`: `setMemberPhoto` (the crop sent first),
+      `removeMemberPhoto`, `memberPhoto`, `memberPhotoUrl`, `photoUpload`;
+      the fake makes a photo by the next GET /members.
 
 ## Deprecations in effect
 

@@ -15,12 +15,8 @@ import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { NotificationsScreen } from './screens/Notifications.js';
-import {
-  PeopleScreen,
-  PersonScreen,
-  RemindersScreen,
-  SearchScreen,
-} from './screens/SearchPeople.js';
+import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
+import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import { SettingsScreen, StorageScreen } from './screens/Settings.js';
 import { SetupScreen } from './screens/Setup.js';
 import { Logo } from './ui.js';
@@ -176,11 +172,21 @@ export function App() {
               </Gate>
             }
           />
+          {/* A person's profile, from People (and old bookmarks); their
+              documents, from Home (A64). */}
           <Route
             path="/people/:id"
             element={
               <Gate need="signed-in">
-                <PersonScreen />
+                <ProfileScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/people/:id/documents"
+            element={
+              <Gate need="signed-in">
+                <PersonDocumentsScreen />
               </Gate>
             }
           />

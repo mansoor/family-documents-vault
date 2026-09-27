@@ -6,6 +6,7 @@ export * from './collections.js';
 export * from './details.js';
 export * from './issuers.js';
 export * from './offline.js';
+export * from './people.js';
 export * from './push.js';
 export * from './titles.js';
 export * from './documents.js';

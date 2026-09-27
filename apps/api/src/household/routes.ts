@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
+import { ApiError } from '../errors.js';
 import type { Principal } from '../auth/service.js';
 import { memberBody, profileBody, type HouseholdService } from './service.js';
 import {
@@ -14,7 +15,120 @@ import {
 import { roleChangeBody, type CoOwnerService } from './co-owners.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { Capability } from '@fdv/shared';
+import type { MultipartFile } from '@fastify/multipart';
 import { needs } from '../authz.js';
+import { noPhoto, orderRefusal, parseCrop, photoOrder, type PhotoService } from './photos.js';
+
+/**
+ * A person's photo (5.17c). No step-up — a photo decides nobody's access —
+ * and no idempotency key: the newest choice wins.
+ */
+function registerPhotos(app: FastifyInstance, household: HouseholdService, photos: PhotoService) {
+  const auth = { preHandler: app.requireAuth };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+
+  /**
+   * PUT /members/{id}/photo, multipart: an optional `crop` field (JSON),
+   * then the photo as `file`, and nothing else. The person first (404),
+   * then who may (403), before a byte of the file is read; then the crop
+   * (422), what the bytes are (415) and how many (413), as they arrive.
+   */
+  app.put('/api/v1/members/:id/photo', auth, async (req, reply) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    // One file, one field: a crop after the file, a second file or any
+    // other part is refused, and nothing is kept.
+    const parts = req
+      .parts({ limits: { fileSize: photos.limit, files: 1, fields: 1, fieldSize: 1024 } })
+      [Symbol.asyncIterator]();
+    /** A refusal before the photo: the rest is read, to nowhere. */
+    const drainRest = async () => {
+      for (;;) {
+        const next = await parts.next().catch(() => ({ done: true as const, value: undefined }));
+        if (next.done) return;
+        if (next.value.type === 'file') next.value.file.resume();
+      }
+    };
+    let file: MultipartFile;
+    let crop: ReturnType<typeof parseCrop> = null;
+    try {
+      await photos.mayChange(p, id);
+      let next = await parts.next();
+      if (!next.done && next.value.type === 'field') {
+        if (next.value.fieldname !== 'crop') throw photoOrder();
+        crop = parseCrop(next.value.value);
+        next = await parts.next();
+      }
+      if (next.done) throw new ApiError(422, 'validation_failed', 'Choose a photo to send.');
+      if (next.value.type !== 'file' || next.value.fieldname !== 'file') {
+        if (next.value.type === 'file') next.value.file.resume();
+        throw photoOrder();
+      }
+      file = next.value;
+    } catch (err) {
+      await drainRest();
+      throw orderRefusal(err);
+    }
+    const theFile = file;
+    await photos
+      .accept(
+        p,
+        id,
+        {
+          crop,
+          stream: theFile.file,
+          truncated: () => theFile.file.truncated,
+          // Nothing may follow the photo.
+          finished: async () => {
+            const after = await parts.next().catch((err: unknown) => {
+              throw orderRefusal(err);
+            });
+            if (after.done) return;
+            if (after.value.type === 'file') after.value.file.resume();
+            await drainRest();
+            throw photoOrder();
+          },
+        },
+        metaOf(req),
+      )
+      .catch(async (err: unknown) => {
+        theFile.file.resume();
+        await drainRest();
+        throw orderRefusal(err);
+      });
+    return reply.status(202).send(await household.member(p, id));
+  });
+
+  app.delete('/api/v1/members/:id/photo', auth, async (req, reply) => {
+    await photos.remove(principal(req), parse(idParam, req.params).id, metaOf(req));
+    return reply.status(204).send();
+  });
+
+  /**
+   * The photo itself, with a sign-in, never kept by a cache. Not allowed,
+   * no photo, an old id and a seal that does not open all answer the same.
+   * Not audited, as a thumbnail is not.
+   */
+  app.get<{ Params: { id: string; photoId: string } }>(
+    '/api/v1/members/:id/photo/:photoId',
+    auth,
+    async (req, reply) => {
+      const got = await photos.photo(principal(req), req.params.id, req.params.photoId);
+      if (got === 'unreadable') {
+        req.log.warn(
+          { member_id: req.params.id, photo_id: req.params.photoId },
+          'photo_unreadable',
+        );
+      }
+      if (got === null || got === 'unreadable') throw noPhoto();
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, no-store');
+      reply.header('x-content-type-options', 'nosniff');
+      return reply.send(got);
+    },
+  );
+}
 
 export function registerHousehold(
   app: FastifyInstance,
@@ -22,10 +136,13 @@ export function registerHousehold(
   stepUp?: StepUpService,
   invitations?: InvitationService,
   coOwners?: CoOwnerService,
+  photos?: PhotoService,
 ): void {
   const auth = { preHandler: app.requireAuth };
   const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
   const principal = (req: FastifyRequest) => req.principal as Principal;
+
+  if (photos) registerPhotos(app, household, photos);
 
   app.get('/api/v1/profile', auth, async (req) => household.profile(principal(req)));
   app.put('/api/v1/profile', guard('profile.edit'), async (req) =>

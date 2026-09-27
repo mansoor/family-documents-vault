@@ -126,7 +126,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       localRoot: root,
       now: () => now,
     });
-    expect(r).toEqual({ done: 1, abandoned: 1 });
+    expect(r).toEqual({ done: 1, abandoned: 1, photos: 0 });
     const left = await admin.query<{ idempotency_key: string }>(
       'select idempotency_key from upload_idempotency where household_id = $1 order by idempotency_key',
       [hh],
@@ -137,5 +137,66 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
     expect(await exists(deadObject)).toBe(false);
     // A try still running keeps its bytes.
     expect(await exists(liveObject)).toBe(true);
+  });
+
+  it('a photo left half made for a day goes, with its upload', async () => {
+    const member = (
+      await admin.query<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'Aisha') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const upload = (name: string) => `${hh}/members/${member}/incoming/${name}.enc`;
+    const photo = (state: string, created: Date, source: string | null) =>
+      admin.query<{ id: string }>(
+        `insert into member_photo
+           (household_id, member_id, state, sealed, ready_at, source_key, source_vault_id,
+            source_key_wrapped, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
+        [
+          hh,
+          member,
+          state,
+          state === 'ready' ? Buffer.alloc(40) : null,
+          state === 'ready' ? created : null,
+          source,
+          source ? vault : null,
+          source ? Buffer.alloc(40) : null,
+          created,
+        ],
+      );
+    // Made long ago: never touched. Half made two days ago: goes, and its
+    // upload with it. (One unfinished per person: the recent one is tried
+    // on its own below.)
+    const ready = (await photo('ready', ago(30), null)).rows[0]?.id;
+    await photo('processing', ago(2), upload('stale'));
+    for (const o of [upload('stale'), upload('recent')]) {
+      await mkdir(path.dirname(path.join(root, o)), { recursive: true });
+      await writeFile(path.join(root, o), 'sealed, half a photo');
+    }
+    const prune = () =>
+      pruneUploads({
+        admin,
+        app: db,
+        credentialsKey: Buffer.alloc(32),
+        localRoot: root,
+        now: () => now,
+      });
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 1 });
+    expect(await exists(upload('stale'))).toBe(false);
+    const left = async () =>
+      (
+        await admin.query<{ id: string; state: string }>(
+          'select id, state from member_photo where member_id = $1 order by state',
+          [member],
+        )
+      ).rows;
+    expect(await left()).toEqual([{ id: ready, state: 'ready' }]);
+
+    // One still on its way, sent an hour ago, keeps its bytes.
+    await photo('processing', ago(1 / 24), upload('recent'));
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 0 });
+    expect(await exists(upload('recent'))).toBe(true);
+    expect((await left()).map((r) => r.state)).toEqual(['processing', 'ready']);
   });
 });

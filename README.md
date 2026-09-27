@@ -568,6 +568,8 @@ Setup creates a local vault on the server (the `fdv_vault-data` volume) and uses
 
 Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, with a version's thumbnail and page previews beside it (`….thumb.enc`, `….p1.enc`), so a bucket can always be read with the provider's own console — the files are ciphertext until the offline recovery tool (a later release) opens them with your recovery code.
 
+A photo chosen for a person rests for a few seconds in `<household>/members/<person>/incoming/<photo>.enc`, encrypted as it arrived, while the worker makes it into a small square picture; then it is deleted, and so is a file the worker could not use. The picture itself is kept, encrypted, in the database, so the nightly backups carry it (a removed photo stays in them until they expire, 30 days by default). The nightly clean-up takes away anything left half made there for a day. The one thing a restore can leave behind in that folder is a photo that was on its way when the database was lost: unreadable ciphertext, since its key went with the database.
+
 ### Rotating the master key
 
 Rotation rewraps the small per-household keys; the encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.

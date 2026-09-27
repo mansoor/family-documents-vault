@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { allows, requireCapability } from '../authz.js';
+import { photoFields } from './photos.js';
 
 /**
  * The household's people and its profile — what the first-run wizard
@@ -53,6 +54,12 @@ export interface MemberView {
    * person is never invited again: see `mustNeverHaveSignedIn`.
    */
   sign_in_removed: boolean;
+  /** Their ready photo, to the family and to themselves (5.17c). */
+  photo: { id: string } | null;
+  /** A new photo on its way, or refused: only to whoever may change it. */
+  photo_status: 'processing' | 'failed' | null;
+  /** Whether the caller may give them a photo, or change it (A66). */
+  can_change_photo: boolean;
 }
 
 export class HouseholdService {
@@ -182,22 +189,41 @@ export class HouseholdService {
         .groupBy('owner_member_id')
         .execute();
       const countOf = new Map(counts.map((c) => [c.owner_member_id, Number(c.n)]));
-      // Birthdays are the family's: a viewer is told only their own (5.3).
-      const birthdays = allows(p, 'family.details');
-      return rows.map((r) => ({
-        id: r.id,
-        display_name: r.display_name,
-        date_of_birth: birthdays || r.id === p.memberId ? r.date_of_birth : null,
-        relationship: r.relationship,
-        is_deceased: r.is_deceased,
-        colour: r.colour,
-        has_account: r.role !== null,
-        role: r.role,
-        is_me: r.id === p.memberId,
-        document_count: countOf.get(r.id) ?? 0,
-        sign_in_removed: r.role === null && r.former_account_id !== null,
-      }));
+      // Photos, in the same transaction: as the database gives them to the
+      // caller (0040), and only what they may be told (5.17c).
+      const photos = await photoFields(trx, p, rows);
+      // Birthdays and relationships are the family's: a viewer is told only
+      // their own (5.3; relationships since 5.17c, the first release that
+      // sets one).
+      const family = allows(p, 'family.details');
+      return rows.map((r) => {
+        const own = family || r.id === p.memberId;
+        const photo = photos.get(r.id);
+        return {
+          id: r.id,
+          display_name: r.display_name,
+          date_of_birth: own ? r.date_of_birth : null,
+          relationship: own ? r.relationship : null,
+          is_deceased: r.is_deceased,
+          colour: r.colour,
+          has_account: r.role !== null,
+          role: r.role,
+          is_me: r.id === p.memberId,
+          document_count: countOf.get(r.id) ?? 0,
+          sign_in_removed: r.role === null && r.former_account_id !== null,
+          photo: photo?.photo ?? null,
+          photo_status: photo?.photo_status ?? null,
+          can_change_photo: photo?.can_change_photo ?? false,
+        };
+      });
     });
+  }
+
+  /** One person, as `members` gives them; 404 when the caller is not given them. */
+  async member(p: Principal, id: string): Promise<MemberView> {
+    const found = (await this.members(p)).find((m) => m.id === id);
+    if (!found) throw new ApiError(404, 'not_found', 'That person is not in the family.');
+    return found;
   }
 
   /** Adds a person without a sign-in. Their private-scope key is minted now (data model §8). */

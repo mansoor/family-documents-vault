@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   can,
   canSee,
   canSeeCollection,
   mayKeepOffline,
+  ROLES,
+  rolesWith,
   type CollectionDetail,
   type CollectionView,
   type DocumentView,
@@ -372,5 +375,60 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     for (const role of roles) expect(expected(role).length, role).toBeLessThan(docs.length);
     // And the two adults each see exactly one private document: their own.
     expect(expected('owner')).not.toEqual(expected('adult'));
+  });
+
+  it("member_photo's policy admits exactly the roles of family.details", async () => {
+    // A photo of somebody with no sign-in, which nobody asking below is.
+    const hh = people.owner.household_id;
+    await withSystem(h.db, hh, async (trx) => {
+      const child = await trx
+        .insertInto('member')
+        .values({ household_id: hh, display_name: 'Photographed' })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('member_photo')
+        .values({
+          household_id: hh,
+          member_id: child.id,
+          state: 'ready',
+          sealed: Buffer.alloc(40),
+          ready_at: new Date(),
+        })
+        .execute();
+    });
+    // The database's rule (0040), asked as each role would be, past the
+    // application: somebody signed in who is not the person in it.
+    const pool = createPool(h.appUrl, 1);
+    const seen = async (role: string) => {
+      const c = await pool.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.member_id', $2, true), set_config('app.role', $3, true)`,
+          [hh, people.viewer.member_id, role],
+        );
+        const { rows } = await c.query<{ n: number }>(
+          "select count(*)::int as n from member_photo m join member p on p.id = m.member_id where p.display_name = 'Photographed'",
+        );
+        await c.query('commit');
+        return (rows[0]?.n ?? 0) > 0;
+      } finally {
+        c.release();
+      }
+    };
+    try {
+      for (const role of ROLES) {
+        expect(await seen(role), role).toBe(can(role, 'family.details'));
+      }
+      // A role never heard of, however it is written, is nobody's.
+      for (const role of ['', 'guest', 'OWNER', ' owner']) {
+        expect(await seen(role), JSON.stringify(role)).toBe(false);
+      }
+    } finally {
+      await pool.end();
+    }
+    expect(rolesWith('family.details')).toEqual(['owner', 'adult', 'teen']);
   });
 });

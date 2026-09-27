@@ -5,16 +5,26 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { deriveKey, EncryptStream, EnvKeyProvider, newKey, ScopeKeys, wrapKey } from '@fdv/crypto';
+import { deflateSync, crc32 } from 'node:zlib';
+import {
+  deriveKey,
+  EncryptStream,
+  EnvKeyProvider,
+  memberPhotoSourceBinding,
+  newKey,
+  ScopeKeys,
+  wrapKey,
+} from '@fdv/crypto';
 import { appendAudit, createDb, createPool, withSystem, type Db, type Schema } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
-import { LocalAdapter } from '@fdv/storage';
+import { LocalAdapter, memberPhotoUploadKey } from '@fdv/storage';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import webpush from 'web-push';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sendAlert } from './jobs/alerts.js';
 import { buildExport } from './jobs/export.js';
+import { makeMemberPhoto } from './jobs/member-photo.js';
 import { createNotifier } from './jobs/notify.js';
 import { backfillPreviews, renderVersionPreviews } from './jobs/previews.js';
 import { processVersion } from './jobs/process-version.js';
@@ -60,6 +70,28 @@ function onePagePdf(): Buffer {
   for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, 'latin1');
+}
+
+/** A one-pixel PNG, built by hand: a photo, as far as the worker can tell. */
+function onePixelPng(): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(Buffer.from([0, 0x88, 0xaa, 0xcc]))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 /** Just enough SMTP to take every message. */
@@ -454,7 +486,52 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
         async () => {
           expect(
             await pruneUploads({ admin, app, credentialsKey, localRoot: vaultDir, now: () => now }),
-          ).toEqual({ done: 0, abandoned: 1 });
+          ).toEqual({ done: 0, abandoned: 1, photos: 0 });
+        },
+      ],
+      [
+        'member.photo',
+        async () => {
+          // A photo on its way: made where ImageMagick is installed, refused
+          // where not — either way the job reached its outcome.
+          const photoId = randomUUID();
+          const fileKey = newKey();
+          const key = memberPhotoUploadKey({ householdId: hh, memberId: ids.member, photoId });
+          const enc = new EncryptStream(fileKey);
+          await Promise.all([
+            new LocalAdapter(vaultDir).put(key, enc),
+            pipeline(Readable.from([onePixelPng()]), enc),
+          ]);
+          await withSystem(seed, hh, async (trx) => {
+            const scope = await keys.unwrap(trx, { householdId: hh, kind: 'household' });
+            const vault = await trx.selectFrom('vault').select('id').executeTakeFirstOrThrow();
+            await trx
+              .insertInto('member_photo')
+              .values({
+                id: photoId,
+                household_id: hh,
+                member_id: ids.member,
+                source_key: key,
+                source_vault_id: vault.id,
+                source_key_wrapped: wrapKey(
+                  fileKey,
+                  scope.key,
+                  memberPhotoSourceBinding(hh, ids.member, photoId),
+                ),
+                created_by: ids.account,
+              })
+              .execute();
+          });
+          const outcome = await makeMemberPhoto(
+            { db: app, keys, credentialsKey, localRoot: vaultDir, log },
+            { household_id: hh, member_id: ids.member, photo_id: photoId },
+          );
+          expect(['ready', 'failed']).toContain(outcome);
+          const row = await admin.query<{ state: string }>(
+            'select state from member_photo where id = $1',
+            [photoId],
+          );
+          expect(row.rows[0]?.state).toBe(outcome);
         },
       ],
       [

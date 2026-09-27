@@ -276,15 +276,30 @@ export function Pills<T extends string>(props: {
   );
 }
 
+/**
+ * A person's circle (5.17c): their photo filling it, with their colour
+ * behind while it loads or if it cannot be shown; otherwise their letters
+ * (`initialsFor`, smaller when there are two). Always aria-hidden: their
+ * name is beside it.
+ */
 export function Avatar({
   name,
   colour,
   size = 44,
+  initials,
+  photo,
 }: {
   name: string;
   colour: number;
   size?: number;
+  /** The family's letters for them; their first letter without. */
+  initials?: string | undefined;
+  /** Their photo's object URL, once fetched. */
+  photo?: string | null | undefined;
 }) {
+  const [failed, setFailed] = useState<string | null>(null);
+  const letters = initials ?? Array.from(name.trim()).slice(0, 1).join('').toLocaleUpperCase();
+  const shown = photo && failed !== photo ? photo : null;
   return (
     <span
       className="avatar"
@@ -293,10 +308,14 @@ export function Avatar({
         width: size,
         height: size,
         background: avatarColour(colour),
-        fontSize: size * 0.42,
+        fontSize: size * (Array.from(letters).length > 1 ? 0.36 : 0.42),
       }}
     >
-      {name.trim().charAt(0).toUpperCase()}
+      {shown ? (
+        <img className="avatar-photo" src={shown} alt="" onError={() => setFailed(shown)} />
+      ) : (
+        letters
+      )}
     </span>
   );
 }

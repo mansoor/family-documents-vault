@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPABILITIES,
   can,
+  canChangePerson,
+  canChangePhoto,
+  canRemovePhoto,
   canSee,
   canSeeCollection,
   capabilitiesFor,
@@ -12,6 +15,7 @@ import {
   COLLECTION_HINT_TEENS,
   collectionItemHint,
   inCollectionAudience,
+  PHOTO_REFUSAL,
   refusalFor,
   ROLES,
   rolesWith,
@@ -179,5 +183,57 @@ describe('who sees a collection (5.14)', () => {
     }
     // A visibility never heard of is shut to everybody.
     expect(collectionItemHint('adults', doc('sealed'))).toBe(COLLECTION_HINT_SOME);
+  });
+});
+
+describe("who may change a person's photo (A66)", () => {
+  const me = 'member-me';
+  const signedIn = { id: 'someone-signed-in', role: 'adult' as const };
+  const noSignIn = { id: 'a-child', role: null };
+
+  it('who may change whose photo', () => {
+    // Every role against themselves, somebody with a sign-in and somebody without.
+    const table = ROLES.map((role) => {
+      const viewer = { role, memberId: me };
+      return [
+        role,
+        canChangePhoto(viewer, { id: me, role }),
+        canChangePhoto(viewer, signedIn),
+        canChangePhoto(viewer, noSignIn),
+      ];
+    });
+    expect(table).toEqual([
+      ['owner', true, true, true],
+      ['adult', true, false, true],
+      ['teen', true, false, false],
+      ['viewer', false, false, false],
+    ]);
+    // The rule for details (5.25) names the same people.
+    expect(canChangePerson({ role: 'adult', memberId: me }, noSignIn)).toBe(true);
+    expect(canChangePerson({ role: 'viewer', memberId: me }, { id: me, role: 'viewer' })).toBe(
+      false,
+    );
+    // Nobody without a member is anybody's self.
+    expect(canChangePhoto({ role: 'teen', memberId: null }, { id: me, role: 'teen' })).toBe(false);
+  });
+
+  it('anybody may take a photo of themselves away; nobody else but who may change it', () => {
+    for (const role of ROLES) {
+      expect(canRemovePhoto({ role, memberId: me }, { id: me, role }), role).toBe(true);
+    }
+    expect(canRemovePhoto({ role: 'viewer', memberId: me }, noSignIn)).toBe(false);
+    expect(canRemovePhoto({ role: 'teen', memberId: me }, noSignIn)).toBe(false);
+    expect(canRemovePhoto({ role: 'adult', memberId: me }, noSignIn)).toBe(true);
+    expect(canRemovePhoto({ role: 'adult', memberId: me }, signedIn)).toBe(false);
+  });
+
+  it('says who may, and a viewer why not', () => {
+    expect(rolesWith('member.photo')).toEqual(['owner', 'adult', 'teen']);
+    expect(refusalFor('member.photo')).toBe(
+      'Viewers can open and download documents, but not add photos.',
+    );
+    expect(PHOTO_REFUSAL).toBe(
+      'Only an owner or the person themselves can change this photo. For someone without a sign-in, any adult can.',
+    );
   });
 });

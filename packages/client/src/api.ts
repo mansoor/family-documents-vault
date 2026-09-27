@@ -62,7 +62,7 @@ import type {
   Visibility,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
-import { captureUpload, type CaptureBody } from './multipart.js';
+import { captureUpload, photoUpload, type CaptureBody, type PhotoBody } from './multipart.js';
 
 /**
  * Every endpoint, as one method each. Every authenticated call takes the
@@ -98,6 +98,9 @@ export function createApi(http: Http) {
     /** Where a version's file is, for a platform that downloads it itself. */
     contentUrl: (versionId: string) => http.url(`/api/v1/versions/${versionId}/content`),
     thumbnailUrl: (versionId: string) => http.url(`/api/v1/versions/${versionId}/thumbnail`),
+    /** Where a person's photo is (0.5.19): fetched with the token, like a thumbnail. */
+    memberPhotoUrl: (memberId: string, photoId: string) =>
+      http.url(`/api/v1/members/${enc(memberId)}/photo/${enc(photoId)}`),
     sharedContentUrl: (linkToken: string, pin?: string) =>
       http.url(`/api/v1/shared/${enc(linkToken)}/content${pin ? `?pin=${enc(pin)}` : ''}`),
     authHeaders: (token: string) => ({ authorization: `Bearer ${token}` }),
@@ -240,6 +243,26 @@ export function createApi(http: Http) {
         token,
         body: { role },
       }),
+    /**
+     * A person's photo (0.5.19, when `features.member_photos`): the picture,
+     * and the part of it to show, sent crop first. `202` with the person,
+     * `photo_status: 'processing'`: the vault makes the square, and GET
+     * /members says `photo` once it is ready (or `photo_status: 'failed'`).
+     * JPEG, PNG, WebP or HEIC, 20 MB at most (`415`, `413`); whose photo is
+     * whose to change is A66 (`403`).
+     */
+    setMemberPhoto: (token: string, memberId: string, body: PhotoBody) =>
+      request<Member>(`/api/v1/members/${enc(memberId)}/photo`, {
+        method: 'PUT',
+        upload: photoUpload(body),
+        token,
+      }),
+    /** Their photo taken away, with any on its way; `204` also when there was none. */
+    removeMemberPhoto: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}/photo`, { method: 'DELETE', token }),
+    /** The photo itself, a 512-pixel JPEG; `404 no_photo` for anything not given. */
+    memberPhoto: (token: string, memberId: string, photoId: string): Promise<ResponseLike> =>
+      raw(`/api/v1/members/${enc(memberId)}/photo/${enc(photoId)}`, { token }),
     ownerChanges: (token: string) =>
       request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
     refuseOwnerChange: (token: string, id: string) =>

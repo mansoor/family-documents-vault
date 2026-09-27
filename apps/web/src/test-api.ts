@@ -145,6 +145,18 @@ export interface FakeState {
   /** Answer GET /collections/{id} in pages of this many, with a cursor. */
   collectionPageSize?: number;
   /**
+   * People's photos (5.17c): how many GET /members a photo on its way waits
+   * for before it is made (1: the next), whether the vault refuses it
+   * instead, and every photo sent — its form's fields, in order, and its crop.
+   */
+  photoReadyAfter?: number;
+  photoRefused?: boolean;
+  photoUploads?: Array<{
+    member: string;
+    fields: string[];
+    crop: Record<string, number> | null;
+  }>;
+  /**
    * GET /documents/{id}/issuer-suggestions, by document id: who its pages
    * say issued it. A document not here answers 'unavailable'.
    */
@@ -179,6 +191,9 @@ export const ME = {
   role: 'owner',
   is_me: true,
   document_count: 1,
+  photo: null,
+  photo_status: null,
+  can_change_photo: true,
 };
 
 export const PASSPORT = {
@@ -587,20 +602,80 @@ export function installFakeApi(state: FakeState) {
         answered_at: null,
       });
     }
-    if (path === '/api/v1/members' && method === 'GET') return json({ items: state.members });
+    if (path === '/api/v1/members' && method === 'GET') {
+      // The worker, as far as this vault has one (5.17c): a photo on its
+      // way is made once it has been asked about `photoReadyAfter` times.
+      for (const m of state.members) {
+        if (m.photo_status !== 'processing') continue;
+        const asked = ((m.photo_asks as number | undefined) ?? 0) + 1;
+        m.photo_asks = asked;
+        if (asked < (state.photoReadyAfter ?? 1)) continue;
+        if (state.photoRefused) Object.assign(m, { photo_status: 'failed' });
+        else {
+          Object.assign(m, { photo: { id: `p-${String(m.id)}-${asked}` }, photo_status: null });
+        }
+      }
+      return json({ items: state.members });
+    }
     if (path === '/api/v1/members' && method === 'POST') {
+      const b = body as {
+        display_name: string;
+        relationship?: string | null;
+        date_of_birth?: string | null;
+      };
       const m = {
         ...ME,
         id: `m-${state.members.length}`,
-        display_name: (body as { display_name: string }).display_name,
+        display_name: b.display_name,
+        relationship: b.relationship ?? null,
+        date_of_birth: b.date_of_birth ?? null,
         is_me: false,
         has_account: false,
         role: null,
         document_count: 0,
         colour: state.members.length,
+        photo: null,
+        photo_status: null,
+        can_change_photo: true,
       };
       state.members.push(m);
       return json(m, 201);
+    }
+    // A person's photo (5.17c): the crop first, then the photo; made at a
+    // later GET /members; fetched, with the token, as a JPEG.
+    const photoAt = /^\/api\/v1\/members\/([^/]+)\/photo(?:\/([^/]+))?$/.exec(path);
+    if (photoAt) {
+      const m = state.members.find((x) => x.id === photoAt[1]);
+      if (photoAt[2]) {
+        const photo = m?.photo as { id: string } | null | undefined;
+        if (method !== 'GET' || !photo || photo.id !== photoAt[2]) {
+          return refuse(404, 'no_photo', 'There is no photo here.');
+        }
+        return Promise.resolve(
+          new Response(`photo ${photo.id}`, {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' },
+          }),
+        );
+      }
+      if (!m) return refuse(404, 'not_found', 'That person is not in the family.');
+      if (method === 'DELETE') {
+        Object.assign(m, { photo: null, photo_status: null });
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const form = init?.body as FormData | undefined;
+      const fields = form ? [...form.keys()] : [];
+      const crop = form?.get('crop');
+      state.photoUploads = [
+        ...(state.photoUploads ?? []),
+        {
+          member: String(m.id),
+          fields,
+          crop: typeof crop === 'string' ? (JSON.parse(crop) as Record<string, number>) : null,
+        },
+      ];
+      Object.assign(m, { photo_status: 'processing', photo_asks: 0 });
+      return json(m, 202);
     }
     if (path === '/api/v1/auth/password/change' && method === 'POST') {
       const b = body as { current_password?: string; new_password: string };
@@ -1154,6 +1229,9 @@ export function installFakeApi(state: FakeState) {
       if (cat) items = items.filter((d) => d.category === cat);
       const from = query.get('issued_by');
       if (from) items = items.filter((d) => sameIssuer(d.issued_by, from));
+      // One person's (5.17c): their documents, and their profile's first few.
+      const whose = query.get('member_id');
+      if (whose) items = items.filter((d) => d.owner_member_id === whose);
       return json({ items: items.map(listed), next_cursor: null, has_more: false });
     }
     if (path === '/api/v1/issuers') {

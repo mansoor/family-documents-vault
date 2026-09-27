@@ -48,14 +48,47 @@ const blank = (v: unknown): boolean =>
   (Array.isArray(v) && v.length === 0);
 
 function seal(key: Buffer, plain: string, binding: string): Buffer {
-  const iv = randomBytes(IV_BYTES);
-  const c = createCipheriv('aes-256-gcm', key, iv);
-  c.setAAD(Buffer.from(binding, 'utf8'));
-  return Buffer.concat([iv, c.update(plain, 'utf8'), c.final(), c.getAuthTag()]);
+  return sealBytes(key, Buffer.from(plain, 'utf8'), binding);
 }
 
 function open(key: Buffer, sealed: Buffer, binding: string): string {
-  if (sealed.length < IV_BYTES + TAG_BYTES) throw new Error('sealed value is too short');
+  return openBytes(key, sealed, binding).toString('utf8');
+}
+
+/**
+ * What a person's photo is bound to (5.17c): its household, its person and
+ * itself. Sealed under the household key, a photo copied onto another
+ * person, or another photo's row, does not open.
+ */
+export const memberPhotoBinding = (householdId: string, memberId: string, photoId: string) =>
+  `member-photo:${householdId}:${memberId}:${photoId}`;
+
+/** What the file key of a photo's upload, on its way, is wrapped for (5.17c). */
+export const memberPhotoSourceBinding = (householdId: string, memberId: string, photoId: string) =>
+  `member-photo-source:${householdId}:${memberId}:${photoId}`;
+
+/** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
+export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
+
+/**
+ * Bytes sealed as the values above are (5.17c): AES-256-GCM under a fresh
+ * nonce, `iv || ciphertext || tag`, bound to what they are by `binding`, so
+ * a blob copied to another row does not open. A person's photo is sealed
+ * so, under the household key, bound to `member-photo:<household>:<person>:<photo>`.
+ */
+export function sealBytes(key: Buffer, plain: Buffer, binding: string): Buffer {
+  const iv = randomBytes(IV_BYTES);
+  const c = createCipheriv('aes-256-gcm', key, iv);
+  c.setAAD(Buffer.from(binding, 'utf8'));
+  return Buffer.concat([iv, c.update(plain), c.final(), c.getAuthTag()]);
+}
+
+/**
+ * Opens what `sealBytes` sealed, under the same key and binding; anything
+ * else — another key, another binding, a byte changed — throws.
+ */
+export function openBytes(key: Buffer, sealed: Buffer, binding: string): Buffer {
+  if (sealed.length < SEAL_OVERHEAD) throw new Error('sealed value is too short');
   const d = createDecipheriv('aes-256-gcm', key, sealed.subarray(0, IV_BYTES));
   d.setAAD(Buffer.from(binding, 'utf8'));
   d.setAuthTag(sealed.subarray(sealed.length - TAG_BYTES));
@@ -63,7 +96,7 @@ function open(key: Buffer, sealed: Buffer, binding: string): string {
     return Buffer.concat([
       d.update(sealed.subarray(IV_BYTES, sealed.length - TAG_BYTES)),
       d.final(),
-    ]).toString('utf8');
+    ]);
   } catch {
     throw new Error('sealed value failed authentication: wrong key, or it was altered or moved');
   }

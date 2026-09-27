@@ -1,4 +1,4 @@
-import type { CaptureMetadata } from '@fdv/shared';
+import type { CaptureMetadata, PhotoCrop } from '@fdv/shared';
 import type { FormDataLike, UploadBody } from './http.js';
 
 /**
@@ -64,6 +64,39 @@ export type CaptureFile =
 export interface CaptureBody {
   file: CaptureFile;
   metadata?: CaptureMetadata;
+}
+
+/** A person's photo (0.5.19): the picture, and the part of it to show — none for the middle. */
+export interface PhotoBody {
+  file: CaptureFile;
+  crop?: PhotoCrop | null;
+}
+
+/**
+ * The body PUT /members/{id}/photo takes: the crop first, as a `crop`
+ * field (JSON), then the picture as `file`, and nothing else. The vault
+ * refuses any other order, and keeps nothing of it.
+ */
+export function photoUpload(body: PhotoBody): UploadBody {
+  const crop = body.crop ? JSON.stringify(body.crop) : null;
+  if (body.file.kind === 'bytes') {
+    const m = multipartBody([
+      ...(crop ? [{ name: 'crop', value: crop }] : []),
+      {
+        name: 'file',
+        filename: body.file.filename,
+        contentType: body.file.contentType,
+        bytes: body.file.bytes,
+      },
+    ]);
+    return { kind: 'bytes', bytes: m.bytes, contentType: m.contentType };
+  }
+  const FormDataCtor = (globalThis as { FormData?: new () => FormDataLike }).FormData;
+  if (!FormDataCtor) throw new Error('No FormData on this platform: send the photo as bytes.');
+  const form = new FormDataCtor();
+  if (crop) form.append('crop', crop);
+  form.append('file', body.file.blob, body.file.filename);
+  return { kind: 'form', form };
 }
 
 /**

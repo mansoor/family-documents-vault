@@ -26,6 +26,8 @@ export type DatePrecision = 'day' | 'month' | 'year';
 export type CollectionAudience = 'everyone' | 'teens' | 'adults' | 'only_me';
 /** Where a version's page previews are (0027). */
 export type PreviewState = 'none' | 'queued' | 'ready' | 'unsupported' | 'failed';
+/** Where a person's photo is (0040): on its way, made, or refused. */
+export type MemberPhotoState = 'processing' | 'ready' | 'failed';
 /** What an attribute holds (0031). */
 export type AttributeKind =
   'text' | 'long_text' | 'date' | 'year' | 'number' | 'money' | 'choice' | 'yes_no';
@@ -59,6 +61,27 @@ export interface Schema {
     created_at: GeneratedTimestamp;
     /** The account whose sign-in was taken away, so it can be given back (0019). */
     former_account_id: Generated<string | null>;
+  };
+
+  /**
+   * A person's photo (0040): one ready 512-pixel square per person, sealed
+   * under the household key, and at most one on its way or refused. The
+   * upload's columns are set only while it is on its way.
+   */
+  member_photo: {
+    id: Generated<string>;
+    household_id: string;
+    member_id: string;
+    state: ColumnType<MemberPhotoState, MemberPhotoState | undefined, MemberPhotoState>;
+    /** The part chosen, as fractions of the upright picture; null for the middle. */
+    crop: ColumnType<unknown, string | null | undefined, string | null>;
+    sealed: Buffer | null;
+    source_key: string | null;
+    source_vault_id: string | null;
+    source_key_wrapped: Buffer | null;
+    created_by: string | null;
+    created_at: GeneratedTimestamp;
+    ready_at: Timestamp | null;
   };
 
   account: {

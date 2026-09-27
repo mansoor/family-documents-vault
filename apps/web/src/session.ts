@@ -6,6 +6,7 @@ import {
   type TokenStore,
 } from '@fdv/client';
 import { api, type Tokens } from './api.js';
+import { clearPhotos } from './photos.js';
 import { disable as disablePush } from './push.js';
 
 /**
@@ -95,6 +96,9 @@ export class Session {
   }
 
   clear() {
+    // People's photos are held in memory for the sign-in that fetched them
+    // (5.17c): the next person at this browser is not shown them.
+    clearPhotos();
     void this.core.clear();
   }
 
