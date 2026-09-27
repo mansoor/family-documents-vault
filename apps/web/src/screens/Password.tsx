@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate } from 'react-router';
 import { api, type ResetPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
+import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
@@ -166,10 +167,25 @@ export function ForgotPasswordScreen() {
   );
 }
 
-/** The page the link in the email opens. */
+/**
+ * The page the link in the email opens: `/reset#<token>` (5.17), or
+ * `/reset/<token>` in a link sent before then. Either way the token was
+ * taken out of the address before anything was drawn (link-token.ts) — out
+ * of the address bar and this tab's history, not out of the browser's own
+ * history of visited pages, which no page can reach. What keeps the link
+ * safe there is that it works once, and for an hour. It goes to the vault
+ * in a body, never a path.
+ */
 export function ResetPasswordScreen() {
-  const { token } = useParams<{ token: string }>();
+  // Read, not taken: reading it twice, as a check in development does,
+  // gives the same token.
+  const [token] = useState(() => heldLinkToken('reset'));
+  // Used in this page load already, and the page opened again (5.17 review).
+  const [spent] = useState(() => linkSpent('reset'));
   const navigate = useNavigate();
+  // To signing in, in place of this page: Back does not come back to a page
+  // whose link is used (5.17 review).
+  const toSignIn = () => void navigate('/sign-in', { replace: true });
   const [preview, setPreview] = useState<ResetPreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [password, setPassword] = useState('');
@@ -178,10 +194,11 @@ export function ResetPasswordScreen() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    if (!token) return;
     let live = true;
     void (async () => {
       try {
-        const p = await api.resetPreview(token ?? '');
+        const p = await api.lookupReset(token);
         if (live) setPreview(p);
       } catch (err) {
         if (live) setLoadError(describeError(err));
@@ -194,16 +211,57 @@ export function ResetPasswordScreen() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!token) return;
     setBusy(true);
     setError(null);
     try {
-      await api.resetPassword(token ?? '', password);
+      await api.completeReset(token, password);
+      markLinkSpent();
       setDone(true);
     } catch (err) {
       setError(describeError(err));
       setBusy(false);
     }
   };
+
+  if (spent) {
+    // The link was used from this page, in this page load, and the page is
+    // open again: asking for the link would send them to one that opens
+    // nothing.
+    return (
+      <main className="page">
+        <Logo />
+        <section className="card stack">
+          <h1 style={{ fontSize: 22 }}>That link has been used</h1>
+          <p className="muted">
+            Your new password is set, and the link opens nothing now. Sign in with your new
+            password.
+          </p>
+          <Button onClick={toSignIn}>Sign in</Button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!token) {
+    // Opened without its link, or reloaded once the link had been taken out
+    // of the address: the link itself still works until it is used or its
+    // hour is up. (After a reload nothing is known of a link used before
+    // it.)
+    return (
+      <main className="page">
+        <Logo />
+        <section className="card stack">
+          <h1 style={{ fontSize: 22 }}>Open your link again</h1>
+          <p className="muted">
+            This page needs the whole link you were sent, by email or by whoever runs the vault.
+            Open it again from there: it works once, and for an hour after it was made.
+          </p>
+          <Button onClick={() => void navigate('/forgot-password')}>Ask for a new one</Button>
+        </section>
+      </main>
+    );
+  }
 
   if (loadError) {
     return (
@@ -227,7 +285,10 @@ export function ResetPasswordScreen() {
           <p>
             Your new password is set and every device has been signed out. Sign in again with it.
           </p>
-          <Button onClick={() => void navigate('/sign-in')}>Sign in</Button>
+          <p className="muted">
+            The link is used up: it opens nothing now, even from this browser's history.
+          </p>
+          <Button onClick={toSignIn}>Sign in</Button>
         </section>
       </main>
     );
@@ -254,6 +315,11 @@ export function ResetPasswordScreen() {
         {preview.issued_by_operator && (
           <p className="muted">Whoever runs this vault made this link for you from the server.</p>
         )}
+        <p className="muted">
+          The link is out of the address bar and this tab's history now, but this browser's own
+          history of pages visited may still have it. That is why it works only once, and only until{' '}
+          {new Date(preview.expires_at).toLocaleTimeString([], { timeStyle: 'short' })}.
+        </p>
       </section>
       <form onSubmit={(e) => void submit(e)} className="card stack">
         <Field

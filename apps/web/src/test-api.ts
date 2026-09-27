@@ -655,7 +655,9 @@ export function installFakeApi(state: FakeState) {
           404,
         );
       }
-      if (method === 'POST') {
+      // Since 0.5.17 the token comes in a body: /lookup shows the link,
+      // /complete spends it. Anything else is a path form.
+      if (method === 'POST' && path !== '/api/v1/password-resets/lookup') {
         state.passwordChanged = (body as { password: string }).password;
         return json({ email: 'mansoor@example.test' });
       }
@@ -972,7 +974,11 @@ export function installFakeApi(state: FakeState) {
       }
       return json(TOKENS, 201);
     }
-    if (path.startsWith('/api/v1/invitations/') && method === 'GET') {
+    // The path form, and since 0.5.17 the token in a body.
+    if (
+      path.startsWith('/api/v1/invitations/') &&
+      (method === 'GET' || (method === 'POST' && path === '/api/v1/invitations/lookup'))
+    ) {
       return json({
         household_name: 'The Seikh family',
         display_name: 'Sam',

@@ -5,8 +5,10 @@ import type { Principal } from '../auth/service.js';
 import { memberBody, profileBody, type HouseholdService } from './service.js';
 import {
   acceptBody,
+  acceptByBody,
   inviteBody,
   inviteExistingBody,
+  lookupBody,
   type InvitationService,
 } from './invitations.js';
 import { roleChangeBody, type CoOwnerService } from './co-owners.js';
@@ -139,11 +141,29 @@ export function registerHousehold(
     return reply.status(204).send();
   });
 
-  // The two unauthenticated ones: the invitee has no account yet, by
-  // definition. Both are rate-limited like sign-in, because the link
+  // The unauthenticated ones: the invitee has no account yet, by
+  // definition. All are rate-limited like sign-in, because the link
   // secret and the code are the only things standing in front of them.
   const tight = { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
 
+  // The link's token in a body, never a path (5.17). A link reads
+  // /join#<token>, and no server is sent what follows the #; the page reads
+  // it and posts it here. The same answers and refusals as the path forms
+  // below.
+  app.post('/api/v1/invitations/lookup', tight, async (req) =>
+    invitations.preview(parse(lookupBody, req.body ?? {}).token),
+  );
+
+  app.post('/api/v1/invitations/accept', tight, async (req, reply) => {
+    const { token, ...body } = parse(acceptByBody, req.body ?? {});
+    const tokens = await invitations.accept(token, body, metaOf(req));
+    return reply.status(201).send(tokens);
+  });
+
+  // The path forms, which links made before 0.5.17 (/join/<token>) were
+  // looked up and accepted with. They keep working while those links live —
+  // seven days, or up to thirty — and are listed in the capability
+  // document's `deprecations`, to go in 0.9.0.
   app.get('/api/v1/invitations/:token', tight, async (req) =>
     invitations.preview(params(tokenParam, req).token),
   );

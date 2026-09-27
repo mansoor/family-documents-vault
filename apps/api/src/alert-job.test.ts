@@ -15,7 +15,7 @@ describe('alertJob', () => {
         accountIds: ['a'],
         subject: 'Setting a new password',
         body: 'b',
-        url: 'https://vault.example/reset/t',
+        url: 'https://vault.example/reset#t',
         urlLabel: 'Set a new password',
         emailOnly: true,
       }),
@@ -24,7 +24,7 @@ describe('alertJob', () => {
       account_ids: ['a'],
       subject: 'Setting a new password',
       body: 'b',
-      url: 'https://vault.example/reset/t',
+      url: 'https://vault.example/reset#t',
       url_label: 'Set a new password',
       email_only: true,
     });

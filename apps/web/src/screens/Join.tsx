@@ -1,8 +1,9 @@
 import { roleDescription } from '@fdv/shared';
 import { useEffect, useState, type FormEvent } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate } from 'react-router';
 import { api, type InvitationPreview } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
+import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
@@ -13,9 +14,21 @@ import { Button, ErrorNote, Field, Logo } from '../ui.js';
  * whose vault this is, who invited them and what they will be able to do —
  * because "paste this link and make a password" is also what a phishing
  * page says, and the difference has to be visible.
+ *
+ * The link reads `/join#<token>` (5.17), or `/join/<token>` if it was made
+ * before then. Either way the token was taken out of the address before
+ * anything was drawn (link-token.ts) — out of the address bar and this
+ * tab's history, not out of the browser's own history of visited pages,
+ * which no page can reach. What keeps the link safe there is that it works
+ * once, only with the code, and not for long. It goes to the vault in a
+ * body, never a path.
  */
 export function JoinScreen() {
-  const { token } = useParams<{ token: string }>();
+  // Read, not taken: reading it twice, as a check in development does,
+  // gives the same token.
+  const [token] = useState(() => heldLinkToken('join'));
+  // Used in this page load already, and the page opened again (5.17 review).
+  const [spent] = useState(() => linkSpent('join'));
   const { session, markAuthChanged } = useApp();
   const navigate = useNavigate();
   const [preview, setPreview] = useState<InvitationPreview | null>(null);
@@ -27,10 +40,11 @@ export function JoinScreen() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!token) return;
     let live = true;
     void (async () => {
       try {
-        const p = await api.invitationPreview(token ?? '');
+        const p = await api.lookupInvitation(token);
         if (live) setPreview(p);
       } catch (err) {
         if (live) setLoadError(describeError(err));
@@ -43,17 +57,20 @@ export function JoinScreen() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!token) return;
     setBusy(true);
     setError(null);
     try {
       session.accept(
-        await api.acceptInvitation(token ?? '', {
+        await api.acceptInvitationLink(token, {
           code,
           password,
           ...(email && email.trim() ? { email: email.trim() } : {}),
         }),
       );
+      markLinkSpent();
       markAuthChanged();
+      // In place of this page, so Back does not come back to it.
       await navigate('/', { replace: true });
     } catch (err) {
       setError(describeError(err));
@@ -61,13 +78,36 @@ export function JoinScreen() {
     }
   };
 
-  if (loadError) {
+  if (spent) {
+    // They joined from this page, in this page load, and it is open again:
+    // asking for the link would send them to one that opens nothing.
     return (
       <main className="page">
         <Logo />
         <section className="card stack">
-          <h1 style={{ fontSize: 24 }}>This invitation cannot be used</h1>
-          <p className="muted">{loadError}</p>
+          <h1 style={{ fontSize: 24 }}>That invitation has been used</h1>
+          <p className="muted">
+            You joined with it, so the link opens nothing now. From here on, your way in is the
+            email and password you chose.
+          </p>
+          <Button onClick={() => void navigate('/', { replace: true })}>Go to the vault</Button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!token || loadError) {
+    return (
+      <main className="page">
+        <Logo />
+        <section className="card stack">
+          <h1 style={{ fontSize: 24 }}>
+            {token ? 'This invitation cannot be used' : 'Open the invitation link again'}
+          </h1>
+          <p className="muted">
+            {loadError ??
+              'This page needs the whole link you were sent. Open it from the message again: it works until you have joined, or until it runs out.'}
+          </p>
           <Button kind="quiet" onClick={() => void navigate('/welcome')}>
             Go to the sign-in page
           </Button>
@@ -117,6 +157,9 @@ export function JoinScreen() {
           onChange={setEmail}
           autoComplete="email"
           placeholder={preview.email}
+          // Left empty, the invitation's own address is kept (5.3): a
+          // browser must not refuse the form for it.
+          required={false}
           hint={`Leave it empty to keep the address this was sent to (${preview.email}). If you ever forget your password, the link to set a new one comes here — so make it an address only you can read.`}
         />
         <Field
@@ -132,6 +175,12 @@ export function JoinScreen() {
         <Button type="submit" disabled={busy || !code || password.length < 10}>
           {busy ? 'Joining…' : 'Join the family vault'}
         </Button>
+        <p className="muted">
+          The link is out of the address bar and this tab's history now, but this browser's own
+          history of pages visited may still have it. That is why it works only once, only with the
+          code, and only until{' '}
+          {new Date(preview.expires_at).toLocaleDateString([], { dateStyle: 'long' })}.
+        </p>
       </form>
     </main>
   );

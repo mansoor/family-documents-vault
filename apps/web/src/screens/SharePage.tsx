@@ -13,8 +13,9 @@ import { Button, ErrorNote, Field, Logo } from '../ui.js';
  * log should not say it was.
  *
  * The secret is in the fragment, which no server is ever sent. It is read
- * once, before the page is drawn (takeLinkToken, from main.tsx), and taken
- * out of the address bar and this tab's history at once. The browser's own
+ * once, before the page is drawn (takeLinkToken in link-token.ts, from
+ * main.tsx), and taken out of the address bar and this tab's history at
+ * once. The browser's own
  * history — the list of pages visited, which it may sync to other devices —
  * has already recorded the link as it arrived, and no page can take it out
  * of that; the PIN is what keeps a link found there shut. The PIN goes in
@@ -25,28 +26,6 @@ import { Button, ErrorNote, Field, Logo } from '../ui.js';
  * Each phase replaces the last, so its heading takes the focus as it
  * arrives, and a screen reader says where it now is.
  */
-
-/**
- * The token from the address's fragment, and the fragment gone from the
- * address bar and from this tab's history (its entry replaced, so Back
- * does not bring it back). The browser's own history of visited pages may
- * still hold the whole link: replaceState cannot reach that. Null when
- * there is none.
- */
-export function takeLinkToken(): string | null {
-  const raw = window.location.hash.replace(/^#/, '');
-  if (!raw) return null;
-  window.history.replaceState(
-    window.history.state,
-    '',
-    `${window.location.pathname}${window.location.search}`,
-  );
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
 
 type Phase =
   | { kind: 'loading' }

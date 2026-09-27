@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { REMIND_ONCE, shortDate, whenExactly } from '@fdv/shared';
 import { App } from './App.js';
 import { ONLY_ME_REMINDING } from './screens/AddConfirm.js';
+import { holdAccountLinkToken, reopenOnNewLink } from './link-token.js';
 import {
   AISHA,
   fresh,
@@ -22,8 +23,29 @@ import {
 beforeEach(() => {
   localStorage.clear();
   window.history.replaceState({}, '', '/');
+  // Whatever link the last test was opened with is not this one's.
+  holdAccountLinkToken();
 });
 afterEach(() => vi.unstubAllGlobals());
+
+const RESET_TOKEN = 'reset-secret-0123456789abcdef';
+const JOIN_TOKEN = 'link-secret-0123456789abcdef';
+
+/**
+ * The app opened at this address, as main.tsx starts it: an invitation's
+ * or a reset's token taken out of the address first (5.17).
+ */
+function opened(address: string) {
+  window.history.replaceState({}, '', address);
+  holdAccountLinkToken();
+}
+
+/** The calls that carried this token anywhere — address or body — as "METHOD url". */
+function carrying(state: ReturnType<typeof fresh>, token: string): string[] {
+  return state.calls
+    .filter((c) => c.url.includes(token) || JSON.stringify(c.body ?? null).includes(token))
+    .map((c) => `${c.method} ${c.url}`);
+}
 
 async function expectAccessible() {
   const results = await axe.run(document.body, {
@@ -493,7 +515,10 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Make the invitation' }));
     await screen.findByRole('heading', { name: 'Send these to Sam' });
-    expect(screen.getByText(/\/join\/link-secret-0123456789abcdef/)).toBeInTheDocument();
+    // The secret after the #, which a browser sends to no server (5.17).
+    expect(
+      screen.getByText(`${window.location.origin}/join#link-secret-0123456789abcdef`),
+    ).toBeInTheDocument();
     expect(screen.getByText('ABCD-EFGH')).toBeInTheDocument();
     expect(screen.getByText(/only time they are shown/)).toBeInTheDocument();
     await expectAccessible();
@@ -819,7 +844,7 @@ describe('App', () => {
   it('the reset link says whose account it is, then sends you to sign in again', async () => {
     const state = fresh();
     installFakeApi(state);
-    window.history.replaceState({}, '', '/reset/reset-secret-0123456789abcdef');
+    opened(`/reset#${RESET_TOKEN}`);
     render(<App />);
 
     await screen.findByRole('heading', { name: 'Set a new password' });
@@ -833,11 +858,157 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'That is done' });
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
     expect(state.passwordChanged).toBe('a brand new password');
+    // Spent, which is what keeps it safe in the browser's own history.
+    expect(screen.getByText(/The link is used up: it opens nothing now/)).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('a reset link works from its fragment, and the token leaves the address bar', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({ kept: true }, '', `/reset#${RESET_TOKEN}`);
+    holdAccountLinkToken();
+    // Out of the address bar, and out of this tab's history: the same entry,
+    // replaced, not a new one after it.
+    expect(window.location.pathname).toBe('/reset');
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain(RESET_TOKEN);
+    expect(window.history.state).toEqual({ kept: true });
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    // The copy says what happened, and no more: this browser's own history
+    // may still have the link.
+    expect(
+      screen.getByText(/out of the address bar and this tab's history now, but this browser's own/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a brand new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Set my new password' }));
+    await screen.findByRole('heading', { name: 'That is done' });
+    expect(window.location.href).not.toContain(RESET_TOKEN);
+
+    // The token went to the vault only in bodies, never in an address.
+    expect(state.calls.some((c) => c.url.includes(RESET_TOKEN))).toBe(false);
+    expect(carrying(state, RESET_TOKEN)).toEqual([
+      'POST /api/v1/password-resets/lookup',
+      'POST /api/v1/password-resets/complete',
+    ]);
+    expect(state.calls.find((c) => c.url === '/api/v1/password-resets/complete')?.body).toEqual({
+      token: RESET_TOKEN,
+      password: 'a brand new password',
+    });
+  });
+
+  it('an old /reset/ link still works until it expires', async () => {
+    // A link emailed before 0.5.17: the token in the path. It is taken out
+    // the same way, and posted as a fragment's is.
+    const state = fresh();
+    installFakeApi(state);
+    opened(`/reset/${RESET_TOKEN}`);
+    expect(window.location.pathname).toBe('/reset');
+    expect(window.location.href).not.toContain(RESET_TOKEN);
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    expect(state.calls.some((c) => c.url.includes(RESET_TOKEN))).toBe(false);
+    expect(carrying(state, RESET_TOKEN)).toEqual(['POST /api/v1/password-resets/lookup']);
+    cleanup();
+
+    // Once its hour is up, the vault refuses it, and the page says so.
+    installFakeApi(fresh({ resetValid: false }));
+    opened(`/reset/${RESET_TOKEN}`);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'This link cannot be used' });
+    expect(screen.getByText(/not valid any more/)).toBeInTheDocument();
+  });
+
+  it('a reset page opened without its link, or reloaded, asks for the link again', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    opened('/reset');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Open your link again' });
+    expect(screen.getByText(/it works once,\s+and\s+for\s+an\s+hour/)).toBeInTheDocument();
+    expect(state.calls.filter((c) => c.url.includes('password-resets'))).toEqual([]);
+    await expectAccessible();
+  });
+
+  it('Back after a finished reset never asks for the used link again (5.17 review)', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    // The link opened in this tab after a page of the app, so Back has
+    // somewhere in the app to go.
+    window.history.replaceState({}, '', '/welcome');
+    window.history.pushState({}, '', `/reset#${RESET_TOKEN}`);
+    holdAccountLinkToken();
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a brand new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Set my new password' }));
+    await screen.findByRole('heading', { name: 'That is done' });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/sign-in'));
+    await screen.findByLabelText('Email');
+
+    // Signing in took the reset page's place: Back is the page before the
+    // link, not a page asking for a link that opens nothing now.
+    act(() => window.history.back());
+    await waitFor(() => expect(window.location.pathname).toBe('/welcome'));
+    await screen.findByRole('button', { name: 'Sign in' });
+    expect(screen.queryByText(/Open your link again|Open it again/)).not.toBeInTheDocument();
+
+    // And the reset page opened again in this page load says what is true:
+    // the link was used.
+    act(() => {
+      window.history.pushState({}, '', '/reset');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { name: 'That link has been used' });
+    expect(screen.getByText(/Sign in with your new\s+password/)).toBeInTheDocument();
+    expect(screen.queryByText(/Open your link again|Open it again/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Ask for a new one' })).not.toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/sign-in'));
+    // One lookup and one spend, and nothing asked of the vault since.
+    expect(carrying(state, RESET_TOKEN)).toEqual([
+      'POST /api/v1/password-resets/lookup',
+      'POST /api/v1/password-resets/complete',
+    ]);
+  });
+
+  it('a link pasted into a tab already at its page starts the page again from it', async () => {
+    // Only the fragment changes, and a browser loads nothing for that: the
+    // page is loaded again, to read the link as a new tab would.
+    const reloads: string[] = [];
+    const stop = reopenOnNewLink(() =>
+      reloads.push(`${window.location.pathname}${window.location.hash}`),
+    );
+    try {
+      for (const page of ['/reset', '/join', '/s']) {
+        window.history.replaceState({}, '', page);
+        window.location.hash = `#${RESET_TOKEN}`;
+        await waitFor(() => expect(reloads.at(-1)).toBe(`${page}#${RESET_TOKEN}`));
+      }
+      expect(reloads).toHaveLength(3);
+      // Anywhere else a fragment is nobody's link.
+      window.history.replaceState({}, '', '/settings');
+      window.location.hash = '#elsewhere';
+      await new Promise((r) => setTimeout(r, 50));
+      expect(reloads).toHaveLength(3);
+    } finally {
+      stop();
+    }
   });
 
   it('a reset link that has been used says so, and offers a new one', async () => {
     installFakeApi(fresh({ resetValid: false }));
-    window.history.replaceState({}, '', '/reset/nope');
+    opened('/reset#nope-0123456789abcdef');
     render(<App />);
 
     await screen.findByRole('heading', { name: 'This link cannot be used' });
@@ -845,10 +1016,121 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Forgotten your password' });
   });
 
+  it('an invitation link works from its fragment', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({ kept: true }, '', `/join#${JOIN_TOKEN}`);
+    holdAccountLinkToken();
+    expect(window.location.pathname).toBe('/join');
+    expect(window.location.hash).toBe('');
+    expect(window.location.href).not.toContain(JOIN_TOKEN);
+    expect(window.history.state).toEqual({ kept: true });
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    expect(
+      screen.getByText(/out of the address bar and this tab's history now, but this browser's own/),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'ABCD-EFGH' },
+    });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'a long enough password' },
+    });
+    // The address is left empty, to keep the one the invitation was sent to:
+    // the form goes (it once asked for one it said could be left out).
+    expect(screen.getByLabelText('The email you will sign in with')).not.toBeRequired();
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+
+    // The token went to the vault only in bodies, never in an address.
+    expect(state.calls.some((c) => c.url.includes(JOIN_TOKEN))).toBe(false);
+    expect(carrying(state, JOIN_TOKEN)).toEqual([
+      'POST /api/v1/invitations/lookup',
+      'POST /api/v1/invitations/accept',
+    ]);
+    expect(state.calls.find((c) => c.url === '/api/v1/invitations/accept')?.body).toEqual({
+      token: JOIN_TOKEN,
+      code: 'ABCD-EFGH',
+      password: 'a long enough password',
+    });
+  });
+
+  it('Back after joining never asks for the used invitation again (5.17 review)', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    window.history.replaceState({}, '', '/welcome');
+    window.history.pushState({}, '', `/join#${JOIN_TOKEN}`);
+    holdAccountLinkToken();
+    render(<App />);
+
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    fireEvent.change(screen.getByLabelText('The code they gave you'), {
+      target: { value: 'ABCD-EFGH' },
+    });
+    fireEvent.change(screen.getByLabelText('Choose a password'), {
+      target: { value: 'a long enough password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Join the family vault' }));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(window.location.pathname).toBe('/');
+
+    // Home took the invitation page's place: Back is the page before the
+    // link (which, signed in now, sends them Home again), never the
+    // invitation.
+    const popped = new Promise((r) => window.addEventListener('popstate', r, { once: true }));
+    act(() => window.history.back());
+    await act(() => popped);
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(screen.queryByText(/Open the invitation link again/)).not.toBeInTheDocument();
+
+    // And the invitation page opened again in this page load says what is
+    // true: it was used.
+    act(() => {
+      window.history.pushState({}, '', '/join');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await screen.findByRole('heading', { name: 'That invitation has been used' });
+    expect(
+      screen.getByText(/You joined with it, so the link opens nothing now/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Open the invitation link again/)).not.toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(screen.getByRole('button', { name: 'Go to the vault' }));
+    await screen.findByRole('heading', { name: 'The Seikh family' });
+    expect(carrying(state, JOIN_TOKEN)).toEqual([
+      'POST /api/v1/invitations/lookup',
+      'POST /api/v1/invitations/accept',
+    ]);
+  });
+
+  it('an old /join/ link still works', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    opened(`/join/${JOIN_TOKEN}`);
+    expect(window.location.pathname).toBe('/join');
+    expect(window.location.href).not.toContain(JOIN_TOKEN);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Join The Seikh family' });
+    expect(state.calls.some((c) => c.url.includes(JOIN_TOKEN))).toBe(false);
+    expect(carrying(state, JOIN_TOKEN)).toEqual(['POST /api/v1/invitations/lookup']);
+  });
+
+  it('a join page opened without its link asks for the link again', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    opened('/join');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Open the invitation link again' });
+    expect(state.calls.filter((c) => c.url.includes('invitations'))).toEqual([]);
+    await expectAccessible();
+  });
+
   it('joining says whose vault it is before asking for anything', async () => {
     const state = fresh();
     installFakeApi(state);
-    window.history.replaceState({}, '', '/join/link-secret-0123456789abcdef');
+    opened(`/join#${JOIN_TOKEN}`);
     render(<App />);
 
     await screen.findByRole('heading', { name: 'Join The Seikh family' });
@@ -887,7 +1169,7 @@ describe('App', () => {
 
   it('an invitation that is no longer valid says so, and offers the way back', async () => {
     installFakeApi(fresh({ invitationValid: false }));
-    window.history.replaceState({}, '', '/join/nope');
+    opened('/join#nope-0123456789abcdef');
     render(<App />);
     await screen.findByRole('heading', { name: 'This invitation cannot be used' });
     expect(screen.getByText(/Ask whoever invited you/)).toBeInTheDocument();

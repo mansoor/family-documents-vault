@@ -201,12 +201,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   });
 
   // Auth endpoints get a tight per-route limit (see routes); this is the
-  // ceiling for everything else.
+  // ceiling for everything else, per address (FDV_RATE_LIMIT_PER_MINUTE, 300
+  // unless raised: a household whose devices share one address may need more).
   // Every 429, from here or a route's own limit, is the one envelope:
   // rate_limited, retriable, with Retry-After (the plugin sets the header).
   await app.register(rateLimit, {
     global: true,
-    max: 300,
+    max: config.FDV_RATE_LIMIT_PER_MINUTE,
     timeWindow: '1 minute',
     errorResponseBuilder: (_req, context) => {
       const seconds = Math.max(1, Math.ceil(context.ttl / 1000));

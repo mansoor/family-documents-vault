@@ -55,6 +55,7 @@ services:
       FDV_TRUST_PROXY: ${FDV_TRUST_PROXY:-private}
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       FDV_OFFLINE_MAX_DAYS: ${FDV_OFFLINE_MAX_DAYS:-}
+      FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - vault-data:/data

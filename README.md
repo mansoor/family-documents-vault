@@ -226,6 +226,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_DB_APP_PASSWORD`              | generated                                 | Password for the application role (`fdv_app`). The API queries as this role, which owns nothing, so row-level security is enforced on every query.                                                                      |
 | `FDV_MAX_UPLOAD_BYTES`             | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                                                                                         |
 | `FDV_OFFLINE_MAX_DAYS`             | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
+| `FDV_RATE_LIMIT_PER_MINUTE`        | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
 | `FDV_LOCAL_VAULT_DIR`              | `/data/vault`                             | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                                                                                                    |
 | `FDV_DISPLAY_NAME`                 | `Our family vault`                        | What your family calls the vault. Shown on every screen.                                                                                                                                                                |
 | `FDV_PORT`                         | `8080`                                    | The port the web app listens on.                                                                                                                                                                                        |
@@ -276,6 +277,13 @@ The invitation lasts seven days and can be cancelled at any time. Five wrong
 codes and it stops working. Nothing is emailed — the vault does not need a
 mail server to bring somebody in, and you pass the invitation on yourself.
 
+The link reads `https://vault.example/join#…`. What is after the `#` is its
+secret, and a browser sends that part to no server, the vault and anything in
+front of it included. The page reads it, then takes it out of the address bar
+and that tab's history. The browser's own history of visited pages may still
+hold the whole link, and no page can take it out of that: what protects it is
+that it works once, only with the code, and not for long.
+
 The four roles:
 
 | Role       | Can                                                                                                                      | Cannot                                                                 |
@@ -320,7 +328,11 @@ a passkey and never had a password, you can set one by confirming it is you.
 the address you sign in with. It works once, stops working after an hour, and
 signs every device out and removes every passkey when it is used. It does not
 sign you in — if two-step sign-in is switched on, you are still asked for the
-code.
+code. Like an invitation's, the link carries its secret after the `#`
+(`https://vault.example/reset#…`), which no server is sent; the page takes it
+out of the address bar and that tab's history, though not out of the
+browser's own history of visited pages — which is why the link works once, and
+only for an hour.
 
 **Which mail server carries that link matters.** The mail server an owner sets
 up in the app is one any owner can change — and point at a mailbox of their

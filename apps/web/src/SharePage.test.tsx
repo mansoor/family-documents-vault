@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { SharePage, takeLinkToken } from './screens/SharePage.js';
+import { takeLinkToken } from './link-token.js';
+import { SharePage } from './screens/SharePage.js';
 import { fresh, installFakeApi, PASSPORT, signedIn } from './test-api.js';
 
 const TOKEN = 'share-secret-0123456789abcdef';

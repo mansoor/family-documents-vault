@@ -45,6 +45,89 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
   const preview = (token: string) =>
     h.app.inject({ url: `/api/v1/invitations/${token}`, ...peer() });
 
+  /** The page's calls since 5.17: the token in a body, never a path. */
+  const lookup = (token: unknown) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations/lookup',
+      payload: { token },
+      ...peer(),
+    });
+  const acceptByBody = (token: string, body: Record<string, unknown>) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations/accept',
+      payload: { token, ...body },
+      ...peer(),
+    });
+
+  it('an invitation link works from its fragment: the token goes in a body, and answers as the path form does', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Robin', email: 'robin@example.test', role: 'teen' }),
+    );
+    const byBody = await lookup(created.link_token);
+    const byPath = await preview(created.link_token);
+    expect(byBody.statusCode).toBe(200);
+    expect(byBody.json()).toEqual(byPath.json());
+    expect(json<InvitationPreview>(byBody)).toMatchObject({
+      household_name: 'The Test family',
+      display_name: 'Robin',
+      role: 'teen',
+      invited_by: 'Owner',
+    });
+
+    // A wrong code from the body counts against the link as from the path.
+    const wrong = await acceptByBody(created.link_token, {
+      code: 'ZZZZ-ZZZZ',
+      password: 'robin chose this',
+    });
+    expect(wrong.statusCode).toBe(401);
+    expect(json<{ error: { message: string } }>(wrong).error.message).toContain('4 tries left');
+    const path = await accept(created.link_token, {
+      code: 'ZZZZ-ZZZZ',
+      password: 'robin chose this',
+    });
+    expect(json<{ error: { message: string } }>(path).error.message).toContain('3 tries left');
+
+    const joined = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'robin chose this',
+    });
+    expect(joined.statusCode).toBe(201);
+    expect(json<Tokens>(joined).role).toBe('teen');
+    // Good once, whichever form spends it.
+    expect((await lookup(created.link_token)).statusCode).toBe(404);
+    expect((await preview(created.link_token)).statusCode).toBe(404);
+    const again = await accept(created.link_token, {
+      code: created.code,
+      password: 'robin chose this',
+    });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it('the body forms refuse what the path forms refuse, in the same words', async () => {
+    const nobody = 'n'.repeat(43);
+    const [deadBody, deadPath] = [await lookup(nobody), await preview(nobody)];
+    expect([deadBody.statusCode, deadPath.statusCode]).toEqual([404, 404]);
+    expect(json<{ error: { code: string } }>(deadBody).error.code).toBe('invitation_not_valid');
+    expect(json<{ error: { message: string } }>(deadBody).error.message).toBe(
+      json<{ error: { message: string } }>(deadPath).error.message,
+    );
+    const [notJoined, notJoinedPath] = [
+      await acceptByBody(nobody, { code: 'ABCD-EFGH', password: 'a long password' }),
+      await accept(nobody, { code: 'ABCD-EFGH', password: 'a long password' }),
+    ];
+    expect([notJoined.statusCode, notJoinedPath.statusCode]).toEqual([404, 404]);
+    // Too short to be a token, or no token at all.
+    expect([(await lookup('short')).statusCode, (await preview('short')).statusCode]).toEqual([
+      422, 422,
+    ]);
+    expect((await lookup(undefined)).statusCode).toBe(422);
+    expect(
+      (await acceptByBody('short', { code: 'ABCD-EFGH', password: 'a long password' })).statusCode,
+    ).toBe(422);
+  });
+
   it('invites someone who is not in the household yet, and says who it is for', async () => {
     const res = await invite({ display_name: 'Sam', email: 'sam@example.test', role: 'adult' });
     expect(res.statusCode).toBe(201);
@@ -115,6 +198,95 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
     // Even the right code is no good now — the invitation itself is gone.
     const dead = await accept(link_token, { code: 'BBBB-BBBB', password: 'a long password' });
     expect(dead.statusCode).toBe(404);
+  });
+
+  it('twenty wrong codes at once, by both ways in, get five tries between them (5.17 review)', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Raced', email: 'raced@example.test', role: 'viewer' }),
+    );
+    // From one address: each way in has ten a minute of its own, so the
+    // limiter lets all twenty through and only the count stands in the way.
+    const from = { remoteAddress: '10.99.17.1' };
+    const wrong = { code: 'WXYZ-WXYZ', password: 'a long password' };
+    const answers = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        i % 2 === 0
+          ? h.app.inject({
+              method: 'POST',
+              url: '/api/v1/invitations/accept',
+              payload: { token: created.link_token, ...wrong },
+              ...from,
+            })
+          : h.app.inject({
+              method: 'POST',
+              url: `/api/v1/invitations/${created.link_token}/accept`,
+              payload: wrong,
+              ...from,
+            }),
+      ),
+    );
+    const said = (r: { json: () => unknown }) =>
+      json<{ error: { code: string; message: string } }>(r).error;
+    const guessed = answers.filter((r) => r.statusCode === 401);
+    const refused = answers.filter((r) => r.statusCode === 404);
+    expect(guessed).toHaveLength(5);
+    expect(refused).toHaveLength(15);
+    // Each of the five tries is counted once, in the words a try always had.
+    expect(guessed.map((r) => said(r).message).sort()).toEqual(
+      [
+        'That code is not right. 4 tries left.',
+        'That code is not right. 3 tries left.',
+        'That code is not right. 2 tries left.',
+        'That code is not right. 1 try left.',
+        'That code was wrong too many times. Ask whoever invited you for a new invitation.',
+      ].sort(),
+    );
+    for (const r of refused) expect(said(r).code).toBe('invitation_not_valid');
+
+    // The right code, afterwards, opens nothing: the invitation is dead.
+    const late = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'a long password',
+    });
+    expect(late.statusCode).toBe(404);
+    const listed = json<{ items: InvitationView[] }>(
+      await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+    ).items.find((i) => i.id === created.invitation.id);
+    expect(listed).toMatchObject({ state: 'locked', attempts_left: 0 });
+  });
+
+  it('a right code on the fifth try still works, and a right code uses no try', async () => {
+    const created = json<CreatedInvitation>(
+      await invite({ display_name: 'Fifth', email: 'fifth@example.test', role: 'viewer' }),
+    );
+    for (const left of ['4 tries', '3 tries', '2 tries', '1 try']) {
+      const res = await acceptByBody(created.link_token, {
+        code: 'WXYZ-WXYZ',
+        password: 'a long password',
+      });
+      expect(res.statusCode).toBe(401);
+      expect(json<{ error: { message: string } }>(res).error.message).toContain(`${left} left`);
+    }
+    // The right code, refused for something else — an address that signs in
+    // here already — gives its try back.
+    const taken = await accept(created.link_token, {
+      code: created.code,
+      password: 'a long password',
+      email: 'owner@example.test',
+    });
+    expect(taken.statusCode).toBe(409);
+    const attemptsLeft = async () =>
+      json<{ items: InvitationView[] }>(
+        await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+      ).items.find((i) => i.id === created.invitation.id)?.attempts_left;
+    expect(await attemptsLeft()).toBe(1);
+
+    const joined = await acceptByBody(created.link_token, {
+      code: created.code,
+      password: 'fifth time lucky',
+    });
+    expect(joined.statusCode).toBe(201);
+    expect(json<Tokens>(joined).role).toBe('viewer');
   });
 
   it('accepting makes a real account with the role it was offered', async () => {

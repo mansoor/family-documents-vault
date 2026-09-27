@@ -246,7 +246,7 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
     account_ids: [] as string[],
     subject: 'Setting a new password for your vault',
     body: 'b',
-    url: 'https://vault.example.test/reset/abc',
+    url: 'https://vault.example.test/reset#abc',
     url_label: 'Set a new password',
     email_only: true,
     via: 'operator' as const,

@@ -8,5 +8,7 @@ export default defineConfig({
     // takes longer when the machine is busy: 10 s timed one out (5.15), as
     // it did the API's (5.3).
     hookTimeout: 30_000,
+    // As the API's (5.17): database round trips on a shared, busy machine.
+    testTimeout: 15_000,
   },
 });

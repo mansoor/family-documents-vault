@@ -22,12 +22,18 @@ export const MIN_CLIENT_VERSION = '0.0.1';
  * What is going, and in which release (docs/api-changelog.md: four minor
  * releases' notice). The old share routes answer only links made before
  * 0.5.14, the last of which lapses within 90 days (A25); by 0.9.0 they
- * would answer nothing.
+ * would answer nothing. A reset's and an invitation's token travel in a
+ * body since 5.17; the path forms serve the links made before it — an hour
+ * for a reset, thirty days at most for an invitation — and go in 0.9.0 too.
  */
 export const DEPRECATIONS: Capabilities['deprecations'] = [
   { field: 'GET /api/v1/shared/{token}', removed_in: '0.9.0' },
   { field: 'POST /api/v1/shared/{token}/open', removed_in: '0.9.0' },
   { field: 'GET /api/v1/shared/{token}/content', removed_in: '0.9.0' },
+  { field: 'GET /api/v1/password-resets/{token}', removed_in: '0.9.0' },
+  { field: 'POST /api/v1/password-resets/{token}', removed_in: '0.9.0' },
+  { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
+  { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
 ];
 
 /**

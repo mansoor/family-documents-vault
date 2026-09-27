@@ -69,6 +69,16 @@ const schema = z.object({
     .positive()
     .default(100 * 1024 * 1024)
     .describe('Largest single file the vault accepts.'),
+  FDV_RATE_LIMIT_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(100_000)
+    .default(300)
+    .describe(
+      'How many requests one address may make in a minute, beyond the tighter limits on ' +
+        'signing in and opening links. Raise it when many devices share one address.',
+    ),
   FDV_OFFLINE_MAX_DAYS: z.coerce
     .number()
     .int()
