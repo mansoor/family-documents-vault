@@ -445,6 +445,40 @@ export function useSheetFocus(
 }
 
 /**
+ * A panel over the page (5.4): sharing, or who can see it, from a row's ⋯;
+ * adding to a list (5.15). While what it holds is on its way, Escape leaves
+ * it open, as the "are you sure?" does: what comes back is shown only here.
+ */
+export function Sheet(props: {
+  label: string;
+  busy: boolean;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const box = useRef<HTMLElement>(null);
+  useSheetFocus(box, {
+    onEscape: props.onClose,
+    busy: props.busy,
+    returnFocus: props.returnFocus,
+  });
+  return (
+    <div className="scrim" role="presentation">
+      <section
+        ref={box}
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={props.label}
+        aria-busy={props.busy}
+      >
+        {props.children}
+      </section>
+    </div>
+  );
+}
+
+/**
  * The app's own "are you sure?" (5.1), never the browser's confirm(): over
  * the page like the step-up sheet. Cancel or Escape is a real answer, until
  * the action is on its way: then neither can take it back, so neither

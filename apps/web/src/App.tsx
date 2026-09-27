@@ -10,6 +10,7 @@ import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
+import { ListScreen, ListsScreen } from './screens/Lists.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { NotificationsScreen } from './screens/Notifications.js';
@@ -175,6 +176,22 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <PersonScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/lists"
+            element={
+              <Gate need="signed-in">
+                <ListsScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/lists/:id"
+            element={
+              <Gate need="signed-in">
+                <ListScreen />
               </Gate>
             }
           />

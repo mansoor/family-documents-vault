@@ -9,7 +9,8 @@ import {
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
-import { DocActions } from '../DocActions.js';
+import { DocActions, type RowList } from '../DocActions.js';
+import { listsOffered, ListsOnHome } from '../lists.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -142,6 +143,10 @@ export function HomeScreen() {
         )}
       </section>
 
+      {/* The way to the family's lists (5.15): only where the vault has
+          them, and for those who make them. A viewer is given none. */}
+      {listsOffered(caps, storedRole()) && <ListsOnHome />}
+
       <section aria-labelledby="recent-h">
         <h2 id="recent-h" className="section-h">
           Recently added
@@ -255,6 +260,9 @@ export function DocRow({
   types,
   onOpen,
   onChanged,
+  hint,
+  list,
+  pick,
 }: {
   doc: DocumentView;
   /** The vault's types, for the type's short name; the category until they arrive. */
@@ -262,12 +270,19 @@ export function DocRow({
   onOpen: () => void;
   /** Its ⋯ changed something (5.4): the list is loaded again. */
   onChanged: () => void | Promise<unknown>;
+  /** On a list's page, for its maker only: who in its audience is not given it (5.14). */
+  hint?: string | null | undefined;
+  /** The list whose page this row is on (5.15). */
+  list?: RowList | undefined;
+  /** Chosen in search's Select (5.15). */
+  pick?: RowPick | undefined;
 }) {
   const who =
     doc.visibility === 'adults' ? 'Adults only' : doc.visibility === 'private' ? 'Only me' : null;
   const title = doc.title ?? 'Scan · needs a name';
   return (
-    <li className="docrow">
+    <li className={pick ? 'docrow docrow-pick' : 'docrow'}>
+      {pick && <PickBox title={title} pick={pick} />}
       <button type="button" className="rowbtn" onClick={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">
@@ -275,10 +290,30 @@ export function DocRow({
           {who && <span>{` · ${who}`}</span>}
         </span>
         <StatusBadge status={doc.status} />
+        {hint && <span className="list-hint">{hint}</span>}
       </button>
       {/* Beside the row's button, never inside it: a button inside a
           button is not a button to anybody using a screen reader. */}
-      <DocActions documentId={doc.id} title={title} doc={doc} onChanged={onChanged} />
+      <DocActions documentId={doc.id} title={title} doc={doc} onChanged={onChanged} list={list} />
     </li>
+  );
+}
+
+/** Whether a row is chosen, in search's Select (5.15). */
+export interface RowPick {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
+/** The box that chooses a row: beside its button, never inside it, and named for it. */
+export function PickBox({ title, pick }: { title: string; pick: RowPick }) {
+  return (
+    <input
+      type="checkbox"
+      className="pick"
+      checked={pick.checked}
+      aria-label={`Select “${title}”`}
+      onChange={(e) => pick.onChange(e.target.checked)}
+    />
   );
 }

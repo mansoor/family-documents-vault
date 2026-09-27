@@ -7,10 +7,12 @@ import {
   type SuggestionView,
 } from '@fdv/shared';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { DocActions } from '../DocActions.js';
+import { AddToList, documentsWord, listsOffered } from '../lists.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -20,10 +22,14 @@ import {
   CollapsibleSection,
   ErrorNote,
   Field,
+  Sheet,
   StatusBadge,
   TopBar,
 } from '../ui.js';
-import { addLink, DocRow, rowLine } from './Home.js';
+import { addLink, DocRow, PickBox, rowLine, type RowPick } from './Home.js';
+
+/** The most documents put on a list at once, as the vault takes them. */
+const MOST_AT_ONCE = 200;
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices, RoleControls } from './Roles.js';
 
@@ -37,8 +43,9 @@ const ISSUER_CHIPS = 8;
  * because non-technical users browse before they search.
  */
 export function SearchScreen() {
-  const { withToken, authVersion } = useApp();
+  const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
+  const select = useSelect(listsOffered(caps, storedRole()));
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const category = params.get('category') ?? '';
@@ -219,6 +226,11 @@ export function SearchScreen() {
         </div>
       )}
       <ErrorNote message={error} />
+      {/* Select, where there is something to choose, or something chosen already. */}
+      {(select.on ||
+        (hits !== null && hits.length + sealed.items.length > 0) ||
+        (browse !== null && browse.length > 0)) &&
+        select.bar}
       {hits && (
         <>
           {/* Where focus goes when a row leaves the results with it (5.4). */}
@@ -234,6 +246,7 @@ export function SearchScreen() {
                 key={h.document_id}
                 hit={h}
                 types={types}
+                pick={select.pick(h.document_id)}
                 onOpen={() => void navigate(`/documents/${h.document_id}`)}
                 onChanged={again}
               />
@@ -254,6 +267,7 @@ export function SearchScreen() {
                     key={h.document_id}
                     hit={h}
                     types={types}
+                    pick={select.pick(h.document_id)}
                     onOpen={() => void navigate(`/documents/${h.document_id}`)}
                     onChanged={again}
                   />
@@ -277,15 +291,141 @@ export function SearchScreen() {
               key={d.id}
               doc={d}
               types={types}
+              pick={select.pick(d.id)}
               onOpen={() => void navigate(`/documents/${d.id}`)}
               onChanged={again}
             />
           ))}
         </ul>
       )}
+      {select.sheet}
       <BottomNav />
     </main>
   );
+}
+
+/**
+ * Search's Select (5.15): a box beside each result, and those chosen put on
+ * a list at once — all of them, or, if one has gone meanwhile, none. Only
+ * where lists are offered; what is chosen stays chosen from one search to
+ * the next, until it is put on a list or Select is cancelled.
+ */
+function useSelect(offered: boolean) {
+  const [on, setOn] = useState(false);
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  // What the sheet said it put on a list, for when it closes.
+  const added = useRef<string | null>(null);
+  const start = useRef<HTMLButtonElement>(null);
+  const add = useRef<HTMLButtonElement>(null);
+
+  const pick = (id: string): RowPick | undefined =>
+    on
+      ? {
+          checked: picked.has(id),
+          onChange: (yes) =>
+            setPicked((was) => {
+              const now = new Set(was);
+              if (yes) now.add(id);
+              else now.delete(id);
+              return now;
+            }),
+        }
+      : undefined;
+
+  const begin = () => {
+    flushSync(() => {
+      setOn(true);
+      setSaid(null);
+    });
+    // Select goes, and the boxes come: the first of them has the focus.
+    document.querySelector<HTMLInputElement>('input.pick')?.focus();
+  };
+
+  const stop = () => {
+    flushSync(() => {
+      setOn(false);
+      setPicked(new Set());
+    });
+    start.current?.focus();
+  };
+
+  const close = () => {
+    const news = added.current;
+    added.current = null;
+    if (!news) {
+      setAdding(false);
+      setBusy(false);
+      return;
+    }
+    // Put on a list: done with these. What the sheet said stays said here.
+    flushSync(() => {
+      setAdding(false);
+      setBusy(false);
+      setOn(false);
+      setPicked(new Set());
+      setSaid(news);
+    });
+    start.current?.focus();
+  };
+
+  const tooMany = picked.size > MOST_AT_ONCE;
+  const bar = offered ? (
+    <div className="select-bar">
+      <div className="row select-row">
+        {on ? (
+          <>
+            <span className="select-count" role="status">
+              {picked.size} selected
+            </span>
+            <button
+              ref={add}
+              type="button"
+              className="btn btn-primary"
+              disabled={picked.size === 0 || tooMany}
+              onClick={() => setAdding(true)}
+            >
+              Add to a list
+            </button>
+            <Button kind="quiet" onClick={stop}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <button ref={start} type="button" className="btn btn-quiet" onClick={begin}>
+            Select
+          </button>
+        )}
+      </div>
+      {tooMany && <p className="muted">Up to {MOST_AT_ONCE} can go on a list at once.</p>}
+      <p className="notice status-line" role="status">
+        {said}
+      </p>
+    </div>
+  ) : null;
+
+  const sheet = adding ? (
+    <Sheet
+      label={`Add ${documentsWord(picked.size)} to a list`}
+      busy={busy}
+      returnFocus={add}
+      onClose={close}
+    >
+      <AddToList
+        documentIds={[...picked]}
+        what={documentsWord(picked.size)}
+        onClose={close}
+        onBusy={setBusy}
+        onAdded={(news) => {
+          added.current = news;
+        }}
+      />
+    </Sheet>
+  ) : null;
+
+  return { on, bar, sheet, pick };
 }
 
 /** One issuer however it was written: "barclays" is "Barclays". */
@@ -296,18 +436,22 @@ function sameIssuer(a: string, b: string): boolean {
 function HitRow({
   hit,
   types,
+  pick,
   onOpen,
   onChanged,
 }: {
   hit: SearchHit;
   types: DocumentTypeView[] | null;
+  /** Chosen in Select (5.15). */
+  pick: RowPick | undefined;
   onOpen: () => void;
   /** Its ⋯ changed something (5.4): the search is run again. */
   onChanged: () => void;
 }) {
   const title = hit.title ?? 'Untitled';
   return (
-    <li className="docrow">
+    <li className={pick ? 'docrow docrow-pick' : 'docrow'}>
+      {pick && <PickBox title={title} pick={pick} />}
       <button type="button" className="rowbtn" onClick={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">{rowLine(hit, types)}</span>

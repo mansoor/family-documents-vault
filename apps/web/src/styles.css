@@ -1251,3 +1251,65 @@ a.btn {
   flex-direction: column;
   gap: 4px;
 }
+
+/* 5.15: lists of documents. Who a list is for, said under its choices. */
+.stack.audience {
+  gap: 8px;
+}
+
+.audience-words,
+.list-about {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.audience-words p,
+.list-about p {
+  margin: 0;
+}
+
+/* For a list's maker: who in its audience is not given this one. Words,
+   never colour alone. */
+.list-hint {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+/* Search's Select: the choices stay in reach while the results scroll. */
+.select-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.select-row {
+  align-items: center;
+}
+
+.select-count {
+  font-weight: 600;
+  flex-grow: 1;
+}
+
+.select-bar p {
+  margin: 0;
+}
+
+/* A row with a box to choose it: the box, the row's button, its ⋯. */
+.list li.docrow-pick {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.pick {
+  width: 24px;
+  height: 24px;
+  margin: 10px 8px 10px 0;
+  accent-color: var(--accent);
+}
