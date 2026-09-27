@@ -6,6 +6,27 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-09-27 — iteration 5.16a
+
+Reminders from any date, on the server: the editor's Reminders section comes in the next release.
+
+### Added
+
+- "Due date" in the field library, for bills, council tax, school fees and anything else that falls due.
+- A kind of document can remind before any date it asks for — Expires, Due date, or a date field of the family's own — with the same choices of how long before. One date per kind; nothing repeats.
+- Each reminder now says which date it is about, in the kind's own word: "Council tax — Due date: 10 Oct, in 7 days".
+
+### Changed
+
+- A document filed after some of its reminder days have passed gets one reminder due now, the nearest, not one for each day already gone.
+- A due date that has already passed when a document is filed makes no reminders; a bill filed after it was paid does not land in Needs attention. An expiry that has passed still does, as before.
+- Snoozing a reminder about a due date never puts it off past the due date.
+- "Lapsed" in the reminder email follows the date a reminder is about, not the day it was sent.
+
+### Security
+
+- On Only me documents the vault can read the one date a kind reminds from, as it can an expiry date, so it can remind their owner; everything else in their details stays sealed. It opens that date only in its owner's own changes and when a kind's reminders move to it.
+
 ## [0.5.14] - 2026-09-26 — iteration 5.16
 
 Share links whose secret stays out of the address a server sees.
