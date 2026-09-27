@@ -1,10 +1,19 @@
-import { appendAudit, regenerateDerived, withPrincipal, type Db } from '@fdv/db';
 import {
+  appendAudit,
+  regenerateDerived,
+  reminderWords,
+  withPrincipal,
+  type Db,
+  type RegenerateOptions,
+} from '@fdv/db';
+import {
+  aboutDate,
   addDays,
   addMonths,
   localToday,
   nextOccurrence,
   parseRecurrence,
+  reminderAbout,
   reminderLabel,
   type ReminderView,
 } from '@fdv/shared';
@@ -20,8 +29,11 @@ import { allows, requireCapability } from '../authz.js';
  *   whenever a document's expiry date or type changes; manual reminders
  *   are never touched by that.
  * - Uploading a new version resolves a document's open reminders (REM-08).
- * - Snooze is honest: one week, one month, or until the expiry date.
+ * - Snooze is honest: one week, one month, or until the date a reminder is
+ *   about — and never past a due date that is still ahead (0.5.15).
  * - Acknowledging a recurring reminder schedules its next instance.
+ * - A derived reminder says which date it is about (`source`), in the
+ *   kind's words (`about`: "Due date: 10 Oct, in 7 days", 0.5.15).
  */
 
 export interface ManualReminderInput {
@@ -37,6 +49,7 @@ type Row = {
   kind: 'derived' | 'manual';
   fire_at: string;
   lead_days: number | null;
+  source: string | null;
   note: string | null;
   recurrence: string | null;
   status: ReminderView['status'];
@@ -58,15 +71,25 @@ export class ReminderService {
   }
 
   /**
-   * Recomputes the derived reminders for a document from its type and
-   * expiry. Runs inside the caller's transaction (document create/update).
-   * Leads whose date is already past are created as `due`, so a passport
-   * added with two months left shows up in the needs-attention strip
-   * straight away rather than being silently skipped. The worker's
+   * Recomputes the derived reminders for a document from its type and the
+   * date its type reminds from: its expiry, or a date detail (0.5.15).
+   * Runs inside the caller's transaction (document create/update). The
+   * nearest lead whose day is already past is created as `due`, so a
+   * passport added with two months left shows up in the needs-attention
+   * strip straight away rather than being silently skipped. The worker's
    * types.regenerate makes them the same way (@fdv/db, 0.5.10).
+   *
+   * An Only me document's details are sealed: its owner's write passes
+   * them as it holds them open (`details`), and one that does not, where
+   * the date is sealed, fails (SealedDateNeeded).
    */
-  async regenerateDerived(trx: Db, householdId: string, documentId: string): Promise<void> {
-    await regenerateDerived(trx, householdId, documentId);
+  async regenerateDerived(
+    trx: Db,
+    householdId: string,
+    documentId: string,
+    opts: RegenerateOptions = {},
+  ): Promise<void> {
+    await regenerateDerived(trx, householdId, documentId, opts);
   }
 
   /** REM-08: a renewed document resolves its open reminders. */
@@ -98,11 +121,13 @@ export class ReminderService {
           'reminder.kind',
           'reminder.fire_at',
           'reminder.lead_days',
+          'reminder.source',
           'reminder.note',
           'reminder.recurrence',
           'reminder.status',
           'reminder.snoozed_until',
           'document.title',
+          'document.type_key',
         ])
         .where('document.deleted_at', 'is', null)
         .where(visibleTo(p))
@@ -114,7 +139,10 @@ export class ReminderService {
           .where('reminder.fire_at', '<=', addDays(today, 90));
       else q = q.where('reminder.status', 'in', ['scheduled', 'due', 'snoozed']);
       const rows = await q.execute();
-      return rows.map((r) => view({ ...r, status: r.status }, r.title, today));
+      const words = await reminderWords(trx, rows);
+      return rows.map((r) =>
+        view({ ...r, status: r.status }, r.title, today, words.get(r.id) ?? null),
+      );
     });
   }
 
@@ -164,14 +192,24 @@ export class ReminderService {
         detail: { document_id: doc.id, fire_at: input.fire_at },
         ip: meta.ip,
       });
-      return view(row, doc.title, today);
+      return view(row, doc.title, today, null);
     });
   }
 
+  /**
+   * Later: a day, or `'expiry'` — the date a derived reminder is about
+   * (0.5.15), its expiry or its due date; a manual one waits for its
+   * document's expiry, as before. A reminder about a date field never
+   * waits past that date while it is ahead: a later day is cut back to it,
+   * so an older phone's "A month" on a bill due in 9 days waits 9 days.
+   */
   async snooze(p: Principal, id: string, until: string, meta: RequestMeta): Promise<ReminderView> {
     return this.transition(p, id, meta, async (trx, r, today) => {
+      const about = aboutDate({ ...r, fire_at: iso(r.fire_at) as string });
       let date = until;
-      if (until === 'expiry') {
+      if (until === 'expiry' && about) {
+        date = about;
+      } else if (until === 'expiry') {
         const doc = await trx
           .selectFrom('document')
           .select('expires_on')
@@ -184,6 +222,8 @@ export class ReminderService {
             'This document has no expiry date to wait for.',
           );
         date = iso(doc.expires_on) as string;
+      } else if (about && r.source !== 'expires' && about > today && date > about) {
+        date = about;
       }
       if (date <= today) throw new ApiError(422, 'validation_failed', 'Pick a day after today.');
       return { status: 'snoozed', snoozed_until: date, action: 'reminder.snoozed' };
@@ -264,7 +304,7 @@ export class ReminderService {
         .selectFrom('reminder')
         .innerJoin('document', 'document.id', 'reminder.document_id')
         .selectAll('reminder')
-        .select('document.title')
+        .select(['document.title', 'document.type_key'])
         .where('reminder.id', '=', id)
         .where(visibleTo(p))
         .executeTakeFirst();
@@ -285,7 +325,8 @@ export class ReminderService {
         objectId: id,
         ip: meta.ip,
       });
-      return view(updated, r.title, today);
+      const words = await reminderWords(trx, [r]);
+      return view(updated, r.title, today, words.get(r.id) ?? null);
     });
   }
 }
@@ -296,9 +337,11 @@ function visibleTo(p: Principal) {
     or (document.visibility = 'private' and document.owner_member_id = ${p.memberId}::uuid))`;
 }
 
-function view(r: Row, title: string | null, today: string): ReminderView {
+/** A reminder as the API answers it; `word` is its kind's for the date it is about. */
+function view(r: Row, title: string | null, today: string, word: string | null): ReminderView {
   const fireAt = iso(r.fire_at) as string;
   const snoozed = iso(r.snoozed_until);
+  const about = aboutDate({ ...r, fire_at: fireAt });
   return {
     id: r.id,
     document_id: r.document_id,
@@ -311,5 +354,7 @@ function view(r: Row, title: string | null, today: string): ReminderView {
     status: r.status,
     snoozed_until: snoozed,
     label: reminderLabel(fireAt, today, r.status, snoozed),
+    source: r.source,
+    about: about && word ? reminderAbout(word, about, today) : null,
   };
 }

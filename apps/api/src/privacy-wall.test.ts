@@ -477,6 +477,79 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     expect(kinds.find((t) => t.key === 'medical_record')?.hidden).toBe(false);
   });
 
+  it("a second adult learns nothing of the first adult's Only me bill from its reminders: not the list, the digest or the impact count", async () => {
+    // A kind the family shares, reminding from its Due date (0.5.15); the
+    // owner's own bill of it is Only me, and due in three days.
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: as(owner),
+      payload: {
+        label: 'Loan repayment',
+        category: 'financial',
+        fields: [{ key: 'due_date' }],
+        remind_from: 'due_date',
+        remind_leads: [7, 1],
+      },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const kind = json<{ key: string }>(made).key;
+    const inDays = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+    const bill = json<DocumentView>(
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/documents',
+        headers: as(owner),
+        payload: {
+          type_key: kind,
+          title: 'Payday loan',
+          owner_member_id: owner.member_id,
+          visibility: 'private',
+          extra: { due_date: { date: inDays(3), precision: 'day' } },
+        },
+      }),
+    );
+    type Line = { id: string; document_id: string; about: string | null };
+    const lines = async (who: Tokens, state: string) =>
+      json<{ items: Line[] }>(
+        await h.app.inject({ url: `/api/v1/reminders?state=${state}`, headers: as(who) }),
+      ).items;
+    // The owner is reminded, in words that name the date…
+    const theirs = (await lines(owner, 'all')).filter((r) => r.document_id === bill.id);
+    expect(theirs).toHaveLength(2);
+    expect(theirs[0]?.about).toMatch(/^Due date: .*, in 3 days$/);
+    // …and Sam is given no line, in any list, and cannot reach one by its id.
+    for (const state of ['all', 'due', 'upcoming']) {
+      expect((await lines(sam, state)).map((r) => r.document_id)).not.toContain(bill.id);
+    }
+    for (const [method, url, payload] of [
+      ['POST', `/api/v1/reminders/${theirs[0]?.id}/snooze`, { until: inDays(2) }],
+      ['POST', `/api/v1/reminders/${theirs[0]?.id}/acknowledge`, undefined],
+      ['DELETE', `/api/v1/reminders/${theirs[0]?.id}`, undefined],
+    ] as const) {
+      const r = await h.app.inject({
+        method,
+        url,
+        headers: as(sam),
+        ...(payload ? { payload } : {}),
+      });
+      expect(r.statusCode, `${method} ${url}`).toBe(404);
+    }
+    // What a change to the kind would touch: nothing of it, by any date.
+    const impact = json<{ reminders: number; reminders_by_source: Record<string, number> }>(
+      await h.app.inject({ url: `/api/v1/document-types/${kind}/impact`, headers: as(sam) }),
+    );
+    expect(impact).toMatchObject({ reminders: 0, reminders_by_source: {} });
+    // The digest is cut per person by the worker, from these same rows: its
+    // half of this is in apps/worker/src/jobs/digest-privacy.test.ts.
+
+    // Gone again, so the owner's Only me documents are as the rest of this
+    // file counts them.
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx.deleteFrom('document').where('id', '=', bill.id).execute(),
+    );
+  });
+
   it('neither pass of search finds a word only that document contains', async () => {
     const first = json<{
       items: Array<{ document_id: string; snippet: string }>;

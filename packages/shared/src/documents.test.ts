@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  defaultLeads,
   deriveStatus,
   formatDate,
   missingFields,
+  nextReminder,
   parseDateInput,
+  REMIND_FROM_NOT_ASKED,
+  REMIND_NEEDS_LEADS,
+  reminderChoices,
+  reminderOf,
+  reminderWord,
   widensVisibility,
   withSealed,
 } from './documents.js';
@@ -210,6 +217,108 @@ describe('what an Only me document needs, its notes and details sealed (0.5.8)',
     const plain = { notes: 'In the drawer', extra: { plate: 'KX19 ZLT' } };
     expect(withSealed(plain, { notes: false, details: [] })).toBe(plain);
     expect(withSealed(plain, null)).toBe(plain);
+  });
+});
+
+describe('what a kind reminds from (0.5.15)', () => {
+  it('reminderOf reads a vault without remind_from as reminding from Expires', () => {
+    // An older vault says nothing of remind_from: Expires, while the kind
+    // expires and has lead times, as every vault has since 0.4.10.
+    expect(reminderOf(passport)).toEqual({ from: 'expires', leads: [270, 180] });
+    expect(reminderOf(birth)).toEqual({ from: null, leads: [] });
+    expect(reminderOf({ expiry_driver: 'expires_on', reminder_leads: [] })).toEqual({
+      from: null,
+      leads: [],
+    });
+    // A newer one says it, and a date field's lead times are its own.
+    expect(
+      reminderOf({
+        expiry_driver: 'expires_on',
+        reminder_leads: [],
+        remind_from: 'due_date',
+        remind_leads: [1, 7],
+      }),
+    ).toEqual({ from: 'due_date', leads: [7, 1] });
+    // Nothing reminds: the times Expires kept, to take back when switched on.
+    expect(
+      reminderOf({
+        expiry_driver: null,
+        reminder_leads: [270, 180],
+        remind_from: null,
+        remind_leads: [270, 180],
+      }),
+    ).toEqual({ from: null, leads: [270, 180] });
+    expect(defaultLeads('expires', [270, 180])).toEqual([270, 180]);
+    expect(defaultLeads('expires')).toEqual([30]);
+    expect(defaultLeads('due_date', [270, 180])).toEqual([7]);
+    expect(defaultLeads('h_abcdefghij')).toEqual([30]);
+  });
+
+  it('offers only the dates a kind shows, in its words: never Issued or a year', () => {
+    const car = {
+      expiry_driver: 'expires_on',
+      core: { expires: { label: 'Tax due' } },
+      fields: [
+        { key: 'plate', label: 'Plate', kind: 'text' as const },
+        { key: 'h_mot0000000', label: 'MOT', kind: 'date' as const },
+        { key: 'first_year', label: 'First registered', kind: 'year' as const },
+        { key: 'h_due0000000', label: 'Due date', kind: 'date' as const },
+      ],
+    };
+    const library = [
+      { key: 'due_date', label: 'Due date', builtin: true },
+      { key: 'h_mot0000000', label: 'MOT', builtin: false },
+      { key: 'h_due0000000', label: 'Due date', builtin: false },
+    ];
+    expect(reminderChoices(car, library)).toEqual([
+      { key: 'expires', label: 'Tax due' },
+      { key: 'h_mot0000000', label: 'MOT' },
+      { key: 'h_due0000000', label: 'Due date (your own)' },
+    ]);
+    expect(reminderChoices({ expiry_driver: 'review_on', fields: [] })).toEqual([
+      { key: 'expires', label: 'Review by' },
+    ]);
+    expect(reminderWord({ expiry_driver: 'expires_on' }, 'expires')).toBe('Expires');
+    expect(reminderWord(car, 'h_mot0000000')).toBe('MOT');
+    expect(reminderWord(null, 'due_date', library)).toBe('Due date');
+  });
+
+  it('works out a change the same way everywhere: the date asked for, with lead times', () => {
+    const bill = { reminding: { from: 'expires', leads: [7, 1] }, expires: true };
+    const shows = { expires: true, dates: ['due_date'] };
+    expect(nextReminder({ remind_from: 'due_date' }, bill, shows)).toEqual({
+      from: 'due_date',
+      leads: [7],
+    });
+    expect(nextReminder({ remind_from: 'issued' }, bill, shows)).toEqual({
+      problem: { message: REMIND_FROM_NOT_ASKED, detail: 'remind_from' },
+    });
+    expect(nextReminder({ remind_from: 'due_date', remind_leads: [] }, bill, shows)).toEqual({
+      problem: { message: REMIND_NEEDS_LEADS, detail: 'remind_leads' },
+    });
+    // Left out: the old rule. Expires switched on reminds 30 days before…
+    const gym = { reminding: { from: null, leads: [] }, expires: false };
+    expect(nextReminder({}, gym, { expires: true, dates: [] })).toEqual({
+      from: 'expires',
+      leads: [30],
+    });
+    // …never over a date that reminds already.
+    const tax = { reminding: { from: 'due_date', leads: [7] }, expires: false };
+    expect(nextReminder({}, tax, shows)).toEqual({ from: 'due_date', leads: [7] });
+    // Hiding the date switches them off: Expires keeps its times, another date's go.
+    expect(nextReminder({}, bill, { expires: false, dates: ['due_date'] })).toEqual({
+      from: null,
+      leads: [7, 1],
+    });
+    const showing = { ...tax, expires: true };
+    expect(nextReminder({}, showing, { expires: true, dates: [] })).toEqual({
+      from: null,
+      leads: [],
+    });
+    // The reminding date cannot be made optional.
+    expect(
+      nextReminder({ fields: [{ key: 'due_date', required: false }] }, tax, shows),
+    ).toMatchObject({ problem: { detail: 'due_date' } });
   });
 });
 

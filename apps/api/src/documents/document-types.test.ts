@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { EnvKeyProvider, openPrivate, ScopeKeys } from '@fdv/crypto';
 import {
   createDb,
   createPool,
   regenerateDerived,
+  typeEtag,
   withPrincipal,
   withSystem,
   type Db,
@@ -11,7 +13,11 @@ import {
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   EXPIRY_ALWAYS_REQUIRED,
+  ONE_SET_OF_LEADS,
   PRIVATE_BY_DEFAULT,
+  REMIND_FROM_NOT_ASKED,
+  REMIND_NEEDS_LEADS,
+  REMINDING_DATE_REQUIRED,
   TYPE_IN_USE,
   UNSEEN_DOCUMENTS,
   type ActivityLine,
@@ -24,7 +30,7 @@ import {
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { forgetTypes, typeLookup } from './service.js';
 
 /**
@@ -55,6 +61,13 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
   const json = <T>(r: { json: () => unknown }) => r.json() as T;
   const error = (r: { json: () => unknown }) =>
     json<{ error: { code: string; message: string; detail?: string; action?: string } }>(r).error;
+  /**
+   * Each call from an address of its own now and then: this file makes more
+   * than the 300 a minute one address may (the vault's ceiling), which is
+   * not what it tests.
+   */
+  let nth = 0;
+  const peer = () => `10.85.${Math.floor(++nth / 200)}.${nth % 200}`;
   const call = (
     who: Tokens,
     method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
@@ -66,6 +79,7 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
       method,
       url,
       headers: { ...h.as(who), ...headers },
+      remoteAddress: peer(),
       ...(payload !== undefined ? { payload: payload as object } : {}),
     });
   const ok = async <T>(r: Promise<{ statusCode: number; body: string; json: () => unknown }>) => {
@@ -124,9 +138,11 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
 
   /**
    * The worker's job for every one the API asked for so far, as it runs:
-   * each document of the type, in a transaction of its own as the vault,
-   * reminded by the function the API uses (apps/worker/src/jobs/types.ts;
-   * its own run is in the worker's actor.test.ts).
+   * each document of the type out of the Trash, in a transaction of its
+   * own as the vault, reminded by the function the API uses — an Only me
+   * document's sealed reminding date opened with its owner's key, and that
+   * date alone passed on (apps/worker/src/jobs/types.ts, 0.5.15; its own
+   * run is in the worker's reminders.test.ts and actor.test.ts).
    */
   const runRegenerate = async () => {
     const asked = h.jobs.filter((j) => j.name === 'types.regenerate');
@@ -134,16 +150,55 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
     for (const j of asked) {
       const { household_id, type_key } = j.data as { household_id: string; type_key: string };
       const docs = await withSystem(app, household_id, (trx) =>
-        trx.selectFrom('document').select('id').where('type_key', '=', type_key).execute(),
+        trx
+          .selectFrom('document')
+          .select('id')
+          .where('type_key', '=', type_key)
+          .where('deleted_at', 'is', null)
+          .execute(),
       );
       for (const d of docs) {
-        await withSystem(app, household_id, (trx) =>
-          regenerateDerived(trx, household_id, d.id, { aheadOnly: true }),
-        );
+        await withSystem(app, household_id, async (trx) => {
+          const row = await trx
+            .selectFrom('document')
+            .select(['owner_member_id', 'sealed_details', 'extra_sealed'])
+            .where('id', '=', d.id)
+            .forUpdate()
+            .executeTakeFirstOrThrow();
+          const from = (
+            await trx
+              .selectFrom('effective_document_type')
+              .select('remind_from')
+              .where('key', '=', type_key)
+              .executeTakeFirst()
+          )?.remind_from;
+          let details: Record<string, unknown> | undefined;
+          if (from && from !== 'expires' && row.sealed_details.includes(from)) {
+            const key = await keys.unwrap(trx, {
+              householdId: household_id,
+              kind: 'member',
+              memberId: row.owner_member_id,
+            });
+            const open = openPrivate(key.key, d.id, { notes_sealed: null, ...row });
+            details = { [from]: open.extra[from] ?? null };
+          }
+          await regenerateDerived(trx, household_id, d.id, { aheadOnly: true, details });
+        });
       }
     }
     return asked;
   };
+  const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+
+  /** A document's derived reminders, with the date each is about. */
+  const about = async (documentId: string) =>
+    (
+      await admin.query<{ source: string; lead_days: number; fire_at: string; status: string }>(
+        `select source, lead_days, to_char(fire_at, 'YYYY-MM-DD') as fire_at, status from reminder
+          where document_id = $1 and kind = 'derived' order by source, lead_days desc`,
+        [documentId],
+      )
+    ).rows;
 
   /** The session's last credential, long enough ago to be asked again. */
   const goStale = () =>
@@ -1160,8 +1215,12 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
   });
 
   it('a viewer can name a household detail its kind no longer asks for, and no other (5.11 review)', async () => {
+    // A name of its own: the library refuses one it has already (0.5.15).
     const officer = await ok<DocumentAttributeView>(
-      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Case officer', kind: 'text' }),
+      call(owner, 'POST', '/api/v1/document-attributes', {
+        label: 'Housing officer',
+        kind: 'text',
+      }),
     );
     const unused = await ok<DocumentAttributeView>(
       call(owner, 'POST', '/api/v1/document-attributes', { label: 'Solicitor', kind: 'text' }),
@@ -1199,7 +1258,7 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
       )
     ).items;
     expect(library.find((a) => a.key === officer.key)).toMatchObject({
-      label: 'Case officer',
+      label: 'Housing officer',
       kind: 'text',
       builtin: false,
     });
@@ -1269,5 +1328,447 @@ describe.skipIf(!testAdminUrl())('kinds of document, managed', () => {
       title: 'Plot 10',
     });
     expect(typed.statusCode).toBe(422);
+  });
+
+  // ------------------------------------------ reminders from any date (0.5.15)
+
+  const due = (days: number) => ({ due_date: { date: inDays(days), precision: 'day' } });
+  const patch = (who: Tokens, key: string, body: Record<string, unknown>, etag?: string) =>
+    call(who, 'PATCH', `/api/v1/document-types/${key}`, body, etag ? { 'if-match': etag } : {});
+
+  it("Due date is in every household's library, as a date", async () => {
+    for (const who of [owner, sam, viewer]) {
+      const library = (
+        await ok<{ items: DocumentAttributeView[] }>(
+          call(who, 'GET', '/api/v1/document-attributes'),
+        )
+      ).items;
+      expect(library).toContainEqual({
+        key: 'due_date',
+        label: 'Due date',
+        kind: 'date',
+        choices: null,
+        builtin: true,
+      });
+    }
+  });
+
+  it('a kind can remind from its Due date instead of Expires', async () => {
+    await runRegenerate(); // what earlier tests asked for, out of the way
+    const tax = await kind({
+      label: 'Council tax',
+      category: 'bills',
+      core: { expires: { shown: true } },
+      fields: [{ key: 'due_date' }],
+    });
+    // Made showing Expires, it reminds from Expires, 30 days before.
+    expect(tax).toMatchObject({ remind_from: 'expires', remind_leads: [30], reminder_leads: [30] });
+    const march = await file(owner, {
+      type_key: tax.key,
+      title: 'Council tax, March',
+      owner_member_id: owner.member_id,
+      expires: { date: inDays(200), precision: 'day' },
+      extra: due(20),
+    });
+    expect(await about(march.id)).toEqual([
+      { source: 'expires', lead_days: 30, fire_at: inDays(170), status: 'scheduled' },
+    ]);
+
+    const moved = await ok<DocumentTypeView>(
+      patch(owner, tax.key, { remind_from: 'due_date', remind_leads: [7, 1] }),
+    );
+    expect(moved).toMatchObject({
+      remind_from: 'due_date',
+      remind_leads: [7, 1],
+      // What an older phone reads: Expires, with no lead times of its own.
+      expiry_driver: 'expires_on',
+      reminder_leads: [],
+    });
+    expect(moved.fields).toEqual([
+      { key: 'due_date', label: 'Due date', kind: 'date', required: true },
+    ]);
+    expect(await runRegenerate()).toHaveLength(1);
+    // Each reminder says which date it is about; Expires's is gone.
+    expect(await about(march.id)).toEqual([
+      { source: 'due_date', lead_days: 7, fire_at: inDays(13), status: 'scheduled' },
+      { source: 'due_date', lead_days: 1, fire_at: inDays(19), status: 'scheduled' },
+    ]);
+    // Said in the log as a change to what it reminds from.
+    const [line] = await admin
+      .query<{ detail: { fields: string[] } }>(
+        `select detail from audit_event where action = 'document_type.updated'
+         and detail->>'key' = $1 order by id desc limit 1`,
+        [tax.key],
+      )
+      .then((r) => r.rows);
+    expect(line?.detail.fields).toEqual(['remind_from', 'remind_leads']);
+  });
+
+  it('only a date the kind shows can be chosen: Issued, a year, a text field and a hidden field are refused with the sentence', async () => {
+    const statement = await kind({
+      label: 'Pension forecast',
+      category: 'financial',
+      core: { issued: { shown: true }, expires: { shown: true } },
+      fields: [{ key: 'tax_year' }, { key: 'account' }],
+    });
+    for (const date of ['issued', 'tax_year', 'account', 'due_date', 'no_such_field']) {
+      const refused = await patch(owner, statement.key, { remind_from: date });
+      expect(refused.statusCode, date).toBe(422);
+      expect(error(refused)).toMatchObject({
+        code: 'validation_failed',
+        message: REMIND_FROM_NOT_ASKED,
+        detail: 'remind_from',
+      });
+    }
+    // Expires is one it asks for; hidden, it is not.
+    await ok(patch(owner, statement.key, { remind_from: 'expires' }));
+    const hidden = await patch(owner, statement.key, {
+      core: { expires: { shown: false } },
+      remind_from: 'expires',
+    });
+    expect(error(hidden)).toMatchObject({ message: REMIND_FROM_NOT_ASKED, detail: 'remind_from' });
+  });
+
+  it('moving to Due date with no lead times gives 7 days; to any other date, 30', async () => {
+    const renewal = await ok<DocumentAttributeView>(
+      call(owner, 'POST', '/api/v1/document-attributes', { label: 'Renewal date', kind: 'date' }),
+    );
+    const lease = await kind({
+      label: 'Garage licence',
+      core: { expires: { shown: true } },
+      fields: [{ key: 'due_date' }, { key: renewal.key }],
+      reminder_leads: [90, 14],
+    });
+    expect(lease).toMatchObject({ remind_from: 'expires', remind_leads: [90, 14] });
+    // Expires's times never carry over to another date, nor back again.
+    const toDue = await ok<DocumentTypeView>(patch(owner, lease.key, { remind_from: 'due_date' }));
+    expect(toDue).toMatchObject({ remind_from: 'due_date', remind_leads: [7] });
+    const toRenewal = await ok<DocumentTypeView>(
+      patch(owner, lease.key, { remind_from: renewal.key }),
+    );
+    expect(toRenewal).toMatchObject({ remind_from: renewal.key, remind_leads: [30] });
+    const toExpires = await ok<DocumentTypeView>(
+      patch(owner, lease.key, { remind_from: 'expires' }),
+    );
+    expect(toExpires).toMatchObject({ remind_from: 'expires', remind_leads: [30] });
+    // Times sent are the ones kept; the date it reminds from already keeps its own.
+    await ok(patch(owner, lease.key, { remind_leads: [60, 14] }));
+    expect(
+      await ok<DocumentTypeView>(patch(owner, lease.key, { remind_from: 'expires' })),
+    ).toMatchObject({ remind_leads: [60, 14] });
+    // Switched off by hiding Expires, it keeps them, and takes them back.
+    const off = await ok<DocumentTypeView>(
+      patch(owner, lease.key, { core: { expires: { shown: false } } }),
+    );
+    expect(off).toMatchObject({ remind_from: null, remind_leads: [60, 14], expiry_driver: null });
+    const back = await ok<DocumentTypeView>(
+      patch(owner, lease.key, { core: { expires: { shown: true } }, remind_from: 'expires' }),
+    );
+    expect(back).toMatchObject({ remind_from: 'expires', remind_leads: [60, 14] });
+  });
+
+  it('reminders on with no lead times are refused', async () => {
+    const made = await call(owner, 'POST', '/api/v1/document-types', {
+      label: 'Water bill',
+      category: 'bills',
+      fields: [{ key: 'due_date' }],
+      remind_from: 'due_date',
+      remind_leads: [],
+    });
+    expect(made.statusCode).toBe(422);
+    expect(error(made)).toMatchObject({ message: REMIND_NEEDS_LEADS, detail: 'remind_leads' });
+    const water = await kind({ label: 'Water bill', fields: [{ key: 'due_date' }] });
+    expect(water).toMatchObject({ remind_from: null, remind_leads: [] });
+    const refused = await patch(owner, water.key, { remind_from: 'due_date', remind_leads: [] });
+    expect(error(refused)).toMatchObject({ message: REMIND_NEEDS_LEADS, detail: 'remind_leads' });
+    // The old way of saying "no reminders" still means just that.
+    const on = await ok<DocumentTypeView>(patch(owner, water.key, { remind_from: 'due_date' }));
+    expect(on).toMatchObject({ remind_from: 'due_date', remind_leads: [7] });
+    const none = await ok<DocumentTypeView>(patch(owner, water.key, { reminder_leads: [] }));
+    expect(none).toMatchObject({ remind_from: null, remind_leads: [], reminder_leads: [] });
+  });
+
+  it('Expires switched on for a kind that reminds nobody reminds 30 days before, as always', async () => {
+    await runRegenerate();
+    const pass = await kind({ label: 'Swimming pass' });
+    expect(pass).toMatchObject({ expiry_driver: null, remind_from: null, reminder_leads: [] });
+    const on = await ok<DocumentTypeView>(
+      patch(owner, pass.key, { core: { expires: { shown: true } } }),
+    );
+    expect(on).toMatchObject({
+      expiry_driver: 'expires_on',
+      reminder_leads: [30],
+      remind_from: 'expires',
+      remind_leads: [30],
+    });
+    expect((await runRegenerate()).length).toBe(1);
+  });
+
+  it('ticking Expires on a Due-date kind keeps its date and lead times', async () => {
+    await runRegenerate();
+    const phone = await kind({
+      label: 'Phone bill',
+      category: 'bills',
+      fields: [{ key: 'due_date' }],
+      remind_from: 'due_date',
+      remind_leads: [7, 1],
+    });
+    expect(phone).toMatchObject({ remind_from: 'due_date', remind_leads: [7, 1] });
+    const ticked = await ok<DocumentTypeView>(
+      patch(owner, phone.key, { core: { expires: { shown: true } } }),
+    );
+    expect(ticked).toMatchObject({
+      expiry_driver: 'expires_on',
+      remind_from: 'due_date',
+      remind_leads: [7, 1],
+      reminder_leads: [],
+    });
+    // Nothing reminds any differently: no documents are reminded anew.
+    expect(await runRegenerate()).toEqual([]);
+  });
+
+  it('hiding the reminding Due date while Expires shows stops its reminders; reminder_leads is [] and expiry_driver unchanged', async () => {
+    await runRegenerate();
+    const gas = await kind({
+      label: 'Gas bill',
+      category: 'bills',
+      core: { expires: { shown: true } },
+      fields: [{ key: 'due_date' }],
+      remind_from: 'due_date',
+      remind_leads: [7],
+    });
+    const bill = await file(owner, {
+      type_key: gas.key,
+      title: 'Gas, spring',
+      owner_member_id: owner.member_id,
+      expires: { date: inDays(300), precision: 'day' },
+      extra: due(30),
+    });
+    expect(await about(bill.id)).toEqual([
+      { source: 'due_date', lead_days: 7, fire_at: inDays(23), status: 'scheduled' },
+    ]);
+    const hidden = await ok<DocumentTypeView>(patch(owner, gas.key, { fields: [] }));
+    expect(hidden).toMatchObject({
+      remind_from: null,
+      remind_leads: [],
+      reminder_leads: [],
+      expiry_driver: 'expires_on',
+      core: { expires: { shown: true, required: true } },
+    });
+    expect(await runRegenerate()).toHaveLength(1);
+    expect(await about(bill.id)).toEqual([]);
+    const [line] = await admin
+      .query<{ detail: { fields: string[] } }>(
+        `select detail from audit_event where action = 'document_type.updated'
+         and detail->>'key' = $1 order by id desc limit 1`,
+        [gas.key],
+      )
+      .then((r) => r.rows);
+    expect(line?.detail.fields).toEqual(['fields', 'remind_from']);
+  });
+
+  it('switching reminders off on a kind showing Expires answers reminder_leads []', async () => {
+    await runRegenerate();
+    const tv = await kind({ label: 'TV licence', core: { expires: { shown: true } } });
+    expect(tv).toMatchObject({ remind_from: 'expires', reminder_leads: [30] });
+    const off = await ok<DocumentTypeView>(patch(owner, tv.key, { remind_from: null }));
+    expect(off).toMatchObject({
+      remind_from: null,
+      remind_leads: [],
+      reminder_leads: [],
+      expiry_driver: 'expires_on',
+    });
+    expect(await runRegenerate()).toHaveLength(1);
+    // Lead times with reminders off are refused, not kept and ignored.
+    const odd = await patch(owner, tv.key, { remind_from: null, remind_leads: [30] });
+    expect(error(odd)).toMatchObject({ detail: 'remind_leads' });
+  });
+
+  it('the reminding date is always required', async () => {
+    const rent = await kind({
+      label: 'Rent demand',
+      category: 'bills',
+      fields: [{ key: 'due_date' }],
+      remind_from: 'due_date',
+    });
+    expect(rent.fields).toEqual([
+      { key: 'due_date', label: 'Due date', kind: 'date', required: true },
+    ]);
+    // Kept so, not only answered so: an older phone's list reads it.
+    const { rows } = await admin.query<{ fields: Array<{ required: boolean }> }>(
+      'select fields from document_type where key = $1',
+      [rent.key],
+    );
+    expect(rows[0]?.fields[0]?.required).toBe(true);
+    const optional = await patch(owner, rent.key, {
+      fields: [{ key: 'due_date', required: false }],
+    });
+    expect(optional.statusCode).toBe(422);
+    expect(error(optional)).toMatchObject({ message: REMINDING_DATE_REQUIRED, detail: 'due_date' });
+    // A document without it says so, as for any required field.
+    const doc = await file(owner, {
+      type_key: rent.key,
+      title: 'Rent, April',
+      owner_member_id: owner.member_id,
+    });
+    expect(doc.status).toEqual({ value: 'needs_info', label: 'Needs a due date' });
+    // Once it reminds from another date, it may be optional again.
+    const moved = await ok<DocumentTypeView>(
+      patch(owner, rent.key, { remind_from: null, fields: [{ key: 'due_date', required: false }] }),
+    );
+    expect(moved.fields).toEqual([
+      { key: 'due_date', label: 'Due date', kind: 'date', required: false },
+    ]);
+  });
+
+  it('remind_leads and reminder_leads together are refused', async () => {
+    const card = await kind({ label: 'Railcard', core: { expires: { shown: true } } });
+    const both = await patch(owner, card.key, { remind_leads: [14], reminder_leads: [14] });
+    expect(both.statusCode).toBe(422);
+    expect(error(both)).toMatchObject({ message: ONE_SET_OF_LEADS });
+    expect((await typeOf(card.key))?.remind_leads).toEqual([30]);
+  });
+
+  it('a new own field named like one in the library is refused, whatever its case', async () => {
+    for (const label of ['Due date', 'DUE DATE', '  due   date ', 'Amount']) {
+      const twin = await call(owner, 'POST', '/api/v1/document-attributes', {
+        label,
+        kind: 'date',
+      });
+      expect(twin.statusCode, label).toBe(422);
+      expect(error(twin).detail).toBe('label');
+    }
+    await ok(
+      call(sam, 'POST', '/api/v1/document-attributes', { label: 'Meter read', kind: 'date' }),
+    );
+    const again = await call(owner, 'POST', '/api/v1/document-attributes', {
+      label: 'meter READ',
+      kind: 'text',
+    });
+    expect(error(again)).toMatchObject({
+      message: 'The library already has “Meter read”. Ask for that one instead of adding another.',
+      detail: 'label',
+    });
+  });
+
+  it("another household's Bill is untouched", async () => {
+    const other = randomUUID();
+    await admin.query("insert into household (id, name) values ($1, 'Next door')", [other]);
+    const bill = () =>
+      withSystem(app, other, (trx) =>
+        trx
+          .selectFrom('effective_document_type')
+          .selectAll()
+          .where('key', '=', 'utility_bill')
+          .executeTakeFirstOrThrow(),
+      );
+    const theirs = await bill();
+    const ours = (await typeOf('utility_bill')) as DocumentTypeView;
+    expect(ours).toMatchObject({ remind_from: 'expires', remind_leads: [7, 1] });
+    const moved = await ok<DocumentTypeView>(
+      patch(owner, 'utility_bill', {
+        fields: [...ours.fields.map((f) => ({ key: f.key })), { key: 'due_date' }],
+        remind_from: 'due_date',
+      }),
+    );
+    expect(moved).toMatchObject({ remind_from: 'due_date', remind_leads: [7], reminder_leads: [] });
+    await runRegenerate();
+    // Next door: the built-in as it ships, tag and all.
+    const after = await bill();
+    expect(after).toEqual(theirs);
+    expect(typeEtag(after)).toBe(typeEtag(theirs));
+    expect(after).toMatchObject({
+      remind_from: 'expires',
+      reminder_leads: [7, 1],
+      expiry_driver: 'expires_on',
+    });
+    // The built-in itself was never written.
+    const { rows } = await admin.query(
+      "select remind_from, reminder_leads from document_type where key = 'utility_bill'",
+    );
+    expect(rows).toEqual([{ remind_from: 'expires', reminder_leads: [7, 1] }]);
+    // Put back, for the rest of the file.
+    await ok(
+      patch(owner, 'utility_bill', {
+        fields: ours.fields.map((f) => ({ key: f.key })),
+        remind_from: 'expires',
+        remind_leads: [7, 1],
+      }),
+    );
+  });
+
+  it('a stale If-Match is 409 after another adult moved the reminders', async () => {
+    const internet = await kind({
+      label: 'Broadband bill',
+      category: 'bills',
+      core: { expires: { shown: true } },
+      fields: [{ key: 'due_date' }],
+    });
+    const seen = (await typeOf(internet.key)) as DocumentTypeView;
+    await ok(patch(sam, internet.key, { remind_from: 'due_date' }, seen.etag));
+    const stale = await patch(owner, internet.key, { remind_leads: [3] }, seen.etag);
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(error(stale).detail as string)).toMatchObject({
+      remind_from: 'due_date',
+      remind_leads: [7],
+    });
+  });
+
+  it('impact counts reminders by date, only on documents the caller can see', async () => {
+    const tax = await kind({
+      label: 'Road tax',
+      category: 'bills',
+      core: { expires: { shown: true } },
+      fields: [{ key: 'due_date' }],
+    });
+    // Filed while it reminds from Expires; then it moves to Due date.
+    await file(owner, {
+      type_key: tax.key,
+      title: 'Road tax, estate',
+      owner_member_id: owner.member_id,
+      expires: { date: inDays(200), precision: 'day' },
+      extra: due(40),
+    });
+    await ok(patch(owner, tax.key, { remind_from: 'due_date', remind_leads: [7] }));
+    await file(owner, {
+      type_key: tax.key,
+      title: 'Road tax, van',
+      owner_member_id: owner.member_id,
+      extra: due(40),
+    });
+    // Sam's own, Only me: its due date sealed, reminded all the same.
+    const samsTax = await file(sam, {
+      type_key: tax.key,
+      title: "Sam's road tax",
+      owner_member_id: sam.member_id,
+      visibility: 'private',
+      extra: due(40),
+    });
+    expect(await about(samsTax.id)).toEqual([
+      { source: 'due_date', lead_days: 7, fire_at: inDays(33), status: 'scheduled' },
+    ]);
+    const counts = async (who: Tokens) => {
+      const i = await ok<DocumentTypeImpact>(
+        call(who, 'GET', `/api/v1/document-types/${tax.key}/impact`),
+      );
+      return { reminders: i.reminders, by: i.reminders_by_source, unseen: i.unseen };
+    };
+    expect(await counts(owner)).toEqual({
+      reminders: 2,
+      by: { due_date: 1, expires: 1 },
+      unseen: UNSEEN_DOCUMENTS,
+    });
+    expect(await counts(sam)).toEqual({
+      reminders: 3,
+      by: { due_date: 2, expires: 1 },
+      unseen: UNSEEN_DOCUMENTS,
+    });
+    // Reminded anew: every one about the due date, Sam's opened as the vault.
+    await runRegenerate();
+    expect((await counts(owner)).by).toEqual({ due_date: 2 });
+    expect((await counts(sam)).by).toEqual({ due_date: 3 });
+    expect(await about(samsTax.id)).toEqual([
+      { source: 'due_date', lead_days: 7, fire_at: inDays(33), status: 'scheduled' },
+    ]);
   });
 });

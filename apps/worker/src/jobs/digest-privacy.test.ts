@@ -493,3 +493,110 @@ describe.skipIf(!testAdminUrl())('the digest respects the privacy wall', () => {
     expect(kindOf('viewer')).toBe('daily');
   });
 });
+
+/**
+ * The digest's half of the privacy wall's test of the same name
+ * (apps/api/src/privacy-wall.test.ts): a reminder about an Only me bill's
+ * due date (0.5.15) says its date to its owner, and to nobody else a word.
+ */
+describe.skipIf(!testAdminUrl())("an Only me bill's reminders and the digest", () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  const hh = randomUUID();
+  const KIND = 'h_loanrepays';
+  const who = { owner: { member: '', account: '' }, adult: { member: '', account: '' } };
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    await admin.query(
+      "insert into household (id, name, timezone) values ($1, 'Two adults', 'UTC')",
+      [hh],
+    );
+    for (const [role, p] of Object.entries(who)) {
+      p.member = (
+        await admin.query<{ id: string }>(
+          'insert into member (household_id, display_name) values ($1, $2) returning id',
+          [hh, role],
+        )
+      ).rows[0]?.id as string;
+      p.account = (
+        await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+          `${role}-bills-${TAG}@example.test`,
+        ])
+      ).rows[0]?.id as string;
+      await admin.query(
+        'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+        [p.account, hh, p.member, role],
+      );
+    }
+    await admin.query(
+      `insert into document_type (key, household_id, label, category, fields, reminder_leads, remind_from)
+       values ($1, $2, 'Loan repayment', 'financial',
+               '[{"key": "due_date", "label": "Due date", "kind": "date", "required": true}]',
+               '{7}', 'due_date')`,
+      [KIND, hh],
+    );
+    await withSystem(db, hh, async (trx) => {
+      for (const [title, visibility] of [
+        ['Payday loan', 'private'],
+        ['Car loan', 'household'],
+      ] as const) {
+        const d = await trx
+          .insertInto('document')
+          .values({
+            household_id: hh,
+            title,
+            visibility,
+            type_key: KIND,
+            owner_member_id: who.owner.member,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        await trx
+          .insertInto('reminder')
+          .values({
+            household_id: hh,
+            document_id: d.id,
+            kind: 'derived',
+            source: 'due_date',
+            fire_at: '2026-10-03',
+            lead_days: 7,
+            status: 'due',
+          })
+          .execute();
+      }
+    });
+  });
+  afterAll(async () => {
+    await db?.destroy();
+    await admin?.end();
+    await tdb?.drop();
+  });
+
+  it("a second adult learns nothing of the first adult's Only me bill from its reminders: the digest", async () => {
+    const digests: Digest[] = [];
+    await deliver({
+      admin,
+      app: db,
+      notifier: { digest: async (d) => (digests.push(d), ['test']) },
+      log: () => undefined,
+      now: () => new Date('2026-10-03T10:00:00Z'),
+      digestHour: 9,
+    });
+    const to = (p: { account: string }) =>
+      digests.find((d) => d.recipient.account_id === p.account);
+    // Its owner is told of both, and of the date each is about.
+    const mine = (to(who.owner)?.items ?? []).map((i) => [i.title, i.about, i.private]);
+    expect(mine.sort()).toEqual([
+      ['Car loan', 'Due date: 10 Oct, in 7 days', false],
+      ['Payday loan', 'Due date: 10 Oct, in 7 days', true],
+    ]);
+    // The other adult's copy: the shared loan, and not a word of the other.
+    const theirs = to(who.adult) as Digest;
+    expect(theirs.items.map((i) => i.title)).toEqual(['Car loan']);
+    expect(JSON.stringify(theirs)).not.toContain('Payday');
+  });
+});

@@ -18,6 +18,20 @@ export interface ReminderView {
   snoozed_until: string | null;
   /** Pre-rendered: "In 12 days · 2 Oct", "Due today", "Overdue by 3 days". */
   label: string;
+  /**
+   * Which date a derived reminder is about (0.5.15): `'expires'`, or the
+   * key of the date field its kind reminds from; null for one somebody set
+   * themselves. Absent from older vaults, where every derived reminder is
+   * about Expires.
+   */
+  source?: string | null;
+  /**
+   * That date, in the kind's words, and how far off it is: "Due date:
+   * 10 Oct, in 7 days" (0.5.15). Show it before `label`, which says when
+   * the reminder itself fell due. Null for a manual reminder; absent from
+   * older vaults.
+   */
+  about?: string | null;
 }
 
 /** ISO date arithmetic without time zones: dates are calendar days. */
@@ -61,15 +75,74 @@ export function nextOccurrence(fireAt: string, recurrence: string, after: string
   return next;
 }
 
-/** Derived reminder dates for a document: one per lead, from the end of the expiry period. */
+/**
+ * Derived reminder dates for a document: one per lead, counted back from
+ * the date its kind reminds from — the end of the expiry period, or a
+ * date field such as a bill's due date (0.5.15).
+ */
 export function derivedFireDates(
-  expiresIso: string,
+  dateIso: string,
   leads: number[],
 ): Array<{ lead: number; fire_at: string }> {
   return [...new Set(leads)]
     .filter((l) => l >= 0)
     .sort((a, b) => b - a)
-    .map((lead) => ({ lead, fire_at: addDays(expiresIso, -lead) }));
+    .map((lead) => ({ lead, fire_at: addDays(dateIso, -lead) }));
+}
+
+/**
+ * The date a derived reminder is about (0.5.15): its day plus its lead
+ * time — the expiry, or the due date. Null for a manual reminder, which
+ * is about nothing but itself.
+ */
+export function aboutDate(r: {
+  kind: string;
+  fire_at: string;
+  lead_days: number | null;
+}): string | null {
+  return r.kind === 'derived' && r.lead_days !== null
+    ? addDays(r.fire_at.slice(0, 10), r.lead_days)
+    : null;
+}
+
+/**
+ * Whether a reminder speaks of something that has lapsed: the date a
+ * derived one is about has passed (0.5.15) — a late 7-day reminder for a
+ * bill due in 6 days has not — and a manual one, its own day.
+ */
+export function lapsed(
+  r: { kind: string; fire_at: string; lead_days: number | null },
+  todayIso: string,
+): boolean {
+  return (aboutDate(r) ?? r.fire_at.slice(0, 10)) < todayIso;
+}
+
+/**
+ * What a derived reminder is about, in the kind's word for the date and
+ * how far off it is (0.5.15): "Due date: 10 Oct, in 7 days", "Expires:
+ * 14 Mar 2031, in 4 years", "MOT: 2 Oct, 3 days ago". The year is said
+ * when it is not this one.
+ */
+export function reminderAbout(word: string, dateIso: string, todayIso: string): string {
+  const [y] = dateIso.split('-').map(Number) as [number];
+  const [ty] = todayIso.split('-').map(Number) as [number];
+  const on = y === ty ? shortDate(dateIso) : `${shortDate(dateIso)} ${y}`;
+  return `${word}: ${on}, ${howFar(daysUntil(todayIso, dateIso))}`;
+}
+
+/** "today", "tomorrow", "in 7 days", "in 9 months", "in 4 years", "yesterday", "3 days ago". */
+function howFar(days: number): string {
+  if (days === 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  if (days === -1) return 'yesterday';
+  const n = Math.abs(days);
+  const span =
+    n < 60
+      ? `${n} days`
+      : n < 730
+        ? `${Math.round(n / 30)} months`
+        : `${Math.round(n / 365)} years`;
+  return days > 0 ? `in ${span}` : `${span} ago`;
 }
 
 /** "Today" on the household's calendar. */

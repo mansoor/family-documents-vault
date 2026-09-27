@@ -14,6 +14,9 @@ import type { TypeService } from './types.js';
 
 const label = z.string().max(200);
 
+/** Lead times: days before, up to ten years, eight at most. */
+const leads = z.array(z.number().int().min(0).max(3650)).max(8);
+
 const coreRule = z
   .object({ shown: z.boolean(), required: z.boolean(), label: label.nullable() })
   .partial()
@@ -48,8 +51,12 @@ const typeBody = z
           .strict(),
       )
       .max(40),
-    // Days before it expires, up to ten years; eight at most.
-    reminder_leads: z.array(z.number().int().min(0).max(3650)).max(8),
+    // Days before the reminding date, up to ten years; eight at most.
+    reminder_leads: leads,
+    // The date to remind from (0.5.15): 'expires', a date field's key, or
+    // null for none; and its lead times, never with reminder_leads.
+    remind_from: z.string().min(1).max(64).nullable(),
+    remind_leads: leads,
     default_visibility: z.enum(['household', 'adults', 'private']),
     usually_essential: z.boolean(),
     hidden: z.boolean(),

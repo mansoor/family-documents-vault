@@ -1,4 +1,12 @@
-import { CATEGORY_LABELS, CORE_FIELDS, LIST_HINT_TEENS, type Tokens } from '@fdv/shared';
+import {
+  CATEGORY_LABELS,
+  CORE_FIELDS,
+  LIST_HINT_TEENS,
+  reminderOf,
+  reminderSentence,
+  type DocumentTypeInput,
+  type Tokens,
+} from '@fdv/shared';
 import { expect } from 'vitest';
 import type { Api } from '../api.js';
 import { ApiRequestError, isSessionOver } from '../errors.js';
@@ -831,6 +839,114 @@ export const contractScenarios: Scenario[] = [
         filename: 'ticket.pdf',
         uploaded_by_name: mine?.display_name,
       });
+    },
+  },
+  {
+    name: 'GET /document-types answers remind_from beside the old fields',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      // Kept, and said off until the web's editor for it ships (0.5.15).
+      expect((await api.capabilities()).features.reminder_dates).toBe(false);
+      const { items } = await api.documentTypes(token, { all: true });
+      for (const t of items) {
+        expect(t, t.key).toHaveProperty('remind_from');
+        expect(Array.isArray(t.remind_leads), t.key).toBe(true);
+        // What an older phone reads is what the vault does: reminder_leads
+        // is Expires's, and [] while a date field reminds.
+        expect(t.reminder_leads, t.key).toEqual(
+          t.remind_from && t.remind_from !== 'expires' ? [] : t.remind_leads,
+        );
+        if (t.remind_from === 'expires') expect(t.expiry_driver, t.key).not.toBeNull();
+        if (t.remind_from === null || t.remind_from === 'expires') {
+          expect(reminderOf(t), t.key).toEqual(
+            reminderOf({ expiry_driver: t.expiry_driver, reminder_leads: t.reminder_leads }),
+          );
+        }
+      }
+      const type = (key: string) => items.find((t) => t.key === key);
+      expect(type('passport')).toMatchObject({
+        remind_from: 'expires',
+        remind_leads: [270, 180],
+        reminder_leads: [270, 180],
+      });
+      expect(type('bank_statement')).toMatchObject({ remind_from: null, reminder_leads: [] });
+      // The date a bill can remind from, in every household's library.
+      expect((await api.documentAttributes(token)).items).toContainEqual({
+        key: 'due_date',
+        label: 'Due date',
+        kind: 'date',
+        choices: null,
+        builtin: true,
+      });
+    },
+  },
+  {
+    name: 'a kind reminding from a date field keeps expiry_driver and reminder_leads as an older phone reads them',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      const tax = await api.createDocumentType(token, {
+        label: 'Council tax',
+        category: 'bills',
+        core: { expires: { shown: true } },
+        fields: [{ key: 'due_date' }],
+      });
+      // Made showing Expires: reminded 30 days before it expires, as always.
+      expect(tax).toMatchObject({
+        expiry_driver: 'expires_on',
+        reminder_leads: [30],
+        remind_from: 'expires',
+        remind_leads: [30],
+      });
+      const moved = await api.updateDocumentType(token, tax.key, { remind_from: 'due_date' });
+      // Its Due date reminds, 7 days before; Expires is still asked for, and
+      // an older phone reads it as Expires with no lead times — never "before
+      // it expires" — and the due date as a date it requires.
+      expect(moved).toMatchObject({
+        remind_from: 'due_date',
+        remind_leads: [7],
+        expiry_driver: 'expires_on',
+        reminder_leads: [],
+        core: { expires: { shown: true, required: true } },
+      });
+      expect(moved.fields).toEqual([
+        { key: 'due_date', label: 'Due date', kind: 'date', required: true },
+      ]);
+      expect(reminderSentence(moved)).toBeNull();
+      expect(moved.etag).not.toBe(tax.etag);
+
+      // Refused, each with its reason: no lead times; a date it does not ask
+      // for; the reminding date made optional; both sets of lead times.
+      const refusals: Array<[DocumentTypeInput, string]> = [
+        [{ remind_from: 'due_date', remind_leads: [] }, 'remind_leads'],
+        [{ remind_from: 'issued' }, 'remind_from'],
+        [{ fields: [{ key: 'due_date', required: false }] }, 'due_date'],
+        [{ remind_leads: [3], reminder_leads: [3] }, 'remind_leads'],
+      ];
+      for (const [change, detail] of refusals) {
+        const refused = await refusal(api.updateDocumentType(token, tax.key, change));
+        expect(refused, JSON.stringify(change)).toMatchObject({
+          status: 422,
+          code: 'validation_failed',
+          detail,
+        });
+      }
+      // The old lead times set the reminding date's.
+      expect(
+        await api.updateDocumentType(token, tax.key, { reminder_leads: [7, 1] }),
+      ).toMatchObject({ remind_from: 'due_date', remind_leads: [7, 1], reminder_leads: [] });
+      // Hiding the date it reminds from switches reminders off.
+      expect(await api.updateDocumentType(token, tax.key, { fields: [] })).toMatchObject({
+        remind_from: null,
+        remind_leads: [],
+        reminder_leads: [],
+        expiry_driver: 'expires_on',
+      });
+      // A field named like one the library has, whatever its case, is refused.
+      const twin = await refusal(
+        api.createDocumentAttribute(token, { label: '  due   DATE ', kind: 'date' }),
+      );
+      expect(twin).toMatchObject({ status: 422, detail: 'label' });
+      expect((await api.documentTypeImpact(token, tax.key)).reminders_by_source).toEqual({});
     },
   },
   {

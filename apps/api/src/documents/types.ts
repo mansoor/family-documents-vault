@@ -4,6 +4,8 @@ import {
   CATEGORY_LABELS,
   CORE_FIELDS,
   EXPIRY_ALWAYS_REQUIRED,
+  libraryHasName,
+  nextReminder,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
@@ -16,6 +18,7 @@ import {
   type DocumentTypeImpact,
   type DocumentTypeView,
   type FieldImpact,
+  type Reminding,
   type TypeField,
 } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -80,7 +83,12 @@ export interface TypeInput {
   core?: Partial<Record<CoreField, RuleInput | undefined>> | undefined;
   fields?:
     Array<{ key: string; label?: string | undefined; required?: boolean | undefined }> | undefined;
+  /** The reminding date's lead times, as before 0.5.15: see `nextReminder`. */
   reminder_leads?: number[] | undefined;
+  /** The date to remind from (0.5.15): 'expires', a date field's key, or null for none. */
+  remind_from?: string | null | undefined;
+  /** Its lead times (0.5.15). Never with `reminder_leads`. */
+  remind_leads?: number[] | undefined;
   default_visibility?: Visibility | undefined;
   usually_essential?: boolean | undefined;
   hidden?: boolean | undefined;
@@ -109,10 +117,21 @@ const ownKey = () => `h_${[...randomBytes(10)].map((b) => BASE32[b % 32]).join('
 /** Where a household's own kinds sit in the list: after the built-ins, before "Something else". */
 const OWN_SORT_ORDER = 500;
 
-/** Reminded this long before it expires, when a new kind that expires says nothing. */
-const DEFAULT_LEADS = [30];
-
 const CATEGORIES = Object.keys(CATEGORY_LABELS);
+
+/**
+ * What a change does to a kind's reminders: the date and lead times after
+ * it, and which of the two it changes, so only those are written — a
+ * household's setting keeps the built-in's own where it said nothing.
+ */
+interface ReminderWrite extends Reminding {
+  fromChanged: boolean;
+  leadsChanged: boolean;
+}
+
+/** The reminding date and its lead times as one key: what moves every reminder of a kind. */
+const remindKey = (t: Pick<EffectiveType, 'remind_from' | 'remind_leads'>) =>
+  t.remind_from ? `${t.remind_from}:${leadsOf(t.remind_leads ?? []).join(',')}` : 'off';
 
 const notOnTheList = () =>
   new ApiError(404, 'not_found', 'That kind of document is not on the list.');
@@ -272,18 +291,22 @@ export class TypeService {
       for (const key of [...others].filter((k) => !own.some((f) => f.key === k)).sort()) {
         fields.push({ key, label: null, ...count((v) => given(v.extra?.[key])) });
       }
-      const reminders = await sql<{ n: number }>`
-        select count(*)::int as n
+      // Those not dealt with yet, by the date each is about (0.5.15): what a
+      // move to another date would drop.
+      const reminders = await sql<{ source: string; n: number }>`
+        select r.source, count(*)::int as n
           from reminder r join document d on d.id = r.document_id
          where d.type_key = ${t.key} and d.deleted_at is null and ${seenDocument(p)}
-           and r.kind = 'derived' and r.status in ('scheduled', 'due', 'snoozed')`.execute(trx);
+           and r.kind = 'derived' and r.status in ('scheduled', 'due', 'snoozed')
+         group by r.source order by r.source`.execute(trx);
       return {
         key: t.key,
         documents: live.length,
         in_trash: docs.length - live.length,
         core,
         fields,
-        reminders: reminders.rows[0]?.n ?? 0,
+        reminders: reminders.rows.reduce((n, r) => n + r.n, 0),
+        reminders_by_source: Object.fromEntries(reminders.rows.map((r) => [r.source, r.n])),
         unseen: UNSEEN_DOCUMENTS,
       };
     });
@@ -305,6 +328,10 @@ export class TypeService {
     return withPrincipal(this.db, p, async (trx) => {
       const own = await this.ownColumns(trx, input, null);
       const expires = input.core?.expires?.shown === true;
+      // Made showing Expires, it reminds 30 days before, as a new kind that
+      // expires always has; or from the date it is told (0.5.15).
+      const reminding = reminderFor(input, null, { expires, fields: own.fields ?? [] });
+      const fields = requireReminding(own.fields ?? [], reminding.from);
       let key: string | undefined;
       // A key another household holds is not seen here; one more try.
       for (let i = 0; i < 3 && !key; i++) {
@@ -317,11 +344,12 @@ export class TypeService {
             category,
             short_label: nameOf(input.short_label, 'The short name'),
             issuer_noun: nameOf(input.issuer_noun, 'The word after who issued it'),
-            fields: JSON.stringify(own.fields ?? []),
+            fields: JSON.stringify(fields ?? own.fields ?? []),
             core: JSON.stringify(own.core),
             issued_by_label: own.issued_by_label ?? null,
             expiry_driver: expires ? 'expires_on' : null,
-            reminder_leads: leadsOf(input.reminder_leads ?? (expires ? DEFAULT_LEADS : [])),
+            remind_from: reminding.from,
+            reminder_leads: reminding.leads,
             usually_essential: input.usually_essential ?? false,
             default_visibility: input.default_visibility ?? 'household',
             sort_order: OWN_SORT_ORDER,
@@ -351,18 +379,20 @@ export class TypeService {
 
   /**
    * PATCH /document-types/{key}: a change to a kind, made to the kind as
-   * the caller last saw it (If-Match) or refused. Its lead times changed,
-   * or its Expires switched on or off, every document of it is reminded
-   * anew by the worker (types.regenerate) once the change is kept.
+   * the caller last saw it (If-Match) or refused. The date it reminds from
+   * or its lead times changed, or its reminders switched on or off, every
+   * document of it is reminded anew by the worker (types.regenerate) once
+   * the change is kept.
    *
-   * Expires switched on for a kind with no lead times is reminded 30 days
+   * Expires switched on for a kind that reminds nobody is reminded 30 days
    * before, as a new kind that expires is (5.11 review): whether a family
-   * is reminded never depends on the order it made its changes in.
+   * is reminded never depends on the order it made its changes in. A kind
+   * reminding from another date keeps it (0.5.15, `reminderFor`).
    */
   async update(
     p: Principal,
     key: string,
-    sent: TypeInput,
+    input: TypeInput,
     ifMatch: string | undefined,
     meta: RequestMeta,
   ): Promise<DocumentTypeView> {
@@ -378,12 +408,7 @@ export class TypeService {
           { detail: JSON.stringify(typeView(before)) },
         );
       }
-      expiryRequired(sent, before.expiry_driver !== null);
-      const switchedOn = before.expiry_driver === null && sent.core?.expires?.shown === true;
-      const input: TypeInput =
-        switchedOn && sent.reminder_leads === undefined && !before.reminder_leads?.length
-          ? { ...sent, reminder_leads: DEFAULT_LEADS }
-          : sent;
+      expiryRequired(input, before.expiry_driver !== null);
       await this.mayWiden(trx, p, before, input.default_visibility);
       if (before.builtin) {
         if (
@@ -394,10 +419,26 @@ export class TypeService {
         ) {
           throw invalid(BUILTIN_KEEPS_NAME);
         }
-        await this.writeSetting(trx, p, before, input);
+      } else if (input.hidden !== undefined) {
+        throw invalid(OWN_NOT_HIDDEN, 'hidden');
+      }
+      // The kind as it will be, and what it will remind from (0.5.15):
+      // worked out from its date and lead times as they are kept, never
+      // from reminder_leads, which reads [] while a date field reminds.
+      const sentFields = input.fields
+        ? await this.fieldsFor(trx, input.fields, (before.fields ?? []) as TypeField[])
+        : undefined;
+      const afterFields = sentFields ?? ((before.fields ?? []) as TypeField[]);
+      const reminding = reminderFor(input, before, {
+        expires: input.core?.expires?.shown ?? before.expiry_driver !== null,
+        fields: afterFields,
+      });
+      const required = requireReminding(afterFields, reminding.from);
+      const fields = required ?? sentFields;
+      if (before.builtin) {
+        await this.writeSetting(trx, p, before, input, fields, reminding);
       } else {
-        if (input.hidden !== undefined) throw invalid(OWN_NOT_HIDDEN, 'hidden');
-        await this.writeOwn(trx, before, input);
+        await this.writeOwn(trx, before, input, fields, reminding);
       }
       // Asked again: the kind as it now is, not as this transaction first saw it.
       forgetTypes(trx);
@@ -407,6 +448,9 @@ export class TypeService {
       const changed = Object.keys(input).filter(
         (k) => k !== 'hidden' && input[k as keyof TypeInput] !== undefined,
       );
+      // Switched off by hiding the date it reminded from: said as a change
+      // to what it reminds from.
+      if (reminding.fromChanged && !changed.includes('remind_from')) changed.push('remind_from');
       if (changed.length > 0) {
         const moved = after.default_visibility !== before.default_visibility;
         await appendAudit(trx, {
@@ -432,9 +476,9 @@ export class TypeService {
       if (input.hidden !== undefined && after.hidden !== before.hidden) {
         await this.auditShown(trx, p, after, meta);
       }
-      regenerate =
-        !sameLeads(before.reminder_leads, after.reminder_leads) ||
-        (before.expiry_driver === null) !== (after.expiry_driver === null);
+      // Every document reminded anew when the date or its lead times move,
+      // or reminders are switched on or off (0.5.15).
+      regenerate = remindKey(before) !== remindKey(after);
       return typeView(after);
     });
     if (regenerate) await this.regenerate(p, view.key);
@@ -553,6 +597,18 @@ export class TypeService {
       throw invalid('Only a choice has answers to choose from.', 'choices');
     }
     return withPrincipal(this.db, p, async (trx) => {
+      // A name the library already has, a built-in's included, in any case,
+      // is refused (0.5.15): two "Due date"s in one list, and the kind
+      // editor's dropdown, could not be told apart. Two at once wait on
+      // each other, so both cannot pass the check.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`attribute:${p.householdId}`}, 0))`.execute(
+        trx,
+      );
+      const said = label.toLowerCase();
+      const same = (await trx.selectFrom('document_attribute').select('label').execute()).find(
+        (a) => a.label.trim().replace(/\s+/g, ' ').toLowerCase() === said,
+      );
+      if (same) throw invalid(libraryHasName(same.label), 'label');
       let made: { key: string } | undefined;
       for (let i = 0; i < 3 && !made; i++) {
         made = await trx
@@ -634,7 +690,13 @@ export class TypeService {
     return { core, issued_by_label, fields };
   }
 
-  private async writeOwn(trx: Db, before: EffectiveType, input: TypeInput): Promise<void> {
+  private async writeOwn(
+    trx: Db,
+    before: EffectiveType,
+    input: TypeInput,
+    fields: TypeField[] | undefined,
+    reminding: ReminderWrite,
+  ): Promise<void> {
     const row = await trx
       .selectFrom('document_type')
       .select(['core', 'expiry_driver'])
@@ -642,7 +704,7 @@ export class TypeService {
       .executeTakeFirstOrThrow();
     const own = await this.ownColumns(
       trx,
-      input,
+      { ...input, fields: undefined },
       before,
       (row.core ?? {}) as Record<string, Partial<CoreFieldRule>>,
     );
@@ -668,8 +730,9 @@ export class TypeService {
     const expires = input.core?.expires?.shown;
     if (expires !== undefined)
       set.expiry_driver = expires ? (row.expiry_driver ?? 'expires_on') : null;
-    if (own.fields) set.fields = JSON.stringify(own.fields);
-    if (input.reminder_leads !== undefined) set.reminder_leads = leadsOf(input.reminder_leads);
+    if (fields) set.fields = JSON.stringify(fields);
+    if (reminding.fromChanged) set.remind_from = reminding.from;
+    if (reminding.leadsChanged) set.reminder_leads = reminding.leads;
     if (input.default_visibility !== undefined) set.default_visibility = input.default_visibility;
     if (input.usually_essential !== undefined) set.usually_essential = input.usually_essential;
     await trx
@@ -688,6 +751,8 @@ export class TypeService {
     p: Principal,
     before: EffectiveType,
     input: TypeInput,
+    fields?: TypeField[],
+    reminding?: ReminderWrite,
   ): Promise<void> {
     const held = await trx
       .selectFrom('document_type_setting')
@@ -706,15 +771,12 @@ export class TypeService {
       if (rule.label !== undefined) next.label = nameOf(rule.label, 'A field’s name');
       core[f] = next;
     }
-    const fields = input.fields
-      ? await this.fieldsFor(trx, input.fields, (before.fields ?? []) as TypeField[])
-      : undefined;
     const values = {
       core: JSON.stringify(core),
       ...(fields ? { fields: JSON.stringify(fields) } : {}),
-      ...(input.reminder_leads !== undefined
-        ? { reminder_leads: leadsOf(input.reminder_leads) }
-        : {}),
+      // Off is 'none': null in a setting is "as the built-in" (0038).
+      ...(reminding?.fromChanged ? { remind_from: reminding.from ?? 'none' } : {}),
+      ...(reminding?.leadsChanged ? { reminder_leads: reminding.leads } : {}),
       ...(input.default_visibility !== undefined
         ? { default_visibility: input.default_visibility }
         : {}),
@@ -826,6 +888,53 @@ function expiryRequired(input: TypeInput, expiresBefore: boolean): void {
     expires ? EXPIRY_ALWAYS_REQUIRED : 'A field has to be shown to be required.',
     'expires',
   );
+}
+
+/**
+ * What the kind will remind from, and how long before (0.5.15), run on the
+ * kind as it will be after the change — its Expires shown or not, and its
+ * fields — by the rules every vault and fake keeps (`nextReminder`,
+ * @fdv/shared): a date it asks for, with lead times; the legacy rule when
+ * `remind_from` is left out; hiding the reminding date switches reminders
+ * off; the reminding date always required. Read from the date and lead
+ * times the kind keeps (`remind_from`, `remind_leads`), never from
+ * `reminder_leads`, which is [] while a date field reminds. Refused with
+ * the rule's sentence.
+ */
+function reminderFor(
+  input: TypeInput,
+  before: EffectiveType | null,
+  after: { expires: boolean; fields: ReadonlyArray<TypeField> },
+): ReminderWrite {
+  const was: Reminding = {
+    from: before?.remind_from ?? null,
+    leads: leadsOf(before?.remind_leads ?? []),
+  };
+  const next = nextReminder(
+    input,
+    before ? { reminding: was, expires: before.expiry_driver !== null } : null,
+    {
+      expires: after.expires,
+      dates: after.fields.filter((f) => f.kind === 'date').map((f) => f.key),
+    },
+  );
+  if ('problem' in next) throw invalid(next.problem.message, next.problem.detail);
+  return {
+    ...next,
+    fromChanged: next.from !== was.from,
+    leadsChanged: !sameLeads(next.leads, was.leads),
+  };
+}
+
+/**
+ * The kind's fields with the one it reminds from required, as it always
+ * is (0.5.15): older phones ask for it through `fields[].required`. Null
+ * when they need no change.
+ */
+function requireReminding(fields: TypeField[], from: string | null): TypeField[] | null {
+  if (from === null || from === 'expires') return null;
+  if (fields.every((f) => f.key !== from || f.required === true)) return null;
+  return fields.map((f) => (f.key === from ? { ...f, required: true } : f));
 }
 
 /**

@@ -7,6 +7,13 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
  * owner's own request — their look at the document, their private search
  * pass, their export — and never kept opened.
  *
+ * With one exception (0.5.15, A62): the date its kind reminds from, when
+ * that is one of its details — a bill's due date. The vault's
+ * types.regenerate job opens the details for that one date, in the
+ * document's own transaction, never in the Trash, and passes on nothing
+ * else; it is never logged or kept. Its only plain trace is the reminder
+ * rows (their day and lead time), as an Only me expiry date's already is.
+ *
  * Each is AES-256-GCM under a fresh nonce, bound to its document and to
  * what it is, so a blob copied to another document, or from the notes into
  * the details, does not open:

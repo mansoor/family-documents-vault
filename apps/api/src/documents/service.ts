@@ -26,7 +26,14 @@ import {
   type PrivateValues,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { appendAudit, withPrincipal, type Db, type Schema, type Visibility } from '@fdv/db';
+import {
+  appendAudit,
+  typeEtag,
+  withPrincipal,
+  type Db,
+  type Schema,
+  type Visibility,
+} from '@fdv/db';
 import {
   checkExtra,
   deriveStatus,
@@ -139,6 +146,13 @@ interface Claim {
   fileKey: ReturnType<typeof newKey>;
   fileKeyWrapped: ReturnType<typeof wrapKey>;
   tempKey: string;
+  /**
+   * An Only me capture's details as sent, before they were sealed at the
+   * claim: the commit makes its reminders from them (0.5.15, A62). Held in
+   * this try's memory only — never written to upload_idempotency — and
+   * gone with it.
+   */
+  details?: Record<string, unknown> | undefined;
 }
 
 export type DocRow = {
@@ -193,31 +207,8 @@ export type EffectiveType = Selectable<Schema['effective_document_type']>;
 /** A type the caller's household has, by key; undefined when it has none of that key. */
 export type TypeLookup = (key: string) => Promise<EffectiveType | undefined>;
 
-/**
- * A type's ETag (0.5.10): everything it says, as the household has it now.
- * Any change to it — the household's, or a release's to a built-in — makes
- * a new one, and an edit made to an older one is refused.
- */
-export function typeEtag(t: EffectiveType): string {
-  const seed = JSON.stringify([
-    t.key,
-    t.label,
-    t.category,
-    t.fields,
-    t.expiry_driver,
-    t.reminder_leads,
-    t.usually_essential,
-    t.default_visibility,
-    t.core,
-    t.short_label,
-    t.issuer_noun,
-    t.hidden,
-    t.archived_at ? new Date(t.archived_at).toISOString() : null,
-    t.pack_version,
-    t.updated_at ? new Date(t.updated_at).toISOString() : null,
-  ]);
-  return `"${createHash('sha256').update(seed).digest('hex').slice(0, 16)}"`;
-}
+/** A type's ETag (0.5.10), kept beside the schema since 0038: see @fdv/db. */
+export { typeEtag };
 
 /**
  * The caller's household's types, looked up in its own transaction: all of
@@ -329,9 +320,16 @@ export function typeView(t: EffectiveType): DocumentTypeView {
     key: t.key,
     label: t.label,
     category: t.category,
-    fields: ((t.fields ?? []) as TypeField[]).map((f) => ({ ...f, required: f.required === true })),
+    // The date reminders come from is always asked for (0.5.15): an older
+    // phone requires it through this, as it requires any other field.
+    fields: ((t.fields ?? []) as TypeField[]).map((f) => ({
+      ...f,
+      required: f.required === true || f.key === t.remind_from,
+    })),
     expiry_driver: t.expiry_driver,
     reminder_leads: t.reminder_leads,
+    remind_from: t.remind_from,
+    remind_leads: t.remind_leads,
     usually_essential: t.usually_essential,
     default_visibility: t.default_visibility,
     issued_by_label: t.issued_by_label,
@@ -733,7 +731,11 @@ export class DocumentService {
       // are written, and never kept plain (0.5.8). The id is minted here,
       // so they are sealed for this document and no other.
       const id = randomUUID();
+      // The details as written, before they are sealed: the date its kind
+      // reminds from may be one of them (0.5.15, A62).
+      let details: Record<string, unknown> | undefined;
       if (made.visibility === 'private') {
+        details = extraOf(made.extra);
         Object.assign(
           made,
           await this.sealFor(
@@ -741,7 +743,7 @@ export class DocumentService {
             p.householdId,
             id,
             (made.owner_member_id ?? null) as string | null,
-            { notes: (made.notes ?? null) as string | null, extra: extraOf(made.extra) },
+            { notes: (made.notes ?? null) as string | null, extra: details },
           ),
         );
       }
@@ -756,7 +758,7 @@ export class DocumentService {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
-      await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
+      await this.reminders?.regenerateDerived(trx, p.householdId, row.id, { details });
       await this.toldPrivate(trx, p, row);
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -849,14 +851,18 @@ export class DocumentService {
         input,
         open ? { ...current, ...open } : current,
       );
+      // An Only me document's details as this edit leaves them, open: the
+      // date its kind reminds from may be one of them (0.5.15, A62).
+      let details: Record<string, unknown> | undefined;
       if (open) {
+        details = 'extra' in values ? extraOf(values.extra) : open.extra;
         // Sealed on every write of its owner, while they are open — with
         // anything the private.seal job has not reached yet.
         Object.assign(
           values,
           await this.sealFor(trx, p.householdId, current.id, current.owner_member_id, {
             notes: 'notes' in values ? (values.notes as string | null) : open.notes,
-            extra: 'extra' in values ? extraOf(values.extra) : open.extra,
+            extra: details,
           }),
         );
       }
@@ -870,8 +876,19 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if (input.expires !== undefined || input.type_key !== undefined) {
-        await this.reminders?.regenerateDerived(trx, p.householdId, id);
+      // Reminded again when the date they count back from may have moved:
+      // its expiry, its kind, or the detail its kind reminds from, set or
+      // taken away (0.5.15). Any other detail leaves them as they are.
+      const remindsFrom = row.type_key
+        ? ((await typeLookup(trx)(row.type_key))?.remind_from ?? null)
+        : null;
+      const dateEdited =
+        input.extra !== undefined &&
+        remindsFrom !== null &&
+        remindsFrom !== 'expires' &&
+        Object.prototype.hasOwnProperty.call(input.extra, remindsFrom);
+      if (input.expires !== undefined || input.type_key !== undefined || dateEdited) {
+        await this.reminders?.regenerateDerived(trx, p.householdId, id, { details });
       }
       if (current.type_key && row.type_key !== current.type_key) {
         await dropDeletedType(trx, current.type_key);
@@ -952,7 +969,13 @@ export class DocumentService {
         .where('id', '=', id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      await this.reminders?.regenerateDerived(trx, p.householdId, id);
+      // In the Trash it had no reminders, and types.regenerate passes it by:
+      // they are made here, in its owner's own request, from what their
+      // key opens (0.5.15, A62).
+      const opened = await this.opened(trx, p, restored);
+      await this.reminders?.regenerateDerived(trx, p.householdId, id, {
+        details: opened?.extra,
+      });
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -961,7 +984,7 @@ export class DocumentService {
         objectId: id,
         ip: meta.ip,
       });
-      return this.view(trx, restored, typeLookup(trx), await this.opened(trx, p, restored));
+      return this.view(trx, restored, typeLookup(trx), opened);
     });
   }
 
@@ -1376,7 +1399,9 @@ export class DocumentService {
             })
             .returningAll()
             .executeTakeFirstOrThrow();
-          await this.reminders?.regenerateDerived(trx, p.householdId, row.id);
+          await this.reminders?.regenerateDerived(trx, p.householdId, row.id, {
+            details: c.details,
+          });
           await this.toldPrivate(trx, p, row);
           await appendAudit(trx, {
             householdId: p.householdId,
@@ -1556,14 +1581,17 @@ export class DocumentService {
       }
       const active = await this.vaults.activeAdapter(trx, p.householdId);
       const scopeKey = await this.keys.unwrap(trx, scope);
+      let details: Record<string, unknown> | undefined;
       if (!doc && scope.kind === 'member') {
         // Only me from its first byte, its notes and details too (0.5.8):
-        // sealed under the key its file is wrapped with, its owner's.
+        // sealed under the key its file is wrapped with, its owner's. The
+        // details as sent go on in this try's memory, for its reminders.
+        details = extraOf(values.extra);
         values = {
           ...values,
           ...sealedColumns(scopeKey.key, documentId, {
             notes: (values.notes as string | null | undefined) ?? null,
-            extra: extraOf(values.extra),
+            extra: details,
           }),
         } as Record<string, unknown> as Record<string, never>;
       }
@@ -1607,6 +1635,7 @@ export class DocumentService {
         fileKey,
         fileKeyWrapped: wrapKey(fileKey, scopeKey.key, `version:${documentId}`),
         tempKey,
+        details,
       } satisfies Claim;
     });
     for (const l of leftovers) await this.dropObject(p, l).catch(() => undefined);

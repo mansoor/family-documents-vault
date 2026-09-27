@@ -1085,6 +1085,68 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     }
   }, 120_000);
 
+  it('a backup made before 0038 says which date each reminder is about, and sends none again', async () => {
+    // 0.5.14: a derived reminder did not say which date it came from.
+    const older = await empty();
+    const migrations = await migrationsUpTo(37);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0037-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const hh = await seed(older.adminUrl);
+      const made = await withClient(older.adminUrl, async (c) => {
+        const { rows } = await c.query<{ id: string; kind: string }>(
+          `insert into reminder (household_id, document_id, kind, fire_at, lead_days, note, status)
+           select $1, d.id, v.kind, current_date, v.lead, v.note, 'due'
+             from (select id from document where household_id = $1 limit 1) d,
+                  (values ('derived', 180, null), ('manual', null, 'Ring the broker'))
+                    as v(kind, lead, note)
+           returning id, kind`,
+          [hh],
+        );
+        await c.query(
+          `insert into reminder_delivery (reminder_id, household_id, fire_date, channel)
+           select id, $1, current_date, 'push' from reminder where household_id = $1`,
+          [hh],
+        );
+        return rows;
+      });
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, households: 1 });
+      // Each keeps its id — and with it its line in the ledger, so the
+      // digest does not send it again — and says which date it is about.
+      const { rows } = await sql(
+        t.adminUrl,
+        `select r.id, r.kind, r.source,
+                (select count(*)::int from reminder_delivery l where l.reminder_id = r.id) as sent
+           from reminder r order by r.kind`,
+      );
+      expect(rows).toEqual(
+        [...made]
+          .sort((a, b) => a.kind.localeCompare(b.kind))
+          .map((r) => ({
+            id: r.id,
+            kind: r.kind,
+            source: r.kind === 'derived' ? 'expires' : null,
+            sent: 1,
+          })),
+      );
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('a restore from before a sealing seals again before the vault opens', async () => {
     // 0.5.7: an Only me document's notes and details were kept plain.
     const older = await empty();

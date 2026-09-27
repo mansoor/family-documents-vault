@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aboutDate,
   addDays,
   addMonths,
   derivedFireDates,
+  lapsed,
   localHour,
   localToday,
   nextOccurrence,
   parseRecurrence,
+  reminderAbout,
   reminderLabel,
 } from './reminders.js';
 
@@ -58,6 +61,31 @@ describe('local calendar', () => {
     expect(localHour('Asia/Kolkata', at)).toBe(5);
     expect(localHour('America/Los_Angeles', at)).toBe(16);
     expect(localToday('Not/AZone', at)).toBe('2026-09-22');
+  });
+});
+
+describe('what a reminder is about (0.5.15)', () => {
+  it('reminderAbout says today, tomorrow, in 7 days, in 9 months, 3 days ago', () => {
+    const today = '2026-10-03';
+    expect(reminderAbout('Due date', '2026-10-03', today)).toBe('Due date: 3 Oct, today');
+    expect(reminderAbout('Due date', '2026-10-04', today)).toBe('Due date: 4 Oct, tomorrow');
+    expect(reminderAbout('Due date', '2026-10-10', today)).toBe('Due date: 10 Oct, in 7 days');
+    expect(reminderAbout('Expires', '2027-06-30', today)).toBe('Expires: 30 Jun 2027, in 9 months');
+    expect(reminderAbout('MOT', '2026-09-30', today)).toBe('MOT: 30 Sept, 3 days ago');
+    expect(reminderAbout('Review by', '2026-10-02', today)).toBe('Review by: 2 Oct, yesterday');
+    expect(reminderAbout('Expires', '2031-03-14', today)).toBe('Expires: 14 Mar 2031, in 4 years');
+  });
+
+  it('a derived reminder is about its day plus its lead time; it has lapsed once that has passed', () => {
+    const late = { kind: 'derived', fire_at: '2026-10-03', lead_days: 7 };
+    expect(aboutDate(late)).toBe('2026-10-10');
+    // A 7-day reminder, late, for a bill due in 5 days: not lapsed.
+    expect(lapsed(late, '2026-10-05')).toBe(false);
+    expect(lapsed(late, '2026-10-11')).toBe(true);
+    // A manual reminder is about nothing but its own day.
+    const manual = { kind: 'manual', fire_at: '2026-10-03', lead_days: null };
+    expect(aboutDate(manual)).toBeNull();
+    expect(lapsed(manual, '2026-10-04')).toBe(true);
   });
 });
 

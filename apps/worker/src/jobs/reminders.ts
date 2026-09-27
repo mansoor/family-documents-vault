@@ -1,11 +1,14 @@
-import { withSystem, type Db } from '@fdv/db';
+import { reminderWords, withSystem, type Db } from '@fdv/db';
 import {
+  aboutDate,
   addDays,
   canSee,
   deriveStatus,
+  lapsed,
   localHour,
   localToday,
   missingFields,
+  reminderAbout,
   reminderLabel,
   withSealed,
   type DateValue,
@@ -42,7 +45,17 @@ export interface DigestItem {
   document_id: string;
   title: string;
   label: string;
+  /**
+   * The date a derived reminder is about, in its kind's words: "Due date:
+   * 10 Oct, in 7 days" (0.5.15). Said in its line instead of `label`; null
+   * for a manual reminder. Never by email for an Only me document.
+   */
+  about: string | null;
   note: string | null;
+  /**
+   * Whether it speaks of something that has lapsed: the date a derived
+   * reminder is about has passed (0.5.15), a manual one's own day.
+   */
   overdue: boolean;
   /**
    * An "Only me" document. Its title may go by push, which is encrypted to
@@ -159,6 +172,7 @@ async function sendToEach(
         document_id: r.document_id,
         title: r.title,
         label: r.label,
+        about: r.about,
         note: r.note,
         overdue: r.overdue,
         private: r.visibility === 'private',
@@ -175,6 +189,50 @@ async function sendToEach(
 
 const union = (reached: Map<string, Set<string>>) =>
   [...new Set([...reached.values()].flatMap((s) => [...s]))].sort();
+
+/**
+ * The digest's lines for these reminders, as of `today`: each derived one
+ * says what it is about in its kind's words (0.5.15), and has lapsed only
+ * once that date has passed — a late 7-day reminder for a bill due in 6
+ * days is not "lapsed".
+ */
+async function dueItems(
+  trx: Db,
+  rows: ReadonlyArray<{
+    id: string;
+    document_id: string;
+    kind: 'derived' | 'manual';
+    fire_at: string;
+    lead_days: number | null;
+    source: string | null;
+    note: string | null;
+    title: string | null;
+    type_key: string | null;
+    visibility: string;
+    owner_member_id: string | null;
+  }>,
+  today: string,
+): Promise<Due[]> {
+  const words = await reminderWords(trx, rows);
+  return rows.map((r) => {
+    const fireAt = String(r.fire_at).slice(0, 10);
+    const on = { kind: r.kind, fire_at: fireAt, lead_days: r.lead_days };
+    const about = aboutDate(on);
+    const word = words.get(r.id);
+    return {
+      reminder_id: r.id,
+      document_id: r.document_id,
+      title: r.title ?? 'Untitled',
+      label: reminderLabel(fireAt, today, 'due', null),
+      about: about && word ? reminderAbout(word, about, today) : null,
+      note: r.note,
+      overdue: lapsed(on, today),
+      fire_at: fireAt,
+      visibility: r.visibility,
+      owner_member_id: r.owner_member_id,
+    };
+  });
+}
 
 export async function tick(deps: ReminderDeps): Promise<{ became_due: number }> {
   const now = deps.now?.() ?? new Date();
@@ -260,11 +318,15 @@ async function deliverTo(
       .select([
         'reminder.id',
         'reminder.document_id',
+        'reminder.kind',
         'reminder.fire_at',
+        'reminder.lead_days',
+        'reminder.source',
         'reminder.note',
         'reminder.status',
         'reminder.snoozed_until',
         'document.title',
+        'document.type_key',
         'document.visibility',
         'document.owner_member_id',
       ])
@@ -277,20 +339,7 @@ async function deliverTo(
       .execute();
     if (due.length === 0) return false;
 
-    const items: Due[] = due.map((r) => {
-      const fireAt = String(r.fire_at).slice(0, 10);
-      return {
-        reminder_id: r.id,
-        document_id: r.document_id,
-        title: r.title ?? 'Untitled',
-        label: reminderLabel(fireAt, today, 'due', null),
-        note: r.note,
-        overdue: fireAt < today,
-        fire_at: fireAt,
-        visibility: r.visibility,
-        owner_member_id: r.owner_member_id,
-      };
-    });
+    const items = await dueItems(trx, due, today);
     const reached = await sendToEach(
       trx,
       deps.notifier,
@@ -361,9 +410,13 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
         .select([
           'reminder.id',
           'reminder.document_id',
+          'reminder.kind',
           'reminder.fire_at',
+          'reminder.lead_days',
+          'reminder.source',
           'reminder.note',
           'document.title',
+          'document.type_key',
           'document.visibility',
           'document.owner_member_id',
         ])
@@ -373,20 +426,7 @@ export async function weekly(deps: ReminderDeps): Promise<{ digests: number }> {
         .orderBy('reminder.fire_at')
         .execute();
       if (rows.length === 0) return false;
-      const items: Due[] = rows.map((r) => {
-        const fireAt = String(r.fire_at).slice(0, 10);
-        return {
-          reminder_id: r.id,
-          document_id: r.document_id,
-          title: r.title ?? 'Untitled',
-          label: reminderLabel(fireAt, today, 'due', null),
-          note: r.note,
-          overdue: fireAt < today,
-          fire_at: fireAt,
-          visibility: r.visibility,
-          owner_member_id: r.owner_member_id,
-        };
-      });
+      const items = await dueItems(trx, rows, today);
       const reached = await sendToEach(
         trx,
         deps.notifier,
