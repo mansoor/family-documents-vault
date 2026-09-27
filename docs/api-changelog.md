@@ -1449,8 +1449,10 @@ invitation_not_valid` — where each used to read the count and all were
       0.001 over an edge, as rounding leaves it, is taken as the edge), then
       the picture as `file`, and nothing else. `202` with the person
       (`photo_status: "processing"`); the worker makes a 512-pixel square
-      JPEG, from a picture of up to 128 megapixels and 16,000 pixels a side,
-      and GET /members says `photo` when it is ready. Refused, in this
+      JPEG, from a picture of up to 16,000 pixels a side: a JPEG of up to 128
+      megapixels, a HEIC, WebP or PNG of up to about 50 (an iPhone's "HEIF
+      Max" is 48), turned upright by its EXIF orientation (a WebP's too), and
+      GET /members says `photo` when it is ready. Refused, in this
       order: a person the caller cannot see, `404`; `403 forbidden` (a
       viewer, in the matrix's words; anybody else not allowed, "Only an
       owner or the person themselves can change this photo. For someone

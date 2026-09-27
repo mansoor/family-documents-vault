@@ -311,6 +311,85 @@ export const PHOTO_MAX_SIDE = 16_000;
 export const PHOTO_DECODE_PIXELS = 32_000_000;
 
 /**
+ * What one photo's decode may use: MAGICK_LIMITS, but 2 GiB of disk. A
+ * HEIC, WebP or PNG cannot be decoded smaller than it is, and a 48 or 50
+ * megapixel one (an iPhone's "HEIF Max", a 50 megapixel WebP) spills its
+ * pixel cache to disk, in the job's own folder, removed after. The pixel
+ * limits stay what they are: the guard against a picture that claims to
+ * be bigger than any photo.
+ */
+const PHOTO_LIMITS = MAGICK_LIMITS.map((v, i, all) => (all[i - 1] === 'disk' ? '2GiB' : v));
+
+/**
+ * The turn that stands a picture up, for each EXIF orientation, as
+ * `-auto-orient` would make it. Named here, rather than left to
+ * `-auto-orient`, so the picture is turned by the same orientation its part
+ * was planned by: ImageMagick 7's `-ping` does not read a WebP's (the 5.17c
+ * review), and a part planned upright and then turned again is the wrong
+ * part.
+ */
+const TURNS: Record<string, string[]> = {
+  TopRight: ['-flop'],
+  BottomRight: ['-rotate', '180'],
+  BottomLeft: ['-flip'],
+  LeftTop: ['-transpose'],
+  RightTop: ['-rotate', '90'],
+  RightBottom: ['-transverse'],
+  LeftBottom: ['-rotate', '270'],
+};
+
+/** EXIF's orientation numbers, by ImageMagick's names for them. */
+const ORIENTATIONS = [
+  'Undefined',
+  'TopLeft',
+  'TopRight',
+  'BottomRight',
+  'BottomLeft',
+  'LeftTop',
+  'RightTop',
+  'RightBottom',
+  'LeftBottom',
+];
+
+/**
+ * A WebP's EXIF orientation, from its RIFF 'EXIF' chunk (IFD0, tag 0x0112),
+ * as ImageMagick names it; null when it has none. ImageMagick 7 reads it
+ * when it decodes the picture, but not when it only pings it.
+ */
+export function webpOrientation(file: Buffer): string | null {
+  if (file.length < 12 || file.toString('latin1', 0, 4) !== 'RIFF') return null;
+  if (file.toString('latin1', 8, 12) !== 'WEBP') return null;
+  let at = 12;
+  while (at + 8 <= file.length) {
+    const id = file.toString('latin1', at, at + 4);
+    const size = file.readUInt32LE(at + 4);
+    const body = file.subarray(at + 8, Math.min(file.length, at + 8 + size));
+    if (id === 'EXIF') return tiffOrientation(body);
+    at += 8 + size + (size % 2);
+  }
+  return null;
+}
+
+/** The orientation in a TIFF header's first IFD (EXIF's layout), with or without "Exif\0\0" before it. */
+function tiffOrientation(exif: Buffer): string | null {
+  const t = exif.toString('latin1', 0, 6) === 'Exif\0\0' ? exif.subarray(6) : exif;
+  if (t.length < 8) return null;
+  const order = t.toString('latin1', 0, 2);
+  if (order !== 'II' && order !== 'MM') return null;
+  const u16 = (o: number) => (order === 'II' ? t.readUInt16LE(o) : t.readUInt16BE(o));
+  const u32 = (o: number) => (order === 'II' ? t.readUInt32LE(o) : t.readUInt32BE(o));
+  const ifd = u32(4);
+  if (ifd + 2 > t.length) return null;
+  const n = u16(ifd);
+  for (let i = 0; i < n; i++) {
+    const e = ifd + 2 + i * 12;
+    if (e + 12 > t.length) return null;
+    if (u16(e) === 0x0112) return ORIENTATIONS[u16(e + 8)] ?? null;
+  }
+  return null;
+}
+
+/**
  * A person's photo, made from one picture (5.17c): read with the coder
  * named (`coder:file[0]`, the first frame only) under MAGICK_LIMITS, the
  * part chosen cut out — or the middle — turned upright, and made one
@@ -320,17 +399,23 @@ export const PHOTO_DECODE_PIXELS = 32_000_000;
  * The picture is decoded once, and as small as will do (the 5.17c review:
  * a phone's 64 megapixel photo ran out of room decoded whole, and again
  * turned upright). Its header says how big it is and which way up (`-ping`,
- * which decodes nothing): more than PHOTO_MAX_PIXELS, or a side over
+ * which decodes nothing; a WebP's orientation is read from its EXIF chunk
+ * here, which ImageMagick 7's ping does not, and a HEIC is upright once
+ * libheif has read it): more than PHOTO_MAX_PIXELS, or a side over
  * PHOTO_MAX_SIDE, is refused there. A JPEG is then decoded by libjpeg at a
  * half, a quarter or an eighth of its size (`jpeg:size`, asked for as
  * exactly that, which ImageMagick 6 and 7 both give): the smallest that
  * keeps the part chosen 512 pixels a side, and no more than
- * PHOTO_DECODE_PIXELS. Any page offset is dropped (`+repage`), so a picture
- * placed off its canvas is cut where it is seen. The part is cut as
- * fractions of whatever was decoded, before anything else: only it is
- * turned upright and resized. The square is kept as a PNG, and only that
+ * PHOTO_DECODE_PIXELS. Anything else is decoded at the size it is, under
+ * PHOTO_LIMITS. Any page offset is dropped (`+repage`), so a picture
+ * placed off its canvas is cut where it is seen. The part is cut before
+ * anything else, in one crop: in pixels when the picture was decoded at the
+ * size its header said, as fractions of what was decoded when libjpeg
+ * shrank it (a copy of all but the corner of a full-size picture would not
+ * fit beside it). Only the part is turned upright, by the orientation it
+ * was planned by, and resized. The square is kept as a PNG, and only that
  * is made a JPEG: at the second quality, if the first is over 256 KiB. The
- * result is checked, and anything but a 512×512 JPEG of at most 256 KiB is
+ * result is checked, and anything but a 512x512 JPEG of at most 256 KiB is
  * refused. ImageMagick's own spill goes into the folder `output` is in.
  */
 export async function squarePhoto(
@@ -349,7 +434,7 @@ export async function squarePhoto(
     [...MAGICK_LIMITS, '-ping', src, '-format', '%w %h %[orientation]', 'info:'],
     { timeout: 60_000, env },
   );
-  const [w, h, orientation = ''] = stdout.trim().split(/\s+/);
+  const [w, h, pinged = ''] = stdout.trim().split(/\s+/);
   const stored = { w: Number(w), h: Number(h) };
   if (!(stored.w > 0 && stored.h > 0 && Number.isFinite(stored.w) && Number.isFinite(stored.h))) {
     throw new Error('the picture has no size');
@@ -361,22 +446,30 @@ export async function squarePhoto(
   ) {
     throw new Error('the picture is bigger than a photo may be');
   }
+  // Which way up, as the picture will be turned: libheif stands a HEIC up
+  // as it reads it; a WebP says so in its EXIF chunk, which ping skips.
+  const orientation =
+    coder === 'heic'
+      ? 'TopLeft'
+      : coder === 'webp'
+        ? (webpOrientation(await readFile(input)) ?? pinged)
+        : pinged;
   const plan = photoPlan(stored, orientation, crop, coder === 'jpeg');
   const { part, shrink } = plan;
-  /** A fraction as ImageMagick's percentage geometry. */
-  const pc = (f: number) => `${Math.min(100, f * 100).toFixed(4)}%`;
-  const square = path.join(path.dirname(output), 'square.png');
-  await run(
-    bin,
-    [
-      ...MAGICK_LIMITS,
-      ...(shrink > 1
-        ? ['-define', `jpeg:size=${Math.floor(stored.w / shrink)}x${Math.floor(stored.h / shrink)}`]
-        : []),
-      src,
-      '+repage',
-      // The part, as fractions of the picture however big it was decoded:
-      // everything up to its far corner, then its own share of that.
+  const cut: string[] = [];
+  if (shrink === 1) {
+    // Decoded at the size the header said: one crop, in pixels.
+    const x0 = Math.min(stored.w - 1, Math.max(0, Math.round(part.x * stored.w)));
+    const y0 = Math.min(stored.h - 1, Math.max(0, Math.round(part.y * stored.h)));
+    const x1 = Math.min(stored.w, Math.max(x0 + 1, Math.round((part.x + part.w) * stored.w)));
+    const y1 = Math.min(stored.h, Math.max(y0 + 1, Math.round((part.y + part.h) * stored.h)));
+    cut.push('-crop', `${x1 - x0}x${y1 - y0}+${x0}+${y0}`, '+repage');
+  } else {
+    /** A fraction as ImageMagick's percentage geometry. */
+    const pc = (f: number) => `${Math.min(100, f * 100).toFixed(4)}%`;
+    // Shrunk as libjpeg read it: as fractions of what was decoded,
+    // everything up to the part's far corner, then its own share of that.
+    cut.push(
       '-gravity',
       'NorthWest',
       '-crop',
@@ -387,7 +480,20 @@ export async function squarePhoto(
       '-crop',
       `${pc(part.w / (part.x + part.w))}x${pc(part.h / (part.y + part.h))}+0+0`,
       '+repage',
-      '-auto-orient',
+    );
+  }
+  const square = path.join(path.dirname(output), 'square.png');
+  await run(
+    bin,
+    [
+      ...(shrink > 1 ? MAGICK_LIMITS : PHOTO_LIMITS),
+      ...(shrink > 1
+        ? ['-define', `jpeg:size=${Math.floor(stored.w / shrink)}x${Math.floor(stored.h / shrink)}`]
+        : []),
+      src,
+      '+repage',
+      ...cut,
+      ...(TURNS[orientation] ?? []),
       '+repage',
       '-resize',
       `${PHOTO_EDGE}x${PHOTO_EDGE}^`,

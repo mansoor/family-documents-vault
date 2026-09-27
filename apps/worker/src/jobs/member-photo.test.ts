@@ -24,7 +24,14 @@ import { LocalAdapter, memberPhotoUploadKey } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { makeMemberPhoto, type MemberPhotoJob } from './member-photo.js';
-import { detectTools, jpegSize, photoPlan, PHOTO_DECODE_PIXELS, type PhotoCrop } from './tools.js';
+import {
+  detectTools,
+  jpegSize,
+  photoPlan,
+  PHOTO_DECODE_PIXELS,
+  webpOrientation,
+  type PhotoCrop,
+} from './tools.js';
 
 const run = promisify(execFile);
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -75,6 +82,99 @@ const magickBin = async () =>
   run('magick', ['-version'])
     .then(() => 'magick')
     .catch(() => 'convert');
+/** Whether ImageMagick here writes this format: a picture of it can be made for a test. */
+const writes = async (format: string) =>
+  tools.magick &&
+  (await magickBin()
+    .then((bin) => run(bin, ['-list', 'format']))
+    .then(({ stdout }) => new RegExp(`^\\s*${format}\\*?\\s+\\S+\\s+rw`, 'm').test(stdout))
+    .catch(() => false));
+const webp = await writes('WEBP');
+/** libheif's own encoder: a 48 megapixel HEIC in seconds, where ImageMagick takes a minute. */
+const heifEnc = await run('heif-enc', ['--version'])
+  .then(() => true)
+  .catch(() => false);
+
+/**
+ * A picture of four quarters as stored, as raw YUV 4:2:0 (Y4M), which
+ * heif-enc reads as it is: red, lime / blue, yellow.
+ */
+function quartersY4m(w: number, h: number): Buffer {
+  // BT.601, limited range, as heif-enc takes a Y4M.
+  const yuv: Record<string, [number, number, number]> = {
+    red: [81, 90, 240],
+    lime: [145, 54, 34],
+    blue: [41, 240, 110],
+    yellow: [210, 16, 146],
+  };
+  const at = (x: number, y: number) =>
+    yuv[y < h / 2 ? (x < w / 2 ? 'red' : 'lime') : x < w / 2 ? 'blue' : 'yellow'] as [
+      number,
+      number,
+      number,
+    ];
+  const head = Buffer.from(`YUV4MPEG2 W${w} H${h} F1:1 Ip A1:1 C420jpeg\nFRAME\n`, 'latin1');
+  const Y = Buffer.alloc(w * h);
+  for (let y = 0; y < h; y++) {
+    const left = at(0, y)[0];
+    const right = at(w - 1, y)[0];
+    Y.fill(left, y * w, y * w + w / 2);
+    Y.fill(right, y * w + w / 2, y * w + w);
+  }
+  const cw = w / 2;
+  const ch = h / 2;
+  const U = Buffer.alloc(cw * ch);
+  const V = Buffer.alloc(cw * ch);
+  for (let y = 0; y < ch; y++) {
+    for (const [plane, i] of [
+      [U, 1],
+      [V, 2],
+    ] as const) {
+      plane.fill(at(0, y * 2)[i], y * cw, y * cw + cw / 2);
+      plane.fill(at(w - 1, y * 2)[i], y * cw + cw / 2, y * cw + cw);
+    }
+  }
+  return Buffer.concat([head, Y, U, V]);
+}
+
+/**
+ * A WebP with an EXIF chunk saying which way up it is, as `cwebp -metadata
+ * exif` writes one: the image's own chunk kept, a VP8X saying there is EXIF.
+ */
+function webpWithExif(simple: Buffer, orientation: number, w: number, h: number): Buffer {
+  const chunk = (id: string, body: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.write(id, 0, 'latin1');
+    head.writeUInt32LE(body.length, 4);
+    return Buffer.concat([head, body, body.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0)]);
+  };
+  const image: Buffer[] = [];
+  for (let at = 12; at + 8 <= simple.length;) {
+    const id = simple.toString('latin1', at, at + 4);
+    const size = simple.readUInt32LE(at + 4);
+    if (id === 'VP8 ' || id === 'VP8L') image.push(simple.subarray(at, at + 8 + size + (size % 2)));
+    at += 8 + size + (size % 2);
+  }
+  const vp8x = Buffer.alloc(10);
+  vp8x[0] = 0x08; // EXIF
+  vp8x.writeUIntLE(w - 1, 4, 3);
+  vp8x.writeUIntLE(h - 1, 7, 3);
+  const tiff = Buffer.from(
+    ['4d4d002a00000008', '0001', `0112000300000001000${orientation}0000`, '00000000'].join(''),
+    'hex',
+  );
+  const body = Buffer.concat([
+    Buffer.from('WEBP', 'latin1'),
+    chunk('VP8X', vp8x),
+    ...image,
+    chunk('EXIF', tiff),
+  ]);
+  const riff = Buffer.alloc(8);
+  riff.write('RIFF', 0, 'latin1');
+  riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
 const heic =
   tools.magick &&
   (await magickBin()
@@ -421,6 +521,122 @@ describe.skipIf(!testAdminUrl() || !tools.magick)('making a person’s photo', (
     expect(Date.now() - started).toBeLessThan(60_000);
   }, 240_000);
 
+  /** The four quarters of a square made from the middle of a picture of four quarters. */
+  async function quartersOf(jpeg: Buffer) {
+    expect(jpegSize(jpeg)).toEqual({ width: 512, height: 512 });
+    expect(near(await pixel(jpeg, 100, 100), [255, 0, 0]), 'top left').toBe(true);
+    expect(near(await pixel(jpeg, 412, 100), [0, 255, 0]), 'top right').toBe(true);
+    expect(near(await pixel(jpeg, 100, 412), [0, 0, 255]), 'bottom left').toBe(true);
+    expect(near(await pixel(jpeg, 412, 412), [255, 255, 0]), 'bottom right').toBe(true);
+  }
+  /** The crop sheet's own middle square of a 4:3 picture. */
+  const MIDDLE = { x: 0.125, y: 0, w: 0.75, h: 1 };
+
+  it.skipIf(!heifEnc || !heic)(
+    "a 48-megapixel HEIC, an iPhone's HEIF Max, is made with the sheet's middle square",
+    async () => {
+      // The 5.17c images check: decoded whole, then cut twice, it ran out
+      // of room ('cache resources exhausted') on ImageMagick 7 Q16-HDRI.
+      const y4m = file('heic48.y4m');
+      await writeFile(y4m, quartersY4m(8064, 6048));
+      const out = file('heic48.heic');
+      await run('heif-enc', ['-e', 'x265', '-p', 'preset=ultrafast', '-q', '30', '-o', out, y4m]);
+      const sent = await v.send(await readFile(out), MIDDLE);
+      const started = Date.now();
+      expect(await makeMemberPhoto(v.deps(), sent.job)).toBe('ready');
+      await quartersOf(await v.square(sent.photoId));
+      expect(Date.now() - started).toBeLessThan(60_000);
+    },
+    240_000,
+  );
+
+  it.skipIf(!webp)(
+    'a 50-megapixel WebP is made with the middle square',
+    async () => {
+      const big = await draw(
+        [
+          '-size',
+          '8160x6120',
+          'xc:yellow',
+          '-fill',
+          'red',
+          '-draw',
+          'rectangle 0,0 4079,3059',
+          '-fill',
+          'lime',
+          '-draw',
+          'rectangle 4080,0 8159,3059',
+          '-fill',
+          'blue',
+          '-draw',
+          'rectangle 0,3060 4079,6119',
+          '-quality',
+          '80',
+        ],
+        `webp:${file('webp50.webp')}`,
+      );
+      const sent = await v.send(big, MIDDLE);
+      expect(await makeMemberPhoto(v.deps(), sent.job)).toBe('ready');
+      await quartersOf(await v.square(sent.photoId));
+    },
+    240_000,
+  );
+
+  it.skipIf(!webp)(
+    'a WebP whose EXIF says it was taken turned is cut where the crop says, upright',
+    async () => {
+      // The 5.17c images check: ImageMagick 7's ping reads no WebP
+      // orientation, so its part was planned as stored and then turned.
+      // Stored 1600 by 1200, four quarters; EXIF 6: upright, the stored
+      // left is on top, so the upright top right quarter is red and the
+      // bottom left yellow.
+      const stored = await draw(
+        [
+          '-size',
+          '1600x1200',
+          'xc:yellow',
+          '-fill',
+          'red',
+          '-draw',
+          'rectangle 0,0 799,599',
+          '-fill',
+          'lime',
+          '-draw',
+          'rectangle 800,0 1599,599',
+          '-fill',
+          'blue',
+          '-draw',
+          'rectangle 0,600 799,1199',
+          '-strip',
+          '-quality',
+          '90',
+        ],
+        `webp:${file('turned.webp')}`,
+      );
+      const turned = webpWithExif(stored, 6, 1600, 1200);
+      expect(webpOrientation(turned)).toBe('RightTop');
+      for (const [crop, want] of [
+        [{ x: 0.5, y: 0, w: 0.5, h: 0.5 }, [255, 0, 0]],
+        [{ x: 0, y: 0.5, w: 0.5, h: 0.5 }, [255, 255, 0]],
+        [{ x: 0, y: 0, w: 0.5, h: 0.5 }, [0, 0, 255]],
+      ] as const) {
+        const sent = await v.send(turned, crop);
+        expect(await makeMemberPhoto(v.deps(), sent.job)).toBe('ready');
+        const sq = await v.square(sent.photoId);
+        for (const [x, y] of [
+          [40, 40],
+          [256, 256],
+          [470, 470],
+        ] as const) {
+          expect(near(await pixel(sq, x, y), [...want]), `${JSON.stringify(crop)} ${x},${y}`).toBe(
+            true,
+          );
+        }
+      }
+    },
+    240_000,
+  );
+
   it('a picture placed off its canvas is cut where it is seen', async () => {
     // The 5.17c review: a PNG whose oFFs puts it at +300+300 was cut on
     // the canvas, not the picture — a blue corner, or a white square —
@@ -538,5 +754,42 @@ describe('how a photo is decoded, and what of it is cut', () => {
     expect(at('RightTop', tall)).toEqual({ x: 0, y: 0.5, w: 0.5, h: 0.5 });
     expect(at('RightBottom', tall)).toEqual({ x: 0.5, y: 0.5, w: 0.5, h: 0.5 });
     expect(at('LeftBottom', tall)).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5 });
+  });
+});
+
+describe("a WebP's orientation, from its EXIF chunk", () => {
+  it('is read from the chunk, in either byte order, with or without the Exif header', () => {
+    const riff = (chunks: Array<[string, Buffer]>) => {
+      const parts = chunks.map(([id, body]) => {
+        const head = Buffer.alloc(8);
+        head.write(id, 0, 'latin1');
+        head.writeUInt32LE(body.length, 4);
+        return Buffer.concat([head, body, body.length % 2 ? Buffer.alloc(1) : Buffer.alloc(0)]);
+      });
+      const body = Buffer.concat([Buffer.from('WEBP', 'latin1'), ...parts]);
+      const head = Buffer.alloc(8);
+      head.write('RIFF', 0, 'latin1');
+      head.writeUInt32LE(body.length, 4);
+      return Buffer.concat([head, body]);
+    };
+    const big = Buffer.from('4d4d002a000000080001011200030000000100060000' + '00000000', 'hex');
+    const little = Buffer.from(
+      '49492a000800000001001201030001000000030000000000' + '00000000',
+      'hex',
+    );
+    const image: [string, Buffer] = ['VP8 ', Buffer.alloc(9)];
+    expect(webpOrientation(riff([['VP8X', Buffer.alloc(10)], image, ['EXIF', big]]))).toBe(
+      'RightTop',
+    );
+    expect(webpOrientation(riff([image, ['EXIF', little]]))).toBe('BottomRight');
+    expect(
+      webpOrientation(
+        riff([image, ['EXIF', Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), big])]]),
+      ),
+    ).toBe('RightTop');
+    // None, or not a WebP at all.
+    expect(webpOrientation(riff([image]))).toBeNull();
+    expect(webpOrientation(Buffer.from('not a webp'))).toBeNull();
+    expect(webpOrientation(riff([image, ['EXIF', Buffer.from('junk')]]))).toBeNull();
   });
 });
