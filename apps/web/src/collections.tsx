@@ -1,11 +1,11 @@
 import {
   can,
-  inListAudience,
-  LIST_DESCRIPTION_MAX,
-  LIST_NAME_MAX,
+  COLLECTION_DESCRIPTION_MAX,
+  COLLECTION_NAME_MAX,
+  inCollectionAudience,
   type Capabilities,
-  type ListAudience,
-  type ListView,
+  type CollectionAudience,
+  type CollectionView,
   type Role,
 } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
@@ -17,18 +17,18 @@ import { storedRole } from './session.js';
 import { Button, ErrorNote, Field, Pills, TextArea } from './ui.js';
 
 /**
- * Lists of documents on the web (5.15): what the Lists screen, a list's
- * page, a row's ⋯ and the document's page share — who a list is for, in
- * words; the form that makes or changes one; and "Add to a list".
+ * Collections of documents on the web (5.15): what the Collections screen, a collection's
+ * page, a row's ⋯ and the document's page share — who a collection is for, in
+ * words; the form that makes or changes one; and "Add to a collection".
  *
  * Nothing here counts what the reader cannot see. Every number is one the
- * vault gave them (`item_count` is what they can see of a list), and a
- * list they are not given is not there at all.
+ * vault gave them (`item_count` is what they can see of a collection), and a
+ * collection they are not given is not there at all.
  */
 
-/** Who a list is for, in the order the picker offers them, each with what it means. */
+/** Who a collection is for, in the order the picker offers them, each with what it means. */
 export const AUDIENCE_CHOICES: ReadonlyArray<{
-  value: ListAudience;
+  value: CollectionAudience;
   label: string;
   sentence: string;
 }> = [
@@ -46,7 +46,7 @@ export const AUDIENCE_CHOICES: ReadonlyArray<{
     value: 'teens',
     label: 'Teens and up',
     // The same people as Everyone: what tells them apart is that only an
-    // Everyone list may ever be granted to a viewer (A17, 5.33).
+    // Everyone collection may ever be granted to a viewer (A17, 5.33).
     sentence:
       'The same people as Everyone in the family: owners, adults and teens. Unlike Everyone, it can never be granted to a viewer.',
   },
@@ -59,13 +59,13 @@ export const AUDIENCE_CHOICES: ReadonlyArray<{
 
 /**
  * Said under Everyone in the family alone: no viewer is in any audience,
- * and only an Everyone list may be granted to one (A17, 5.33).
+ * and only an Everyone collection may be granted to one (A17, 5.33).
  */
-export const VIEWERS_NEED_A_GRANT = 'Viewers see a list only when it is granted to them.';
+export const VIEWERS_NEED_A_GRANT = 'Viewers see a collection only when it is granted to them.';
 
-/** A list never widens who sees a document (5.14). */
+/** A collection never widens who sees a document (5.14). */
 export const NEVER_WIDENS =
-  'Whoever sees a list sees only the documents on it they could see already.';
+  'Whoever sees a collection sees only the documents in it they could see already.';
 
 export function audienceLabel(audience: string): string {
   return AUDIENCE_CHOICES.find((c) => c.value === audience)?.label ?? 'Some of the family';
@@ -83,34 +83,37 @@ export function documentsWord(n: number): string {
 }
 
 /**
- * Whether lists are offered at all: the vault has them (`features.lists`),
- * and the reader may make them (`list.manage`: owners, adults and teens).
- * A viewer is offered nothing about lists, and older vaults have none.
+ * Whether collections are offered at all: the vault has them (`features.collections`),
+ * and the reader may make them (`collection.manage`: owners, adults and teens).
+ * A viewer is offered nothing about collections, and older vaults have none.
  */
-export function listsOffered(caps: Capabilities | null, role: Role): boolean {
-  return caps?.features.lists === true && can(role, 'list.manage');
+export function collectionsOffered(caps: Capabilities | null, role: Role): boolean {
+  return caps?.features.collections === true && can(role, 'collection.manage');
 }
 
 /**
- * Whether the reader may change a list — its name, who it is for, what is
- * on it: its maker, while they are in its audience (A18). The vault decides
+ * Whether the reader may change a collection — its name, who it is for, what is
+ * in it: its maker, while they are in its audience (A18). The vault decides
  * regardless; this only decides what is drawn.
  */
-export function mayChangeList(role: Role, list: Pick<ListView, 'mine' | 'audience'>): boolean {
-  return list.mine && inListAudience(role, list.audience);
+export function mayChangeCollection(
+  role: Role,
+  collection: Pick<CollectionView, 'mine' | 'audience'>,
+): boolean {
+  return collection.mine && inCollectionAudience(role, collection.audience);
 }
 
 /**
- * Who a list is for: the four choices as pills — only those the maker is in
+ * Who a collection is for: the four choices as pills — only those the maker is in
  * themselves, as the vault allows — with what the chosen one means. It is
  * asked for, never assumed, so it is marked as the name is.
  */
 export function AudiencePicker(props: {
-  value: ListAudience | null;
+  value: CollectionAudience | null;
   role: Role;
-  onChange: (audience: ListAudience) => void;
+  onChange: (audience: CollectionAudience) => void;
 }) {
-  const choices = AUDIENCE_CHOICES.filter((c) => inListAudience(props.role, c.value));
+  const choices = AUDIENCE_CHOICES.filter((c) => inCollectionAudience(props.role, c.value));
   const chosen = choices.find((c) => c.value === props.value);
   return (
     <div className="stack audience">
@@ -130,34 +133,36 @@ export function AudiencePicker(props: {
   );
 }
 
-export interface ListFields {
+export interface CollectionFields {
   name: string;
-  audience: ListAudience;
-  /** Undefined where the form does not ask for it (the ⋯'s quick "Make a new list"). */
+  audience: CollectionAudience;
+  /** Undefined where the form does not ask for it (the ⋯'s quick "Make a new collection"). */
   description?: string | null;
 }
 
 /**
- * Making a list, or changing one: its name, what it is for (on the Lists
- * screen and the list's page) and who it is for. It says what is missing
+ * Making a collection, or changing one: its name, what it is for (on the Collections
+ * screen and the collection's page) and who it is for. It says what is missing
  * in the vault's own words before it asks the vault anything.
  */
-export function ListForm(props: {
+export function CollectionForm(props: {
   id: string;
-  /** The list as it is, when it is being changed. */
-  initial?: { name: string; description: string | null; audience: ListAudience };
+  /** The collection as it is, when it is being changed. */
+  initial?: { name: string; description: string | null; audience: CollectionAudience };
   withDescription: boolean;
   submitLabel: string;
   busyLabel: string;
-  onSubmit: (fields: ListFields) => Promise<void>;
+  onSubmit: (fields: CollectionFields) => Promise<void>;
   onCancel: () => void;
 }) {
   const role = storedRole();
   const [name, setName] = useState(props.initial?.name ?? '');
   const [description, setDescription] = useState(props.initial?.description ?? '');
-  // Nothing is chosen for a new list: who may know a list is there is the
+  // Nothing is chosen for a new collection: who may know a collection is there is the
   // maker's decision, never a default they did not notice.
-  const [audience, setAudience] = useState<ListAudience | null>(props.initial?.audience ?? null);
+  const [audience, setAudience] = useState<CollectionAudience | null>(
+    props.initial?.audience ?? null,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ message: string; field: 'name' | 'audience' | null } | null>(
     null,
@@ -168,11 +173,11 @@ export function ListForm(props: {
     e.preventDefault();
     if (busy) return;
     if (!name.trim()) {
-      setError({ message: 'Give the list a name.', field: 'name' });
+      setError({ message: 'Give the collection a name.', field: 'name' });
       return;
     }
     if (!audience) {
-      setError({ message: 'Say who the list is for.', field: 'audience' });
+      setError({ message: 'Say who the collection is for.', field: 'audience' });
       // Where the answer is given: the first of the choices.
       form.current?.querySelector<HTMLButtonElement>('.audience .pill')?.focus();
       return;
@@ -201,7 +206,7 @@ export function ListForm(props: {
         required={false}
         requiredMark
         invalid={error?.field === 'name'}
-        maxLength={LIST_NAME_MAX}
+        maxLength={COLLECTION_NAME_MAX}
         placeholder="For the mortgage broker"
         onChange={setName}
       />
@@ -210,7 +215,7 @@ export function ListForm(props: {
           id={`${props.id}-about`}
           label="What it is for"
           value={description}
-          maxLength={LIST_DESCRIPTION_MAX}
+          maxLength={COLLECTION_DESCRIPTION_MAX}
           hint="Optional. A few words for whoever opens it."
           onChange={setDescription}
         />
@@ -230,20 +235,20 @@ export function ListForm(props: {
 }
 
 /**
- * "Add to a list" (5.15), in a sheet over the page: one document from its
+ * "Add to a collection" (5.15), in a sheet over the page: one document from its
  * row's ⋯ or its own page, or several chosen in search. It offers the
- * lists the reader may put things on — those they made, for an audience
- * they are in — and a new one. Several go on all at once or not at all:
- * one that has gone meanwhile is refused with the rest, and nothing is on.
+ * collections the reader may put things in — those they made, for an audience
+ * they are in — and a new one. Several go in all at once or not at all:
+ * one that has gone meanwhile is refused with the rest, and nothing goes in.
  */
-export function AddToList(props: {
+export function AddToCollection(props: {
   documentIds: string[];
   /** What is being added, as the sentences say it: “Passport”, or 3 documents. */
   what: string;
   onClose: () => void;
   /** Something is on its way: the sheet stays open until it is done. */
   onBusy: (busy: boolean) => void;
-  /** Something was put on a list: what the sheet said about it. */
+  /** Something was put in a collection: what the sheet said about it. */
   onAdded?: (said: string) => void;
 }) {
   const { withToken } = useApp();
@@ -256,10 +261,10 @@ export function AddToList(props: {
   } = useLoad(
     async (t) => {
       const [all, onIt] = await Promise.all([
-        api.lists(t),
-        one ? api.documentLists(t, one) : Promise.resolve(null),
+        api.collections(t),
+        one ? api.documentCollections(t, one) : Promise.resolve(null),
       ]);
-      return { lists: all.items, on: (onIt?.items ?? []).map((l) => l.id) };
+      return { collections: all.items, on: (onIt?.items ?? []).map((l) => l.id) };
     },
     [props.documentIds.join(',')],
   );
@@ -268,36 +273,36 @@ export function AddToList(props: {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const status = useRef<HTMLParagraphElement>(null);
-  const newList = useRef<HTMLButtonElement>(null);
+  const newCollection = useRef<HTMLButtonElement>(null);
   const card = useRef<HTMLDivElement>(null);
 
-  const mine = (data?.lists ?? []).filter((l) => mayChangeList(role, l));
-  // Lists the reader made, for people they are no longer one of (A18).
-  const outgrown = (data?.lists ?? []).filter((l) => l.mine).length;
+  const mine = (data?.collections ?? []).filter((l) => mayChangeCollection(role, l));
+  // Collections the reader made, for people they are no longer one of (A18).
+  const outgrown = (data?.collections ?? []).filter((l) => l.mine).length;
   const on = new Set(data?.on ?? []);
 
-  const working = (list: string | null) => {
-    setAdding(list);
-    props.onBusy(list !== null);
+  const working = (collection: string | null) => {
+    setAdding(collection);
+    props.onBusy(collection !== null);
   };
 
   /**
-   * What a refusal means, in words. Several go on together or not at all,
-   * so a refusal of several says none went on. A list that is not there
-   * any more leaves the sheet: the reader's lists as they are now say
-   * whether it was the list that had gone, or a document.
+   * What a refusal means, in words. Several go in together or not at all,
+   * so a refusal of several says none went in. A collection that is not there
+   * any more leaves the sheet: the reader's collections as they are now say
+   * whether it was the collection that had gone, or a document.
    */
-  const refusal = async (list: ListView, err: unknown): Promise<string> => {
+  const refusal = async (collection: CollectionView, err: unknown): Promise<string> => {
     if (!(err instanceof ApiRequestError)) return describeError(err);
     if (err.status === 404) {
-      const now = await withToken((t) => api.lists(t)).catch(() => null);
-      if (now) setData((d) => (d ? { ...d, lists: now.items } : d));
-      if (now && !now.items.some((l) => l.id === list.id)) {
-        return `“${list.name}” is not there any more, so nothing went on it.`;
+      const now = await withToken((t) => api.collections(t)).catch(() => null);
+      if (now) setData((d) => (d ? { ...d, collections: now.items } : d));
+      if (now && !now.items.some((l) => l.id === collection.id)) {
+        return `“${collection.name}” is not there any more, so nothing went into it.`;
       }
     }
     if (one || (err.status !== 404 && err.status !== 403)) return describeError(err);
-    const none = `None of the ${props.documentIds.length} went on “${list.name}”`;
+    const none = `None of the ${props.documentIds.length} went into “${collection.name}”`;
     return err.status === 404
       ? `${none}: one of them is no longer in the vault, or no longer yours to see.`
       : `${none}. ${err.message}`;
@@ -306,37 +311,39 @@ export function AddToList(props: {
   /**
    * Where the focus goes after a refusal: never out of the sheet. It stays
    * on the Add button that was pressed, or goes back to it (switched off
-   * while it was asked, it let go of the focus); when its list has gone,
-   * and the button with it, to the next list's, or the one before, or to
-   * Make a new list — as a row that leaves its list gives it to the next.
+   * while it was asked, it let go of the focus); when its collection has gone,
+   * and the button with it, to the next collection's, or the one before, or to
+   * Make a new collection — as a row that leaves its collection gives it to the next.
    */
   const refocus = (pressed: string, order: string[]) => {
     const box = card.current;
     if (!box || box.contains(document.activeElement)) return;
     const buttons = new Map(
-      [...box.querySelectorAll<HTMLElement>('li[data-list]')].map((li) => [
-        li.dataset.list,
+      [...box.querySelectorAll<HTMLElement>('li[data-collection]')].map((li) => [
+        li.dataset.collection,
         li.querySelector('button'),
       ]),
     );
     const at = order.indexOf(pressed);
     const near = [pressed, ...order.slice(at + 1), ...order.slice(0, Math.max(at, 0)).reverse()];
-    (near.map((id) => buttons.get(id)).find((b) => b) ?? newList.current)?.focus();
+    (near.map((id) => buttons.get(id)).find((b) => b) ?? newCollection.current)?.focus();
   };
 
-  const add = async (list: ListView) => {
+  const add = async (collection: CollectionView) => {
     if (adding) return;
     const order = mine.map((l) => l.id);
-    working(list.id);
+    working(collection.id);
     setError(null);
     setNote(null);
     try {
-      const after = await withToken((t) => api.addToList(t, list.id, props.documentIds));
+      const after = await withToken((t) =>
+        api.addToCollection(t, collection.id, props.documentIds),
+      );
       if (!after) return;
       setData((d) =>
         d
           ? {
-              lists: d.lists.map((l) =>
+              collections: d.collections.map((l) =>
                 l.id === after.id ? { ...l, item_count: after.item_count } : l,
               ),
               on: [...d.on, after.id],
@@ -344,47 +351,47 @@ export function AddToList(props: {
           : d,
       );
       const said = one
-        ? `${props.what} is on “${after.name}” now.`
+        ? `${props.what} is in “${after.name}” now.`
         : `${props.what} added to “${after.name}”.`;
       setNote(said);
       props.onAdded?.(said);
       // Its Add button goes: the news has the focus, so it is heard.
       status.current?.focus();
     } catch (err) {
-      const said = await refusal(list, err);
+      const said = await refusal(collection, err);
       // Drawn at once, with the buttons back on, so one can take the focus.
       flushSync(() => {
         setError(said);
         working(null);
       });
-      refocus(list.id, order);
+      refocus(collection.id, order);
     } finally {
       working(null);
     }
   };
 
-  const make = async (fields: ListFields) => {
+  const make = async (fields: CollectionFields) => {
     props.onBusy(true);
-    let made: ListView | null;
+    let made: CollectionView | null;
     try {
       made = await withToken((t) =>
-        api.createList(t, { name: fields.name, audience: fields.audience }),
+        api.createCollection(t, { name: fields.name, audience: fields.audience }),
       );
     } finally {
       props.onBusy(false);
     }
     if (!made) return;
     setMaking(false);
-    setData((d) => (d ? { ...d, lists: [...d.lists, made] } : d));
-    // Made, then put on: should that be refused, the list is there to try again.
+    setData((d) => (d ? { ...d, collections: [...d.collections, made] } : d));
+    // Made, then put in: should that be refused, the collection is there to try again.
     await add(made);
   };
 
-  const titleId = `add-to-list-h`;
+  const titleId = `add-to-collection-h`;
   return (
     <div ref={card} className="card stack">
       <h2 id={titleId} style={{ fontSize: 20 }}>
-        Add {props.what} to a list
+        Add {props.what} to a collection
       </h2>
       <p ref={status} className="notice status-line" role="status" tabIndex={-1}>
         {note}
@@ -392,22 +399,22 @@ export function AddToList(props: {
       <ErrorNote message={error ?? loadError} />
       {data === null && !loadError && (
         <p className="muted" role="status">
-          Finding your lists…
+          Finding your collections…
         </p>
       )}
       {data !== null && mine.length === 0 && (
         <p className="muted">
           {outgrown === 1
-            ? 'The list you made is for people you are no longer one of: you can still delete it, but not put documents on it.'
+            ? 'The collection you made is for people you are no longer one of: you can still delete it, but not put documents in it.'
             : outgrown > 1
-              ? 'The lists you made are for people you are no longer one of: you can still delete them, but not put documents on them.'
-              : 'You haven’t made a list yet. Only the person who made a list can put documents on it.'}
+              ? 'The collections you made are for people you are no longer one of: you can still delete them, but not put documents in them.'
+              : 'You haven’t made a collection yet. Only the person who made a collection can put documents in it.'}
         </p>
       )}
       {mine.length > 0 && (
         <ul className="list" aria-labelledby={titleId}>
           {mine.map((l) => (
-            <li key={l.id} data-list={l.id}>
+            <li key={l.id} data-collection={l.id}>
               <span>
                 <strong>{l.name}</strong>
                 <span className="muted">
@@ -417,7 +424,7 @@ export function AddToList(props: {
               {on.has(l.id) ? (
                 <span className="muted">
                   <span aria-hidden="true">✓ </span>
-                  {one ? 'On this list' : 'Added'}
+                  {one ? 'In this collection' : 'Added'}
                 </span>
               ) : (
                 <Button
@@ -434,28 +441,28 @@ export function AddToList(props: {
         </ul>
       )}
       {making ? (
-        <ListForm
-          id="add-new-list"
+        <CollectionForm
+          id="add-new-collection"
           withDescription={false}
           submitLabel="Make it and add"
-          busyLabel="Making the list…"
+          busyLabel="Making the collection…"
           onSubmit={make}
           onCancel={() => {
             setMaking(false);
             // The form goes, and its Cancel with it: back to what opened it.
-            requestAnimationFrame(() => newList.current?.focus());
+            requestAnimationFrame(() => newCollection.current?.focus());
           }}
         />
       ) : (
         data !== null && (
           <button
-            ref={newList}
+            ref={newCollection}
             type="button"
             className="btn btn-quiet"
             disabled={adding !== null}
             onClick={() => setMaking(true)}
           >
-            Make a new list
+            Make a new collection
           </button>
         )
       )}
@@ -469,39 +476,39 @@ export function AddToList(props: {
 }
 
 /**
- * The family's lists on Home (5.15), the way to the Lists screen: the
+ * The family's collections on Home (5.15), the way to the Collections screen: the
  * first few as tiles, each with how many of its documents the reader can
  * see, as the vault counts them. The way there is always drawn — while
  * they load, and when they cannot be loaded — and the tiles fill in when
  * they come. `version` goes up when something on Home may have changed
- * what is on a list (a row's ⋯), and they are counted again. `quiet`:
+ * what is in a collection (a row's ⋯), and they are counted again. `quiet`:
  * Home has said already that the vault cannot be reached, and once is
  * enough — a screen reader would read the same alert twice.
  */
-export function ListsOnHome(props: { version: number; quiet: boolean }) {
+export function CollectionsOnHome(props: { version: number; quiet: boolean }) {
   const { authVersion } = useApp();
   const { data, error } = useLoad(
-    async (t) => (await api.lists(t)).items,
+    async (t) => (await api.collections(t)).items,
     [authVersion, props.version],
   );
   const none = data !== null && data.length === 0;
   return (
-    <section aria-labelledby="lists-h">
-      <h2 id="lists-h" className="section-h">
-        Lists
+    <section aria-labelledby="collections-h">
+      <h2 id="collections-h" className="section-h">
+        Collections
       </h2>
       <ErrorNote message={props.quiet ? null : error} />
       {data !== null && (
         <div className="tiles">
           {data.slice(0, 4).map((l) => (
-            <Link key={l.id} to={`/lists/${l.id}`} className="tile">
+            <Link key={l.id} to={`/collections/${l.id}`} className="tile">
               <span className="tile-title">{l.name}</span>
               <span className="muted">{documentsWord(l.item_count)}</span>
             </Link>
           ))}
           {none && (
-            <Link to="/lists" className="tile tile-missing">
-              <span className="tile-title">Make a list</span>
+            <Link to="/collections" className="tile tile-missing">
+              <span className="tile-title">Make a collection</span>
               <span className="muted">
                 Gather papers for a purpose: a trip, a mortgage, a move.
               </span>
@@ -511,8 +518,8 @@ export function ListsOnHome(props: { version: number; quiet: boolean }) {
         </div>
       )}
       {!none && (
-        <Link to="/lists" className="seeall">
-          All lists
+        <Link to="/collections" className="seeall">
+          All collections
         </Link>
       )}
     </section>

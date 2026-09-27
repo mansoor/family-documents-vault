@@ -23,8 +23,8 @@ import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
 import { registerTypes } from './documents/type-routes.js';
 import type { TypeService } from './documents/types.js';
-import { registerLists } from './lists/routes.js';
-import type { ListService } from './lists/service.js';
+import { registerCollections } from './collections/routes.js';
+import type { CollectionService } from './collections/service.js';
 import type { VisibilityService } from './documents/visibility.js';
 import type { TotpService } from './auth/totp.js';
 import { registerExports } from './exports/routes.js';
@@ -55,8 +55,8 @@ export interface AppDeps {
   documents: DocumentService;
   /** Kinds of document, managed (5.11). */
   types: TypeService;
-  /** Lists of documents (5.14). */
-  lists: ListService;
+  /** Collections of documents (5.14). */
+  collections: CollectionService;
   sealedSearch: SealedSearchService;
   visibility: VisibilityService;
   totp: TotpService;
@@ -255,7 +255,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerAudit(app, deps.audit);
   registerOffline(app, deps.offline);
   registerTypes(app, deps.types);
-  registerLists(app, deps.lists);
+  registerCollections(app, deps.collections);
   await registerDocuments(
     app,
     deps.documents,

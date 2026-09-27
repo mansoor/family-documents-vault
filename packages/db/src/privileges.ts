@@ -65,14 +65,14 @@ begin
   if to_regclass('public.effective_document_type') is not null then
     revoke insert, update, delete on public.effective_document_type from fdv_app;
   end if;
-  -- A list is marked deleted, never removed (0036): its lines in the
-  -- activity log find their audience through it.
-  if to_regclass('public.doc_list') is not null then
-    revoke delete on public.doc_list from fdv_app;
+  -- A collection is marked deleted, never removed (0036; named so by 0039):
+  -- its lines in the activity log find their audience through it.
+  if to_regclass('public.doc_collection') is not null then
+    revoke delete on public.doc_collection from fdv_app;
   end if;
-  -- Who may change a list asks it whether nobody may any more (0036).
-  if to_regprocedure('public.doc_list_stranded(uuid, text)') is not null then
-    grant execute on function public.doc_list_stranded(uuid, text) to fdv_app;
+  -- Who may change a collection asks it whether nobody may any more (0036).
+  if to_regprocedure('public.doc_collection_stranded(uuid, text)') is not null then
+    grant execute on function public.doc_collection_stranded(uuid, text) to fdv_app;
   end if;
 end $$;
 

@@ -336,12 +336,12 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
-      capability: 'list.manage',
-      what: 'make a list of documents',
+      capability: 'collection.manage',
+      what: 'make a collection of documents',
       call: (t) =>
         h.app.inject({
           method: 'POST',
-          url: '/api/v1/lists',
+          url: '/api/v1/collections',
           headers: h.as(t),
           payload: { name: 'Papers for the move', audience: 'everyone' },
         }),

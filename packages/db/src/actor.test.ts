@@ -184,8 +184,8 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
 
 /**
  * The tables 0030 guards — the document, everything that hangs off it, and
- * exports — and the lists of documents 0036 adds, which a link is not
- * given either (5.19 gives a list's share what it needs).
+ * exports — and the collections of documents 0036 adds, which a link is not
+ * given either (5.19 gives a collection's share what it needs).
  */
 const GUARDED = [
   'document',
@@ -200,8 +200,8 @@ const GUARDED = [
   'private_notice',
   'upload_idempotency',
   'export',
-  'doc_list',
-  'doc_list_item',
+  'doc_collection',
+  'doc_collection_item',
 ] as const;
 type Counts = Record<(typeof GUARDED)[number], number>;
 
@@ -342,16 +342,16 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
       hh,
       ids.account,
     ]);
-    // A list for everyone, with both documents on it (0036).
-    const list = await one<{ id: string }>(
-      `insert into doc_list (household_id, name, audience, owner_member_id)
+    // A collection for everyone, with both documents in it (0036).
+    const collection = await one<{ id: string }>(
+      `insert into doc_collection (household_id, name, audience, owner_member_id)
        values ($1, 'Papers for the broker', 'everyone', $2) returning id`,
       [hh, ids.member],
     );
     await admin.query(
-      `insert into doc_list_item (list_id, document_id, household_id, position)
+      `insert into doc_collection_item (collection_id, document_id, household_id, position)
        values ($1, $2, $3, 1), ($1, $4, $3, 2)`,
-      [list.id, ids.lease, hh, ids.will],
+      [collection.id, ids.lease, hh, ids.will],
     );
     ids.adultMember = (
       await one<{ id: string }>(

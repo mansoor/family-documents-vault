@@ -1,7 +1,7 @@
 import {
   CATEGORY_LABELS,
   CORE_FIELDS,
-  LIST_HINT_TEENS,
+  COLLECTION_HINT_TEENS,
   reminderOf,
   reminderSentence,
   type DocumentTypeInput,
@@ -950,10 +950,10 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
-    name: 'a list holds what its maker puts on it, counted as they see it; a change is made to the list they saw; a document says which lists it is on (0.5.12)',
+    name: 'a collection holds what its maker puts in it, counted as they see it; a change is made to the collection they saw; a document says which collections it is in (0.5.12)',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
-      expect((await api.capabilities()).features.lists).toBe(true);
+      expect((await api.capabilities()).features.collections).toBe(true);
       const me = await api.me(token);
       const everyday = await api.createDocument(token, {
         title: 'Contract council tax',
@@ -964,7 +964,7 @@ export const contractScenarios: Scenario[] = [
         owner_member_id: me.member_id,
         visibility: 'adults',
       });
-      const made = await api.createList(token, {
+      const made = await api.createCollection(token, {
         name: '  For the   broker ',
         audience: 'everyone',
       });
@@ -978,39 +978,47 @@ export const contractScenarios: Scenario[] = [
         items: [],
       });
 
-      // Put on in the order asked, each once; its maker is told who of its
+      // Put in, in the order asked, each once; its maker is told who of its
       // audience cannot see one.
-      const filled = await api.addToList(token, made.id, [everyday.id, adults.id, everyday.id]);
+      const filled = await api.addToCollection(token, made.id, [
+        everyday.id,
+        adults.id,
+        everyday.id,
+      ]);
       expect(filled.items.map((i) => i.document.id)).toEqual([everyday.id, adults.id]);
       expect(filled.item_count).toBe(2);
-      expect(filled.items.map((i) => i.hint)).toEqual([null, LIST_HINT_TEENS]);
-      // A document that is not there is refused, and nothing is put on with it.
-      const missing = await refusal(api.addToList(token, made.id, [everyday.id, NEVER_USED]));
+      expect(filled.items.map((i) => i.hint)).toEqual([null, COLLECTION_HINT_TEENS]);
+      // A document that is not there is refused, and nothing is put in with it.
+      const missing = await refusal(api.addToCollection(token, made.id, [everyday.id, NEVER_USED]));
       expect(missing).toMatchObject({ status: 404, code: 'not_found' });
-      expect((await api.getList(token, made.id)).item_count).toBe(2);
+      expect((await api.getCollection(token, made.id)).item_count).toBe(2);
       expect(filled).toMatchObject({ has_more: false, next_cursor: null });
 
       // A page at a time: item_count is all of them, on every page.
-      const first = await api.getList(token, made.id, { limit: 1 });
+      const first = await api.getCollection(token, made.id, { limit: 1 });
       expect(first.items.map((i) => i.document.id)).toEqual([everyday.id]);
       expect(first).toMatchObject({ item_count: 2, has_more: true });
       expect(typeof first.next_cursor).toBe('string');
-      const second = await api.getList(token, made.id, {
+      const second = await api.getCollection(token, made.id, {
         limit: 1,
         cursor: first.next_cursor,
       });
       expect(second.items.map((i) => i.document.id)).toEqual([adults.id]);
       expect(second).toMatchObject({ item_count: 2, has_more: false, next_cursor: null });
-      const badCursor = await refusal(api.getList(token, made.id, { cursor: 'not-a-cursor' }));
+      const badCursor = await refusal(
+        api.getCollection(token, made.id, { cursor: 'not-a-cursor' }),
+      );
       expect(badCursor).toMatchObject({ status: 422, code: 'validation_failed' });
 
-      // The same count in the list of lists; each document says it is on it.
-      const listed = (await api.lists(token)).items.find((l) => l.id === made.id);
+      // The same count in the list of collections; each document says it is in it.
+      const listed = (await api.collections(token)).items.find((l) => l.id === made.id);
       expect(listed).toMatchObject({ name: 'For the broker', item_count: 2, mine: true });
-      expect((await api.documentLists(token, adults.id)).items.map((l) => l.id)).toEqual([made.id]);
+      expect((await api.documentCollections(token, adults.id)).items.map((l) => l.id)).toEqual([
+        made.id,
+      ]);
 
-      // Renamed, made to the list as it was seen: an older ETag is refused.
-      const renamed = await api.updateList(
+      // Renamed, made to the collection as it was seen: an older ETag is refused.
+      const renamed = await api.updateCollection(
         token,
         made.id,
         { name: 'For the new broker' },
@@ -1019,29 +1027,29 @@ export const contractScenarios: Scenario[] = [
       expect(renamed).toMatchObject({ name: 'For the new broker', item_count: 2 });
       expect(renamed.etag).not.toBe(made.etag);
       const stale = await refusal(
-        api.updateList(token, made.id, { audience: 'adults' }, made.etag),
+        api.updateCollection(token, made.id, { audience: 'adults' }, made.etag),
       );
       expect(stale).toMatchObject({ status: 409, code: 'conflict' });
-      // A list has a name, of 80 characters at most, and somebody it is for.
+      // A collection has a name, of 80 characters at most, and somebody it is for.
       for (const name of ['   ', 'x'.repeat(81)]) {
-        const err = await refusal(api.createList(token, { name, audience: 'everyone' }));
+        const err = await refusal(api.createCollection(token, { name, audience: 'everyone' }));
         expect(err).toMatchObject({ status: 422, code: 'validation_failed', detail: 'name' });
       }
 
-      // Taken off, once; a second time it is not on it.
-      await api.removeFromList(token, made.id, adults.id);
-      expect((await api.getList(token, made.id)).items.map((i) => i.document.id)).toEqual([
+      // Taken out, once; a second time it is not in it.
+      await api.removeFromCollection(token, made.id, adults.id);
+      expect((await api.getCollection(token, made.id)).items.map((i) => i.document.id)).toEqual([
         everyday.id,
       ]);
-      const twice = await refusal(api.removeFromList(token, made.id, adults.id));
+      const twice = await refusal(api.removeFromCollection(token, made.id, adults.id));
       expect(twice).toMatchObject({ status: 404, code: 'not_found' });
 
       // Deleted, it is gone; its documents are not.
-      await api.deleteList(token, made.id);
-      const gone = await refusal(api.getList(token, made.id));
+      await api.deleteCollection(token, made.id);
+      const gone = await refusal(api.getCollection(token, made.id));
       expect(gone).toMatchObject({ status: 404, code: 'not_found' });
-      expect((await api.lists(token)).items.map((l) => l.id)).not.toContain(made.id);
-      expect((await api.documentLists(token, everyday.id)).items).toEqual([]);
+      expect((await api.collections(token)).items.map((l) => l.id)).not.toContain(made.id);
+      expect((await api.documentCollections(token, everyday.id)).items).toEqual([]);
       expect((await api.document(token, everyday.id)).title).toBe('Contract council tax');
     },
   },

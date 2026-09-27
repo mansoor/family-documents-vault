@@ -815,7 +815,7 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     });
   });
 
-  it("a second adult learns nothing of the first adult's Only me list, not its name, not its count", async () => {
+  it("a second adult learns nothing of the first adult's Only me collection, not its name, not its count", async () => {
     const send = (
       t: Tokens,
       method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
@@ -827,35 +827,35 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       const { error } = json<{ error: Record<string, unknown> }>(r);
       return { status: r.statusCode, ...error, request_id: null };
     };
-    /** Everything Sam can read that a list could leave a mark on. */
+    /** Everything Sam can read that a collection could leave a mark on. */
     const samSees = async () => ({
-      lists: json<unknown>(await send(sam, 'GET', '/api/v1/lists')),
-      ofShared: json<unknown>(await send(sam, 'GET', `/api/v1/documents/${sharedId}/lists`)),
+      collections: json<unknown>(await send(sam, 'GET', '/api/v1/collections')),
+      ofShared: json<unknown>(await send(sam, 'GET', `/api/v1/documents/${sharedId}/collections`)),
       shared: json<DocumentView>(await send(sam, 'GET', `/api/v1/documents/${sharedId}`)),
       counts: json<unknown>(await send(sam, 'GET', '/api/v1/documents/counts')),
       search: json<{ items: unknown[] }>(await send(sam, 'GET', '/api/v1/search?q=Divorce')).items,
     });
     const before = await samSees();
 
-    // The owner's Only me list: a telling name, the shared document Sam
+    // The owner's Only me collection: a telling name, the shared document Sam
     // can see, and the owner's own secret.
-    const made = await send(owner, 'POST', '/api/v1/lists', {
+    const made = await send(owner, 'POST', '/api/v1/collections', {
       name: 'Divorce papers',
       audience: 'only_me',
       description: 'For the solicitor',
     });
     expect(made.statusCode, made.body).toBe(201);
-    const listId = json<{ id: string }>(made).id;
-    const filled = await send(owner, 'POST', `/api/v1/lists/${listId}/items`, {
+    const collectionId = json<{ id: string }>(made).id;
+    const filled = await send(owner, 'POST', `/api/v1/collections/${collectionId}/items`, {
       document_ids: [sharedId, secretId],
     });
     expect(json<{ item_count: number }>(filled).item_count).toBe(2);
 
-    // Nothing Sam reads has moved: not the lists, not the shared
-    // document's lists, its ETag or its counts, not search.
+    // Nothing Sam reads has moved: not the collections, not the shared
+    // document's collections, its ETag or its counts, not search.
     expect(await samSees()).toEqual(before);
 
-    // Asked for by id, every way, it is exactly a list that never was.
+    // Asked for by id, every way, it is exactly a collection that never was.
     const nowhere = randomUUID();
     for (const [method, path, payload] of [
       ['GET', '', undefined],
@@ -864,26 +864,28 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
       ['POST', '/items', { document_ids: [sharedId] }],
       ['DELETE', `/items/${sharedId}`, undefined],
     ] as const) {
-      const hidden = await send(sam, method, `/api/v1/lists/${listId}${path}`, payload);
+      const hidden = await send(sam, method, `/api/v1/collections/${collectionId}${path}`, payload);
       expect(hidden.statusCode, `${method} ${path}`).toBe(404);
       expect(body(hidden), `${method} ${path}`).toEqual(
-        body(await send(sam, method, `/api/v1/lists/${nowhere}${path}`, payload)),
+        body(await send(sam, method, `/api/v1/collections/${nowhere}${path}`, payload)),
       );
     }
 
     // And the activity log has no line about it: not its making, not the
-    // shared document going on it, not a line with its name taken out.
+    // shared document going into it, not a line with its name taken out.
     const log = json<{ items: ActivityLine[] }>(await send(sam, 'GET', '/api/v1/audit?limit=100'))
       .items.map((l) => l.text)
       .join('\n');
     expect(log).not.toContain('Divorce');
-    expect(log).not.toMatch(/list/);
+    expect(log).not.toMatch(/collection/);
     // Its maker's log has all of it.
     const theirs = json<{ items: ActivityLine[] }>(
       await send(owner, 'GET', '/api/v1/audit?limit=100'),
     ).items.map((l) => l.text);
-    expect(theirs).toContain('Owner made the list “Divorce papers”');
-    expect(theirs).toContain('Owner added “Home insurance policy” to the list “Divorce papers”');
+    expect(theirs).toContain('Owner made the collection “Divorce papers”');
+    expect(theirs).toContain(
+      'Owner added “Home insurance policy” to the collection “Divorce papers”',
+    );
   });
 
   it('and after all of that, the owner can still open their own document', async () => {

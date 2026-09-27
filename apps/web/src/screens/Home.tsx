@@ -10,8 +10,8 @@ import { useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
-import { DocActions, type RowList } from '../DocActions.js';
-import { listsOffered, ListsOnHome } from '../lists.js';
+import { collectionsOffered, CollectionsOnHome } from '../collections.js';
+import { DocActions, type RowCollection } from '../DocActions.js';
 import { storedRole } from '../session.js';
 import {
   Avatar,
@@ -73,8 +73,8 @@ export function HomeScreen() {
     },
     [authVersion],
   );
-  // Bumped when a row's ⋯ changed something (5.4): put on a list, moved to
-  // the Trash. The lists' counts are the vault's, so they are asked again.
+  // Bumped when a row's ⋯ changed something (5.4): put in a collection, moved to
+  // the Trash. The collections' counts are the vault's, so they are asked again.
   const [changes, setChanges] = useState(0);
   const changed = () => {
     setChanges((n) => n + 1);
@@ -153,9 +153,11 @@ export function HomeScreen() {
         )}
       </section>
 
-      {/* The way to the family's lists (5.15): only where the vault has
+      {/* The way to the family's collections (5.15): only where the vault has
           them, and for those who make them. A viewer is given none. */}
-      {listsOffered(caps, storedRole()) && <ListsOnHome version={changes} quiet={error !== null} />}
+      {collectionsOffered(caps, storedRole()) && (
+        <CollectionsOnHome version={changes} quiet={error !== null} />
+      )}
 
       <section aria-labelledby="recent-h">
         <h2 id="recent-h" className="section-h">
@@ -271,7 +273,7 @@ export function DocRow({
   onOpen,
   onChanged,
   hint,
-  list,
+  collection,
   pick,
 }: {
   doc: DocumentView;
@@ -280,10 +282,10 @@ export function DocRow({
   onOpen: () => void;
   /** Its ⋯ changed something (5.4): the list is loaded again. */
   onChanged: () => void | Promise<unknown>;
-  /** On a list's page, for its maker only: who in its audience is not given it (5.14). */
+  /** On a collection's page, for its maker only: who in its audience is not given it (5.14). */
   hint?: string | null | undefined;
-  /** The list whose page this row is on (5.15). */
-  list?: RowList | undefined;
+  /** The collection whose page this row is on (5.15). */
+  collection?: RowCollection | undefined;
   /** Chosen in search's Select (5.15). */
   pick?: RowPick | undefined;
 }) {
@@ -299,11 +301,17 @@ export function DocRow({
           {who && <span>{` · ${who}`}</span>}
         </span>
         <StatusBadge status={doc.status} />
-        {hint && <span className="list-hint">{hint}</span>}
+        {hint && <span className="collection-hint">{hint}</span>}
       </RowMain>
       {/* Beside the row's button, never inside it: a button inside a
           button is not a button to anybody using a screen reader. */}
-      <DocActions documentId={doc.id} title={title} doc={doc} onChanged={onChanged} list={list} />
+      <DocActions
+        documentId={doc.id}
+        title={title}
+        doc={doc}
+        onChanged={onChanged}
+        collection={collection}
+      />
     </li>
   );
 }

@@ -6,6 +6,6 @@ import { afterEach } from 'vitest';
 afterEach(() => cleanup());
 
 // findBy and waitFor give up after this long. The default, 1 s, is too short
-// for a file's first screen while the whole gate runs at once: Lists.test's
+// for a file's first screen while the whole gate runs at once: Collections.test's
 // first search took longer (5.15). It is a ceiling; a passing wait is no slower.
 configure({ asyncUtilTimeout: 3000 });

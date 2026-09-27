@@ -44,7 +44,7 @@ async function make(
       vaults: vaultsStub,
       documents: documentsStub,
       types: anyStub,
-      lists: anyStub,
+      collections: anyStub,
       sealedSearch: anyStub,
       household: householdStub,
       invitations: anyStub,

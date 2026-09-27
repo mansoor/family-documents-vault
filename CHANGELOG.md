@@ -6,6 +6,16 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.18] - 2026-09-27 — iteration 5.17b
+
+Lists are called collections.
+
+### Changed
+
+- Lists of documents are now **collections**, everywhere: Home's "Collections", "Add to a collection", "Make a collection", and a document is _in_ a collection rather than on a list. A document can be in several at once, and a collection is what you gather to hand over — for the solicitor, the mortgage, the move.
+- The API's `/api/v1/lists` routes are now `/api/v1/collections`, with no aliases: nothing but this vault's own web app used them. The database tables are renamed in place; every collection, its documents and their order are kept.
+- Activity lines about lists written before this release are no longer shown; new ones say "collection".
+
 ## [0.5.17] - 2026-09-27 — iteration 5.17
 
 Invitation and password-reset links the same way as share links.

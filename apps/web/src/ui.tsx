@@ -471,7 +471,7 @@ export function useSheetFocus(
 
 /**
  * A panel over the page (5.4): sharing, or who can see it, from a row's ⋯;
- * adding to a list (5.15). While what it holds is on its way, Escape leaves
+ * adding to a collection (5.15). While what it holds is on its way, Escape leaves
  * it open, as the "are you sure?" does: what comes back is shown only here.
  */
 export function Sheet(props: {
