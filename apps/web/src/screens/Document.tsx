@@ -11,6 +11,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
+import { AddToList, audienceLabel, listsOffered } from '../lists.js';
 import {
   BottomNav,
   Button,
@@ -18,6 +19,7 @@ import {
   ConfirmDialog,
   ErrorNote,
   MoveToTrashDialog,
+  Sheet,
   StatusBadge,
   TopBar,
   TrashIcon,
@@ -34,7 +36,7 @@ import { createUploadKeys, whileInProgress } from '../upload-keys.js';
  */
 export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken, guarded, authVersion, session } = useApp();
+  const { withToken, guarded, authVersion, session, caps } = useApp();
   const navigate = useNavigate();
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -401,6 +403,9 @@ export function DocumentScreen() {
           <p className="keep-lines">{doc.notes}</p>
         </section>
       )}
+      {listsOffered(caps, storedRole()) && (
+        <DocumentLists documentId={doc.id} title={doc.title ?? 'Needs a name'} />
+      )}
       {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
       {doc.latest_version_id !== null && (
         <SharePanel documentId={doc.id} documentTitle={doc.title} />
@@ -427,5 +432,71 @@ export function DocumentScreen() {
       )}
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * The lists this document is on, of those the reader may see, and "Add to
+ * a list" (5.15). A list the reader may not see is not mentioned at all.
+ */
+function DocumentLists(props: { documentId: string; title: string }) {
+  const { authVersion } = useApp();
+  const { data, error, reload } = useLoad(
+    async (t) => (await api.documentLists(t, props.documentId)).items,
+    [props.documentId, authVersion],
+  );
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const added = useRef(false);
+  const button = useRef<HTMLButtonElement>(null);
+
+  const close = () => {
+    setOpen(false);
+    setBusy(false);
+    if (!added.current) return;
+    added.current = false;
+    void reload();
+  };
+
+  return (
+    <section aria-labelledby="doc-lists-h">
+      <h2 id="doc-lists-h" className="section-h">
+        Lists
+      </h2>
+      <ErrorNote message={error} />
+      {data && data.length > 0 && (
+        <ul className="list">
+          {data.map((l) => (
+            <li key={l.id}>
+              <Link to={`/lists/${l.id}`} className="rowbtn">
+                <span className="doc-title">{l.name}</span>
+                <span className="muted">{audienceLabel(l.audience)}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button ref={button} type="button" className="btn btn-quiet" onClick={() => setOpen(true)}>
+        Add to a list
+      </button>
+      {open && (
+        <Sheet
+          label={`Add “${props.title}” to a list`}
+          busy={busy}
+          returnFocus={button}
+          onClose={close}
+        >
+          <AddToList
+            documentIds={[props.documentId]}
+            what={`“${props.title}”`}
+            onClose={close}
+            onBusy={setBusy}
+            onAdded={() => {
+              added.current = true;
+            }}
+          />
+        </Sheet>
+      )}
+    </section>
   );
 }

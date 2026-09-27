@@ -1,9 +1,22 @@
+import { canSee, canSeeList, inListAudience, listItemHint, type Role } from '@fdv/shared';
 import { vi } from 'vitest';
 
 /**
  * An in-memory stand-in for the API, good enough to drive the screens.
  * Each test starts from `fresh()` and can tweak the state before rendering.
  */
+
+/** A list of documents as the vault keeps it (0.5.12). The signed-in member is "me". */
+export interface FakeList {
+  id: string;
+  name: string;
+  description: string | null;
+  audience: 'everyone' | 'teens' | 'adults' | 'only_me';
+  owner_member_id: string | null;
+  etag: string;
+  /** The documents on it, by id, in the order they were put there. */
+  items: string[];
+}
 
 export interface FakeState {
   setupRequired: boolean;
@@ -92,6 +105,14 @@ export interface FakeState {
   uploads?: Record<string, string>;
   /** Every capture that arrived: its form fields in order, and its details. */
   captures?: Array<{ fields: string[]; metadata: Record<string, unknown> | null }>;
+  /**
+   * Lists of documents (5.15), kept as the vault keeps them (0.5.12).
+   * Given, the vault has lists (`features.lists`); left out, it is a vault
+   * from before them, and every list route is unanswered.
+   */
+  lists?: FakeList[];
+  /** Answer GET /lists/{id} in pages of this many, with a cursor. */
+  listPageSize?: number;
   /**
    * GET /documents/{id}/issuer-suggestions, by document id: who its pages
    * say issued it. A document not here answers 'unavailable'.
@@ -370,7 +391,7 @@ export function installFakeApi(state: FakeState) {
         edition: 'self_hosted',
         protection_mode: 'standard',
         setup_required: state.setupRequired,
-        features: { passkeys: true, custom_types: true },
+        features: { passkeys: true, custom_types: true, ...(state.lists ? { lists: true } : {}) },
         limits: {},
         deprecations: [],
         branding: { display_name: state.displayName },
@@ -923,6 +944,15 @@ export function installFakeApi(state: FakeState) {
         return keep(changedKind(kind, body as Record<string, unknown>, state.attributes ?? []));
       }
     }
+    if (
+      state.lists &&
+      (path === '/api/v1/lists' ||
+        path.startsWith('/api/v1/lists/') ||
+        /^\/api\/v1\/documents\/[^/]+\/lists$/.test(path))
+    ) {
+      const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
+      return answerLists(state, method, path, query, body, ifMatch);
+    }
     if (path === '/api/v1/documents/counts') {
       return json({
         by_member: [{ member_id: 'me', count: state.documents.length }],
@@ -1249,6 +1279,260 @@ export function installFakeApi(state: FakeState) {
   };
   vi.stubGlobal('fetch', fn);
   return fn;
+}
+
+/**
+ * Lists of documents, as the vault answers them (0.5.12): each reader is
+ * given the lists their role and the list's audience allow — a viewer
+ * none but their own — and, on each, the documents they could see anyway,
+ * counted so. Only a list's maker changes it, while in its audience (A18);
+ * its maker deletes it, or an owner once nobody may change it. A page's
+ * cursor names the last document given. Several put on at once — up to
+ * 200 — go on together or not at all.
+ */
+function answerLists(
+  state: FakeState,
+  method: string,
+  path: string,
+  query: URLSearchParams,
+  body: unknown,
+  ifMatch: string | undefined,
+): Promise<Response> {
+  const json = (b: unknown, status = 200) => Promise.resolve(Response.json(b, { status }));
+  const done = () => Promise.resolve(new Response(null, { status: 204 }));
+  const refuse = (status: number, code: string, message: string, more: object = {}) =>
+    json({ error: { code, message, retriable: false, request_id: 'r', ...more } }, status);
+  const noList = () => refuse(404, 'not_found', 'That list does not exist.');
+  const noDocument = () => refuse(404, 'not_found', 'That document is not in the vault.');
+  const role = storedRole() as Role;
+  const reader = { role, memberId: 'me' };
+  const all = state.lists ?? [];
+  const seesList = (l: FakeList) => canSeeList(reader, l);
+  const seesDoc = (d: Record<string, unknown> | undefined): d is Record<string, unknown> =>
+    d !== undefined &&
+    !d.deleted_at &&
+    canSee(reader, {
+      visibility: String(d.visibility),
+      owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
+    });
+  const docsOn = (l: FakeList) =>
+    l.items.map((id) => state.documents.find((d) => d.id === id)).filter(seesDoc);
+  const view = (l: FakeList) => ({
+    id: l.id,
+    name: l.name,
+    description: l.description,
+    audience: l.audience,
+    owner_member_id: l.owner_member_id,
+    mine: l.owner_member_id === 'me',
+    item_count: docsOn(l).length,
+    created_at: '2026-09-26T10:00:00Z',
+    updated_at: '2026-09-26T10:00:00Z',
+    etag: l.etag,
+  });
+  const detail = (l: FakeList, from = 0, limit = state.listPageSize ?? 50) => {
+    const docs = docsOn(l);
+    const more = from + limit < docs.length;
+    const shown = docs.slice(from, from + limit);
+    const last = shown[shown.length - 1];
+    return {
+      ...view(l),
+      items: shown.map((d) => ({
+        document: listed(d),
+        added_at: '2026-09-26T10:00:00Z',
+        hint:
+          l.owner_member_id === 'me'
+            ? listItemHint(l.audience, {
+                visibility: String(d.visibility),
+                owner_member_id: (d.owner_member_id as string | null | undefined) ?? null,
+              })
+            : null,
+      })),
+      // As the vault's: the last document given, and nothing about where
+      // it stands among those the reader is not given.
+      next_cursor: more && last ? btoa(JSON.stringify({ after: last.id })) : null,
+      has_more: more,
+    };
+  };
+  /**
+   * Where the page after `cursor` starts: after the document it names, as
+   * the reader is given the list now. One they are not given now — taken
+   * off, moved to the Trash — is a cursor that is not valid.
+   */
+  const startAfter = (l: FakeList, cursor: string): number | null => {
+    let after: unknown;
+    try {
+      after = (JSON.parse(atob(cursor)) as { after?: unknown }).after;
+    } catch {
+      return null;
+    }
+    const at = docsOn(l).findIndex((d) => d.id === after);
+    return at === -1 ? null : at + 1;
+  };
+  /**
+   * An owner may delete somebody else's list only when nobody may change
+   * it any more: its maker has no sign-in, or is not one of its audience.
+   */
+  const stranded = (l: FakeList) => {
+    const maker = state.members.find((m) => m.id === l.owner_member_id);
+    const makerRole = maker?.role as Role | null | undefined;
+    return !makerRole || !inListAudience(makerRole, l.audience);
+  };
+  const manage = () =>
+    role === 'viewer'
+      ? refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not make lists of them.',
+        )
+      : null;
+  /** Only its maker, in its audience, changes a list (A18). */
+  const refusedChange = (l: FakeList) =>
+    manage() ??
+    (l.owner_member_id !== 'me'
+      ? refuse(403, 'forbidden', 'Only the person who made this list can change it.')
+      : !inListAudience(role, l.audience)
+        ? refuse(
+            403,
+            'forbidden',
+            'This list is for people you are no longer one of. You can still delete it, but not change it.',
+          )
+        : null);
+  const tidy = (name: unknown) =>
+    typeof name === 'string' ? name.trim().replace(/\s+/g, ' ') : '';
+
+  const onDocument = /^\/api\/v1\/documents\/([^/]+)\/lists$/.exec(path);
+  if (onDocument) {
+    const id = onDocument[1] as string;
+    if (!seesDoc(state.documents.find((d) => d.id === id))) return noDocument();
+    return json({ items: all.filter((l) => seesList(l) && l.items.includes(id)).map(view) });
+  }
+  if (path === '/api/v1/lists' && method === 'GET') {
+    const seen = all.filter(seesList).sort((a, b) => a.name.localeCompare(b.name));
+    return json({ items: seen.map(view) });
+  }
+  if (path === '/api/v1/lists' && method === 'POST') {
+    const b = body as {
+      name?: unknown;
+      audience?: FakeList['audience'];
+      description?: string | null;
+    };
+    const refused = manage();
+    if (refused) return refused;
+    const name = tidy(b.name);
+    if (!name) {
+      return refuse(422, 'validation_failed', 'Give the list a name.', { detail: 'name' });
+    }
+    if (!b.audience) {
+      return refuse(422, 'validation_failed', 'Say who the list is for.', { detail: 'audience' });
+    }
+    if (!inListAudience(role, b.audience)) {
+      return refuse(403, 'forbidden', 'Only an adult can make a list for the adults.');
+    }
+    const made: FakeList = {
+      id: `list-${all.length + 1}`,
+      name,
+      description: b.description?.trim() || null,
+      audience: b.audience,
+      owner_member_id: 'me',
+      etag: `"list-${all.length + 1}.1"`,
+      items: [],
+    };
+    // Never pushed: the array may be another test's.
+    state.lists = [...all, made];
+    return json(detail(made), 201);
+  }
+  const at = /^\/api\/v1\/lists\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
+  if (at?.[2] && !at[3] && method === 'POST') {
+    // As the vault's route takes them, before it looks for the list: one
+    // at least, and at most 200.
+    const refused = manage();
+    if (refused) return refused;
+    const ids = (body as { document_ids?: unknown } | undefined)?.document_ids;
+    if (!Array.isArray(ids) || ids.length < 1) {
+      return refuse(422, 'validation_failed', 'Too small: expected array to have >=1 items');
+    }
+    if (ids.length > 200) {
+      return refuse(422, 'validation_failed', 'Too big: expected array to have <=200 items');
+    }
+  }
+  const list = at ? all.find((l) => l.id === at[1]) : undefined;
+  if (!at || !list || !seesList(list)) return noList();
+  const replace = (next: FakeList) => {
+    state.lists = (state.lists ?? []).map((l) => (l.id === list.id ? next : l));
+    return next;
+  };
+  if (!at[2]) {
+    if (method === 'GET') {
+      const cursor = query.get('cursor');
+      const from = cursor === null ? 0 : startAfter(list, cursor);
+      if (from === null) {
+        return refuse(422, 'validation_failed', 'That page cursor is not valid.');
+      }
+      const limit = query.get('limit');
+      return json(detail(list, from, limit ? Number(limit) : undefined));
+    }
+    if (method === 'PATCH') {
+      const refused = refusedChange(list);
+      if (refused) return refused;
+      if (ifMatch && ifMatch !== list.etag) {
+        return refuse(409, 'conflict', 'Someone else changed this list. Reload and try again.', {
+          detail: JSON.stringify(view(list)),
+        });
+      }
+      const b = body as {
+        name?: unknown;
+        audience?: FakeList['audience'];
+        description?: string | null;
+      };
+      const name = b.name === undefined ? list.name : tidy(b.name);
+      if (!name)
+        return refuse(422, 'validation_failed', 'Give the list a name.', { detail: 'name' });
+      const changed = replace({
+        ...list,
+        name,
+        audience: b.audience ?? list.audience,
+        description: b.description === undefined ? list.description : b.description?.trim() || null,
+        etag: `"${list.id}.${state.calls.length}"`,
+      });
+      return json(detail(changed));
+    }
+    if (method === 'DELETE') {
+      // Its maker, whatever their role now; an owner, only when stranded.
+      if (list.owner_member_id !== 'me') {
+        const refused = manage();
+        if (refused) return refused;
+        if (role !== 'owner' || !stranded(list)) {
+          return refuse(403, 'forbidden', 'Only the person who made this list can change it.');
+        }
+      }
+      state.lists = (state.lists ?? []).filter((l) => l.id !== list.id);
+      return done();
+    }
+  }
+  const refused = refusedChange(list);
+  if (refused) return refused;
+  if (!at[3] && method === 'POST') {
+    const ids = (body as { document_ids: string[] }).document_ids;
+    // All of them, or none.
+    if (!ids.every((id) => seesDoc(state.documents.find((d) => d.id === id)))) return noDocument();
+    const changed = replace({
+      ...list,
+      items: [
+        ...list.items,
+        ...ids.filter((id, i) => !list.items.includes(id) && ids.indexOf(id) === i),
+      ],
+    });
+    return json(detail(changed));
+  }
+  if (at[3] && method === 'DELETE') {
+    const id = decodeURIComponent(at[3]);
+    if (!list.items.includes(id)) {
+      return refuse(404, 'not_found', 'That document is not on this list.');
+    }
+    replace({ ...list, items: list.items.filter((d) => d !== id) });
+    return done();
+  }
+  return Promise.reject(new Error(`unmocked ${method} ${path}`));
 }
 
 /**

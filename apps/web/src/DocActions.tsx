@@ -6,17 +6,24 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
   type RefObject,
 } from 'react';
 import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
+import { AddToList, listsOffered } from './lists.js';
 import { SharePanel } from './screens/Share.js';
 import { VisibilityControl } from './screens/Visibility.js';
 import { storedRole } from './session.js';
-import { ErrorNote, MoveToTrashDialog, TrashIcon, useSheetFocus } from './ui.js';
+import {
+  ConfirmDialog,
+  ErrorNote,
+  MoveToTrashDialog,
+  Sheet,
+  TrashIcon,
+  useSheetFocus,
+} from './ui.js';
 import { createUploadKeys, whileInProgress } from './upload-keys.js';
 
 /**
@@ -33,9 +40,19 @@ export type DocAction =
   | 'edit'
   | 'share'
   | 'visibility'
+  | 'list'
+  | 'unlist'
   | 'essential'
   | 'version'
   | 'trash';
+
+/** The list a row is on, on that list's page (5.15). */
+export interface RowList {
+  id: string;
+  name: string;
+  /** The reader made it and is in its audience: its maker may take things off (A18). */
+  mayChange: boolean;
+}
 
 /**
  * Who may change a document: whoever may change documents, and a teen only
@@ -55,11 +72,16 @@ export function mayChange(
  * What the ⋯ offers for one document (A14), in order: only what would not
  * be refused. The vault decides regardless; this only decides what is
  * drawn. With no document yet (a search hit's is still on its way), Open.
+ *
+ * `lists`: lists are offered to this reader (5.15), so anything they can
+ * see may go on one of theirs. `unlist`: the row is on a list the reader
+ * may change, on that list's page.
  */
 export function actionsFor(
   role: Role,
   memberId: string | null | undefined,
   doc: Pick<DocumentView, 'owner_member_id' | 'visibility' | 'latest_version_id'> | null,
+  lists: { lists: boolean; unlist: boolean } = { lists: false, unlist: false },
 ): DocAction[] {
   const actions: DocAction[] = ['open'];
   if (!doc) return actions;
@@ -78,6 +100,9 @@ export function actionsFor(
   if (can(role, 'document.visibility') && (doc.visibility !== 'private' || mine)) {
     actions.push('visibility');
   }
+  // Whoever may see it may put it on a list of their own: it widens nothing.
+  if (lists.lists) actions.push('list');
+  if (lists.lists && lists.unlist) actions.push('unlist');
   if (changes) actions.push('essential');
   if (changes && can(role, 'document.add')) actions.push('version');
   if (changes) actions.push('trash');
@@ -98,6 +123,10 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
       return 'Share a link';
     case 'visibility':
       return 'Who can see';
+    case 'list':
+      return 'Add to a list';
+    case 'unlist':
+      return 'Take off this list';
     case 'essential':
       return doc?.is_essential ? 'Stop it being Essential' : 'Make it Essential';
     case 'version':
@@ -107,8 +136,8 @@ function labelFor(action: DocAction, doc: DocumentView | null): string {
   }
 }
 
-/** The most the menu can be: an owner's nine items, 44 px each, and its edges. */
-const MENU_TALLEST = 9 * 44 + 18;
+/** The most the menu can be: an owner's eleven items on a list's page, 44 px each, and its edges. */
+const MENU_TALLEST = 11 * 44 + 18;
 /** However little room there is, three items and a bit, so it is seen to scroll. */
 const MENU_SHORTEST = 132;
 
@@ -143,8 +172,10 @@ export function DocActions(props: {
   doc?: DocumentView;
   /** Something about it changed: the list is loaded again. */
   onChanged: () => void | Promise<unknown>;
+  /** The row is on this list's page (5.15): its maker may take it off from here. */
+  list?: RowList | undefined;
 }) {
-  const { withToken, guarded, session } = useApp();
+  const { withToken, guarded, session, caps } = useApp();
   const navigate = useNavigate();
   const more = useRef<HTMLButtonElement>(null);
   const file = useRef<HTMLInputElement>(null);
@@ -154,13 +185,16 @@ export function DocActions(props: {
     doc: null,
     error: null,
   });
-  const [sheet, setSheet] = useState<'share' | 'visibility' | 'trash' | null>(null);
+  const [sheet, setSheet] = useState<'share' | 'visibility' | 'list' | 'unlist' | 'trash' | null>(
+    null,
+  );
   // What the sheet holds is on its way: Escape leaves it open until it is done.
   const [sheetBusy, setSheetBusy] = useState(false);
-  // Who can see it was changed in the sheet: the list is loaded again when
-  // the sheet closes, not under it.
+  // Who can see it was changed in the sheet, or it was put on a list: the
+  // list is loaded again when the sheet closes, not under it.
   const changedInSheet = useRef(false);
-  const [trashing, setTrashing] = useState(false);
+  // Moving to the Trash, or off this list: the row is on its way out.
+  const [leaving, setLeaving] = useState(false);
   // Essential being turned on or off: not chosen again until the vault answers.
   const [toggling, setToggling] = useState(false);
   // The copy Essential was last saved to, and the ETags it has replaced.
@@ -174,7 +208,11 @@ export function DocActions(props: {
   const drawn = props.doc ?? fetched.doc;
   const doc = saved && drawn && saved.replaces.includes(drawn.etag) ? saved.doc : drawn;
   const memberId = session.info?.member_id;
-  const offered = actionsFor(storedRole(), memberId, doc);
+  const role = storedRole();
+  const offered = actionsFor(role, memberId, doc, {
+    lists: listsOffered(caps, role),
+    unlist: props.list?.mayChange ?? false,
+  });
 
   // A row that leaves its list takes its ⋯ with it. If focus was there, it
   // goes to what the list says about itself, which stays, not to nowhere.
@@ -269,29 +307,34 @@ export function DocActions(props: {
     }
   };
 
-  const remove = async () => {
-    setTrashing(true);
+  /** The row leaves its list: moved to the Trash, or taken off this list (5.15). */
+  const leave = async (go: (token: string) => Promise<unknown>) => {
+    setLeaving(true);
     try {
-      await withToken((t) => api.deleteDocument(t, props.documentId));
+      await withToken(go);
       // The row goes when the list is loaded again, and its ⋯ with it, so
-      // focus goes to the next row (or the one before) rather than nowhere.
-      // The only row in its list leaves it to the list's heading (landing).
+      // focus goes to the next row (or the one before) rather than nowhere:
+      // to its own part, the button that opens it, or in search's Select
+      // its box (5.15). The only row in its list leaves it to the list's
+      // heading (landing).
       const row = more.current?.closest('li');
-      const neighbour = (row?.nextElementSibling ?? row?.previousElementSibling)?.querySelector(
-        'button',
-      );
+      const neighbour = (
+        row?.nextElementSibling ?? row?.previousElementSibling
+      )?.querySelector<HTMLElement>('input.pick, button');
       flushSync(() => {
-        setTrashing(false);
+        setLeaving(false);
         setSheet(null);
       });
       neighbour?.focus();
       await props.onChanged();
     } catch (err) {
-      setTrashing(false);
+      setLeaving(false);
       setSheet(null);
       setError(describeError(err));
     }
   };
+  const remove = () => leave((t) => api.deleteDocument(t, props.documentId));
+  const unlist = (list: RowList) => leave((t) => api.removeFromList(t, list.id, props.documentId));
 
   const choose = (action: DocAction) => {
     setMenu(null);
@@ -318,6 +361,8 @@ export function DocActions(props: {
         return;
       case 'share':
       case 'visibility':
+      case 'list':
+      case 'unlist':
       case 'trash':
         setSheet(action);
         return;
@@ -426,16 +471,78 @@ export function DocActions(props: {
           />
         </Sheet>
       )}
+      {sheet === 'list' && (
+        <Sheet
+          label={`Add “${props.title}” to a list`}
+          busy={sheetBusy}
+          returnFocus={more}
+          onClose={closeSheet}
+        >
+          <AddToList
+            documentIds={[props.documentId]}
+            what={`“${props.title}”`}
+            onClose={closeSheet}
+            onBusy={setSheetBusy}
+            onAdded={() => {
+              // What a list holds has changed, and counts of it with it
+              // (Home's tiles). Not on a list's page, where nothing drawn
+              // has: the row is on this list already, and which others it
+              // is on is shown nowhere here, so the page stays as it is.
+              if (!props.list) changedInSheet.current = true;
+            }}
+          />
+        </Sheet>
+      )}
+      {sheet === 'unlist' && props.list && (
+        <TakeOffListDialog
+          title={props.title}
+          list={props.list.name}
+          busy={leaving}
+          returnFocus={more}
+          onConfirm={() => props.list && void unlist(props.list)}
+          onCancel={closeSheet}
+        />
+      )}
       {sheet === 'trash' && (
         <MoveToTrashDialog
           title={doc?.title ?? null}
-          busy={trashing}
+          busy={leaving}
           returnFocus={more}
           onConfirm={() => void remove()}
           onCancel={closeSheet}
         />
       )}
     </>
+  );
+}
+
+/**
+ * Taking a document off a list asks first (5.15), in the app's own dialog
+ * (5.1): it stays in the vault, and on any other list.
+ */
+function TakeOffListDialog(props: {
+  title: string;
+  list: string;
+  busy: boolean;
+  returnFocus: RefObject<HTMLElement | null>;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <ConfirmDialog
+      title="Take it off this list?"
+      confirmLabel="Take it off"
+      busyLabel="Taking it off…"
+      busy={props.busy}
+      returnFocus={props.returnFocus}
+      onConfirm={props.onConfirm}
+      onCancel={props.onCancel}
+    >
+      <p>
+        “{props.title}” comes off “{props.list}”. It stays in the vault, and on any other list it is
+        on.
+      </p>
+    </ConfirmDialog>
   );
 }
 
@@ -515,40 +622,6 @@ function ActionMenu(props: {
         )}
         <ErrorNote message={props.error} />
       </div>
-    </div>
-  );
-}
-
-/**
- * Sharing, or who can see it, over the list: the same panels as the
- * document's page. While what it holds is on its way, Escape leaves it
- * open, as the "are you sure?" does: what comes back is shown only here.
- */
-function Sheet(props: {
-  label: string;
-  busy: boolean;
-  returnFocus: RefObject<HTMLElement | null>;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const box = useRef<HTMLElement>(null);
-  useSheetFocus(box, {
-    onEscape: props.onClose,
-    busy: props.busy,
-    returnFocus: props.returnFocus,
-  });
-  return (
-    <div className="scrim" role="presentation">
-      <section
-        ref={box}
-        className="sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-label={props.label}
-        aria-busy={props.busy}
-      >
-        {props.children}
-      </section>
     </div>
   );
 }

@@ -25,25 +25,30 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
       },
     });
   }
-  const signIn = await request.post('/api/v1/auth/password', {
-    data: { email: EMAIL, password: PASSWORD },
-  });
-  const { access_token } = (await signIn.json()) as { access_token: string };
+  // Signed in through the page, the one sign-in this file makes (sign-in
+  // is limited to 10 a minute, and the suite signs in five times a run, so
+  // two runs back to back stay within it); the access token it was given
+  // makes this file's document.
+  await page.goto('/welcome');
+  await page.getByRole('button', { name: 'Sign in' }).press('Enter');
+  await page.getByLabel('Email').fill(EMAIL);
+  await page.getByLabel('Password').fill(PASSWORD);
+  const [signedIn] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
+    page.getByLabel('Password').press('Enter'),
+  ]);
+  await expect(page).toHaveURL(/\/$/);
+  const { access_token } = (await signedIn.json()) as { access_token: string };
   const title = `Quick actions ${Date.now()}`;
   const made = await request.post('/api/v1/documents', {
     headers: { authorization: `Bearer ${access_token}` },
     data: { title, visibility: 'household' },
   });
   expect(made.ok()).toBe(true);
-
-  await page.goto('/welcome');
-  await page.getByRole('button', { name: 'Sign in' }).press('Enter');
-  await page.getByLabel('Email').fill(EMAIL);
-  await page.getByLabel('Password').fill(PASSWORD);
-  await Promise.all([
-    page.waitForResponse((r) => r.url().endsWith('/api/v1/auth/password') && r.ok()),
-    page.getByLabel('Password').press('Enter'),
-  ]);
+  // Home again, through the app, to have it among what was added recently.
+  await page.getByRole('link', { name: 'Search' }).click();
+  await expect(page.getByLabel('Search everything')).toBeVisible();
+  await page.getByRole('link', { name: 'Home' }).click();
   await expect(page).toHaveURL(/\/$/);
 
   // The ⋯ is the next stop after the row's own button: beside it, not in it.

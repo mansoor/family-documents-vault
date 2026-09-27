@@ -326,14 +326,19 @@ h3 {
   gap: 10px;
 }
 
+/* A link, not a button, so it centres its mark itself; a touch target (NFR-09). */
 .back {
-  width: 40px;
-  height: 40px;
-  border-radius: 20px;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: calc(var(--tap) / 2);
   background: var(--surface);
   border: 1px solid var(--border);
   font-size: 24px;
   line-height: 1;
+  text-decoration: none;
   cursor: pointer;
   color: var(--ink);
 }
@@ -1250,4 +1255,80 @@ a.btn {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* 5.15: lists of documents. Who a list is for, said under its choices. */
+.stack.audience {
+  gap: 8px;
+}
+
+.audience-words,
+.list-about {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.audience-words p,
+.list-about p {
+  margin: 0;
+}
+
+/* For a list's maker: who in its audience is not given this one. Words,
+   never colour alone. */
+.list-hint {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+/* Search's Select: the choices stay in reach while the results scroll. */
+.select-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.select-row {
+  align-items: center;
+}
+
+.select-count {
+  font-weight: 600;
+  flex-grow: 1;
+}
+
+.select-bar p {
+  margin: 0;
+}
+
+/* In Select, a row is the label of the box that chooses it, beside its ⋯:
+   pressed anywhere, it ticks the box and never opens the document. The box
+   has a column a thumb wide (--tap) in a row at least that tall. */
+.rowbtn.rowpick {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+}
+
+.rowpick-words {
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pick {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: 0 calc(var(--tap) - 24px) 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
