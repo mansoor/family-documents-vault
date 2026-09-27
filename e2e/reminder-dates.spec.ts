@@ -1,5 +1,4 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { takeOver } from './session-handoff.js';
 
 /**
  * Reminders from any date (5.16b), on the real stack: an adult shows Due
@@ -18,11 +17,10 @@ const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
 
 /**
- * Signed in through the page, once for this file, only when
- * quick-actions.spec.ts left no session to take over (run on its own):
- * sign-in is limited to 10 a minute, and the suite signs in five times a
- * run at most, so two runs back to back stay within it. The access token
- * too, to tidy up after this file.
+ * Signed in through the page, once for this file. Signing in is limited to
+ * 10 a minute, and the suite signs in up to seven times a run: once in each
+ * file, first-run.spec.ts only when it is run again. So wait a minute
+ * between local runs. The access token too, to tidy up after this file.
  */
 async function signIn(page: Page, request: APIRequestContext): Promise<string> {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
@@ -57,6 +55,21 @@ function fromToday(days: number): Date {
   return d;
 }
 
+/**
+ * What the vault says a reminder is about, for `date`, `days` off: "Due
+ * date: 2 Oct, in 5 days", with the year when it is not this one. Built
+ * from the date itself, the month as the vault's shortDate writes it:
+ * three letters, or four where the vault's ICU has them (September is
+ * "Sept" on Node 22, "Sep" before), so either is taken.
+ */
+function aboutLine(word: string, date: Date, days: number): RegExp {
+  const month = date.toLocaleDateString('en-GB', { month: 'long', timeZone: 'UTC' });
+  const short = month.length > 3 ? `${month.slice(0, 3)}(?:${month.charAt(3)})?` : month;
+  const year = date.getUTCFullYear();
+  const said = year === fromToday(0).getUTCFullYear() ? '' : ` ${year}`;
+  return new RegExp(`^${word}: ${date.getUTCDate()} ${short}${said}, in ${days} days$`);
+}
+
 // One page, signed in once, for every test here: one after the other.
 test.describe.configure({ mode: 'serial' });
 const run = Date.now().toString(36);
@@ -67,10 +80,9 @@ let token: string;
 let kindKey = '';
 let billId = '';
 
-test.beforeAll(async ({ browser, request }, testInfo) => {
+test.beforeAll(async ({ browser, request }) => {
   page = await browser.newPage();
-  // The session quick-actions.spec.ts left, or one of its own.
-  token = (await takeOver(page, testInfo)) ?? (await signIn(page, request));
+  token = await signIn(page, request);
 });
 
 test.afterAll(async ({ request }) => {
@@ -152,7 +164,7 @@ test('a bill due in 5 days is in Needs attention and on Home', async () => {
 
   // Seven days before a date five days off is already here: it is due now,
   // and says what it is about.
-  const about = /^Due date: \d{1,2} \w{3}( \d{4})?, in 5 days$/;
+  const about = aboutLine('Due date', due, 5);
   await page.getByRole('link', { name: 'Reminders' }).click();
   await expect(page.getByRole('heading', { name: 'Needs attention' })).toBeVisible();
   const row = page.getByRole('listitem').filter({ hasText: BILL });

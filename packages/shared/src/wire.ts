@@ -299,6 +299,12 @@ export interface RoleChangeResult {
 
 export interface Profile {
   household_name: string;
+  /**
+   * The household's time zone (IANA): reminders fall due on its calendar,
+   * and "today" is its day. Every role reads it; a vault answers it
+   * whenever it answers the profile.
+   */
+  timezone?: string;
   owns_home: boolean | null;
   rents_home: boolean | null;
   vehicle_count: number | null;

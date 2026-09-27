@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { handOver } from './session-handoff.js';
 
 /**
  * Quick actions on every document (5.4), with the keyboard alone: Tab
@@ -11,9 +10,6 @@ import { handOver } from './session-handoff.js';
 
 const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
-
-// Its session goes on to reminder-dates.spec.ts, which then signs in no more.
-test.afterEach(async ({ page }, testInfo) => handOver(page, testInfo));
 
 test('the ⋯ on a row works from the keyboard alone', async ({ page, request }) => {
   const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
@@ -29,11 +25,11 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
       },
     });
   }
-  // Signed in through the page, the one sign-in this file makes (sign-in
-  // is limited to 10 a minute, and the suite signs in up to six times a
-  // run, so a second run within a minute of the first can be refused: wait
-  // a minute between local runs); the access token it was given makes this
-  // file's document.
+  // Signed in through the page, the one sign-in this file makes. Signing
+  // in is limited to 10 a minute, and the suite signs in up to seven times
+  // a run: once in each file, first-run.spec.ts only when it is run again.
+  // So wait a minute between local runs. The access token it was given
+  // makes this file's document.
   await page.goto('/welcome');
   await page.getByRole('button', { name: 'Sign in' }).press('Enter');
   await page.getByLabel('Email').fill(EMAIL);

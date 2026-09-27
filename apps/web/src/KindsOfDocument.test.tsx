@@ -33,8 +33,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function expectAccessible() {
-  const results = await axe.run(document.body, {
+/** axe on the page, or on one part of it where the rest is as it was (the 5.16b review: it is slow). */
+async function expectAccessible(context: Element = document.body) {
+  const results = await axe.run(context, {
     rules: { 'color-contrast': { enabled: false } }, // jsdom has no layout
   });
   expect(
@@ -939,10 +940,12 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
   });
 
   it('the warning gives both counts, the dropped reminders and the unseen sentence', async () => {
+    // 25 not dealt with, 20 of them about Expires: the counts are by date.
     const impact = {
       ...PASSPORT_IMPACT,
       fields: [{ key: 'due_date', label: null, with_value: 2, without_value: 12 }],
-      reminders_by_source: { expires: 20 },
+      reminders: 25,
+      reminders_by_source: { expires: 20, due_date: 5 },
     };
     open('/settings/kinds/passport', 'owner', { impact: { passport: impact } });
     await screen.findByRole('heading', { name: 'Passport', level: 1 });
@@ -961,6 +964,28 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
     fireEvent.click(theSwitch());
     expect(
       await screen.findByText('Its 20 reminders stop: nobody is reminded about these documents.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(UNSEEN)).toBeInTheDocument();
+    cleanup();
+
+    // The date they come from hidden: they stop, and why.
+    open('/settings/kinds/h_council1', 'owner', {
+      ...withCouncil,
+      impact: {
+        h_council1: {
+          ...PASSPORT_IMPACT,
+          key: 'h_council1',
+          documents: 4,
+          fields: [{ key: 'due_date', label: null, with_value: 0, without_value: 4 }],
+          reminders: 3,
+          reminders_by_source: { due_date: 3 },
+        },
+      },
+    });
+    await screen.findByRole('heading', { name: 'Council tax', level: 1 });
+    show('Due date');
+    expect(
+      await screen.findByText('Its 3 reminders stop: it no longer asks for its due date.'),
     ).toBeInTheDocument();
     expect(screen.getByText(UNSEEN)).toBeInTheDocument();
   });
@@ -984,12 +1009,14 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
     expect(within(chips()).getByRole('button', { name: '2 months' })).toBe(chip);
     expect(chip).toHaveFocus();
     expect(chip).toHaveAttribute('aria-pressed', 'true');
-    // With a date field reminding, and switched off, still.
+    // With a date field reminding, and switched off, still: only Reminders,
+    // and the field whose Required it locks, have changed.
     show('Due date');
     fireEvent.change(theDate(), { target: { value: 'due_date' } });
-    await expectAccessible();
+    await expectAccessible(reminders());
+    await expectAccessible(group('Due date'));
     fireEvent.click(theSwitch());
-    await expectAccessible();
+    await expectAccessible(reminders());
   });
 
   it('without the flag the chips stay under Expires', async () => {
@@ -1028,7 +1055,287 @@ describe('Kinds of document: Reminders, from any date (5.16b)', () => {
     show('Due date');
     fireEvent.click(theSwitch());
     expect([...theDate().options].map((o) => o.text)).toEqual(['due date (your own)', 'Due date']);
-    // Its own lead times: not a built-in's.
-    said('Reminders are on: 30 days before its due date.');
+    // Its own lead times: not a built-in's; and named apart from the built-in.
+    said('Reminders are on: 30 days before its due date (your own).');
+  });
+
+  describe('the 5.16b review', () => {
+    /** A passport that asks for a due date too, not required; it reminds from Expires. */
+    const PASSPORT_DUE = {
+      ...PASSPORT,
+      fields: [{ key: 'due_date', label: 'Due date', kind: 'date', required: false }],
+    };
+    /** A gym membership: it shows Expires, and on purpose reminds nobody. */
+    const GYM = {
+      ...ALLOTMENT,
+      key: 'h_gym1',
+      label: 'Gym membership',
+      expiry_driver: 'expires_on',
+      remind_from: null,
+      remind_leads: [],
+      etag: '"h_gym1.1"',
+      core: core(),
+    };
+    /** What a change to a kind would touch: `documents`, each with every fixed field filled. */
+    const impactOf = (key: string, documents: number, over: Record<string, unknown> = {}) => ({
+      ...PASSPORT_IMPACT,
+      key,
+      documents,
+      core: Object.fromEntries(
+        Object.keys(PASSPORT_IMPACT.core).map((f) => [
+          f,
+          { with_value: documents, without_value: 0 },
+        ]),
+      ),
+      fields: [],
+      reminders: 0,
+      reminders_by_source: {},
+      ...over,
+    });
+    const nothingSaved = async (state: FakeState) => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      expect(await screen.findByText('Nothing had changed.')).toBeInTheDocument();
+      expect(state.calls.some((c) => c.method === 'PATCH')).toBe(false);
+    };
+
+    it('Select to Due date and back to Expires keeps [270,180], and Save sends nothing about reminders', async () => {
+      const state = open('/settings/kinds/passport', 'owner', {
+        types: [PASSPORT_DUE, WILL, ALLOTMENT],
+      });
+      await screen.findByRole('heading', { name: 'Passport', level: 1 });
+      const required = () => within(group('Due date')).getByRole('checkbox', { name: 'Required' });
+      expect(pressed()).toEqual(['6 months', '9 months']);
+      expect(required()).not.toBeChecked();
+      // Arrowing through the closed Select: Due date on the way…
+      fireEvent.change(theDate(), { target: { value: 'due_date' } });
+      expect(pressed()).toEqual(['7 days']);
+      expect(required()).toBeChecked();
+      expect(required()).toBeDisabled();
+      // …and back: as saved, and said.
+      fireEvent.change(theDate(), { target: { value: 'expires' } });
+      said('Reminders are on: 9 months and 6 months before it expires.');
+      expect(pressed()).toEqual(['6 months', '9 months']);
+      // Due date is the family's to require again, as they had it.
+      expect(required()).toBeEnabled();
+      expect(required()).not.toBeChecked();
+      await nothingSaved(state);
+    });
+
+    it('unticking and re-ticking the reminding date restores it', async () => {
+      const state = open('/settings/kinds/h_council1', 'owner', withCouncil);
+      await screen.findByRole('heading', { name: 'Council tax', level: 1 });
+      show('Due date');
+      said('Reminders are off: this kind no longer asks for its due date.');
+      show('Due date');
+      said('Reminders are on: 7 days and 1 day before its due date.');
+      expect(theSwitch()).toBeChecked();
+      expect(theDate()).toHaveValue('due_date');
+      expect(pressed()).toEqual(['1 day', '7 days']);
+      expect(within(group('Due date')).getByRole('checkbox', { name: 'Required' })).toBeDisabled();
+      await nothingSaved(state);
+    });
+
+    it('the Gym case: Expires unticked and ticked again does not switch reminders on', async () => {
+      const state = open('/settings/kinds/h_gym1', 'owner', { types: [GYM] });
+      await screen.findByRole('heading', { name: 'Gym membership', level: 1 });
+      expect(theSwitch()).not.toBeChecked();
+      show('Expires');
+      show('Expires');
+      expect(theSwitch()).not.toBeChecked();
+      expect(screen.queryByText(/^Reminders are on/)).toBeNull();
+      await nothingSaved(state);
+    });
+
+    it('switched on first, a date field of their own added after is the date, 30 days before', async () => {
+      const state = open('/settings/kinds/h_allotment1');
+      await screen.findByRole('heading', { name: 'Allotment tenancy', level: 1 });
+      fireEvent.click(theSwitch());
+      said(NO_DATE);
+      // The owner's own example: a car's MOT, a date.
+      const own = screen.getByRole('region', { name: 'Add your own field' });
+      fireEvent.change(within(own).getByLabelText('What it’s called'), {
+        target: { value: 'MOT' },
+      });
+      fireEvent.change(within(own).getByLabelText('What it holds'), {
+        target: { value: 'date' },
+      });
+      fireEvent.click(within(own).getByRole('button', { name: 'Add this field' }));
+      await screen.findByText('“MOT” is on the card now, and in the library for every kind.');
+      const mot = `h_field${LIBRARY.length}`;
+      said('Reminders are on: 30 days before its MOT.');
+      expect(theDate()).toHaveValue(mot);
+      expect([...theDate().options].map((o) => o.text)).toEqual(['MOT']);
+      expect(pressed()).toEqual(['30 days']);
+      expect(screen.queryByText(NO_DATE)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByText('“Allotment tenancy” is saved.');
+      expect(lastCall(state, 'PATCH')?.body).toEqual({
+        fields: [{ key: mot, required: true }],
+        remind_from: mot,
+        remind_leads: [30],
+      });
+    });
+
+    it('what is changed while a field is being added stays changed when it lands', async () => {
+      let land = () => {};
+      const landed = new Promise<void>((resolve) => {
+        land = resolve;
+      });
+      open('/settings/kinds/h_allotment1', 'owner', {
+        hold: (method, path) =>
+          method === 'POST' && path === '/api/v1/document-attributes' ? landed : undefined,
+      });
+      await screen.findByRole('heading', { name: 'Allotment tenancy', level: 1 });
+      const own = screen.getByRole('region', { name: 'Add your own field' });
+      fireEvent.change(within(own).getByLabelText('What it’s called'), {
+        target: { value: 'Plot' },
+      });
+      fireEvent.click(within(own).getByRole('button', { name: 'Add this field' }));
+      await within(own).findByRole('button', { name: 'Adding…' });
+      // While it is being added.
+      show('Last reviewed');
+      fireEvent.click(theSwitch());
+      expect(theDate()).toHaveValue('last_reviewed');
+      land();
+      await screen.findByText('“Plot” is on the card now, and in the library for every kind.');
+      expect(within(group('Plot')).getByRole('checkbox', { name: 'Show' })).toBeChecked();
+      expect(within(group('Last reviewed')).getByRole('checkbox', { name: 'Show' })).toBeChecked();
+      expect(theSwitch()).toBeChecked();
+      expect(theDate()).toHaveValue('last_reviewed');
+      expect(pressed()).toEqual(['30 days']);
+    });
+
+    it('switching reminders on says, before saving, what that does to the documents', async () => {
+      open('/settings/kinds/h_gym1', 'owner', {
+        types: [GYM],
+        impact: { h_gym1: impactOf('h_gym1', 14) },
+      });
+      await screen.findByRole('heading', { name: 'Gym membership', level: 1 });
+      expect(screen.queryByText(UNSEEN)).toBeNull();
+      fireEvent.click(theSwitch());
+      expect(
+        await screen.findByText(
+          'Its reminders will come from Expires. All 14 of its documents have an expiry date and are reminded from it. Only reminders still to come are made.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByText(UNSEEN)).toBeInTheDocument();
+      cleanup();
+
+      // Switched on by showing Expires: said once, with those that have none.
+      const none = impactOf('h_allotment1', 14);
+      open('/settings/kinds/h_allotment1', 'owner', {
+        impact: {
+          h_allotment1: {
+            ...none,
+            core: { ...none.core, expires: { with_value: 0, without_value: 14 } },
+          },
+        },
+      });
+      await screen.findByRole('heading', { name: 'Allotment tenancy', level: 1 });
+      show('Expires');
+      expect(
+        await screen.findByText(
+          'Its reminders will come from Expires. None of its 14 documents has an expiry date yet: they will read Needs an expiry date, on Home too, until someone adds it. Only reminders still to come are made.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/nothing in “Expires” yet/)).toBeNull();
+      expect(screen.getByText(UNSEEN)).toBeInTheDocument();
+    });
+
+    it('an own Due date beside the built-in: each sentence names the one it means', async () => {
+      const mine = {
+        key: 'h_field9',
+        label: 'Due date',
+        kind: 'date',
+        choices: null,
+        builtin: false,
+      };
+      const WATER = {
+        ...COUNCIL,
+        key: 'h_water1',
+        label: 'Water bill',
+        etag: '"h_water1.1"',
+        fields: [
+          { key: 'h_field9', label: 'Due date', kind: 'date', required: true },
+          { key: 'due_date', label: 'Due date', kind: 'date', required: false },
+        ],
+        remind_from: 'h_field9',
+        remind_leads: [30],
+      };
+      open('/settings/kinds/h_water1', 'owner', {
+        types: [WATER],
+        attributes: [...LIBRARY, mine],
+      });
+      await screen.findByRole('heading', { name: 'Water bill', level: 1 });
+      expect([...theDate().options].map((o) => o.text)).toEqual([
+        'Due date (your own)',
+        'Due date',
+      ]);
+      const says = () =>
+        [...(document.getElementById('k-rem-says')?.querySelectorAll('p') ?? [])].map(
+          (p) => p.textContent,
+        );
+      expect(says()).toEqual(
+        expect.arrayContaining([
+          "We'll remind you 30 days before its due date (your own).",
+          'Only Due date (your own) reminds: nobody is told before its due date.',
+          'Every document of this kind needs its due date (your own): without one it reads Needs a due date.',
+        ]),
+      );
+      fireEvent.change(theDate(), { target: { value: 'due_date' } });
+      said('Reminders are on: 7 days before its due date.');
+      expect(says()).toEqual(
+        expect.arrayContaining([
+          "We'll remind you 7 days before its due date.",
+          'Only Due date reminds: nobody is told before its due date (your own).',
+          'Every document of this kind needs its due date: without one it reads Needs a due date.',
+        ]),
+      );
+    });
+
+    it('switched off by hand on a kind reminding from its due date, remind_from: null is saved', async () => {
+      const state = open('/settings/kinds/h_council1', 'owner', withCouncil);
+      await screen.findByRole('heading', { name: 'Council tax', level: 1 });
+      fireEvent.click(theSwitch());
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByText('“Council tax” is saved.');
+      expect(lastCall(state, 'PATCH')?.body).toEqual({ remind_from: null });
+      expect(state.types.find((t) => t.key === 'h_council1')).toMatchObject({
+        remind_from: null,
+        remind_leads: [],
+      });
+    });
+
+    it('Expires shown on a kind that reminds nobody, then switched off, stays off', async () => {
+      const state = open('/settings/kinds/h_allotment1', 'owner', withCouncil);
+      await screen.findByRole('heading', { name: 'Allotment tenancy', level: 1 });
+      show('Expires');
+      fireEvent.click(theSwitch());
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await screen.findByText('“Allotment tenancy” is saved.');
+      // Without it the vault would start reminding from Expires, as for older phones.
+      expect(lastCall(state, 'PATCH')?.body).toEqual({
+        core: { expires: { shown: true } },
+        remind_from: null,
+      });
+      expect(state.types.find((t) => t.key === 'h_allotment1')).toMatchObject({
+        remind_from: null,
+      });
+    });
+
+    it('a new kind showing Expires with reminders off is made reminding nobody', async () => {
+      const state = open('/settings/kinds/new');
+      fireEvent.change(await screen.findByLabelText('Name of this kind'), {
+        target: { value: 'Gym pass' },
+      });
+      show('Expires');
+      fireEvent.click(theSwitch());
+      fireEvent.click(screen.getByRole('button', { name: 'Add this kind' }));
+      expect(await screen.findByText('“Gym pass” is ready to use.')).toBeInTheDocument();
+      const made = state.calls.find((c) => c.method === 'POST' && c.url.endsWith('document-types'));
+      expect(made?.body).toMatchObject({ core: { expires: { shown: true } }, remind_from: null });
+      expect(made?.body).not.toHaveProperty('remind_leads');
+      expect(state.types.at(-1)).toMatchObject({ remind_from: null, remind_leads: [] });
+    });
   });
 });

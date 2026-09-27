@@ -16,6 +16,7 @@ import {
   signedIn,
   STATEMENT,
   TYPES,
+  type FakeState,
 } from './test-api.js';
 
 beforeEach(() => {
@@ -1963,18 +1964,127 @@ describe('reminders from any date, on the web (5.16b)', () => {
     const upcoming = screen.getByRole('region', { name: 'Coming up' });
     expect(within(upcoming).getByText('Due date: 3 Nov, in 27 days')).toBeInTheDocument();
     expect(within(upcoming).getByText(`Reminder on ${shortDate(plus(20))}`)).toHaveClass('muted');
-    // A month would wait past the bill's due date: the day itself is offered instead.
-    const row = chip.closest('li') as HTMLElement;
-    expect(
-      within(row)
-        .getAllByRole('button')
-        .map((b) => b.textContent),
-    ).toEqual(['Due date: 10 Oct, in 7 daysCouncil tax, March', 'A week', 'On the day', 'Done']);
-    fireEvent.click(within(row).getByRole('button', { name: 'On the day' }));
-    await waitFor(() =>
-      expect(state.calls.find((c) => c.url.endsWith('/reminders/r-1/snooze'))?.body).toEqual({
-        until: plus(7),
-      }),
-    );
+  });
+
+  /** A calendar day `n` from `today`. */
+  const dayFrom = (today: string, n: number) => {
+    const d = new Date(`${today}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  /** A derived reminder, due: `lead` days before the date it is about. */
+  const dueReminder = (
+    id: string,
+    title: string,
+    fireAt: string,
+    lead: number,
+    source: string,
+  ) => ({
+    id,
+    document_id: 'doc-1',
+    document_title: title,
+    kind: 'derived',
+    fire_at: fireAt,
+    lead_days: lead,
+    note: null,
+    recurrence: null,
+    status: 'due',
+    snoozed_until: null,
+    label: 'Due today',
+    source,
+    about: `${title}: about`,
+  });
+  /** The snooze buttons on a row of Needs attention, by its document's title. */
+  const snoozesOn = (title: string) =>
+    within(screen.getByText(title).closest('li') as HTMLElement)
+      .getAllByRole('button')
+      .slice(1)
+      .map((b) => b.textContent);
+  const snoozedTo = (state: FakeState, id: string) =>
+    state.calls.find((c) => c.url.endsWith(`/reminders/${id}/snooze`))?.body;
+
+  it('a snooze never waits past a due date still ahead: On the day, to that day', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const plus = (n: number) => dayFrom(today, n);
+    const state = fresh({
+      reminders: [
+        // Five days before the bill: a week, or a month, would pass it.
+        dueReminder('r-1', 'Council tax, March', today, 5, 'due_date'),
+        // A bill already overdue: nothing to pass, so a week and a month.
+        dueReminder('r-2', 'Council tax, April', plus(-10), 7, 'due_date'),
+        // An expiry in 20 days: the vault never cuts those back.
+        dueReminder('r-3', 'Passport', today, 20, 'expires'),
+        // Snoozed: it is next heard of on the day it was snoozed to.
+        {
+          ...dueReminder('r-4', 'Council tax, May', plus(-1), 7, 'due_date'),
+          status: 'snoozed',
+          snoozed_until: plus(3),
+          label: 'Later',
+          about: 'Due date: in 6 days',
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/reminders');
+    render(<App />);
+    await screen.findByText('Council tax, March');
+    expect(snoozesOn('Council tax, March')).toEqual(['On the day', 'Done']);
+    expect(snoozesOn('Council tax, April')).toEqual(['A week', 'A month', 'Done']);
+    expect(snoozesOn('Passport')).toEqual(['A week', 'A month', 'Done']);
+    const upcoming = screen.getByRole('region', { name: 'Coming up' });
+    expect(within(upcoming).getByText(`Reminder on ${shortDate(plus(3))}`)).toBeInTheDocument();
+
+    const row = (title: string) => screen.getByText(title).closest('li') as HTMLElement;
+    fireEvent.click(within(row('Council tax, March')).getByRole('button', { name: 'On the day' }));
+    await waitFor(() => expect(snoozedTo(state, 'r-1')).toEqual({ until: plus(5) }));
+    fireEvent.click(within(row('Council tax, April')).getByRole('button', { name: 'A week' }));
+    await waitFor(() => expect(snoozedTo(state, 'r-2')).toEqual({ until: plus(7) }));
+    fireEvent.click(within(row('Passport')).getByRole('button', { name: 'A month' }));
+    await waitFor(() => expect(snoozedTo(state, 'r-3')).toEqual({ until: plus(30) }));
+  });
+
+  it("the snooze buttons go by the household's day, not the browser's", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // Sydney, 8 am on 5 Oct, when it is still 4 Oct in UTC: the bill is
+      // due today there, so the vault takes a week or a month, and refuses
+      // a snooze to today.
+      vi.setSystemTime(new Date('2026-10-04T21:00:00Z'));
+      const state = fresh({
+        timezone: 'Australia/Sydney',
+        reminders: [dueReminder('r-1', 'Council tax, October', '2026-09-28', 7, 'due_date')],
+      });
+      installFakeApi(state);
+      signedIn();
+      window.history.replaceState({}, '', '/reminders');
+      const east = render(<App />);
+      await screen.findByText('Council tax, October');
+      await waitFor(() =>
+        expect(snoozesOn('Council tax, October')).toEqual(['A week', 'A month', 'Done']),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'A week' }));
+      await waitFor(() => expect(snoozedTo(state, 'r-1')).toEqual({ until: '2026-10-12' }));
+      east.unmount();
+
+      // Pago Pago, 10 pm on 26 Sep, when it is already 27 Sep in UTC: the
+      // bill is due tomorrow there, so a week would pass it.
+      vi.setSystemTime(new Date('2026-09-27T09:00:00Z'));
+      const west = fresh({
+        timezone: 'Pacific/Pago_Pago',
+        reminders: [dueReminder('r-2', 'Council tax, September', '2026-09-26', 1, 'due_date')],
+      });
+      installFakeApi(west);
+      signedIn();
+      render(<App />);
+      await screen.findByText('Council tax, September');
+      await waitFor(() =>
+        expect(snoozesOn('Council tax, September')).toEqual(['On the day', 'Done']),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'On the day' }));
+      await waitFor(() => expect(snoozedTo(west, 'r-2')).toEqual({ until: '2026-09-27' }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

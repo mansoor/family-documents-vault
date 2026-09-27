@@ -27,7 +27,12 @@ interface Made {
   auth: { authorization: string };
 }
 
-/** Signed in once for the file: signing in is limited per address. */
+/**
+ * Signed in once for the file, through the API. Signing in is limited to
+ * 10 a minute, and the suite signs in up to seven times a run: once in each
+ * file, first-run.spec.ts only when it is run again. So wait a minute
+ * between local runs.
+ */
 let signedIn: Promise<string> | null = null;
 
 async function signIn(request: APIRequestContext): Promise<string> {

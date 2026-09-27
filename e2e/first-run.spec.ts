@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { handOver } from './session-handoff.js';
 
 /**
  * The Phase 1 proof, end to end, on the real stack: set up a household,
@@ -12,9 +11,6 @@ const PDF = Buffer.from(
 );
 const EMAIL = 'e2e-owner@example.test';
 const PASSWORD = 'correct horse battery staple';
-
-// Its session goes on to lists.spec.ts, which then signs in no more.
-test.afterEach(async ({ page }, testInfo) => handOver(page, testInfo));
 
 test('first run to first document', async ({ page }) => {
   await page.goto('/');

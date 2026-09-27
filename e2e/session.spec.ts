@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Request } from '@playwright/test';
 
 /**
  * A reload is not a sign-out.
@@ -27,6 +27,10 @@ test('reloading Settings keeps you signed in, with one refresh', async ({ page, 
     });
   }
 
+  // Signed in through the page, the one sign-in this file makes. Signing
+  // in is limited to 10 a minute, and the suite signs in up to seven times
+  // a run: once in each file, first-run.spec.ts only when it is run again.
+  // So wait a minute between local runs.
   await page.goto('/welcome');
   await page.getByRole('button', { name: 'Sign in' }).click();
   await page.getByLabel('Email').fill(EMAIL);
@@ -42,15 +46,20 @@ test('reloading Settings keeps you signed in, with one refresh', async ({ page, 
   await page.goto('/settings');
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 
-  let refreshes = 0;
+  // Asked for from here on: the reload's, not one /settings may still be
+  // waiting for.
+  const refreshes: Request[] = [];
   page.on('request', (r) => {
-    if (r.url().endsWith('/api/v1/auth/refresh')) refreshes++;
+    if (r.url().endsWith('/api/v1/auth/refresh')) refreshes.push(r);
   });
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   await page.waitForLoadState('networkidle');
 
-  expect(refreshes).toBe(1);
+  expect(refreshes).toHaveLength(1);
+  // And it worked: one refused (429, too many a minute) would leave the
+  // page offline, still showing Settings, proving nothing.
+  expect((await refreshes[0]?.response())?.status()).toBe(200);
   expect(new URL(page.url()).pathname).toBe('/settings');
   // And the session still works for whatever comes next.
   await page.goto('/');

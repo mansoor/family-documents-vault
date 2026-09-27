@@ -85,6 +85,11 @@ export interface FakeState {
    * ones by `?state=upcoming`. Left out, there are none.
    */
   reminders?: Array<Record<string, unknown>>;
+  /**
+   * The household's time zone, as GET /profile gives it: reminders fall due
+   * on its calendar. Left out, 'UTC', the vault's default.
+   */
+  timezone?: string;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -568,6 +573,20 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/notifications/smtp/providers') return json([]);
     if (path === '/api/v1/profile' && method === 'PUT')
       return json({ household_name: state.displayName, ...(body as object) });
+    if (path === '/api/v1/profile') {
+      // Every role reads the household's name and time zone.
+      return json({
+        household_name: state.displayName,
+        timezone: state.timezone ?? 'UTC',
+        owns_home: null,
+        rents_home: null,
+        vehicle_count: null,
+        has_pets: null,
+        has_business: null,
+        country: null,
+        answered_at: null,
+      });
+    }
     if (path === '/api/v1/members' && method === 'GET') return json({ items: state.members });
     if (path === '/api/v1/members' && method === 'POST') {
       const m = {

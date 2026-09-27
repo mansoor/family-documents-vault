@@ -324,12 +324,29 @@ function KindLink({ kind }: { kind: DocumentTypeView }) {
 
 // ---------------------------------------------------------------- the editor
 
+/** Switched on while the kind asked for no date: the first date it shows is the one. */
+const FIRST = Symbol('the first date shown');
+
+/**
+ * What was chosen by hand in Reminders (5.16b): a date's key; null,
+ * switched off; FIRST; or undefined, nothing — the reminders are then the
+ * vault's own rule, worked out on the kind as saved.
+ */
+type Chosen = string | null | typeof FIRST | undefined;
+
+/** What the reminders just did by themselves: on, from a date and when; or off, its date hidden. */
+type RemNotice = { on: string; leads: number[] } | { off: string };
+
 /** What the editor holds while somebody changes it: the kind as it will be saved. */
 interface Draft {
   label: string;
   category: string;
   core: Record<CoreField, CoreFieldRule>;
-  /** The details it asks for, from the library, in order. */
+  /**
+   * The details it asks for, from the library, in order, each required as
+   * the family chose. The date reminders come from is required whatever
+   * they chose (`asked`).
+   */
   fields: Array<{ key: string; required: boolean }>;
   /**
    * Lead times, in days. Without `features.reminder_dates`, Expires's, as
@@ -341,8 +358,15 @@ interface Draft {
   from: string | null;
   /** The Reminders switch (5.16b): on with no date while the kind asks for none. */
   reminding: boolean;
-  /** The chips were changed since the date was chosen: choosing another keeps them. */
-  leadsTouched: boolean;
+  /**
+   * What was chosen by hand in Reminders (5.16b). `from`, `leads` and
+   * `reminding` are worked out again from it and the kind as saved at every
+   * change (`settle`), never from the draft before: so a change undone is
+   * undone here too, and saving it sends nothing (the 5.16b review).
+   */
+  chosen: Chosen;
+  /** Lead times chosen by hand with the chips: they stay with whichever date reminds. */
+  chosenLeads: number[] | undefined;
   visibility: Visibility;
   essential: boolean;
 }
@@ -376,7 +400,8 @@ function draftOf(kind: DocumentTypeView | null, dated: boolean): Draft {
     leads: dated ? was.leads : (kind?.reminder_leads ?? []),
     from: was.from,
     reminding: was.from !== null,
-    leadsTouched: false,
+    chosen: undefined,
+    chosenLeads: undefined,
     visibility: kind?.default_visibility ?? 'household',
     essential: kind?.usually_essential ?? false,
   };
@@ -385,6 +410,18 @@ function draftOf(kind: DocumentTypeView | null, dated: boolean): Draft {
 /** Whether the draft still asks for a date: Expires shown, or the field on its card. */
 const asksForDate = (d: Draft, key: string) =>
   key === 'expires' ? d.core.expires.shown : d.fields.some((f) => f.key === key);
+
+/**
+ * The details as the vault will keep them: the date reminders come from is
+ * always asked for, so it is required, while it reminds. Moved to another
+ * date, it is required as the family chose again.
+ */
+function asked(d: Draft): Draft['fields'] {
+  const from = d.reminding ? d.from : null;
+  return from === null || from === 'expires'
+    ? d.fields
+    : d.fields.map((f) => (f.key === from ? { ...f, required: true } : f));
+}
 
 const RENAMABLE = new Set<CoreField>(OPTIONAL.filter((o) => o.renamable).map((o) => o.field));
 
@@ -441,7 +478,7 @@ function createBody(d: Draft, dated: boolean): DocumentTypeInput {
     label: tidy(d.label) ?? '',
     category: d.category,
     core: Object.fromEntries(CORE_FIELDS.map((f) => [f, ruleOut(f, d.core[f])])),
-    fields: d.fields.map((f) => ({ key: f.key, required: f.required })),
+    fields: asked(d).map((f) => ({ key: f.key, required: f.required })),
     ...(dated
       ? reminds
         ? { remind_from: d.from, remind_leads: leadTimes(d.leads) }
@@ -474,8 +511,9 @@ function changeBody(kind: DocumentTypeView, d: Draft, dated: boolean): DocumentT
     if (Object.keys(change).length > 0) core[f] = change;
   }
   if (Object.keys(core).length > 0) body.core = core;
-  if (JSON.stringify(d.fields) !== JSON.stringify(before.fields)) {
-    body.fields = d.fields.map((f) => ({ key: f.key, required: f.required }));
+  const fields = asked(d);
+  if (JSON.stringify(fields) !== JSON.stringify(before.fields)) {
+    body.fields = fields.map((f) => ({ key: f.key, required: f.required }));
   }
   if (dated) Object.assign(body, remindChange(kind, d));
   else if (d.core.expires.shown && !sameLeads(d.leads, before.leads)) body.reminder_leads = d.leads;
@@ -548,10 +586,18 @@ function KindEditor(props: {
   // Reminders from any date, with a section of their own (5.16b). A vault
   // without them keeps today's editor: the chips under Expires.
   const dated = caps?.features.reminder_dates === true;
-  const [draft, setDraft] = useState(() => draftOf(kind, dated));
-  // What the editor just did to the reminders by itself, said as it happens.
-  const [remNotice, setRemNotice] = useState<string | null>(null);
-  const [library, setLibrary] = useState(props.library);
+  // The draft, the library a field added here joins, and what the editor
+  // just did to the reminders by itself, said as it happens: one state, so
+  // every change is made to the latest of all three, even one landing after
+  // an await (the 5.16b review).
+  const [{ draft, library, remNotice }, setEditor] = useState(() => ({
+    draft: draftOf(kind, dated),
+    library: props.library,
+    remNotice: null as RemNotice | null,
+  }));
+  /** A change nothing about the reminders follows. */
+  const edit = (change: (d: Draft) => Draft) =>
+    setEditor((e) => ({ ...e, draft: change(e.draft) }));
   // The library's rows keep their places while fields are shown and hidden:
   // the kind's own first, as it asks them, then the rest by name.
   const [order, setOrder] = useState(() => {
@@ -587,45 +633,121 @@ function KindEditor(props: {
     f === 'expires' && review ? 'Review by' : (OPTIONAL.find((o) => o.field === f)?.word ?? f);
   /** A fixed field's name on the card: the kind's, or the app's own word. */
   const cardName = (f: CoreField) => tidy(draft.core[f].label) ?? wordFor(f);
-  const fieldOf = (key: string) => {
+  const fieldOf = (key: string, lib: ReadonlyArray<DocumentAttributeView> = library) => {
     const had = kind?.fields.find((f) => f.key === key);
-    const lib = library.find((a) => a.key === key);
-    return { key, label: had?.label ?? lib?.label ?? key, kind: had?.kind ?? lib?.kind ?? 'text' };
+    const known = lib.find((a) => a.key === key);
+    return {
+      key,
+      label: had?.label ?? known?.label ?? key,
+      kind: had?.kind ?? known?.kind ?? 'text',
+    };
   };
 
   // ---- reminders from any date (5.16b), by the vault's own rules ----
 
   /** The kind as the draft will save it, as the vault's rules read it. */
-  const asType = (d: Draft): ReminderWords => ({
+  const asType = (
+    d: Draft,
+    lib: ReadonlyArray<DocumentAttributeView> = library,
+  ): ReminderWords => ({
     expiry_driver: d.core.expires.shown ? (kind?.expiry_driver ?? 'expires_on') : null,
     core: { expires: { label: d.core.expires.label } },
-    fields: d.fields.map((f) => fieldOf(f.key)),
+    fields: d.fields.map((f) => fieldOf(f.key, lib)),
   });
   /** The dates it can remind from, in its words and its order (reminderChoices). */
-  const datesOf = (d: Draft) => reminderChoices(asType(d), library);
-  /** Where the vault's rule starts from, and where it ends up, for `nextReminder`. */
-  const before = (d: Draft) => ({
-    reminding: { from: d.from, leads: d.leads },
-    expires: d.core.expires.shown,
-  });
-  const after = (d: Draft) => ({
-    expires: d.core.expires.shown,
-    dates: datesOf(d)
-      .map((c) => c.key)
-      .filter((k) => k !== 'expires'),
-  });
+  const datesOf = (d: Draft, lib: ReadonlyArray<DocumentAttributeView> = library) =>
+    reminderChoices(asType(d, lib), lib);
+  /** The kind as saved, where the vault's rule starts from (`nextReminder`). */
+  const asSaved = {
+    reminding: kind && dated ? reminderOf(kind) : { from: null, leads: [] },
+    expires: coreOf(kind).expires.shown,
+  };
+
+  /**
+   * The draft's reminders, worked out again at every change, by the vault's
+   * own rule (nextReminder), from the kind as saved and what was chosen by
+   * hand — never from the draft before, so a change undone is undone here
+   * too (the 5.16b review). Hiding the date they come from switches them
+   * off, and showing it again brings them back as they were; showing
+   * Expires on a kind that reminds nobody, and never showed it, switches
+   * them on, 30 days before unless it kept its own times; switched on
+   * while the kind asked for no date, the first date shown is chosen; a
+   * date chosen by hand and hidden since is off until it is shown again.
+   * `lib` is the library with any field just added to it.
+   */
+  const settle = (d: Draft, lib: ReadonlyArray<DocumentAttributeView>): Draft => {
+    if (!dated) return d;
+    const keys = datesOf(d, lib).map((c) => c.key);
+    const shape = { expires: d.core.expires.shown, dates: keys.filter((k) => k !== 'expires') };
+    let chosen = d.chosen;
+    if (chosen === FIRST) {
+      if (keys.length === 0) return { ...d, reminding: true, from: null, leads: [] };
+      chosen = keys[0];
+    }
+    const out = nextReminder(
+      chosen === undefined
+        ? {}
+        : { remind_from: chosen !== null && !keys.includes(chosen) ? null : chosen },
+      asSaved,
+      shape,
+    );
+    if ('problem' in out) return { ...d, chosen };
+    return {
+      ...d,
+      chosen,
+      from: out.from,
+      reminding: out.from !== null,
+      leads: out.from !== null && d.chosenLeads !== undefined ? d.chosenLeads : out.leads,
+    };
+  };
+
+  /** What the reminders did by themselves: said as it happens. */
+  const byItself = (was: Draft, now: Draft): RemNotice | null =>
+    !dated || now.from === was.from
+      ? null
+      : now.from !== null
+        ? { on: now.from, leads: now.leads }
+        : was.from !== null
+          ? { off: was.from }
+          : null;
+
+  /**
+   * A change, made to the latest draft (never the one this page was drawn
+   * with: a field added lands after an await), with what the reminders do
+   * after it, said.
+   */
+  const change = (apply: (d: Draft) => Draft, say = byItself) =>
+    setEditor((e) => {
+      const next = settle(apply(e.draft), e.library);
+      return { ...e, draft: next, remNotice: say(e.draft, next) };
+    });
+
+  /**
+   * A date field's name in Reminders' sentences: its label, or, beside
+   * another date of the same name, the chooser's — "Due date (your own)" —
+   * so the promise and "Only … reminds" never name two dates alike.
+   */
+  const spoken = (key: string, d: Draft) => {
+    const label = fieldOf(key).label;
+    const alike = (other: string) => other.trim().toLowerCase() === label.trim().toLowerCase();
+    const same = datesOf(d).filter((c) => c.key !== 'expires' && alike(fieldOf(c.key).label));
+    return same.length > 1 ? (same.find((c) => c.key === key)?.label ?? label) : label;
+  };
   /** "its due date", "it expires": the date, as the sentences say it. */
   const whenOf = (key: string, d: Draft) =>
     key === 'expires'
       ? asType(d).expiry_driver === 'review_on'
         ? 'it’s due for review'
         : 'it expires'
-      : itsName(fieldOf(key).label);
-  /** The promise for a date and its lead times, in the vault's own sentence. */
-  const promiseOf = (key: string, leads: number[], d: Draft) =>
+      : itsName(spoken(key, d));
+  /**
+   * The promise for a date and its lead times, in the vault's own sentence;
+   * `label` names a date field as the card does.
+   */
+  const promiseOf = (key: string, leads: number[], d: Draft, label = spoken(key, d)) =>
     key === 'expires'
       ? reminderSentence({ expiry_driver: asType(d).expiry_driver, reminder_leads: leads })
-      : dateReminderSentence(fieldOf(key).label, leads);
+      : dateReminderSentence(label, leads);
   /** "Reminders are on: 30 days before it expires." */
   const onNotice = (key: string, leads: number[], d: Draft) =>
     `Reminders are on: ${(promiseOf(key, leads, d) ?? '').replace(/^We'll remind you /, '')}`;
@@ -639,133 +761,70 @@ function KindEditor(props: {
         : itsName(fieldOf(key).label)
     }.`;
 
-  /**
-   * The draft with a date to remind from (or none), as the vault keeps it:
-   * the date reminders come from is always asked for, so its Required is
-   * ticked (and locked, below).
-   */
-  const withReminding = (d: Draft, r: Reminding, on: boolean): Draft => ({
-    ...d,
-    from: r.from,
-    leads: r.leads,
-    reminding: on,
-    leadsTouched: r.from === d.from ? d.leadsTouched : false,
-    fields:
-      r.from !== null && r.from !== 'expires'
-        ? d.fields.map((f) => (f.key === r.from ? { ...f, required: true } : f))
-        : d.fields,
-  });
-
-  /**
-   * A change to what the card asks for, and what it does to the reminders,
-   * by the vault's own rules (nextReminder), each said as it happens:
-   * hiding the date they come from switches them off; showing Expires on a
-   * kind that reminds nobody switches them on, 30 days before unless it
-   * kept its own times; and, switched on while the kind asked for no date,
-   * the first date shown is chosen.
-   */
-  const reshape = (next: Draft) => {
-    setRemNotice(null);
-    if (!dated) {
-      setDraft(next);
-      return;
-    }
-    const [first] = datesOf(next);
-    const waiting = draft.reminding && draft.from === null;
-    const out = nextReminder(
-      waiting && first ? { remind_from: first.key } : {},
-      before(draft),
-      after(next),
-    );
-    if ('problem' in out) {
-      setDraft(next);
-      return;
-    }
-    const settled = withReminding(next, out, out.from !== null || waiting);
-    setDraft(settled);
-    if (out.from === draft.from) return;
-    setRemNotice(
-      out.from === null ? offNotice(draft.from as string) : onNotice(out.from, out.leads, settled),
-    );
-  };
-
-  const setRule = (f: CoreField, change: Partial<CoreFieldRule>) => {
-    const rule = { ...draft.core[f], ...change };
-    // Hidden, it cannot be required.
-    if (!rule.shown) rule.required = false;
-    const next = { ...draft, core: { ...draft.core, [f]: rule } };
-    // Without the section, Expires switched on is reminded 30 days before, as always.
-    if (!dated && f === 'expires' && rule.shown && draft.leads.length === 0) {
-      next.leads = DEFAULT_LEADS;
-    }
-    reshape(next);
-  };
-  const setField = (key: string, shown: boolean, required: boolean) => {
-    const at = draft.fields.findIndex((f) => f.key === key);
-    reshape({
-      ...draft,
+  /** A field shown or hidden, or its Required changed. */
+  const withField = (d: Draft, key: string, shown: boolean, required: boolean): Draft => {
+    const at = d.fields.findIndex((f) => f.key === key);
+    return {
+      ...d,
       fields: !shown
-        ? draft.fields.filter((f) => f.key !== key)
+        ? d.fields.filter((f) => f.key !== key)
         : at < 0
-          ? [...draft.fields, { key, required }]
-          : draft.fields.map((f) => (f.key === key ? { key, required } : f)),
-    });
+          ? [...d.fields, { key, required }]
+          : d.fields.map((f) => (f.key === key ? { key, required } : f)),
+    };
   };
+
+  const setRule = (f: CoreField, to: Partial<CoreFieldRule>) =>
+    change((d) => {
+      const rule = { ...d.core[f], ...to };
+      // Hidden, it cannot be required.
+      if (!rule.shown) rule.required = false;
+      const next = { ...d, core: { ...d.core, [f]: rule } };
+      // Without the section, Expires switched on is reminded 30 days before, as always.
+      if (!dated && f === 'expires' && rule.shown && d.leads.length === 0) {
+        next.leads = DEFAULT_LEADS;
+      }
+      return next;
+    });
+  const setField = (key: string, shown: boolean, required: boolean) =>
+    change((d) => withField(d, key, shown, required));
+  /**
+   * A field of the family's own, just added to the library and shown: the
+   * dates to remind from are worked out with it in the library, so a date
+   * field added while reminders wait for one is chosen (the 5.16b review).
+   */
+  const addField = (a: DocumentAttributeView) =>
+    setEditor((e) => {
+      const lib = [...e.library, a];
+      const next = settle(withField(e.draft, a.key, true, false), lib);
+      return { draft: next, library: lib, remNotice: byItself(e.draft, next) };
+    });
 
   /**
    * The switch. On, it picks Expires if the kind shows it, else its first
    * date, with that date's own lead times (defaultLeads, through the
-   * vault's rule). Off, the date's times go, except Expires's, which are
-   * kept on the page for switching on again, as the vault keeps them when
-   * Expires is hidden.
+   * vault's rule): as saved, when it is the date the kind reminds from.
+   * Off, nothing reminds, whatever the card shows.
    */
-  const switchTo = (on: boolean) => {
-    setRemNotice(null);
-    if (!on) {
-      setDraft({
-        ...draft,
-        reminding: false,
-        from: null,
-        leads: draft.from === null || draft.from === 'expires' ? draft.leads : [],
-        leadsTouched: false,
-      });
-      return;
-    }
-    const [first] = datesOf(draft);
-    if (!first) {
-      setDraft({ ...draft, reminding: true });
-      return;
-    }
-    const out = nextReminder({ remind_from: first.key }, before(draft), after(draft));
-    if ('problem' in out) return;
-    const settled = withReminding(draft, out, true);
-    setDraft(settled);
-    setRemNotice(onNotice(first.key, out.leads, settled));
-  };
+  const switchTo = (on: boolean) =>
+    change(
+      (d) => ({ ...d, chosen: on ? FIRST : null, chosenLeads: undefined }),
+      on ? byItself : () => null,
+    );
 
   /** Another date: with the chips untouched, its own lead times, as the vault gives them. */
-  const choose = (key: string) => {
-    setRemNotice(null);
-    const keep = draft.leadsTouched;
-    if (keep && draft.leads.length === 0) {
-      setDraft(withReminding(draft, { from: key, leads: [] }, true));
-      return;
-    }
-    const out = nextReminder(
-      keep ? { remind_from: key, remind_leads: draft.leads } : { remind_from: key },
-      before(draft),
-      after(draft),
+  const choose = (key: string) =>
+    change(
+      (d) => ({ ...d, chosen: key }),
+      // Chips chosen by hand stay as they were: nothing to say.
+      (was, now) => (now.chosenLeads !== undefined ? null : byItself(was, now)),
     );
-    if ('problem' in out) return;
-    const settled = withReminding(draft, out, true);
-    setDraft(keep ? { ...settled, leadsTouched: true } : settled);
-    if (!keep) setRemNotice(onNotice(key, out.leads, settled));
-  };
 
-  const setLeads = (leads: number[]) => {
-    setRemNotice(null);
-    setDraft((d) => ({ ...d, leads, leadsTouched: true }));
-  };
+  const setLeads = (leads: number[]) =>
+    change(
+      (d) => ({ ...d, chosenLeads: leads }),
+      () => null,
+    );
 
   /** What Save waits for in Reminders: a date, and a lead time. */
   const remindProblem =
@@ -879,10 +938,20 @@ function KindEditor(props: {
             promise,
             ...(which ? [which] : []),
             REMIND_ONCE,
-            `Every document of this kind needs ${itsName(fieldOf(reminds).label)}: without one it reads Needs ${needsWords(reminds, fieldOf(reminds).label)}.`,
+            `Every document of this kind needs ${itsName(spoken(reminds, draft))}: without one it reads Needs ${needsWords(reminds, fieldOf(reminds).label)}.`,
             ONLY_ME_DATE,
           ]
       : [];
+  // The preview says it in the card's own words: under the date it is about.
+  const cardPromise = reminds
+    ? promiseOf(reminds, draft.leads, draft, fieldOf(reminds).label)
+    : null;
+  const noticeText =
+    remNotice === null
+      ? null
+      : 'off' in remNotice
+        ? offNotice(remNotice.off)
+        : onNotice(remNotice.on, remNotice.leads, draft);
   // The kind's own lead times stay chips while off, for the date it keeps them for.
   const kept = kind && dated ? reminderOf(kind) : null;
   const savedLeads = kept && kept.from === draft.from ? kept.leads : [];
@@ -937,7 +1006,7 @@ function KindEditor(props: {
             id="k-label"
             label="Name of this kind"
             value={draft.label}
-            onChange={(label) => setDraft((d) => ({ ...d, label }))}
+            onChange={(label) => edit((d) => ({ ...d, label }))}
             required={false}
             placeholder="Allotment tenancy"
           />
@@ -945,7 +1014,7 @@ function KindEditor(props: {
             id="k-category"
             label="Category"
             value={draft.category}
-            onChange={(category) => setDraft((d) => ({ ...d, category }))}
+            onChange={(category) => edit((d) => ({ ...d, category }))}
             options={Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }))}
             hint="Where it sits in the lists, on the web and on the phone."
           />
@@ -999,7 +1068,7 @@ function KindEditor(props: {
                       label={`Remind us before ${review ? 'it’s due for review' : 'it expires'}`}
                       leads={draft.leads}
                       saved={kind?.reminder_leads ?? []}
-                      onChange={(leads) => setDraft((d) => ({ ...d, leads }))}
+                      onChange={(leads) => edit((d) => ({ ...d, leads }))}
                     />
                     <p className="muted">
                       {reminder ?? 'No reminders: nobody is told before the day.'}
@@ -1045,12 +1114,11 @@ function KindEditor(props: {
         <AddOwnField
           library={library}
           onAdded={(a) => {
-            setLibrary((l) => [...l, a]);
             setOrder((o) => {
               const at = o.findIndex((k) => !shownKeys.has(k));
               return at < 0 ? [...o, a.key] : [...o.slice(0, at), a.key, ...o.slice(at)];
             });
-            setField(a.key, true, false);
+            addField(a);
             setAdded(`“${a.label}” is on the card now, and in the library for every kind.`);
           }}
         />
@@ -1069,7 +1137,7 @@ function KindEditor(props: {
             onChange={switchTo}
           />
           <p role="status" className="notice status-line">
-            {remNotice}
+            {noticeText}
           </p>
           {!draft.reminding && <p className="muted">{REMINDERS_OFF}</p>}
           {reminds !== null && (
@@ -1124,7 +1192,7 @@ function KindEditor(props: {
                   className={`pill${draft.visibility === v ? ' pill-on' : ''}`}
                   aria-pressed={draft.visibility === v}
                   disabled={wider && !mayWiden}
-                  onClick={() => setDraft((d) => ({ ...d, visibility: v }))}
+                  onClick={() => edit((d) => ({ ...d, visibility: v }))}
                 >
                   {words}
                 </button>
@@ -1152,7 +1220,7 @@ function KindEditor(props: {
             id="k-essential"
             type="checkbox"
             checked={draft.essential}
-            onChange={(e) => setDraft((d) => ({ ...d, essential: e.target.checked }))}
+            onChange={(e) => edit((d) => ({ ...d, essential: e.target.checked }))}
           />
           <label htmlFor="k-essential">
             Usually Essential
@@ -1168,7 +1236,7 @@ function KindEditor(props: {
         draft={draft}
         cardName={cardName}
         fieldOf={fieldOf}
-        reminder={dated ? promise : expires.shown ? reminder : null}
+        reminder={dated ? cardPromise : expires.shown ? reminder : null}
         remindAt={dated ? reminds : null}
       />
 
@@ -1294,7 +1362,8 @@ function FieldRow(props: {
                 checked={props.required === true || lockedWhy !== undefined}
                 disabled={lockedWhy !== undefined}
                 aria-describedby={lockedWhy}
-                onChange={(e) => props.onRequired?.(e.target.checked)}
+                // Locked, it keeps what the family chose for when it is not.
+                onChange={(e) => lockedWhy === undefined && props.onRequired?.(e.target.checked)}
               />
               <label htmlFor={`${props.id}-required`}>Required</label>
             </div>
@@ -1506,7 +1575,7 @@ function Preview(props: {
         {CARD_ORDER.filter((f) => draft.core[f].shown).map((f) =>
           row(f, props.cardName(f), needed(f, draft.core[f]), remindAt === f ? f : null),
         )}
-        {draft.fields.map((f) =>
+        {asked(draft).map((f) =>
           row(
             `f-${f.key}`,
             props.fieldOf(f.key).label,
@@ -1564,7 +1633,9 @@ function warningsFor(
   // Reminders from any date: where they come from as saved, and now.
   const was = dated ? reminderOf(kind) : null;
   const now = dated && draft.reminding ? draft.from : null;
-  const moved = was?.from != null && now !== null && now !== was.from ? now : null;
+  // Reminders from a date they did not come from as saved: moved to it,
+  // or switched on (the 5.16b review).
+  const moved = was !== null && now !== null && now !== was.from ? now : null;
   const out: Warning[] = [];
   let touches = false;
   const needsInfo = (key: string, n: number, name: string) => {
@@ -1590,10 +1661,13 @@ function warningsFor(
     const was = before.core[f];
     const now = draft.core[f];
     const counts = impact.core[f];
-    if (needed(f, now) && !needed(f, was)) needsInfo(f, counts.without_value, savedName(f));
+    // Reminders coming from Expires say how many have it, below.
+    if (needed(f, now) && !needed(f, was) && !(f === 'expires' && moved === 'expires')) {
+      needsInfo(f, counts.without_value, savedName(f));
+    }
     if (was.shown && !now.shown) kept(f, counts.with_value, savedName(f), 'on each of them');
   }
-  for (const f of draft.fields) {
+  for (const f of asked(draft)) {
     const had = before.fields.find((x) => x.key === f.key);
     // Reminders moving to it say how many have it, below.
     if (f.required && !had?.required && f.key !== moved) {
@@ -1642,12 +1716,17 @@ function warningsFor(
       if (asksForDate(draft, was.from)) stop(r, 'nobody is reminded about these documents');
       else if (was.from === 'expires') stop(r, 'its documents no longer expire');
       else stop(r, `it no longer asks for ${itsName(fieldOf(was.from).label)}`);
-    } else if (was.from !== null && moved !== null) {
+    } else if (moved !== null) {
+      // Moved to another date, or switched on: how many are reminded from
+      // it, and how many will say they need it.
       touches = true;
-      const text = movedWords(impact, moved, ctx.labelOf(moved), fieldOf(moved).label, {
-        count: about(was.from),
-        word: ctx.wasWord(was.from),
-      });
+      const text = movedWords(
+        impact,
+        moved,
+        ctx.labelOf(moved),
+        fieldOf(moved).label,
+        was.from === null ? null : { count: about(was.from), word: ctx.wasWord(was.from) },
+      );
       if (text) out.push({ key: 'reminders', text });
     } else if (now !== null && now === was.from && !sameLeads(draft.leads, was.leads)) {
       madeAgain();
@@ -1663,17 +1742,18 @@ function warningsFor(
 }
 
 /**
- * Reminders moving to another date (5.16b): how many of its documents have
- * that date, and are reminded from it; how many have none yet, and will
- * say they need it; and the reminders about the old date, not dealt with
- * yet, that go. Null when it has no documents to say it of.
+ * Reminders moving to another date (5.16b), or switched on (`dropped`
+ * null, the 5.16b review): how many of its documents have that date, and
+ * are reminded from it; how many have none yet, and will say they need it;
+ * and the reminders about the old date, not dealt with yet, that go. Null
+ * when it has no documents to say it of.
  */
 function movedWords(
   impact: DocumentTypeImpact,
   to: string,
   name: string,
   label: string,
-  dropped: { count: number; word: string },
+  dropped: { count: number; word: string } | null,
 ): string | null {
   const n = impact.documents;
   if (n === 0) return null;
@@ -1696,8 +1776,9 @@ function movedWords(
           : `None of its ${n} documents has ${a} yet: they ${until}.`
         : `Of ${docs}, ${w} ${have(w)} ${a} and ${w === 1 ? 'is' : 'are'} reminded from it; ${m} ${have(m)} none yet and ${until}.`;
   const gone =
-    dropped.count > 0
+    dropped && dropped.count > 0
       ? ` ${dropped.count} ${dropped.count === 1 ? 'reminder' : 'reminders'} from ${dropped.word} not dealt with yet ${dropped.count === 1 ? 'is' : 'are'} dropped.`
       : '';
-  return `Its reminders move to ${name}. ${counted}${gone} Only reminders still to come are made.`;
+  const lead = dropped ? `Its reminders move to ${name}.` : `Its reminders will come from ${name}.`;
+  return `${lead} ${counted}${gone} Only reminders still to come are made.`;
 }
