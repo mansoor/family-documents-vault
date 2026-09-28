@@ -24,7 +24,10 @@ import {
  *   node apps/worker/dist/cli.mjs decrypt-backup <in.sql.enc> <out.sql>
  *
  * All of them need only the normal configuration (the master key and the
- * database). The README's "Restoring" section says when to use which.
+ * database). The README's "Restoring" section says when to use which. A
+ * backup made before the master key was rotated is restored, or drilled,
+ * with FDV_MASTER_KEY_PREVIOUS set to the key it was made with: what it
+ * holds is then moved onto the current key (restore-keys.ts).
  */
 async function main() {
   const [command, a, b] = process.argv.slice(2);
@@ -36,6 +39,10 @@ async function main() {
   const log = (level: string, msg: string, extra?: Record<string, unknown>) =>
     console.log(JSON.stringify({ level, msg, ...extra }));
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
+  const master = {
+    current: masterSecret,
+    previous: process.env.FDV_MASTER_KEY_PREVIOUS || undefined,
+  };
   const backupNow = async () =>
     (
       await backupDatabase({
@@ -66,6 +73,7 @@ async function main() {
         adminUrl,
         appUrl: config.DATABASE_URL,
         log,
+        master,
       });
       console.log(
         `restored: households=${report.households} people=${report.members} ` +
@@ -100,7 +108,7 @@ async function main() {
       const report = await restoreBackup(
         file,
         backupKey,
-        { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL },
+        { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL, master },
         log,
       );
       console.log(summary(file, report));
@@ -119,6 +127,14 @@ async function main() {
         return;
       }
       console.error(`Nothing was restored; the database is as it was. ${(err as Error).message}`);
+      if (!master.previous && /failed authentication/.test((err as Error).message)) {
+        console.error(
+          '\nIf the backup was made before the master key was rotated, give the key it was\n' +
+            'made with, beside the current one:\n\n' +
+            '  docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker ' +
+            `node apps/worker/dist/cli.mjs restore-backup ${a}`,
+        );
+      }
       const older = a === 'latest' ? await backupBefore(file, config.FDV_BACKUP_DIR) : null;
       if (older) {
         console.error(
@@ -169,6 +185,15 @@ function summary(file: string, r: RestoreReport): string {
     '  - Passkeys and two-step sign-in are as they were then too. Anybody who removed a',
     '    passkey or reset two-step sign-in since does it again, in Settings.',
   ];
+  if (r.rekeyed) {
+    const secrets = Object.values(r.rekeyed.resealed).reduce((n, c) => n + c, 0);
+    lines.push(
+      '  - It was made before the master key was rotated. What it holds is now under the',
+      `    current key, as the vault's own is: ${plural(r.rekeyed.rewrapped, 'scope key')} and ` +
+        `${plural(secrets, 'secret')} (two-step`,
+      '    sign-in, storage and mail) were moved across.',
+    );
+  }
   if (r.ownerChangesWithdrawn > 0) {
     lines.push(
       `  - ${plural(r.ownerChangesWithdrawn, 'request')} to change who is an owner ` +

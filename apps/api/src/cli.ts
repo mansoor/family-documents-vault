@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import { EnvKeyProvider, rotateMasterKey, ScopeKeys } from '@fdv/crypto';
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
 import { PasswordService, RESET_TTL_MINUTES } from './auth/passwords.js';
 import { loadConfig } from './config.js';
+import { rotateMasterKeyCommand } from './rotate-master-key.js';
 
 /**
  * Operator commands, run inside the api container:
@@ -11,10 +12,12 @@ import { loadConfig } from './config.js';
  *   node apps/api/dist/cli.mjs reset-password someone@example.com
  *
  * `rotate-master-key` reads the current key from the normal configuration
- * and the new one from FDV_MASTER_KEY_NEW. It rewraps every scope key in
- * one transaction; file content is untouched. Afterwards, put the new key
- * in .env and restart — every session is signed out, because session
- * signing derives from it.
+ * and the new one from FDV_MASTER_KEY_NEW. In one transaction it rewraps
+ * every scope key, seals the secrets kept under master-derived keys again
+ * (two-step sign-in, storage credentials, the mail password) and ends every
+ * session; file content is untouched. It refuses a new key that is the
+ * current one or would not survive `.env`. Afterwards, put the new key in
+ * .env and restart.
  *
  * `reset-password` prints a one-time link for an account that cannot get
  * in any other way. It exists because a household with no mail server
@@ -38,25 +41,11 @@ async function main() {
   const current = config.FDV_MASTER_KEY_FILE
     ? (await readFile(config.FDV_MASTER_KEY_FILE, 'utf8')).trim()
     : (config.FDV_MASTER_KEY as string);
-  const next = process.env.FDV_MASTER_KEY_NEW;
-  if (!next || next.length < 32) {
-    console.error('FDV_MASTER_KEY_NEW must be set and at least 32 characters');
-    process.exitCode = 2;
-    return;
-  }
-  const admin = createPool(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, 1);
-  try {
-    const { rewrapped } = await rotateMasterKey(
-      admin,
-      new EnvKeyProvider(current),
-      new EnvKeyProvider(next),
-    );
-    console.log(
-      `rewrapped ${rewrapped} scope key(s). Now set FDV_MASTER_KEY to the new value and restart.`,
-    );
-  } finally {
-    await admin.end();
-  }
+  process.exitCode = await rotateMasterKeyCommand({
+    current,
+    next: process.env.FDV_MASTER_KEY_NEW,
+    adminUrl: config.DATABASE_ADMIN_URL ?? config.DATABASE_URL,
+  });
 }
 
 async function resetPassword(email: string | undefined) {

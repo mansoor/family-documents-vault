@@ -9,6 +9,9 @@ import { DecryptStream } from '@fdv/crypto';
 import { createPool, listMigrations, migrateUp } from '@fdv/db';
 import { libpqConnection, withDatabase } from './libpq.js';
 
+// For a backup made before the master key was rotated.
+import { backupKeyFor, onCurrentKey, type MasterKeys, type RekeyReport } from './restore-keys.js';
+
 /**
  * Putting a backup back (NFR-07).
  *
@@ -41,6 +44,14 @@ export interface RestoreTarget {
   adminUrl: string;
   /** The application role, on the same database. */
   appUrl: string;
+  /**
+   * The master key the vault there runs with and, for a backup made before
+   * it was rotated, the key the backup was made with (FDV_MASTER_KEY_PREVIOUS).
+   * Given it, the restore opens such a backup and moves what it holds onto
+   * the current key; without it, the backup is loaded as it was made. The
+   * command line always gives it.
+   */
+  master?: MasterKeys | undefined;
 }
 
 export interface RestoreReport {
@@ -49,6 +60,8 @@ export interface RestoreReport {
   members: number;
   documents: number;
   versions: number;
+  /** A backup made before a rotation: what was moved onto the current master key. */
+  rekeyed: RekeyReport | null;
   /** Sessions ended, so that everybody signs in again. */
   sessionsEnded: number;
   /** Requests to change who is an owner, withdrawn: they are asked again, with fresh notice. */
@@ -74,10 +87,14 @@ export async function restoreBackup(
 ): Promise<RestoreReport> {
   await assertEmpty(target.adminUrl);
   const known = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
-  const undone = await load(file, backupKey, target.adminUrl, known);
+  const key = await backupKeyFor(file, backupKey, target.master?.previous);
+  const undone = await load(file, key, target.adminUrl, known);
   log('info', 'backup loaded', { file, ...undone });
 
   try {
+    // Before anything reads it: a backup made before the master key was
+    // rotated holds its keys and secrets under the key it was made with.
+    const rekeyed = target.master ? await onCurrentKey(target.adminUrl, target.master, log) : null;
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
     try {
@@ -89,7 +106,7 @@ export async function restoreBackup(
     } finally {
       await admin.end();
     }
-    return { ...(await checkRestored(target)), ...undone, ...open };
+    return { ...(await checkRestored(target)), ...undone, ...open, rekeyed };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
   }
@@ -151,6 +168,7 @@ export async function restoreDrill(opts: {
   adminUrl: string;
   appUrl: string;
   log: Log;
+  master?: RestoreTarget['master'];
 }): Promise<RestoreReport> {
   const name = `${DRILL_PREFIX}${Math.floor(Date.now() / 1000)}_${randomUUID().slice(0, 8)}`;
   const root = createPool(withDatabase(opts.adminUrl, 'postgres'), 1);
@@ -168,7 +186,11 @@ export async function restoreDrill(opts: {
     return await restoreBackup(
       opts.file,
       opts.backupKey,
-      { adminUrl: withDatabase(opts.adminUrl, name), appUrl: withDatabase(opts.appUrl, name) },
+      {
+        adminUrl: withDatabase(opts.adminUrl, name),
+        appUrl: withDatabase(opts.appUrl, name),
+        master: opts.master,
+      },
       opts.log,
     );
   } finally {
@@ -354,7 +376,7 @@ end $guard$;`;
  */
 export async function checkRestored(
   target: RestoreTarget,
-): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen>> {
+): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | 'rekeyed'>> {
   const admin = createPool(target.adminUrl, 1);
   const app = createPool(target.appUrl, 1);
   try {

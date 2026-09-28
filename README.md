@@ -195,7 +195,7 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for phones on networks that lose answers: the phone app may present the token it has just replaced once more, within 30 seconds, from the same installation. Anyone else presenting it, or presenting it later, ends the session.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
-- The token signing key is derived from `FDV_MASTER_KEY`, so changing the master key signs everyone out.
+- The token signing key is derived from `FDV_MASTER_KEY`. [Rotating the master key](#rotating-the-master-key) signs everyone out.
 - Sign-in attempts are limited to 10 per minute per address.
 
 ### Inviting the rest of the family
@@ -452,7 +452,7 @@ docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-b
 docker compose up -d
 ```
 
-To go further back, name a file instead of `latest`, such as `/data/backups/fdv-2026-09-20T02-30-00-000Z.sql.enc`.
+To go further back, name a file instead of `latest`, such as `/data/backups/fdv-2026-09-20T02-30-00-000Z.sql.enc`. A backup made before you last [rotated the master key](#rotating-the-master-key) also needs the key it was made with: add `-e FDV_MASTER_KEY_PREVIOUS=<old key>` to the restore command.
 
 **On a new machine**, start from the three things above. Put your `.env` beside `docker-compose.yml`, and put your copy of the files back into the `fdv_vault-data` volume, owned by the container's user:
 
@@ -500,13 +500,41 @@ Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, wit
 
 ### Rotating the master key
 
-Rotation rewraps the small per-household keys; the encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
+Rotation moves everything the master key protects onto a new key, in one database transaction: it rewraps the small per-household keys, and seals again the secrets the vault keeps for you — each person's two-step sign-in, an S3 bucket's credentials, the household's mail password. The encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store. If anything does not open with the current key, it stops and changes nothing.
+
+First make the new key, and put it somewhere safe before you use it — beside your copy of `.env`, or in a password manager. After the rotation, nothing opens without it.
 
 ```bash
-docker compose run --rm -e FDV_MASTER_KEY_NEW="$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')" api node apps/api/dist/cli.mjs rotate-master-key
+node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))'
 ```
 
-Then put the new value in `.env` as `FDV_MASTER_KEY`, run `docker compose up -d`, and back the file up again. Everyone is signed out by the rotation, because sign-in tokens are derived from the same key.
+Take a backup, then stop the vault, so that nothing is written under the old key while the new one goes in:
+
+```bash
+docker compose exec worker node apps/worker/dist/cli.mjs backup-now
+```
+
+```bash
+docker compose stop api worker
+```
+
+Rotate, with the new key in place of `<new key>`:
+
+```bash
+docker compose run --rm --no-deps -e FDV_MASTER_KEY_NEW=<new key> api node apps/api/dist/cli.mjs rotate-master-key
+```
+
+It says how many keys and secrets it moved and how many sessions it ended. It refuses a new key that is the one in use, or that holds anything `.env` would change, such as a space, a quote or a `$` (the command above makes one that is safe). If it refuses or stops, nothing has changed: `docker compose up -d` starts the vault again as it was. Otherwise put the new key in `.env` as `FDV_MASTER_KEY` (or in your key file, if you use `FDV_MASTER_KEY_FILE`), start the vault with `docker compose up -d`, and back `.env` up again.
+
+**Everybody is signed out**, on every device, and signs in again. Two-step sign-in, passkeys, email, an S3 bucket, share links and invitations carry on working as before.
+
+**Keep the old key** as long as you keep a backup made before the rotation: the nightly ones stay in `/data/backups` for `FDV_BACKUP_RETAIN_DAYS` (30) days, and your own copies as long as you keep them. Such a backup is encrypted under the old key, and so is everything in it. To restore one, follow [Restoring](#restoring) and give the old key beside the new one, as `FDV_MASTER_KEY_PREVIOUS`; the restore moves what the backup holds onto the current key before the vault opens it:
+
+```bash
+docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> worker node apps/worker/dist/cli.mjs restore-backup latest
+```
+
+The restore drill takes it the same way: `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<old key> worker sh scripts/restore-drill.sh <file>`. If what a backup holds does not all open with one of the two keys, nothing in it is moved and the restore fails, saying what to do: a vault is never left partly under one key and partly under the other. After more than one rotation, give the key that particular backup was made with. Once the last backup made with the old key is gone, the old key can go too.
 
 ## Upgrading
 
