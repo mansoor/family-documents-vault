@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type CreatedShare } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, ErrorNote, LockIcon } from '../ui.js';
-import { HandOver, LinkOptions, readLinkOptions, useLinkOptions } from './Share.js';
+import { HandOver, LinkOptions, linkFactors, readLinkOptions, useLinkOptions } from './Share.js';
 
 /**
  * Sharing a collection outside the family (5.19).
@@ -90,7 +90,12 @@ export function ShareCollectionPanel(props: {
   // A link that keeps up with the collection lasts 30 days at most (A19).
   const maxDays = follow ? Math.min(vaultMax, FOLLOW_MAX_DAYS) : vaultMax;
   const viewable = ticked.every((i) => i.viewable);
-  const read = readLinkOptions(options.value, { timezone, maxDays, viewable });
+  const read = readLinkOptions(options.value, {
+    timezone,
+    maxDays,
+    viewable,
+    factors: linkFactors(caps),
+  });
   const nothing = ticked.length === 0 && !follow;
 
   const working = (on: boolean) => {

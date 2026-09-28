@@ -37,12 +37,27 @@ describe('the activity log, in sentences', () => {
     const locked = describeEvent(
       ev({ action: 'share.locked', actor: null, actor_label: 'shared link (the letting agent)' }),
     );
+    // 5.20: a password or a code counts against the same ten.
     expect(locked?.text).toBe(
-      'A link to “Home insurance policy” stopped working: its PIN was typed wrong ten times',
+      'A link to “Home insurance policy” stopped working: its PIN, password or code was wrong ten times',
     );
     expect(locked?.notable).toBe(true);
     expect(describeEvent(ev({ action: 'share.resumed' }))?.text).toBe(
       'Sarah turned a link to “Home insurance policy” back on after a restore',
+    );
+  });
+
+  it('says a code was emailed, to an address it only ever has masked (5.20)', () => {
+    const sent = describeEvent(
+      ev({
+        action: 'share.code_sent',
+        actor: null,
+        actor_label: 'shared link (Jane)',
+        detail: { share_id: 's-1', to: 'j•••@e•••.com' },
+      }),
+    );
+    expect(sent?.text).toBe(
+      'A code to open a link to “Home insurance policy” was emailed to j•••@e•••.com',
     );
   });
 

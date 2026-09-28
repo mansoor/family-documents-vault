@@ -1,4 +1,4 @@
-import { pagesNotSharedNote } from '@fdv/shared';
+import { pagesNotSharedNote, readShareCode, type ShareCodeSent } from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import {
   api,
@@ -51,9 +51,14 @@ const NO_LINK =
  */
 const secure = () => window.isSecureContext !== false;
 
+/** A link for one device, in another browser (5.20): said before anything is tried. */
+const OTHER_DEVICE =
+  'This link has been opened on another device already, and it only opens there. Ask whoever sent it for a new one if you need it here.';
+
 export function SharePage({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [pin, setPin] = useState('');
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -77,7 +82,12 @@ export function SharePage({ token }: { token: string | null }) {
       try {
         if (token) {
           const preview = await api.previewLink(token);
-          if (live) setPhase({ kind: 'preview', preview });
+          if (!live) return;
+          setPhase(
+            preview.other_device
+              ? { kind: 'dead', message: OTHER_DEVICE }
+              : { kind: 'preview', preview },
+          );
           return;
         }
         // No token: the page was reloaded after Open, or opened without its
@@ -101,13 +111,20 @@ export function SharePage({ token }: { token: string | null }) {
     setBusy(true);
     setError(null);
     try {
-      const session = await api.unlockLink(token, pin.trim() || undefined);
+      const session = await api.unlockLink(
+        token,
+        pin.trim() || undefined,
+        readShareCode(code) ?? undefined,
+      );
       setPhase({ kind: 'open', session });
       setPin('');
+      setCode('');
     } catch (err) {
       if (
         err instanceof ApiRequestError &&
-        (err.code === 'link_not_valid' || err.code === 'link_used_up')
+        (err.code === 'link_not_valid' ||
+          err.code === 'link_used_up' ||
+          err.code === 'other_device')
       ) {
         setPhase({ kind: 'dead', message: err.message });
       } else {
@@ -138,14 +155,18 @@ export function SharePage({ token }: { token: string | null }) {
         </section>
       )}
 
-      {phase.kind === 'preview' && (
+      {phase.kind === 'preview' && token && (
         <Preview
+          token={token}
           preview={phase.preview}
           pin={pin}
           setPin={setPin}
+          code={code}
+          setCode={setCode}
           busy={busy}
           error={error}
           onOpen={(e) => void open(e)}
+          onOver={onOver}
           heading={heading}
         />
       )}
@@ -157,20 +178,43 @@ export function SharePage({ token }: { token: string | null }) {
   );
 }
 
+/**
+ * What a link asks for, in the sentence that says who sent it (5.20): a PIN
+ * or a password, and a code by email.
+ */
+function asksFor(needs: { pin: boolean; password: boolean; code: boolean }): string {
+  const secret = needs.pin ? 'a PIN' : needs.password ? 'a password' : null;
+  if (secret && needs.code) {
+    return `, and put ${secret} on it. It also asks for a code, which we email to you.`;
+  }
+  if (secret) return `, and put ${secret} on it.`;
+  if (needs.code) return ', and it asks for a code, which we email to you.';
+  return '.';
+}
+
 function Preview({
   heading,
   ...props
 }: {
+  token: string;
   preview: ShareLinkPreview;
   pin: string;
   setPin: (v: string) => void;
+  code: string;
+  setCode: (v: string) => void;
   busy: boolean;
   error: string | null;
   onOpen: (e: FormEvent) => void;
+  onOver: (message: string) => void;
   heading: RefObject<HTMLHeadingElement | null>;
 }) {
   const { preview } = props;
   const needsPin = preview.protection.includes('pin');
+  const needsPassword = preview.protection.includes('password');
+  const needsCode = preview.protection.includes('code');
+  const [sent, setSent] = useState<ShareCodeSent | null>(null);
+  const [sending, setSending] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const from = preview.shared_by ? <strong>{preview.shared_by}</strong> : 'Somebody';
   const canOpen = secure();
   // A collection (5.19): its name, withheld behind a PIN as a title is.
@@ -182,6 +226,33 @@ function Preview({
     : preview.document_title
       ? 'this'
       : 'a document';
+  // An emailed code (5.20): sent when they ask, to the address the sharer
+  // typed, which this page only ever shows masked.
+  const sendCode = async () => {
+    setSending(true);
+    setCodeError(null);
+    try {
+      setSent(await api.sendLinkCode(props.token));
+      props.setCode('');
+    } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'link_not_valid' ||
+          err.code === 'link_used_up' ||
+          err.code === 'other_device')
+      ) {
+        props.onOver(err.message);
+      } else {
+        setCodeError(describeError(err));
+      }
+    } finally {
+      setSending(false);
+    }
+  };
+  const ready =
+    (!needsPin || props.pin.trim().length >= 4) &&
+    (!needsPassword || props.pin.trim().length > 0) &&
+    (!needsCode || readShareCode(props.code) !== null);
   return (
     <>
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
@@ -197,9 +268,11 @@ function Preview({
       >
         <p>
           {from} shared {what} with you from {preview.household_name}
-          {needsPin ? ', and put a PIN on it.' : '.'}
+          {asksFor({ pin: needsPin, password: needsPassword, code: needsCode })}
         </p>
-        {(preview.permission === 'view' || preview.opens_left != null) && (
+        {(preview.permission === 'view' ||
+          preview.opens_left != null ||
+          preview.this_device_only) && (
           <ul className="share-terms">
             {preview.permission === 'view' && (
               <li>You can look at its pages here. It is not shared to download.</li>
@@ -208,6 +281,12 @@ function Preview({
               <li>
                 It can be opened {moreTimes(preview.opens_left)}. Each press of Open counts;
                 reloading the page it opens does not.
+              </li>
+            )}
+            {preview.this_device_only && (
+              <li>
+                It opens only on the first device that opens it. Open it where you want to read it:
+                after that, it will not open anywhere else.
               </li>
             )}
           </ul>
@@ -224,6 +303,52 @@ function Preview({
             hint="It came separately from the link. Its name stays hidden until the PIN is right."
           />
         )}
+        {needsPassword && (
+          <Field
+            id="share-secret"
+            label="The password they gave you"
+            type="password"
+            value={props.pin}
+            onChange={props.setPin}
+            autoComplete="off"
+            maxLength={64}
+            hint="It came separately from the link. Its name stays hidden until it is right."
+          />
+        )}
+        {needsCode && (
+          <div className="stack" style={{ gap: 8 }} data-testid="share-code">
+            {sent ? (
+              <p className="status status-ok share-code-sent" role="status">
+                We sent a code to {sent.sent_to}. It works once, for 10 minutes.
+              </p>
+            ) : (
+              <p className="share-code-sent">
+                We will email a code to <strong>{preview.code_to ?? 'their inbox'}</strong>, the
+                address {preview.shared_by ?? 'whoever sent the link'} gave for you.
+              </p>
+            )}
+            <ErrorNote message={codeError} />
+            {sent && (
+              <Field
+                id="share-code-input"
+                label="The code from the email"
+                value={props.code}
+                onChange={props.setCode}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={9}
+                hint="Six digits. If it has not come, look in junk mail, or send another."
+              />
+            )}
+            <Button
+              kind={sent ? 'quiet' : 'primary'}
+              disabled={sending || !secure()}
+              onClick={() => void sendCode()}
+            >
+              {sending ? 'Sending…' : sent ? 'Send another code' : 'Email me a code'}
+            </Button>
+          </div>
+        )}
         {!canOpen && (
           <p className="status status-warn" role="note">
             This page is not on a secure connection, so this browser could not download the
@@ -232,10 +357,7 @@ function Preview({
           </p>
         )}
         <ErrorNote message={props.error} />
-        <Button
-          type="submit"
-          disabled={!canOpen || props.busy || (needsPin && props.pin.trim().length < 4)}
-        >
+        <Button type="submit" disabled={!canOpen || props.busy || !ready}>
           {props.busy ? 'Opening…' : 'Open'}
         </Button>
         <p className="muted">

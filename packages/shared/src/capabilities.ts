@@ -106,6 +106,22 @@ export interface CapabilityFeatures {
    * vaults.
    */
   collection_shares?: boolean;
+  /**
+   * A link can ask for more than itself (5.20): a password the vault makes
+   * up (`with_password`) or one the sharer types (`password`), and to open
+   * in one browser only (`this_device_only`); every failed PIN, password or
+   * code uses up the link's one counter of ten. Absent from older vaults,
+   * which take `with_pin` alone.
+   */
+  share_second_factor?: boolean;
+  /**
+   * A link can ask for a code emailed to an address the sharer typed
+   * (5.20, `code_email`; `POST /shared/code` sends it). Only through the
+   * mail server of whoever runs the vault (FDV_SMTP_URL, A21), never the
+   * household's own: false without one, and a client hides the option,
+   * saying why (`SHARE_CODE_UNAVAILABLE`). Absent from older vaults.
+   */
+  share_email_code?: boolean;
 }
 
 export interface CapabilityLimits {

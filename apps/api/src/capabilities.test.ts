@@ -69,6 +69,10 @@ describe('buildCapabilities', () => {
       share_options: true,
       // 5.19: a collection shared outside, as ticked, checked on every request.
       collection_shares: true,
+      // 5.20: a password and one browser only; one counter of ten.
+      share_second_factor: true,
+      // 5.20: an emailed code, only with the operator's mail server (A21).
+      share_email_code: false,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's
@@ -82,6 +86,16 @@ describe('buildCapabilities', () => {
       { field: 'GET /api/v1/invitations/{token}', removed_in: '0.9.0' },
       { field: 'POST /api/v1/invitations/{token}/accept', removed_in: '0.9.0' },
     ]);
+  });
+
+  it("an emailed code is offered only with the operator's mail server (5.20, A21)", () => {
+    expect(buildCapabilities(config).features.share_email_code).toBe(false);
+    expect(buildCapabilities({ ...config, operatorMail: false }).features.share_email_code).toBe(
+      false,
+    );
+    expect(buildCapabilities({ ...config, operatorMail: true }).features.share_email_code).toBe(
+      true,
+    );
   });
 
   it('push is reported only when the vault has Web Push keys', () => {

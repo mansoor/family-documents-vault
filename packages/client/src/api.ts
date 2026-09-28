@@ -48,6 +48,7 @@ import type {
   SearchResult,
   SessionRow,
   Share,
+  ShareCodeSent,
   SharedDocument,
   SharedSession,
   ShareInput,
@@ -667,11 +668,33 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { token: linkToken },
       }),
-    /** Open: counted, written down, and a session for this browser. */
-    unlockLink: (linkToken: string, secret?: string) =>
+    /**
+     * Open: counted, written down, and a session for this browser. `secret`
+     * is the PIN or, since 5.20, the password; `code` the emailed code. A
+     * wrong one of either is `401` (`pin_wrong` for a PIN alone, otherwise
+     * `secret_wrong`), in words that never say which; another browser than
+     * the one a link for this device only was opened in is `403
+     * other_device`.
+     */
+    unlockLink: (linkToken: string, secret?: string, code?: string) =>
       request<SharedSession>('/api/v1/shared/unlock', {
         method: 'POST',
-        body: secret ? { token: linkToken, secret } : { token: linkToken },
+        body: {
+          token: linkToken,
+          ...(secret ? { secret } : {}),
+          ...(code ? { code } : {}),
+        },
+      }),
+    /**
+     * An emailed code (5.20, `features.share_email_code`), to the address the
+     * sharer typed — the page never says one. `429 code_limit` past 3 in 15
+     * minutes or 10 a day; `503 email_code_unavailable` when the vault has no
+     * way to send one.
+     */
+    sendLinkCode: (linkToken: string) =>
+      request<ShareCodeSent>('/api/v1/shared/code', {
+        method: 'POST',
+        body: { token: linkToken },
       }),
     /** What is open in this browser's session; `401 share_session_ended` when nothing is. */
     linkItems: () => request<SharedSession>('/api/v1/shared/items'),

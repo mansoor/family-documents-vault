@@ -426,18 +426,22 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       document_title: null,
       shared_by: 'Owner',
     });
-    // Nothing in what it is given counts anything.
+    // Nothing in what it is given counts anything. (5.20's say what Open
+    // asks for: a code's inbox, masked, and whether it is for one device.)
     expect(Object.keys(shown).sort()).toEqual(
       [
+        'code_to',
         'collection_name',
         'document_title',
         'expires_at',
         'household_name',
         'kind',
         'opens_left',
+        'other_device',
         'permission',
         'protection',
         'shared_by',
+        'this_device_only',
       ].sort(),
     );
     const { session } = await opened(link.link_token);
@@ -1633,6 +1637,25 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     ] as const) {
       await expect(tries(over), what).rejects.toThrow(
         /row-level security|head of the activity log/,
+      );
+    }
+    // 5.20's line, a code sent (0043), is held the same way: about its own
+    // collection, under its own name, on the chain.
+    const codeSent = {
+      action: 'share.code_sent',
+      object_type: 'collection',
+      object_id: family,
+      detail: JSON.stringify({ share_id: link.share.id, to: 'j•••@e•••.com' }),
+    };
+    await expect(tries(codeSent)).rejects.toThrow(/written, and undone/);
+    for (const [what, over] of [
+      ['a collection it is not to', { object_id: teens }],
+      ['as somebody else’s link', { actor_label: 'shared link (the landlord)' }],
+      ['off the chain', { prev_hash: randomBytes(32) }],
+      ['long ago', { at: new Date(Date.now() - 3_600_000) }],
+    ] as const) {
+      await expect(tries({ ...codeSent, ...over }), `a code sent, ${what}`).rejects.toThrow(
+        /row-level security/,
       );
     }
   });

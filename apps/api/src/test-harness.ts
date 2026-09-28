@@ -1,7 +1,14 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import {
+  deriveKey,
+  EnvKeyProvider,
+  OPERATOR_MAIL_KEY_PURPOSE,
+  openBytes,
+  operatorMailBinding,
+  ScopeKeys,
+} from '@fdv/crypto';
 import { createDb, createPool, type Db, type Schema } from '@fdv/db';
 import type { Role } from '@fdv/shared';
 import { createTestDatabase, type TestDatabase } from '@fdv/db/testing';
@@ -23,7 +30,8 @@ import { HouseholdService } from './household/service.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
-import { ShareService } from './documents/shares.js';
+import { SHARE_CODE_KEY_PURPOSE, ShareService } from './documents/shares.js';
+import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -106,6 +114,36 @@ export interface HarnessOptions {
    * limit keep it.
    */
   rateLimitPerMinute?: number;
+  /**
+   * FDV_SMTP_URL set: the operator's mail server, which alone sends a link's
+   * code (5.20). On unless a test says false, as passwords.test.ts's reset
+   * route is.
+   */
+  operatorMail?: boolean;
+}
+
+/** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
+export const TEST_MAIL_KEY = deriveKey(TEST_MASTER, OPERATOR_MAIL_KEY_PURPOSE);
+
+/**
+ * What the harness caught on its way to one address (5.20): each
+ * `mail.to_address` job, opened as the worker opens it. The test harness's
+ * mail capture: nothing leaves it.
+ */
+export function mailSent(h: Pick<Harness, 'jobs'>): Array<MailRequest> {
+  return h.jobs
+    .filter((j) => j.name === MAIL_JOB)
+    .map((j) => {
+      const householdId = String(j.data.household_id);
+      const opened = JSON.parse(
+        openBytes(
+          TEST_MAIL_KEY,
+          Buffer.from(String(j.data.sealed), 'base64'),
+          operatorMailBinding(householdId),
+        ).toString('utf8'),
+      ) as { to: string; subject: string; text: string };
+      return { householdId, ...opened };
+    });
 }
 
 export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -124,6 +162,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     ...(opts.rateLimitPerMinute
       ? { FDV_RATE_LIMIT_PER_MINUTE: String(opts.rateLimitPerMinute) }
       : {}),
+    // Nothing is ever sent to it: the harness catches every email (mailSent).
+    ...(opts.operatorMail === false ? {} : { FDV_SMTP_URL: 'smtp://operator-mail.test:25' }),
   });
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
@@ -136,6 +176,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
   // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
   const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
+  // And an email to one address (5.20): the same sealed mapping as production.
+  const operatorMail = (m: MailRequest) => enqueue(MAIL_JOB, mailJob(TEST_MAIL_KEY, m));
   const reminders = new ReminderService(db);
   const totp = new TotpService(
     db,
@@ -198,6 +240,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     shares: new ShareService(db, keys, vaults, alert, opts.publicUrl ?? null, {
       enqueue,
       maxDays: config.FDV_SHARE_MAX_DAYS,
+      codeKey: deriveKey(TEST_MASTER, SHARE_CODE_KEY_PURPOSE),
+      mail: config.FDV_SMTP_URL ? operatorMail : null,
     }),
     audit: new AuditService(db),
     reminders,

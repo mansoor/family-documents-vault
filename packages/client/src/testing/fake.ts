@@ -630,6 +630,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           share_options: true,
           // A collection shared outside (5.19), as the vault says.
           collection_shares: true,
+          // A password and one browser only (5.20); an emailed code only
+          // with the operator's mail server, which a fake has none of.
+          share_second_factor: true,
+          share_email_code: false,
         },
         limits: {
           max_upload_bytes: 104_857_600,

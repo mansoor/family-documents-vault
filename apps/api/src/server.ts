@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { deriveKey, EnvKeyProvider, OPERATOR_MAIL_KEY_PURPOSE, ScopeKeys } from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { TotpService } from './auth/totp.js';
@@ -24,7 +24,8 @@ import { HouseholdService } from './household/service.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
-import { ShareService } from './documents/shares.js';
+import { SHARE_CODE_KEY_PURPOSE, ShareService } from './documents/shares.js';
+import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -114,6 +115,10 @@ async function main(): Promise<void> {
   const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
   // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
   const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
+  // An email to one address, through the operator's mail server (5.20):
+  // sealed on the queue, the same mapping here and in tests.
+  const mailKey = deriveKey(masterSecret, OPERATOR_MAIL_KEY_PURPOSE);
+  const operatorMail = (m: MailRequest) => enqueue(MAIL_JOB, mailJob(mailKey, m));
 
   // Passkeys are bound to the address the vault is published at, so this
   // is where FDV_BASE_URL stops being cosmetic.
@@ -173,6 +178,10 @@ async function main(): Promise<void> {
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
       enqueue,
       maxDays: config.FDV_SHARE_MAX_DAYS,
+      // 5.20: a link's codes, HMACed under a key of their own, and sent only
+      // through the operator's mail server — none at all without one (A21).
+      codeKey: deriveKey(masterSecret, SHARE_CODE_KEY_PURPOSE),
+      mail: config.FDV_SMTP_URL ? operatorMail : null,
     }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),

@@ -10,11 +10,14 @@ import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
 import {
+  codeBody,
   collectionShareBody,
   openBody,
   previewBody,
   SHARE_COOKIE,
   SHARE_COOKIE_PATH,
+  SHARE_DEVICE_COOKIE,
+  SHARE_DEVICE_MAX_AGE_S,
   shareBody,
   unlockBody,
   type ShareService,
@@ -630,27 +633,51 @@ export function registerDocuments(
   // cookie for this path alone, whose hash is all the vault keeps.
 
   app.post('/api/v1/shared/preview', tight, async (req) =>
-    shares.previewLink(parse(previewBody, req.body ?? {}).token),
+    shares.previewLink(parse(previewBody, req.body ?? {}).token, req.cookies[SHARE_DEVICE_COOKIE]),
+  );
+
+  /**
+   * An emailed code (5.20): to the address the sharer typed — the page
+   * never says one — through the operator's mail server alone (A21).
+   */
+  app.post('/api/v1/shared/code', tight, async (req) =>
+    shares.sendCode(
+      parse(codeBody, req.body ?? {}).token,
+      req.cookies[SHARE_DEVICE_COOKIE],
+      metaOf(req),
+    ),
   );
 
   app.post('/api/v1/shared/unlock', tight, async (req, reply) => {
-    const opened = await shares.unlock(parse(unlockBody, req.body ?? {}), metaOf(req));
-    void reply.setCookie(SHARE_COOKIE, opened.cookie, {
+    const opened = await shares.unlock(
+      parse(unlockBody, req.body ?? {}),
+      metaOf(req),
+      req.cookies[SHARE_DEVICE_COOKIE],
+    );
+    // Always Secure: browsers keep a Secure cookie from http://localhost,
+    // and a vault that outsiders reach is reached over https (the
+    // public-only site, README). Over plain http elsewhere the page says
+    // why it cannot open.
+    const scoped = {
       path: SHARE_COOKIE_PATH,
       httpOnly: true,
-      // Always: browsers keep a Secure cookie from http://localhost, and a
-      // vault that outsiders reach is reached over https (the public-only
-      // site, README). Over plain http elsewhere the page says why it
-      // cannot open.
       secure: true,
       sameSite: 'strict',
-      maxAge: opened.maxAge,
-    });
+    } as const;
+    void reply.setCookie(SHARE_COOKIE, opened.cookie, { ...scoped, maxAge: opened.maxAge });
+    // A link for one device (5.20): which browser this is, sent back on its
+    // next Open, and kept by the vault only as a hash.
+    if (opened.device) {
+      void reply.setCookie(SHARE_DEVICE_COOKIE, opened.device, {
+        ...scoped,
+        maxAge: SHARE_DEVICE_MAX_AGE_S,
+      });
+    }
     return opened.session;
   });
 
   app.get('/api/v1/shared/items', inSession, async (req) =>
-    shares.sessionItems(req.cookies[SHARE_COOKIE]),
+    shares.sessionItems(req.cookies[SHARE_COOKIE], req.cookies[SHARE_DEVICE_COOKIE]),
   );
 
   app.get<{ Params: { doc: string } }>(
@@ -658,7 +685,12 @@ export function registerDocuments(
     inSession,
     async (req, reply) => {
       const doc = parse(z.object({ doc: z.string().uuid() }), req.params).doc;
-      const file = await shares.sessionContent(req.cookies[SHARE_COOKIE], doc, metaOf(req));
+      const file = await shares.sessionContent(
+        req.cookies[SHARE_COOKIE],
+        doc,
+        metaOf(req),
+        req.cookies[SHARE_DEVICE_COOKIE],
+      );
       return sendShared(reply, file);
     },
   );
@@ -677,7 +709,13 @@ export function registerDocuments(
         }),
         req.params,
       );
-      const jpeg = await shares.sessionPage(req.cookies[SHARE_COOKIE], doc, n, metaOf(req));
+      const jpeg = await shares.sessionPage(
+        req.cookies[SHARE_COOKIE],
+        doc,
+        n,
+        metaOf(req),
+        req.cookies[SHARE_DEVICE_COOKIE],
+      );
       reply.header('content-type', 'image/jpeg');
       reply.header('cache-control', 'private, no-store');
       reply.header('x-robots-tag', 'noindex, nofollow');

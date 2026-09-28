@@ -639,10 +639,28 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
                 from share_link where id = ${shares.lease}
               on conflict (id) do update set token_hash = excluded.token_hash`.execute(trx),
       ],
+      // 5.20 (0043): what protects it is the sharer's, and stays as made.
+      [
+        'one device, or any',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ this_device_only: true } as never)
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'a code sent where it chooses',
+        (trx) =>
+          sql`update share_link set code_email = 'somebody@example.test'
+               where id = ${shares.lease}`.execute(trx),
+      ],
     ];
     for (const [what, change] of theSharers) {
+      // Refused by the link's own guard, its rule, or — for what protects it
+      // (0043), whoever asks — the guard that keeps a link as it was made.
       await expect(as(link(shares.lease), change), what).rejects.toThrow(
-        /only count its opens|row-level security/,
+        /only count its opens|row-level security|keeps the protection|only when the link has ended/,
       );
     }
 

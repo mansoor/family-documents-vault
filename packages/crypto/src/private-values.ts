@@ -67,6 +67,16 @@ export const memberPhotoBinding = (householdId: string, memberId: string, photoI
 export const memberPhotoSourceBinding = (householdId: string, memberId: string, photoId: string) =>
   `member-photo-source:${householdId}:${memberId}:${photoId}`;
 
+/**
+ * An email the API asks the worker to send to one address through the
+ * operator's mail server (5.20, `mail.to_address`): sealed under a key
+ * derived from the master key for this alone, so the job queue — and every
+ * backup of it — holds no address and no code. The API seals, the worker
+ * opens; bound to its household.
+ */
+export const OPERATOR_MAIL_KEY_PURPOSE = 'operator-mail-job';
+export const operatorMailBinding = (householdId: string) => `mail.to_address:${householdId}`;
+
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
 
