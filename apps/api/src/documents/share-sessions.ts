@@ -15,9 +15,11 @@ import { sql } from 'kysely';
  * What then becomes of it (the fifth round):
  *  - the request in flight goes on after the link has ended, and is
  *    answered by inSession as the link's, gone (404 link_not_valid), all it
- *    did undone and its session removed — asked again as it finishes;
- *  - the session's next request finds its link gone first, and is answered
- *    and removed the same way;
+ *    did undone and its session removed — asked again as it finishes — so a
+ *    later request of that session is 401 share_session_ended;
+ *  - a session whose request finished just before the link ended is kept:
+ *    its next request finds its link gone first, and is answered 404
+ *    link_not_valid and removed;
  *  - left alone, it lapses within four hours;
  *  - and an ended link's pages are removed whatever sessions it has.
  */

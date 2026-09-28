@@ -835,7 +835,8 @@ export class CollectionService {
     if (ended.length === 0) return;
     // Their open pages end too — but one in use this moment, whose request
     // holds it and may be waiting on the log held here: not waited on
-    // (endSessions, the fourth review), and refused at its next request.
+    // (endSessions, the fourth review); that request removes it itself as
+    // it finds the link gone, and one left behind is refused at its next.
     await endSessions(
       trx,
       ended.map((e) => e.id),

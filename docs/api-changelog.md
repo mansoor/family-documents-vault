@@ -1841,8 +1841,11 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       all it did undone (a first download is not counted, a first look at
       pages is not written down) and its session removed; a first download
       that waited on the link as it was taken back, locked or paused is
-      refused at its count. The session's next request is answered the
-      same way. A request whose link still works keeps its own answer.
+      refused at its count. Its session goes with that answer, so a later
+      request of it is `401 share_session_ended`, as after any
+      `link_not_valid` (5.16). A session whose request finished just before
+      its link ended is refused `404 link_not_valid` at its next request,
+      and removed. A request whose link still works keeps its own answer.
     - **Changed (pages that could not be drawn):** 5.18's rules now hold a
       version at a time, for a document's link and each document of a
       collection's alike. The worker's last failed try is kept for the
