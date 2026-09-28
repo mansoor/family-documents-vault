@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.20] - 2026-09-28 — iteration 5.18
+
+Share links: until a date and time, view or download, so many opens.
+
+### Added
+
+- A share link can end at a date and time of your choosing — "Tonight", "Friday 5 pm", "In a week", or any moment, in the household's time zone — up to `FDV_SHARE_MAX_DAYS` days (90 by default).
+- **View only**: the recipient sees the document's pages, each marked across the page and along the foot with who it was shared with and when, and cannot download the file. Up to the first 30 pages are shown; both sides are told when a document has more. Word and Excel files cannot be shared this way.
+- **Opened so many times**: a link can be opened a set number of times; opening it again in the same sitting, or turning pages, does not count. The family's list says how many opens and downloads are left.
+- Watermarks are drawn in the recipient label's own script — Arabic, Devanagari, Chinese, Japanese, Korean, emoji.
+
+### Changed
+
+- A link that has used up its opens tells the recipient so, instead of the general "this link cannot be opened".
+- A link made with no end, or by an older app asking for more days than the vault allows, ends at the vault's limit.
+
+### Fixed
+
+- Multi-page TIFF scans show every page (up to 30) instead of the first; counting their pages no longer runs out of memory on large scans.
+
 ## [0.5.19] - 2026-09-27 — iteration 5.17c
 
 A person's profile, and their photo.

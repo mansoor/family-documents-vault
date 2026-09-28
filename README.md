@@ -153,6 +153,24 @@ What it cannot do: it is still a page on the internet. Anyone can knock on it, a
 is only as private as the message you send it in; a PIN, told over the phone, is the
 second lock.
 
+A link can say more than who it is for:
+
+- **Until when**: a date and a time on your household's clock (Settings → Household), with
+  Tonight, Friday 5 pm and In a week one tap away. At least five minutes ahead, and at
+  most `FDV_SHARE_MAX_DAYS` (90 unless you shorten it; the share sheet offers nothing
+  longer): a link always ends.
+- **View, or view and download.** A link to view shows the document's pages, each drawn
+  by the worker with who the link is for and the day it was made written across the
+  whole page, again and again on the slant (so a part cut out still carries it), in any
+  script, and once more below it. It never gives the file itself, by any route. It shows
+  the first 30 pages (of a PDF, or of a scanner's many-page TIFF), and you are told when
+  a document is longer. The recipient can keep pictures of the pages, each marked; no page
+  can stop a screenshot, and the page says so. Word and Excel files are shared only with
+  download: the vault cannot draw their pages. A link's pages are removed when it ends.
+- **How many opens.** Each press of Open that works is one; reloading the page it opened,
+  turning its pages or downloading the file again there is not. A download is counted
+  once per document for each open, and so is the line the activity log gets for it.
+
 ## Phones and other apps
 
 The phone app talks to the same API as the web app, at the same address. Nothing needs
@@ -236,6 +254,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_BASE_URL`                     | `http://localhost:8080`                   | What reminder emails and notifications link back to. Set it to the `https://` address once you have one.                                                                                                                |
 | `FDV_CADDYFILE`                    | internal                                  | Which TLS setup to use: `./docker/caddy/Caddyfile.internal` or `./docker/caddy/Caddyfile.public`.                                                                                                                       |
 | `FDV_PUBLIC_URL`                   | unset                                     | The public-only site's `https://` address, which share links start with. See [Links for people outside the family](#links-for-people-outside-the-family).                                                               |
+| `FDV_SHARE_MAX_DAYS`               | `90`                                      | The longest a share link may last, in days (1 to 90). A link always ends; this only shortens the longest end the vault accepts.                                                                                         |
 | `FDV_PUBLIC_HOSTNAME`              | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
 | `FDV_PUBLIC_HTTPS_PORT`            | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`             | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |

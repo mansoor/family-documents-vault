@@ -24,6 +24,19 @@ export const JOBS = {
    * vault reading a hundred pages never keeps somebody's photo waiting.
    */
   memberPhoto: 'member.photo',
+  /**
+   * A view-only link's pages (5.18): the previews drawn again with whom the
+   * link is for across each. Sent by the API when the link is made, when a
+   * page is asked for and there are none, and when an owner turns the link
+   * back on after a restore; one per link queued or running. The name
+   * matches the API's SHARE_PAGES_JOB.
+   */
+  sharePages: 'share.pages',
+  /**
+   * Ended links' pages removed (5.18): one link's when it is taken back
+   * (the API's SHARE_PAGES_PRUNE_JOB), and every household's each night.
+   */
+  sharePagesPrune: 'share.pages.prune',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
   /**

@@ -273,6 +273,20 @@ async function seed(url: string): Promise<string> {
             where s.household_id = $1 and s.revoked_at is null and s.expires_at > now()`,
           [hh, randomBytes(32)],
         );
+        // And, where the schema counts them (0041), the download that
+        // session has had.
+        const uses = await c.query<{ has: boolean }>(
+          "select to_regclass('public.share_session_use') is not null as has",
+        );
+        if (uses.rows[0]?.has) {
+          await c.query(
+            `insert into share_session_use (household_id, session_id, share_id, document_id, kind)
+             select $1, s.id, s.share_id, l.document_id, 'downloaded'
+               from share_session s join share_link l on l.id = s.share_id
+              where s.household_id = $1`,
+            [hh],
+          );
+        }
       }
     }
   });
@@ -960,6 +974,13 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
   }, 60_000);
 
   it('after a restore every link is paused and no session survives', async () => {
+    // The backup has a session open, and a download it has had (0041).
+    const before = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from share_session) as sessions,
+              (select count(*)::int from share_session_use) as uses`,
+    );
+    expect(before.rows[0]).toEqual({ sessions: 1, uses: 1 });
     const t = await empty();
     const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
     // The live link, and only that: one taken back or run out stays as it was.
@@ -971,9 +992,11 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from share_link where paused_reason = 'restored') as paused,
               (select count(*)::int from share_link where paused_at is not null
                   and (revoked_at is not null or expires_at <= now())) as dead_paused,
-              (select count(*)::int from share_session) as sessions`,
+              (select count(*)::int from share_session) as sessions,
+              (select count(*)::int from share_session_use) as uses`,
     );
-    expect(rows[0]).toEqual({ live: 0, paused: 1, dead_paused: 0, sessions: 0 });
+    // What those sessions had had goes with them (0041).
+    expect(rows[0]).toEqual({ live: 0, paused: 1, dead_paused: 0, sessions: 0, uses: 0 });
     // And a link asking as itself, as the vault will let it, reaches nothing.
     const [link] = (
       await sql(t.adminUrl, `select id, household_id from share_link where paused_at is not null`)

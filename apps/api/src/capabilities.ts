@@ -10,6 +10,8 @@ export interface CapabilityConfig {
   pushEnabled: boolean;
   /** This installation's identifier (migration 0021); null before it exists. */
   instanceId: string | null;
+  /** FDV_SHARE_MAX_DAYS: the longest a share link may last (5.18). 90 when not said. */
+  shareMaxDays?: number;
 }
 
 /**
@@ -79,11 +81,15 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 0.5.19: people's photos, made by the worker; the family sees
       // everyone's, a viewer only their own (5.17c).
       member_photos: true,
+      // 5.18: a link until a date and time, to view or to download, so many opens.
+      share_options: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,
       max_members: null,
       max_storage_bytes: null,
+      // 5.18 review: a client offers only ends the vault will take.
+      share_max_days: config.shareMaxDays ?? 90,
     },
     deprecations: DEPRECATIONS,
     branding: { display_name: config.displayName },

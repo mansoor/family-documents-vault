@@ -626,6 +626,28 @@ export function registerDocuments(
     },
   );
 
+  // A view-only link's pages (5.18): the ones drawn for it, with whom it is
+  // for across each, and never the file or the vault's own previews.
+  app.get<{ Params: { doc: string; n: string } }>(
+    '/api/v1/shared/items/:doc/pages/:n',
+    inSession,
+    async (req, reply) => {
+      const { doc, n } = parse(
+        z.object({
+          doc: z.string().uuid(),
+          // Past the pages drawn is the service's to say, in words.
+          n: z.coerce.number().int().min(1).max(10_000),
+        }),
+        req.params,
+      );
+      const jpeg = await shares.sessionPage(req.cookies[SHARE_COOKIE], doc, n, metaOf(req));
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, no-store');
+      reply.header('x-robots-tag', 'noindex, nofollow');
+      return reply.send(jpeg);
+    },
+  );
+
   // ---------------------------------------------- the old routes (A25)
   //
   // For links made before 5.16 (`flow = 'legacy'`) and nothing else: a new

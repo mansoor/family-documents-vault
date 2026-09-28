@@ -129,6 +129,8 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // after a restore paused it.
   ['share.locked', BY_TYPE],
   ['share.resumed', BY_TYPE],
+  // 5.18: a view-only link's pages looked at, once a session.
+  ['share.viewed', BY_TYPE],
   // people
   ['member.added', BY_TYPE],
   ['member.role_changed', BY_TYPE],

@@ -140,17 +140,28 @@ jobs:
       # A service is reached by its name from a job in a container.
       DATABASE_ADMIN_URL: postgres://fdv:fdv@postgres:5432/fdv
       COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      # The worker image's tools, all here: the checks that need exactly them
+      # (OCR reading a view-only page's watermark back, where a line in each
+      # script falls) run here, and are skipped everywhere else.
+      FDV_IMAGE_PARITY: '1'
     steps:
-      # The worker image's packages (Dockerfile, worker stage), and what the
-      # tests make their pictures with: libheif's encoders and heif-enc (the
-      # worker only reads HEIC), and git, for the checkout.
+      # The worker image's packages (Dockerfile, worker stage) — pango and the
+      # fonts a view-only link's pages are written in (5.18), pruned to one
+      # weight each as the image keeps them — and what the tests make their
+      # pictures with: libheif's encoders and heif-enc (the worker only reads
+      # HEIC), and git, for the checkout.
       - name: Install the worker image's tools
         run: |
           apk add --no-cache git tesseract-ocr tesseract-ocr-data-eng poppler-utils \
-            imagemagick imagemagick-heic fontconfig font-dejavu font-liberation \
-            postgresql16-client libheif-plugins-all libheif-tools
+            imagemagick imagemagick-heic imagemagick-pango fontconfig font-dejavu \
+            font-liberation font-noto font-noto-arabic font-noto-devanagari font-noto-emoji \
+            font-wqy-zenhei postgresql16-client libheif-plugins-all libheif-tools
+          find /usr/share/fonts/noto -type f ! -name NotoSans-Regular.ttf \
+            ! -name NotoSansArabic-Regular.ttf ! -name NotoSansDevanagari-Regular.ttf \
+            ! -name NotoColorEmoji.ttf -delete
           fc-cache -f
           magick -version | head -1
+          magick -list format | grep PANGO
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
@@ -161,6 +172,7 @@ jobs:
           pnpm exec vitest run
           apps/worker/src/jobs/member-photo.test.ts
           apps/worker/src/jobs/previews.test.ts
+          apps/worker/src/jobs/share-pages.test.ts
 
   images:
     name: Build images

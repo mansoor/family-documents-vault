@@ -89,6 +89,15 @@ export interface CapabilityFeatures {
    * own. Absent from older vaults, where a client shows initials.
    */
   member_photos?: boolean;
+  /**
+   * A link's options (5.18): POST /documents/{id}/share takes `expires_at`
+   * (a date and time), `permission` (`view` or `download`), `max_opens` and
+   * `max_downloads`; a link to view serves its pages at
+   * /shared/items/{id}/pages/{n} and never the file. Absent from older
+   * vaults, which take `expires_in_days` only; send the rest only when this
+   * is true.
+   */
+  share_options?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -97,6 +106,12 @@ export interface CapabilityLimits {
   max_members: number | null;
   /** `null` means unlimited, which is the self-hosted default. */
   max_storage_bytes: number | null;
+  /**
+   * The longest a share link may last, in days (5.18: FDV_SHARE_MAX_DAYS,
+   * 90 unless the operator shortens it). An `expires_at` past it is refused.
+   * Absent from older vaults, which take 90.
+   */
+  share_max_days?: number;
 }
 
 export interface Deprecation {

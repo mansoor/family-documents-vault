@@ -11,6 +11,7 @@ import type { SendPreviews } from './previews.js';
 import {
   detectTools,
   drawable,
+  imageFrames,
   ocrImage,
   pdfPageCount,
   readIfExists,
@@ -113,7 +114,13 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
 
     // 2. Page count (PDF only).
     if (isPdf && tools.pdftoppm) update.page_count = await pdfPageCount(plainFile);
-    if (isImage) update.page_count = 1;
+    // An image is one page, but a scanner's TIFF holds one a frame (5.18
+    // review): counted, so that "the first 30 of 42" is true of it too.
+    if (isImage) {
+      update.page_count = tools.magick
+        ? await imageFrames(plainFile, version.mime).catch(() => 1)
+        : 1;
+    }
 
     // 3. Thumbnail, encrypted with the version's key, cached beside the object.
     if ((isPdf || isImage) && tools.magick) {

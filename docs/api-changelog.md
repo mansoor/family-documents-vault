@@ -1546,6 +1546,120 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
     detail as `jsonb` does). Rows already written are unchanged, and so is
     the rule that checks them; a chain broken this way before stays broken
     at that row.
+  - Until a date and time, view or download, so many opens (5.18,
+    `features.share_options`). A new link can end at a time, be for viewing
+    only, and be opened so many times. One use is one Open that worked:
+    reloading the page it opened, turning its pages and downloading again
+    inside that session are free.
+    - **Added:** `features.share_options` in the capability document,
+      `true` from this release and absent before it. Send what follows
+      only when it is `true`.
+    - **Added:** `POST /api/v1/documents/{id}/share` takes `expires_at` (ISO
+      8601 with an offset; at least 5 minutes ahead and at most
+      `FDV_SHARE_MAX_DAYS` days, 90 unless the operator shortens it),
+      `permission` (`view` or `download`, the default), `max_opens` and
+      `max_downloads` (1 to 1000, or null for no limit). Refusals:
+      `422 expiry_out_of_range` ("Choose a time at least 5 minutes from
+      now.", "A link can last 90 days at most."); `422 view_not_possible`
+      for a file the vault cannot draw (Word, Excel: "Word and Excel files
+      can only be shared to download…"); `422 validation_failed` for both
+      `expires_at` and `expires_in_days`, or `max_downloads` on a link to
+      view. **Kept:** `expires_in_days` (1 to 90) for older clients; with
+      neither, a week, as before. Neither of those is refused for being
+      past `FDV_SHARE_MAX_DAYS`, which an older client cannot know: they
+      are cut to it, and the answer's `expires_at` says when the link ends.
+    - **Added:** `limits.share_max_days` in the capability document: the
+      longest a link may last (`FDV_SHARE_MAX_DAYS`). A client offers only
+      ends within it. Absent from older vaults, which take 90.
+    - **Added:** `Share` gains `permission`, `max_opens`, `max_downloads`,
+      `downloads_used` and `pages` (`{ state: 'drawing' | 'ready' |
+'failed', shown, total }` for a link to view, else null), and `state`
+      gains `used_up`: opened as often as it allows (a page opened with it
+      lasts to its own end). Its `summary` reads "Shared with the letting
+      agent, opened 2 of 5 times; 3 downloads. Stops working on 2 October
+      at 17:00.", the time on the household's clock.
+    - **Added:** `ShareLinkPreview` gains `permission` and `opens_left`
+      (null for no limit); `SharedSession` gains `permission` and
+      `downloads_left`; `SharedItem` gains `pages` and `downloaded` (this
+      session has had the file, and may again, free, once the link's
+      downloads are used up). All absent from older vaults, where every
+      link downloads and has no limits.
+    - A view-only link's pages still to be drawn are asked of the worker
+      whenever the link is looked at — the preview, Open, `GET
+/shared/items`, a page, and the family's `GET /shares` — once for each
+      link and version however often it is asked, so a newer version, a
+      lost job or a worker that started after the API never leaves a link
+      "being drawn" for ever. Pages the worker could not draw, on its last
+      try, are `pages.state: "failed"` for that version for an hour; after
+      that, somebody looking at the link asks for them again (a newer
+      version, or an owner turning the link back on, does so at once). A
+      version whose own previews failed, or a kind of file the vault cannot
+      draw, is `failed` for good.
+    - An `expires_at` up to 5 minutes past the longest is taken, for a
+      client whose clock is ahead.
+    - **Added:** `GET /api/v1/shared/items/{document_id}/pages/{n}` (the
+      cookie) → a JPEG: page `n` of a view-only link's document, drawn by
+      the worker from the vault's page previews with the link's
+      recipient label and the day it was made written across the whole
+      page in a slanted grid, and once more below it, in any script. The
+      first 30 pages; past them `404 no_preview` ("Pages after 30 were not
+      shared."); not drawn yet `404 preview_pending` (retriable,
+      `Retry-After: 3`), and the worker is asked to draw them. On a link
+      to download, `404 no_preview`. 120 a minute per address, as the
+      session's other routes.
+    - **Changed:** a view-only link never gives the file: `GET
+/api/v1/shared/items/{id}/content` is `403 view_only`, and the legacy
+      routes answer only legacy links, which are always to download (the
+      database holds every 5.18 option to `flow = 'v2'`).
+    - **Changed:** Open (`POST /api/v1/shared/unlock`) counts within
+      `max_opens` in one guarded statement, however many press it at once;
+      past it, Open and the preview answer `410 link_used_up` ("This link
+      has been opened as many times as it allows…"), and no PIN is tried.
+      A download is counted against `max_downloads` once per document per
+      session; past it, the file is `403 downloads_used_up`.
+    - **Changed:** on the new routes, `share.downloaded` is written once
+      per document per session, not on every fetch; **new** `share.viewed`, once per
+      document per session, the first time a view-only link's pages are
+      fetched. `share.created`'s detail gains `permission`, `max_opens`
+      and `max_downloads`. The activity log says "Sam made a view-only link
+      to “Lease” for the GP" and "Shared link (the GP) looked at the pages
+      of “Lease”".
+    - **Added:** `FDV_SHARE_MAX_DAYS` (1 to 90, default 90): the longest a
+      link may last.
+    - The worker: `share.pages` draws a view-only link's pages. It is queued
+      when the link is made, when an owner turns it back on after a
+      restore, and whenever a live link's pages are still to be drawn and
+      somebody looks at it (the preview, Open, `GET /shared/items`, a page,
+      `GET /shares`), once for each link and version. The last try failing
+      is recorded on the link, and somebody looking at the link an hour or
+      more later asks for its pages again. A drawing that fails part-way
+      removes what it wrote (even with the database out of reach) and no
+      page names; one whose link ended meanwhile keeps nothing.
+      `share.pages.prune` removes a link's pages when it is taken back, and
+      nightly for links that have ended or been used up and a version a
+      newer one replaced.
+    - `@fdv/shared`: `SharePermission`, `SharePages`, `ShareInput`,
+      `SHARE_MIN_MINUTES`, `SHARE_MAX_DAYS`, `SHARE_LIMIT_MAX`,
+      `SHARE_END_GRACE_MINUTES`, `canShareToView`, `sharePagesNote`,
+      `pagesNotSharedNote`, `shareUses`, `zonedParts`, `zonedTime`,
+      `shareQuickPicks(timezone, now, maxDays)` (only the picks within the
+      vault's longest), `latestShareEnd`, `defaultShareEnd` (a week, or an
+      hour safely inside a shorter longest), `shareEndWords`,
+      `shareEndProblem` (with `maxDays` and `graceMinutes`);
+      `CapabilityFeatures.share_options`, `CapabilityLimits.share_max_days`,
+      `SharedItem.downloaded`.
+      `@fdv/client`: `share` takes a `ShareInput`; `linkItemPageUrl`. The
+      fake says `share_options: true`.
+    - A multi-page TIFF (a document scanner's) is a page a frame: its
+      `page_count` counts them (from the frames' headers, up to 1000), and
+      its previews, and so a view-only link, draw up to 30.
+    - The database: 0041 adds `share_link.permission`, `max_opens`,
+      `max_downloads`, `downloads_used`, `pages_failed_version` and
+      `pages_failed_at`, each 5.18 option checked to a
+      v2 link (`flow = 'v2' or …`), the counts held within their limits,
+      and a link's own writes to the counts alone; `share_session_use`
+      (what each session has had) and `share_page` (a view-only link's
+      pages), each with a rule for every kind of caller.
 
 ## Deprecations in effect
 

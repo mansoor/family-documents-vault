@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import {
   appendAudit,
@@ -11,6 +12,7 @@ import {
   type Db,
   type Scope,
 } from '@fdv/db';
+import { readAll } from '@fdv/storage';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -19,11 +21,22 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
+import type { Enqueue } from './service.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
   can,
   canSee,
+  canShareToView,
+  PREVIEW_MAX_PAGES,
+  SHARE_LIMIT_MAX,
+  SHARE_END_GRACE_MINUTES,
+  SHARE_MAX_DAYS,
+  shareEndProblem,
+  shareEndWords,
+  shareUses,
   type ShareLinkPreview,
+  type SharePages,
+  type SharePermission,
   type SharedItem,
   type SharedSession,
   type ShareProtection,
@@ -54,6 +67,13 @@ import {
  * which the document is fetched, every request checking the link again.
  * The links made before then (`flow = 'legacy'`) keep the old routes, and
  * only they do (A25).
+ *
+ * Since 5.18 a new link can end at a time as well as on a day, can be for
+ * viewing only — its pages, drawn with whom it is for, and never the file
+ * (A22) — and can be opened, or downloaded from, so many times. One use is
+ * one Open that worked: whatever happens inside the session it gave is
+ * free, and a download or a look at the pages is counted, and written to
+ * the activity log, once a session for each document.
  */
 
 const MAX_PIN_ATTEMPTS = 10;
@@ -72,13 +92,32 @@ export const SHARE_COOKIE_PATH = '/api/v1/shared';
 export const SESSION_IDLE_MS = 30 * 60_000;
 export const SESSION_MAX_MS = 4 * 3_600_000;
 
+/**
+ * The worker's jobs for a view-only link's pages (5.18): drawing them, and
+ * removing them once the link has ended. The names match the worker's JOBS.
+ */
+export const SHARE_PAGES_JOB = 'share.pages';
+export const SHARE_PAGES_PRUNE_JOB = 'share.pages.prune';
+const sharePagesKey = (shareId: string, versionId: string) => `share-pages:${shareId}:${versionId}`;
+/** How long pages the worker could not draw are said to have failed before they are asked for again. */
+export const PAGES_RETRY_MS = 60 * 60_000;
+
+const limit = z.number().int().min(1).max(SHARE_LIMIT_MAX).nullable().optional();
+
 export const shareBody = z
   .object({
-    expires_in_days: z.number().int().min(1).max(90).optional(),
+    /** What older clients send: whole days from now. */
+    expires_in_days: z.number().int().min(1).max(SHARE_MAX_DAYS).optional(),
+    /** The end, as a date and time (5.18): at least 5 minutes ahead. */
+    expires_at: z.string().datetime({ offset: true }).optional(),
     /** A label for the family's own list: "the letting agent". */
     recipient_label: z.string().trim().max(80).optional(),
     /** True asks the server to invent one; nobody chooses 0000. */
     with_pin: z.boolean().optional(),
+    /** To view (the pages) or to download (the file), 5.18. */
+    permission: z.enum(['view', 'download']).optional(),
+    max_opens: limit,
+    max_downloads: limit,
   })
   .strict();
 
@@ -106,12 +145,19 @@ export interface ShareView {
   has_pin: boolean;
   open_count: number;
   last_opened_at: string | null;
-  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused';
+  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused' | 'used_up';
   /** Which routes open it (5.16): the old ones for `legacy`, the new ones for `v2`. */
   flow: 'legacy' | 'v2';
   /** Paused, and why: a restore (5.16). An owner turns it back on. */
   paused_at: string | null;
   paused_reason: 'restored' | null;
+  /** What it gives (5.18): the pages, drawn with whom it is for, or the file. */
+  permission: SharePermission;
+  max_opens: number | null;
+  max_downloads: number | null;
+  downloads_used: number;
+  /** A view-only link's pages: how many, of how many, and whether drawn yet. */
+  pages: SharePages | null;
   /** One sentence for the list on the home screen. */
   summary: string;
 }
@@ -179,22 +225,48 @@ type LinkRow = {
   expires_at: Date;
   pin_hash: string | null;
   flow: Flow;
+  permission: SharePermission;
+  open_count: number;
+  max_opens: number | null;
+  downloads_used: number;
+  max_downloads: number | null;
+  pages_failed_version: string | null;
+  pages_failed_at: Date | null;
 };
 
 /** How one try of a link's PIN went. */
 type Attempt = 'right' | 'no pin' | { wrong: number } | 'locked' | 'gone';
 
+/** Why Open did not open: a PIN's try, or the link's opens used up (5.18). */
+type Refusal = Exclude<Attempt, 'right' | 'no pin'> | 'used up';
+
 /** A try that did not open the link, and the link it was made on. */
-type Refused = { readonly refused: Exclude<Attempt, 'right' | 'no pin'>; readonly link: LinkRow };
+type Refused = { readonly refused: Refusal; readonly link: LinkRow };
 
 const isRefused = (outcome: object): outcome is Refused =>
   'refused' in outcome && (outcome as Partial<Refused>).refused !== undefined;
+
+/** Opened as many times as it allows (5.18). */
+const usedUp = (link: { open_count: number; max_opens: number | null }) =>
+  link.max_opens !== null && link.open_count >= link.max_opens;
 
 const gone = () =>
   new ApiError(
     404,
     'link_not_valid',
     'That link is not valid any more. Ask whoever sent it for a new one.',
+  );
+
+/**
+ * A link opened as many times as it allows (5.18). Said plainly, unlike the
+ * other dead ends: whoever holds the link has the right to know somebody
+ * has used it, and it may not have been them.
+ */
+const opensUsedUp = () =>
+  new ApiError(
+    410,
+    'link_used_up',
+    'This link has been opened as many times as it allows, so it cannot be opened again. Ask whoever sent it for a new one.',
   );
 
 const sessionEnded = () =>
@@ -212,6 +284,8 @@ const pinWrong = (left: number) =>
       ? 'That PIN is not right. Check with whoever sent you the link.'
       : 'That PIN was wrong too many times, so the link has stopped working.',
   );
+
+const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
 /**
  * An outsider's address, as the vault keeps it (A24): IPv4 to its /24 and
@@ -233,7 +307,17 @@ export function truncatedIp(ip: string | null | undefined): string | null {
   return `${hex(a)}:${hex(b)}:${hex(c)}::/48`;
 }
 
+export interface ShareOptions {
+  /** How the worker is asked to draw, and to remove, a view-only link's pages (5.18). */
+  enqueue?: Enqueue;
+  /** FDV_SHARE_MAX_DAYS: the longest a link may last (A20). */
+  maxDays?: number;
+}
+
 export class ShareService {
+  private readonly enqueue: Enqueue;
+  private readonly maxDays: number;
+
   constructor(
     private readonly db: Db,
     private readonly keys: ScopeKeys,
@@ -242,9 +326,43 @@ export class ShareService {
     private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
     /** The public-only site's address (FDV_PUBLIC_URL), which links start with when set. */
     private readonly publicUrl: string | null = null,
-  ) {}
+    opts: ShareOptions = {},
+  ) {
+    this.enqueue = opts.enqueue ?? (async () => undefined);
+    this.maxDays = Math.min(opts.maxDays ?? SHARE_MAX_DAYS, SHARE_MAX_DAYS);
+  }
 
   // -------------------------------------------------------------- making
+
+  /**
+   * When a new link ends: `expires_at`, or `expires_in_days` from an older
+   * client, or a week. A client that says a date and time can know the
+   * vault's longest (`limits.share_max_days`), and past it is refused. An
+   * older one cannot, so its days, and the week nobody said, are cut to
+   * the longest (the answer's `expires_at` says when it ends).
+   */
+  private endOf(input: z.infer<typeof shareBody>): Date {
+    if (input.expires_at !== undefined && input.expires_in_days !== undefined) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Say when the link ends once: expires_at or expires_in_days, not both.',
+      );
+    }
+    const days = Math.min(input.expires_in_days ?? DEFAULT_DAYS, this.maxDays);
+    const end =
+      input.expires_at !== undefined
+        ? new Date(input.expires_at)
+        : new Date(Date.now() + days * 864e5);
+    // A few minutes past the longest are let through: a client's clock may
+    // be that far ahead of this one, and it offered only what it could.
+    const problem = shareEndProblem(end, {
+      maxDays: this.maxDays,
+      graceMinutes: SHARE_END_GRACE_MINUTES,
+    });
+    if (problem) throw expiryRefused(problem);
+    return end;
+  }
 
   async create(
     p: Principal,
@@ -253,12 +371,20 @@ export class ShareService {
     meta: RequestMeta,
   ): Promise<CreatedShare> {
     requireCapability(p, 'document.share');
+    const expiresAt = this.endOf(input);
+    const permission: SharePermission = input.permission ?? 'download';
+    if (permission === 'view' && input.max_downloads != null) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'A link to view has nothing to download: leave out max_downloads.',
+      );
+    }
     const token = randomBytes(32).toString('base64url');
     const pin = input.with_pin ? String(randomInt(0, 10000)).padStart(4, '0') : null;
     const pinHash = pin ? await argon2.hash(pin, ARGON2) : null;
-    const expiresAt = new Date(Date.now() + (input.expires_in_days ?? DEFAULT_DAYS) * 864e5);
 
-    const id = await withPrincipal(this.db, p, async (trx) => {
+    const { id, versionId } = await withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
         .selectFrom('document')
         .select(['id', 'title', 'visibility', 'owner_member_id'])
@@ -270,16 +396,26 @@ export class ShareService {
       if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
         throw notFound('That document');
       }
-      const versions = await trx
+      const newest = await trx
         .selectFrom('document_version')
-        .select(['id'])
+        .select(['id', 'mime'])
         .where('document_id', '=', documentId)
+        .orderBy('version_no', 'desc')
         .executeTakeFirst();
-      if (!versions) {
+      if (!newest) {
         throw new ApiError(
           422,
           'nothing_to_share',
           'There is no file on this document yet, so there is nothing to send.',
+        );
+      }
+      // To view is to see the pages the vault draws, and it draws PDFs and
+      // photos; a Word or an Excel file can only go as itself (A22).
+      if (permission === 'view' && !canShareToView(newest.mime)) {
+        throw new ApiError(
+          422,
+          'view_not_possible',
+          'Word and Excel files can only be shared to download: the vault cannot draw their pages.',
         );
       }
 
@@ -295,6 +431,9 @@ export class ShareService {
           recipient_label: input.recipient_label ?? null,
           created_by: p.accountId,
           expires_at: expiresAt,
+          permission,
+          max_opens: input.max_opens ?? null,
+          max_downloads: input.max_downloads ?? null,
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -309,11 +448,18 @@ export class ShareService {
           recipient_label: input.recipient_label ?? null,
           with_pin: Boolean(pin),
           expires_at: expiresAt.toISOString(),
+          permission,
+          max_opens: input.max_opens ?? null,
+          max_downloads: input.max_downloads ?? null,
         },
         ip: meta.ip,
       });
-      return row.id;
+      return { id: row.id, versionId: newest.id };
     });
+
+    // A link to view shows the pages the worker draws for it, with whom it
+    // is for across each: asked for now, so they are there when it opens.
+    if (permission === 'view') await this.drawPages(p.householdId, id, versionId);
 
     const share = (await this.list(p)).find((s) => s.id === id) as ShareView;
     // The whole link to send, on the public-only site, when the vault has
@@ -322,6 +468,25 @@ export class ShareService {
     return pin
       ? { share, link_token: token, link_url, pin }
       : { share, link_token: token, link_url };
+  }
+
+  /**
+   * Asks the worker to draw a view-only link's pages of a version: once
+   * for each link and version queued or being drawn, however often it is
+   * asked. A request that fails (the worker has not made its queue yet) is
+   * asked again by whoever looks at the link next.
+   */
+  private drawPages(householdId: string, shareId: string, versionId: string, redraw = false) {
+    return this.enqueue(
+      SHARE_PAGES_JOB,
+      {
+        household_id: householdId,
+        share_id: shareId,
+        version_id: versionId,
+        ...(redraw ? { redraw: true } : {}),
+      },
+      { singletonKey: sharePagesKey(shareId, versionId), priority: 10 },
+    ).catch(() => undefined);
   }
 
   async list(p: Principal): Promise<ShareView[]> {
@@ -360,6 +525,12 @@ export class ShareService {
           'share_link.flow',
           'share_link.paused_at',
           'share_link.paused_reason',
+          'share_link.permission',
+          'share_link.max_opens',
+          'share_link.max_downloads',
+          'share_link.downloads_used',
+          'share_link.pages_failed_version',
+          'share_link.pages_failed_at',
           'document.title',
           'document.visibility',
           'document.owner_member_id',
@@ -367,39 +538,115 @@ export class ShareService {
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
+      const household = await trx
+        .selectFrom('household')
+        .select('timezone')
+        .executeTakeFirstOrThrow();
       // A link names its document, so the list shows only links to what the
       // reader may see — the same rule as every other list. Until 0.4.2
       // this checked only "private", and a teen could read the titles of
       // adults-only documents that had been shared out of the house.
-      return rows
-        .filter((r) => canSee({ role: p.role, memberId: p.memberId }, r))
-        .map((r) => {
-          const state = stateOf(r);
-          return {
-            id: r.id,
-            document_id: r.document_id,
-            document_title: r.title,
-            recipient_label: r.recipient_label,
-            created_by_name: r.created_by_name,
-            created_at: r.created_at.toISOString(),
-            expires_at: r.expires_at.toISOString(),
-            has_pin: r.pin_hash !== null,
-            open_count: r.open_count,
-            last_opened_at: r.last_opened_at?.toISOString() ?? null,
-            state,
-            flow: r.flow,
-            paused_at: r.paused_at?.toISOString() ?? null,
-            paused_reason: r.paused_reason,
-            summary: summarise(r, state),
-            created_by: r.created_by,
-          };
+      const seen = rows.filter((r) => canSee({ role: p.role, memberId: p.memberId }, r));
+      const views: LinkView[] = [];
+      for (const r of seen) {
+        const state = stateOf(r);
+        views.push({
+          id: r.id,
+          document_id: r.document_id,
+          document_title: r.title,
+          recipient_label: r.recipient_label,
+          created_by_name: r.created_by_name,
+          created_at: r.created_at.toISOString(),
+          expires_at: r.expires_at.toISOString(),
+          has_pin: r.pin_hash !== null,
+          open_count: r.open_count,
+          last_opened_at: r.last_opened_at?.toISOString() ?? null,
+          state,
+          flow: r.flow,
+          paused_at: r.paused_at?.toISOString() ?? null,
+          paused_reason: r.paused_reason,
+          permission: r.permission,
+          max_opens: r.max_opens,
+          max_downloads: r.max_downloads,
+          downloads_used: r.downloads_used,
+          // A live link's pages still to be drawn are asked for here too.
+          pages:
+            r.permission === 'view'
+              ? await this.pagesOf(trx, r, state === 'active' ? p.householdId : undefined)
+              : null,
+          summary: summarise(r, state, household.timezone),
+          created_by: r.created_by,
         });
+      }
+      return views;
     });
+  }
+
+  /**
+   * A view-only link's pages of a document: drawn (how many, of how many),
+   * still being drawn, or impossible to draw. Drawn for the newest version,
+   * as the link gives the newest; a newer version is drawn again.
+   *
+   * Asked with `ask` (the link's household), for a live link, pages still
+   * to be drawn are asked of the worker as well — whoever looks at the link
+   * is what keeps it from waiting for ever (5.18 review): a newer version
+   * uploaded, a job lost on its way, a worker that started after the API.
+   * Once for each link and version, however often it is asked.
+   *
+   * Pages the worker's last try could not draw are said to have failed, and
+   * not asked for, for PAGES_RETRY_MS; after that, they are asked for again
+   * (the second review: a storage outage of a minute must not end a link's
+   * pages for good). The version's own previews failing, or a kind of file
+   * the vault cannot draw, is for good.
+   */
+  private async pagesOf(
+    trx: Db,
+    link: {
+      id: string;
+      document_id: string;
+      pages_failed_version: string | null;
+      pages_failed_at: Date | null;
+    },
+    ask?: string,
+  ): Promise<SharePages> {
+    const v = await trx
+      .selectFrom('document_version')
+      .select(['id', 'page_count', 'preview_state', 'preview_pages'])
+      .where('document_id', '=', link.document_id)
+      .orderBy('version_no', 'desc')
+      .executeTakeFirst();
+    if (!v) return { state: 'failed', shown: 0, total: null };
+    const drawn = await trx
+      .selectFrom('share_page')
+      .select((eb) => eb.fn.countAll<string>().as('n'))
+      .where('share_id', '=', link.id)
+      .where('version_id', '=', v.id)
+      .executeTakeFirstOrThrow();
+    const n = Number(drawn.n);
+    const total = v.page_count ?? (v.preview_state === 'ready' ? v.preview_pages : null);
+    if (n > 0) return { state: 'ready', shown: n, total: total ?? n };
+    // The hour is lifted only for a caller about to ask again: a link that
+    // is not live says what it has, "failed", not "being drawn" by nobody
+    // (the third review).
+    const failedLately =
+      link.pages_failed_version === v.id &&
+      (!ask ||
+        link.pages_failed_at === null ||
+        Date.now() - link.pages_failed_at.getTime() < PAGES_RETRY_MS);
+    if (v.preview_state === 'unsupported' || v.preview_state === 'failed' || failedLately) {
+      return { state: 'failed', shown: 0, total };
+    }
+    if (ask) void this.drawPages(ask, link.id, v.id);
+    return {
+      state: 'drawing',
+      shown: total !== null ? Math.min(total, PREVIEW_MAX_PAGES) : null,
+      total,
+    };
   }
 
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
-    await withPrincipal(this.db, p, async (trx) => {
+    const revoked = await withPrincipal(this.db, p, async (trx) => {
       // A link to a document the caller cannot see is not there for them.
       const target = await trx
         .selectFrom('share_link')
@@ -415,7 +662,7 @@ export class ShareService {
         .set({ revoked_at: new Date(), revoked_by: p.accountId })
         .where('id', '=', id)
         .where('revoked_at', 'is', null)
-        .returning(['id', 'document_id'])
+        .returning(['id', 'document_id', 'permission'])
         .executeTakeFirst();
       if (!row) throw notFound('That link');
       // Taken back is taken back everywhere: a page opened with it stops at
@@ -430,7 +677,15 @@ export class ShareService {
         detail: { share_id: row.id },
         ip: meta.ip,
       });
+      return row;
     });
+    // Its pages go with it (5.18): the worker removes them now.
+    if (revoked.permission === 'view') {
+      await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
+        household_id: p.householdId,
+        share_id: id,
+      }).catch(() => undefined);
+    }
   }
 
   // ------------------------------------------------------ after a restore
@@ -473,13 +728,19 @@ export class ShareService {
   /** Turns a paused link back on: it opens again, as it did before. */
   async resume(p: Principal, id: string, meta: RequestMeta): Promise<ShareView> {
     await this.resumable(p, id);
-    await withPrincipal(this.db, p, async (trx) => {
+    const resumed = await withPrincipal(this.db, p, async (trx) => {
+      // Turned back on, a link whose pages could not be drawn is tried afresh.
       const row = await trx
         .updateTable('share_link')
-        .set({ paused_at: null, paused_reason: null })
+        .set({
+          paused_at: null,
+          paused_reason: null,
+          pages_failed_version: null,
+          pages_failed_at: null,
+        })
         .where('id', '=', id)
         .where('paused_at', 'is not', null)
-        .returning(['id', 'document_id'])
+        .returning(['id', 'document_id', 'permission'])
         .executeTakeFirst();
       if (!row) throw notFound('That paused link');
       await appendAudit(trx, {
@@ -491,7 +752,14 @@ export class ShareService {
         detail: { share_id: row.id },
         ip: meta.ip,
       });
+      const newest = await this.newestVersion(trx, row.document_id);
+      return { ...row, versionId: newest.id };
     });
+    // The backup's record of its pages may name files removed since it was
+    // made: a view-only link has them drawn again.
+    if (resumed.permission === 'view') {
+      await this.drawPages(p.householdId, id, resumed.versionId, true);
+    }
     return (await this.list(p)).find((s) => s.id === id) as ShareView;
   }
 
@@ -540,14 +808,18 @@ export class ShareService {
 
   /**
    * What the page shows before anybody presses anything: whose vault, who
-   * sent it, what it asks for and until when. Nothing is counted and
-   * nothing is written down — a link scanner fetching the page is not
-   * somebody opening the document.
+   * sent it, what it asks for, what it gives and until when. Nothing is
+   * counted and nothing is written down — a link scanner fetching the page
+   * is not somebody opening the document.
    */
   async previewLink(token: string): Promise<ShareLinkPreview> {
     const scope = await this.linkScope(token, 'v2');
     return withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
+      if (usedUp(link)) throw opensUsedUp();
+      // A view-only link's pages still to be drawn are asked for while the
+      // recipient reads this: nothing is counted or written down for it.
+      if (link.permission === 'view') await this.pagesOf(trx, link, scope.householdId);
       const context = await this.context(trx, link.document_id, link.created_by);
       const protection: ShareProtection[] = link.pin_hash ? ['pin'] : [];
       return {
@@ -559,6 +831,8 @@ export class ShareService {
         // settlement" is information, and the PIN is there because somebody
         // wanted a second lock on exactly that.
         document_title: protection.length ? null : context.title,
+        permission: link.permission,
+        opens_left: link.max_opens === null ? null : link.max_opens - link.open_count,
       };
     });
   }
@@ -567,16 +841,20 @@ export class ShareService {
    * Open: the one step that is counted and written down. Its PIN is tried
    * (a wrong one uses up one of the link's ten, reserved before it is
    * checked, so tries made at once cannot get past ten), the open is
-   * counted, and a session is made for this browser.
+   * counted — within the link's opens, however many press Open at once —
+   * and a session is made for this browser.
    */
   async unlock(input: z.infer<typeof unlockBody>, meta: RequestMeta): Promise<Unlocked> {
     const scope = await this.linkScope(input.token, 'v2');
     const { householdId } = scope;
     const outcome = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
+      // Used up already: no PIN is tried on a link that cannot open.
+      if (usedUp(link)) return { refused: 'used up', link } as const;
       const tried = await this.tryPin(trx, householdId, link, input.secret, meta);
       if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
-      if (!(await this.countOpen(trx, link.id))) return { refused: 'gone', link } as const;
+      const counted = await this.countOpen(trx, link.id);
+      if (counted !== 'counted') return { refused: counted, link } as const;
 
       const cookie = randomBytes(32).toString('base64url');
       const now = Date.now();
@@ -589,7 +867,7 @@ export class ShareService {
         .where('share_id', '=', link.id)
         .where('expires_at', '<=', new Date(now))
         .execute();
-      await trx
+      const made = await trx
         .insertInto('share_session')
         .values({
           household_id: householdId,
@@ -602,12 +880,19 @@ export class ShareService {
           ip: truncatedIp(meta.ip),
           user_agent: meta.userAgent?.slice(0, 512) ?? null,
         })
-        .execute();
+        .returning('id')
+        .executeTakeFirstOrThrow();
       await this.record(trx, householdId, link, 'share.opened', meta);
-      const session = await this.sessionView(trx, link, expiresAt);
+      const session = await this.sessionView(
+        trx,
+        { ...link, household_id: householdId },
+        expiresAt,
+        made.id,
+      );
       return { cookie, expiresAt, session } as const;
     });
     if (isRefused(outcome)) {
+      if (outcome.refused === 'used up') throw opensUsedUp();
       await this.refuse(householdId, outcome.link, outcome.refused);
       throw gone();
     }
@@ -618,10 +903,10 @@ export class ShareService {
     };
   }
 
-  /** What is open in a session: the same answer Open gave. */
+  /** What is open in a session: the same answer Open gave. Free: nothing is counted. */
   async sessionItems(cookie: string | undefined): Promise<SharedSession> {
     return this.inSession(cookie, (trx, link, session) =>
-      this.sessionView(trx, link, session.expires_at),
+      this.sessionView(trx, link, session.expires_at, session.id),
     );
   }
 
@@ -629,29 +914,189 @@ export class ShareService {
    * A document's file, inside a session. Only the link's own document: any
    * other id is not there for it — the database's rule for a link gives it
    * no other document's row, and the answer is the 404 of one that does
-   * not exist.
+   * not exist. Only a link to download: a link to view never gives the
+   * file (A22). The first download of each document in a session is
+   * counted against the link's downloads and written down; the rest of that
+   * session's are free.
    */
   async sessionContent(
     cookie: string | undefined,
     documentId: string,
     meta: RequestMeta,
   ): Promise<{ stream: Readable; total: number; contentType: string; filename: string }> {
-    const found = await this.inSession(cookie, async (trx, link) => {
+    const found = await this.inSession(cookie, async (trx, link, session) => {
       const doc = await trx
         .selectFrom('document')
         .select('id')
         .where('id', '=', documentId)
         .executeTakeFirst();
       if (!doc || doc.id !== link.document_id) return null;
+      if (link.permission !== 'download') {
+        throw new ApiError(
+          403,
+          'view_only',
+          'This link is for viewing only: the file itself was not shared.',
+        );
+      }
+      const first = await this.used(trx, link, session.id, doc.id, 'downloaded');
+      if (first) {
+        // Within the link's downloads, however many ask at once: one
+        // statement counts it, or finds there are none left. Refused, the
+        // whole request is undone, the note that it was had included.
+        const counted = await trx
+          .updateTable('share_link')
+          .set((eb) => ({ downloads_used: eb('downloads_used', '+', 1) }))
+          .where('id', '=', link.id)
+          .where((eb) =>
+            eb.or([
+              eb('max_downloads', 'is', null),
+              eb('downloads_used', '<', eb.ref('max_downloads')),
+            ]),
+          )
+          .returning('downloads_used')
+          .executeTakeFirst();
+        if (!counted) {
+          throw new ApiError(
+            403,
+            'downloads_used_up',
+            'This link has been downloaded from as many times as it allows. Ask whoever sent it for a new one.',
+          );
+        }
+        await this.record(trx, link.household_id, link, 'share.downloaded', meta);
+      }
       const v = await this.newestVersion(trx, link.document_id);
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
-      await this.record(trx, link.household_id, link, 'share.downloaded', meta);
       return { version: v, adapter, fileKey };
     });
     if (!found) throw notFound('That document');
     return this.decrypted(found);
+  }
+
+  /**
+   * One page of a view-only link's document, inside a session: the page the
+   * worker drew for this link, with whom it is for across it, and never the
+   * vault's own preview or the file. The first page a session looks at is
+   * written down (`share.viewed`), once for each document; the rest are
+   * free. Pages not drawn yet answer `preview_pending`, as the family's own
+   * do, and the worker is asked (again) to draw them.
+   */
+  async sessionPage(
+    cookie: string | undefined,
+    documentId: string,
+    n: number,
+    meta: RequestMeta,
+  ): Promise<Buffer> {
+    const outcome = await this.inSession(cookie, async (trx, link, session) => {
+      const doc = await trx
+        .selectFrom('document')
+        .select('id')
+        .where('id', '=', documentId)
+        .executeTakeFirst();
+      if (!doc || doc.id !== link.document_id) return { kind: 'missing' } as const;
+      if (link.permission !== 'view') {
+        throw new ApiError(
+          404,
+          'no_preview',
+          'This link gives the file itself, not pages: download it.',
+        );
+      }
+      const v = await this.newestVersion(trx, link.document_id);
+      const page = await trx
+        .selectFrom('share_page')
+        .select('storage_key')
+        .where('share_id', '=', link.id)
+        .where('version_id', '=', v.id)
+        .where('n', '=', n)
+        .executeTakeFirst();
+      if (!page) {
+        // Asked of the worker again, when they are still to be drawn.
+        const pages = await this.pagesOf(trx, link, link.household_id);
+        if (pages.state === 'failed') {
+          throw new ApiError(
+            404,
+            'no_preview',
+            "The vault couldn't draw this document's pages. Ask whoever sent the link to send it another way.",
+          );
+        }
+        if (pages.state === 'ready') {
+          const shown = pages.shown ?? PREVIEW_MAX_PAGES;
+          throw new ApiError(
+            404,
+            'no_preview',
+            pages.total !== null && pages.total > shown
+              ? `Pages after ${shown} were not shared.`
+              : 'The document has no such page.',
+          );
+        }
+        return { kind: 'pending' } as const;
+      }
+      if (await this.used(trx, link, session.id, doc.id, 'viewed')) {
+        await this.record(trx, link.household_id, link, 'share.viewed', meta);
+      }
+      const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
+      const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
+      const adapter = await this.vaults.adapterById(trx, v.vault_id);
+      return {
+        kind: 'page',
+        key: page.storage_key,
+        fileKey,
+        adapter,
+        householdId: link.household_id,
+        shareId: link.id,
+        versionId: v.id,
+      } as const;
+    });
+    if (outcome.kind === 'missing') throw notFound('That document');
+    const pending = () =>
+      new ApiError(
+        404,
+        'preview_pending',
+        'The pages are still being drawn. Try again in a moment.',
+        { retriable: true, retryAfter: 3 },
+      );
+    if (outcome.kind === 'pending') throw pending();
+    try {
+      const dec = new DecryptStream(outcome.fileKey);
+      const [, plain] = await Promise.all([
+        pipeline(await outcome.adapter.get(outcome.key), dec),
+        readAll(dec),
+      ]);
+      return plain;
+    } catch {
+      // Gone from the vault's storage — a restore brings back its record
+      // after the file was removed, say: drawn again.
+      void this.drawPages(outcome.householdId, outcome.shareId, outcome.versionId, true);
+      throw pending();
+    }
+  }
+
+  /**
+   * Notes that a session has had a document — its download, or a look at
+   * its pages — and says whether this was the first time. Two requests of
+   * one session at once: the second waits for the first, and finds it done.
+   */
+  private async used(
+    trx: Db,
+    link: LinkRow & { household_id: string },
+    sessionId: string,
+    documentId: string,
+    kind: 'viewed' | 'downloaded',
+  ): Promise<boolean> {
+    const row = await trx
+      .insertInto('share_session_use')
+      .values({
+        household_id: link.household_id,
+        session_id: sessionId,
+        share_id: link.id,
+        document_id: documentId,
+        kind,
+      })
+      .onConflict((oc) => oc.doNothing())
+      .returning('kind')
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   /**
@@ -660,6 +1105,8 @@ export class ShareService {
    * exactly as Open checked it — revoked, paused, expired, locked, its
    * maker no longer able to see the document, the document in the Trash.
    * A session that fails is removed, and its next request is refused too.
+   * A link opened as many times as it allows is not ended by that: each
+   * session is one of its opens, and lasts to its own end.
    */
   private async inSession<T>(
     cookie: string | undefined,
@@ -718,9 +1165,31 @@ export class ShareService {
     return outcome.value;
   }
 
-  private async sessionView(trx: Db, link: LinkRow, sessionEnds: Date): Promise<SharedSession> {
+  /**
+   * What is open in a session: its document, and for a link to view, its
+   * pages — asked of the worker again while they are still to be drawn, so
+   * that the page polling this is what keeps them coming (5.18 review). For
+   * a link to download, whether this session has had the file already: it
+   * may again, free, once the link's downloads are used up.
+   */
+  private async sessionView(
+    trx: Db,
+    link: LinkRow & { household_id: string },
+    sessionEnds: Date,
+    sessionId: string,
+  ): Promise<SharedSession> {
     const context = await this.context(trx, link.document_id, link.created_by);
     const v = await this.newestVersion(trx, link.document_id);
+    const downloaded =
+      link.permission === 'download'
+        ? (await trx
+            .selectFrom('share_session_use')
+            .select('kind')
+            .where('session_id', '=', sessionId)
+            .where('document_id', '=', link.document_id)
+            .where('kind', '=', 'downloaded')
+            .executeTakeFirst()) !== undefined
+        : false;
     const item: SharedItem = {
       id: link.document_id,
       title: context.title,
@@ -728,6 +1197,8 @@ export class ShareService {
       filename: v.filename,
       content_type: v.mime,
       byte_size: Number(v.byte_size),
+      pages: link.permission === 'view' ? await this.pagesOf(trx, link, link.household_id) : null,
+      downloaded,
     };
     return {
       household_name: context.household_name,
@@ -735,6 +1206,11 @@ export class ShareService {
       expires_at: link.expires_at.toISOString(),
       session_expires_at: sessionEnds.toISOString(),
       items: [item],
+      permission: link.permission,
+      downloads_left:
+        link.permission === 'download' && link.max_downloads !== null
+          ? Math.max(0, link.max_downloads - link.downloads_used)
+          : null,
     };
   }
 
@@ -774,7 +1250,9 @@ export class ShareService {
       const link = await this.live(trx, scope.actor.shareId, 'legacy');
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
       if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
-      if (!(await this.countOpen(trx, link.id))) return { refused: 'gone', link } as const;
+      if ((await this.countOpen(trx, link.id)) !== 'counted') {
+        return { refused: 'gone', link } as const;
+      }
       const context = await this.context(trx, link.document_id, link.created_by);
       const version = await this.newestVersion(trx, link.document_id);
       await this.record(trx, householdId, link, 'share.opened', meta);
@@ -801,7 +1279,8 @@ export class ShareService {
    * The file itself. Takes the PIN again rather than handing out a second
    * token: it is one call from the same page, and a token that unlocks a
    * file is one more secret to lose. Fetching it does not count as a
-   * second visit: the family's log should read like what happened.
+   * second visit: the family's log should read like what happened. A legacy
+   * link is always one to download (0041 holds it so).
    */
   async content(
     token: string,
@@ -812,6 +1291,7 @@ export class ShareService {
     const { householdId } = scope;
     const outcome = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'legacy');
+      if (link.permission !== 'download') return { refused: 'gone', link } as const;
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
       if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
       const v = await this.newestVersion(trx, link.document_id);
@@ -881,12 +1361,8 @@ export class ShareService {
    * After the link's transaction: throws what a refused try is answered
    * with, telling the sharer first if it locked the link.
    */
-  private async refuse(
-    householdId: string,
-    link: LinkRow,
-    why: Exclude<Attempt, 'right' | 'no pin'>,
-  ) {
-    if (why === 'gone') return;
+  private async refuse(householdId: string, link: LinkRow, why: Refusal) {
+    if (why === 'gone' || why === 'used up') return;
     if (why === 'locked') {
       await this.alert({
         householdId,
@@ -902,8 +1378,13 @@ export class ShareService {
     throw pinWrong(why.wrong);
   }
 
-  /** One more open, counted in one statement, and only while the link is live. */
-  private async countOpen(trx: Db, id: string): Promise<boolean> {
+  /**
+   * One more open, counted in one statement, and only while the link is
+   * live and has opens left (5.18): of any number pressing Open at once on
+   * a link with one open left, the statement counts one, and the rest find
+   * none. Otherwise says which: used up, or gone since.
+   */
+  private async countOpen(trx: Db, id: string): Promise<'counted' | 'used up' | 'gone'> {
     const row = await trx
       .updateTable('share_link')
       .set((eb) => ({ open_count: eb('open_count', '+', 1), last_opened_at: new Date() }))
@@ -912,9 +1393,18 @@ export class ShareService {
       .where('paused_at', 'is', null)
       .where('expires_at', '>', new Date())
       .where('attempts', '<', MAX_PIN_ATTEMPTS)
+      .where((eb) =>
+        eb.or([eb('max_opens', 'is', null), eb('open_count', '<', eb.ref('max_opens'))]),
+      )
       .returning('open_count')
       .executeTakeFirst();
-    return row !== undefined;
+    if (row) return 'counted';
+    const now = await trx
+      .selectFrom('share_link')
+      .select(['open_count', 'max_opens'])
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return now && usedUp(now) ? 'used up' : 'gone';
   }
 
   private record(
@@ -944,7 +1434,8 @@ export class ShareService {
    * The link, if it may be used now: not revoked, paused, expired or locked;
    * of the flow the route serves; its document out of the Trash; and its
    * maker still in the household and still able to see the document. Asked
-   * on every open and every request of a session, never remembered.
+   * on every open and every request of a session, never remembered. (Its
+   * opens are Open's to count: a session already opened is one of them.)
    */
   private async live(trx: Db, shareId: string, flow: Flow): Promise<LinkRow> {
     const row = await trx
@@ -1037,39 +1528,47 @@ function stateOf(r: {
   expires_at: Date;
   attempts: number;
   paused_at: Date | null;
+  open_count: number;
+  max_opens: number | null;
 }): ShareView['state'] {
   if (r.revoked_at) return 'revoked';
   if (r.attempts >= MAX_PIN_ATTEMPTS) return 'locked';
   if (r.expires_at.getTime() < Date.now()) return 'expired';
   if (r.paused_at) return 'paused';
+  if (usedUp(r)) return 'used_up';
   return 'active';
 }
 
 function summarise(
-  r: { recipient_label: string | null; open_count: number; expires_at: Date },
+  r: {
+    recipient_label: string | null;
+    open_count: number;
+    max_opens: number | null;
+    permission: SharePermission;
+    downloads_used: number;
+    max_downloads: number | null;
+    flow: Flow;
+    expires_at: Date;
+  },
   state: ShareView['state'],
+  timezone: string,
 ): string {
   const who = r.recipient_label ? `Shared with ${r.recipient_label}` : 'Shared by link';
-  const opened =
-    r.open_count === 0
-      ? 'not opened yet'
-      : r.open_count === 1
-        ? 'opened once'
-        : `opened ${r.open_count} times`;
+  const uses = shareUses(r);
+  const opened = `${uses.charAt(0).toLowerCase()}${uses.slice(1)}`;
+  const end = shareEndWords(r.expires_at, timezone, { weekday: false });
   switch (state) {
     case 'active':
-      return `${who}, ${opened}. Stops working on ${formatDay(r.expires_at)}.`;
+      return `${who}, ${opened}. Stops working on ${end}.`;
+    case 'used_up':
+      return `${who}, ${opened}. Used up: it cannot be opened again.`;
     case 'expired':
-      return `${who}, ${opened}. Expired on ${formatDay(r.expires_at)}.`;
+      return `${who}, ${opened}. Expired on ${end}.`;
     case 'revoked':
       return `${who}, ${opened}. You took this link back.`;
     case 'locked':
       return `${who}. The PIN was wrong too many times, so it stopped working.`;
     case 'paused':
-      return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${formatDay(r.expires_at)}.`;
+      return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
   }
-}
-
-function formatDay(d: Date): string {
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
 }

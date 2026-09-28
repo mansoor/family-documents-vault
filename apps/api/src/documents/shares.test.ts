@@ -1,15 +1,33 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { withSystem } from '@fdv/db';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { EncryptStream, EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
+import { withScope, withSystem, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import type { DocumentView, ShareLinkPreview, SharedSession } from '@fdv/shared';
+import {
+  pagesNotSharedNote,
+  sharePagesNote,
+  type DocumentView,
+  type ShareLinkPreview,
+  type SharedSession,
+} from '@fdv/shared';
+import { LocalAdapter } from '@fdv/storage';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
-import type { CreatedShare, SharedDocument, SharePreview, ShareView } from './shares.js';
+import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import {
+  PAGES_RETRY_MS,
+  type CreatedShare,
+  type SharedDocument,
+  type SharePreview,
+  type ShareView,
+} from './shares.js';
+
+const testKeys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
 
 const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
@@ -106,6 +124,12 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       cookies: { fdv_share: cookie },
       ...peer(),
     });
+  const page = (cookie: string, documentId: string, n: number) =>
+    h.app.inject({
+      url: `/api/v1/shared/items/${documentId}/pages/${n}`,
+      cookies: { fdv_share: cookie },
+      ...peer(),
+    });
   /** Open, and the session's cookie. */
   const opened = async (token: string, secret?: string) => {
     const res = await unlock(token, secret);
@@ -160,10 +184,94 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     withSystem(h.db, owner.household_id, (trx) =>
       trx
         .selectFrom('share_link')
-        .select(['attempts', 'open_count', 'flow', 'paused_at'])
+        .select(['attempts', 'open_count', 'flow', 'paused_at', 'downloads_used'])
         .where('id', '=', id)
         .executeTakeFirstOrThrow(),
     );
+
+  // ----------------------------------------- a view-only link's pages (5.18)
+
+  /** The newest version of a document, as the vault keeps it. */
+  const newestOf = (documentId: string) =>
+    withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .selectFrom('document_version')
+        .selectAll()
+        .where('document_id', '=', documentId)
+        .orderBy('version_no', 'desc')
+        .executeTakeFirstOrThrow(),
+    );
+  /** What the worker would have found: the version's own pages drawn, and how long it is. */
+  const drawnAlready = async (documentId: string, drawn: number, pageCount = drawn) => {
+    const v = await newestOf(documentId);
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('document_version')
+        .set({ preview_state: 'ready', preview_pages: drawn, page_count: pageCount })
+        .where('id', '=', v.id)
+        .execute(),
+    );
+    // The vault's own previews, which a link must never hand out.
+    for (let n = 1; n <= drawn; n += 1) await putFor(documentId, `${v.storage_key}.p${n}.enc`, OWN);
+  };
+  const OWN = Buffer.from("the vault's own preview, not for a link");
+  const marked = (shareId: string, n: number) =>
+    Buffer.from(
+      `\xff\xd8\xff a page for ${shareId}, number ${n}, carrying its watermark`,
+      'latin1',
+    );
+  /** Stores bytes as the vault stores a file: encrypted under the version's own key. */
+  const putFor = async (documentId: string, key: string, plain: Buffer) => {
+    const v = await newestOf(documentId);
+    const fileKey = await withSystem(h.db, owner.household_id, async (trx) =>
+      unwrapKey(
+        v.file_key_wrapped,
+        await testKeys.unwrapById(trx, v.wrapped_by_scope),
+        `version:${documentId}`,
+      ),
+    );
+    const enc = new EncryptStream(fileKey);
+    await Promise.all([
+      new LocalAdapter(h.vaultDir).put(key, enc),
+      pipeline(Readable.from([plain]), enc),
+    ]);
+  };
+  /**
+   * What the worker's share.pages job leaves (apps/worker, share-pages.ts):
+   * a page for the link, encrypted beside the version, and its row. The
+   * drawing itself, watermark and all, is the worker's own test.
+   */
+  const drawAsWorker = async (shareId: string, documentId: string, pages: number) => {
+    const v = await newestOf(documentId);
+    for (let n = 1; n <= pages; n += 1) {
+      await putFor(documentId, `${v.storage_key}.share-${shareId}.p${n}.enc`, marked(shareId, n));
+    }
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .insertInto('share_page')
+        .values(
+          Array.from({ length: pages }, (_, i) => ({
+            household_id: owner.household_id,
+            share_id: shareId,
+            document_id: documentId,
+            version_id: v.id,
+            n: i + 1,
+            storage_key: `${v.storage_key}.share-${shareId}.p${i + 1}.enc`,
+          })),
+        )
+        .execute(),
+    );
+  };
+  const jobsFor = (name: string, shareId: string) =>
+    h.jobs.filter((j) => j.name === name && j.data.share_id === shareId);
+  /** A link's pages gone from storage, their rows left: a restore's view of them. */
+  const rmPages = async (documentId: string, shareId: string) => {
+    const v = await newestOf(documentId);
+    await new LocalAdapter(h.vaultDir).delete(`${v.storage_key}.share-${shareId}.p1.enc`);
+  };
+  /** A transaction asked as whoever holds a link. */
+  const withScopeOfLink = <T>(shareId: string, fn: (trx: Db) => Promise<T>) =>
+    withScope(h.db, { householdId: owner.household_id, actor: { kind: 'link', shareId } }, fn);
   const sessionsOf = (shareId: string) =>
     withSystem(h.db, owner.household_id, (trx) =>
       trx.selectFrom('share_session').selectAll().where('share_id', '=', shareId).execute(),
@@ -415,39 +523,54 @@ describe.skipIf(!testAdminUrl())('share links', () => {
   }, 60_000);
 
   it('a v2 token is 404 on each legacy route', async () => {
-    // Every combination of the options a link can have today.
+    // Every combination of the options a link can have today: a PIN, a
+    // label, to view or to download (5.18), limits or none, and an end at
+    // a time rather than in days.
+    const limitsFor = (permission: 'view' | 'download') =>
+      permission === 'view'
+        ? [{}, { max_opens: 3 }]
+        : [{}, { max_opens: 3 }, { max_downloads: 2 }, { max_opens: 3, max_downloads: 2 }];
     for (const withPin of [false, true]) {
       for (const label of [undefined, 'the notary']) {
-        const created = await made(lease, {
-          ...(withPin ? { with_pin: true } : {}),
-          ...(label ? { recipient_label: label } : {}),
-        });
-        const t = created.link_token;
-        const what = `pin ${withPin}, label ${label ?? 'none'}`;
-        for (const res of [
-          await legacyPreview(t),
-          await legacyOpen(t, created.pin),
-          await legacyContent(t, created.pin),
-          await legacyOpen(t, '0000'),
-        ]) {
-          expect(res.statusCode, what).toBe(404);
-          expect(code(res), what).toBe('link_not_valid');
+        for (const permission of ['download', 'view'] as const) {
+          for (const limits of limitsFor(permission)) {
+            const created = await made(lease, {
+              ...(withPin ? { with_pin: true } : {}),
+              ...(label ? { recipient_label: label } : {}),
+              permission,
+              ...limits,
+              expires_at: new Date(Date.now() + 26 * 3_600_000).toISOString(),
+            });
+            const t = created.link_token;
+            const what = `pin ${withPin}, label ${label ?? 'none'}, ${permission}, ${JSON.stringify(limits)}`;
+            expect(created.share, what).toMatchObject({ permission, flow: 'v2' });
+            for (const res of [
+              await legacyPreview(t),
+              await legacyOpen(t, created.pin),
+              await legacyContent(t, created.pin),
+              await legacyOpen(t, '0000'),
+            ]) {
+              expect(res.statusCode, what).toBe(404);
+              expect(code(res), what).toBe('link_not_valid');
+            }
+            // Nothing was tried, opened or written down on its way past.
+            expect(await linkRow(created.share.id), what).toMatchObject({
+              attempts: 0,
+              open_count: 0,
+              downloads_used: 0,
+              flow: 'v2',
+            });
+            expect(
+              (await auditOf(created.share.id)).map((a) => a.action),
+              what,
+            ).toEqual(['share.created']);
+            // And it still works where it belongs.
+            expect((await preview(t)).statusCode, what).toBe(200);
+          }
         }
-        // Nothing was tried, opened or written down on its way past.
-        expect(await linkRow(created.share.id), what).toMatchObject({
-          attempts: 0,
-          open_count: 0,
-          flow: 'v2',
-        });
-        expect(
-          (await auditOf(created.share.id)).map((a) => a.action),
-          what,
-        ).toEqual(['share.created']);
-        // And it still works where it belongs.
-        expect((await preview(t)).statusCode, what).toBe(200);
       }
     }
-  });
+  }, 60_000);
 
   it('a legacy link cannot be given a new option', async () => {
     const old = await legacyLink(lease, { pin: '4321' });
@@ -489,6 +612,20 @@ describe.skipIf(!testAdminUrl())('share links', () => {
           .execute(),
       ),
     ).rejects.toThrow(/keeps the flow/);
+    // ... and 5.18's options are a v2 link's alone (0041): a legacy link
+    // downloads, as the old routes do, and has no limits they would ignore.
+    for (const [set, rule] of [
+      [{ permission: 'view' }, /share_link_permission_v2/],
+      [{ max_opens: 5 }, /share_link_max_opens_v2/],
+      [{ max_downloads: 5 }, /share_link_max_downloads_v2/],
+    ] as const) {
+      await expect(
+        withSystem(h.db, owner.household_id, (trx) =>
+          trx.updateTable('share_link').set(set).where('id', '=', old.id).execute(),
+        ),
+        JSON.stringify(set),
+      ).rejects.toThrow(rule);
+    }
     // And the old routes still open it.
     expect((await legacyOpen(old.token, '4321')).statusCode).toBe(200);
   });
@@ -804,6 +941,576 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     });
   });
 
+  describe('until a date and time, view or download, so many opens (5.18)', () => {
+    it('the fifth open works and the sixth is refused, also when both arrive together', async () => {
+      const created = await made(lease, { max_opens: 5, recipient_label: 'five opens' });
+      const t = created.link_token;
+      expect(json<ShareLinkPreview>(await preview(t)).opens_left).toBe(5);
+      for (let i = 0; i < 4; i += 1) await opened(t);
+      expect(json<ShareLinkPreview>(await preview(t)).opens_left).toBe(1);
+
+      // The fifth and the sixth at the same moment: one opens, one is told.
+      const both = await Promise.all([unlock(t), unlock(t)]);
+      expect(both.map((r) => r.statusCode).sort()).toEqual([200, 410]);
+      const refused = both.find((r) => r.statusCode === 410) as LightMyRequestResponse;
+      expect(code(refused)).toBe('link_used_up');
+      expect(refused.body).toMatch(/opened as many times as it allows/);
+      expect(cookieOf(refused)).toBeUndefined();
+      expect((await linkRow(created.share.id)).open_count).toBe(5);
+
+      // After it, the same, and the page's preview says so before Open.
+      for (const res of [await unlock(t), await preview(t)]) {
+        expect(res.statusCode).toBe(410);
+        expect(code(res)).toBe('link_used_up');
+      }
+      expect((await linkRow(created.share.id)).open_count).toBe(5);
+      expect(
+        (await auditOf(created.share.id)).filter((a) => a.action === 'share.opened'),
+      ).toHaveLength(5);
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id) as ShareView;
+      expect(listed).toMatchObject({ state: 'used_up', open_count: 5, max_opens: 5 });
+      expect(listed.summary).toMatch(
+        /opened 5 of 5 times.*\. Used up: it cannot be opened again\.$/,
+      );
+
+      // Twelve at once on a link with five: five open, however they race.
+      const crowd = await made(lease, { max_opens: 5, with_pin: true });
+      const tries = await Promise.all(
+        Array.from({ length: 12 }, () => unlock(crowd.link_token, crowd.pin)),
+      );
+      expect(tries.filter((r) => r.statusCode === 200)).toHaveLength(5);
+      expect(tries.filter((r) => r.statusCode === 410)).toHaveLength(7);
+      // A right PIN gives its try back; one refused as used up tried none.
+      expect(await linkRow(crowd.share.id)).toMatchObject({ open_count: 5, attempts: 0 });
+    }, 60_000);
+
+    it('a reload inside a session is free', async () => {
+      const created = await made(lease, { max_opens: 1, max_downloads: 1 });
+      const { res, cookie } = await opened(created.link_token);
+      expect(json<SharedSession>(res)).toMatchObject({ permission: 'download', downloads_left: 1 });
+      for (let i = 0; i < 3; i += 1) {
+        expect((await items(cookie)).statusCode).toBe(200);
+        expect((await content(cookie, lease)).statusCode).toBe(200);
+      }
+      // One Open, one download, however often the page was reloaded or the
+      // file fetched again; and one line each in the activity log.
+      expect(await linkRow(created.share.id)).toMatchObject({ open_count: 1, downloads_used: 1 });
+      expect((await auditOf(created.share.id)).map((a) => a.action)).toEqual([
+        'share.created',
+        'share.opened',
+        'share.downloaded',
+      ]);
+      // Its one open used, the page opened with it still works to its end;
+      // nobody else gets in.
+      expect(json<SharedSession>(await items(cookie)).downloads_left).toBe(0);
+      expect((await content(cookie, lease)).statusCode).toBe(200);
+      expect(code(await unlock(created.link_token))).toBe('link_used_up');
+    });
+
+    it('a view-only link never gives the original, by any route', async () => {
+      const doc = await make('Settlement agreement', 'household');
+      await drawnAlready(doc, 2);
+      const created = await made(doc, { permission: 'view', recipient_label: 'the mediator' });
+      expect(created.share).toMatchObject({ permission: 'view', max_downloads: null });
+      // Asked of the worker as it was made, for the link and its version:
+      // asked as often as it may be, one key, so the queue draws it once.
+      const v1 = (await newestOf(doc)).id;
+      const asked = jobsFor('share.pages', created.share.id);
+      expect(asked.length).toBeGreaterThan(0);
+      for (const job of asked) {
+        expect(job).toEqual({
+          name: 'share.pages',
+          data: { household_id: owner.household_id, share_id: created.share.id, version_id: v1 },
+          options: { singletonKey: `share-pages:${created.share.id}:${v1}`, priority: 10 },
+        });
+      }
+      await drawAsWorker(created.share.id, doc, 2);
+
+      const shown = json<ShareLinkPreview>(await preview(created.link_token));
+      expect(shown).toMatchObject({ permission: 'view', opens_left: null });
+      const { res, cookie } = await opened(created.link_token);
+      const session = json<SharedSession>(res);
+      expect(session).toMatchObject({ permission: 'view', downloads_left: null });
+      expect(session.items[0]?.pages).toEqual({ state: 'ready', shown: 2, total: 2 });
+
+      // Its pages: the ones drawn for it, never the vault's own previews.
+      for (const n of [1, 2, 1]) {
+        const res = await page(cookie, doc, n);
+        expect(res.statusCode, `page ${n}`).toBe(200);
+        expect(res.headers['content-type']).toBe('image/jpeg');
+        expect(res.headers['cache-control']).toBe('private, no-store');
+        expect(res.rawPayload.equals(marked(created.share.id, n))).toBe(true);
+        expect(res.rawPayload.equals(OWN)).toBe(false);
+        expect(res.rawPayload.includes(Buffer.from('%PDF'))).toBe(false);
+      }
+      expect((await page(cookie, doc, 3)).statusCode).toBe(404);
+
+      // Not the file inside the session ...
+      const file = await content(cookie, doc);
+      expect(file.statusCode).toBe(403);
+      expect(code(file)).toBe('view_only');
+      expect(file.rawPayload.includes(Buffer.from('%PDF'))).toBe(false);
+      // ... nor on the old routes, which do not know its token ...
+      for (const res of [
+        await legacyPreview(created.link_token),
+        await legacyOpen(created.link_token),
+        await legacyContent(created.link_token),
+      ]) {
+        expect(res.statusCode).toBe(404);
+        expect(res.rawPayload.includes(Buffer.from('%PDF'))).toBe(false);
+      }
+      // ... nor the family's own, which need a sign-in, whatever cookie comes.
+      const v = await newestOf(doc);
+      for (const url of [
+        `/api/v1/versions/${v.id}/content`,
+        `/api/v1/versions/${v.id}/pages/1`,
+        `/api/v1/documents/${doc}`,
+      ]) {
+        const res = await h.app.inject({ url, cookies: { fdv_share: cookie }, ...peer() });
+        expect(res.statusCode, url).toBe(401);
+      }
+      // A link cannot make itself one to download either: that is the sharer's.
+      await expect(
+        withScopeOfLink(created.share.id, (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ permission: 'download' })
+            .where('id', '=', created.share.id)
+            .execute(),
+        ),
+      ).rejects.toThrow(/only count its opens|row-level security/);
+
+      // Looked at twice, written down once; nothing was downloaded.
+      expect((await auditOf(created.share.id)).map((a) => a.action)).toEqual([
+        'share.created',
+        'share.opened',
+        'share.viewed',
+      ]);
+      expect((await linkRow(created.share.id)).downloads_used).toBe(0);
+
+      // A link to download has no pages to give.
+      const whole = await made(doc);
+      const other = await opened(whole.link_token);
+      expect(code(await page(other.cookie, doc, 1))).toBe('no_preview');
+
+      // Taken back, its pages go: the worker is asked to remove them.
+      await takeBack(owner, created.share.id);
+      expect(jobsFor('share.pages.prune', created.share.id)).toHaveLength(1);
+    });
+
+    it('a download counts once per session', async () => {
+      const created = await made(lease, { max_downloads: 2, recipient_label: 'two downloads' });
+      const first = await opened(created.link_token);
+      for (let i = 0; i < 3; i += 1) {
+        expect((await content(first.cookie, lease)).statusCode).toBe(200);
+      }
+      expect((await linkRow(created.share.id)).downloads_used).toBe(1);
+
+      const second = await opened(created.link_token);
+      // Two requests of one session at once still count one.
+      const pair = await Promise.all([
+        content(second.cookie, lease),
+        content(second.cookie, lease),
+      ]);
+      expect(pair.map((r) => r.statusCode)).toEqual([200, 200]);
+      expect((await linkRow(created.share.id)).downloads_used).toBe(2);
+
+      // A third session finds none left, and is told so.
+      const third = await opened(created.link_token);
+      expect(json<SharedSession>(third.res).downloads_left).toBe(0);
+      const refused = await content(third.cookie, lease);
+      expect(refused.statusCode).toBe(403);
+      expect(code(refused)).toBe('downloads_used_up');
+      expect(refused.rawPayload.includes(Buffer.from('%PDF'))).toBe(false);
+      // Refused is not counted, nor half-noted: it is refused again.
+      expect(code(await content(third.cookie, lease))).toBe('downloads_used_up');
+      expect((await linkRow(created.share.id)).downloads_used).toBe(2);
+      // The sessions that downloaded may still, free.
+      expect((await content(first.cookie, lease)).statusCode).toBe(200);
+
+      expect(
+        (await auditOf(created.share.id)).filter((a) => a.action === 'share.downloaded'),
+      ).toHaveLength(2);
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id) as ShareView;
+      expect(listed).toMatchObject({ downloads_used: 2, max_downloads: 2, open_count: 3 });
+      expect(listed.summary).toMatch(/opened 3 times; 2 of 2 downloads/);
+    });
+
+    it('a 42-page document: the sharer is told, and the recipient gets 30 pages and the sentence', async () => {
+      const long = await make('Mortgage offer', 'household');
+      await drawnAlready(long, 30, 42);
+      const created = await made(long, { permission: 'view' });
+      // Told as it is made: the first 30 of 42, being drawn.
+      expect(created.share.pages).toEqual({ state: 'drawing', shown: 30, total: 42 });
+      expect(sharePagesNote(created.share.pages)).toMatch(
+        /^They will see the first 30 of 42 pages\. The pages are still being drawn/,
+      );
+      await drawAsWorker(created.share.id, long, 30);
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id) as ShareView;
+      expect(listed.pages).toEqual({ state: 'ready', shown: 30, total: 42 });
+      expect(sharePagesNote(listed.pages)).toBe('They will see the first 30 of 42 pages.');
+
+      const { res, cookie } = await opened(created.link_token);
+      const pages = json<SharedSession>(res).items[0]?.pages;
+      expect(pages).toEqual({ state: 'ready', shown: 30, total: 42 });
+      expect(pagesNotSharedNote(pages)).toBe('Pages after 30 were not shared.');
+      expect((await page(cookie, long, 30)).statusCode).toBe(200);
+      const past = await page(cookie, long, 31);
+      expect(past.statusCode).toBe(404);
+      expect(code(past)).toBe('no_preview');
+      expect(past.body).toMatch(/Pages after 30 were not shared/);
+    });
+
+    it('a link made before the previews are ready says so, then works', async () => {
+      // Just added: nothing drawn yet, not even the vault's own pages.
+      const fresh = await make('Just scanned', 'household');
+      expect((await newestOf(fresh)).preview_state).toBe('none');
+      const created = await made(fresh, { permission: 'view' });
+      expect(created.share.pages?.state).toBe('drawing');
+      expect(sharePagesNote(created.share.pages)).toMatch(
+        /The pages are still being drawn; the link works in a minute\./,
+      );
+      const asked = jobsFor('share.pages', created.share.id).length;
+      expect(asked).toBeGreaterThan(0);
+
+      // Opened meanwhile: the page says so, and asks the worker again.
+      const { res, cookie } = await opened(created.link_token);
+      expect(json<SharedSession>(res).items[0]?.pages?.state).toBe('drawing');
+      const waiting = await page(cookie, fresh, 1);
+      expect(waiting.statusCode).toBe(404);
+      expect(code(waiting)).toBe('preview_pending');
+      expect(json<{ error: { retriable: boolean } }>(waiting).error.retriable).toBe(true);
+      expect(waiting.headers['retry-after']).toBe('3');
+      expect(jobsFor('share.pages', created.share.id).length).toBeGreaterThan(asked);
+
+      // The worker draws them (its own and then the link's), and it works.
+      await drawnAlready(fresh, 1);
+      await drawAsWorker(created.share.id, fresh, 1);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages).toEqual({
+        state: 'ready',
+        shown: 1,
+        total: 1,
+      });
+      const shown = await page(cookie, fresh, 1);
+      expect(shown.statusCode).toBe(200);
+      expect(shown.rawPayload.equals(marked(created.share.id, 1))).toBe(true);
+    });
+
+    it('an expiry in the past or under 5 minutes is refused', async () => {
+      const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+      for (const [when, words] of [
+        [at(-60_000), /at least 5 minutes from now/],
+        [at(4 * 60_000), /at least 5 minutes from now/],
+        [at(91 * 864e5), /90 days at most/],
+      ] as const) {
+        const res = await share(lease, { expires_at: when });
+        expect(res.statusCode, when).toBe(422);
+        expect(code(res), when).toBe('expiry_out_of_range');
+        expect(res.body, when).toMatch(words);
+      }
+      // One end, said once.
+      const both = await share(lease, { expires_at: at(864e5), expires_in_days: 2 });
+      expect(code(both)).toBe('validation_failed');
+      expect(code(await share(lease, { expires_at: 'Friday at five' }))).toBe('validation_failed');
+
+      // Six minutes is enough, and the page opened with it ends when it does.
+      const end = at(6 * 60_000);
+      const soon = await made(lease, { expires_at: end });
+      expect(soon.share.expires_at).toBe(end);
+      const { res } = await opened(soon.link_token);
+      expect(cookieOf(res)?.maxAge).toBeLessThanOrEqual(360);
+      expect(json<SharedSession>(res).session_expires_at).toBe(end);
+      // An end given with an offset is the same moment.
+      const friday = new Date(Date.now() + 3 * 864e5);
+      friday.setUTCSeconds(0, 0);
+      const local = `${friday.toISOString().slice(0, 16)}:00+00:00`;
+      expect((await made(lease, { expires_at: local })).share.expires_at).toBe(
+        friday.toISOString(),
+      );
+    });
+
+    it("under a limit shorter than a week, the default and an older client's days are cut to it, and the limit is said (5.18 review)", async () => {
+      const short = await createHarness({ shareMaxDays: 3 });
+      try {
+        const who = await short.setup();
+        const res = await short.app.inject({
+          method: 'POST',
+          url: '/api/v1/documents',
+          headers: short.as(who),
+          payload: { title: 'Short-lived', visibility: 'household' },
+        });
+        const doc = res.json<DocumentView>().id;
+        const form = new FormData();
+        form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+        await short.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${doc}/versions`,
+          headers: { ...short.as(who), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+          payload: form.getBuffer(),
+        });
+        const ask = (payload: Record<string, unknown>) =>
+          short.app.inject({
+            method: 'POST',
+            url: `/api/v1/documents/${doc}/share`,
+            headers: short.as(who),
+            payload,
+          });
+        // Said in the capability document, for a client to offer only what
+        // the vault takes.
+        const caps = await short.app.inject({ url: '/api/v1/capabilities' });
+        expect(caps.json<{ limits: { share_max_days: number } }>().limits.share_max_days).toBe(3);
+        // Nothing said (the API's default, a week) and an older client's
+        // seven days both make a link, to the longest the vault allows.
+        for (const payload of [{}, { recipient_label: 'the agent' }, { expires_in_days: 7 }]) {
+          const before = Date.now();
+          const res = await ask(payload);
+          expect(res.statusCode, JSON.stringify(payload)).toBe(201);
+          const end = Date.parse(res.json<CreatedShare>().share.expires_at);
+          expect(end, JSON.stringify(payload)).toBeGreaterThanOrEqual(before + 3 * 864e5);
+          expect(end, JSON.stringify(payload)).toBeLessThanOrEqual(Date.now() + 3 * 864e5);
+        }
+        // A client that says a date and time knows the limit: past it is refused.
+        const refused = await ask({ expires_at: new Date(Date.now() + 4 * 864e5).toISOString() });
+        expect(refused.statusCode).toBe(422);
+        expect(code(refused)).toBe('expiry_out_of_range');
+        expect(refused.body).toMatch(/3 days at most/);
+      } finally {
+        await short.close();
+      }
+    }, 60_000);
+
+    it('expires_in_days still works', async () => {
+      const before = Date.now();
+      const three = await made(lease, { expires_in_days: 3 });
+      const end = Date.parse(three.share.expires_at);
+      expect(end).toBeGreaterThanOrEqual(before + 3 * 864e5);
+      expect(end).toBeLessThan(Date.now() + 3 * 864e5 + 1000);
+      // Nothing said: a week, as always.
+      const week = Date.parse((await made(lease)).share.expires_at);
+      expect(week).toBeGreaterThanOrEqual(before + 7 * 864e5);
+      expect(week).toBeLessThan(Date.now() + 7 * 864e5 + 1000);
+      expect(code(await share(lease, { expires_in_days: 91 }))).toBe('validation_failed');
+    });
+
+    it('a Word file cannot be shared view-only', async () => {
+      const notes = await make('Tenancy notes', 'household');
+      const v = await newestOf(notes);
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({
+            mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            filename: 'notes.docx',
+          })
+          .where('id', '=', v.id)
+          .execute(),
+      );
+      const refused = await share(notes, { permission: 'view' });
+      expect(refused.statusCode).toBe(422);
+      expect(code(refused)).toBe('view_not_possible');
+      expect(refused.body).toMatch(/Word and Excel files can only be shared to download/);
+      // To download, as always.
+      const whole = await share(notes, { permission: 'download' });
+      expect(whole.statusCode).toBe(201);
+      // And a link to view has nothing to download.
+      const muddled = await share(lease, { permission: 'view', max_downloads: 2 });
+      expect(code(muddled)).toBe('validation_failed');
+    });
+
+    it('a newer version is drawn again for a page that only asks what is open (5.18 review)', async () => {
+      const doc = await make('Lease, unsigned', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view', recipient_label: 'the tenant' });
+      await drawAsWorker(created.share.id, doc, 1);
+      const { cookie } = await opened(created.link_token);
+      const v1 = (await newestOf(doc)).id;
+
+      // The signed copy is added, and its own pages drawn.
+      const form = new FormData();
+      form.append('file', PDF, { filename: 'signed.pdf', contentType: 'application/pdf' });
+      const added = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${doc}/versions`,
+        headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+        payload: form.getBuffer(),
+      });
+      expect(added.statusCode, added.body).toBe(201);
+      await drawnAlready(doc, 1);
+      const v2 = (await newestOf(doc)).id;
+      expect(v2).not.toBe(v1);
+
+      // The recipient's page asks only what is open, as it does while it
+      // waits: that alone asks the worker for the new version's pages.
+      const forV2 = () =>
+        jobsFor('share.pages', created.share.id).filter((j) => j.data.version_id === v2);
+      expect(forV2()).toEqual([]);
+      const polled = json<SharedSession>(await items(cookie));
+      expect(polled.items[0]?.pages?.state).toBe('drawing');
+      expect(forV2()).toEqual([
+        {
+          name: 'share.pages',
+          data: { household_id: owner.household_id, share_id: created.share.id, version_id: v2 },
+          options: { singletonKey: `share-pages:${created.share.id}:${v2}`, priority: 10 },
+        },
+      ]);
+      // And so do the page before Open, and the family's own list.
+      await preview(created.link_token);
+      await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) });
+      expect(forV2()).toHaveLength(3);
+      // Drawn, the page shows them.
+      await drawAsWorker(created.share.id, doc, 1);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('ready');
+    });
+
+    it('pages the worker could not draw are said to both ends, and not asked for again (5.18 review)', async () => {
+      const doc = await make('Scanned badly', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view' });
+      const { cookie } = await opened(created.link_token);
+      // The worker's last try failed, for this version, a moment ago.
+      await withSystem(h.db, owner.household_id, async (trx) =>
+        trx
+          .updateTable('share_link')
+          .set({ pages_failed_version: (await newestOf(doc)).id, pages_failed_at: new Date() })
+          .where('id', '=', created.share.id)
+          .execute(),
+      );
+      const before = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id);
+      expect(listed?.pages?.state).toBe('failed');
+      expect(sharePagesNote(listed?.pages)).toMatch(/could not draw the pages/);
+      expect(code(await page(cookie, doc, 1))).toBe('no_preview');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+      // A link cannot clear it for itself.
+      await expect(
+        withScopeOfLink(created.share.id, (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ pages_failed_version: null })
+            .where('id', '=', created.share.id)
+            .execute(),
+        ),
+      ).rejects.toThrow(/only count its opens|row-level security/);
+    });
+
+    it('pages that failed an hour ago or more are asked for again: an outage passes (second review)', async () => {
+      const doc = await make('Scanned in an outage', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view' });
+      const { cookie } = await opened(created.link_token);
+      const v = (await newestOf(doc)).id;
+      const failedAgo = (ms: number) =>
+        withSystem(h.db, owner.household_id, (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ pages_failed_version: v, pages_failed_at: new Date(Date.now() - ms) })
+            .where('id', '=', created.share.id)
+            .execute(),
+        );
+      // Under an hour: failed, and not asked for.
+      await failedAgo(PAGES_RETRY_MS - 60_000);
+      const before = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+      // Past it: being drawn again, and the worker asked, by whoever looks.
+      await failedAgo(PAGES_RETRY_MS + 60_000);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('drawing');
+      expect(jobsFor('share.pages', created.share.id).length).toBeGreaterThan(before);
+      expect(jobsFor('share.pages', created.share.id).at(-1)?.data).toEqual({
+        household_id: owner.household_id,
+        share_id: created.share.id,
+        version_id: v,
+      });
+      // The version's own previews failing is for good, however long ago.
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ preview_state: 'failed' })
+          .where('id', '=', v)
+          .execute(),
+      );
+      const now = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(now);
+    });
+
+    it('a link that is not live, whose pages failed long ago, says they failed, not "being drawn" (third review)', async () => {
+      const doc = await make('Used up and failed', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view', max_opens: 1 });
+      await opened(created.link_token);
+      await withSystem(h.db, owner.household_id, async (trx) =>
+        trx
+          .updateTable('share_link')
+          .set({
+            pages_failed_version: (await newestOf(doc)).id,
+            pages_failed_at: new Date(Date.now() - 2 * PAGES_RETRY_MS),
+          })
+          .where('id', '=', created.share.id)
+          .execute(),
+      );
+      const before = jobsFor('share.pages', created.share.id).length;
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id);
+      // Opened as often as it allows: nobody will ask for its pages again.
+      expect(listed?.state).toBe('used_up');
+      expect(listed?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+    });
+
+    it('an end a few minutes past the longest, from a clock that is ahead, is taken (second review)', async () => {
+      const edge = new Date(Date.now() + 90 * 864e5 + 3 * 60_000).toISOString();
+      expect((await share(lease, { expires_at: edge })).statusCode).toBe(201);
+      const far = new Date(Date.now() + 90 * 864e5 + 10 * 60_000).toISOString();
+      expect(code(await share(lease, { expires_at: far }))).toBe('expiry_out_of_range');
+    });
+
+    it('a document this page has downloaded stays downloadable here once downloads are used up (5.18 review)', async () => {
+      const created = await made(lease, { max_downloads: 1 });
+      const { res, cookie } = await opened(created.link_token);
+      expect(json<SharedSession>(res).items[0]?.downloaded).toBe(false);
+      expect((await content(cookie, lease)).statusCode).toBe(200);
+      // Reloaded: none left for anybody, and this page may have it again.
+      const after = json<SharedSession>(await items(cookie));
+      expect(after.downloads_left).toBe(0);
+      expect(after.items[0]?.downloaded).toBe(true);
+      expect((await content(cookie, lease)).statusCode).toBe(200);
+      // Another page opened with it has had nothing, and is refused.
+      const other = await opened(created.link_token);
+      expect(json<SharedSession>(other.res).items[0]?.downloaded).toBe(false);
+      expect(code(await content(other.cookie, lease))).toBe('downloads_used_up');
+    });
+
+    it('turned back on after a restore, a view-only link has its pages drawn again', async () => {
+      const doc = await make('Restored lease', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view' });
+      await drawAsWorker(created.share.id, doc, 1);
+      await restoredFromBefore(created.share.id);
+      expect((await resume(owner, created.share.id)).statusCode).toBe(200);
+      expect(jobsFor('share.pages', created.share.id).at(-1)?.data).toEqual({
+        household_id: owner.household_id,
+        share_id: created.share.id,
+        version_id: (await newestOf(doc)).id,
+        redraw: true,
+      });
+      // A page whose file is gone since is drawn again rather than broken.
+      await rmPages(doc, created.share.id);
+      const { cookie } = await opened(created.link_token);
+      expect(code(await page(cookie, doc, 1))).toBe('preview_pending');
+    });
+  });
+
   it('a link nobody made is refused, and a token is not a document id', async () => {
     expect((await preview('a'.repeat(43))).statusCode).toBe(404);
     expect((await legacyPreview('a'.repeat(43))).statusCode).toBe(404);
@@ -907,15 +1614,33 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     await content(cookie, lease);
     await content(cookie, randomUUID());
     await items('not-a-session');
+    // And a view-only link's pages (5.18), with an end at a time.
+    const viewed = await made(lease, {
+      with_pin: true,
+      permission: 'view',
+      max_opens: 2,
+      expires_at: new Date(Date.now() + 864e5).toISOString(),
+    });
+    await drawnAlready(lease, 1);
+    await drawAsWorker(viewed.share.id, lease, 1);
+    await preview(viewed.link_token);
+    const inside = await opened(viewed.link_token, viewed.pin);
+    await page(inside.cookie, lease, 1);
+    await page(inside.cookie, lease, 2);
+    await content(inside.cookie, lease);
 
     const text = logged.join('\n');
     // The log was written, and names the routes ...
     expect(text).toContain('/api/v1/shared/unlock');
     expect(text).toContain('/api/v1/shared/items');
+    expect(text).toContain(`/api/v1/shared/items/${lease}/pages/1`);
     // ... and nothing that opens anything.
-    expect(text).not.toContain(created.link_token);
-    expect(text).not.toContain(cookie);
+    for (const secret of [created.link_token, viewed.link_token, cookie, inside.cookie]) {
+      expect(text).not.toContain(secret);
+    }
     expect(text).not.toContain(sha256(cookie).toString('hex'));
+    expect(text).not.toContain(sha256(inside.cookie).toString('hex'));
+    expect(text).not.toContain(`"${viewed.pin}"`);
     // A PIN is four digits, which a request id or a timing could hold by
     // chance: what is looked for is a PIN as a body or a query would log it.
     for (const p of [pin, wrongPin]) {

@@ -247,6 +247,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       edition: config.FDV_EDITION,
       displayName: householdName ?? config.FDV_DISPLAY_NAME,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
+      shareMaxDays: config.FDV_SHARE_MAX_DAYS,
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say

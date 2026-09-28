@@ -229,6 +229,49 @@ export interface Schema {
     /** Paused for an owner to turn back on, and why: a restore (0037). */
     paused_at: Timestamp | null;
     paused_reason: 'restored' | null;
+    /**
+     * What it gives (0041): `view`, the pages the vault drew for it and never
+     * the file; `download`, the file. Every link made before 0041 downloads,
+     * and a legacy one can be nothing else.
+     */
+    permission: Generated<'view' | 'download'>;
+    /** How many Opens may work (0041), against `open_count`; null for no limit. v2 only. */
+    max_opens: number | null;
+    /** How many downloads (0041), each document once a session; null for no limit. v2 only. */
+    max_downloads: number | null;
+    downloads_used: Generated<number>;
+    /** A view-only link's pages could not be drawn for this version (0041), and when. */
+    pages_failed_version: string | null;
+    pages_failed_at: Timestamp | null;
+  };
+
+  /**
+   * What one session has had of a document (0041): its download, or its
+   * first look at a view-only link's pages. Counted, and written down, once.
+   */
+  share_session_use: {
+    household_id: string;
+    session_id: string;
+    share_id: string;
+    document_id: string;
+    kind: 'viewed' | 'downloaded';
+    used_at: GeneratedTimestamp;
+  };
+
+  /**
+   * A view-only link's own pages (0041): drawn by the worker from the
+   * version's previews with whom the link is for across each, and encrypted
+   * under the version's file key at `storage_key`.
+   */
+  share_page: {
+    household_id: string;
+    share_id: string;
+    permission: Generated<'view'>;
+    document_id: string;
+    version_id: string;
+    n: number;
+    storage_key: string;
+    created_at: GeneratedTimestamp;
   };
 
   /**

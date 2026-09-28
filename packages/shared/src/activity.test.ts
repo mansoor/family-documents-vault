@@ -86,6 +86,22 @@ describe('the activity log, in sentences', () => {
     expect(nobody?.document_id).toBeNull();
   });
 
+  it('says a view-only link, and that its pages were looked at (5.18)', () => {
+    expect(
+      describeEvent(
+        ev({ action: 'share.created', detail: { permission: 'view', recipient_label: 'the GP' } }),
+      )?.text,
+    ).toBe('Sarah made a view-only link to “Home insurance policy” for the GP');
+    expect(
+      describeEvent(ev({ action: 'share.created', detail: { permission: 'download' } }))?.text,
+    ).toBe('Sarah made a link to “Home insurance policy”');
+    expect(
+      describeEvent(
+        ev({ action: 'share.viewed', actor: null, actor_label: 'shared link (the GP)' }),
+      )?.text,
+    ).toBe('Shared link (the GP) looked at the pages of “Home insurance policy”');
+  });
+
   it('never prints an id when it has no name', () => {
     const line = describeEvent(ev({ actor: null, actor_label: null, object_title: null }));
     expect(line?.text).toBe('Somebody downloaded a document');

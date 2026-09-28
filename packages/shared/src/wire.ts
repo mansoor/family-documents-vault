@@ -1,5 +1,6 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { Role } from './roles.js';
+import type { SharePages, SharePermission } from './shares.js';
 
 /**
  * The shapes that travel over the wire, written once.
@@ -225,8 +226,12 @@ export interface Share {
   has_pin: boolean;
   open_count: number;
   last_opened_at: string | null;
-  /** `paused` since 0.5.14: a restore paused it, for an owner to turn back on. */
-  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused';
+  /**
+   * `paused` since 0.5.14: a restore paused it, for an owner to turn back
+   * on. `used_up` since 5.18: opened as many times as it allows (a page
+   * opened with it stays open to its own end).
+   */
+  state: 'active' | 'expired' | 'revoked' | 'locked' | 'paused' | 'used_up';
   /**
    * Which routes open it (0.5.14): `legacy`, a link made before then, on
    * the old /shared/{token} routes; `v2`, on the new ones. Absent from
@@ -236,7 +241,38 @@ export interface Share {
   /** When it was paused, and why (0.5.14). Absent from older vaults. */
   paused_at?: string | null;
   paused_reason?: 'restored' | null;
+  /**
+   * What it gives (5.18): `view`, the pages the vault drew for it, with
+   * whom it is for across each, and never the file; `download`, the file.
+   * Absent from older vaults, where every link downloads.
+   */
+  permission?: SharePermission;
+  /** How many times Open may work, against `open_count`; null for no limit (5.18). */
+  max_opens?: number | null;
+  /** How many downloads, each document counted once a session; null for no limit (5.18). */
+  max_downloads?: number | null;
+  /** Downloads so far, each document once a session (5.18). */
+  downloads_used?: number;
+  /** A view-only link's pages (5.18); null for a link to download. */
+  pages?: SharePages | null;
   summary: string;
+}
+
+/**
+ * `POST /documents/{id}/share`. `expires_at` (5.18) is the end: at least 5
+ * minutes ahead and at most `limits.share_max_days` (FDV_SHARE_MAX_DAYS, 90)
+ * days. Send it, and the rest of 5.18's options, only to a vault with
+ * `features.share_options`; `expires_in_days` is what older vaults take.
+ * Neither: seven days. Days past the vault's longest are cut to it.
+ */
+export interface ShareInput {
+  expires_at?: string;
+  expires_in_days?: number;
+  recipient_label?: string;
+  with_pin?: boolean;
+  permission?: SharePermission;
+  max_opens?: number | null;
+  max_downloads?: number | null;
 }
 
 /**
@@ -271,6 +307,10 @@ export interface ShareLinkPreview {
   expires_at: string;
   /** Withheld while a protection is on: a title can say a great deal. */
   document_title: string | null;
+  /** What Open gives (5.18): the pages, or the file. Absent from older vaults: download. */
+  permission?: SharePermission;
+  /** How many more times Open will work; null for no limit (5.18). */
+  opens_left?: number | null;
 }
 
 /** A document inside an opened link (0.5.14). */
@@ -281,6 +321,17 @@ export interface SharedItem {
   filename: string;
   content_type: string;
   byte_size: number;
+  /**
+   * A view-only link's pages of it (5.18): `GET
+   * /shared/items/{id}/pages/{n}` serves 1 to `shown`. Null for a link to
+   * download.
+   */
+  pages?: SharePages | null;
+  /**
+   * This session has downloaded it already (5.18): downloading it again
+   * here is free, even once the link's downloads are used up.
+   */
+  downloaded?: boolean;
 }
 
 /**
@@ -295,6 +346,10 @@ export interface SharedSession {
   expires_at: string;
   session_expires_at: string;
   items: SharedItem[];
+  /** What the link gives (5.18): the pages, or the files. Absent from older vaults: download. */
+  permission?: SharePermission;
+  /** How many more documents may be downloaded; null for no limit (5.18). */
+  downloads_left?: number | null;
 }
 
 export interface SharePreview {

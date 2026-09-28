@@ -98,6 +98,8 @@ export interface HarnessOptions {
   logger?: object;
   /** FDV_PUBLIC_URL: the public-only site share links start with (5.16). */
   publicUrl?: string;
+  /** FDV_SHARE_MAX_DAYS: the longest a share link may last (5.18). */
+  shareMaxDays?: number;
 }
 
 export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -112,6 +114,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     FDV_MASTER_KEY: TEST_MASTER,
     FDV_LOCAL_VAULT_DIR: vaultDir,
     LOG_LEVEL: 'error',
+    ...(opts.shareMaxDays ? { FDV_SHARE_MAX_DAYS: String(opts.shareMaxDays) } : {}),
   });
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
@@ -183,7 +186,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     collections: new CollectionService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
-    shares: new ShareService(db, keys, vaults, alert, opts.publicUrl ?? null),
+    shares: new ShareService(db, keys, vaults, alert, opts.publicUrl ?? null, {
+      enqueue,
+      maxDays: config.FDV_SHARE_MAX_DAYS,
+    }),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(

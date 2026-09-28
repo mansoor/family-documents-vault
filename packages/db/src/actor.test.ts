@@ -535,6 +535,16 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
         .executeTakeFirst(),
     );
     expect(counted?.open_count).toBeGreaterThan(0);
+    // And its downloads (0041), upwards too.
+    const downloaded = await as(link(shares.lease), (trx) =>
+      trx
+        .updateTable('share_link')
+        .set((eb) => ({ downloads_used: eb('downloads_used', '+', 1) }))
+        .where('id', '=', shares.lease)
+        .returning('downloads_used')
+        .executeTakeFirst(),
+    );
+    expect(downloaded?.downloads_used).toBe(1);
 
     // When it ends, its PIN, whom it is for, and its counts going down are
     // the sharer's.
@@ -590,6 +600,34 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
           trx
             .updateTable('share_link')
             .set((eb) => ({ open_count: eb('open_count', '-', 1) }))
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      // 5.18 (0041): what it gives and how often are the sharer's too.
+      [
+        'more opens than it was given',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ max_opens: 1000 })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'the file, on a link to view',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ permission: 'view' })
+            .where('id', '=', shares.lease)
+            .execute(),
+      ],
+      [
+        'fewer downloads',
+        (trx) =>
+          trx
+            .updateTable('share_link')
+            .set((eb) => ({ downloads_used: eb('downloads_used', '-', 1) }))
             .where('id', '=', shares.lease)
             .execute(),
       ],

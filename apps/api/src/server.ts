@@ -163,7 +163,10 @@ async function main(): Promise<void> {
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push),
-    shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null),
+    shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
+      enqueue,
+      maxDays: config.FDV_SHARE_MAX_DAYS,
+    }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,

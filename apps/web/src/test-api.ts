@@ -58,6 +58,29 @@ export interface FakeState {
   shareSession: boolean;
   /** CreatedShare.link_url: the vault's FDV_PUBLIC_URL link, when it has one (5.16). */
   shareLinkUrl?: string | null;
+  /**
+   * The link the page at /s opens (5.18): to view or to download, how many
+   * opens it has left (null: no limit; 0: used up), how many downloads, and
+   * its pages when it is for viewing. Left out: to download, no limits.
+   */
+  sharePermission?: 'view' | 'download';
+  shareOpensLeft?: number | null;
+  shareDownloadsLeft?: number | null;
+  sharePages?: {
+    state: 'drawing' | 'ready' | 'failed';
+    shown: number | null;
+    total: number | null;
+  };
+  /** The newest version's kind of file, as GET /documents/{id}/versions says: a PDF when left out. */
+  versionMime?: string;
+  /** limits.share_max_days in the capability document (5.18 review); left out, not said. */
+  shareMaxDays?: number;
+  /** Whether this session has downloaded the shared document already (SharedItem.downloaded). */
+  shareDownloaded?: boolean;
+  /** How many times /api/v1/shared/items was asked. */
+  shareItemsAsked?: number;
+  /** Answer the next this-many asks of /api/v1/shared/items with a 503. */
+  shareItemsFailing?: number;
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
@@ -446,8 +469,9 @@ export function installFakeApi(state: FakeState) {
           custom_types: true,
           ...(state.collections ? { collections: true } : {}),
           reminder_dates: state.reminderDates ?? true,
+          share_options: true,
         },
-        limits: {},
+        limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
         branding: { display_name: state.displayName },
       });
@@ -783,7 +807,33 @@ export function installFakeApi(state: FakeState) {
           'There is no file on this document yet, so there is nothing to send.',
         );
       }
-      const b = body as { recipient_label?: string; with_pin?: boolean };
+      const b = body as {
+        recipient_label?: string;
+        with_pin?: boolean;
+        expires_at?: string;
+        expires_in_days?: number;
+        permission?: 'view' | 'download';
+        max_opens?: number | null;
+      };
+      // The vault's own refusals (5.18), in its words.
+      const end = b.expires_at
+        ? new Date(b.expires_at)
+        : new Date(Date.now() + (b.expires_in_days ?? 7) * 864e5);
+      if (end.getTime() < Date.now() + 5 * 60_000) {
+        return refuse(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
+      }
+      const maxDays = state.shareMaxDays ?? 90;
+      if (end.getTime() > Date.now() + maxDays * 864e5) {
+        return refuse(422, 'expiry_out_of_range', `A link can last ${maxDays} days at most.`);
+      }
+      if (b.permission === 'view' && state.versionMime && state.versionMime !== 'application/pdf') {
+        return refuse(
+          422,
+          'view_not_possible',
+          'Word and Excel files can only be shared to download: the vault cannot draw their pages.',
+        );
+      }
+      const opened = b.max_opens ? `opened 0 of ${b.max_opens} times` : 'not opened yet';
       const share = {
         id: `sh-${state.shares.length}`,
         document_id: documentId,
@@ -791,12 +841,25 @@ export function installFakeApi(state: FakeState) {
         recipient_label: b.recipient_label ?? null,
         created_by_name: 'Mansoor Seikh',
         created_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        expires_at: end.toISOString(),
         has_pin: Boolean(b.with_pin),
         open_count: 0,
         last_opened_at: null,
         state: 'active',
-        summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September.`,
+        flow: 'v2',
+        permission: b.permission ?? 'download',
+        max_opens: b.max_opens ?? null,
+        max_downloads: null,
+        downloads_used: 0,
+        pages:
+          b.permission === 'view'
+            ? (state.sharePages ?? {
+                state: 'drawing',
+                shown: state.pageCount,
+                total: state.pageCount,
+              })
+            : null,
+        summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, ${opened}${b.permission === 'view' ? '; to view only' : ''}. Stops working on 30 September at 17:00.`,
       };
       state.shares.push(share);
       return json(
@@ -837,6 +900,7 @@ export function installFakeApi(state: FakeState) {
         'link_not_valid',
         'That link is not valid any more. Ask whoever sent it for a new one.',
       );
+    const view = state.sharePermission === 'view';
     const linkSession = () => ({
       household_name: 'The Seikh family',
       shared_by: 'Mansoor Seikh',
@@ -850,21 +914,36 @@ export function installFakeApi(state: FakeState) {
           filename: 'tenancy.pdf',
           content_type: 'application/pdf',
           byte_size: 1024,
+          pages: view ? (state.sharePages ?? { state: 'ready', shown: 2, total: 2 }) : null,
+          downloaded: Boolean(state.shareDownloaded),
         },
       ],
+      permission: state.sharePermission ?? 'download',
+      downloads_left: view ? null : (state.shareDownloadsLeft ?? null),
     });
+    // Opened as often as it allows (5.18): said plainly, before and at Open.
+    const usedUp = () =>
+      refuse(
+        410,
+        'link_used_up',
+        'This link has been opened as many times as it allows, so it cannot be opened again. Ask whoever sent it for a new one.',
+      );
     if (path === '/api/v1/shared/preview' && method === 'POST') {
       if (!state.shareValid) return linkGone();
+      if (state.shareOpensLeft === 0) return usedUp();
       return json({
         household_name: 'The Seikh family',
         shared_by: 'Mansoor Seikh',
         protection: state.sharePin ? ['pin'] : [],
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
         document_title: state.sharePin ? null : 'Flat 3 tenancy agreement',
+        permission: state.sharePermission ?? 'download',
+        opens_left: state.shareOpensLeft ?? null,
       });
     }
     if (path === '/api/v1/shared/unlock' && method === 'POST') {
       if (!state.shareValid) return linkGone();
+      if (state.shareOpensLeft === 0) return usedUp();
       if (state.sharePin && (body as { secret?: string }).secret !== state.sharePin) {
         return refuse(
           401,
@@ -874,9 +953,17 @@ export function installFakeApi(state: FakeState) {
       }
       state.shareOpens += 1;
       state.shareSession = true;
+      if (typeof state.shareOpensLeft === 'number') state.shareOpensLeft -= 1;
       return json(linkSession());
     }
     if (path === '/api/v1/shared/items' && method === 'GET') {
+      state.shareItemsAsked = (state.shareItemsAsked ?? 0) + 1;
+      // The vault out of reach for a moment.
+      if ((state.shareItemsFailing ?? 0) > 0) {
+        state.shareItemsFailing = (state.shareItemsFailing ?? 0) - 1;
+        return refuse(503, 'not_ready', 'The vault is starting up or cannot reach its database.');
+      }
+      if (!state.shareValid) return linkGone();
       if (!state.shareSession) {
         return refuse(
           401,
@@ -1408,7 +1495,7 @@ export function installFakeApi(state: FakeState) {
             document_id: versionsOf[1],
             version_no: 1,
             filename: 'passport.pdf',
-            mime: 'application/pdf',
+            mime: state.versionMime ?? 'application/pdf',
             byte_size: 2048,
             sha256: 'x',
             page_count: state.pageCount,

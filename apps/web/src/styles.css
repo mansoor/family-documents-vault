@@ -70,7 +70,7 @@ h3 {
    Chromium rings such an element even before anybody has touched the page
    (the share page's title as it loads), so none of them draws one. A
    control keeps its ring, however it was focused. */
-:is(h1, h2, h3, p, dl)[tabindex='-1']:focus {
+:is(h1, h2, h3, p, dl, ol)[tabindex='-1']:focus {
   outline: none;
 }
 
@@ -120,6 +120,8 @@ h3 {
 
 .status::before {
   content: '';
+  /* A dot, however many lines the words beside it take. */
+  flex: none;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -1468,4 +1470,57 @@ a.btn {
   margin: 0 calc(var(--tap) - 24px) 0 0;
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+/* A link's options (5.18): the end's date and time side by side, and what
+   the link will do, said back as a short list. */
+.share-when {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+/* A date or time control has a width of its own; here it takes its column's. */
+.share-when input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 10px;
+}
+
+.share-when .field span {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.share-terms {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A view-only link's pages, one under another, each as wide as the card. */
+.shared-pages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.shared-pages img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface);
 }

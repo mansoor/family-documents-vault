@@ -65,6 +65,8 @@ describe('buildCapabilities', () => {
       reminder_dates: true,
       // 0.5.19: people's photos (5.17c).
       member_photos: true,
+      // 5.18: a link until a date and time, to view or to download, so many opens.
+      share_options: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's
@@ -95,6 +97,11 @@ describe('buildCapabilities', () => {
     const caps = buildCapabilities(config);
     expect(caps.limits.max_members).toBeNull();
     expect(caps.limits.max_storage_bytes).toBeNull();
+  });
+
+  it('says the longest a share link may last, so a client offers only what the vault takes (5.18 review)', () => {
+    expect(buildCapabilities(config).limits.share_max_days).toBe(90);
+    expect(buildCapabilities({ ...config, shareMaxDays: 3 }).limits.share_max_days).toBe(3);
   });
 
   it('the minimum client version is a valid semver the server itself satisfies', () => {

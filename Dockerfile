@@ -73,7 +73,19 @@ ENV NODE_ENV=production \
 # photos). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
-RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick imagemagick-heic     fontconfig font-dejavu font-liberation postgresql16-client     && fc-cache -f && magick -version >/dev/null && tesseract --version >/dev/null     && pg_dump --version >/dev/null
+# A view-only link's pages carry whom it is for (5.18), in whatever script
+# the family wrote it: pango lays the line out, and fontconfig finds each
+# character a font — Noto Sans (Latin, Greek, Cyrillic), Noto Sans Arabic
+# and Devanagari, WenQuanYi Zen Hei (Chinese, Japanese, Korean) and Noto
+# Color Emoji. One weight of each is kept: about 28 MB in all.
+RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagemagick imagemagick-heic \
+      imagemagick-pango fontconfig font-dejavu font-liberation font-noto font-noto-arabic \
+      font-noto-devanagari font-noto-emoji font-wqy-zenhei postgresql16-client \
+    && find /usr/share/fonts/noto -type f ! -name NotoSans-Regular.ttf \
+         ! -name NotoSansArabic-Regular.ttf ! -name NotoSansDevanagari-Regular.ttf \
+         ! -name NotoColorEmoji.ttf -delete \
+    && fc-cache -f && magick -version >/dev/null && magick -list format | grep -q PANGO \
+    && tesseract --version >/dev/null && pg_dump --version >/dev/null
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules
