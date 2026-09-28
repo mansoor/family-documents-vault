@@ -72,10 +72,12 @@ export async function backupKeyFor(
 
 /**
  * Everything the master key protects in the restored database, opening
- * with the vault's current key: moved there, in one transaction, from the
- * previous key if that is what it is under. When it opens with neither —
- * or part with one and part with the other — nothing is moved and the
- * restore fails, rather than leave a vault part of which cannot be opened.
+ * with the vault's current key: whatever is under the previous key moved
+ * there, value by value, in one transaction. That also mends a backup of a
+ * vault rotated by a release before 0.5.0, whose scope keys moved and whose
+ * secrets did not. When something opens with neither key, nothing is moved
+ * and the restore fails, rather than leave a vault part of which cannot be
+ * opened.
  */
 export async function onCurrentKey(
   adminUrl: string,
@@ -89,14 +91,14 @@ export async function onCurrentKey(
     return moved;
   } catch (err) {
     if (!(err instanceof MasterKeyMismatch)) throw err;
+    const does = err.unopened.length === 1 ? 'does' : 'do';
     throw new Error(
       master.previous === undefined
-        ? `${err.what} does not open with this vault's master key: the backup was made under ` +
-            'another one. If that was before a rotation, restore it again with ' +
-            'FDV_MASTER_KEY_PREVIOUS set to the key it was made with'
-        : `${err.what} does not open with FDV_MASTER_KEY_PREVIOUS, and not all of the backup ` +
-            "opens with this vault's own master key, so nothing was moved: what a backup holds " +
-            'must be all under one key or all under the other',
+        ? `${err.what} ${does} not open with this vault's master key: the backup was made, at ` +
+            'least in part, under another one. If that was before a rotation, restore it again ' +
+            'with FDV_MASTER_KEY_PREVIOUS set to the key it was made with'
+        : `${err.what} ${does} not open with this vault's master key or with ` +
+            'FDV_MASTER_KEY_PREVIOUS, so nothing was moved',
       { cause: err },
     );
   } finally {

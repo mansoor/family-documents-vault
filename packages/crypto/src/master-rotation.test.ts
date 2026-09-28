@@ -4,6 +4,8 @@ import pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { deriveKey, KEK_PURPOSE } from './master.js';
 import {
+  CannotSeeVault,
+  checkMasterKey,
   ensureMasterKey,
   MASTER_SEALED,
   MasterKeyMismatch,
@@ -14,12 +16,15 @@ import { binding, type ScopeRef } from './scope-keys.js';
 import { newKey, unwrapKey, wrapKey } from './wrap.js';
 
 /**
- * A restore of a backup made before a rotation (ensureMasterKey): what it
- * holds is moved onto the current key, all of it or none of it.
+ * A restore of a backup made before a rotation (ensureMasterKey), and the
+ * check the vault's start makes (checkMasterKey): each value opened with
+ * the current key or the previous one, and moved onto the current key; if
+ * anything opens with neither, nothing at all.
  */
 
 const OLD = 'old-master-secret-with-at-least-32-bytes!!';
 const NEW = 'new-master-secret-with-at-least-32-bytes!!';
+const OTHER = 'a-master-secret-nobody-here-has-32-bytes!!';
 
 describe.skipIf(!testAdminUrl())('a restored database and the master key', () => {
   let tdb: TestDatabase;
@@ -145,6 +150,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     expect(moved).toEqual({
       rewrapped: 6,
       resealed: { totpSecrets: 2, vaultCredentials: 2, smtpPasswords: 2 },
+      unchanged: 0,
     });
     expect(await openAll(NEW)).toEqual(plain);
     await expect(openAll(OLD)).rejects.toThrow();
@@ -156,21 +162,85 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     expect(await bytes()).toBe(after);
   });
 
-  it('refuses a database part under one key and part under the other, and moves none of it', async () => {
+  /** What a rotation before 0.5.0 left: the scope keys moved to `to`, the secrets not. */
+  async function rewrapScopeKeysOnly(from: string, to: string): Promise<void> {
+    const { rows } = await admin.query<{
+      id: string;
+      household_id: string;
+      kind: ScopeRef['kind'];
+      member_id: string | null;
+      key_wrapped: Buffer;
+    }>('select id, household_id, kind, member_id, key_wrapped from scope_key');
+    for (const r of rows) {
+      const b = binding({ householdId: r.household_id, kind: r.kind, memberId: r.member_id });
+      const key = unwrapKey(r.key_wrapped, deriveKey(from, KEK_PURPOSE), b);
+      await admin.query('update scope_key set key_wrapped = $1 where id = $2', [
+        wrapKey(key, deriveKey(to, KEK_PURPOSE), b),
+        r.id,
+      ]);
+    }
+  }
+
+  it('mends a database a rotation before 0.5.0 left part under each key, value by value', async () => {
     await seed(OLD);
-    // The mail password is reached last: by then every scope key and the
-    // other secrets have been moved, in the same transaction.
+    await rewrapScopeKeysOnly(OLD, NEW);
+    // Neither key alone opens it.
+    await expect(checkMasterKey(admin, NEW)).rejects.toBeInstanceOf(MasterKeyMismatch);
+    await expect(checkMasterKey(admin, OLD)).rejects.toBeInstanceOf(MasterKeyMismatch);
+
+    const moved = await ensureMasterKey(admin, NEW, OLD);
+    expect(moved).toEqual({
+      rewrapped: 0,
+      resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1 },
+      unchanged: 3,
+    });
+    expect(await openAll(NEW)).toEqual(plain);
+    expect(await checkMasterKey(admin, NEW)).toEqual({ checked: 6 });
+  });
+
+  it('refuses whole, naming it, a value that opens with neither key, and moves nothing', async () => {
+    await seed(OLD);
+    await rewrapScopeKeysOnly(OLD, NEW);
     const { rows } = await admin.query<{ id: string }>(
       'select household_id as id from smtp_settings',
     );
     const h = rows[0]?.id as string;
     await admin.query('update smtp_settings set password_encrypted = $1', [
-      sealBound(deriveKey(NEW, 'smtp-credentials'), Buffer.from('mixed'), `smtp:${h}`),
+      sealBound(deriveKey(OTHER, 'smtp-credentials'), Buffer.from('lost'), `smtp:${h}`),
     ]);
     const before = await bytes();
-    await expect(ensureMasterKey(admin, NEW, OLD)).rejects.toThrow(
-      new RegExp(`smtp_settings.password_encrypted of ${h} does not open`),
-    );
+    const refused = await ensureMasterKey(admin, NEW, OLD).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(MasterKeyMismatch);
+    expect((refused as MasterKeyMismatch).unopened).toEqual([
+      `smtp_settings.password_encrypted of ${h}`,
+    ]);
+    // Everything else opened, with one key or the other.
+    expect((refused as MasterKeyMismatch).opened).toBe(5);
     expect(await bytes()).toBe(before);
+  });
+
+  it('the check reads only, and names what does not open and whether the rest does', async () => {
+    await seed(OLD);
+    expect(await checkMasterKey(admin, OLD)).toEqual({ checked: 6 });
+    const wrong = await checkMasterKey(admin, NEW).catch((e: unknown) => e);
+    expect(wrong).toBeInstanceOf(MasterKeyMismatch);
+    expect((wrong as MasterKeyMismatch).unopened).toHaveLength(6);
+    expect((wrong as MasterKeyMismatch).opened).toBe(0);
+    expect((wrong as MasterKeyMismatch).message).toMatch(/scope key .* and 3 more do not open/);
+  });
+
+  it('refuses a connection row-level security applies to, which would see one household at most', async () => {
+    await seed(OLD);
+    const app = new pg.Pool({ connectionString: tdb.appUrl, max: 1 });
+    try {
+      const before = await bytes();
+      await expect(ensureMasterKey(app, NEW, OLD)).rejects.toBeInstanceOf(CannotSeeVault);
+      await expect(checkMasterKey(app, OLD)).rejects.toThrow(
+        /row-level security applies to fdv_app_test on .*scope_key/,
+      );
+      expect(await bytes()).toBe(before);
+    } finally {
+      await app.end();
+    }
   });
 });

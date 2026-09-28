@@ -500,15 +500,15 @@ Objects are laid out as `<household>/<document>/<version>/<hash>.<ext>.enc`, wit
 
 ### Rotating the master key
 
-Rotation moves everything the master key protects onto a new key, in one database transaction: it rewraps the small per-household keys, and seals again the secrets the vault keeps for you — each person's two-step sign-in, an S3 bucket's credentials, the household's mail password. The encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store. If anything does not open with the current key, it stops and changes nothing.
+Rotation moves everything the master key protects onto a new key, in one database transaction: it rewraps the small per-household keys, and seals again the secrets the vault keeps for you — each person's two-step sign-in, an S3 bucket's credentials, the household's mail password. The encrypted files themselves are never rewritten, so it takes seconds regardless of how much you store.
 
-First make the new key, and put it somewhere safe before you use it — beside your copy of `.env`, or in a password manager. After the rotation, nothing opens without it.
+First make the new key, and put it somewhere safe before you use it — beside your copy of `.env`, or in a password manager. After the rotation, nothing opens without it. This works in any shell, PowerShell and the Windows command prompt included:
 
 ```bash
-node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))'
+node -p "require('crypto').randomBytes(32).toString('base64url')"
 ```
 
-Take a backup, then stop the vault, so that nothing is written under the old key while the new one goes in:
+Take a backup, then stop the vault, so that nothing is written under the old key while the new one goes in. The rotation refuses to run while anything else is connected to the database.
 
 ```bash
 docker compose exec worker node apps/worker/dist/cli.mjs backup-now
@@ -524,7 +524,15 @@ Rotate, with the new key in place of `<new key>`:
 docker compose run --rm --no-deps -e FDV_MASTER_KEY_NEW=<new key> api node apps/api/dist/cli.mjs rotate-master-key
 ```
 
-It says how many keys and secrets it moved and how many sessions it ended. It refuses a new key that is the one in use, or that holds anything `.env` would change, such as a space, a quote or a `$` (the command above makes one that is safe). If it refuses or stops, nothing has changed: `docker compose up -d` starts the vault again as it was. Otherwise put the new key in `.env` as `FDV_MASTER_KEY` (or in your key file, if you use `FDV_MASTER_KEY_FILE`), start the vault with `docker compose up -d`, and back `.env` up again.
+It says how many keys and secrets it moved and how many sessions it ended. Then put the new key in `.env` as `FDV_MASTER_KEY` (or in your key file, if you use `FDV_MASTER_KEY_FILE`), start the vault, and back `.env` up again:
+
+```bash
+docker compose up -d
+```
+
+Use `up -d`, never `docker compose start` or `restart`: those keep the key the containers were made with, the old one. The vault does not start on a key that does not open it: the api and the worker stop at once, and their logs say `FDV_MASTER_KEY does not open this vault`, and what to do. If it does not come up after a rotation, look there first.
+
+If the command refuses before it starts (a new key that is the one in use, or that holds anything `.env` would change, such as a space, a quote or a `$`; the vault still running; no `DATABASE_ADMIN_URL`), or says `Nothing was changed`, the vault is as it was, on the old key: `docker compose up -d` starts it again. If it says `The database is already on the new key`, an earlier run finished: put the new key in `.env` as above.
 
 **Everybody is signed out**, on every device, and signs in again. Two-step sign-in, passkeys, email, an S3 bucket, share links and invitations carry on working as before.
 
@@ -534,7 +542,15 @@ It says how many keys and secrets it moved and how many sessions it ended. It re
 docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> worker node apps/worker/dist/cli.mjs restore-backup latest
 ```
 
-The restore drill takes it the same way: `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<old key> worker sh scripts/restore-drill.sh <file>`. If what a backup holds does not all open with one of the two keys, nothing in it is moved and the restore fails, saying what to do: a vault is never left partly under one key and partly under the other. After more than one rotation, give the key that particular backup was made with. Once the last backup made with the old key is gone, the old key can go too.
+The restore drill takes it the same way: `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<old key> worker sh scripts/restore-drill.sh <file>`. If anything a backup holds opens with neither key, nothing in it is moved and the restore fails, saying what to do: a vault is never left partly under one key and partly under the other. After more than one rotation, give the key that particular backup was made with. Once the last backup made with the old key is gone, the old key can go too.
+
+**If you rotated the master key with a release before 0.5.0**, that rotation moved only the per-household keys: the two-step sign-in secrets, an S3 bucket's credentials and the mail password stayed under the key before. You can tell: after it, owners with two-step sign-in could not sign in (the code step failed with "Something went wrong"), and mail or an S3 bucket stopped working. From 0.5.0 the vault does not start on it, and says that part of it opens and part does not. Repair it with the key you had before that rotation, with the vault stopped:
+
+```bash
+docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> api node apps/api/dist/cli.mjs repair-master-key
+```
+
+It moves whatever is still under the old key onto the one in `.env` and signs everybody out; if anything opens with neither key, it changes nothing and says what. Then `docker compose up -d`. A backup made since that rotation is restored the same way, with `FDV_MASTER_KEY_PREVIOUS` set to the key before it.
 
 ## Upgrading
 

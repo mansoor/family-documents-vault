@@ -2,9 +2,20 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { DecryptStream, deriveKey, EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
+import {
+  binding,
+  checkMasterKey,
+  DecryptStream,
+  deriveKey,
+  EnvKeyProvider,
+  KEK_PURPOSE,
+  ScopeKeys,
+  unwrapKey,
+  wrapKey,
+  type ScopeKind,
+} from '@fdv/crypto';
 import { createDb, createPool } from '@fdv/db';
-import { testAdminUrl } from '@fdv/db/testing';
+import { TEST_APP_PASSWORD, TEST_APP_ROLE, testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView } from '@fdv/shared';
 import { openCredentials, readAll, sealCredentials } from '@fdv/storage';
 import FormData from 'form-data';
@@ -14,7 +25,12 @@ import { deriveSigningKey } from './auth/tokens.js';
 import { codeFor, TotpService } from './auth/totp.js';
 import { sealPassword } from './notifications/service.js';
 import { openPassword } from './notifications/smtp-password.js';
-import { newMasterKeyProblem, rotateMasterKeyCommand } from './rotate-master-key.js';
+import {
+  newMasterKeyProblem,
+  repairMasterKeyCommand,
+  rotateMasterKeyCommand,
+  type CommandOptions,
+} from './rotate-master-key.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
@@ -26,10 +42,15 @@ import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
  *
  * What is sealed here is sealed by the vault's own code, and opened after
  * the rotation by the vault's own code with keys from the new master key,
- * as the restarted vault would.
+ * as the restarted vault would. The command runs as the operator runs it,
+ * as the owning role; --even-if-connected, since this file's own
+ * connections stay open, except where that refusal is the point.
  */
 
 const NEW = 'the-new-master-key-that-is-long-enough-9876543210';
+/** A rotation after that one, by a release before 0.5.0: the scope keys alone. */
+const NEWER = 'a-newer-master-key-that-is-long-enough-5555555555';
+const FOREIGN = 'a-master-key-from-some-other-vault-0123456789';
 const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key' };
 const MAIL_PASSWORD = 'the household mail password';
 const PDF = Buffer.from(
@@ -44,18 +65,40 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
   let totpSecret: string;
   let vaultId: string;
 
-  const run = async (next: string | undefined, current = TEST_MASTER) => {
+  type Run = { code: number; out: string; err: string };
+  const captured = async (
+    command: (io: Pick<CommandOptions, 'out' | 'err'>) => Promise<number>,
+  ): Promise<Run> => {
     const out: string[] = [];
     const err: string[] = [];
-    const code = await rotateMasterKeyCommand({
-      current,
-      next,
-      adminUrl: h.adminUrl,
-      out: (l) => out.push(l),
-      err: (l) => err.push(l),
-    });
+    const code = await command({ out: (l) => out.push(l), err: (l) => err.push(l) });
     return { code, out: out.join('\n'), err: err.join('\n') };
   };
+  const run = (
+    next: string | undefined,
+    current = TEST_MASTER,
+    o: Partial<CommandOptions> = {},
+  ): Promise<Run> =>
+    captured((io) =>
+      rotateMasterKeyCommand({
+        current,
+        next,
+        adminUrl: h.adminUrl,
+        evenIfConnected: true,
+        ...io,
+        ...o,
+      }),
+    );
+  const repair = (current: string, previous: string | undefined): Promise<Run> =>
+    captured((io) =>
+      repairMasterKeyCommand({
+        current,
+        previous,
+        adminUrl: h.adminUrl,
+        evenIfConnected: true,
+        ...io,
+      }),
+    );
 
   /** Every byte the master key protects, in a fixed order. */
   const sealedBytes = async () => {
@@ -72,6 +115,18 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       all.push(...rows.map((r) => `${table}:${r.v}`));
     }
     return all;
+  };
+
+  /** Until some connection waits on a lock, or five seconds have passed. */
+  const waitingOnALock = async () => {
+    for (let i = 0; i < 50; i++) {
+      const { rows } = await admin.query<{ n: number }>(
+        `select count(*)::int as n from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`,
+      );
+      if (rows[0]?.n) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
   };
 
   const liveSessions = async () =>
@@ -192,6 +247,43 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     expect(await liveSessions()).toBeGreaterThan(0);
   });
 
+  it('refuses without DATABASE_ADMIN_URL, or as the application role, and changes nothing', async () => {
+    const before = await sealedBytes();
+    const sessions = await liveSessions();
+    const none = await run(NEW, TEST_MASTER, { adminUrl: undefined });
+    expect(none.code).toBe(2);
+    expect(none.err).toMatch(/DATABASE_ADMIN_URL is needed to rotate .*Nothing was changed/);
+
+    // Row-level security hides every household's scope keys, S3 vault and
+    // mail settings from the application role, but not the accounts: until
+    // this refusal it moved the two-step secrets alone and said it was done.
+    const app = new URL(h.adminUrl);
+    app.username = TEST_APP_ROLE;
+    app.password = TEST_APP_PASSWORD;
+    const asApp = await run(NEW, TEST_MASTER, { adminUrl: app.toString() });
+    expect(asApp.code).toBe(2);
+    expect(asApp.err).toMatch(/row-level security applies to fdv_app_test.*Nothing was changed/);
+    expect(asApp.out).toBe('');
+    expect(await sealedBytes()).toEqual(before);
+    expect(await liveSessions()).toBe(sessions);
+  });
+
+  it('refuses while anything else is connected to the database, and changes nothing', async () => {
+    const before = await sealedBytes();
+    const held = await admin.connect();
+    try {
+      const running = await run(NEW, TEST_MASTER, { evenIfConnected: false });
+      expect(running.code).toBe(2);
+      expect(running.err).toMatch(
+        /^The vault is still running \(\d+ other connections? to its database\): docker compose stop api worker/,
+      );
+      expect(running.err).toContain('--even-if-connected');
+    } finally {
+      held.release();
+    }
+    expect(await sealedBytes()).toEqual(before);
+  });
+
   it('stops at anything that does not open, and leaves everything as it was', async () => {
     // The mail password is the last thing a rotation reaches: by then the
     // scope keys, the two-step secret and the S3 credentials have been
@@ -201,7 +293,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       [owner.household_id],
     );
     const kept = rows[0]?.p as Buffer;
-    const foreign = deriveKey('a-master-key-from-some-other-vault-0123456789', 'smtp-credentials');
+    const foreign = deriveKey(FOREIGN, 'smtp-credentials');
     await admin.query('update smtp_settings set password_encrypted = $1', [
       sealPassword(foreign, MAIL_PASSWORD, owner.household_id),
     ]);
@@ -211,8 +303,10 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       const stopped = await run(NEW);
       expect(stopped.code).toBe(1);
       expect(stopped.err).toMatch(
-        /^Nothing was changed: smtp_settings\.password_encrypted of [0-9a-f-]{36} does not open/,
+        /^Nothing was changed\. These open with neither FDV_MASTER_KEY nor FDV_MASTER_KEY_NEW:\n {2}smtp_settings\.password_encrypted of [0-9a-f-]{36}\n/,
       );
+      // The rest opens: it points to the repair.
+      expect(stopped.err).toContain('repair-master-key');
       expect(await sealedBytes()).toEqual(before);
       expect(await liveSessions()).toBe(sessions);
       // The vault as it runs now still opens all of it.
@@ -236,7 +330,45 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       scopeKeys = (await admin.query('select id from scope_key')).rowCount ?? 0;
       sessions = (await liveSessions()) ?? 0;
       expect(sessions).toBeGreaterThan(0);
-      done = await run(NEW);
+      // Told to, it goes ahead although something is connected: here, a
+      // vault still running on the old key, in the middle of adding a
+      // person (their key wrapped under the old one) and signing somebody
+      // in. The rotation waits for both, moves the new key too, and ends
+      // that session too.
+      const held = await admin.connect();
+      try {
+        await held.query('begin');
+        const { rows } = await held.query<{ id: string }>(
+          "insert into member (household_id, display_name) values ($1, 'Added') returning id",
+          [owner.household_id],
+        );
+        const ref = {
+          householdId: owner.household_id,
+          kind: 'member' as const,
+          memberId: rows[0]?.id ?? null,
+        };
+        await held.query(
+          "insert into scope_key (household_id, kind, member_id, key_wrapped) values ($1, 'member', $2, $3)",
+          [
+            ref.householdId,
+            ref.memberId,
+            wrapKey(randomBytes(32), deriveKey(TEST_MASTER, KEK_PURPOSE), binding(ref)),
+          ],
+        );
+        await held.query(
+          `insert into session (account_id, household_id, refresh_hash, expires_at)
+           values ($1, $2, $3, now() + interval '30 days')`,
+          [accountId, owner.household_id, randomBytes(32)],
+        );
+        const rotating = run(NEW, TEST_MASTER, { evenIfConnected: true });
+        await waitingOnALock();
+        await held.query('commit');
+        done = await rotating;
+      } finally {
+        held.release();
+      }
+      sessions += 1;
+      scopeKeys += 1;
     });
 
     it('moved all of it in one go, and says what it moved: counts, never a secret', () => {
@@ -288,6 +420,8 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     });
 
     it('every scope key opens under the new key, and opens its files', async () => {
+      // All of them: the one added while it waited too.
+      expect(await checkMasterKey(admin, NEW)).toEqual({ checked: scopeKeys + 3 });
       const keys = new ScopeKeys(new EnvKeyProvider(NEW));
       // As the owning role, which every household's rows are open to.
       const db = createDb(createPool(h.adminUrl, 1));
@@ -312,6 +446,16 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       expect(opened).toEqual({ versions: 3, scopes: 3 });
     });
 
+    it('run again, it says an earlier run finished, and changes nothing', async () => {
+      const before = await sealedBytes();
+      const again = await run(NEW);
+      expect(again.err).toBe('');
+      expect(again.code).toBe(0);
+      expect(again.out).toMatch(/^The database is already on the new key: an earlier run finished/);
+      expect(again.out).toContain('docker compose up -d');
+      expect(await sealedBytes()).toEqual(before);
+    });
+
     it('everybody is signed out: a refresh token does not depend on the key', async () => {
       expect(await liveSessions()).toBe(0);
       const refreshed = await h.app.inject({
@@ -320,6 +464,111 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
         payload: { refresh_token: owner.refresh_token },
       });
       expect(refreshed.statusCode).toBe(401);
+    });
+  });
+
+  describe('a vault a rotation before 0.5.0 left part under each key', () => {
+    /** The old command's rotation from NEW to NEWER: the scope keys, nothing else. */
+    beforeAll(async () => {
+      const { rows } = await admin.query<{
+        id: string;
+        household_id: string;
+        kind: ScopeKind;
+        member_id: string | null;
+        key_wrapped: Buffer;
+      }>('select id, household_id, kind, member_id, key_wrapped from scope_key');
+      for (const r of rows) {
+        const b = binding({ householdId: r.household_id, kind: r.kind, memberId: r.member_id });
+        const key = unwrapKey(r.key_wrapped, deriveKey(NEW, KEK_PURPOSE), b);
+        await admin.query('update scope_key set key_wrapped = $1 where id = $2', [
+          wrapKey(key, deriveKey(NEWER, KEK_PURPOSE), b),
+          r.id,
+        ]);
+      }
+      // And somebody signed in since, on the vault that half worked.
+      await admin.query(
+        `insert into session (account_id, household_id, refresh_hash, expires_at)
+         values ($1, $2, $3, now() + interval '30 days')`,
+        [accountId, owner.household_id, randomBytes(32)],
+      );
+    });
+
+    it('a rotation refuses it, names what does not open, and points to the repair', async () => {
+      const before = await sealedBytes();
+      const refused = await run('yet-another-master-key-long-enough-777777777', NEWER);
+      expect(refused.code).toBe(1);
+      expect(refused.err).toContain(`account.totp_secret of ${accountId}`);
+      expect(refused.err).toContain('repair-master-key');
+      expect(await sealedBytes()).toEqual(before);
+    });
+
+    it('the repair wants the key before, and not the one in use', async () => {
+      expect((await repair(NEWER, undefined)).code).toBe(2);
+      const same = await repair(NEWER, NEWER);
+      expect(same.code).toBe(2);
+      expect(same.err).toMatch(/is the key the vault runs with/);
+    });
+
+    it('the repair refuses, naming it, what opens with neither key, and changes nothing', async () => {
+      const { rows } = await admin.query<{ p: Buffer }>(
+        'select password_encrypted as p from smtp_settings where household_id = $1',
+        [owner.household_id],
+      );
+      const kept = rows[0]?.p as Buffer;
+      await admin.query('update smtp_settings set password_encrypted = $1', [
+        sealPassword(deriveKey(FOREIGN, 'smtp-credentials'), MAIL_PASSWORD, owner.household_id),
+      ]);
+      try {
+        const before = await sealedBytes();
+        const refused = await repair(NEWER, NEW);
+        expect(refused.code).toBe(1);
+        expect(refused.err).toBe(
+          'Nothing was changed. These open with neither FDV_MASTER_KEY nor FDV_MASTER_KEY_PREVIOUS:\n' +
+            `  smtp_settings.password_encrypted of ${owner.household_id}`,
+        );
+        expect(await sealedBytes()).toEqual(before);
+      } finally {
+        await admin.query('update smtp_settings set password_encrypted = $1', [kept]);
+      }
+    });
+
+    it('the repair moves it wholly onto the key in use, and signs everybody out', async () => {
+      const done = await repair(NEWER, NEW);
+      expect(done.err).toBe('');
+      expect(done.code).toBe(0);
+      expect(done.out).toContain('0 scope keys rewrapped');
+      expect(done.out).toContain('1 two-step sign-in secret sealed again');
+      expect(done.out).toContain('1 storage (S3) credential sealed again');
+      expect(done.out).toContain('1 mail (SMTP) password sealed again');
+      expect(done.out).toContain('1 session ended');
+      expect(await liveSessions()).toBe(0);
+
+      const totp = new TotpService(h.db, deriveKey(NEWER, 'totp-secrets'), deriveSigningKey(NEWER));
+      expect(await totp.verify(accountId, codeFor(totpSecret))).toBe(true);
+      const vault = await admin.query<{ c: Buffer }>(
+        'select credentials_encrypted as c from vault where id = $1',
+        [vaultId],
+      );
+      expect(
+        openCredentials(deriveKey(NEWER, 'vault-credentials'), vault.rows[0]?.c as Buffer, vaultId),
+      ).toEqual(S3);
+      const smtp = await admin.query<{ p: Buffer }>(
+        'select password_encrypted as p from smtp_settings where household_id = $1',
+        [owner.household_id],
+      );
+      expect(
+        openPassword(
+          deriveKey(NEWER, 'smtp-credentials'),
+          smtp.rows[0]?.p as Buffer,
+          owner.household_id,
+        ),
+      ).toBe(MAIL_PASSWORD);
+
+      const again = await repair(NEWER, NEW);
+      expect(again.code).toBe(0);
+      expect(again.out).toBe(
+        'Everything already opens with FDV_MASTER_KEY: there is nothing to repair.',
+      );
     });
   });
 });

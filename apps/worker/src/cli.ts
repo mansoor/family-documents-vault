@@ -14,6 +14,7 @@ import {
   restoreDrill,
   type RestoreReport,
 } from './jobs/restore.js';
+import { backupKeyFor } from './jobs/restore-keys.js';
 
 /**
  * Operator commands, run inside the worker container:
@@ -51,6 +52,7 @@ async function main() {
         dir: config.FDV_BACKUP_DIR,
         retainDays: config.FDV_BACKUP_RETAIN_DAYS,
         log,
+        masterSecret,
       })
     ).file;
 
@@ -87,6 +89,12 @@ async function main() {
       console.log('restore drill OK: the vault would read it as it reads itself');
     } catch (err) {
       console.error(`restore drill FAILED: ${(err as Error).message}`);
+      const hint = previousKeyHint(
+        err,
+        master.previous,
+        `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker sh scripts/restore-drill.sh ${file}`,
+      );
+      if (hint) console.error(hint);
       process.exitCode = 1;
     }
     return;
@@ -127,19 +135,20 @@ async function main() {
         return;
       }
       console.error(`Nothing was restored; the database is as it was. ${(err as Error).message}`);
-      if (!master.previous && /failed authentication/.test((err as Error).message)) {
-        console.error(
-          '\nIf the backup was made before the master key was rotated, give the key it was\n' +
-            'made with, beside the current one:\n\n' +
-            '  docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker ' +
-            `node apps/worker/dist/cli.mjs restore-backup ${a}`,
-        );
-      }
+      const hint = previousKeyHint(
+        err,
+        master.previous,
+        'docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker ' +
+          `node apps/worker/dist/cli.mjs restore-backup ${a}`,
+      );
+      if (hint) console.error(hint);
       const older = a === 'latest' ? await backupBefore(file, config.FDV_BACKUP_DIR) : null;
       if (older) {
+        // With the old key again, if it was given: the one before is as likely to need it.
+        const withPrevious = master.previous ? '-e FDV_MASTER_KEY_PREVIOUS=<the old key> ' : '';
         console.error(
           `\nIf this backup is damaged, restore the one before it:\n\n` +
-            `  docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-backup ${older}`,
+            `  docker compose run --rm --no-deps ${withPrevious}worker node apps/worker/dist/cli.mjs restore-backup ${older}`,
         );
       }
       process.exitCode = 1;
@@ -148,8 +157,17 @@ async function main() {
   }
 
   if (command === 'decrypt-backup' && a && b) {
-    await pipeline(createReadStream(a), new DecryptStream(backupKey), createWriteStream(b));
+    const key = await backupKeyFor(a, backupKey, master.previous);
+    await pipeline(createReadStream(a), new DecryptStream(key), createWriteStream(b));
     console.log(`wrote ${b}`);
+    if (key !== backupKey) {
+      console.error(
+        'This backup was made before the master key was rotated: it opened with\n' +
+          'FDV_MASTER_KEY_PREVIOUS, and what is in it is under that key too. A database loaded\n' +
+          'from it by hand would not open with the current key. Restore it with restore-backup\n' +
+          'and FDV_MASTER_KEY_PREVIOUS instead, which moves it onto the current key.',
+      );
+    }
     return;
   }
   console.error(
@@ -157,6 +175,18 @@ async function main() {
       'decrypt-backup <in.sql.enc> <out.sql>',
   );
   process.exitCode = 2;
+}
+
+/**
+ * A backup that did not open with this vault's key may have been made
+ * before a rotation: how to give the key it was made with, if it was not.
+ */
+function previousKeyHint(err: unknown, previous: string | undefined, command: string) {
+  if (previous || !/failed authentication/.test((err as Error).message)) return null;
+  return (
+    '\nIf the backup was made before the master key was rotated, give the key it was\n' +
+    `made with, beside the current one:\n\n  ${command}`
+  );
 }
 
 /** The empty database a restore needs, reached without touching the files. */

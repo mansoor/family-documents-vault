@@ -261,6 +261,43 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       await expect(opensUnder(t, OLD)).rejects.toThrow();
     }, 120_000);
 
+    it('a backup of a vault a rotation before 0.5.0 left part under each key comes back whole', async () => {
+      // The old command's rotation from OLD to NEW moved the scope keys and
+      // nothing else, and the worker has made its backups on NEW since.
+      const mixed = await vaultUnder(OLD);
+      const keys = await query<{
+        id: string;
+        household_id: string;
+        kind: ScopeRef['kind'];
+        member_id: string | null;
+        key_wrapped: Buffer;
+      }>(mixed.db.adminUrl, 'select id, household_id, kind, member_id, key_wrapped from scope_key');
+      for (const k of keys) {
+        const b = binding({ householdId: k.household_id, kind: k.kind, memberId: k.member_id });
+        const key = unwrapKey(k.key_wrapped, deriveKey(OLD, KEK_PURPOSE), b);
+        await query(mixed.db.adminUrl, 'update scope_key set key_wrapped = $1 where id = $2', [
+          wrapKey(key, deriveKey(NEW, KEK_PURPOSE), b),
+          k.id,
+        ]);
+      }
+      const file = await backup(mixed.db, backupKey(NEW));
+
+      // Without the old key it is refused, as it holds secrets under it.
+      const refused = await db(false);
+      await expect(restore(file, refused, { current: NEW })).rejects.toThrow(
+        /account\.totp_secret of .* do not open .*FDV_MASTER_KEY_PREVIOUS/,
+      );
+
+      const t = await db(false);
+      const report = await restore(file, t, { current: NEW, previous: OLD });
+      expect(report.rekeyed).toEqual({
+        rewrapped: 0,
+        resealed: { totpSecrets: 1, vaultCredentials: 1, smtpPasswords: 1 },
+        unchanged: 3,
+      });
+      expect(await opensUnder(t, NEW, mixed)).toEqual(everything);
+    }, 120_000);
+
     it('without that key restores nothing, and never leaves a vault half under each', async () => {
       const file = await backup(old.db, backupKey(OLD));
       const empty = await db(false);
