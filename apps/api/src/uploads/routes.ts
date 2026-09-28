@@ -6,14 +6,35 @@ import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import {
   createBody,
-  DROP_COOKIE,
   DROP_COOKIE_PATH,
+  DROP_COOKIE_PREFIX,
   DROP_DEVICE_COOKIE,
+  DROP_REQUEST_HEADER,
+  dropCookieName,
   dropFinishBody,
   dropTokenBody,
   dropUnlockBody,
   type UploadRequestService,
 } from './requests.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The session cookie a sender's call is for. Each request's has its own
+ * name (a browser may have two open); the page says which with
+ * `X-FDV-Drop-Request` (the `request_id` Open answered), and with one
+ * session open it need not say.
+ */
+export function dropSessionCookie(req: FastifyRequest): string | undefined {
+  const wanted = req.headers[DROP_REQUEST_HEADER];
+  if (typeof wanted === 'string') {
+    return UUID.test(wanted) ? req.cookies[dropCookieName(wanted)] : undefined;
+  }
+  const open = Object.entries(req.cookies).filter(
+    ([name, value]) => name.startsWith(DROP_COOKIE_PREFIX) && value,
+  );
+  return open.length === 1 ? open[0]?.[1] : undefined;
+}
 
 /**
  * Asking somebody to send documents (5.21): the family's routes, and the
@@ -62,9 +83,10 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
 
   // ------------------------------------------------------------ the sender
   // Nobody signs in for these. Opening one is 20 tries a minute from an
-  // address (the preview, a code, Open), as a share link's; inside an opened
-  // one, 120 requests a minute. FDV_RATE_LIMIT_PER_MINUTE is the ceiling
-  // above both.
+  // address (the preview, a code, Open), as a share link's, and so is
+  // sending a file (a request takes 10 at most); inside an opened one,
+  // anything else is 120 requests a minute. FDV_RATE_LIMIT_PER_MINUTE is the
+  // ceiling above both.
   const tight = { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } };
   const inSession = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
 
@@ -92,7 +114,9 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
       req.cookies[DROP_DEVICE_COOKIE],
       metaOf(req),
     );
-    void reply.setCookie(DROP_COOKIE, opened.cookie, cookieOptions(opened.maxAge));
+    void reply.setCookie(opened.cookieName, opened.cookie, cookieOptions(opened.maxAge));
+    // Only when this browser had none: one device cookie serves every
+    // request it opens, so a second never unbinds the first.
     if (opened.device) {
       void reply.setCookie(
         DROP_DEVICE_COOKIE,
@@ -104,16 +128,18 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   });
 
   app.get('/api/v1/drop/session', inSession, async (req) =>
-    uploads.session(req.cookies[DROP_COOKIE]),
+    uploads.session(dropSessionCookie(req)),
   );
 
   /**
    * One file, multipart: an optional `item_id` field (which of the things
    * asked for it is), then the file as `file`, and nothing else. The session
-   * is checked before a byte is read.
+   * is checked before a byte is read, and the file's room is reserved by
+   * the upload's own length.
    */
-  app.post('/api/v1/drop/files', inSession, async (req, reply) => {
-    const cookie = req.cookies[DROP_COOKIE];
+  app.post('/api/v1/drop/files', tight, async (req, reply) => {
+    const cookie = dropSessionCookie(req);
+    const length = Number(req.headers['content-length']);
     const parts = req
       .parts({
         limits: { fileSize: uploads.maxFileBytes, files: 1, fields: 1, fieldSize: 64 },
@@ -145,7 +171,9 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
       }
       file = next.value;
     } catch (err) {
-      await drainRest();
+      // Answered now, the rest read to nowhere as it comes: a refusal does
+      // not wait for a body a sender is still sending, or holding open.
+      void drainRest();
       throw limitRefusal(err, order);
     }
     const theFile = file;
@@ -154,6 +182,7 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
         filename: theFile.filename,
         stream: theFile.file,
         itemId,
+        declaredBytes: Number.isSafeInteger(length) && length > 0 ? length : null,
         truncated: () => theFile.file.truncated,
         finished: async () => {
           const after = await parts.next().catch((err: unknown) => {
@@ -165,9 +194,9 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
           throw order();
         },
       })
-      .catch(async (err: unknown) => {
+      .catch((err: unknown) => {
         theFile.file.resume();
-        await drainRest();
+        void drainRest();
         throw limitRefusal(err, order);
       });
     return reply.status(201).send(sent);
@@ -177,13 +206,13 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
     '/api/v1/drop/files/:id',
     inSession,
     async (req, reply) => {
-      await uploads.removeFile(req.cookies[DROP_COOKIE], parse(idParam, req.params).id);
+      await uploads.removeFile(dropSessionCookie(req), parse(idParam, req.params).id);
       return reply.status(204).send();
     },
   );
 
   app.post('/api/v1/drop/finish', inSession, async (req) =>
-    uploads.finish(req.cookies[DROP_COOKIE], parse(dropFinishBody, req.body ?? {}), metaOf(req)),
+    uploads.finish(dropSessionCookie(req), parse(dropFinishBody, req.body ?? {}), metaOf(req)),
   );
 }
 

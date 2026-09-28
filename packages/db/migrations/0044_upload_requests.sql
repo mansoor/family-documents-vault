@@ -202,6 +202,12 @@ create table incoming_file (
   -- What its bytes are, never what it was called or said to be.
   mime                text,
   byte_size           bigint constraint incoming_file_size check (byte_size >= 0),
+  -- The room it holds while it arrives: what it said it would be, or the
+  -- most it could be. Counted against the request's and the household's
+  -- caps with what is already in (incoming_room()), so senders at once
+  -- cannot together pass them; its bytes are cut off at it as they come.
+  reserved_bytes      bigint not null default 0
+                        constraint incoming_file_reserved check (reserved_bytes >= 0),
   sha256              bytea,
   cipher_bytes        bigint,
   cipher_sha256       bytea,
@@ -327,16 +333,30 @@ create function upload_session_find(p_cookie_hash bytea)
         and s.expires_at > now() $$;
 grant execute on function upload_session_find(bytea) to fdv_app;
 
--- How many bytes of the household's are waiting for review: its cap across
--- every request, which no one request's link can see the rest of.
-create function incoming_pending_bytes() returns bigint
+-- How much room is taken, for the caps, which no one request's link can see
+-- the rest of: the household's files waiting for review, and those still
+-- arriving by the room each holds; and, of one request, the files still
+-- arriving and the room they hold. A file arriving for more than 15 minutes
+-- (the public-only site cuts a body off at 5) holds none: its try is dead,
+-- and the nightly prune takes it away.
+create function incoming_room(p_request uuid)
+  returns table (household_bytes bigint, request_files int, request_bytes bigint)
   language sql stable security definer
   set search_path = pg_catalog, public, pg_temp as
-  $$ select coalesce(sum(byte_size), 0)::bigint
-       from incoming_file
-      where household_id = app_household()
-        and state in ('uploading', 'received') $$;
-grant execute on function incoming_pending_bytes() to fdv_app;
+  $$ select coalesce(sum(case when f.state = 'received' then f.byte_size
+                              when f.created_at > now() - interval '15 minutes'
+                                then f.reserved_bytes
+                              else 0 end), 0)::bigint,
+            (count(*) filter (where f.request_id = p_request and f.state = 'uploading'
+                                and f.created_at > now() - interval '15 minutes'))::int,
+            coalesce(sum(f.reserved_bytes) filter (where f.request_id = p_request
+                                                     and f.state = 'uploading'
+                                                     and f.created_at > now() - interval '15 minutes'),
+                     0)::bigint
+       from incoming_file f
+      where f.household_id = app_household()
+        and f.state in ('uploading', 'received') $$;
+grant execute on function incoming_room(uuid) to fdv_app;
 
 -- The requests: its reviewers', the vault's, and an upload link's own. A
 -- review-by-me request is its requester's alone (A43); a request for any
@@ -384,6 +404,27 @@ end $$;
 
 create trigger upload_request_upload_writes before update on upload_request
   for each row execute function upload_request_upload_writes();
+
+-- The address a code would go to is kept no longer than the request can be
+-- used: it is cleared by the change that ends it — the tenth wrong try, the
+-- last visit, taking it back, closing it — whoever makes it. (One that runs
+-- out of time is cleared by the nightly prune.) Before the upload link's own
+-- check above, which fires after it by name, and which lets an address be
+-- cleared.
+create function upload_request_forgets_address() returns trigger
+  language plpgsql set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if new.attempts >= 10
+     or new.revoked_at is not null
+     or new.closed_at is not null
+     or (new.max_visits is not null and new.visits_used >= new.max_visits) then
+    new.recipient_email := null;
+  end if;
+  return new;
+end $$;
+
+create trigger upload_request_ended_forgets before update on upload_request
+  for each row execute function upload_request_forgets_address();
 
 -- A request's items follow the request; an upload link reads its own.
 create policy upload_request_item_actor on upload_request_item as restrictive

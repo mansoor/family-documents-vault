@@ -1,10 +1,12 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { crc32 } from 'node:zlib';
 import { deriveKey, openBytes } from '@fdv/crypto';
 import { createPool, withPrincipal } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
+import { LocalAdapter } from '@fdv/storage';
 import {
   rolesWith,
   type ActivityLine,
@@ -17,7 +19,7 @@ import {
 } from '@fdv/shared';
 import FormData from 'form-data';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { EXCEL_MIME, WORD_MIME } from './office.js';
 
@@ -79,9 +81,15 @@ const contentTypes = (main: string) =>
   `<Override PartName="/word/document.xml" ContentType="${main}"/></Types>`;
 const WORD_MAIN =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
-const docx = (extra: Array<[string, string]> = [], main = WORD_MAIN) =>
+const ROOT_RELS =
+  '<?xml version="1.0" encoding="UTF-8"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+  '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+  '</Relationships>';
+const docx = (extra: Array<[string, string]> = [], main = WORD_MAIN, types?: string) =>
   zip([
-    ['[Content_Types].xml', contentTypes(main)],
+    ['[Content_Types].xml', types ?? contentTypes(main)],
+    ['_rels/.rels', ROOT_RELS],
     ['word/document.xml', '<w:document/>'],
     ...extra,
   ]);
@@ -142,14 +150,16 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
   const opened = async (token: string, extra: Record<string, string> = {}) => {
     const res = await unlock(token, extra);
     expect(res.statusCode, res.body).toBe(200);
+    const set = res.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
+    // The session cookie, named for its request, as a browser would send it.
     return {
-      cookie: res.cookies.find((c) => c.name === 'fdv_drop')?.value as string,
+      cookie: { [set?.name as string]: set?.value as string } as Record<string, string>,
       session: res.json<DropSession>(),
     };
   };
 
   const send = (
-    cookie: string,
+    cookie: Record<string, string>,
     file: { name: string; bytes: Buffer; type?: string; itemId?: string },
   ) => {
     const form = new FormData();
@@ -162,7 +172,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       method: 'POST',
       url: '/api/v1/drop/files',
       headers: form.getHeaders(),
-      cookies: { fdv_drop: cookie },
+      cookies: cookie,
       payload: form.getBuffer(),
       remoteAddress: addr(),
     });
@@ -242,7 +252,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       (
         await h.app.inject({
           url: '/api/v1/drop/session',
-          cookies: { fdv_drop: cookie },
+          cookies: cookie,
           remoteAddress: addr(),
         })
       ).body,
@@ -379,7 +389,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     const bSession = (
       await h.app.inject({
         url: '/api/v1/drop/session',
-        cookies: { fdv_drop: b.cookie },
+        cookies: b.cookie,
         remoteAddress: addr(),
       })
     ).json<DropSession>();
@@ -387,7 +397,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     const takeBack = await h.app.inject({
       method: 'DELETE',
       url: `/api/v1/drop/files/${sent.id}`,
-      cookies: { fdv_drop: b.cookie },
+      cookies: b.cookie,
       remoteAddress: addr(),
     });
     expect(takeBack.statusCode).toBe(404);
@@ -395,7 +405,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     const aSession = (
       await h.app.inject({
         url: '/api/v1/drop/session',
-        cookies: { fdv_drop: a.cookie },
+        cookies: a.cookie,
         remoteAddress: addr(),
       })
     ).json<DropSession>();
@@ -409,7 +419,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     ]) {
       const res = await h.app.inject({
         url,
-        cookies: { fdv_drop: a.cookie },
+        cookies: a.cookie,
         remoteAddress: addr(),
       });
       expect(res.statusCode, url).toBeGreaterThanOrEqual(401);
@@ -638,7 +648,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     const done = await h.app.inject({
       method: 'POST',
       url: '/api/v1/drop/finish',
-      cookies: { fdv_drop: cookie },
+      cookies: cookie,
       payload: { note: 'Here it is' },
       remoteAddress: addr(),
     });
@@ -699,12 +709,23 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       `upload-code:${job.code_id}`,
     ).toString('utf8');
     expect(code).toMatch(/^\d{6}$/);
-    // The stored code cannot be checked without the server's key.
+    // The stored code cannot be checked without the server's key: it is its
+    // HMAC under that key, not a hash anybody with a dump could try codes
+    // against, nor one under another key.
     const [stored] = await admin<{ code_hash: Buffer }>(
       'select code_hash from upload_code where id = $1',
       [job.code_id],
     );
-    expect(stored?.code_hash.toString('hex')).not.toContain(Buffer.from(code).toString('hex'));
+    const text = `${made.request.id}:${code}`;
+    const under = (key: Buffer) => createHmac('sha256', key).update(text).digest();
+    expect(stored?.code_hash.equals(under(deriveKey(TEST_MASTER, 'upload-code-hmac')))).toBe(true);
+    expect(stored?.code_hash.equals(createHash('sha256').update(text).digest())).toBe(false);
+    expect(stored?.code_hash.equals(createHash('sha256').update(code).digest())).toBe(false);
+    expect(
+      stored?.code_hash.equals(
+        under(deriveKey('another-master-key-that-is-long-enough-9876', 'upload-code-hmac')),
+      ),
+    ).toBe(false);
 
     const wrong = await unlock(made.link_token, { password: 'not-the-password', code });
     expect(wrong.statusCode).toBe(401);
@@ -714,14 +735,14 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     await h.app.inject({
       method: 'DELETE',
       url: `/api/v1/drop/files/${sent.json<DropFile>().id}`,
-      cookies: { fdv_drop: cookie },
+      cookies: cookie,
       remoteAddress: addr(),
     });
     await send(cookie, { name: 'W-2 very-private-name.pdf', bytes: PDF() });
     await h.app.inject({
       method: 'POST',
       url: '/api/v1/drop/finish',
-      cookies: { fdv_drop: cookie },
+      cookies: cookie,
       payload: { note: 'my private note' },
       remoteAddress: addr(),
     });
@@ -737,7 +758,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       made.link_token,
       password,
       code,
-      cookie,
+      ...Object.values(cookie),
       'very-private-name',
       'jane.secret',
       'my private note',
@@ -843,7 +864,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       );
     }
     // The session cookie is for the sender's routes alone, and no script's.
-    const cookie = answers[1]?.cookies.find((c) => c.name === 'fdv_drop');
+    const cookie = answers[1]?.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
     expect(cookie).toMatchObject({
       path: '/api/v1/drop',
       httpOnly: true,
@@ -852,11 +873,580 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     });
   });
 
+  // ------------------------------------------------ from the 5.21 review
+
+  it('the tenth wrong try, the last visit, taking back and closing each clear the address at once', async () => {
+    const addressOf = async (id: string) =>
+      (
+        await admin<{ recipient_email: string | null }>(
+          'select recipient_email from upload_request where id = $1',
+          [id],
+        )
+      )[0]?.recipient_email;
+    const email = { recipient_email: 'jane@example.test' };
+
+    // Locked by the tenth wrong try (R521-2).
+    const locked = await make(adult, { ...email, with_password: true });
+    for (let i = 0; i < 10; i++) await unlock(locked.link_token, { password: 'wrong-wrong' });
+    expect(
+      (
+        await admin<{ attempts: number }>('select attempts from upload_request where id = $1', [
+          locked.request.id,
+        ])
+      )[0]?.attempts,
+    ).toBe(10);
+    expect(await addressOf(locked.request.id)).toBeNull();
+
+    // Used up by its last visit (D521-8).
+    const once = await make(adult, { ...email, max_visits: 1 });
+    expect(await addressOf(once.request.id)).toBe('jane@example.test');
+    await opened(once.link_token);
+    expect(await addressOf(once.request.id)).toBeNull();
+    const listed = (
+      await h.app.inject({ url: '/api/v1/upload-requests', headers: h.as(adult) })
+    ).json<{ items: UploadRequestView[] }>();
+    expect(listed.items.find((r) => r.id === once.request.id)).toMatchObject({
+      state: 'used_up',
+      recipient_email: null,
+    });
+
+    // Taken back.
+    const back = await make(adult, email);
+    await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/upload-requests/${back.request.id}`,
+      headers: h.as(adult),
+    });
+    expect(await addressOf(back.request.id)).toBeNull();
+
+    // Closed by the first sending, with close_after_submit: its link opens
+    // nothing more, and its sessions go.
+    const closing = await make(adult, { ...email, close_after_submit: true });
+    const { cookie } = await opened(closing.link_token);
+    await send(cookie, { name: 'w2.pdf', bytes: PDF() });
+    const done = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/finish',
+      cookies: cookie,
+      payload: {},
+      remoteAddress: addr(),
+    });
+    expect(done.json()).toEqual({ files: 1, closed: true });
+    expect(await addressOf(closing.request.id)).toBeNull();
+    const [row] = await admin<{ closed_reason: string | null; sessions: number }>(
+      `select closed_reason,
+              (select count(*)::int from upload_session where request_id = $1) as sessions
+         from upload_request where id = $1`,
+      [closing.request.id],
+    );
+    expect(row).toEqual({ closed_reason: 'submitted', sessions: 0 });
+    expect((await preview(closing.link_token)).statusCode).toBe(404);
+  });
+
+  it('a Word file of many small parts is read with bounded work, and one of more parts than any document has is refused', async () => {
+    const made = await make(adult, { accept_types: 'office' });
+    const { cookie } = await opened(made.link_token);
+    const many = (n: number) =>
+      docx(Array.from({ length: n }, (_, i): [string, string] => [`word/media/p${i}.xml`, '']));
+    const reads = vi.spyOn(LocalAdapter.prototype, 'get');
+    try {
+      const fine = await send(cookie, { name: 'long.docx', type: WORD_MIME, bytes: many(400) });
+      expect(fine.statusCode, fine.body).toBe(201);
+      // One chunk, decrypted once, however many small reads the zip needs:
+      // its header and its bytes.
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(4);
+    } finally {
+      reads.mockRestore();
+    }
+    const tooMany = await send(cookie, { name: 'long.docx', type: WORD_MIME, bytes: many(600) });
+    expect(tooMany.statusCode).toBe(415);
+  });
+
+  it('a Word file that hides its macros from a text search is refused, and one that is Excel is taken', async () => {
+    const made = await make(adult, { accept_types: 'office' });
+    const { cookie } = await opened(made.link_token);
+    const types = (body: string) =>
+      '<?xml version="1.0" encoding="UTF-8"?>' +
+      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      body +
+      '</Types>';
+    const refused = async (bytes: Buffer, code: string) => {
+      const res = await send(cookie, { name: 'report.docx', type: WORD_MIME, bytes });
+      expect(res.statusCode, res.body).toBe(415);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe(code);
+    };
+    // Character references, the Word type in a comment, and the VBA project
+    // renamed: an XML parser reads it as macro-enabled, with a VBA project.
+    await refused(
+      docx(
+        [['word/macros.dat', 'Attribute VB_Name']],
+        WORD_MAIN,
+        types(
+          `<!-- ${WORD_MAIN} -->` +
+            '<Default Extension="xml" ContentType="application/xml"/>' +
+            '<Default Extension="dat" ContentType="application/vnd.ms-office.vba&#80;roject"/>' +
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.ms-word.document.macro&#69;nabled.main+xml"/>',
+        ),
+      ),
+      'macros_refused',
+    );
+    // The Word type only in a comment, and no part that is Word: a zip, not a document.
+    await refused(
+      docx(
+        [],
+        WORD_MAIN,
+        types(`<!-- ${WORD_MAIN} --><Default Extension="xml" ContentType="application/xml"/>`),
+      ),
+      'unsupported_type',
+    );
+    // A VBA project by its relationship, whatever its part is called and declared as.
+    await refused(
+      docx([
+        [
+          'word/_rels/document.xml.rels',
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            '<Relationship Id="rId9" Type="http://schemas.microsoft.com/office/2006/relationships/vba&#80;roject" Target="macros.dat"/>' +
+            '</Relationships>',
+        ],
+        ['word/macros.dat', 'Attribute VB_Name'],
+      ]),
+      'macros_refused',
+    );
+    // A template, with its macros, fetched from elsewhere when it opens.
+    await refused(
+      docx([
+        [
+          'word/_rels/settings.xml.rels',
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://evil.example/t.dotm" TargetMode="External"/>' +
+            '</Relationships>',
+        ],
+      ]),
+      'macros_refused',
+    );
+    // A VBA project by its name alone.
+    await refused(docx([['word/vbaProject.bin', 'x']]), 'macros_refused');
+    // A document type of its own, which could define anything.
+    await refused(
+      docx(
+        [],
+        WORD_MAIN,
+        `<!DOCTYPE Types [<!ENTITY m "macroEnabled">]>${contentTypes(WORD_MAIN)}`,
+      ),
+      'unsupported_type',
+    );
+    expect(await stored(made.request.id)).toBe(0);
+
+    // An ordinary workbook is taken, as Excel.
+    const xlsx = zip([
+      [
+        '[Content_Types].xml',
+        types(
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+        ),
+      ],
+      [
+        '_rels/.rels',
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+          '</Relationships>',
+      ],
+      ['xl/workbook.xml', '<workbook/>'],
+      ['xl/printerSettings/printerSettings1.bin', 'printer'],
+    ]);
+    const taken = await send(cookie, { name: 'accounts.xlsx', type: EXCEL_MIME, bytes: xlsx });
+    expect(taken.statusCode, taken.body).toBe(201);
+    expect(taken.json<DropFile>().content_type).toBe(EXCEL_MIME);
+  });
+
+  it("uploads at once can't together pass the caps: each holds its room from its start", async () => {
+    const made = await make(adult, { max_total_bytes: 3_000_000 });
+    const { cookie } = await opened(made.link_token);
+    const file = PDF(2_500_000);
+    /** An upload whose body stops after its first 64 KB, until let go. */
+    const held = () => {
+      const form = new FormData();
+      form.append('file', file, { filename: 'big.pdf', contentType: 'application/pdf' });
+      const body = form.getBuffer();
+      const stream = new PassThrough();
+      stream.write(body.subarray(0, 64 * 1024));
+      const reply = h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/files',
+        headers: { ...form.getHeaders(), 'content-length': String(body.length) },
+        cookies: cookie,
+        payload: stream,
+        remoteAddress: addr(),
+      });
+      return { reply, release: () => stream.end(body.subarray(64 * 1024)) };
+    };
+    const arriving = async () =>
+      (
+        await admin<{ n: number; reserved: string }>(
+          `select count(*)::int as n, coalesce(sum(reserved_bytes), 0)::text as reserved
+             from incoming_file where request_id = $1 and state = 'uploading'`,
+          [made.request.id],
+        )
+      )[0];
+    const first = held();
+    for (let i = 0; i < 100 && (await arriving())?.n !== 1; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const second = held();
+    for (let i = 0; i < 100 && (await arriving())?.n !== 2; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const third = held();
+    const fourth = held();
+    // No room is left for these two: refused at once, before their bodies end.
+    const soon = <T>(p: Promise<T>) =>
+      Promise.race([p, new Promise<'held'>((r) => setTimeout(() => r('held'), 5000))]);
+    const [a, b] = await Promise.all([soon(third.reply), soon(fourth.reply)]);
+    expect(a === 'held' ? 'held' : a.statusCode).toBe(413);
+    expect(b === 'held' ? 'held' : b.statusCode).toBe(413);
+    // And what the two arriving hold is within the request's cap.
+    const now = await arriving();
+    expect(now?.n).toBe(2);
+    expect(Number(now?.reserved)).toBeLessThanOrEqual(3_000_000);
+    third.release();
+    fourth.release();
+    first.release();
+    second.release();
+    expect((await first.reply).statusCode).toBe(201);
+    // The second said 2.5 MB and was given what was left: cut off there.
+    expect((await second.reply).statusCode).toBe(413);
+    const [after] = await admin<{ files_used: number; bytes_used: string }>(
+      'select files_used, bytes_used::text from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(after).toEqual({ files_used: 1, bytes_used: String(file.length) });
+    expect(await stored(made.request.id)).toBe(1);
+  });
+
+  it('a file past what is left is cut off as it arrives, not stored whole first', async () => {
+    const made = await make(adult, { max_total_bytes: 1000 });
+    const { cookie } = await opened(made.link_token);
+    let written = 0;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- called with its own this below
+    const original = LocalAdapter.prototype.put;
+    const puts = vi.spyOn(LocalAdapter.prototype, 'put').mockImplementation(function (
+      this: LocalAdapter,
+      key,
+      body,
+      meta,
+    ) {
+      body.on('data', (c: Buffer) => (written += c.length));
+      return original.call(this, key, body, meta);
+    });
+    try {
+      const res = await send(cookie, { name: 'big.pdf', bytes: PDF(200_000) });
+      expect(res.statusCode).toBe(413);
+    } finally {
+      puts.mockRestore();
+    }
+    // At most the room, sealed: nothing like the 200 KB sent.
+    expect(written).toBeLessThanOrEqual(1000 + 64);
+    expect(await stored(made.request.id)).toBe(0);
+  });
+
+  it('this device only: of Opens at once, one binds and works, and every other is refused', async () => {
+    const made = await make(adult, { this_device_only: true });
+    const all = await Promise.all([1, 2, 3, 4, 5].map(() => unlock(made.link_token)));
+    expect(all.map((r) => r.statusCode).sort()).toEqual([200, 403, 403, 403, 403]);
+    const [row] = await admin<{ sessions: number; visits_used: number }>(
+      `select visits_used,
+              (select count(*)::int from upload_session where request_id = $1) as sessions
+         from upload_request where id = $1`,
+      [made.request.id],
+    );
+    expect(row).toEqual({ sessions: 1, visits_used: 1 });
+    // The browser that bound it opens it again; another browser is refused.
+    const device = all
+      .find((r) => r.statusCode === 200)
+      ?.cookies.find((c) => c.name === 'fdv_drop_device')?.value as string;
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token },
+      cookies: { fdv_drop_device: device },
+      remoteAddress: addr(),
+    });
+    expect(again.statusCode).toBe(200);
+    const elsewhere = await unlock(made.link_token);
+    expect(elsewhere.statusCode).toBe(403);
+    expect(elsewhere.json<{ error: { code: string } }>().error.code).toBe('other_device');
+  });
+
+  it('Opens at once with the one right code: one opens, the rest are told it was used, and no try is counted', async () => {
+    const made = await make(adult, { recipient_email: 'jane@example.test', email_code: true });
+    const sent = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/code',
+      payload: { token: made.link_token },
+      remoteAddress: addr(),
+    });
+    expect(sent.statusCode).toBe(200);
+    const job = h.jobs.filter((j) => j.name === 'upload.code').at(-1)?.data as {
+      code_id: string;
+      sealed: string;
+    };
+    const code = openBytes(
+      deriveKey(TEST_MASTER, 'upload-code-job'),
+      Buffer.from(job.sealed, 'base64'),
+      `upload-code:${job.code_id}`,
+    ).toString('utf8');
+    const all = await Promise.all([1, 2, 3, 4].map(() => unlock(made.link_token, { code })));
+    expect(all.map((r) => r.statusCode).sort()).toEqual([200, 409, 409, 409]);
+    for (const r of all.filter((x) => x.statusCode === 409)) {
+      expect(r.json<{ error: { code: string } }>().error.code).toBe('code_used');
+    }
+    // Pressed again later: still used, still not a wrong guess.
+    expect((await unlock(made.link_token, { code })).statusCode).toBe(409);
+    const [row] = await admin<{ attempts: number }>(
+      'select attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row?.attempts).toBe(0);
+  });
+
+  it('the fourth code in a quarter of an hour is refused', async () => {
+    const made = await make(adult, { recipient_email: 'jane@example.test', email_code: true });
+    const ask = () =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/code',
+        payload: { token: made.link_token },
+        remoteAddress: addr(),
+      });
+    for (let i = 0; i < 3; i++) expect((await ask()).statusCode).toBe(200);
+    const fourth = await ask();
+    expect(fourth.statusCode).toBe(429);
+    expect(fourth.json<{ error: { code: string } }>().error.code).toBe('too_many_codes');
+  });
+
+  it('a browser keeps two requests open: neither unbinds nor replaces the other', async () => {
+    const first = await make(adult, { this_device_only: true, title: 'First papers' });
+    const second = await make(adult, { this_device_only: true, title: 'Second papers' });
+    /** One browser's cookies, as it keeps them. */
+    const jar: Record<string, string> = {};
+    const open = async (token: string) => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/unlock',
+        payload: { token },
+        cookies: jar,
+        remoteAddress: addr(),
+      });
+      for (const c of res.cookies) jar[c.name] = c.value;
+      return res;
+    };
+    expect((await open(first.link_token)).statusCode).toBe(200);
+    const device = jar.fdv_drop_device;
+    const b = await open(second.link_token);
+    expect(b.statusCode).toBe(200);
+    // One device cookie for the browser, made once.
+    expect(b.cookies.find((c) => c.name === 'fdv_drop_device')).toBeUndefined();
+    expect(jar.fdv_drop_device).toBe(device);
+    // The first opens again in it.
+    expect((await open(first.link_token)).statusCode).toBe(200);
+    // And each session is its own request's, asked for by its id.
+    const titleOf = async (requestId: string) =>
+      (
+        await h.app.inject({
+          url: '/api/v1/drop/session',
+          cookies: jar,
+          headers: { 'x-fdv-drop-request': requestId },
+          remoteAddress: addr(),
+        })
+      ).json<DropSession>().title;
+    expect(await titleOf(first.request.id)).toBe('First papers');
+    expect(await titleOf(second.request.id)).toBe('Second papers');
+    // With two open, a call that does not say which is not guessed at.
+    const unsaid = await h.app.inject({
+      url: '/api/v1/drop/session',
+      cookies: jar,
+      remoteAddress: addr(),
+    });
+    expect(unsaid.statusCode).toBe(401);
+  });
+
+  it("stepping down to teen, or losing one's sign-in, closes one's requests; an owner made an adult keeps them", async () => {
+    const person = async (name: string, role: 'owner' | 'adult') => {
+      const t = await h.join(owner, {
+        name,
+        email: `${name.toLowerCase()}-${randomUUID()}@example.test`,
+        role: 'adult',
+      });
+      if (role === 'owner') {
+        const made = await h.app.inject({
+          method: 'POST',
+          url: `/api/v1/members/${t.member_id}/role`,
+          headers: h.as(owner),
+          payload: { role: 'owner' },
+        });
+        expect(made.statusCode, made.body).toBe(200);
+      }
+      return t;
+    };
+    const closed = async (id: string) =>
+      (
+        await admin<{
+          closed_reason: string | null;
+          recipient_email: string | null;
+          sessions: number;
+        }>(
+          `select closed_reason, recipient_email,
+                  (select count(*)::int from upload_session where request_id = $1) as sessions
+             from upload_request where id = $1`,
+          [id],
+        )
+      )[0];
+    const lost = { closed_reason: 'requester_lost_right', recipient_email: null, sessions: 0 };
+
+    // An owner who steps down to teen.
+    const stepping = await person('Stepping', 'owner');
+    const theirs = await make(stepping, { recipient_email: 'jane@example.test' });
+    await opened(theirs.link_token);
+    const down = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/me/step-down',
+      headers: h.as(stepping),
+      payload: { role: 'teen' },
+    });
+    expect(down.statusCode, down.body).toBe(200);
+    expect(await closed(theirs.request.id)).toEqual(lost);
+
+    // An adult whose sign-in is taken away.
+    const leaving = await person('Leaving', 'adult');
+    const hers = await make(leaving, { recipient_email: 'jane@example.test' });
+    await opened(hers.link_token);
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${leaving.member_id}/sign-in`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    expect(await closed(hers.request.id)).toEqual(lost);
+
+    // An owner made an adult, after the seven days, may still ask.
+    const staying = await person('Staying', 'owner');
+    const kept = await make(staying);
+    const asked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${staying.member_id}/role`,
+      headers: h.as(owner),
+      payload: { role: 'adult' },
+    });
+    const change = asked.json<{ request: { id: string } }>().request.id;
+    await admin(
+      'update owner_change_request set opens_at = now() - interval $$1 second$$ where id = $1',
+      [change],
+    );
+    const done = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/owner-changes/${change}/complete`,
+      headers: h.as(owner),
+    });
+    expect(done.statusCode, done.body).toBe(200);
+    expect((await closed(kept.request.id))?.closed_reason).toBeNull();
+    expect((await preview(kept.link_token)).statusCode).toBe(200);
+  });
+
+  it("after a restore, an adult is shown their own paused requests, and nobody else's", async () => {
+    const mine = await make(adult, { review_by: 'adults' });
+    const theirs = await make(other, { review_by: 'adults' });
+    await admin(
+      "update upload_request set paused_at = now(), paused_reason = 'restored' where id = any($1::uuid[])",
+      [[mine.request.id, theirs.request.id]],
+    );
+    const paused = async (t: Tokens) =>
+      (await h.app.inject({ url: '/api/v1/after-restore', headers: h.as(t) }))
+        .json<{ upload_requests: UploadRequestView[] }>()
+        .upload_requests.map((r) => r.id);
+    const adults = await paused(adult);
+    expect(adults).toContain(mine.request.id);
+    expect(adults).not.toContain(theirs.request.id);
+    expect(await paused(owner)).toEqual(
+      expect.arrayContaining([mine.request.id, theirs.request.id]),
+    );
+  });
+
   it("the database's copy of who may ask is the matrix's", async () => {
     expect(rolesWith('upload_request.create')).toEqual(['owner', 'adult']);
     const [fn] = await admin<{ src: string }>(
       "select pg_get_functiondef('public.app_live_upload_request()'::regprocedure) as src",
     );
     expect(fn?.src).toContain("asker.role in ('owner', 'adult')");
+  });
+});
+
+/**
+ * The caps and the choices that depend on the vault's own settings: the
+ * household's room for files waiting, and operator mail (5.21 review).
+ */
+describe.skipIf(!testAdminUrl())('a vault with little room and no operator mail', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let ip = 0;
+  const addr = () => `10.78.${(++ip >> 8) & 0xff}.${ip & 0xff}`;
+
+  beforeAll(async () => {
+    h = await createHarness({ operatorMail: false, incomingMaxBytes: 5000 });
+    owner = await h.setup();
+  }, 90_000);
+  afterAll(() => h.close());
+
+  const make = async (body: Partial<UploadRequestInput> = {}) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/upload-requests',
+      headers: h.as(owner),
+      payload: {
+        title: 'Tax papers',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        ...body,
+      },
+    });
+
+  const sendTo = async (token: string, bytes: Buffer) => {
+    const opened = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token },
+      remoteAddress: addr(),
+    });
+    const set = opened.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
+    const form = new FormData();
+    form.append('file', bytes, { filename: 'w2.pdf', contentType: 'application/pdf' });
+    return h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/files',
+      headers: form.getHeaders(),
+      cookies: { [set?.name as string]: set?.value as string },
+      payload: form.getBuffer(),
+      remoteAddress: addr(),
+    });
+  };
+
+  it("the household's room for files waiting is shared by every request", async () => {
+    const one = (await make()).json<CreatedUploadRequest>();
+    const two = (await make()).json<CreatedUploadRequest>();
+    expect((await sendTo(one.link_token, PDF(3000))).statusCode).toBe(201);
+    const refused = await sendTo(two.link_token, PDF(3000));
+    expect(refused.statusCode).toBe(413);
+    expect(refused.json<{ error: { message: string } }>().error.message).toMatch(
+      /cannot take any more files/,
+    );
+  });
+
+  it('without operator mail, an emailed code is refused, and said to be unavailable', async () => {
+    const res = await make({ recipient_email: 'jane@example.test', email_code: true });
+    expect(res.statusCode).toBe(422);
+    expect(res.json<{ error: { code: string } }>().error.code).toBe('email_code_unavailable');
+    const listed = (
+      await h.app.inject({ url: '/api/v1/upload-requests', headers: h.as(owner) })
+    ).json<{ email_code_available: boolean }>();
+    expect(listed.email_code_available).toBe(false);
   });
 });

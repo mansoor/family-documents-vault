@@ -2038,41 +2038,67 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         3 a quarter of an hour and 10 a day (`429 too_many_codes`). Kept as
         an HMAC under a server key; the email has no link and no title.
       - `POST /api/v1/drop/unlock` `{ token, password?, code? }` →
-        `DropSession`, and the `fdv_drop` cookie (httpOnly, Secure,
-        SameSite=Strict, path `/api/v1/drop`; 30 minutes idle, 4 hours at
-        most, never past the request's end). A wrong password or code, in
-        either, is `401 secret_wrong`, the same answer, and uses up one of
-        the request's ten tries for its life, reserved before it is checked;
-        the tenth locks it (the requester is told). Past `max_visits`,
-        `410 request_used_up`, however many press Open at once. This device
-        only: the first Open sets `fdv_drop_device`; another browser is
+        `DropSession` (with its `request_id`), and a session cookie named
+        for the request, `fdv_drop_s_<request id without dashes>`
+        (httpOnly, Secure, SameSite=Strict, path `/api/v1/drop`; 30 minutes
+        idle, 4 hours at most, never past the request's end), so a browser
+        can have two requests open. Opens pressed at once wait for each
+        other. A wrong password or code, in either, is `401 secret_wrong`,
+        the same answer, and uses up one of the request's ten tries for its
+        life; the tenth locks it (the requester is told). The code a
+        request was just opened with, pressed again, is `409 code_used` and
+        uses up no try. Past `max_visits`, `410 request_used_up`, however
+        many press Open at once. This device only: one `fdv_drop_device`
+        cookie per browser, set by the first Open that needs one and never
+        replaced; each request is bound to it by the first Open that works,
+        and every other Open, at once or later, from another browser is
         `403 other_device`.
+      - Inside an opened request, a call says which request it is about
+        with `X-FDV-Drop-Request: <request_id>`; with only one session
+        cookie in the browser it need not. With two and no header, it is
+        `401 drop_session_ended`.
       - `GET /api/v1/drop/session` → `DropSession`: the household, who
         asked, the title, the message, the items, what it takes
         (`accept_types`, `accepted`), `files_left`, `bytes_left`,
         `max_file_bytes` and the files this browser has sent. Never another
         session's, and never the hints.
       - `POST /api/v1/drop/files`, multipart: an optional `item_id` field,
-        then `file`, and nothing else. `201` `DropFile`. Refused, and
-        nothing of it kept: `415 unsupported_type` for anything but a PDF
-        or a photo by its bytes (and, with `office`, a Word or Excel file
-        by its zip's own content types), whatever it is called or said to
-        be; `415 macros_refused` for a Word or Excel file with macros;
-        `413 too_large` at the first cap it passes, counted as it arrives —
-        the file's own (`max_upload_bytes`), what is left of the request's
-        bytes, or the household's room for files waiting for review
-        (2 GB); `409 files_used_up`.
+        then `file`, and nothing else; 20 a minute per address. `201`
+        `DropFile`. Its room is reserved before a byte is read: its
+        `Content-Length`, or the most it could be, within the file's own
+        limit (`max_upload_bytes`), what is left of the request's bytes and
+        files, and the household's room for files waiting for review
+        (2 GB), each counting the files still arriving as well as those in.
+        No room: `413 too_large` (or `409 files_used_up`) at once, before
+        its body has arrived. Refused, and nothing of it kept:
+        `415 unsupported_type` for anything but a PDF or a photo by its bytes —
+        stopped as soon as its first bytes say so — and, with `office`, a
+        Word or Excel file only as its package's own main part declares it
+        (read as XML: character references decoded, comments ignored, a
+        document type refused), a package of more than 500 parts not at
+        all; `415 macros_refused` for a Word or Excel file with anything
+        that runs or reaches outside — a VBA project by its content type,
+        relationship or name, a macro-enabled or template main part, a
+        macro sheet, ActiveX, an embedded OLE object, or a template, frame
+        or object fetched from elsewhere; `413 too_large` when more arrives
+        than the room reserved.
       - `DELETE /api/v1/drop/files/{id}` → `204`: a file this session sent,
         before Finish. `POST /api/v1/drop/finish` `{ note? }` (up to 1,000
         characters) → `{ files, closed }`; `422 nothing_to_send` with no
         file. With `close_after_submit`, the request closes.
-      - Every one of them answers a request that has been taken back,
-        closed, paused, run out, locked, or whose requester is no longer an
-        owner or an adult as `404 link_not_valid`, and a session that has
-        ended as `401 drop_session_ended`. 20 a minute per address for the
-        preview, a code and Open; 120 inside a session. Every answer carries
-        the public pages' headers (no referrer, nosniff, noindex, a strict
-        sandboxing policy).
+      - The preview, a code and Open answer a request that has been taken
+        back, closed, paused, locked, run out of time, or whose requester
+        is no longer an owner or an adult as `404 link_not_valid`, and one
+        opened as many times as it allows as `410 request_used_up`. The
+        routes inside a session answer `401 drop_session_ended` once the
+        request has stopped, because its sessions end with it; they answer
+        `404 link_not_valid` only for a session that outlives a stop the
+        database alone knows of (a requester's role changed by hand). A
+        used-up request's sessions keep working to their own end. 20 a
+        minute per address for the preview, a code, Open and a file; 120
+        for the rest inside a session. Every answer carries the public
+        pages' headers (no referrer, nosniff, noindex, a strict sandboxing
+        policy).
     - **Changed:** a requester made a teen or a viewer, or whose sign-in is
       taken away, loses their requests: each is closed, its sessions and
       codes end, and its address is cleared (A39).
@@ -2094,6 +2120,12 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       trace level are redacted (they carried a bearer token too).
     - After a restore, every live request is paused for an owner to turn
       back on (A55), and no sender's session or code survives.
+    - A request's address is cleared by whatever ends it: the tenth wrong
+      try, its last visit, taking it back, closing it; one that runs out of
+      time, by the nightly prune.
+    - **Added:** `503 busy` (retriable, `Retry-After: 1`), on any route,
+      for two requests that got in each other's way in the database (a
+      deadlock or a serialization failure): nothing was done.
     - The worker: `upload.code` sends an emailed code by operator mail; the
       nightly `uploads.prune` also takes away files whose sending died,
       with their objects, ended senders' sessions and codes, and the
@@ -2107,9 +2139,10 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       `DropPreview`, `DropCodeSent`, `DropSession`, `DropFile`,
       `DropFinished`. `@fdv/client`: `createUploadRequest`,
       `uploadRequests`, `revokeUploadRequest`, `resumeUploadRequest`,
-      `dropPreview`, `dropCode`, `dropUnlock`, `dropSession`,
-      `dropFilesUrl`, `dropRemoveFile`, `dropFinish`; the fake keeps
-      requests (`state.uploadRequests`).
+      `dropPreview`, `dropCode`, `dropUnlock`, `dropSession(requestId)`,
+      `dropFilesUrl`, `dropRemoveFile(requestId, id)`,
+      `dropFinish(requestId, note?)`, `dropHeaders(requestId)`; the fake
+      keeps requests (`state.uploadRequests`).
     - The database: 0044 adds `upload_request`, `upload_request_item`,
       `upload_session`, `upload_code` and `incoming_file`, each with a rule
       for every kind of caller: an upload link reaches its own request

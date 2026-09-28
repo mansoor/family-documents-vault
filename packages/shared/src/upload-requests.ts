@@ -193,6 +193,12 @@ export interface DropFile {
  * Never the person or the kind of document the requester guessed at.
  */
 export interface DropSession {
+  /**
+   * Which request this is: the page sends it back as `X-FDV-Drop-Request`,
+   * so a browser with two requests open is asked about the right one. Its
+   * session cookie is named for it.
+   */
+  request_id: string;
   household_name: string;
   requested_by: string | null;
   title: string;

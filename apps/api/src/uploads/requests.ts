@@ -9,6 +9,7 @@ import {
 import { PassThrough, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
+  CHUNK_SIZE,
   decryptRange,
   EncryptStream,
   newKey,
@@ -108,10 +109,24 @@ const ARGON2 = {
   parallelism: 1,
 } as const;
 
-/** The session cookie, the device cookie, and the one path both are sent to. */
-export const DROP_COOKIE = 'fdv_drop';
+/**
+ * The cookies, and the one path they are sent to. A session's is named for
+ * its request (`fdv_drop_s_<request id>`), so a browser that opens two
+ * requests keeps both; the device cookie is one per browser, minted once,
+ * and each request that is for "this device only" binds to it and its own
+ * id, so opening a second never unbinds the first.
+ */
+export const DROP_COOKIE_PREFIX = 'fdv_drop_s_';
 export const DROP_DEVICE_COOKIE = 'fdv_drop_device';
 export const DROP_COOKIE_PATH = '/api/v1/drop';
+/** Which request a page is asking about, when its browser holds more than one session. */
+export const DROP_REQUEST_HEADER = 'x-fdv-drop-request';
+/** The device cookie lasts as long as the longest request can. */
+export const DROP_DEVICE_MAX_AGE = SHARE_MAX_DAYS * 86_400;
+
+/** A session cookie's name, for its request. */
+export const dropCookieName = (requestId: string) =>
+  `${DROP_COOKIE_PREFIX}${requestId.replace(/-/g, '').toLowerCase()}`;
 /** A session lasts 30 minutes from its last use, and 4 hours at most (A26, as a link's). */
 export const DROP_SESSION_IDLE_MS = 30 * 60_000;
 export const DROP_SESSION_MAX_MS = 4 * 3_600_000;
@@ -196,25 +211,31 @@ export interface DropUpload {
   truncated: () => boolean;
   /** The route's last check, once the file has arrived: nothing may follow it. */
   finished: () => Promise<void>;
+  /** How long the upload said it was (its Content-Length), if it said: the room reserved. */
+  declaredBytes: number | null;
 }
 
 type RequestRow = Selectable<Schema['upload_request']>;
 
 /** Why Open did not open. */
-type Refusal = 'used up' | 'other device' | 'gone' | 'locked' | 'wrong';
+type Refusal = 'used up' | 'other device' | 'gone' | 'locked' | 'wrong' | 'code used';
 
 /** A transaction asked for by whoever holds one request's link: never anybody else. */
 type UploadScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'upload' }> };
 
-/** A session made by Open: the cookie, once, and what it opened. */
+/** A session made by Open: the cookie, once, its name, and what it opened. */
 export interface DropUnlocked {
   cookie: string;
+  cookieName: string;
   /** Seconds until the session ends at the latest: the cookie's Max-Age. */
   maxAge: number;
-  /** "This device only": the device cookie, the first time, and until when. */
+  /** "This device only": the browser's device cookie, when this Open minted it. */
   device?: { cookie: string; maxAge: number };
   session: DropSession;
 }
+
+/** How a device cookie binds one request: its hash with the request's id. */
+const deviceBinding = (cookie: string, requestId: string) => hash(`${cookie}:${requestId}`);
 
 const hash = (s: string) => createHash('sha256').update(s, 'utf8').digest();
 
@@ -247,6 +268,13 @@ const secretWrong = (left: number) =>
       : 'That was wrong too many times, so the link has stopped working.',
   );
 
+const codeUsed = () =>
+  new ApiError(
+    409,
+    'code_used',
+    'That code has just been used to open this link. Ask for a new code to open it again.',
+  );
+
 const otherDevice = () =>
   new ApiError(
     403,
@@ -276,7 +304,7 @@ const macros = () =>
   new ApiError(
     415,
     'macros_refused',
-    "Word and Excel files with macros can't be sent here. Save it as an ordinary Word or Excel file, or as a PDF, and send that.",
+    "Word and Excel files with macros, or that load something from elsewhere, can't be sent here. Save it as an ordinary Word or Excel file, or as a PDF, and send that.",
   );
 
 const storageUnreachable = (detail: string) =>
@@ -333,10 +361,13 @@ function stateOf(r: RequestRow): UploadRequestState {
   return 'active';
 }
 
-/** Whether a request has ended for good: its address is cleared then. */
+/**
+ * Whether a request has ended for good: its address is cleared then. Used
+ * up too: nothing gives a request more visits.
+ */
 const ended = (r: RequestRow) => {
   const s = stateOf(r);
-  return s === 'revoked' || s === 'closed' || s === 'locked' || s === 'expired';
+  return s === 'revoked' || s === 'closed' || s === 'locked' || s === 'expired' || s === 'used_up';
 };
 
 export class UploadRequestService {
@@ -687,12 +718,13 @@ export class UploadRequestService {
    * household (A39; locked from 5.28 joins them). The database gives an
    * upload link no row otherwise; this asks again, in words.
    */
-  private async live(trx: Db, requestId: string): Promise<RequestRow> {
-    const row = await trx
-      .selectFrom('upload_request')
-      .selectAll()
-      .where('id', '=', requestId)
-      .executeTakeFirst();
+  private async live(
+    trx: Db,
+    requestId: string,
+    opts: { lock?: boolean } = {},
+  ): Promise<RequestRow> {
+    const query = trx.selectFrom('upload_request').selectAll().where('id', '=', requestId);
+    const row = await (opts.lock ? query.forUpdate() : query).executeTakeFirst();
     if (!row) throw gone();
     if (row.revoked_at || row.closed_at || row.paused_at) throw gone();
     if (row.expires_at.getTime() <= Date.now()) throw gone();
@@ -819,12 +851,13 @@ export class UploadRequestService {
   }
 
   /**
-   * Open: the one step that is counted and written down. This device only
-   * first (the device cookie must be the one the first Open bound); then the
-   * password and the code, against one counter of ten reserved before they
-   * are checked, every wrong one answered alike (A23); then the visit,
-   * counted within `max_visits` by one statement however many press Open at
-   * once; then a session for this browser.
+   * Open: the one step that is counted and written down. The whole of it
+   * holds the request's row, taken first, so Opens pressed at once wait for
+   * each other whole and never take their locks in another order. This
+   * device only first: a browser's device cookie, bound to this request by
+   * the first Open that works; then the password and the code, every wrong
+   * one answered alike and counted against one counter of ten (A23); then
+   * the visit, within `max_visits`; then a session for this browser.
    */
   async unlock(
     input: z.infer<typeof dropUnlockBody>,
@@ -834,16 +867,25 @@ export class UploadRequestService {
     const scope = await this.scopeOf(input.token);
     const { householdId } = scope;
     const outcome = await withScope(this.db, scope, async (trx) => {
-      const r = await this.live(trx, scope.actor.requestId);
+      const r = await this.live(trx, scope.actor.requestId, { lock: true });
       const refused = (why: Refusal, left = 0) => ({ refused: why, left, requester: r.created_by });
       if (r.max_visits !== null && r.visits_used >= r.max_visits) return refused('used up');
-      if (r.this_device_only && r.device_hash) {
-        const presented = deviceCookie && deviceCookie.length <= 128 ? hash(deviceCookie) : null;
-        if (!presented || !timingSafeEqual(presented, r.device_hash))
-          return refused('other device');
+      const browser = deviceCookie && deviceCookie.length <= 128 ? deviceCookie : null;
+      let binding: Buffer | null = null;
+      let minted: string | undefined;
+      if (r.this_device_only) {
+        if (r.device_hash) {
+          if (!browser || !timingSafeEqual(deviceBinding(browser, r.id), r.device_hash)) {
+            return refused('other device');
+          }
+        } else {
+          // One device cookie per browser: made now only if it has none.
+          const cookie = browser ?? (minted = randomBytes(32).toString('base64url'));
+          binding = deviceBinding(cookie, r.id);
+        }
       }
       const tried = await this.trySecrets(trx, r, input, meta);
-      if (tried === 'gone' || tried === 'locked') return refused(tried);
+      if (tried === 'gone' || tried === 'locked' || tried === 'code used') return refused(tried);
       if (tried !== 'right') return refused('wrong', tried.wrong);
 
       const counted = await trx
@@ -856,20 +898,16 @@ export class UploadRequestService {
         .returning('visits_used')
         .executeTakeFirst();
       if (!counted) return refused('used up');
-
-      let device: { cookie: string; maxAge: number } | undefined;
-      if (r.this_device_only && !r.device_hash) {
-        const cookie = randomBytes(32).toString('base64url');
-        await trx
+      if (binding) {
+        // Bound once, by one Open: the row is held, and this says so again.
+        const bound = await trx
           .updateTable('upload_request')
-          .set({ device_hash: hash(cookie) })
+          .set({ device_hash: binding })
           .where('id', '=', r.id)
           .where('device_hash', 'is', null)
-          .execute();
-        device = {
-          cookie,
-          maxAge: Math.max(1, Math.floor((r.expires_at.getTime() - Date.now()) / 1000)),
-        };
+          .returning('id')
+          .executeTakeFirst();
+        if (!bound) throw otherDevice();
       }
 
       const cookie = randomBytes(32).toString('base64url');
@@ -910,7 +948,7 @@ export class UploadRequestService {
       });
       const fresh = { ...r, visits_used: counted.visits_used };
       const session = await this.sessionView(trx, fresh, made.id, expiresAt);
-      return { cookie, expiresAt, device, session } as const;
+      return { cookie, requestId: r.id, expiresAt, minted, session } as const;
     });
     if ('refused' in outcome) {
       switch (outcome.refused) {
@@ -920,6 +958,8 @@ export class UploadRequestService {
           throw otherDevice();
         case 'gone':
           throw gone();
+        case 'code used':
+          throw codeUsed();
         case 'locked':
           await this.alert({
             householdId,
@@ -937,39 +977,33 @@ export class UploadRequestService {
     }
     return {
       cookie: outcome.cookie,
+      cookieName: dropCookieName(outcome.requestId),
       maxAge: Math.max(1, Math.floor((outcome.expiresAt.getTime() - Date.now()) / 1000)),
-      ...(outcome.device ? { device: outcome.device } : {}),
+      ...(outcome.minted
+        ? { device: { cookie: outcome.minted, maxAge: DROP_DEVICE_MAX_AGE } }
+        : {}),
       session: outcome.session,
     };
   }
 
   /**
    * The password, then the code, as one try of the request's one counter
-   * (A23): reserved before either is checked — `attempts + 1 where attempts
-   * < 10`, which takes the row — so tries at once queue behind it, and no
-   * more than ten are ever made. Right, the try is given back. Wrong, in
-   * either, it is kept, and the answer does not say which was wrong; the
-   * tenth locks the request, once: its sessions end and the log says so.
+   * (A23), on the row Open holds: tries at once wait for it, so no more
+   * than ten are ever made. Right, nothing is counted. Wrong, in either,
+   * the try is counted, and the answer does not say which was wrong; the
+   * tenth locks the request, once — its sessions and codes end, its address
+   * is cleared (upload_request_ended_forgets, 0044), and the log says so. A
+   * code this request has just been opened with is a second press of Open,
+   * not a guess: refused as used, and not counted.
    */
   private async trySecrets(
     trx: Db,
     r: RequestRow,
     input: z.infer<typeof dropUnlockBody>,
     meta: RequestMeta,
-  ): Promise<'right' | 'gone' | 'locked' | { wrong: number }> {
+  ): Promise<'right' | 'gone' | 'locked' | 'code used' | { wrong: number }> {
     if (!r.secret_hash && !r.email_code) return 'right';
-    await sql`savepoint fdv_upload_attempt`.execute(trx);
-    const reserved = await trx
-      .updateTable('upload_request')
-      .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
-      .where('id', '=', r.id)
-      .where('attempts', '<', MAX_ATTEMPTS)
-      .returning('attempts')
-      .executeTakeFirst();
-    if (!reserved) {
-      await sql`release savepoint fdv_upload_attempt`.execute(trx);
-      return 'gone';
-    }
+    if (r.attempts >= MAX_ATTEMPTS) return 'gone';
     let right = true;
     if (r.secret_hash) {
       right = input.password
@@ -978,11 +1012,12 @@ export class UploadRequestService {
     }
     // The code only after the password (A23): a wrong password never uses
     // up a code's own tries.
-    let codeId: string | null = null;
     if (right && r.email_code) {
+      const given = input.code?.replace(/\s+/g, '') ?? '';
+      const presented = /^\d{6}$/.test(given) ? this.codeHash(r.id, given) : null;
       const code = await trx
         .selectFrom('upload_code')
-        .select(['id', 'code_hash', 'attempts'])
+        .select(['id', 'code_hash'])
         .where('request_id', '=', r.id)
         .where('used_at', 'is', null)
         .where('expires_at', '>', new Date())
@@ -991,14 +1026,28 @@ export class UploadRequestService {
         .limit(1)
         .forUpdate()
         .executeTakeFirst();
-      const given = input.code?.replace(/\s+/g, '') ?? '';
-      right =
-        code !== undefined &&
-        /^\d{6}$/.test(given) &&
-        timingSafeEqual(code.code_hash, this.codeHash(r.id, given));
-      if (right && code) codeId = code.id;
-      else if (code) {
-        // The code's own five tries count too: kept with the wrong try.
+      if (presented && code && timingSafeEqual(code.code_hash, presented)) {
+        await trx
+          .updateTable('upload_code')
+          .set({ used_at: new Date() })
+          .where('id', '=', code.id)
+          .execute();
+        return 'right';
+      }
+      if (presented) {
+        const used = await trx
+          .selectFrom('upload_code')
+          .select('id')
+          .where('request_id', '=', r.id)
+          .where('used_at', 'is not', null)
+          .where('expires_at', '>', new Date())
+          .where('code_hash', '=', presented)
+          .executeTakeFirst();
+        if (used) return 'code used';
+      }
+      right = false;
+      // The code's own five tries count too.
+      if (code) {
         await trx
           .updateTable('upload_code')
           .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
@@ -1006,28 +1055,20 @@ export class UploadRequestService {
           .execute();
       }
     }
-    if (right) {
-      await sql`rollback to savepoint fdv_upload_attempt`.execute(trx);
-      if (codeId) {
-        await trx
-          .updateTable('upload_code')
-          .set({ used_at: new Date() })
-          .where('id', '=', codeId)
-          .execute();
-      }
-      return 'right';
-    }
-    await sql`release savepoint fdv_upload_attempt`.execute(trx);
-    if (reserved.attempts < MAX_ATTEMPTS) return { wrong: MAX_ATTEMPTS - reserved.attempts };
+    if (right) return 'right';
+    const counted = await trx
+      .updateTable('upload_request')
+      .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
+      .where('id', '=', r.id)
+      .where('attempts', '<', MAX_ATTEMPTS)
+      .returning('attempts')
+      .executeTakeFirst();
+    if (!counted) return 'gone';
+    if (counted.attempts < MAX_ATTEMPTS) return { wrong: MAX_ATTEMPTS - counted.attempts };
     // The tenth, once in the request's life: failed tries are counters,
     // never audit rows; the lock is one row.
     await trx.deleteFrom('upload_session').where('request_id', '=', r.id).execute();
     await trx.deleteFrom('upload_code').where('request_id', '=', r.id).execute();
-    await trx
-      .updateTable('upload_request')
-      .set({ recipient_email: null })
-      .where('id', '=', r.id)
-      .execute();
     await appendAudit(trx, {
       householdId: r.household_id,
       actorLabel: this.actorLabel(r),
@@ -1138,6 +1179,7 @@ export class UploadRequestService {
       .execute();
     const bytesLeft = Math.max(0, Number(r.max_total_bytes) - Number(r.bytes_used));
     return {
+      request_id: r.id,
       ...(await this.names(trx, r)),
       title: r.title,
       message: r.message,
@@ -1162,17 +1204,22 @@ export class UploadRequestService {
   }
 
   /**
-   * One file in (POST /drop/files). Its row first, `uploading`, so a try
-   * that dies leaves something the nightly prune finds; then its bytes,
-   * sniffed, counted against every cap as they arrive and cut off at the
-   * first they pass, and encrypted under the reviewer's key straight to its
-   * object; then, for a Word or Excel file, its zip read where it is kept;
-   * then the commit, which counts it against the request under a lock.
-   * Refused anywhere, nothing of it is kept: not the object, not the row.
+   * One file in (POST /drop/files). First, under the household's lock, its
+   * room is reserved: what it says it will be (the upload's length), or the
+   * most it could be, within the file's own limit and what is left of the
+   * request's and the household's caps once every file already in, and
+   * every file still arriving, is counted (incoming_room(), 0044). No room,
+   * and it is refused before a byte is read. Its row holds the reservation,
+   * `uploading`, so a try that dies leaves something the nightly prune
+   * finds. Then its bytes: sniffed as they come (a kind the request does not
+   * take is stopped at once), cut off at the room reserved, and encrypted
+   * under the reviewer's key straight to its object; then, for a Word or
+   * Excel file, its package read where it is kept; then the commit, which
+   * counts it against the request. Refused anywhere, nothing of it is kept:
+   * not the object, not the row.
    */
   async addFile(cookie: string | undefined, upload: DropUpload): Promise<DropFile> {
     const ctx = await this.inSession(cookie, async (trx, r, session, scope) => {
-      if (r.files_used >= r.max_files) throw filesUsedUp(r.max_files);
       if (upload.itemId) {
         const item = await trx
           .selectFrom('upload_request_item')
@@ -1184,12 +1231,32 @@ export class UploadRequestService {
           throw new ApiError(422, 'validation_failed', 'That is not one of the things asked for.');
         }
       }
-      const pending = Number(
-        (await sql<{ n: string }>`select incoming_pending_bytes() as n`.execute(trx)).rows[0]?.n ??
-          0,
+      // One household's reservations one at a time: what senders at once
+      // hold can never together pass a cap.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`incoming:${scope.householdId}`}, 0))`.execute(
+        trx,
       );
-      const requestLeft = Number(r.max_total_bytes) - Number(r.bytes_used);
-      const householdLeft = this.householdMax - pending;
+      const room = (
+        await sql<{ household_bytes: string; request_files: number; request_bytes: string }>`
+          select household_bytes, request_files, request_bytes from incoming_room(${r.id})
+        `.execute(trx)
+      ).rows[0];
+      const arriving = Number(room?.request_files ?? 0);
+      if (r.files_used + arriving >= r.max_files) throw filesUsedUp(r.max_files);
+      const limits = {
+        file: this.opts.maxFileBytes,
+        request:
+          Number(r.max_total_bytes) - Number(r.bytes_used) - Number(room?.request_bytes ?? 0),
+        household: this.householdMax - Number(room?.household_bytes ?? 0),
+      };
+      const most = Math.min(limits.file, limits.request, limits.household);
+      if (most <= 0) throw tooBigFor(limits, 1, Number(r.max_total_bytes));
+      // What it says it will be, when it says: the multipart body is a
+      // little more than the file, so the file fits in it.
+      const reserved =
+        upload.declaredBytes !== null && upload.declaredBytes > 0
+          ? Math.min(most, upload.declaredBytes)
+          : most;
       const active = await this.vaults.activeAdapter(trx, scope.householdId);
       const scopeKey = await this.keys.unwrap(
         trx,
@@ -1210,6 +1277,7 @@ export class UploadRequestService {
           item_id: upload.itemId,
           session_id: session.id,
           original_name: safeName(upload.filename),
+          reserved_bytes: reserved,
           // The object's name says nothing about the file.
           storage_key: `${scope.householdId}/incoming/${r.id}/${randomBytes(16).toString('hex')}.enc`,
           vault_id: active.vaultId,
@@ -1227,7 +1295,8 @@ export class UploadRequestService {
         adapter: active.adapter,
         fileKey,
         accept: r.accept_types,
-        limits: { file: this.opts.maxFileBytes, request: requestLeft, household: householdLeft },
+        limits,
+        reserved,
         maxTotal: Number(r.max_total_bytes),
       };
     });
@@ -1239,33 +1308,30 @@ export class UploadRequestService {
       ).catch(() => undefined);
     };
 
-    // The caps, counted on the stream: the file's own, what is left of the
-    // request, and what is left of the household's room for files waiting.
-    const tooBig = (): ApiError => {
-      if (bytes > ctx.limits.household) {
-        return tooLarge(
-          'The vault cannot take any more files just now. Ask whoever sent the link.',
-        );
-      }
-      if (bytes > ctx.limits.request) {
-        return tooLarge(
-          `That file would take this request past the ${megabytes(ctx.maxTotal)} it can take in all.`,
-        );
-      }
-      return tooLarge(
-        `That file is too big: one file can be ${megabytes(ctx.limits.file)} at most.`,
-      );
-    };
-    const cap = Math.min(ctx.limits.file, ctx.limits.request, ctx.limits.household);
+    // Cut off at the room reserved, as the bytes come: a sender that says
+    // one length and sends another is stopped there too.
     let bytes = 0;
     let head = Buffer.alloc(0);
+    let sniffed = false;
     const plainHash = createHash('sha256');
     const counted = new PassThrough();
+    const sniff = () => {
+      if (sniffed) return;
+      sniffed = true;
+      // A kind the request does not take is stopped now, not once it has
+      // all arrived.
+      this.quickKind(head, ctx.accept).catch((err: unknown) => counted.destroy(err as Error));
+    };
     counted.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       plainHash.update(chunk);
-      if (head.length < SNIFF_BYTES) head = Buffer.concat([head, chunk]).subarray(0, SNIFF_BYTES);
-      if (bytes > cap) counted.destroy(tooBig());
+      if (head.length < SNIFF_BYTES) {
+        head = Buffer.concat([head, chunk]).subarray(0, SNIFF_BYTES);
+        if (head.length >= SNIFF_BYTES) sniff();
+      }
+      if (bytes > ctx.reserved) {
+        counted.destroy(tooBigFor(ctx.limits, bytes, ctx.maxTotal, ctx.reserved));
+      }
     });
     const enc = new EncryptStream(ctx.fileKey);
     const storing = ctx.adapter.put(ctx.key, enc);
@@ -1273,7 +1339,7 @@ export class UploadRequestService {
     let put: { bytes: number; sha256: string };
     try {
       [put] = await Promise.all([storing, flowing]);
-      if (upload.truncated()) throw tooBig();
+      if (upload.truncated()) throw tooBigFor(ctx.limits, bytes + 1, ctx.maxTotal, ctx.reserved);
       await upload.finished();
     } catch (err) {
       enc.destroy();
@@ -1294,22 +1360,9 @@ export class UploadRequestService {
 
     try {
       const view = await this.inSession(cookie, async (trx, r) => {
-        // One household's commits one at a time: its room for files
-        // waiting is counted exactly, however many send at once.
-        await sql`select pg_advisory_xact_lock(hashtextextended(${`incoming:${ctx.scope.householdId}`}, 0))`.execute(
-          trx,
-        );
-        const pending = Number(
-          (await sql<{ n: string }>`select incoming_pending_bytes() as n`.execute(trx)).rows[0]
-            ?.n ?? 0,
-        );
-        if (pending + bytes > this.householdMax) {
-          throw tooLarge(
-            'The vault cannot take any more files just now. Ask whoever sent the link.',
-          );
-        }
         // Within the request's files and bytes, however many arrive at once:
-        // one statement counts it, or finds there is no room.
+        // one statement counts it, or finds there is no room. (Its room was
+        // reserved; this is the floor under that.)
         const room = await trx
           .updateTable('upload_request')
           .set((eb) => ({
@@ -1324,9 +1377,7 @@ export class UploadRequestService {
         if (!room) {
           throw r.files_used >= r.max_files
             ? filesUsedUp(r.max_files)
-            : tooLarge(
-                `That file would take this request past the ${megabytes(Number(r.max_total_bytes))} it can take in all.`,
-              );
+            : tooBigFor({ ...ctx.limits, request: 0 }, bytes, ctx.maxTotal);
         }
         const done = await trx
           .updateTable('incoming_file')
@@ -1354,34 +1405,58 @@ export class UploadRequestService {
   }
 
   /**
-   * What a file is, from its first bytes (and a zip from its parts): one of
-   * the kinds the request takes, or refused. PDFs and photos by file-type's
-   * reading; a zip is taken only as the Word or Excel file its own content
-   * types say it is, with no macros, and only by a request that takes them.
+   * From the first bytes alone: a kind the request cannot take at all. A
+   * zip goes on (its package is read once it has all arrived) only for a
+   * request that takes Word and Excel files.
+   */
+  private async quickKind(head: Buffer, accept: 'standard' | 'office'): Promise<void> {
+    if (isZip(head)) {
+      if (accept !== 'office') throw wrongType(accept);
+      return;
+    }
+    await this.photoOrPdf(head, accept);
+  }
+
+  private async photoOrPdf(head: Buffer, accept: 'standard' | 'office'): Promise<string> {
+    const { fileTypeFromBuffer } = await import('file-type');
+    const found = await fileTypeFromBuffer(head);
+    const mime = found?.mime === 'image/heif' ? 'image/heic' : found?.mime;
+    if (!mime || !uploadRequestTypes('standard').includes(mime)) throw wrongType(accept);
+    return mime;
+  }
+
+  /**
+   * What a file is, from its first bytes (and a zip from its package): one
+   * of the kinds the request takes, or refused. PDFs and photos by
+   * file-type's reading; a zip is taken only as the Word or Excel file its
+   * own package says it is, with nothing that runs, and only by a request
+   * that takes them. The package is read a chunk at a time, each decrypted
+   * once (office.ts).
    */
   private async kindOf(
     head: Buffer,
     size: number,
     ctx: { adapter: StorageAdapter; key: string; fileKey: Buffer; accept: 'standard' | 'office' },
   ): Promise<string> {
-    const zip = head.length >= 4 && head.readUInt32LE(0) === 0x04034b50;
-    if (zip) {
+    if (isZip(head)) {
       if (ctx.accept !== 'office') throw wrongType(ctx.accept);
-      const verdict = await inspectOffice(size, async (start, end) => {
-        const plain = await decryptRange(ctx.fileKey, size, { start, end: end - 1 }, async (s, e) =>
-          readAll(await ctx.adapter.get(ctx.key, { start: s, end: e })),
-        );
-        return plain;
-      }).catch(() => ({ refused: 'not_office' as const }));
-      if ('refused' in verdict)
+      const verdict = await inspectOffice({
+        size,
+        chunkSize: CHUNK_SIZE,
+        read: (i) =>
+          decryptRange(
+            ctx.fileKey,
+            size,
+            { start: i * CHUNK_SIZE, end: Math.min(size, (i + 1) * CHUNK_SIZE) - 1 },
+            async (s, e) => readAll(await ctx.adapter.get(ctx.key, { start: s, end: e })),
+          ),
+      });
+      if ('refused' in verdict) {
         throw verdict.refused === 'macros' ? macros() : wrongType(ctx.accept);
+      }
       return verdict.mime;
     }
-    const { fileTypeFromBuffer } = await import('file-type');
-    const found = await fileTypeFromBuffer(head);
-    const mime = found?.mime === 'image/heif' ? 'image/heic' : found?.mime;
-    if (!mime || !uploadRequestTypes('standard').includes(mime)) throw wrongType(ctx.accept);
-    return mime;
+    return this.photoOrPdf(head, ctx.accept);
   }
 
   /**
@@ -1489,6 +1564,30 @@ const filesUsedUp = (max: number) =>
     'files_used_up',
     `This request takes ${max} ${max === 1 ? 'file' : 'files'}, and that many have been sent.`,
   );
+
+/** A zip's first bytes: a local file header. */
+const isZip = (head: Buffer) => head.length >= 4 && head.readUInt32LE(0) === 0x04034b50;
+
+/** The cap a file of `bytes` passed, in words: the household's, the request's, or its own. */
+function tooBigFor(
+  limits: { file: number; request: number; household: number },
+  bytes: number,
+  maxTotal: number,
+  reserved?: number,
+): ApiError {
+  if (bytes > limits.household) {
+    return tooLarge('The vault cannot take any more files just now. Ask whoever sent the link.');
+  }
+  if (bytes > limits.request) {
+    return tooLarge(
+      `That file would take this request past the ${megabytes(maxTotal)} it can take in all.`,
+    );
+  }
+  if (bytes > limits.file || reserved === undefined) {
+    return tooLarge(`That file is too big: one file can be ${megabytes(limits.file)} at most.`);
+  }
+  return tooLarge('That file is longer than its upload said it would be.');
+}
 
 function megabytes(n: number): string {
   const mb = n / (1024 * 1024);

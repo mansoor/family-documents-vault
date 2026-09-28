@@ -520,6 +520,12 @@ const GUARDS = [
     table: 'incoming_file',
     fn: 'incoming_file_upload_writes',
   },
+  // A request's address is cleared by whatever ends it (0044).
+  {
+    name: 'upload_request_ended_forgets',
+    table: 'upload_request',
+    fn: 'upload_request_forgets_address',
+  },
 ];
 
 /**

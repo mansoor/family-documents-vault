@@ -231,6 +231,18 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       ).rows[0]?.id as string;
     const live = await request(false);
     const takenBack = await request(true);
+    // Used up with its address still there, as a backup from before its last
+    // visit cleared it would bring it back: an insert, which no trigger sees.
+    const usedUp = (
+      await admin.query<{ id: string }>(
+        `insert into upload_request
+           (household_id, created_by, requester_member_id, title, token_hash, expires_at,
+            recipient_email, max_visits, visits_used)
+         values ($1, $2, $3, 'Tax', $4, now() + interval '1 day', 'jane@example.test', 1, 1)
+         returning id`,
+        [hh, account, member, Buffer.from(randomUUID())],
+      )
+    ).rows[0]?.id as string;
     const file = async (name: string, created: Date) => {
       const key = `${hh}/incoming/${live}/${name}.enc`;
       await mkdir(path.dirname(path.join(root, key)), { recursive: true });
@@ -263,6 +275,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
     expect(Object.fromEntries(emails.rows.map((e) => [e.id, e.recipient_email]))).toEqual({
       [live]: 'jane@example.test',
       [takenBack]: null,
+      [usedUp]: null,
     });
   });
 });

@@ -765,17 +765,32 @@ export function createApi(http: Http) {
         method: 'POST',
         body: { token: linkToken, ...secrets },
       }),
-    dropSession: () => request<DropSession>('/api/v1/drop/session'),
-    /** Where a file is sent, multipart: an optional `item_id`, then `file`. */
+    // Inside an opened request, the page names it (its `request_id`): a
+    // browser may have two open, each with its own session cookie.
+    dropSession: (requestId: string) =>
+      request<DropSession>('/api/v1/drop/session', { headers: dropHeaders(requestId) }),
+    /**
+     * Where a file is sent, multipart: an optional `item_id`, then `file`,
+     * with `X-FDV-Drop-Request` (`dropHeaders`).
+     */
     dropFilesUrl: () => http.url('/api/v1/drop/files'),
-    dropRemoveFile: (id: string) =>
-      request<void>(`/api/v1/drop/files/${enc(id)}`, { method: 'DELETE' }),
-    dropFinish: (note?: string) =>
+    dropRemoveFile: (requestId: string, id: string) =>
+      request<void>(`/api/v1/drop/files/${enc(id)}`, {
+        method: 'DELETE',
+        headers: dropHeaders(requestId),
+      }),
+    dropFinish: (requestId: string, note?: string) =>
       request<DropFinished>('/api/v1/drop/finish', {
         method: 'POST',
         body: note ? { note } : {},
+        headers: dropHeaders(requestId),
       }),
   };
+}
+
+/** Which request a sender's call is about (0.5.21): the `request_id` Open answered. */
+export function dropHeaders(requestId: string): Record<string, string> {
+  return { 'x-fdv-drop-request': requestId };
 }
 
 export type Api = ReturnType<typeof createApi>;

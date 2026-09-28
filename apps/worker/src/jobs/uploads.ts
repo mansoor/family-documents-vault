@@ -123,6 +123,11 @@ export async function pruneUploads(
             eb('revoked_at', 'is not', null),
             eb('closed_at', 'is not', null),
             eb('attempts', '>=', 10),
+            // Used up: nothing gives a request more visits.
+            eb.and([
+              eb('max_visits', 'is not', null),
+              eb('visits_used', '>=', eb.ref('max_visits')),
+            ]),
           ]),
         )
         .execute();

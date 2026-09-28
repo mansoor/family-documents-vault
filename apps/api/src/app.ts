@@ -183,6 +183,17 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     // is the caller's mistake, not the server's: 22021 in text, 22P05 in
     // JSON.
     const pgCode = (err as { code?: unknown }).code;
+    // Two requests that got in each other's way (a deadlock, or a
+    // serialization failure): nothing was done, and the next try works.
+    if (pgCode === '40P01' || pgCode === '40001') {
+      const busy = new ApiError(503, 'busy', 'The vault was busy just then. Try again.', {
+        retriable: true,
+        retryAfter: 1,
+      });
+      void reply.header('retry-after', '1');
+      void reply.status(503).send(busy.toBody(req.id));
+      return;
+    }
     if (pgCode === '22021' || pgCode === '22P05') {
       const refused = new ApiError(
         422,

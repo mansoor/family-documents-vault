@@ -483,6 +483,8 @@ export interface Schema {
     original_name: string;
     mime: string | null;
     byte_size: ColumnType<string | number | null, number | null | undefined, number | null>;
+    /** The room it holds while it arrives, against the caps (incoming_room()). */
+    reserved_bytes: ColumnType<string | number, number | undefined, number>;
     sha256: Buffer | null;
     cipher_bytes: ColumnType<string | number | null, number | null | undefined, number | null>;
     cipher_sha256: Buffer | null;
