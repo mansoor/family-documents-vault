@@ -219,7 +219,9 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
   let teens: string;
 
   beforeAll(async () => {
-    h = await createHarness();
+    // The family's calls all come from one address, and this file makes more
+    // than 300 of them a minute on a fast runner (CI, PR #72).
+    h = await createHarness({ rateLimitPerMinute: 100_000 });
     t.owner = await h.setup();
     t.adult = await h.join(t.owner, { name: 'Alex', email: 'alex@example.test', role: 'adult' });
     t.teen = await h.join(t.owner, { name: 'Tia', email: 'tia@example.test', role: 'teen' });
