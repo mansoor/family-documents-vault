@@ -1,5 +1,6 @@
 import { withPrincipal, type Db, type Role, type Visibility } from '@fdv/db';
 import {
+  can,
   canSee,
   canSeeCollection,
   describeEvents,
@@ -34,6 +35,8 @@ const PAGE = 50;
 export interface Reader {
   role: Role;
   memberId: string;
+  /** Their sign-in: a link they made is theirs to read of (5.19 review). */
+  accountId?: string;
 }
 
 /**
@@ -49,6 +52,12 @@ export interface Line {
   document_owner: string | null;
   collection_audience?: string | null;
   collection_owner?: string | null;
+  /**
+   * A collection's link the line is about (5.19 review): who made it, and
+   * whether the reader can see every document it was made with or has
+   * followed. Null when there is no such link to be found.
+   */
+  link?: { made_by: string; all_seen: boolean } | null;
 }
 
 type Audience = (reader: Reader, line: Line) => boolean;
@@ -85,6 +94,23 @@ const seesTheCollection: Audience = (reader, line) =>
  */
 const seesTheDocumentInTheCollection: Audience = (reader, line) =>
   seesTheDocument(reader, line) && seesTheCollection(reader, line);
+
+/**
+ * A collection's link outside the family (5.19 review, C519-04): its lines
+ * say who it went to, so they are for those the list of links (GET /shares)
+ * gives it to — one who may share, and made it or can see every document
+ * it was made with or has followed — as well as the collection's audience.
+ */
+const knowsTheLink: Audience = (reader, line) =>
+  can(reader.role, 'document.share') &&
+  line.link != null &&
+  (line.link.made_by === reader.accountId || line.link.all_seen);
+
+const seesTheCollectionsLink: Audience = (reader, line) =>
+  seesTheCollection(reader, line) && knowsTheLink(reader, line);
+
+const seesTheDocumentFollowTheLink: Audience = (reader, line) =>
+  seesTheDocumentInTheCollection(reader, line) && knowsTheLink(reader, line);
 
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
@@ -132,8 +158,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 5.18: a view-only link's pages looked at, once a session.
   ['share.viewed', BY_TYPE],
   // 5.19: a document put in a collection whose link keeps up with it, and
-  // so sent outside the family: a line about the document, in the collection.
-  ['share.followed', seesTheDocumentInTheCollection],
+  // so sent outside the family: a line about the document, in the collection,
+  // on the link — for those who may know of the link.
+  ['share.followed', seesTheDocumentFollowTheLink],
   // people
   ['member.added', BY_TYPE],
   ['member.role_changed', BY_TYPE],
@@ -195,9 +222,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
 const TYPES: ReadonlyMap<string | null, Audience> = new Map<string | null, Audience>([
   ['document', seesTheDocument],
   // 5.19: a link to a collection — made, opened, taken back, locked, turned
-  // back on — is its collection's line, for whoever may see the collection.
-  // The collection's own actions (collection.*) keep their rows above.
-  ['collection', seesTheCollection],
+  // back on — is its collection's line, for whoever in the collection's
+  // audience the list of links gives the link to (the 5.19 review). The
+  // collection's own actions (collection.*) keep their rows above.
+  ['collection', seesTheCollectionsLink],
   ['member', everyone],
   ['invitation', everyone],
   ['owner_change_request', everyone],
@@ -305,11 +333,14 @@ export class AuditService {
       `.execute(trx);
 
       const rows = result.rows.slice(0, limit);
+      const links = await this.collectionLinks(trx, p, rows);
       const events: ActivityEvent[] = [];
       for (const r of rows) {
         // A private document belongs to one person, and so does every line
         // about it; a line nobody has said the audience of is nobody's.
-        if (!shownTo(p, r)) continue;
+        const id = collectionLinkOf(r);
+        const line: Line = id === undefined ? r : { ...r, link: links.get(id) ?? null };
+        if (!shownTo(p, line)) continue;
         events.push({
           id: Number(r.id),
           at: r.at.toISOString(),
@@ -337,4 +368,56 @@ export class AuditService {
       };
     });
   }
+
+  /**
+   * The collections' links the page's lines are about: who made each, and
+   * whether the reader can see every document it was made with or has
+   * followed (not what it was made without) — as GET /shares asks.
+   */
+  private async collectionLinks(
+    trx: Db,
+    p: Principal,
+    rows: Row[],
+  ): Promise<Map<string, { made_by: string; all_seen: boolean }>> {
+    const found = new Map<string, { made_by: string; all_seen: boolean }>();
+    const ids = [
+      ...new Set(rows.map(collectionLinkOf).filter((id): id is string => id !== undefined)),
+    ];
+    if (ids.length === 0 || !can(p.role, 'document.share')) return found;
+    const made = await trx
+      .selectFrom('share_link')
+      .select(['id', 'created_by'])
+      .where('id', 'in', ids)
+      .where('collection_id', 'is not', null)
+      .execute();
+    for (const l of made) found.set(l.id, { made_by: l.created_by, all_seen: true });
+    const items = await trx
+      .selectFrom('share_link_item as t')
+      .innerJoin('document as d', 'd.id', 't.document_id')
+      .select(['t.share_id', 'd.visibility', 'd.owner_member_id'])
+      .where('t.share_id', 'in', ids)
+      .where('t.kind', 'in', ['ticked', 'followed'])
+      .execute();
+    for (const i of items) {
+      const link = found.get(i.share_id);
+      if (link && !canSee(p, i)) link.all_seen = false;
+    }
+    return found;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The collection's link a line is about, by the id in its detail — a link
+ * to a collection made, opened, taken back…, or a document that followed
+ * one — or undefined for any other line.
+ */
+function collectionLinkOf(r: Row): string | undefined {
+  const about =
+    (r.object_type === 'collection' && r.action.startsWith('share.')) ||
+    r.action === 'share.followed';
+  if (!about) return undefined;
+  const id = (r.detail as { share_id?: unknown } | null)?.share_id;
+  return typeof id === 'string' && UUID.test(id) ? id.toLowerCase() : '';
 }

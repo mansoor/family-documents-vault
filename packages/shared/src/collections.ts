@@ -1,5 +1,5 @@
 import type { DocumentView } from './documents.js';
-import type { CollectionAudience } from './roles.js';
+import type { CollectionAudience, Role } from './roles.js';
 
 /**
  * Collections of documents (5.14), as the API answers them.
@@ -56,9 +56,11 @@ export interface CollectionSharedOutside {
 /**
  * The warning beside a collection shared outside, where documents are put
  * in it (5.19): "This collection is shared with Jane Smith", and whether
- * what goes in now goes to them too.
+ * what goes in now goes to them too. Only what an owner or an adult puts in
+ * a collection follows its link (the 5.19 review): a teen, `role`, is told
+ * that what they put in stays in the family.
  */
-export function sharedOutsideWords(shared: CollectionSharedOutside): string {
+export function sharedOutsideWords(shared: CollectionSharedOutside, role?: Role | null): string {
   const names = shared.with.filter((n) => n.trim() !== '');
   const whom =
     names.length === 0
@@ -66,9 +68,10 @@ export function sharedOutsideWords(shared: CollectionSharedOutside): string {
       : names.length === 1
         ? `This collection is shared with ${names[0]}`
         : `This collection is shared with ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-  return shared.following
+  if (!shared.following) return `${whom}. What you put in it now is not sent.`;
+  return role === 'owner' || role === 'adult' || role == null
     ? `${whom}. What you put in it goes to them too, if everybody the collection is for may see it.`
-    : `${whom}. What you put in it now is not sent.`;
+    : `${whom}. What you put in it stays in the family: only what an owner or an adult puts in goes to them.`;
 }
 
 export interface CollectionItemView {

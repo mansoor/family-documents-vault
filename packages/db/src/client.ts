@@ -217,6 +217,14 @@ export interface Schema {
      * later, for the whole of its audience (0042, A19): 30 days at most.
      */
     follow_collection: ColumnType<boolean, boolean | undefined, never>;
+    /** The collection's audience as a following link was made (0042): what follows must fit it. */
+    follow_audience: ColumnType<
+      'everyone' | 'teens' | 'adults' | null,
+      'everyone' | 'teens' | 'adults' | null | undefined,
+      never
+    >;
+    /** A collection's link ended with its collection: made Only me, or deleted (0042). */
+    revoked_why: 'collection_only_me' | 'collection_deleted' | null;
     token_hash: Buffer;
     pin_hash: string | null;
     recipient_label: string | null;
@@ -260,6 +268,16 @@ export interface Schema {
     collection_id: string;
     document_id: string;
     position: number;
+    /**
+     * Ticked as the link was made; followed, decided as it was put in the
+     * collection later; left out, in it as the link was made and not
+     * ticked, so that it never follows (0042, the 5.19 review).
+     */
+    kind: ColumnType<
+      'ticked' | 'followed' | 'left_out',
+      'ticked' | 'followed' | 'left_out' | undefined,
+      never
+    >;
   };
 
   /**

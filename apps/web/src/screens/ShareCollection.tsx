@@ -22,9 +22,10 @@ import { HandOver, LinkOptions, readLinkOptions, useLinkOptions } from './Share.
  * says so and is never ticked for them. Only what is ticked goes — the rest
  * stays in the family, and nothing tells the other end it is there — and
  * each is checked again every time the link is used. Then a link's options
- * (5.18), and whether it keeps up with the collection: what is put in it
- * later goes too, if everybody it is for may see it, and such a link lasts
- * 30 days at most. Making it always asks to confirm it's you.
+ * (5.18), and whether it keeps up with the collection: what an owner or an
+ * adult puts in it later goes too, if everybody it is for may see it —
+ * decided once, as it goes in, never for what was left unticked — and such
+ * a link lasts 30 days at most. Making it always asks to confirm it's you.
  */
 
 /**
@@ -149,11 +150,8 @@ export function ShareCollectionPanel(props: {
               const id = `share-item-${i.document_id}`;
               return (
                 <li key={i.document_id} className="share-item">
-                  <label
-                    htmlFor={id}
-                    className="row"
-                    style={{ gap: 8, alignItems: 'start', flexWrap: 'nowrap' }}
-                  >
+                  {/* The app's box (`.check`): beside the start of its label. */}
+                  <div className="check">
                     <input
                       ref={i.document_id === firstOpen ? firstBox : undefined}
                       id={id}
@@ -165,11 +163,11 @@ export function ShareCollectionPanel(props: {
                         setChosen((c) => ({ ...c, [i.document_id]: e.target.checked }))
                       }
                     />
-                    <span className="stack" style={{ gap: 2 }}>
+                    <label htmlFor={id}>
                       <span>{i.title ?? 'A document'}</span>
                       {i.type_label && <span className="muted">{i.type_label}</span>}
-                    </span>
-                  </label>
+                    </label>
+                  </div>
                   {i.reason && (
                     <span
                       id={`${id}-why`}
@@ -196,23 +194,27 @@ export function ShareCollectionPanel(props: {
 
       {loaded && (
         <>
-          <label className="row" style={{ gap: 8, alignItems: 'start', flexWrap: 'nowrap' }}>
-            <input
-              ref={followBox}
-              type="checkbox"
-              checked={follow}
-              disabled={busy}
-              onChange={(e) => setFollow(e.target.checked)}
-              aria-describedby="share-follow-note"
-            />
-            <span className="stack" style={{ gap: 2 }}>
-              <span>Keep it up to date</span>
-              <span id="share-follow-note" className="muted">
-                What you put in the collection later goes too, if everybody it is for may see it —
-                never a private document. A link that keeps up lasts {FOLLOW_MAX_DAYS} days at most.
-              </span>
-            </span>
-          </label>
+          {/* Named by its label alone, and explained by the note beside it,
+              once (W519-5). */}
+          <div className="stack share-follow" style={{ gap: 2 }}>
+            <div className="check">
+              <input
+                ref={followBox}
+                id="share-follow"
+                type="checkbox"
+                checked={follow}
+                disabled={busy}
+                onChange={(e) => setFollow(e.target.checked)}
+                aria-describedby="share-follow-note"
+              />
+              <label htmlFor="share-follow">Keep it up to date</label>
+            </div>
+            <p id="share-follow-note" className="muted share-follow-note">
+              What an owner or an adult puts in the collection later goes too, if everybody it is
+              for may see it — never a private document, nor anything in it now that you leave
+              unticked. A link that keeps up lasts {FOLLOW_MAX_DAYS} days at most.
+            </p>
+          </div>
 
           <LinkOptions
             options={options}

@@ -1,5 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { SharePage } from './screens/SharePage.js';
@@ -19,6 +21,14 @@ import {
  * links in Settings → Sharing, and the warning where documents are put in a
  * collection that is shared.
  */
+
+/** The web's stylesheet, read from disk: under Vitest an import of it is empty. */
+const CSS = (() => {
+  const file = ['src/styles.css', 'apps/web/src/styles.css']
+    .map((p) => resolve(process.cwd(), p))
+    .find((p) => existsSync(p));
+  return file ? readFileSync(file, 'utf8') : '';
+})();
 
 beforeEach(() => {
   localStorage.clear();
@@ -327,5 +337,87 @@ describe('sharing a collection (5.19)', () => {
     );
     const quiet = within(sheet).getByText('Quiet').closest('li') as HTMLElement;
     expect(quiet).not.toHaveTextContent(/shared/);
+    // Heard with the Add button itself, not only read around it (W519-3).
+    expect(
+      within(sheet).getByRole('button', { name: 'Add to “For the broker”' }),
+    ).toHaveAccessibleDescription(
+      'This collection is shared with Jane Smith. What you put in it goes to them too, if everybody the collection is for may see it.',
+    );
+    expect(
+      within(sheet).getByRole('button', { name: 'Add to “Quiet”' }),
+    ).not.toHaveAccessibleDescription();
+  });
+
+  it('a teen is told what they put in a shared collection stays in the family (C519-02)', async () => {
+    at(
+      `/documents/${PASSPORT.id}`,
+      {
+        collections: [
+          {
+            ...BROKER,
+            audience: 'everyone',
+            items: [],
+            shared_outside: { with: [], following: true },
+          },
+        ],
+      },
+      'teen',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to a collection' }));
+    const sheet = await screen.findByRole('dialog', {
+      name: "Add “Mansoor's passport” to a collection",
+    });
+    const said =
+      'This collection is shared outside the family. What you put in it stays in the family: only what an owner or an adult puts in goes to them.';
+    expect(await within(sheet).findByText(said)).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole('button', { name: 'Add to “For the broker”' }),
+    ).toHaveAccessibleDescription(said);
+  });
+
+  it('Keep it up to date is named once, and explained once (W519-5)', async () => {
+    at(`/collections/${BROKER.id}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Share “For the broker”' });
+    const follow = await within(sheet).findByRole('checkbox', { name: 'Keep it up to date' });
+    expect(follow).toHaveAccessibleName('Keep it up to date');
+    expect(follow).toHaveAccessibleDescription(
+      /^What an owner or an adult puts in the collection later goes too/,
+    );
+  });
+
+  it('every box in the share sheets sits beside the start of its label, as the app’s other boxes do', async () => {
+    // The app's box: `.check`, the box and then its label, side by side and
+    // never wrapped onto a line of its own (5.18's PIN row on a phone).
+    const css = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = /(?:^|\})\s*\.check\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/display:\s*flex/);
+    expect(rule).not.toMatch(/flex-wrap:\s*wrap/);
+    // And the box keeps its size beside a long label that wraps (the PIN's).
+    const box = /(?:^|\})\s*\.check input\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(box).toMatch(/flex:\s*none|flex-shrink:\s*0/);
+    const boxesBesideLabels = (root: HTMLElement) => {
+      const boxes = within(root).getAllByRole('checkbox');
+      expect(boxes.length).toBeGreaterThan(0);
+      for (const box of boxes) {
+        const row = box.parentElement as HTMLElement;
+        expect(row.className, box.id).toMatch(/\bcheck\b/);
+        const label = box.nextElementSibling as HTMLElement | null;
+        expect(label?.tagName, box.id).toBe('LABEL');
+        expect(label?.getAttribute('for'), box.id).toBe(box.id);
+      }
+    };
+    // A collection's sheet: the documents, Keep it up to date and the PIN.
+    at(`/collections/${BROKER.id}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Share “For the broker”' });
+    await within(sheet).findByRole('checkbox', { name: /Keep it up to date/ });
+    boxesBesideLabels(sheet);
+    cleanup();
+    // A document's: the PIN.
+    at(`/documents/${PASSPORT.id}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
+    const pin = await screen.findByRole('checkbox', { name: /Also ask for a four-digit PIN/ });
+    boxesBesideLabels(pin.closest('section') as HTMLElement);
   });
 });

@@ -450,9 +450,16 @@ export class CollectionService {
       // In the order asked, by the rows' own ids.
       const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
       const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
-      // Its links that keep up with it (5.19): what goes in now, and is for
-      // the whole of its audience, goes out on each, and the log says so.
-      const following = await this.linksOf(trx, collection.id, { following: true });
+      // Its links that keep up with it (5.19): each decides once, here, as a
+      // document goes in, whether it goes out too — and the log says so.
+      // What is decided is written down, and a link gives nothing else
+      // (the 5.19 review): nothing that changes later sends out anything
+      // more. Only what an owner or an adult puts in follows; a teen's
+      // stays in the family.
+      const following =
+        p.role === 'owner' || p.role === 'adult'
+          ? await this.linksOf(trx, collection.id, { following: true })
+          : [];
 
       const last = await trx
         .selectFrom('doc_collection_item')
@@ -484,8 +491,28 @@ export class CollectionService {
           detail: { collection_id: collection.id },
           ip: meta.ip,
         });
+        // For the whole of the collection's audience now, and of the one
+        // the link was made for — never private (neither gives it).
         if (!withinCollectionAudience(collection.audience, visibility)) continue;
         for (const link of following) {
+          if (!link.follow_audience) continue;
+          if (!withinCollectionAudience(link.follow_audience, visibility)) continue;
+          // Once: a document the link was made with, or without (left out),
+          // or has followed before, is not decided again.
+          const followed = await trx
+            .insertInto('share_link_item')
+            .values({
+              share_id: link.id,
+              household_id: p.householdId,
+              collection_id: collection.id,
+              document_id: documentId,
+              position,
+              kind: 'followed',
+            })
+            .onConflict((oc) => oc.columns(['share_id', 'document_id']).doNothing())
+            .returning('document_id')
+            .executeTakeFirst();
+          if (!followed) continue;
           await appendAudit(trx, {
             householdId: p.householdId,
             actorAccountId: p.accountId,
@@ -676,6 +703,7 @@ export class CollectionService {
         's.collection_id',
         's.recipient_label',
         's.follow_collection',
+        's.follow_audience',
         's.created_by',
       ])
       .where('s.collection_id', 'in', ids)
@@ -715,6 +743,7 @@ export class CollectionService {
           'in',
           links.map((l) => l.id),
         )
+        .where('t.kind', 'in', ['ticked', 'followed'])
         .execute();
       for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
     }
@@ -742,9 +771,13 @@ export class CollectionService {
     why: 'collection_deleted' | 'collection_only_me',
     meta: RequestMeta,
   ): Promise<void> {
+    // Called after the change is in the log: appendAudit has taken the
+    // household's log lock, which a link being made takes too before it
+    // looks at the collection again (C519-07). Made first, it is here to
+    // be ended; made after, it finds the collection Only me, or deleted.
     const ended = await trx
       .updateTable('share_link')
-      .set({ revoked_at: new Date(), revoked_by: p.accountId })
+      .set({ revoked_at: new Date(), revoked_by: p.accountId, revoked_why: why })
       .where('collection_id', '=', collectionId)
       .where('revoked_at', 'is', null)
       .where('expires_at', '>', new Date())

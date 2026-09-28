@@ -265,6 +265,8 @@ type LinkRow = {
   document_id: string | null;
   collection_id: string | null;
   follow_collection: boolean;
+  /** The audience a following link was made for (the 5.19 review): what follows must fit it. */
+  follow_audience: 'everyone' | 'teens' | 'adults' | null;
   recipient_label: string | null;
   created_by: string;
   created_at: Date;
@@ -766,6 +768,10 @@ export class ShareService {
           document_id: null,
           collection_id: c.id,
           follow_collection: follow,
+          // What follows must fit the audience it was made for, as well as
+          // the collection's then: narrowing only takes away (5.19 review).
+          // (An Only me collection was refused above: it goes nowhere.)
+          follow_audience: follow && c.audience !== 'only_me' ? c.audience : null,
           token_hash: hashToken(token),
           pin_hash: pinHash,
           recipient_label: input.recipient_label ?? null,
@@ -777,18 +783,40 @@ export class ShareService {
         })
         .returning('id')
         .executeTakeFirstOrThrow();
-      if (found.length) {
+      // A link that keeps up with its collection keeps, too, what was in it
+      // and was not ticked — whoever may see it — so that it never follows,
+      // however it is taken out and put back (5.19 review): only what is
+      // put in afterwards, and was never in it as the link was made, can.
+      const leftOut = follow
+        ? (
+            await trx
+              .selectFrom('doc_collection_item')
+              .select(['document_id', 'position'])
+              .where('collection_id', '=', c.id)
+              .execute()
+          ).filter((i) => !found.some((d) => d.id === i.document_id))
+        : [];
+      if (found.length || leftOut.length) {
         await trx
           .insertInto('share_link_item')
-          .values(
-            found.map((d) => ({
+          .values([
+            ...found.map((d) => ({
               share_id: row.id,
               household_id: p.householdId,
               collection_id: c.id,
               document_id: d.id,
               position: d.position,
+              kind: 'ticked' as const,
             })),
-          )
+            ...leftOut.map((i) => ({
+              share_id: row.id,
+              household_id: p.householdId,
+              collection_id: c.id,
+              document_id: i.document_id,
+              position: i.position,
+              kind: 'left_out' as const,
+            })),
+          ])
           .execute();
       }
       // About the collection, for whoever may see it; the documents that
@@ -813,6 +841,18 @@ export class ShareService {
         },
         ip: meta.ip,
       });
+      // The collection read again, now that the household's log is held: a
+      // maker making it Only me, or deleting it, holds the log too as it
+      // takes its links back, so one made meanwhile is seen here, or is
+      // there for that to take back (C519-07). Made Only me, or gone, the
+      // link is not made.
+      const still = await trx
+        .selectFrom('doc_collection')
+        .select(['audience', 'deleted_at'])
+        .where('id', '=', c.id)
+        .executeTakeFirst();
+      if (!still || still.deleted_at !== null) throw noCollection();
+      if (still.audience === 'only_me') throw onlyMeStaysHome();
       // Its maker is told when somebody else shares their collection (A19).
       const maker =
         c.owner_member_id && c.owner_member_id !== p.memberId
@@ -910,6 +950,13 @@ export class ShareService {
             .onRef('account_household.household_id', '=', 'share_link.household_id'),
         )
         .leftJoin('member', 'member.id', 'account_household.member_id')
+        // Who took it back, by name (W519-1): the list says it to others.
+        .leftJoin('account_household as revoker', (j) =>
+          j
+            .onRef('revoker.account_id', '=', 'share_link.revoked_by')
+            .onRef('revoker.household_id', '=', 'share_link.household_id'),
+        )
+        .leftJoin('member as revoker_member', 'revoker_member.id', 'revoker.member_id')
         .select([
           'share_link.id',
           'share_link.document_id',
@@ -920,6 +967,9 @@ export class ShareService {
           'share_link.created_at',
           'share_link.expires_at',
           'share_link.revoked_at',
+          'share_link.revoked_by',
+          'share_link.revoked_why',
+          'revoker_member.display_name as revoked_by_name',
           'share_link.open_count',
           'share_link.last_opened_at',
           'share_link.attempts',
@@ -947,8 +997,9 @@ export class ShareService {
         .select('timezone')
         .executeTakeFirstOrThrow();
       const reader = { role: p.role, memberId: p.memberId };
-      // What each collection's link was made with: the reader must be able
-      // to see every one of them, or it is not theirs to know about.
+      // What each collection's link was made with, and has followed: the
+      // reader must be able to see every one of them, or it is not theirs
+      // to know about. (What it was made without, left out, is not.)
       const collectionLinks = rows.filter((r) => r.collection_id !== null).map((r) => r.id);
       const unseen = new Set<string>();
       if (collectionLinks.length) {
@@ -957,6 +1008,7 @@ export class ShareService {
           .innerJoin('document', 'document.id', 'share_link_item.document_id')
           .select(['share_link_item.share_id', 'document.visibility', 'document.owner_member_id'])
           .where('share_link_item.share_id', 'in', collectionLinks)
+          .where('share_link_item.kind', 'in', ['ticked', 'followed'])
           .execute();
         for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
       }
@@ -1013,7 +1065,7 @@ export class ShareService {
                   state === 'active' ? p.householdId : undefined,
                 )
               : null,
-          summary: summarise(r, state, household.timezone),
+          summary: summarise(r, state, household.timezone, p.accountId),
           created_by: r.created_by,
         });
       }
@@ -1134,6 +1186,7 @@ export class ShareService {
             .innerJoin('document', 'document.id', 'share_link_item.document_id')
             .select(['document.visibility', 'document.owner_member_id'])
             .where('share_link_item.share_id', '=', id)
+            .where('share_link_item.kind', 'in', ['ticked', 'followed'])
             .execute();
           if (items.some((i) => !canSee(reader, i))) throw notFound('That link');
         }
@@ -2018,30 +2071,33 @@ export class ShareService {
 
   /**
    * The documents a live link gives now, in order. A document's: its own. A
-   * collection's (5.19): each document in the collection now, out of the
-   * Trash, with a file, that its sharer can see — and that they ticked, or,
-   * for a link that follows the collection, that was put in it after the
-   * link was made and is for all of its audience (A19). Never a count of
-   * the rest. The database asks the same (app_link_documents(), 0042), and
-   * gives the link no row of anything else.
+   * collection's (5.19): each document of its snapshot — ticked as it was
+   * made, or followed, decided as it was put in the collection (the 5.19
+   * review) — that is in the collection now, out of the Trash, with a file,
+   * and one its sharer can see; one that followed only while it is still
+   * for the whole of the audience the link was made for and of the
+   * collection's now. Nothing is decided here: every check only takes
+   * away. Never a count of the rest. The database asks the same
+   * (app_link_documents(), 0042), and gives the link no row of anything else.
    */
   private async liveItems(trx: Db, link: Live): Promise<string[]> {
     if (link.document_id !== null) return [link.document_id];
     const collection = link.collection;
     if (!collection) return [];
-    const ticked = new Set(
+    const snapshot = new Map(
       (
         await trx
           .selectFrom('share_link_item')
-          .select('document_id')
+          .select(['document_id', 'kind'])
           .where('share_id', '=', link.id)
+          .where('kind', 'in', ['ticked', 'followed'])
           .execute()
-      ).map((t) => t.document_id),
+      ).map((t) => [t.document_id, t.kind]),
     );
     const rows = await trx
       .selectFrom('doc_collection_item as i')
       .innerJoin('document as d', 'd.id', 'i.document_id')
-      .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at', 'i.added_at'])
+      .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at'])
       .select((eb) =>
         eb
           .exists(
@@ -2058,16 +2114,16 @@ export class ShareService {
       .execute();
     const sharer = { role: link.maker.role, memberId: link.maker.member_id };
     return rows
-      .filter(
-        (d) =>
-          d.deleted_at === null &&
-          d.has_file &&
-          canSee(sharer, d) &&
-          (ticked.has(d.id) ||
-            (link.follow_collection &&
-              d.added_at.getTime() > link.created_at.getTime() &&
-              withinCollectionAudience(collection.audience, d.visibility))),
-      )
+      .filter((d) => {
+        const kind = snapshot.get(d.id);
+        if (!kind || d.deleted_at !== null || !d.has_file || !canSee(sharer, d)) return false;
+        return (
+          kind === 'ticked' ||
+          (link.follow_audience !== null &&
+            withinCollectionAudience(collection.audience, d.visibility) &&
+            withinCollectionAudience(link.follow_audience, d.visibility))
+        );
+      })
       .map((d) => d.id);
   }
 
@@ -2150,9 +2206,13 @@ function summarise(
     flow: Flow;
     expires_at: Date;
     follow_collection?: boolean;
+    revoked_by?: string | null;
+    revoked_by_name?: string | null;
+    revoked_why?: 'collection_only_me' | 'collection_deleted' | null;
   },
   state: ShareView['state'],
   timezone: string,
+  reader: string,
 ): string {
   const who = r.recipient_label ? `Shared with ${r.recipient_label}` : 'Shared by link';
   const uses = shareUses(r);
@@ -2167,10 +2227,32 @@ function summarise(
     case 'expired':
       return `${who}, ${opened}. Expired on ${end}.`;
     case 'revoked':
-      return `${who}, ${opened}. You took this link back.`;
+      return `${who}, ${opened}. ${takenBack(r, reader)}`;
     case 'locked':
       return `${who}. The PIN was wrong too many times, so it stopped working.`;
     case 'paused':
       return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
   }
+}
+
+/**
+ * Why a link stopped, said to whoever reads the list (5.19 review, W519-1):
+ * a collection's link that ended with its collection says so; otherwise the
+ * one who took it back is "You" only to themselves, and named to the rest.
+ */
+function takenBack(
+  r: {
+    revoked_by?: string | null;
+    revoked_by_name?: string | null;
+    revoked_why?: 'collection_only_me' | 'collection_deleted' | null;
+  },
+  reader: string,
+): string {
+  if (r.revoked_why === 'collection_only_me') {
+    return 'It stopped when the collection was made Only me.';
+  }
+  if (r.revoked_why === 'collection_deleted') return 'It stopped when the collection was deleted.';
+  if (r.revoked_by && r.revoked_by === reader) return 'You took this link back.';
+  if (r.revoked_by_name) return `${r.revoked_by_name} took this link back.`;
+  return 'It was taken back.';
 }

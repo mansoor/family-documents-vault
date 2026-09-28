@@ -1166,9 +1166,10 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       t.adminUrl,
       `update share_link set paused_at = null, paused_reason = null where id = '${theCollections?.id}'`,
     );
-    // Its share, its line and its collection. (The documents seeded here
-    // have no file, and a collection's link gives none without one.)
-    expect(await reach(theCollections)).toBe(3);
+    // Its share and its collection. (The documents seeded here have no
+    // file, and a collection's link gives none without one — nor, since the
+    // 5.19 review, the line of one it does not give.)
+    expect(await reach(theCollections)).toBe(2);
   }, 60_000);
 
   it("a household's collections come back, and an Only me collection is still its maker's alone (0036)", async () => {

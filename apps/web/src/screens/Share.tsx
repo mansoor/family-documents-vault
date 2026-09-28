@@ -431,14 +431,19 @@ export function LinkOptions(props: {
         </span>
       </div>
 
-      <label className="row" style={{ gap: 8, alignItems: 'start', flexWrap: 'nowrap' }}>
+      {/* The app's box (`.check`): beside the start of its label, never
+          wrapped onto a line of its own on a phone. */}
+      <div className="check">
         <input
+          id="share-pin"
           type="checkbox"
           checked={value.withPin}
           onChange={(e) => options.set({ withPin: e.target.checked })}
         />
-        <span>Also ask for a four-digit PIN, which you tell them separately</span>
-      </label>
+        <label htmlFor="share-pin">
+          Also ask for a four-digit PIN, which you tell them separately
+        </label>
+      </div>
     </>
   );
 }
@@ -519,8 +524,8 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
         )}
         {share.follow_collection && (
           <li>
-            It keeps up with the collection: what you put in it goes too, if everybody the
-            collection is for may see it.
+            It keeps up with the collection: what an owner or an adult puts in it goes too, if
+            everybody the collection is for may see it.
           </li>
         )}
       </ul>

@@ -16,9 +16,18 @@
 --               given: nothing says it was there.
 --
 -- A link that follows its collection (follow_collection, A19) also gives
--- what is put in the collection after it was made — only what the whole of
--- the collection's audience may see, which a private document never is.
--- Such a link lasts 30 days at most.
+-- what is put in the collection after it was made. Whether a document
+-- follows is decided once, as it is put in (the 5.19 review), and written
+-- into the link's snapshot as `followed` — never worked out again at each
+-- request, where narrowing the collection or widening a document would
+-- send out what was held back. It follows only when an owner or an adult
+-- puts it in (a teen's never go outside, A18), it is not private, the whole
+-- of the audience the link was made for (follow_audience) and of the
+-- collection's audience now may see it, and it was not in the collection
+-- when the link was made (what the sharer left unticked is kept as
+-- `left_out`, and never follows, however it is taken out and put back).
+-- Every request still checks each one as it is now, and a later change only
+-- ever takes away. Such a link lasts 30 days at most.
 --
 -- The same rules are ShareService's (apps/api/src/documents/shares.ts);
 -- this is the second wall under them, as 0030 is for a document's link.
@@ -42,7 +51,14 @@ alter table share_link alter column document_id drop not null;
 alter table share_link
   add column collection_id uuid,
   -- A19: what is put in the collection later goes out too.
-  add column follow_collection boolean not null default false;
+  add column follow_collection boolean not null default false,
+  -- The audience the collection had when a following link was made: what
+  -- follows must fit it as well as the collection's now, so narrowing can
+  -- only take away (the 5.19 review).
+  add column follow_audience text,
+  -- Why a collection's link ended without anybody taking it back: its
+  -- collection made Only me, or deleted (the family's list says which).
+  add column revoked_why text;
 
 alter table share_link
   add constraint share_link_collection_fkey
@@ -57,7 +73,14 @@ alter table share_link
   -- Only a collection's link has anything to follow, and it lasts 30 days at most.
   add constraint share_link_follow_collection check (collection_id is not null or not follow_collection),
   add constraint share_link_follow_30_days
-    check (not follow_collection or expires_at <= created_at + interval '30 days');
+    check (not follow_collection or expires_at <= created_at + interval '30 days'),
+  add constraint share_link_follow_audience
+    check ((follow_audience is not null) = follow_collection
+           and (follow_audience is null or follow_audience in ('everyone', 'teens', 'adults'))),
+  add constraint share_link_revoked_why
+    check (revoked_why is null
+           or (revoked_at is not null and collection_id is not null
+               and revoked_why in ('collection_only_me', 'collection_deleted')));
 
 create index share_link_collection_idx on share_link (collection_id) where collection_id is not null;
 
@@ -73,7 +96,8 @@ create function share_link_target_fixed() returns trigger
 begin
   if new.document_id is distinct from old.document_id
      or new.collection_id is distinct from old.collection_id
-     or new.follow_collection is distinct from old.follow_collection then
+     or new.follow_collection is distinct from old.follow_collection
+     or new.follow_audience is distinct from old.follow_audience then
     raise exception 'a link keeps what it was made for'
       using errcode = 'check_violation';
   end if;
@@ -85,10 +109,20 @@ create trigger share_link_target_fixed before update on share_link
 
 -- ----------------------------------------------------------- the snapshot
 --
--- The documents the sharer ticked, in the collection's order, and nothing
--- else: what was left unticked is not written down anywhere a link could
--- read it. A document taken out of the collection is not given (the live
--- check), and one removed from the vault goes from here too.
+-- What a collection's link gives, a document at a time, in the collection's
+-- order:
+--
+--   ticked     what its sharer ticked as they made it;
+--   followed   what was put in the collection later and was decided, as
+--              it was put in, to follow (a link that keeps up with it);
+--   left_out   for a link that keeps up with its collection, what was in
+--              the collection as it was made and not ticked — so that it
+--              never follows, however it is taken out and put back.
+--
+-- A link reads only the rows of what it gives now (its rule below): what
+-- was left out, and what it no longer gives, is not there for it, nor how
+-- many there are. A document taken out of the collection is not given (the
+-- live check), and one removed from the vault goes from here too.
 
 create table share_link_item (
   share_id      uuid not null,
@@ -96,6 +130,8 @@ create table share_link_item (
   collection_id uuid not null,
   document_id   uuid not null,
   position      int not null,
+  kind          text not null default 'ticked'
+    constraint share_link_item_kind check (kind in ('ticked', 'followed', 'left_out')),
   primary key (share_id, document_id),
   foreign key (share_id, household_id, collection_id)
     references share_link (id, household_id, collection_id) on delete cascade,
@@ -201,12 +237,13 @@ create function app_live_share() returns uuid
 grant execute on function app_live_share() to fdv_app;
 
 -- The documents the asking link gives now. A document's link: its document.
--- A collection's: each document in the collection now that is out of the
--- Trash, has a file, and is one its sharer can see (canSee, with the roles
--- of document.see_adults) — and that was ticked, or, for a link that
--- follows, was put in the collection after the link was made and is for
--- all of its audience (collection_audience_sees). ShareService.liveItems()
--- asks the same; change them together.
+-- A collection's: each document of its snapshot, ticked or followed, that
+-- is in the collection now, out of the Trash, has a file, and is one its
+-- sharer can see (canSee, with the roles of document.see_adults); one that
+-- followed, only while it is still for the whole of the audience the link
+-- was made for and of the collection's now (collection_audience_sees).
+-- Nothing is decided here that was not decided before: this only takes
+-- away. ShareService.liveItems() asks the same; change them together.
 create function app_link_documents() returns setof uuid
   language sql stable parallel safe security definer
   set search_path = pg_catalog, public, pg_temp as
@@ -220,8 +257,9 @@ create function app_link_documents() returns setof uuid
        join doc_collection c on c.id = s.collection_id and c.household_id = s.household_id
        join account_household maker
          on maker.account_id = s.created_by and maker.household_id = s.household_id
-       join doc_collection_item i on i.collection_id = c.id
-       join document d on d.id = i.document_id and d.household_id = s.household_id
+       join share_link_item t on t.share_id = s.id and t.kind in ('ticked', 'followed')
+       join doc_collection_item i on i.collection_id = c.id and i.document_id = t.document_id
+       join document d on d.id = t.document_id and d.household_id = s.household_id
       where s.id = app_live_share()
         and d.deleted_at is null
         and case d.visibility
@@ -231,11 +269,12 @@ create function app_link_documents() returns setof uuid
               else false
             end
         and exists (select 1 from document_version v where v.document_id = d.id)
-        and (exists (select 1 from share_link_item t
-                      where t.share_id = s.id and t.document_id = d.id)
-             or (s.follow_collection
-                 and i.added_at > s.created_at
-                 and collection_audience_sees(c.audience, d.visibility::text))) $$;
+        -- What followed was decided as it was put in; now it may only be
+        -- taken away: it must still be for the whole of the audience the
+        -- link was made for, and of the collection's now.
+        and (t.kind = 'ticked'
+             or (collection_audience_sees(c.audience, d.visibility::text)
+                 and collection_audience_sees(s.follow_audience, d.visibility::text))) $$;
 grant execute on function app_link_documents() to fdv_app;
 
 -- The newest version of each of them: the file the page gives.
@@ -262,6 +301,36 @@ create function app_link_sharer() returns uuid
   set search_path = pg_catalog, public, pg_temp as
   $$ select s.created_by from share_link s where s.id = app_live_share() $$;
 grant execute on function app_link_sharer() to fdv_app;
+
+-- The name the asking link writes its lines in the activity log under:
+-- 'shared link', or 'shared link (<whom it is for>)' — shares.ts record().
+-- Asked of the link whether or not it is live: its lock is written as it
+-- stops (the 5.19 review).
+create function app_link_label() returns text
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select case when nullif(s.recipient_label, '') is null then 'shared link'
+                 else 'shared link (' || s.recipient_label || ')' end
+       from share_link s
+      where s.id = app_share() and s.household_id = app_household() $$;
+grant execute on function app_link_label() to fdv_app;
+
+-- Whether a line the asking link writes may be about this: its own document
+-- or collection, whether or not it is live (a lock is written as it stops),
+-- or a document it gives now (a download, a look at the pages).
+create function app_link_may_name(p_type text, p_id uuid) returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select coalesce((
+       select case p_type
+                when 'document' then p_id = s.document_id
+                                     or p_id in (select app_link_documents())
+                when 'collection' then p_id = s.collection_id
+                else false
+              end
+         from share_link s
+        where s.id = app_share() and s.household_id = app_household()), false) $$;
+grant execute on function app_link_may_name(text, uuid) to fdv_app;
 
 -- The last hash of the caller's own household's activity log, which the
 -- next line is chained to (packages/db/src/audit.ts). With the owner's
@@ -326,13 +395,15 @@ alter policy document_type_actor on document_type
               else false
             end);
 
--- Its snapshot: read by its own link, while live; made by somebody signed
--- in; changed by the vault (a page it could not draw).
+-- Its snapshot: read by its own link, while live, and only the rows of what
+-- it gives now — not what it was made without, and not what it no longer
+-- gives, nor how many (the 5.19 review); made by somebody signed in.
 create policy share_link_item_actor on share_link_item as restrictive
   using (case app_actor()
            when 'account' then true
            when 'system' then true
            when 'link' then share_id = (select app_live_share())
+                            and document_id in (select app_link_documents())
            else false
          end);
 create policy share_link_item_actor_insert on share_link_item as restrictive for insert
@@ -460,12 +531,22 @@ create policy vault_link_delete on vault as restrictive for delete
 -- naming its own share and nobody signed in.
 create policy audit_event_link on audit_event as restrictive for select
   using (case app_actor() when 'link' then false else true end);
+-- Its own lines, and only as its own (the 5.19 review): about its own
+-- document or collection, or a document it gives; under its own name; and
+-- chained to the log's head, as appendAudit chains every line, within a
+-- few minutes of now.
 create policy audit_event_link_insert on audit_event as restrictive for insert
   with check (case app_actor()
                 when 'link' then actor_account_id is null
                                  and action in ('share.opened', 'share.viewed',
                                                 'share.downloaded', 'share.locked')
                                  and detail->>'share_id' = app_share()::text
+                                 and actor_label is not distinct from app_link_label()
+                                 and object_type in ('document', 'collection')
+                                 and app_link_may_name(object_type, object_id)
+                                 and prev_hash is not distinct from audit_chain_head(household_id)
+                                 and at between clock_timestamp() - interval '15 minutes'
+                                            and clock_timestamp() + interval '15 minutes'
                 else true
               end);
 

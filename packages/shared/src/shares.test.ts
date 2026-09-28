@@ -245,5 +245,12 @@ describe('sharing a collection', () => {
     expect(sharedOutsideWords({ with: [], following: true })).toMatch(
       /^This collection is shared outside the family\. What you put in it goes to them too/,
     );
+    // A teen's additions never follow (C519-02, A18): said so to a teen.
+    expect(sharedOutsideWords({ with: [], following: true }, 'teen')).toBe(
+      'This collection is shared outside the family. What you put in it stays in the family: only what an owner or an adult puts in goes to them.',
+    );
+    expect(sharedOutsideWords({ with: [], following: false }, 'teen')).toBe(
+      'This collection is shared outside the family. What you put in it now is not sent.',
+    );
   });
 });

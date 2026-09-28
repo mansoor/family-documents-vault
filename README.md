@@ -471,9 +471,12 @@ collection** lists what is in it that you can see, with what everybody the
 collection is for may see already ticked. Only what you tick goes, and each is
 checked again every time the link is used: one you can no longer see, one taken
 out of the collection or moved to the trash, stops being sent, and the other end
-is never told how many there were. **Keep it up to date** also sends what is put
-in the collection later — only what the whole of its audience may see, never a
-private document — and such a link lasts 30 days at most. Sharing a collection
+is never told how many there were. **Keep it up to date** also sends what an
+owner or an adult puts in the collection later — decided once, as it goes in:
+only what the whole of its audience may see, never a private document, and
+never anything that was in it when you shared it and you left unticked. What a
+teen puts in stays in the family. Narrowing the collection or a document later
+only takes away. Such a link lasts 30 days at most. Sharing a collection
 always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
 collection, is in **Settings → Sharing**, to take back.

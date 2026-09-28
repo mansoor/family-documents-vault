@@ -963,9 +963,13 @@ h3 {
 }
 
 .check input {
+  /* Its size whatever the label: a long one wraps, it does not squeeze the box. */
+  flex: none;
   width: 22px;
   height: 22px;
-  margin-top: 2px;
+  /* Flush with the text around it: its label starts 32px in, and what is
+     said under a label (a share sheet's notes) is set in by as much. */
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 
@@ -1524,13 +1528,19 @@ a.btn {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  /* Under the title, past the box beside it. */
-  padding-left: 28px;
+  /* Under the title, past the box beside it (`.check`: 22px and 10px). */
+  padding-left: 32px;
 }
 
 .share-item-why.warn {
   color: var(--warn);
   font-weight: 600;
+}
+
+/* Keep it up to date: what it means, under its label, past its box. */
+.share-follow-note {
+  margin: 0;
+  padding-left: 32px;
 }
 
 /* A view-only link's pages, one under another, each as wide as the card. */

@@ -381,7 +381,9 @@ export function CollectionScreen() {
             maker={maker?.display_name ?? null}
           />
           {collection.shared_outside && (
-            <p className="status status-warn">{sharedOutsideWords(collection.shared_outside)}</p>
+            <p className="status status-warn">
+              {sharedOutsideWords(collection.shared_outside, role)}
+            </p>
           )}
           {collectionShareOffered(caps, role, collection) && (
             <div className="row">

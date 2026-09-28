@@ -725,11 +725,11 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     );
     const made = async (follow: boolean) => {
       const { id } = await one<{ id: string }>(
-        `insert into share_link (household_id, collection_id, follow_collection, token_hash,
-                                 created_by, expires_at, created_at)
-         values ($1, $2, $3, $4, $5, now() + interval '7 days', now() - interval '1 hour')
+        `insert into share_link (household_id, collection_id, follow_collection, follow_audience,
+                                 token_hash, created_by, expires_at, created_at)
+         values ($1, $2, $3, $4, $5, $6, now() + interval '7 days', now() - interval '1 hour')
          returning id`,
-        [hh, collection.id, follow, randomBytes(32), ids.adultAccount],
+        [hh, collection.id, follow, follow ? 'everyone' : null, randomBytes(32), ids.adultAccount],
       );
       await admin.query(
         `insert into share_link_item (share_id, household_id, collection_id, document_id, position)
@@ -755,15 +755,29 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
       versions: [ids.leaseV2],
       shares: [snapshot],
     });
-    // Put in the collection since, the will goes on the link that follows
-    // it — everybody the collection is for may see it — and not on the other.
+    // Nothing follows by being in the collection, or put in it since (the
+    // 5.19 review): only what the vault decided, as it was put in, and
+    // wrote down. Written down as left out, it is not given either.
     await admin.query(
       'update doc_collection_item set added_at = now() where collection_id = $1 and document_id = $2',
       [collection.id, ids.will],
     );
+    expect((await given(following)).documents).toEqual([ids.lease]);
+    await admin.query(
+      `insert into share_link_item (share_id, household_id, collection_id, document_id, position, kind)
+       values ($1, $2, $3, $4, 2, 'left_out')`,
+      [following, hh, collection.id, ids.will],
+    );
+    expect((await given(following)).documents).toEqual([ids.lease]);
+    // Decided to follow, the will goes on the link that follows — everybody
+    // the collection is for may see it — and not on the other.
+    await admin.query(
+      "update share_link_item set kind = 'followed' where share_id = $1 and document_id = $2",
+      [following, ids.will],
+    );
     expect((await given(following)).documents.sort()).toEqual([ids.lease, ids.will].sort());
     expect((await given(snapshot)).documents).toEqual([ids.lease]);
-    // For the adults, it is not everybody's: it does not follow.
+    // For the adults now, it is not everybody's: it is not given any more.
     await admin.query("update document set visibility = 'adults' where id = $1", [ids.will]);
     expect((await given(following)).documents).toEqual([ids.lease]);
     await admin.query("update document set visibility = 'household' where id = $1", [ids.will]);

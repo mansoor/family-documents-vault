@@ -647,8 +647,12 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       expect(String(j.data.body)).toMatch(/^Alex shared one of the collections you made/);
       expect(JSON.stringify(j.data)).not.toMatch(/mortgage|School trip|Jane Smith|lease/i);
     }
-    // The teen reads it in the log, as a teen reads the collection.
-    expect(await activity('teen')).toContain('Alex made a link to the collection “School trip”');
+    // The line in the log about the link is for those the list of links
+    // gives it to (C519-04): the owner, who may see all it gives, and not
+    // the teen, who is told by the email but is given no links.
+    const line = 'Alex made a link to the collection “School trip”';
+    expect(await activity('owner')).toContain(line);
+    expect(await activity('teen')).not.toContain(line);
   });
 
   it('a reader who cannot see every item does not see the collection share in GET /shares', async () => {
@@ -1136,5 +1140,282 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     } finally {
       await admin.end();
     }
+  });
+
+  // ------------------------------------------------ the 5.19 review
+
+  describe('following decides once, as a document is added (R519-01, C519-01/02/03)', () => {
+    /** An adult's following link to a fresh collection of the owner's, for everyone. */
+    const following = async (name: string, documents: string[], ticked = documents) => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const id = await collection('owner', name, 'everyone', documents);
+      const link = await shared('adult', id, {
+        document_ids: ticked,
+        follow_collection: true,
+        recipient_label: 'the agent',
+      });
+      const { cookie } = await opened(link.link_token);
+      return { id, link, cookie };
+    };
+    const followedLines = async (collectionId: string) =>
+      (
+        await withSystem(h.db, t.owner.household_id, (trx) =>
+          trx
+            .selectFrom('audit_event')
+            .select('object_id')
+            .where('action', '=', 'share.followed')
+            .where(sql<boolean>`detail->>'collection_id' = ${collectionId}`)
+            .execute(),
+        )
+      ).map((r) => r.object_id);
+
+    it('narrowing a following collection to Adults sends nothing new outside', async () => {
+      const house = await make('owner', 'Gas safety certificate');
+      const settlement = await make('owner', 'Divorce settlement', 'adults');
+      const { id, cookie } = await following('House papers', [docs.lease]);
+      // Put in while the collection is for everyone: the household one
+      // follows; the adults-only one is held back, and the log says which.
+      await put('owner', id, [house, settlement]);
+      expect(await given(cookie)).toEqual([docs.lease, house]);
+      expect(await followedLines(id)).toEqual([house]);
+      // Made more private: nothing held back goes out now, and what went out
+      // before and still fits stays.
+      const narrowed = await call('owner', 'PATCH', `/api/v1/collections/${id}`, {
+        audience: 'adults',
+      });
+      expect(narrowed.statusCode, narrowed.body).toBe(200);
+      expect(await given(cookie)).toEqual([docs.lease, house]);
+      expect((await content(cookie, settlement)).statusCode).toBe(404);
+      expect(await followedLines(id)).toEqual([house]);
+    });
+
+    it("widening a document's visibility later does not send it out", async () => {
+      const medical = await make('owner', 'Medical history', 'private');
+      const statement = await make('owner', 'Savings statement', 'adults');
+      const { id, cookie } = await following('Before the move', [docs.lease]);
+      await put('owner', id, [medical, statement]);
+      expect(await given(cookie)).toEqual([docs.lease]);
+      // Both made the family's own afterwards: still not sent.
+      for (const doc of [medical, statement]) {
+        const widened = await call('owner', 'POST', `/api/v1/documents/${doc}/visibility`, {
+          visibility: 'household',
+        });
+        expect(widened.statusCode, widened.body).toBe(200);
+      }
+      expect(await given(cookie)).toEqual([docs.lease]);
+      expect(await followedLines(id)).toEqual([]);
+      // And one that followed, made adults-only later, is taken away: a
+      // later change only ever takes away.
+      const utility = await make('owner', 'Water bill');
+      await put('owner', id, [utility]);
+      expect(await given(cookie)).toEqual([docs.lease, utility]);
+      await call('owner', 'POST', `/api/v1/documents/${utility}/visibility`, {
+        visibility: 'adults',
+      });
+      expect(await given(cookie)).toEqual([docs.lease]);
+    });
+
+    it("a teen's addition never follows", async () => {
+      await fresh('adult', true);
+      const trip = await collection('teen', 'Exchange trip', 'everyone', [docs.teenPoster]);
+      const link = await shared('adult', trip, {
+        document_ids: [docs.teenPoster],
+        follow_collection: true,
+      });
+      const { cookie } = await opened(link.link_token);
+      // The teen, its maker, puts the family's household bank letter in it.
+      const letter = await make('owner', 'Bank letter');
+      await put('teen', trip, [letter]);
+      expect(await given(cookie)).toEqual([docs.teenPoster]);
+      expect((await content(cookie, letter)).statusCode).toBe(404);
+      expect(await followedLines(trip)).toEqual([]);
+      // Nor does it through the database's own rule for the link.
+      const reached = await withScopeOfLink(link.share.id, (trx) =>
+        trx.selectFrom('document').select('id').execute(),
+      );
+      expect(reached.map((r) => r.id)).toEqual([docs.teenPoster]);
+    });
+
+    it('a document left unticked never follows, even re-added', async () => {
+      const deed = await make('owner', 'Title deed scan');
+      const { id, cookie } = await following('For the solicitor', [docs.lease, deed], [docs.lease]);
+      expect(await given(cookie)).toEqual([docs.lease]);
+      // Taken out and put back — how a document is moved to the end.
+      expect(
+        (await call('owner', 'DELETE', `/api/v1/collections/${id}/items/${deed}`)).statusCode,
+      ).toBe(204);
+      await put('owner', id, [deed]);
+      expect(await given(cookie)).toEqual([docs.lease]);
+      expect(await followedLines(id)).toEqual([]);
+    });
+
+    it("a share racing the maker's narrowing to Only me does not survive it (C519-07)", async () => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const id = await collection('owner', 'Race', 'everyone', [docs.lease]);
+      const admin = createPool(h.adminUrl, 3);
+      const holder = await admin.connect();
+      const dbName = new URL(h.adminUrl).pathname.slice(1);
+      const waiting = async (n: number) => {
+        for (let i = 0; i < 200; i += 1) {
+          const r = await admin.query<{ n: number }>(
+            `select count(*)::int as n from pg_stat_activity
+              where datname = $1 and wait_event_type = 'Lock'`,
+            [dbName],
+          );
+          if ((r.rows[0]?.n ?? 0) >= n) return;
+          await new Promise((res) => setTimeout(res, 50));
+        }
+        throw new Error(`fewer than ${n} requests waiting`);
+      };
+      try {
+        // The household's activity log held, so both requests stop where
+        // they write to it: the narrowing after its change, the share after
+        // it read the collection as it was.
+        await holder.query('begin');
+        await holder.query(`select pg_advisory_xact_lock(hashtext('audit:' || $1::uuid::text))`, [
+          t.owner.household_id,
+        ]);
+        const narrowing = call('owner', 'PATCH', `/api/v1/collections/${id}`, {
+          audience: 'only_me',
+        });
+        await waiting(1);
+        const sharing = share('adult', id, { document_ids: [docs.lease] });
+        await waiting(2);
+        await holder.query('commit');
+        const [narrowed, made] = await Promise.all([narrowing, sharing]);
+        expect(narrowed.statusCode, narrowed.body).toBe(200);
+        // Refused, or made and then taken back with the rest: never live.
+        const live = await withSystem(h.db, t.owner.household_id, (trx) =>
+          trx
+            .selectFrom('share_link')
+            .select('id')
+            .where('collection_id', '=', id)
+            .where('revoked_at', 'is', null)
+            .execute(),
+        );
+        expect(live).toEqual([]);
+        // Widened again, nothing comes back.
+        await call('owner', 'PATCH', `/api/v1/collections/${id}`, { audience: 'everyone' });
+        if (made.statusCode === 201) {
+          expect(code(await preview(json<CreatedShare>(made).link_token))).toBe('link_not_valid');
+        } else {
+          expect([404, 422]).toContain(made.statusCode);
+        }
+      } finally {
+        holder.release();
+        await admin.end();
+      }
+    });
+  });
+
+  it('a link reads only the snapshot rows of what it gives (R519-03)', async () => {
+    await fresh('owner', true);
+    const first = await make('owner', 'Snapshot one');
+    const second = await make('owner', 'Snapshot two');
+    const id = await collection('owner', 'Snapshot', 'everyone', [first, second]);
+    const link = await shared('owner', id, { document_ids: [first, second] });
+    const rows = () =>
+      withScopeOfLink(link.share.id, (trx) =>
+        trx.selectFrom('share_link_item').select('document_id').execute(),
+      );
+    expect((await rows()).length).toBe(2);
+    // The second in the Trash: the link neither gives it nor learns it was ticked.
+    expect((await call('owner', 'DELETE', `/api/v1/documents/${second}`)).statusCode).toBe(204);
+    expect(await rows()).toEqual([{ document_id: first }]);
+    await call('owner', 'POST', `/api/v1/documents/${second}/restore`);
+    expect((await rows()).length).toBe(2);
+  });
+
+  it("a link writes only its own lines: its own documents, its own name, the chain's head (R519-04)", async () => {
+    await fresh('owner', true);
+    const link = await shared('owner', family, {
+      document_ids: [docs.lease],
+      recipient_label: 'the bank',
+    });
+    const head = async (trx: Db) =>
+      (
+        await sql<{
+          hash: Buffer | null;
+        }>`select audit_chain_head(${t.owner.household_id}::uuid) as hash`.execute(trx)
+      ).rows[0]?.hash ?? null;
+    /** A line the link writes, then undone: whether the rule let it through. */
+    const tries = (over: Record<string, unknown>) =>
+      withScopeOfLink(link.share.id, async (trx) => {
+        await trx
+          .insertInto('audit_event')
+          .values({
+            household_id: t.owner.household_id,
+            actor_label: 'shared link (the bank)',
+            action: 'share.downloaded',
+            object_type: 'document',
+            object_id: docs.lease,
+            detail: JSON.stringify({ share_id: link.share.id }),
+            prev_hash: await head(trx),
+            hash: randomBytes(32),
+            ...over,
+          })
+          .execute();
+        throw new Error('written, and undone');
+      });
+    // Its own: written (and undone here, to keep the chain whole).
+    await expect(tries({})).rejects.toThrow(/written, and undone/);
+    // A document it does not give, a collection it is not to, another's
+    // name, nobody's name, or a line off the chain: refused.
+    for (const [what, over] of [
+      ['a document it does not give', { object_id: docs.insurance }],
+      ['the will, which it does not give', { object_id: docs.will }],
+      ['a collection it is not to', { object_type: 'collection', object_id: teens }],
+      ['as the owner', { actor_label: 'Owner' }],
+      ['as somebody else’s link', { actor_label: 'shared link (the landlord)' }],
+      ['off the chain', { prev_hash: randomBytes(32) }],
+    ] as const) {
+      await expect(tries(over), what).rejects.toThrow(/row-level security/);
+    }
+  });
+
+  it('a collection link’s lines in the log are for those GET /shares gives the link (C519-04)', async () => {
+    await fresh('owner', true);
+    const withDiary = await shared('owner', family, {
+      document_ids: [docs.lease, docs.diary],
+      recipient_label: 'the divorce lawyer',
+    });
+    await opened(withDiary.link_token);
+    const leaseOnly = await shared('owner', family, {
+      document_ids: [docs.lease],
+      recipient_label: 'the landlord',
+    });
+    await opened(leaseOnly.link_token);
+    const said = async (who: Who) => (await activity(who)).join('\n');
+    // Its maker, who sees every document, reads both.
+    expect(await said('owner')).toMatch(/for the divorce lawyer/);
+    expect(await said('owner')).toMatch(/Shared link \(the divorce lawyer\) opened/);
+    // An adult who cannot see the diary: not a word of that link.
+    expect(await said('adult')).not.toMatch(/divorce lawyer/);
+    expect(await said('adult')).toMatch(/for the landlord/);
+    // A teen, who may not share: no collection link's lines at all.
+    expect(await said('teen')).not.toMatch(/divorce lawyer|the landlord/);
+  });
+
+  it('Sharing says who took a link back, and why a collection’s ended (W519-1)', async () => {
+    await fresh('adult', true);
+    await fresh('owner', true);
+    const id = await collection('owner', 'Taken back', 'everyone', [docs.lease]);
+    const link = await shared('adult', id, {
+      document_ids: [docs.lease],
+      recipient_label: 'the bank',
+    });
+    expect((await call('owner', 'DELETE', `/api/v1/shares/${link.share.id}`)).statusCode).toBe(204);
+    const summary = async (who: Who, shareId: string) =>
+      (await linksFor(who)).find((l) => l.id === shareId)?.summary;
+    expect(await summary('adult', link.share.id)).toMatch(/Owner took this link back\.$/);
+    expect(await summary('owner', link.share.id)).toMatch(/You took this link back\.$/);
+    // Ended with its collection made Only me: said so, to its maker.
+    const other = await shared('owner', id, { document_ids: [docs.lease] });
+    await call('owner', 'PATCH', `/api/v1/collections/${id}`, { audience: 'only_me' });
+    expect(await summary('owner', other.share.id)).toMatch(
+      /It stopped when the collection was made Only me\.$/,
+    );
   });
 });
