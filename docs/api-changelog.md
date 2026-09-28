@@ -1833,11 +1833,16 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       holds the documents it names in id order, as an addition does.
     - **Changed (every link, sessions):** ending a link — taking it back,
       its tenth wrong PIN, its collection deleted or made Only me — ends
-      its sessions without waiting for one in use at that moment, which
-      its next request refuses (`404 link_not_valid`) and removes. A
-      request of a session whose link ends while it is being answered is
-      answered `404 link_not_valid` too — a first download is not counted,
-      and a first look at pages is not written down — never `500`.
+      its sessions without waiting for one in use at that moment. A
+      session request (`GET /shared/items`, `…/content`, `…/pages/{n}`)
+      whose link ends while it is being answered — its session removed as
+      it waited, anything it asks failing or coming back empty, or its link
+      found gone as it finishes — is answered `404 link_not_valid`, with
+      all it did undone (a first download is not counted, a first look at
+      pages is not written down) and its session removed; a first download
+      that waited on the link as it was taken back, locked or paused is
+      refused at its count. The session's next request is answered the
+      same way. A request whose link still works keeps its own answer.
     - **Changed (pages that could not be drawn):** 5.18's rules now hold a
       version at a time, for a document's link and each document of a
       collection's alike. The worker's last failed try is kept for the

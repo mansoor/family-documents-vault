@@ -21,7 +21,12 @@ import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Tokens } from '../auth/service.js';
-import { PAGES_RETRY_MS, type CreatedShare, type ShareView } from '../documents/shares.js';
+import {
+  PAGES_RETRY_MS,
+  ShareService,
+  type CreatedShare,
+  type ShareView,
+} from '../documents/shares.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 
 const testKeys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
@@ -2068,10 +2073,14 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     ['a first download', 'download', 'deleted', 'collection'],
     ['a first download', 'download', 'made Only me', 'collection'],
     ['a first download', 'download', 'taken back', 'collection'],
-    // A document's own link: its line would be let through, so the count
-    // is what refuses a download that waited on the link as it was taken
-    // back (5.18's code).
+    // A document's own link, taken back as 5.18 takes links back: the rule
+    // would let its line about its own document through; its count finds
+    // the link gone first.
     ['a first download of a document’s link', 'download', 'taken back', 'document'],
+    // And a document's view link: its line about its own document is let
+    // through, and the request then finds the file's key gone (the fifth
+    // review: a 500 until inSession asked its link again).
+    ['a first look at a page of a document’s link', 'view', 'taken back', 'document'],
   ];
 
   for (const [what, perm, how, of] of cases) {
@@ -2103,8 +2112,9 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
         expect(u.statusCode, u.body).toBe(404);
         expect(code(u)).toBe('link_not_valid');
         expect(await revoked(link.share.id)).toBe(true);
-        // Its session, passed over, is refused and removed at its next request.
-        expect(code(await content(cookie, lease))).toBe('link_not_valid');
+        // Its session, passed over by the ending, went with that answer (the
+        // fifth review), as a session found on a gone link always has: a
+        // later request of it finds none.
         const left = await withSystem(h.db, t.owner.household_id, (trx) =>
           trx
             .selectFrom('share_session')
@@ -2113,6 +2123,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
             .execute(),
         );
         expect(left).toEqual([]);
+        expect(code(await content(cookie, lease))).toBe('share_session_ended');
         const used = await withSystem(h.db, t.owner.household_id, (trx) =>
           trx
             .selectFrom('share_link')
@@ -2240,7 +2251,15 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
           ]);
           const said = `${what}, ${how}, ${offset} ms`;
           expect(e.statusCode, `${said}: ${e.body}`).toBe(endedWith[how]);
-          expect(u.statusCode, `${said}: ${u.body}`).not.toBe(500);
+          // Done before the link ended, its own answer (the file; for a
+          // page not yet drawn, "being drawn"); otherwise the link's, gone —
+          // and nothing else (the fifth review).
+          const answered =
+            u.statusCode === 200 ? 'done' : ((code(u) as string | undefined) ?? `${u.statusCode}`);
+          expect(
+            [perm === 'download' ? 'done' : 'preview_pending', 'link_not_valid'],
+            `${said}: ${u.statusCode} ${u.body}`,
+          ).toContain(answered);
           expect(await revoked(link.share.id), said).toBe(true);
         }
       }
@@ -2250,6 +2269,89 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       await admin.end();
     }
   }, 120_000);
+
+  /**
+   * Holds the next call of a method, wherever it is made, until let go: a
+   * request stopped part-way, its session row held and its link's checks
+   * behind it.
+   */
+  const gateOnce = (target: object, name: string) => {
+    const proto = target as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const original = proto[name] as (...args: unknown[]) => Promise<unknown>;
+    let release!: () => void;
+    const opened = new Promise<void>((res) => (release = res));
+    let reached!: () => void;
+    const arrived = new Promise<void>((res) => (reached = res));
+    let first = true;
+    const spy = vi.spyOn(proto, name).mockImplementation(async function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      if (first) {
+        first = false;
+        reached();
+        await opened;
+      }
+      return original.apply(this, args);
+    });
+    return { arrived, release, restore: () => spy.mockRestore() };
+  };
+  const sessionsOf = (shareId: string) =>
+    withSystem(h.db, t.owner.household_id, (trx) =>
+      trx.selectFrom('share_session').select('id').where('share_id', '=', shareId).execute(),
+    );
+
+  const secondDownloads: Array<['collection' | 'document', Ending]> = [
+    ['document', 'taken back'],
+    ['collection', 'deleted'],
+  ];
+  for (const [of, how] of secondDownloads) {
+    it(`a second download under way as its ${of}’s link is ${how} is answered link_not_valid, not a fault (fifth review)`, async () => {
+      await fresh('owner', true);
+      const { id, link, use } = await inUse('download', `A second download: ${of}, ${how}`, of);
+      expect((await use()).statusCode).toBe(200);
+      // The second held where it asks for the file's key: after every
+      // check, its session row held.
+      const gate = gateOnce(ScopeKeys.prototype, 'unwrapById');
+      try {
+        const using = use();
+        await gate.arrived;
+        // The link ends meanwhile, not waiting for it.
+        const e = await ending(how, id, link.share.id);
+        expect(e.statusCode, e.body).toBe(endedWith[how]);
+        gate.release();
+        const u = await using;
+        expect(u.statusCode, u.body).toBe(404);
+        expect(code(u)).toBe('link_not_valid');
+        expect(await sessionsOf(link.share.id)).toEqual([]);
+      } finally {
+        gate.release();
+        gate.restore();
+      }
+    });
+  }
+
+  it('the list of what a session gives, under way as its link is taken back, is answered link_not_valid (fifth review)', async () => {
+    await fresh('owner', true);
+    const { link, cookie } = await inUse('download', 'The list as it ends');
+    // Held as it starts to say who sent it: its checks behind it.
+    const gate = gateOnce(ShareService.prototype, 'from');
+    try {
+      const listing = items(cookie);
+      await gate.arrived;
+      const e = await ending('taken back', '', link.share.id);
+      expect(e.statusCode, e.body).toBe(204);
+      gate.release();
+      const u = await listing;
+      // Not an empty list from nobody: the link is gone.
+      expect(u.statusCode, u.body).toBe(404);
+      expect(code(u)).toBe('link_not_valid');
+      expect(await sessionsOf(link.share.id)).toEqual([]);
+    } finally {
+      gate.release();
+      gate.restore();
+    }
+  });
 
   it('a following link takes as many left-out documents as a household holds, in any number of rows (third review)', async () => {
     await fresh('adult', true);

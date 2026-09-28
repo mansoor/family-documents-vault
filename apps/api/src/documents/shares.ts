@@ -1761,9 +1761,31 @@ export class ShareService {
           ended: (await this.stillLive(trx, session.share_id)) ? 'session' : 'link',
         } as const;
       }
-      return {
-        value: await fn(trx, { ...link, household_id: found.household_id }, session),
-      } as const;
+      // Its link may end while this is answered: whatever ends it passes
+      // over a session in use (endSessions) and does not wait for it, and
+      // from then on the database gives this request none of what the link
+      // gave — its documents, their files, their keys, where they are kept.
+      // So what is asked is asked inside a savepoint, and the link asked
+      // after again: ended, all of it is undone — a download's count, a
+      // line in the log — and the answer is the link's, gone, with its
+      // session removed; never a fault, a document "not there", or an
+      // empty list (the 5.19 review's fifth round). Still working, an error
+      // is the request's own, and stands.
+      await sql`savepoint fdv_in_session`.execute(trx);
+      let value: T;
+      try {
+        value = await fn(trx, { ...link, household_id: found.household_id }, session);
+      } catch (err) {
+        await sql`rollback to savepoint fdv_in_session`.execute(trx);
+        if (!(await this.stillLive(trx, session.share_id))) return end('link');
+        throw err;
+      }
+      if (!(await this.stillLive(trx, session.share_id))) {
+        await sql`rollback to savepoint fdv_in_session`.execute(trx);
+        return end('link');
+      }
+      await sql`release savepoint fdv_in_session`.execute(trx);
+      return { value } as const;
     });
     if ('ended' in outcome) throw outcome.ended === 'session' ? sessionEnded() : gone();
     return outcome.value;
@@ -2031,15 +2053,18 @@ export class ShareService {
    * A line the link writes in the family's activity log, about what it is
    * to — or, for a download or a look at pages, about that document.
    *
-   * The log may be held, as this asks for it, by whatever is ending the
-   * link — its collection deleted, say — which does not wait for this
-   * request (endSessions). Ended by the time the line is written, the
-   * database's rule refuses it (a link writes only while it may be used):
-   * then this request is answered as the link's, gone, rather than as a
-   * fault (the 5.19 review's fourth round). The lock, which is written as
-   * the link stops, is not asked so.
+   * Nothing here turns a refusal into another answer. Within a session, a
+   * line the database refuses because the link ended as it was written (a
+   * collection's link, its collection deleted as a document was looked at)
+   * is undone and answered as gone by inSession, with all else the request
+   * did (the 5.19 review's fifth round). Outside a session: an Open counts
+   * itself on the link's row before it writes, so nothing ends the link
+   * under it; an older client's download writes about the link's own
+   * document, which the rule takes whether or not the link still works;
+   * and the lock's line is written by the very transaction that locks it —
+   * were it turned into "gone", the lock itself would be undone.
    */
-  private async record(
+  private record(
     trx: Db,
     householdId: string,
     link: {
@@ -2052,7 +2077,7 @@ export class ShareService {
     meta: RequestMeta,
     documentId?: string,
   ): Promise<void> {
-    const line = {
+    return appendAudit(trx, {
       householdId,
       // Nobody signed in, so there is no actor account — this label is
       // what the family's activity log shows instead.
@@ -2062,17 +2087,7 @@ export class ShareService {
       detail: { share_id: link.id, user_agent: meta.userAgent ?? null },
       // An outsider's address is kept only as far as their network (A24).
       ip: truncatedIp(meta.ip),
-    };
-    if (action === 'share.locked') return appendAudit(trx, line);
-    await sql`savepoint fdv_link_line`.execute(trx);
-    try {
-      await appendAudit(trx, line);
-    } catch (err) {
-      await sql`rollback to savepoint fdv_link_line`.execute(trx);
-      if (!(await this.stillLive(trx, link.id))) throw gone();
-      throw err;
-    }
-    await sql`release savepoint fdv_link_line`.execute(trx);
+    });
   }
 
   /**
