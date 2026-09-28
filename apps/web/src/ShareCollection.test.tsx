@@ -1,3 +1,4 @@
+import { SHARE_CODE_TRUTH, SHARE_CODE_UNAVAILABLE } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
@@ -171,6 +172,62 @@ describe('sharing a collection (5.19)', () => {
         'This collection is shared with Jane Smith. What you put in it goes to them too, if everybody the collection is for may see it.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('a collection’s link is protected as a document’s is, with operator mail and without (W520-8)', async () => {
+    const openSheet = async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));
+      const sheet = await screen.findByRole('dialog', { name: 'Share “For the broker”' });
+      await within(sheet).findByRole('checkbox', { name: /Mansoor's passport/ });
+      return { sheet, protect: within(sheet).getByRole('group', { name: 'Protect it' }) };
+    };
+    const posted = (state: FakeState) =>
+      state.calls
+        .filter((c) => c.method === 'POST' && c.url === `/api/v1/collections/${BROKER.id}/shares`)
+        .at(-1)?.body as Record<string, unknown> | undefined;
+
+    // With operator mail: a password made up, a code by email, one browser.
+    const state = at(`/collections/${BROKER.id}`, { operatorMail: true });
+    const { sheet, protect } = await openSheet();
+    fireEvent.click(within(protect).getByLabelText(/ask for a password/));
+    fireEvent.click(within(protect).getByLabelText(/email them a code/));
+    fireEvent.change(within(sheet).getByLabelText('Their email address'), {
+      target: { value: 'jane.smith@example.com' },
+    });
+    fireEvent.click(within(protect).getByLabelText('This device only'));
+    expect(within(sheet).getByText(SHARE_CODE_TRUTH)).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Make the link' }));
+    expect(await within(sheet).findByTestId('share-password')).toHaveTextContent('k7mq-p2xa-9htw');
+    expect(posted(state)).toMatchObject({
+      document_ids: [PASSPORT.id],
+      with_pin: false,
+      with_password: true,
+      code_email: 'jane.smith@example.com',
+      this_device_only: true,
+    });
+    expect(within(sheet).getByText(/a code is emailed to j•••@e•••\.com/)).toBeInTheDocument();
+    cleanup();
+
+    // Without: no code is offered, and the reason is said; the rest is there.
+    const without = at(`/collections/${BROKER.id}`, { operatorMail: false });
+    const other = await openSheet();
+    expect(within(other.protect).queryByLabelText(/email them a code/)).not.toBeInTheDocument();
+    expect(within(other.sheet).getByTestId('share-code-unavailable')).toHaveTextContent(
+      SHARE_CODE_UNAVAILABLE,
+    );
+    fireEvent.click(within(other.protect).getByLabelText(/ask for a password/));
+    fireEvent.click(within(other.sheet).getByRole('button', { name: 'I’ll type one' }));
+    fireEvent.change(within(other.sheet).getByLabelText('The password'), {
+      target: { value: 'river otter lantern' },
+    });
+    await expectAccessible();
+    fireEvent.click(within(other.sheet).getByRole('button', { name: 'Make the link' }));
+    await within(other.sheet).findByText(/\/s#share-secret-0123456789abcdef$/);
+    const body = posted(without);
+    expect(body).toMatchObject({ password: 'river otter lantern', with_pin: false });
+    expect(body).not.toHaveProperty('code_email');
+    expect(body).not.toHaveProperty('this_device_only');
   });
 
   it('a teen is not offered to share a collection, nor is anybody an Only me one', async () => {

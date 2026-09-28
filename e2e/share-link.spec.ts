@@ -323,7 +323,7 @@ test('a password link for this device only opens in the first browser, and no ot
 
   await page.goto(`/s#${made.token}`);
   await expect(page.getByText(/put a password on it/)).toBeVisible();
-  await expect(page.getByText(/It opens only on the first device that opens it/)).toBeVisible();
+  await expect(page.getByText(/It opens only in the first browser that opens it/)).toBeVisible();
   await page.getByLabel('The password they gave you').fill('not the password');
   await page.getByRole('button', { name: 'Open' }).click();
   await expect(page.getByRole('alert')).toContainText('That password is not right');
@@ -342,7 +342,7 @@ test('a password link for this device only opens in the first browser, and no ot
     const other = await elsewhere.newPage();
     await other.goto(`/s#${made.token}`);
     await expect(other.getByRole('heading', { name: 'This link cannot be opened' })).toBeVisible();
-    await expect(other.getByRole('alert')).toContainText('opened on another device already');
+    await expect(other.getByRole('alert')).toContainText('opened in another browser already');
     await expect(other.getByText(made.title)).toHaveCount(0);
   } finally {
     await elsewhere.close();

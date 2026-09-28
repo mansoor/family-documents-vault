@@ -1887,23 +1887,33 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
     - **Added (making a link):** `POST /documents/{id}/share` and `POST
 /collections/{id}/shares` take `with_password` (the vault makes one
       up: three groups of four letters and digits, returned once as
-      `CreatedShare.password`), `password` (typed: 8 to 64 characters,
-      never returned), `code_email` (the address a code goes to) and
-      `this_device_only`. One secret at most: a PIN, a made-up password or
-      a typed one, else `422 validation_failed`. `code_email` without the
-      operator's mail server is `422 email_code_unavailable`, with the
-      reason (the household's own mail settings are never used for it).
+      `CreatedShare.password`; checked without regard to capitals, dashes
+      or spaces, since it is read out and typed unseen), `password` (typed:
+      8 to 64 characters, never returned, checked as typed), `code_email`
+      (the address a code goes to: `isShareAddress`, the same rule the
+      share sheet checks, else `422 validation_failed` whose `detail`
+      starts `code_email:`) and `this_device_only`. One secret at most: a
+      PIN, a made-up password or a typed one, else `422 validation_failed`.
+      `code_email` without the operator's mail server is `422
+email_code_unavailable`, with the reason (the household's own mail
+      settings are never used for it).
     - **Added (the page):** `POST /api/v1/shared/code` `{ token }` → `200 {
 sent_to, expires_at }`: a six-digit code, good for 10 minutes and 5
       tries and used once, sent to the address the sharer typed — the page
       never says one, and `sent_to` is masked (`j•••@e•••.com`) — through
       the operator's mail server alone, as a plain-text email with no link
-      and no title. A newer code ends the ones before it. At most 3 a link
-      in 15 minutes and 10 a day: `429 code_limit` with `Retry-After`.
-      `409 no_code_needed` for a link that asks for none; `403
-other_device` from another browser than a bound link's; `503
-email_code_unavailable` when the vault can no longer send one.
-      Rate-limited as the other share routes are.
+      and no title. A newer code ends the ones before it: only the newest
+      works, and the page and the email say so. At most 3 a link in 15
+      minutes and 10 a day: `429 code_limit` with `Retry-After`. `409
+no_code_needed` for a link that asks for none; `403 other_device` from
+      another browser than a bound link's; `503 email_code_unavailable`
+      when the vault can no longer send one (worded for the person the link
+      is for: ask whoever sent it for a new link); `503 code_not_sent`
+      (retriable, `Retry-After: 60`) when its email could not be queued —
+      then nothing was kept: no code, no line in the activity log, no place
+      in the count of sends, and the code before it still works; the error
+      is logged, with no address or code. Rate-limited as the other share
+      routes are.
     - **Changed:** `POST /api/v1/shared/unlock` takes `code` beside
       `secret` (the PIN, or now the password). **One counter of ten**
       (A23): every failed PIN, password or code uses up one of the link's
@@ -1915,16 +1925,21 @@ email_code_unavailable` when the vault can no longer send one.
       before. A link for one device binds the browser of the first Open
       that works with a cookie, `fdv_share_device` (httpOnly, Secure,
       SameSite=Strict, `/api/v1/shared`, kept only as a hash with the
-      link's id); from any other browser Open is `403 other_device` before
-      anything is tried or counted, and a session cookie taken to another
-      browser is refused there (`items`, `content`, `pages`).
+      link's id). Only the vault makes one — random bytes and their HMAC
+      under a key derived from the master key — and a cookie the browser
+      brings is kept only when it is one of those; any other is replaced,
+      so a cookie planted before the first open is never bound. From any
+      other browser Open is `403 other_device` ("…opened in another
+      browser already…") before anything is tried or counted, and a
+      session cookie taken to another browser is refused there (`items`,
+      `content`, `pages`).
     - **Added:** `ShareLinkPreview.protection` may say `password` and
       `code`; **new** `code_to` (masked), `this_device_only` and
       `other_device` (this browser is not the one it opens in: title and
       collection name withheld). `Share` gains `protection`, `code_to`
       (masked; null once the link has ended) and `this_device_only`;
       `has_pin` stays true for a PIN only. The summary says "Asks for a
-      password and a code emailed to j•••@e•••.com. Opens on one device
+      password and a code emailed to j•••@e•••.com. Opens in one browser
       only." where it does.
     - The activity log: **new** `share.code_sent` ("A code to open a link
       to “Lease” was emailed to j•••@e•••.com"), written as the link, with
@@ -1939,8 +1954,9 @@ email_code_unavailable` when the vault can no longer send one.
       queue under a key derived from the master key. The nightly
       `share.pages.prune` also clears ended links' addresses and codes past
       their day. Neither logs an address.
-    - The database: 0043 adds `share_link.secret_kind` (`pin` or
-      `password`; the argon2 hash stays in `pin_hash`), `code_email`,
+    - The database: 0043 adds `share_link.secret_kind` (`pin`, `password`
+      — typed — or `generated` — made up, hashed lowercase without dashes
+      or spaces; the argon2 hash stays in `pin_hash`), `code_email`,
       `this_device_only` and `device_hash`, each a v2 link's alone;
       `share_link_factors_fixed` keeps a link's protection as it was made,
       binds a device once, and clears the address only when the link has
@@ -1955,7 +1971,8 @@ email_code_unavailable` when the vault can no longer send one.
       deletes every code.
     - `@fdv/shared`: `ShareSecretKind`, `ShareCodeSent`, `maskEmail`,
       `readShareCode`, `SHARE_PASSWORD_MIN`/`MAX`, `SHARE_CODE_*`,
-      `SHARE_CODE_TRUTH`, `SHARE_CODE_UNAVAILABLE`; `ShareProtection` gains
+      `SHARE_CODE_TRUTH`, `SHARE_CODE_UNAVAILABLE`, `SHARE_CODE_CANNOT_SEND`,
+      `SHARE_NEWEST_CODE_ONLY`, `isShareAddress`; `ShareProtection` gains
       `password` and `code`. `@fdv/client`: `sendLinkCode`, and
       `unlockLink(token, secret?, code?)`. The fake says
       `share_second_factor: true, share_email_code: false`.

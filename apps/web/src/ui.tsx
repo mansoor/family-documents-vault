@@ -55,6 +55,9 @@ export function Field(props: {
   invalid?: boolean;
   inputMode?: 'text' | 'numeric' | 'decimal';
   maxLength?: number;
+  /** A password read out to them (5.20): a phone keyboard leaves it as typed. */
+  autoCapitalize?: 'none' | 'off' | 'sentences' | 'words' | 'characters';
+  autoCorrect?: 'on' | 'off';
   /**
    * What is said about the value, directly under the field and heard with
    * it (5.16b): "We'll remind you 7 days before its due date."
@@ -77,6 +80,8 @@ export function Field(props: {
         placeholder={props.placeholder}
         inputMode={props.inputMode}
         maxLength={props.maxLength}
+        autoCapitalize={props.autoCapitalize}
+        autoCorrect={props.autoCorrect}
         onChange={(e) => props.onChange(e.target.value)}
         required={props.required ?? true}
         aria-required={props.requiredMark || undefined}

@@ -30,7 +30,12 @@ import { HouseholdService } from './household/service.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
-import { SHARE_CODE_KEY_PURPOSE, ShareService } from './documents/shares.js';
+import {
+  SHARE_CODE_KEY_PURPOSE,
+  SHARE_DEVICE_KEY_PURPOSE,
+  ShareService,
+} from './documents/shares.js';
+import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
@@ -120,6 +125,11 @@ export interface HarnessOptions {
    * route is.
    */
   operatorMail?: boolean;
+  /**
+   * How a code is sent, in place of the harness's capture (mailSent): for a
+   * test whose queue fails (the 5.20 review, M520-02).
+   */
+  mail?: (m: MailRequest) => Promise<void>;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -241,7 +251,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       enqueue,
       maxDays: config.FDV_SHARE_MAX_DAYS,
       codeKey: deriveKey(TEST_MASTER, SHARE_CODE_KEY_PURPOSE),
-      mail: config.FDV_SMTP_URL ? operatorMail : null,
+      mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
+      deviceKey: deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE),
     }),
     audit: new AuditService(db),
     reminders,

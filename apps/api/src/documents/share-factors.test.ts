@@ -1,10 +1,12 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
 import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   maskEmail,
+  SHARE_CODE_CANNOT_SEND,
   SHARE_CODE_UNAVAILABLE,
+  SHARE_NEWEST_CODE_ONLY,
   type Capabilities,
   type CollectionDetail,
   type DocumentView,
@@ -18,8 +20,17 @@ import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
+import type { MailRequest } from '../mail-job.js';
+import {
+  deviceCookieKey,
+  mintDeviceCookie,
+  verifiedDeviceCookie,
+} from '../public/device-cookie.js';
 import { createHarness, mailSent, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SHARE_CODE_KEY_PURPOSE, type CreatedShare, type ShareView } from './shares.js';
+
+/** What "this device only" cookies are made with (shares.ts SHARE_DEVICE_KEY_PURPOSE). */
+const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
 
 const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
@@ -378,6 +389,130 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     expect((await unlock(created.link_token, { code: fresh })).statusCode).toBe(200);
   });
 
+  it('only the newest code works, also once the newest is spent, and the email and the answer say so (W520-7, F520-03)', async () => {
+    const to = address();
+    const created = await made(lease, { code_email: to });
+    const older = await sendAndRead(created.link_token, to);
+    const newer = await sendAndRead(created.link_token, to);
+    // Said in the email (F520-03).
+    const mail = mailSent(h)
+      .filter((m) => m.to === to)
+      .at(-1);
+    expect(mail?.text).toContain(SHARE_NEWEST_CODE_ONLY);
+    // The older one ended as the newer was sent.
+    const [a, b] = await codesOf(created.share.id);
+    expect(a?.expires_at.getTime()).toBeLessThanOrEqual(b?.sent_at.getTime() ?? 0);
+    // The newer spent by five wrong tries: the older, still inside its ten
+    // minutes, does not come back (W520-7).
+    for (let i = 0; i < 5; i++) {
+      expect((await unlock(created.link_token, { code: another(newer) })).statusCode).toBe(401);
+    }
+    const refused = await unlock(created.link_token, { code: older });
+    expect(refused.statusCode).toBe(401);
+    // And said in the answer (F520-03).
+    expect(errorOf(refused).message).toContain(SHARE_NEWEST_CODE_ONLY);
+    expect((await linkRow(created.share.id)).open_count).toBe(0);
+  });
+
+  it('a code whose email cannot be queued is not kept, counted or written down, and the log says why (M520-02)', async () => {
+    const logs: string[] = [];
+    let failing = false;
+    const queued: MailRequest[] = [];
+    const flaky = await createHarness({
+      logger: { level: 'info', stream: { write: (s: string) => void logs.push(s) } },
+      mail: async (m) => {
+        if (failing) throw new Error('Queue mail.to_address does not exist');
+        queued.push(m);
+      },
+    });
+    try {
+      const o = await flaky.setup();
+      const doc = json<DocumentView>(
+        await flaky.app.inject({
+          method: 'POST',
+          url: '/api/v1/documents',
+          headers: flaky.as(o),
+          payload: { title: 'Lease', type_key: 'utility_bill', visibility: 'household' },
+        }),
+      ).id;
+      const form = new FormData();
+      form.append('file', PDF, { filename: 'scan.pdf', contentType: 'application/pdf' });
+      await flaky.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${doc}/versions`,
+        headers: { ...flaky.as(o), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+        payload: form.getBuffer(),
+      });
+      const to = address('queue.test');
+      const link = json<CreatedShare>(
+        await flaky.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${doc}/share`,
+          headers: flaky.as(o),
+          payload: { code_email: to },
+        }),
+      );
+      const send = () =>
+        flaky.app.inject({
+          method: 'POST',
+          url: '/api/v1/shared/code',
+          payload: { token: link.link_token },
+          ...peer(),
+        });
+      const codeOf = (m: MailRequest | undefined) =>
+        /(\d{3}) (\d{3})/
+          .exec(m?.text ?? '')
+          ?.slice(1)
+          .join('') ?? '';
+      expect((await send()).statusCode).toBe(200);
+      const first = codeOf(queued.at(-1));
+
+      failing = true;
+      for (let i = 0; i < 3; i++) {
+        const r = await send();
+        expect(r.statusCode).toBe(503);
+        expect(errorOf(r).code).toBe('code_not_sent');
+        expect(r.headers['retry-after']).toBe('60');
+      }
+      // Nothing of them was kept: one code, one line in the log.
+      const kept = await withSystem(flaky.db, o.household_id, async (trx) => ({
+        codes: await trx
+          .selectFrom('share_code')
+          .select('id')
+          .where('share_id', '=', link.share.id)
+          .execute(),
+        lines: await trx
+          .selectFrom('audit_event')
+          .select('action')
+          .where('action', '=', 'share.code_sent')
+          .execute(),
+      }));
+      expect(kept.codes).toHaveLength(1);
+      expect(kept.lines).toHaveLength(1);
+      // The operator is told why, with no address or code in it.
+      const said = logs.join('\n');
+      expect(said).toContain('could not be queued');
+      expect(said).toContain('Queue mail.to_address does not exist');
+      expect(said).not.toContain('queue.test');
+
+      // The code already sent still works …
+      failing = false;
+      const opened = await flaky.app.inject({
+        method: 'POST',
+        url: '/api/v1/shared/unlock',
+        payload: { token: link.link_token, code: first },
+        ...peer(),
+      });
+      expect(opened.statusCode, opened.body).toBe(200);
+      // … and the failed sends took none of the three in 15 minutes.
+      expect((await send()).statusCode).toBe(200);
+      expect((await send()).statusCode).toBe(200);
+      expect((await send()).statusCode).toBe(429);
+    } finally {
+      await flaky.close();
+    }
+  }, 90_000);
+
   // ---------------------------------------------- one counter of ten (A23)
 
   it('wrong codes and wrong passwords share one counter of 10', async () => {
@@ -599,6 +734,38 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
         payload: { with_password: true, this_device_only: true },
       });
       expect(pw.statusCode, pw.body).toBe(201);
+      // A link that asks for a code on a vault that can no longer send one
+      // (its operator has taken the mail server away since): the person it
+      // is for is told what they can do, not the sharer's reason (W520-14).
+      const token = randomUUID() + randomUUID();
+      const account = json<{ account_id: string }>(
+        await without.app.inject({ url: '/api/v1/me', headers: without.as(o) }),
+      ).account_id;
+      await withSystem(without.db, o.household_id, (trx) =>
+        trx
+          .insertInto('share_link')
+          .values({
+            household_id: o.household_id,
+            document_id: doc,
+            token_hash: createHash('sha256').update(token, 'utf8').digest(),
+            created_by: account,
+            expires_at: new Date(Date.now() + 864e5),
+            code_email: address(),
+          })
+          .execute(),
+      );
+      const cannot = await without.app.inject({
+        method: 'POST',
+        url: '/api/v1/shared/code',
+        payload: { token },
+        ...peer(),
+      });
+      expect(cannot.statusCode).toBe(503);
+      expect(errorOf(cannot)).toMatchObject({
+        code: 'email_code_unavailable',
+        message: SHARE_CODE_CANNOT_SEND,
+      });
+      expect(errorOf(cannot).message).not.toBe(SHARE_CODE_UNAVAILABLE);
     } finally {
       await without.close();
     }
@@ -624,8 +791,10 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     const listed = await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) });
     expect(listed.body).not.toContain(madeUp.password);
     const row = await linkRow(madeUp.share.id);
-    expect(row.secret_kind).toBe('password');
-    expect(await argon2.verify(row.pin_hash as string, madeUp.password as string)).toBe(true);
+    expect(row.secret_kind).toBe('generated');
+    expect(
+      await argon2.verify(row.pin_hash as string, (madeUp.password as string).replace(/-/g, '')),
+    ).toBe(true);
 
     const typed = await made(lease, { password: '  horse battery  ' });
     expect(typed.password).toBeUndefined();
@@ -673,7 +842,66 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     }
   });
 
+  it('a made-up password is taken without regard to capitals, dashes or spaces; a typed one as typed (F520-06)', async () => {
+    const madeUp = await made(lease, { with_password: true });
+    const pw = madeUp.password as string;
+    // Read out over the phone and typed unseen: every one of these is it,
+    // and none uses up a try.
+    for (const typed of [
+      pw.toUpperCase(),
+      pw.replace(/-/g, ''),
+      pw.replace(/-/g, ' '),
+      ` ${pw.toUpperCase().replace(/-/g, ' - ')} `,
+    ]) {
+      const r = await unlock(madeUp.link_token, { secret: typed });
+      expect(r.statusCode, `${typed}: ${r.body}`).toBe(200);
+    }
+    expect(await linkRow(madeUp.share.id)).toMatchObject({ attempts: 0, secret_kind: 'generated' });
+    // Nor does it make another password right.
+    const wrong = `${pw.slice(0, -1)}${pw.endsWith('a') ? 'b' : 'a'}`;
+    expect((await unlock(madeUp.link_token, { secret: wrong })).statusCode).toBe(401);
+    // A password the sharer typed is theirs, checked exactly as typed.
+    const typed = await made(lease, { password: 'River Otter Lantern' });
+    expect((await linkRow(typed.share.id)).secret_kind).toBe('password');
+    expect((await unlock(typed.link_token, { secret: 'river otter lantern' })).statusCode).toBe(
+      401,
+    );
+    expect((await unlock(typed.link_token, { secret: 'River Otter Lantern' })).statusCode).toBe(
+      200,
+    );
+  });
+
   // --------------------------------------------------- this device only
+
+  it('a device cookie the vault did not make is never bound, and one it made is kept (F520-04)', async () => {
+    // Planted in the browser before its first open by somebody who holds the
+    // link: whatever its shape, it is replaced, and opens nothing after.
+    for (const planted of [
+      'planted-by-somebody-else',
+      randomBytes(64).toString('base64url'),
+      mintDeviceCookie(deviceCookieKey(`${TEST_MASTER}-not-this-vault`, SHARE_DEVICE_KEY_PURPOSE)),
+      mintDeviceCookie(deviceCookieKey(TEST_MASTER, 'drop-device')),
+    ]) {
+      const created = await made(lease, { this_device_only: true });
+      const first = await unlock(created.link_token, {}, planted);
+      expect(first.statusCode, first.body).toBe(200);
+      const bound = cookie(first, 'fdv_share_device')?.value as string;
+      expect(bound).not.toBe(planted);
+      expect(
+        verifiedDeviceCookie(deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE), bound),
+      ).toBe(bound);
+      const attacker = await unlock(created.link_token, {}, planted);
+      expect(attacker.statusCode, planted).toBe(403);
+      expect((await unlock(created.link_token, {}, bound)).statusCode).toBe(200);
+    }
+    // One the vault made is kept: the same browser, another link.
+    const one = await made(lease, { this_device_only: true });
+    const theirs = cookie(await unlock(one.link_token), 'fdv_share_device')?.value as string;
+    const two = await made(lease, { this_device_only: true });
+    const again = await unlock(two.link_token, {}, theirs);
+    expect(again.statusCode).toBe(200);
+    expect(cookie(again, 'fdv_share_device')?.value).toBe(theirs);
+  }, 60_000);
 
   it('a second browser is refused', async () => {
     for (const kind of ['document', 'collection'] as const) {
@@ -713,6 +941,9 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
       const refused = await unlock(created.link_token, { secret: pin });
       expect(refused.statusCode, kind).toBe(403);
       expect(errorOf(refused).code).toBe('other_device');
+      // One browser, not the device (F520-05).
+      expect(errorOf(refused).message).toMatch(/opened in another browser already/);
+      expect(errorOf(refused).message).not.toMatch(/device/);
       const forged = await unlock(created.link_token, { secret: pin }, 'a-cookie-of-its-own');
       expect(forged.statusCode, kind).toBe(403);
       expect(await linkRow(created.share.id)).toMatchObject({ attempts: 0, open_count: 1 });

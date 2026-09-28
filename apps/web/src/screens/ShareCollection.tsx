@@ -11,7 +11,14 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type CreatedShare } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { Button, ErrorNote, LockIcon } from '../ui.js';
-import { HandOver, LinkOptions, linkFactors, readLinkOptions, useLinkOptions } from './Share.js';
+import {
+  codeAddressRefusal,
+  HandOver,
+  LinkOptions,
+  linkFactors,
+  readLinkOptions,
+  useLinkOptions,
+} from './Share.js';
 
 /**
  * Sharing a collection outside the family (5.19).
@@ -127,7 +134,10 @@ export function ShareCollectionPanel(props: {
         props.onShared?.();
       }
     } catch (err) {
-      setError(describeError(err));
+      // About the address a code goes to: said under it (W520-5).
+      const refused = codeAddressRefusal(err);
+      if (refused) options.set({ codeRefused: refused });
+      else setError(describeError(err));
     } finally {
       working(false);
     }

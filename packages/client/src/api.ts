@@ -687,9 +687,15 @@ export function createApi(http: Http) {
       }),
     /**
      * An emailed code (5.20, `features.share_email_code`), to the address the
-     * sharer typed — the page never says one. `429 code_limit` past 3 in 15
-     * minutes or 10 a day; `503 email_code_unavailable` when the vault has no
-     * way to send one.
+     * sharer typed — the page never says one. Only the newest code works: a
+     * new one ends the one before it. `429 code_limit` past 3 in 15 minutes
+     * or 10 a day; `409 no_code_needed` for a link that asks for none; `403
+     * other_device` from another browser than a link for one browser was
+     * opened in; `503 email_code_unavailable` when the vault has no way to
+     * send one (ask the sender for a new link); `503 code_not_sent`
+     * (retriable, `Retry-After`) when its email could not be queued just
+     * now — nothing was sent, the code before it still works, and the try is
+     * not counted against the limit.
      */
     sendLinkCode: (linkToken: string) =>
       request<ShareCodeSent>('/api/v1/shared/code', {

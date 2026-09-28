@@ -414,6 +414,33 @@ export const SHARE_CODE_UNAVAILABLE =
   'Emailing a code needs the mail server of whoever runs this vault, and none is set up. The household’s own mail settings are not used for it: a code must not go through a server that can be pointed anywhere.';
 
 /**
+ * What the person a link is for is told when the vault cannot send the code
+ * it asks for (the 5.20 review, W520-14): not the sharer's explanation, but
+ * what they can do.
+ */
+export const SHARE_CODE_CANNOT_SEND =
+  'This link asks for a code by email, which this vault cannot send just now. Ask whoever sent it for a new link.';
+
+/**
+ * Said wherever a code is (the 5.20 review, F520-03): a new code ends the
+ * one before it, so an earlier email's code is refused, and uses up a try.
+ */
+export const SHARE_NEWEST_CODE_ONLY = 'Only the newest code works';
+
+/**
+ * An address a code can be sent to (the 5.20 review, W520-5): the rule the
+ * API holds `code_email` to, and the one the share sheet checks before it
+ * sends — so the sheet never offers an address the vault refuses. It is
+ * zod's own email rule (4.x), at most 254 characters.
+ */
+const SHARE_ADDRESS =
+  /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+
+export function isShareAddress(address: string): boolean {
+  return address.length <= 254 && SHARE_ADDRESS.test(address);
+}
+
+/**
  * An address as the recipient and the activity log see it: enough to know
  * which inbox, and no more — `jane.smith@example.com` is `j•••@e•••.com`.
  */

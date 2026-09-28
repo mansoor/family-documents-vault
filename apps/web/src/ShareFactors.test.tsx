@@ -133,6 +133,53 @@ describe('the protection choices (5.20)', () => {
     expect(screen.getByText('They will be asked for the password you chose.')).toBeInTheDocument();
   });
 
+  it('an address the vault would refuse is refused here, and a refusal from the vault is said under it (W520-5)', async () => {
+    const state = await openSheet({ operatorMail: true, refuseCodeEmail: true });
+    fireEvent.click(screen.getByLabelText(/email them a code/));
+    const field = screen.getByLabelText('Their email address');
+    const make = () => screen.getByRole('button', { name: 'Make the link' });
+    // What the vault's own rule refuses: none of these is offered to it.
+    for (const refused of [
+      'jane@example.c',
+      'jane..smith@example.com',
+      '.jane@example.com',
+      'jane@-example.com',
+      'jané@example.com',
+    ]) {
+      fireEvent.change(field, { target: { value: refused } });
+      expect(make(), refused).toBeDisabled();
+      expect(field, refused).toHaveAttribute('aria-invalid', 'true');
+    }
+    // One it takes goes; the vault's refusal of it is said under the field,
+    // not at the top of the card, and goes when the address is changed.
+    fireEvent.change(field, { target: { value: 'jane.smith@example.com' } });
+    fireEvent.click(make());
+    const note = await screen.findByText(
+      'That is not an email address. Check it: name@example.com.',
+    );
+    expect(note).toHaveAttribute('id', 'share-code-note');
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(make()).toBeDisabled();
+    expect(state.calls.filter((c) => c.url.endsWith('/share'))).toHaveLength(1);
+    fireEvent.change(field, { target: { value: 'jane@example.com' } });
+    expect(screen.queryByText(/That is not an email address/)).not.toBeInTheDocument();
+    expect(make()).toBeEnabled();
+  });
+
+  it('a typed password is not marked wrong before anything is typed, and is left as typed (W520-6, W520-13)', async () => {
+    await openSheet();
+    fireEvent.click(screen.getByLabelText(/ask for a password/));
+    fireEvent.click(screen.getByRole('button', { name: 'I’ll type one' }));
+    const field = screen.getByLabelText('The password');
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toHaveAttribute('autocapitalize', 'none');
+    expect(field).toHaveAttribute('autocorrect', 'off');
+    fireEvent.change(field, { target: { value: 'short' } });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(field, { target: { value: 'long enough now' } });
+    expect(field).not.toHaveAttribute('aria-invalid');
+  });
+
   it('an older vault is offered the PIN alone, and sent nothing it does not know', async () => {
     const state = await openSheet({ shareSecondFactor: false, operatorMail: false });
     const protect = screen.getByRole('group', { name: 'Protect it' });
@@ -163,8 +210,10 @@ describe('the page a link opens, with a second factor (5.20)', () => {
     await expectAccessible();
 
     fireEvent.click(screen.getByRole('button', { name: 'Email me a code' }));
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'We sent a code to j•••@e•••.com. It works once, for 10 minutes.',
+    await waitFor(() =>
+      expect(within(screen.getByTestId('share-code')).getByRole('status')).toHaveTextContent(
+        'We sent a code to j•••@e•••.com.',
+      ),
     );
     fireEvent.change(screen.getByLabelText('The code from the email'), {
       target: { value: '111111' },
@@ -219,17 +268,68 @@ describe('the page a link opens, with a second factor (5.20)', () => {
   it('this device only is said before Open, and another browser is told it cannot open here', async () => {
     installFakeApi(fresh({ shareDeviceOnly: true }));
     const { unmount } = render(<SharePage token={TOKEN} />);
-    await screen.findByText(/It opens only on the first device that opens it/);
+    // One browser, not the device (F520-05), and which to use.
+    const said = await screen.findByText(/It opens only in the first browser that opens it/);
+    expect(said).toHaveTextContent(/not a private window, or the browser inside your email app/);
+    expect(said).not.toHaveTextContent(/device/);
     unmount();
 
     const state = fresh({ shareDeviceOnly: true, shareOtherDevice: true });
     installFakeApi(state);
     render(<SharePage token={TOKEN} />);
     await screen.findByRole('heading', { name: 'This link cannot be opened' });
-    expect(screen.getByText(/opened on another device already/)).toBeInTheDocument();
+    expect(screen.getByText(/opened in another browser already/)).toBeInTheDocument();
+    expect(screen.queryByText(/another device/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open' })).not.toBeInTheDocument();
     expect(state.calls.map((c) => c.url)).toEqual(['/api/v1/shared/preview']);
     expect(screen.queryByText(/tenancy/i)).not.toBeInTheDocument();
     await expectAccessible();
+  });
+
+  it('a code already in the inbox is typed without sending another, and only the newest works (W520-1, F520-03)', async () => {
+    // Reopened, reloaded, or back from the email app: the code already
+    // sent is at hand, and sending another would end it.
+    const state = fresh({ shareCode: '482915' });
+    installFakeApi(state);
+    render(<SharePage token={TOKEN} />);
+    const field = await screen.findByLabelText('The code from the email');
+    expect(screen.getByText(/Already have a code\? Type it here/)).toBeInTheDocument();
+    expect(screen.getByTestId('share-code')).toHaveTextContent(
+      /Only the newest code works, once, for 10 minutes/,
+    );
+    fireEvent.change(field, { target: { value: '482915' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    await screen.findByRole('heading', { name: 'Flat 3 tenancy agreement' });
+    expect(state.calls.filter((c) => c.url === '/api/v1/shared/code')).toHaveLength(0);
+  });
+
+  it('each code sent is heard, a new one says the last no longer works, and the focus goes to the code (W520-2)', async () => {
+    installFakeApi(fresh({ shareCode: '482915' }));
+    render(<SharePage token={TOKEN} />);
+    const box = await screen.findByTestId('share-code');
+    // Always in the page, so that what it comes to say is announced.
+    const status = within(box).getByRole('status');
+    expect(status).toHaveTextContent('');
+    fireEvent.click(within(box).getByRole('button', { name: 'Email me a code' }));
+    await waitFor(() => expect(status).toHaveTextContent('We sent a code to j•••@e•••.com.'));
+    expect(within(box).getByRole('status')).toBe(status);
+    expect(document.activeElement).toBe(screen.getByLabelText('The code from the email'));
+    // Sent again: said again, differently.
+    const first = status.textContent;
+    fireEvent.click(within(box).getByRole('button', { name: 'Send another code' }));
+    await waitFor(() => expect(status.textContent).not.toBe(first));
+    expect(status).toHaveTextContent(
+      'We sent a new code to j•••@e•••.com (2 so far). The one before it no longer works.',
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText('The code from the email'));
+    await expectAccessible();
+  });
+
+  it('the password field is left as typed by a phone keyboard (W520-13)', async () => {
+    installFakeApi(fresh({ sharePassword: 'river otter lantern' }));
+    render(<SharePage token={TOKEN} />);
+    const field = await screen.findByLabelText('The password they gave you');
+    expect(field).toHaveAttribute('autocapitalize', 'none');
+    expect(field).toHaveAttribute('autocorrect', 'off');
   });
 });

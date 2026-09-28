@@ -1,4 +1,9 @@
-import { pagesNotSharedNote, readShareCode, type ShareCodeSent } from '@fdv/shared';
+import {
+  pagesNotSharedNote,
+  readShareCode,
+  SHARE_NEWEST_CODE_ONLY,
+  type ShareCodeSent,
+} from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import {
   api,
@@ -51,9 +56,13 @@ const NO_LINK =
  */
 const secure = () => window.isSecureContext !== false;
 
-/** A link for one device, in another browser (5.20): said before anything is tried. */
+/**
+ * A link for one browser, in another (5.20): said before anything is tried.
+ * One browser, not the device (the 5.20 review, F520-05): what it is bound
+ * to is that browser's cookie.
+ */
 const OTHER_DEVICE =
-  'This link has been opened on another device already, and it only opens there. Ask whoever sent it for a new one if you need it here.';
+  'This link has been opened in another browser already, and it only opens there. Open it in the browser you opened it in first, or ask whoever sent it for a new one.';
 
 export function SharePage({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
@@ -213,6 +222,9 @@ function Preview({
   const needsPassword = preview.protection.includes('password');
   const needsCode = preview.protection.includes('code');
   const [sent, setSent] = useState<ShareCodeSent | null>(null);
+  // How many codes this page has sent: what it says changes with each, so
+  // a screen reader hears a second send as well as the first (W520-2).
+  const [sends, setSends] = useState(0);
   const [sending, setSending] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
   const from = preview.shared_by ? <strong>{preview.shared_by}</strong> : 'Somebody';
@@ -233,6 +245,7 @@ function Preview({
     setCodeError(null);
     try {
       setSent(await api.sendLinkCode(props.token));
+      setSends((n) => n + 1);
       props.setCode('');
     } catch (err) {
       if (
@@ -249,6 +262,11 @@ function Preview({
       setSending(false);
     }
   };
+  // Sent: the focus goes to where the code is typed (W520-2), from the
+  // button that was turned off while it was sending.
+  useEffect(() => {
+    if (sends > 0) document.getElementById('share-code-input')?.focus();
+  }, [sends]);
   const ready =
     (!needsPin || props.pin.trim().length >= 4) &&
     (!needsPassword || props.pin.trim().length > 0) &&
@@ -283,10 +301,12 @@ function Preview({
                 reloading the page it opens does not.
               </li>
             )}
+            {/* One browser, not the device (F520-05): its cookie is what it is bound to. */}
             {preview.this_device_only && (
               <li>
-                It opens only on the first device that opens it. Open it where you want to read it:
-                after that, it will not open anywhere else.
+                It opens only in the first browser that opens it. Open it in the browser you usually
+                use — not a private window, or the browser inside your email app — because after
+                that it will not open anywhere else.
               </li>
             )}
           </ul>
@@ -311,35 +331,49 @@ function Preview({
             value={props.pin}
             onChange={props.setPin}
             autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
             maxLength={64}
             hint="It came separately from the link. Its name stays hidden until it is right."
           />
         )}
         {needsCode && (
           <div className="stack" style={{ gap: 8 }} data-testid="share-code">
-            {sent ? (
-              <p className="status status-ok share-code-sent" role="status">
-                We sent a code to {sent.sent_to}. It works once, for 10 minutes.
-              </p>
-            ) : (
-              <p className="share-code-sent">
-                We will email a code to <strong>{preview.code_to ?? 'their inbox'}</strong>, the
-                address {preview.shared_by ?? 'whoever sent the link'} gave for you.
-              </p>
-            )}
+            <p className="share-code-sent">
+              We email a code to <strong>{preview.code_to ?? 'your inbox'}</strong>, the address{' '}
+              {preview.shared_by ?? 'whoever sent the link'} gave for you. {SHARE_NEWEST_CODE_ONLY},
+              once, for 10 minutes.
+            </p>
+            {/* Always here (W520-1): a code already in the inbox — from before
+                a reload, or from the email app — is typed without sending
+                another, which would end it. */}
+            <Field
+              id="share-code-input"
+              label="The code from the email"
+              value={props.code}
+              onChange={props.setCode}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={9}
+              hint={
+                sent
+                  ? 'Six digits. If it has not come, look in junk mail, or send another.'
+                  : 'Already have a code? Type it here. Six digits, from the newest email.'
+              }
+            />
+            {/* Always in the page, so what it says is heard when it changes
+                (W520-2); it changes with every send. */}
+            <p
+              className={sent ? 'status status-ok share-code-status' : 'share-code-status'}
+              role="status"
+            >
+              {sent
+                ? sends > 1
+                  ? `We sent a new code to ${sent.sent_to} (${sends} so far). The one before it no longer works.`
+                  : `We sent a code to ${sent.sent_to}.`
+                : ''}
+            </p>
             <ErrorNote message={codeError} />
-            {sent && (
-              <Field
-                id="share-code-input"
-                label="The code from the email"
-                value={props.code}
-                onChange={props.setCode}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={9}
-                hint="Six digits. If it has not come, look in junk mail, or send another."
-              />
-            )}
             <Button
               kind={sent ? 'quiet' : 'primary'}
               disabled={sending || !secure()}

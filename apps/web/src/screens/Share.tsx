@@ -2,6 +2,7 @@ import {
   can,
   canShareToView,
   defaultShareEnd,
+  isShareAddress,
   latestShareEnd,
   PREVIEW_MAX_PAGES,
   SHARE_CODE_TRUTH,
@@ -21,7 +22,7 @@ import {
   type SharePermission,
 } from '@fdv/shared';
 import { useState, type ReactNode } from 'react';
-import { api, type CreatedShare, type Share } from '../api.js';
+import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ErrorNote, Field } from '../ui.js';
@@ -116,7 +117,10 @@ export function SharePanel(props: {
         await reload();
       }
     } catch (err) {
-      setError(describeError(err));
+      // About the address a code goes to: said under it (W520-5).
+      const refused = codeAddressRefusal(err);
+      if (refused) options.set({ codeRefused: refused });
+      else setError(describeError(err));
     } finally {
       working(null);
     }
@@ -236,6 +240,11 @@ export interface LinkOptionsValue {
   /** A code emailed to this address when they ask (5.20). */
   withCode: boolean;
   codeEmail: string;
+  /**
+   * The vault's own refusal of that address, said under it (W520-5), until
+   * it is changed.
+   */
+  codeRefused: string | null;
   /** The first browser to open it is the only one it opens in (5.20). */
   thisDeviceOnly: boolean;
 }
@@ -251,6 +260,7 @@ const NO_OPTIONS: LinkOptionsValue = {
   password: '',
   withCode: false,
   codeEmail: '',
+  codeRefused: null,
   thisDeviceOnly: false,
 };
 
@@ -291,8 +301,17 @@ export function linkFactors(caps: Capabilities | null): LinkFactors {
   };
 }
 
-/** An address as a person types one: something, an @, and a name with a dot in it. */
-const LOOKS_LIKE_ADDRESS = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * The vault's refusal of what a link asks for, when it is about the address
+ * a code goes to (W520-5): said under that field, where it can be put right,
+ * rather than at the top of the card. Null for anything else.
+ */
+export function codeAddressRefusal(err: unknown): string | null {
+  if (!(err instanceof ApiRequestError)) return null;
+  if (err.code === 'email_code_unavailable') return err.message;
+  if (err.code === 'validation_failed' && err.detail?.startsWith('code_email')) return err.message;
+  return null;
+}
 
 /** What the options come to: the end, what is wrong, and what to send when nothing is. */
 export function readLinkOptions(
@@ -337,10 +356,13 @@ export function readLinkOptions(
       : null;
   const code = factors.email && value.withCode;
   const address = value.codeEmail.trim();
-  const codeProblem =
-    code && !LOOKS_LIKE_ADDRESS.test(address)
+  // The vault's own rule (isShareAddress, W520-5): nothing it would refuse
+  // is offered; and a refusal it gave anyway is said here too.
+  const codeProblem = code
+    ? !isShareAddress(address)
       ? 'Their email address, which the code will go to: name@example.com.'
-      : null;
+      : value.codeRefused
+    : null;
   const body: ShareInput | null =
     endAt && !endProblem && !opensProblem && !passwordProblem && !codeProblem
       ? {
@@ -603,15 +625,19 @@ function Protection(props: {
               {value.passwordMode === 'typed' ? (
                 <div className="field">
                   <label htmlFor="share-password">The password</label>
+                  {/* Left as typed by a phone keyboard (W520-13), and not
+                      marked wrong before anything is typed (W520-6). */}
                   <input
                     id="share-password"
                     type="text"
                     autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     spellCheck={false}
                     maxLength={SHARE_PASSWORD_MAX}
                     value={value.password}
                     onChange={(e) => options.set({ password: e.target.value })}
-                    aria-invalid={passwordProblem ? true : undefined}
+                    aria-invalid={passwordProblem && value.password ? true : undefined}
                     aria-describedby="share-password-note"
                   />
                   <span
@@ -653,7 +679,7 @@ function Protection(props: {
                   autoComplete="off"
                   maxLength={254}
                   value={value.codeEmail}
-                  onChange={(e) => options.set({ codeEmail: e.target.value })}
+                  onChange={(e) => options.set({ codeEmail: e.target.value, codeRefused: null })}
                   aria-invalid={codeProblem && value.codeEmail ? true : undefined}
                   aria-describedby="share-code-note"
                 />

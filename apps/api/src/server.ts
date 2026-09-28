@@ -24,7 +24,12 @@ import { HouseholdService } from './household/service.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
-import { SHARE_CODE_KEY_PURPOSE, ShareService } from './documents/shares.js';
+import {
+  SHARE_CODE_KEY_PURPOSE,
+  SHARE_DEVICE_KEY_PURPOSE,
+  ShareService,
+} from './documents/shares.js';
+import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
@@ -182,6 +187,8 @@ async function main(): Promise<void> {
       // through the operator's mail server — none at all without one (A21).
       codeKey: deriveKey(masterSecret, SHARE_CODE_KEY_PURPOSE),
       mail: config.FDV_SMTP_URL ? operatorMail : null,
+      // "This device only" cookies: made, and checked, by the vault alone.
+      deviceKey: deviceCookieKey(masterSecret, SHARE_DEVICE_KEY_PURPOSE),
     }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),

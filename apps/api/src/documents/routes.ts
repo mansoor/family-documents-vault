@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { errorForLog } from '../log-redaction.js';
 import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
@@ -640,13 +641,26 @@ export function registerDocuments(
    * An emailed code (5.20): to the address the sharer typed — the page
    * never says one — through the operator's mail server alone (A21).
    */
-  app.post('/api/v1/shared/code', tight, async (req) =>
-    shares.sendCode(
-      parse(codeBody, req.body ?? {}).token,
-      req.cookies[SHARE_DEVICE_COOKIE],
-      metaOf(req),
-    ),
-  );
+  app.post('/api/v1/shared/code', tight, async (req) => {
+    try {
+      return await shares.sendCode(
+        parse(codeBody, req.body ?? {}).token,
+        req.cookies[SHARE_DEVICE_COOKIE],
+        metaOf(req),
+      );
+    } catch (err) {
+      // A code whose email could not be queued (the 5.20 review, M520-02):
+      // undone, answered 503, and why said to the operator — with no
+      // address or code in it (errorForLog).
+      if (err instanceof ApiError && err.code === 'code_not_sent') {
+        req.log.error(
+          { error: errorForLog((err as Error & { cause?: unknown }).cause) },
+          "a share link's code could not be queued to be emailed",
+        );
+      }
+      throw err;
+    }
+  });
 
   app.post('/api/v1/shared/unlock', tight, async (req, reply) => {
     const opened = await shares.unlock(

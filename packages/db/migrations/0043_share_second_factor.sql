@@ -3,9 +3,12 @@
 -- A link made since 5.16 (`flow = 'v2'`) can ask for more than itself, in
 -- any combination:
 --
---   secret_kind       a PIN (four digits the vault made up, as since 0.5.0)
---                     or a password (made up by the vault, or typed by the
---                     sharer: 8 characters or more), its argon2 hash kept in
+--   secret_kind       a PIN (four digits the vault made up, as since 0.5.0),
+--                     a password the sharer typed (`password`: 8 characters
+--                     or more, checked as typed), or one the vault made up
+--                     (`generated`: hashed and checked lowercase with its
+--                     dashes and spaces taken out, since it is read out over
+--                     the phone and typed unseen). Its argon2 hash is kept in
 --                     pin_hash as a PIN's always was. A row with a hash and
 --                     no kind is a PIN's, as every one before this was.
 --   code_email        an emailed 6-digit code, sent only to this address,
@@ -29,7 +32,7 @@
 
 alter table share_link
   add column secret_kind text
-    constraint share_link_secret_kind check (secret_kind in ('pin', 'password')),
+    constraint share_link_secret_kind check (secret_kind in ('pin', 'password', 'generated')),
   add column code_email text
     constraint share_link_code_email check (char_length(code_email) between 3 and 254
                                             and position('@' in code_email) > 1),
@@ -41,7 +44,9 @@ update share_link set secret_kind = 'pin' where pin_hash is not null;
 alter table share_link
   -- A kind of secret has its hash.
   add constraint share_link_secret_hashed check (secret_kind is null or pin_hash is not null),
-  add constraint share_link_password_v2 check (flow = 'v2' or secret_kind is distinct from 'password'),
+  -- A legacy link has a PIN or nothing: a password of either kind is a v2 link's.
+  add constraint share_link_password_v2
+    check (flow = 'v2' or secret_kind is null or secret_kind = 'pin'),
   add constraint share_link_code_email_v2 check (flow = 'v2' or code_email is null),
   add constraint share_link_this_device_v2 check (flow = 'v2' or not this_device_only),
   -- Only a link for one device is bound to one.

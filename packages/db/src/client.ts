@@ -257,12 +257,14 @@ export interface Schema {
     max_downloads: number | null;
     downloads_used: Generated<number>;
     /**
-     * What `pin_hash` is the hash of (0043): a PIN, or a password (v2 only).
-     * Null with a hash is a PIN, as every link before 0043 had.
+     * What `pin_hash` is the hash of (0043): a PIN, a password the sharer
+     * typed, or one the vault made up (`generated`: hashed and checked in its
+     * canonical form, lowercase without dashes or spaces). Passwords are v2
+     * only. Null with a hash is a PIN, as every link before 0043 had.
      */
     secret_kind: ColumnType<
-      'pin' | 'password' | null,
-      'pin' | 'password' | null | undefined,
+      'pin' | 'password' | 'generated' | null,
+      'pin' | 'password' | 'generated' | null | undefined,
       never
     >;
     /**

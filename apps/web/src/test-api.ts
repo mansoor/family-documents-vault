@@ -113,6 +113,8 @@ export interface FakeState {
   shareCode?: string | null;
   shareCodeTo?: string;
   shareCodesSent?: number;
+  /** The vault refuses the address a code would go to (validation_failed on code_email). */
+  refuseCodeEmail?: boolean;
   shareDeviceOnly?: boolean;
   shareOtherDevice?: boolean;
   /** How many times /api/v1/shared/items was asked. */
@@ -883,6 +885,15 @@ export function installFakeApi(state: FakeState) {
           'Emailing a code needs the mail server of whoever runs this vault, and none is set up.',
         );
       }
+      // An address the vault refuses, as its schema does (W520-5).
+      if (b.code_email !== undefined && state.refuseCodeEmail) {
+        return refuse(
+          422,
+          'validation_failed',
+          'That is not an email address. Check it: name@example.com.',
+          { detail: 'code_email: That is not an email address. Check it: name@example.com.' },
+        );
+      }
       // The vault's own refusals (5.18), in its words.
       const end = b.expires_at
         ? new Date(b.expires_at)
@@ -1011,7 +1022,7 @@ export function installFakeApi(state: FakeState) {
       refuse(
         403,
         'other_device',
-        'This link has been opened on another device already, and it only opens there. Ask whoever sent it for a new one if you need it here.',
+        'This link has been opened in another browser already, and it only opens there. Open it in the browser you opened it in first, or ask whoever sent it for a new one.',
       );
     if (path === '/api/v1/shared/preview' && method === 'POST') {
       if (!state.shareValid) return linkGone();
@@ -1076,10 +1087,10 @@ export function installFakeApi(state: FakeState) {
           401,
           'secret_wrong',
           state.sharePassword && state.shareCode
-            ? 'The password or the code is not right. Check the password with whoever sent you the link; a code works once, for 10 minutes, so send a new one if it has run out.'
+            ? 'The password or the code is not right. Check the password with whoever sent you the link. Only the newest code works, once, for 10 minutes: send a new one if it has run out.'
             : state.sharePassword
               ? 'That password is not right. Check with whoever sent you the link.'
-              : 'That code is not right, or it has run out: a code works once, for 10 minutes. Send a new one.',
+              : 'That code is not right, or it has run out. Only the newest code works, once, for 10 minutes: send a new one.',
         );
       }
       state.shareOpens += 1;

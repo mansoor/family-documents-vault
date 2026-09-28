@@ -26,6 +26,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { MailRequest } from '../mail-job.js';
+import { mintDeviceCookie, verifiedDeviceCookie } from '../public/device-cookie.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { seenCollection } from '../collections/service.js';
@@ -42,11 +43,14 @@ import {
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   FOLLOW_MAX_DAYS,
+  isShareAddress,
   maskEmail,
   PREVIEW_MAX_PAGES,
   readShareCode,
+  SHARE_CODE_CANNOT_SEND,
   SHARE_CODE_MINUTES,
   SHARE_CODE_SENDS,
+  SHARE_NEWEST_CODE_ONLY,
   SHARE_CODE_TRIES,
   SHARE_CODE_UNAVAILABLE,
   SHARE_END_GRACE_MINUTES,
@@ -186,7 +190,13 @@ const shareOptions = {
   /** Or one the sharer types (5.20): what the recipient will type, spaces at its ends aside. */
   password: z.string().trim().min(SHARE_PASSWORD_MIN).max(SHARE_PASSWORD_MAX).optional(),
   /** Where an emailed code goes (5.20): only this address, through operator mail only. */
-  code_email: z.string().trim().max(254).email().optional(),
+  // The share sheet's own rule (isShareAddress), so it never offers one this refuses.
+  code_email: z
+    .string()
+    .trim()
+    .max(254)
+    .refine(isShareAddress, 'That is not an email address. Check it: name@example.com.')
+    .optional(),
   /** The first browser to open it is the only one it opens in (5.20). */
   this_device_only: z.boolean().optional(),
 };
@@ -373,6 +383,30 @@ function madeUpPassword(): string {
   return `${group()}-${group()}-${group()}`;
 }
 
+/**
+ * A made-up password as it is hashed and checked (the 5.20 review, F520-06):
+ * lowercase, with its dashes and any spaces taken out. It is read out over
+ * the phone and typed without being seen, so `K7MQ P2XA 9HTW` and
+ * `k7mqp2xa9htw` are the same password and use up none of the link's ten.
+ * A password the sharer typed is theirs, and is checked as typed.
+ */
+const canonicalMadeUp = (password: string) => password.toLowerCase().replace(/[\s-]/g, '');
+
+/**
+ * What a link's secret is (0043): a PIN, a password the sharer typed, or a
+ * password the vault made up (`generated`: checked in its canonical form).
+ * A hash with no kind is a PIN's. The page is told a password for either.
+ */
+type SecretKind = 'pin' | 'password' | 'generated';
+
+/** The secret as the page and the wire name it: a made-up password is a password. */
+const wireKind = (kind: SecretKind | null): ShareSecretKind =>
+  kind === 'generated' ? 'password' : (kind ?? 'pin');
+
+/** The recipient's try, as it is checked against the secret's hash. */
+const asChecked = (kind: SecretKind | null, given: string) =>
+  kind === 'generated' ? canonicalMadeUp(given) : given;
+
 /** A try that opened: what it proved. */
 const isRight = (a: Attempt): a is { right: NonNullable<Verified> } =>
   typeof a === 'object' && 'right' in a;
@@ -405,7 +439,7 @@ type LinkRow = {
   downloads_used: number;
   max_downloads: number | null;
   /** What pin_hash is the hash of (5.20); null with a hash is a PIN. */
-  secret_kind: ShareSecretKind | null;
+  secret_kind: SecretKind | null;
   /** Where its code goes (5.20), until it ends. */
   code_email: string | null;
   this_device_only: boolean;
@@ -503,10 +537,10 @@ const sessionEnded = () =>
  */
 const protectionOf = (link: {
   pin_hash: string | null;
-  secret_kind: ShareSecretKind | null;
+  secret_kind: SecretKind | null;
   code_email: string | null;
 }): ShareProtection[] => [
-  ...(link.pin_hash ? [link.secret_kind ?? 'pin'] : []),
+  ...(link.pin_hash ? [wireKind(link.secret_kind)] : []),
   ...(link.code_email ? (['code'] as const) : []),
 ];
 
@@ -534,26 +568,39 @@ const factorWrong = (asks: ShareProtection[], left: number) => {
       `That ${secret ?? 'PIN'} is not right. Check with whoever sent you the link.`,
     );
   }
+  // Only the newest code works (the 5.20 review, F520-03): an earlier one
+  // typed from an earlier email is refused like any wrong one, and says so.
   return new ApiError(
     401,
     'secret_wrong',
     secret
-      ? `The ${secret} or the code is not right. Check the ${secret} with whoever sent you the link; a code works once, for ${SHARE_CODE_MINUTES} minutes, so send a new one if it has run out.`
-      : `That code is not right, or it has run out: a code works once, for ${SHARE_CODE_MINUTES} minutes. Send a new one.`,
+      ? `The ${secret} or the code is not right. Check the ${secret} with whoever sent you the link. Only the newest code works, once, for ${SHARE_CODE_MINUTES} minutes: send a new one if it has run out.`
+      : `That code is not right, or it has run out. Only the newest code works, once, for ${SHARE_CODE_MINUTES} minutes: send a new one.`,
   );
 };
 
-/** Another browser than the one a link for this device only was opened in (5.20). */
+/**
+ * Another browser than the one a link for this device only was opened in
+ * (5.20). It is one browser, not the device (the 5.20 review, F520-05): its
+ * cookie is what it was bound to.
+ */
 const otherDeviceRefused = () =>
   new ApiError(
     403,
     'other_device',
-    'This link has been opened on another device already, and it only opens there. Ask whoever sent it for a new one if you need it here.',
+    'This link has been opened in another browser already, and it only opens there. Open it in the browser you opened it in first, or ask whoever sent it for a new one.',
   );
 
-/** A code asked for where there is no way to send one: the operator's mail server is unset (A21). */
+/**
+ * A code asked for where there is no way to send one: the operator's mail
+ * server is unset (A21). To the sharer (422), why the option is not there;
+ * to the person the link is for (503, the 5.20 review, W520-14), what they
+ * can do.
+ */
 const codeUnavailable = (status: 422 | 503) =>
-  new ApiError(status, 'email_code_unavailable', SHARE_CODE_UNAVAILABLE);
+  status === 422
+    ? new ApiError(422, 'email_code_unavailable', SHARE_CODE_UNAVAILABLE)
+    : new ApiError(503, 'email_code_unavailable', SHARE_CODE_CANNOT_SEND);
 
 const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
@@ -609,12 +656,23 @@ export interface ShareOptions {
    * unset: then no link can ask for a code.
    */
   mail?: ((m: MailRequest) => Promise<void>) | null;
+  /**
+   * The key "this device only" cookies are made and checked with (the 5.20
+   * review, F520-04): derived from the master key for this alone
+   * (SHARE_DEVICE_KEY_PURPOSE, public/device-cookie.ts). Without one, a key
+   * made up for this process.
+   */
+  deviceKey?: Buffer;
 }
+
+/** What "this device only" cookies are made with: deviceCookieKey(master, this). */
+export const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
 
 export class ShareService {
   private readonly enqueue: Enqueue;
   private readonly maxDays: number;
   private readonly codeKey: Buffer;
+  private readonly deviceKey: Buffer;
   private readonly mail: ((m: MailRequest) => Promise<void>) | null;
 
   constructor(
@@ -630,6 +688,7 @@ export class ShareService {
     this.enqueue = opts.enqueue ?? (async () => undefined);
     this.maxDays = Math.min(opts.maxDays ?? SHARE_MAX_DAYS, SHARE_MAX_DAYS);
     this.codeKey = opts.codeKey ?? randomBytes(32);
+    this.deviceKey = opts.deviceKey ?? randomBytes(32);
     this.mail = opts.mail ?? null;
   }
 
@@ -718,8 +777,16 @@ export class ShareService {
     const token = randomBytes(32).toString('base64url');
     const pin = input.with_pin ? String(randomInt(0, 10000)).padStart(4, '0') : null;
     const password = input.with_password ? madeUpPassword() : null;
-    const secret = pin ?? password ?? input.password ?? null;
-    const secretKind: ShareSecretKind | null = pin ? 'pin' : secret ? 'password' : null;
+    // A made-up password is kept (and checked) in its canonical form
+    // (F520-06); a PIN and a typed password as they are.
+    const secretKind: SecretKind | null = pin
+      ? 'pin'
+      : password
+        ? 'generated'
+        : input.password !== undefined
+          ? 'password'
+          : null;
+    const secret = pin ?? (password ? canonicalMadeUp(password) : null) ?? input.password ?? null;
     return {
       token,
       pin,
@@ -754,13 +821,15 @@ export class ShareService {
   /** What a link's line in the activity log says it asks for (5.20): never the secret, the address masked. */
   private static protectionDetail(s: {
     pin: string | null;
-    secretKind: ShareSecretKind | null;
+    secretKind: SecretKind | null;
     codeEmail: string | null;
     thisDeviceOnly: boolean;
   }) {
     return {
       with_pin: Boolean(s.pin),
-      ...(s.secretKind === 'password' ? { with_password: true } : {}),
+      ...(s.secretKind === 'password' || s.secretKind === 'generated'
+        ? { with_password: true }
+        : {}),
       ...(s.codeEmail ? { code_to: maskEmail(s.codeEmail) } : {}),
       ...(s.thisDeviceOnly ? { this_device_only: true } : {}),
     };
@@ -1795,28 +1864,35 @@ export class ShareService {
       await this.record(trx, householdId, link, 'share.code_sent', meta, undefined, {
         to: maskEmail(link.code_email),
       });
-      return { to: link.code_email, code, expiresAt };
-    });
-    // Nothing in it names the vault's documents, and nothing in it is a
-    // link: whoever reads it types the code where they asked for it.
-    if (!mail) throw codeUnavailable(503);
-    await mail({
-      householdId,
-      to: sent.to,
-      subject: 'Your code to open a shared link',
-      text:
-        `Your code is ${sent.code.slice(0, 3)} ${sent.code.slice(3)}.\n\n` +
-        `Type it on the page where you opened the link you were sent. It works once, ` +
-        `for the next ${SHARE_CODE_MINUTES} minutes.\n\n` +
-        'If you did not ask for a code, somebody else may have the link. You can ignore ' +
-        'this email; it opens nothing by itself. Tell whoever sent you the link if it keeps happening.\n',
-    }).catch(() => {
-      throw new ApiError(
-        503,
-        'code_not_sent',
-        'The code could not be sent just now. Try again in a minute.',
-        { retriable: true, retryAfter: 60 },
-      );
+      // Queued before any of it is kept (the 5.20 review, M520-02): if the
+      // email cannot be queued, the code, its line in the activity log, its
+      // place in the count of sends and the end of the code before it are
+      // all undone with the transaction, and the error goes to the log.
+      // Nothing in it names the vault's documents, and nothing in it is a
+      // link: whoever reads it types the code where they asked for it.
+      await mail({
+        householdId,
+        to: link.code_email,
+        subject: 'Your code to open a shared link',
+        text:
+          `Your code is ${code.slice(0, 3)} ${code.slice(3)}.\n\n` +
+          `Type it on the page where you opened the link you were sent. It works once, ` +
+          `for the next ${SHARE_CODE_MINUTES} minutes. ${SHARE_NEWEST_CODE_ONLY}: if you ` +
+          'asked for more than one, use the one in the newest email.\n\n' +
+          'If you did not ask for a code, somebody else may have the link. You can ignore ' +
+          'this email; it opens nothing by itself. Tell whoever sent you the link if it keeps happening.\n',
+      }).catch((err: unknown) => {
+        throw Object.assign(
+          new ApiError(
+            503,
+            'code_not_sent',
+            'The code could not be sent just now. Try again in a minute.',
+            { retriable: true, retryAfter: 60 },
+          ),
+          { cause: err },
+        );
+      });
+      return { to: link.code_email, expiresAt };
     });
     return { sent_to: maskEmail(sent.to), expires_at: sent.expiresAt.toISOString() };
   }
@@ -1851,14 +1927,16 @@ export class ShareService {
       );
       if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
       // The first Open that works binds a link for one device to this
-      // browser: its cookie, the one it came with or a new one (5.20). Two
+      // browser: its cookie (5.20) — one the vault made, and never one it did
+      // not (the 5.20 review, F520-04): a cookie planted in the browser before
+      // the first open, whose value somebody else knows, is replaced. Two
       // browsers at once: one binds it, the other is refused — and if the
       // open is not counted after all, the binding is undone with it.
       let deviceCookie: string | undefined;
       let deviceHash: Buffer | null = null;
       if (link.this_device_only) {
         deviceCookie =
-          device && device.length <= 128 ? device : randomBytes(32).toString('base64url');
+          verifiedDeviceCookie(this.deviceKey, device) ?? mintDeviceCookie(this.deviceKey);
         deviceHash = deviceHashOf(link.id, deviceCookie);
         if (link.device_hash === null) {
           await sql`savepoint fdv_device`.execute(trx);
@@ -2481,9 +2559,12 @@ export class ShareService {
       await sql`release savepoint fdv_pin_attempt`.execute(trx);
       return 'gone';
     }
+    // A made-up password is checked in its canonical form (F520-06).
     const secretRight = link.pin_hash
       ? given.secret
-        ? await argon2.verify(link.pin_hash, given.secret).catch(() => false)
+        ? await argon2
+            .verify(link.pin_hash, asChecked(link.secret_kind, given.secret))
+            .catch(() => false)
         : false
       : true;
     let codeRight = !needsCode;
@@ -2512,7 +2593,7 @@ export class ShareService {
           .where('used_at', 'is', null)
           .execute();
       }
-      const secret: 'pin' | 'password' | null = link.pin_hash ? (link.secret_kind ?? 'pin') : null;
+      const secret: 'pin' | 'password' | null = link.pin_hash ? wireKind(link.secret_kind) : null;
       const verified = (
         secret && needsCode ? `${secret}+code` : (secret ?? 'code')
       ) as NonNullable<Verified>;
@@ -2859,7 +2940,7 @@ function summarise(
     revoked_by_name?: string | null;
     revoked_why?: 'collection_only_me' | 'collection_deleted' | null;
     pin_hash?: string | null;
-    secret_kind?: ShareSecretKind | null;
+    secret_kind?: SecretKind | null;
     code_email?: string | null;
     this_device_only?: boolean;
   },
@@ -2874,12 +2955,13 @@ function summarise(
   const follows = r.follow_collection ? ' Keeps up with the collection.' : '';
   // 5.20's protections, said where the link is listed (a PIN, as before, is not).
   const asks = [
-    r.pin_hash && r.secret_kind === 'password' ? 'a password' : null,
+    r.pin_hash && wireKind(r.secret_kind ?? null) === 'password' ? 'a password' : null,
     r.code_email ? `a code emailed to ${maskEmail(r.code_email)}` : null,
   ].filter((a): a is string => a !== null);
+  // One browser (F520-05): the one it was first opened in.
   const guarded =
     (asks.length ? ` Asks for ${asks.join(' and ')}.` : '') +
-    (r.this_device_only ? ' Opens on one device only.' : '');
+    (r.this_device_only ? ' Opens in one browser only.' : '');
   switch (state) {
     case 'active':
       return `${who}, ${opened}. Stops working on ${end}.${follows}${guarded}`;
