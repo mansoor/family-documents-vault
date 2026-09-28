@@ -24,6 +24,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
+import { endSessions } from '../documents/share-sessions.js';
 
 /**
  * Collections of documents (5.14).
@@ -832,14 +833,13 @@ export class CollectionService {
       .returning('id')
       .execute();
     if (ended.length === 0) return;
-    await trx
-      .deleteFrom('share_session')
-      .where(
-        'share_id',
-        'in',
-        ended.map((e) => e.id),
-      )
-      .execute();
+    // Their open pages end too — but one in use this moment, whose request
+    // holds it and may be waiting on the log held here: not waited on
+    // (endSessions, the fourth review), and refused at its next request.
+    await endSessions(
+      trx,
+      ended.map((e) => e.id),
+    );
     for (const link of ended) {
       await appendAudit(trx, {
         householdId: p.householdId,

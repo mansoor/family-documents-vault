@@ -24,6 +24,7 @@ import { seenCollection } from '../collections/service.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
+import { endSessions } from './share-sessions.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
   can,
@@ -1243,8 +1244,9 @@ export class ShareService {
         .executeTakeFirst();
       if (!row) throw notFound('That link');
       // Taken back is taken back everywhere: a page opened with it stops at
-      // its next request anyway, and now there is no session left to ask.
-      await trx.deleteFrom('share_session').where('share_id', '=', id).execute();
+      // its next request anyway, and now there is no session left to ask —
+      // but one in use this moment, which is not waited on (endSessions).
+      await endSessions(trx, [id]);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -1535,11 +1537,18 @@ export class ShareService {
       if (first) {
         // Within the link's downloads, however many ask at once: one
         // statement counts it, or finds there are none left. Refused, the
-        // whole request is undone, the note that it was had included.
+        // whole request is undone, the note that it was had included. And
+        // only while the link still works, as the row is when this has it:
+        // taken back, locked or paused while this waited for it (its
+        // collection deleted, say — the fourth review), it is not counted,
+        // and the answer is that the link is gone.
         const counted = await trx
           .updateTable('share_link')
           .set((eb) => ({ downloads_used: eb('downloads_used', '+', 1) }))
           .where('id', '=', link.id)
+          .where('revoked_at', 'is', null)
+          .where('paused_at', 'is', null)
+          .where('attempts', '<', MAX_PIN_ATTEMPTS)
           .where((eb) =>
             eb.or([
               eb('max_downloads', 'is', null),
@@ -1549,6 +1558,7 @@ export class ShareService {
           .returning('downloads_used')
           .executeTakeFirst();
         if (!counted) {
+          if (!(await this.stillLive(trx, link.id))) throw gone();
           throw new ApiError(
             403,
             'downloads_used_up',
@@ -1737,11 +1747,20 @@ export class ShareService {
         if (err instanceof ApiError && err.code === 'link_not_valid') return end('link');
         throw err;
       }
-      await trx
+      const touched = await trx
         .updateTable('share_session')
         .set({ last_seen_at: new Date(now) })
         .where('id', '=', session.id)
-        .execute();
+        .executeTakeFirst();
+      // Ended as this waited for it — its link taken back, locked, or ended
+      // with its collection, which removes the link's sessions not in use
+      // (endSessions): refused as that, not left to fail as a fault further
+      // on (the 5.19 review's fourth round).
+      if (touched.numUpdatedRows === 0n) {
+        return {
+          ended: (await this.stillLive(trx, session.share_id)) ? 'session' : 'link',
+        } as const;
+      }
       return {
         value: await fn(trx, { ...link, household_id: found.household_id }, session),
       } as const;
@@ -1951,8 +1970,9 @@ export class ShareService {
       return { wrong: MAX_PIN_ATTEMPTS - reserved.attempts };
     // The tenth: only one try ever takes the count to ten, so this happens
     // once in a link's life. Failed tries are counters, never audit rows;
-    // the lock is one row.
-    await trx.deleteFrom('share_session').where('share_id', '=', link.id).execute();
+    // the lock is one row. Its sessions end — but one in use this moment,
+    // which is not waited on (endSessions).
+    await endSessions(trx, [link.id]);
     await this.record(trx, householdId, link, 'share.locked', meta);
     return 'locked';
   }
@@ -2010,8 +2030,16 @@ export class ShareService {
   /**
    * A line the link writes in the family's activity log, about what it is
    * to — or, for a download or a look at pages, about that document.
+   *
+   * The log may be held, as this asks for it, by whatever is ending the
+   * link — its collection deleted, say — which does not wait for this
+   * request (endSessions). Ended by the time the line is written, the
+   * database's rule refuses it (a link writes only while it may be used):
+   * then this request is answered as the link's, gone, rather than as a
+   * fault (the 5.19 review's fourth round). The lock, which is written as
+   * the link stops, is not asked so.
    */
-  private record(
+  private async record(
     trx: Db,
     householdId: string,
     link: {
@@ -2023,8 +2051,8 @@ export class ShareService {
     action: string,
     meta: RequestMeta,
     documentId?: string,
-  ) {
-    return appendAudit(trx, {
+  ): Promise<void> {
+    const line = {
       householdId,
       // Nobody signed in, so there is no actor account — this label is
       // what the family's activity log shows instead.
@@ -2034,7 +2062,30 @@ export class ShareService {
       detail: { share_id: link.id, user_agent: meta.userAgent ?? null },
       // An outsider's address is kept only as far as their network (A24).
       ip: truncatedIp(meta.ip),
-    });
+    };
+    if (action === 'share.locked') return appendAudit(trx, line);
+    await sql`savepoint fdv_link_line`.execute(trx);
+    try {
+      await appendAudit(trx, line);
+    } catch (err) {
+      await sql`rollback to savepoint fdv_link_line`.execute(trx);
+      if (!(await this.stillLive(trx, link.id))) throw gone();
+      throw err;
+    }
+    await sql`release savepoint fdv_link_line`.execute(trx);
+  }
+
+  /**
+   * Whether the asking link still works, asked afresh: the database gives a
+   * link its own row only while it may be used (app_live_share, 0042).
+   */
+  private async stillLive(trx: Db, id: string): Promise<boolean> {
+    const row = await trx
+      .selectFrom('share_link')
+      .select('id')
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row !== undefined;
   }
 
   // ------------------------------------------------------------- helpers

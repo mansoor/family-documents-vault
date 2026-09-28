@@ -1983,6 +1983,274 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     await expect(tries({ action: 'share.code_sent' })).rejects.toThrow(/row-level security/);
   });
 
+  // ------------------------------------ a request in a session, as its link ends
+
+  /**
+   * A collection's link, to view or to download, the adult's, opened: in
+   * use. Or, `of` a document, the document's own link, the owner's.
+   */
+  const inUse = async (
+    perm: 'view' | 'download',
+    name: string,
+    of: 'collection' | 'document' = 'collection',
+  ) => {
+    const hh = t.owner.household_id;
+    const lease = await make('owner', `${name}: the lease`);
+    const id = await collection('owner', name, 'everyone', [lease]);
+    await fresh('adult', true);
+    const link =
+      of === 'collection'
+        ? await shared('adult', id, { document_ids: [lease], permission: perm })
+        : json<CreatedShare>(
+            await call('owner', 'POST', `/api/v1/documents/${lease}/share`, { permission: perm }),
+          );
+    if (perm === 'view') {
+      // A page drawn for it (nowhere in storage: it answers "being drawn").
+      await withSystem(h.db, hh, async (trx) => {
+        const v = await trx
+          .selectFrom('document_version')
+          .select('id')
+          .where('document_id', '=', lease)
+          .orderBy('version_no', 'desc')
+          .executeTakeFirstOrThrow();
+        await trx
+          .insertInto('share_page')
+          .values({
+            household_id: hh,
+            share_id: link.share.id,
+            permission: 'view',
+            document_id: lease,
+            version_id: v.id,
+            n: 1,
+            storage_key: `nowhere/${link.share.id}/1`,
+          })
+          .execute();
+      });
+    }
+    const { cookie } = await opened(link.link_token);
+    const use = () => (perm === 'view' ? page(cookie, lease, 1) : content(cookie, lease));
+    return { id, link, lease, cookie, use };
+  };
+  type Ending = 'deleted' | 'made Only me' | 'taken back';
+  const ending = (how: Ending, collectionId: string, shareId: string) =>
+    how === 'deleted'
+      ? call('owner', 'DELETE', `/api/v1/collections/${collectionId}`)
+      : how === 'made Only me'
+        ? call('owner', 'PATCH', `/api/v1/collections/${collectionId}`, { audience: 'only_me' })
+        : call('owner', 'DELETE', `/api/v1/shares/${shareId}`);
+  const endedWith: Record<Ending, number> = {
+    deleted: 204,
+    'made Only me': 200,
+    'taken back': 204,
+  };
+  const deadlocksSoFar = async (admin: ReturnType<typeof createPool>) => {
+    const dbName = new URL(h.adminUrl).pathname.slice(1);
+    return (
+      await admin.query<{ n: number }>(
+        'select deadlocks::int as n from pg_stat_database where datname = $1',
+        [dbName],
+      )
+    ).rows[0]?.n as number;
+  };
+  const revoked = async (shareId: string) =>
+    (
+      await withSystem(h.db, t.owner.household_id, (trx) =>
+        trx
+          .selectFrom('share_link')
+          .select('revoked_at')
+          .where('id', '=', shareId)
+          .executeTakeFirstOrThrow(),
+      )
+    ).revoked_at !== null;
+  const cases: Array<[string, 'view' | 'download', Ending, 'collection' | 'document']> = [
+    ['a first look at a page', 'view', 'deleted', 'collection'],
+    ['a first look at a page', 'view', 'made Only me', 'collection'],
+    ['a first download', 'download', 'deleted', 'collection'],
+    ['a first download', 'download', 'made Only me', 'collection'],
+    ['a first download', 'download', 'taken back', 'collection'],
+    // A document's own link: its line would be let through, so the count
+    // is what refuses a download that waited on the link as it was taken
+    // back (5.18's code).
+    ['a first download of a document’s link', 'download', 'taken back', 'document'],
+  ];
+
+  for (const [what, perm, how, of] of cases) {
+    it(`${what}, held up in its session as its link is ${how}, is never a deadlock (fourth review)`, async () => {
+      await fresh('owner', true);
+      const { id, link, cookie, lease, use } = await inUse(perm, `Held up: ${what}, ${how}`, of);
+      const admin = createPool(h.adminUrl, 3);
+      const holder = await admin.connect();
+      const before = await deadlocksSoFar(admin);
+      try {
+        // The document held a moment (as an edit of it would): the request
+        // stops there, its session row already held.
+        await holder.query('begin');
+        await holder.query('select id from document where id = $1 for update', [lease]);
+        const using = use();
+        await lockWaiters(admin, 1);
+        // The link ends meanwhile, waiting on nothing the request holds.
+        const ended = ending(how, id, link.share.id);
+        const first = await Promise.race([
+          ended.then(() => 'ended' as const),
+          new Promise<'waiting'>((res) => setTimeout(() => res('waiting'), 5_000)),
+        ]);
+        await holder.query('rollback');
+        const [u, e] = await Promise.all([using, ended]);
+        expect(first, `${what}, ${how}: the ending waited on the request`).toBe('ended');
+        expect(e.statusCode, e.body).toBe(endedWith[how]);
+        // The request finds its link gone as it goes on: refused as such,
+        // and nothing counted.
+        expect(u.statusCode, u.body).toBe(404);
+        expect(code(u)).toBe('link_not_valid');
+        expect(await revoked(link.share.id)).toBe(true);
+        // Its session, passed over, is refused and removed at its next request.
+        expect(code(await content(cookie, lease))).toBe('link_not_valid');
+        const left = await withSystem(h.db, t.owner.household_id, (trx) =>
+          trx
+            .selectFrom('share_session')
+            .select('id')
+            .where('share_id', '=', link.share.id)
+            .execute(),
+        );
+        expect(left).toEqual([]);
+        const used = await withSystem(h.db, t.owner.household_id, (trx) =>
+          trx
+            .selectFrom('share_link')
+            .select('downloads_used')
+            .where('id', '=', link.share.id)
+            .executeTakeFirstOrThrow(),
+        );
+        expect(used.downloads_used).toBe(0);
+        await new Promise((res) => setTimeout(res, 1500));
+        expect(await deadlocksSoFar(admin)).toBe(before);
+      } finally {
+        await holder.query('rollback').catch(() => undefined);
+        holder.release();
+        await admin.end();
+      }
+    });
+  }
+
+  /** Waits until a statement naming `text` waits on a lock. */
+  const waitingOn = async (admin: ReturnType<typeof createPool>, text: string) => {
+    const dbName = new URL(h.adminUrl).pathname.slice(1);
+    for (let i = 0; i < 200; i += 1) {
+      const r = await admin.query<{ n: number }>(
+        `select count(*)::int as n from pg_stat_activity
+          where datname = $1 and wait_event_type = 'Lock' and query like $2`,
+        [dbName, `%${text}%`],
+      );
+      if ((r.rows[0]?.n ?? 0) >= 1) return;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    throw new Error(`nothing naming ${text} waits on a lock`);
+  };
+  const holdTheLog = async (c: { query: (q: string, v?: unknown[]) => Promise<unknown> }) => {
+    await c.query('begin');
+    await c.query(`select pg_advisory_xact_lock(hashtext('audit:' || $1::uuid::text))`, [
+      t.owner.household_id,
+    ]);
+  };
+
+  it('a first download that waits on its link as the link is taken back is refused, and not counted (fourth review)', async () => {
+    await fresh('owner', true);
+    const { link, lease, use } = await inUse('download', 'Counted as it ends', 'document');
+    const admin = createPool(h.adminUrl, 4);
+    const doc = await admin.connect();
+    const log = await admin.connect();
+    try {
+      // The request held up in its session: the document held a moment.
+      await doc.query('begin');
+      await doc.query('select id from document where id = $1 for update', [lease]);
+      const using = use();
+      await lockWaiters(admin, 1);
+      // The link taken back, and held up at the log with its row held.
+      await holdTheLog(log);
+      const takingBack = call('owner', 'DELETE', `/api/v1/shares/${link.share.id}`);
+      await lockWaiters(admin, 2);
+      // The request goes on, to count its download: it waits on the link.
+      await doc.query('rollback');
+      await waitingOn(admin, 'downloads_used');
+      await log.query('rollback');
+      const [u, r] = await Promise.all([using, takingBack]);
+      expect(r.statusCode, r.body).toBe(204);
+      expect(u.statusCode, u.body).toBe(404);
+      expect(code(u)).toBe('link_not_valid');
+      const now = await withSystem(h.db, t.owner.household_id, (trx) =>
+        trx
+          .selectFrom('share_link')
+          .select('downloads_used')
+          .where('id', '=', link.share.id)
+          .executeTakeFirstOrThrow(),
+      );
+      expect(now.downloads_used).toBe(0);
+    } finally {
+      await doc.query('rollback').catch(() => undefined);
+      await log.query('rollback').catch(() => undefined);
+      doc.release();
+      log.release();
+      await admin.end();
+    }
+  });
+
+  it('a request that comes as its link is being taken back is refused as gone, not a fault (fourth review)', async () => {
+    await fresh('owner', true);
+    const { link, use } = await inUse('download', 'Arriving as it ends', 'document');
+    const admin = createPool(h.adminUrl, 3);
+    const log = await admin.connect();
+    try {
+      // Taken back, its sessions removed, and held up at the log.
+      await holdTheLog(log);
+      const takingBack = call('owner', 'DELETE', `/api/v1/shares/${link.share.id}`);
+      await lockWaiters(admin, 1);
+      // A request of the session then waits on its row, being removed.
+      const using = use();
+      await lockWaiters(admin, 2);
+      await log.query('rollback');
+      const [u, r] = await Promise.all([using, takingBack]);
+      expect(r.statusCode, r.body).toBe(204);
+      expect(u.statusCode, u.body).toBe(404);
+      expect(code(u)).toBe('link_not_valid');
+    } finally {
+      await log.query('rollback').catch(() => undefined);
+      log.release();
+      await admin.end();
+    }
+  });
+
+  it('a first look or download racing its link’s end is never a deadlock, whichever comes first (fourth review)', async () => {
+    await fresh('owner', true);
+    const admin = createPool(h.adminUrl, 1);
+    const before = await deadlocksSoFar(admin);
+    try {
+      for (const [what, perm, how, of] of cases) {
+        // A few tries each, the ending a little before or after the request.
+        for (const offset of [-2, 0, 2, 5]) {
+          const { id, link, use } = await inUse(perm, `Racing: ${what}, ${how}, ${offset}`, of);
+          const pause = (ms: number) => new Promise((res) => setTimeout(res, ms));
+          const [u, e] = await Promise.all([
+            (async () => {
+              if (offset < 0) await pause(-offset);
+              return use();
+            })(),
+            (async () => {
+              if (offset > 0) await pause(offset);
+              return ending(how, id, link.share.id);
+            })(),
+          ]);
+          const said = `${what}, ${how}, ${offset} ms`;
+          expect(e.statusCode, `${said}: ${e.body}`).toBe(endedWith[how]);
+          expect(u.statusCode, `${said}: ${u.body}`).not.toBe(500);
+          expect(await revoked(link.share.id), said).toBe(true);
+        }
+      }
+      await new Promise((res) => setTimeout(res, 1500));
+      expect(await deadlocksSoFar(admin)).toBe(before);
+    } finally {
+      await admin.end();
+    }
+  }, 120_000);
+
   it('a following link takes as many left-out documents as a household holds, in any number of rows (third review)', async () => {
     await fresh('adult', true);
     const hh = t.owner.household_id;

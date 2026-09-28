@@ -1831,6 +1831,13 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       collection or making it Only me holds its links before the activity
       log, as every other writer of a link does, and a collection's link
       holds the documents it names in id order, as an addition does.
+    - **Changed (every link, sessions):** ending a link — taking it back,
+      its tenth wrong PIN, its collection deleted or made Only me — ends
+      its sessions without waiting for one in use at that moment, which
+      its next request refuses (`404 link_not_valid`) and removes. A
+      request of a session whose link ends while it is being answered is
+      answered `404 link_not_valid` too — a first download is not counted,
+      and a first look at pages is not written down — never `500`.
     - **Changed (pages that could not be drawn):** 5.18's rules now hold a
       version at a time, for a document's link and each document of a
       collection's alike. The worker's last failed try is kept for the
