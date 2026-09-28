@@ -66,6 +66,7 @@ begin
     -- And what a link's own lines in the activity log may say (5.19 review).
     grant execute on function public.app_link_label() to fdv_app;
     grant execute on function public.app_link_may_name(text, uuid) to fdv_app;
+    grant execute on function public.app_link_locked() to fdv_app;
   end if;
   -- The migrations' own record, and the suggestion rules every household
   -- shares, are the vault's: the application only reads them.

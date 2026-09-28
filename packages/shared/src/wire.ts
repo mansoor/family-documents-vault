@@ -336,12 +336,16 @@ export interface CollectionShareItem {
  * `POST /collections/{id}/shares` (5.19): the documents ticked, at least one
  * unless the link follows the collection, and 5.18's options. Always asks to
  * confirm it's you (`step_up_required`, action `share_collection`).
- * `follow_collection` sends what is put in the collection later too, for
- * the whole of its audience, and such a link lasts 30 days at most.
+ * `follow_collection` sends what an owner or an adult puts in the collection
+ * later too, for the whole of its audience, and such a link lasts 30 days
+ * at most. `left_out_ids`, what the sheet offered and was left unticked: for
+ * a link that keeps up, never to follow, even if it leaves the collection
+ * before the link is made (absent from older clients: what is in it then).
  */
 export interface CollectionShareInput extends ShareInput {
   document_ids: string[];
   follow_collection?: boolean;
+  left_out_ids?: string[];
 }
 
 /** What protects a link (0.5.14): its PIN. 5.20 adds a password and an emailed code. */

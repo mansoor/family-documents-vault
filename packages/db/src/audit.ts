@@ -109,21 +109,23 @@ export async function appendAudit(trx: Db, input: AuditInput): Promise<void> {
            to_regprocedure('public.audit_chain_head(uuid)') is not null as chained`.execute(trx);
   const canon = stored.rows[0] as Stored & { chained: boolean };
 
-  const last = canon.chained
-    ? await sql<{ hash: Buffer | null }>`
-        select audit_chain_head(${canon.household_id}::uuid) as hash
-      `
-        .execute(trx)
-        .then((r) => (r.rows[0]?.hash ? { hash: r.rows[0].hash } : undefined))
-    : await trx
-        .selectFrom('audit_event')
-        .select('hash')
-        .where('household_id', '=', canon.household_id)
-        .orderBy('id', 'desc')
-        .limit(1)
-        .executeTakeFirst();
-
-  const at = new Date();
+  // The line's time is the database's, to the millisecond the hash keeps,
+  // taken once the log is held: the rule a link's line is checked by
+  // compares it with the database's clock, never with this process's (the
+  // 5.19 review's second round) — however far apart the two drift.
+  const head = canon.chained
+    ? await sql<{ hash: Buffer | null; at: Date }>`
+        select audit_chain_head(${canon.household_id}::uuid) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at
+      `.execute(trx)
+    : await sql<{ hash: Buffer | null; at: Date }>`
+        select (select e.hash from audit_event e
+                 where e.household_id = ${canon.household_id}::uuid
+                 order by e.id desc limit 1) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at
+      `.execute(trx);
+  const last = head.rows[0]?.hash ? { hash: head.rows[0].hash } : undefined;
+  const at = head.rows[0]?.at ?? new Date();
   const row = {
     household_id: canon.household_id,
     actor_account_id: canon.actor_account_id,

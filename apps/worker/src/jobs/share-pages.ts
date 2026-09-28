@@ -320,13 +320,18 @@ async function drawDocumentPages(
     // All of them at once, and only if the link is still there to show them:
     // taken back (or run out, or locked) while they were being drawn, it
     // keeps none — the prune its taking back asked for has already run, and
-    // found nothing to remove. The link is held while this is decided.
+    // found nothing to remove. The link is held while this is decided —
+    // against its being taken back, run out or locked, which change it;
+    // not against a document's following it, which only names it (FOR NO
+    // KEY UPDATE, the 5.19 review's second round: FOR UPDATE waited on a
+    // collection's addition while it held the document this goes on to
+    // name, and one of the two was ended as a deadlock).
     const kept = await withSystem(deps.db, hh, async (trx) => {
       const now = await trx
         .selectFrom('share_link')
         .select([...LINK_COLUMNS])
         .where('id', '=', link.id)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (!now || ended(now, await openSessionsOf(trx, link.id))) return null;
       // This document's pages of the link: a collection's has others'.

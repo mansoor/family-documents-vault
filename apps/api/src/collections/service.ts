@@ -435,6 +435,19 @@ export class CollectionService {
       const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
       if (asked.length === 0)
         throw invalid('Choose a document to put in the collection.', 'document_ids');
+      // Its links that keep up with it (5.19): each decides once, here, as a
+      // document goes in, whether it goes out too — and the log says so.
+      // What is decided is written down, and a link gives nothing else
+      // (the 5.19 review): nothing that changes later sends out anything
+      // more. Only what an owner or an adult puts in follows; a teen's
+      // stays in the family. Held (FOR KEY SHARE) before the documents
+      // are, as what writes a link's pages holds the link before the
+      // documents it names (the second review): in one order, never a
+      // deadlock between the two.
+      const following =
+        p.role === 'owner' || p.role === 'adult'
+          ? await this.linksOf(trx, collection.id, { following: true, hold: true })
+          : [];
       // Held while they are checked, in one order: made somebody else's
       // Only me, or taken to the Trash, meanwhile, one is not added.
       const found = await trx
@@ -450,16 +463,6 @@ export class CollectionService {
       // In the order asked, by the rows' own ids.
       const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
       const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
-      // Its links that keep up with it (5.19): each decides once, here, as a
-      // document goes in, whether it goes out too — and the log says so.
-      // What is decided is written down, and a link gives nothing else
-      // (the 5.19 review): nothing that changes later sends out anything
-      // more. Only what an owner or an adult puts in follows; a teen's
-      // stays in the family.
-      const following =
-        p.role === 'owner' || p.role === 'adult'
-          ? await this.linksOf(trx, collection.id, { following: true })
-          : [];
 
       const last = await trx
         .selectFrom('doc_collection_item')
@@ -498,7 +501,8 @@ export class CollectionService {
           if (!link.follow_audience) continue;
           if (!withinCollectionAudience(link.follow_audience, visibility)) continue;
           // Once: a document the link was made with, or without (left out),
-          // or has followed before, is not decided again.
+          // is not decided again; one that followed is decided again only
+          // once it has been taken out (removeItem).
           const followed = await trx
             .insertInto('share_link_item')
             .values({
@@ -553,6 +557,16 @@ export class CollectionService {
         .returning('document_id')
         .executeTakeFirst();
       if (!taken) throw new ApiError(404, 'not_found', 'That document is not in this collection.');
+      // What followed its links goes with it (the 5.19 review's second
+      // round): put back, it is decided again — by whoever puts it back,
+      // for the audiences then — and the log says so again. What a link
+      // was made with, ticked or left out, stays as it was made.
+      await trx
+        .deleteFrom('share_link_item')
+        .where('collection_id', '=', collection.id)
+        .where('document_id', '=', doc.id)
+        .where('kind', '=', 'followed')
+        .execute();
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -687,9 +701,15 @@ export class CollectionService {
    * A collection's links outside the family that still work: not taken
    * back, paused, run out or locked, made by somebody who may still share
    * (an owner or an adult, still in the household). What ShareService.live()
-   * asks of each; `following`, only those that keep up with it.
+   * asks of each; `following`, only those that keep up with it; `hold`,
+   * each held FOR KEY SHARE — against nothing but its going, which a link
+   * never does, and so waiting on nothing that writes to it.
    */
-  private linksOf(trx: Db, collectionIds: string | string[], opts: { following?: boolean } = {}) {
+  private linksOf(
+    trx: Db,
+    collectionIds: string | string[],
+    opts: { following?: boolean; hold?: boolean } = {},
+  ) {
     const ids = Array.isArray(collectionIds) ? collectionIds : [collectionIds];
     let q = trx
       .selectFrom('share_link as s')
@@ -713,6 +733,7 @@ export class CollectionService {
       .where('s.attempts', '<', 10)
       .where('ah.role', 'in', ['owner', 'adult']);
     if (opts.following) q = q.where('s.follow_collection', '=', true);
+    if (opts.hold) q = q.forKeyShare('s');
     return q.orderBy('s.created_at').execute();
   }
 

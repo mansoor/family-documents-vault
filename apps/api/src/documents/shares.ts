@@ -150,6 +150,10 @@ export const collectionShareBody = z
     ...shareOptions,
     document_ids: z.array(z.string().uuid()).max(200),
     follow_collection: z.boolean().optional(),
+    // What the share sheet offered and was left unticked (the 5.19 review's
+    // second round): for a link that keeps up, never to follow — even one
+    // taken out of the collection while the sheet was open.
+    left_out_ids: z.array(z.string().uuid()).max(5000).optional(),
   })
   .strict();
 
@@ -787,16 +791,34 @@ export class ShareService {
       // and was not ticked — whoever may see it — so that it never follows,
       // however it is taken out and put back (5.19 review): only what is
       // put in afterwards, and was never in it as the link was made, can.
-      const leftOut = follow
-        ? (
-            await trx
-              .selectFrom('doc_collection_item')
-              .select(['document_id', 'position'])
-              .where('collection_id', '=', c.id)
+      // And what the sheet offered and the sharer left unticked, though it
+      // has left the collection since the sheet was opened (the second
+      // review). Those are taken as said, of the documents the sharer can
+      // see — what the sheet offers — and nothing else: a row that is left
+      // out only ever keeps a document from going, so a sharer can only
+      // narrow their own link by it, and nothing more need be proved.
+      const leftOut = new Map<string, number>();
+      if (follow) {
+        const ticked = new Set(found.map((d) => d.id));
+        const inIt = await trx
+          .selectFrom('doc_collection_item')
+          .select(['document_id', 'position'])
+          .where('collection_id', '=', c.id)
+          .execute();
+        for (const i of inIt)
+          if (!ticked.has(i.document_id)) leftOut.set(i.document_id, i.position);
+        const offered = [...new Set((input.left_out_ids ?? []).map((d) => d.toLowerCase()))];
+        const seen = offered.length
+          ? await trx
+              .selectFrom('document as d')
+              .select('d.id')
+              .where('d.id', 'in', offered)
+              .where(seenDocument(p))
               .execute()
-          ).filter((i) => !found.some((d) => d.id === i.document_id))
-        : [];
-      if (found.length || leftOut.length) {
+          : [];
+        for (const d of seen) if (!ticked.has(d.id) && !leftOut.has(d.id)) leftOut.set(d.id, 0);
+      }
+      if (found.length || leftOut.size) {
         await trx
           .insertInto('share_link_item')
           .values([
@@ -808,12 +830,12 @@ export class ShareService {
               position: d.position,
               kind: 'ticked' as const,
             })),
-            ...leftOut.map((i) => ({
+            ...[...leftOut].map(([documentId, position]) => ({
               share_id: row.id,
               household_id: p.householdId,
               collection_id: c.id,
-              document_id: i.document_id,
-              position: i.position,
+              document_id: documentId,
+              position,
               kind: 'left_out' as const,
             })),
           ])

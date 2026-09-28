@@ -24,10 +24,13 @@
 -- puts it in (a teen's never go outside, A18), it is not private, the whole
 -- of the audience the link was made for (follow_audience) and of the
 -- collection's audience now may see it, and it was not in the collection
--- when the link was made (what the sharer left unticked is kept as
--- `left_out`, and never follows, however it is taken out and put back).
--- Every request still checks each one as it is now, and a later change only
--- ever takes away. Such a link lasts 30 days at most.
+-- when the link was made (what the sharer left unticked — in it then, or
+-- offered by the share sheet and taken out before Share was pressed — is
+-- kept as `left_out`, and never follows, however it is taken out and put
+-- back). One that followed and is taken out is decided again if it is put
+-- back (the second review). Every request still checks each one as it is
+-- now, and a later change only ever takes away. Such a link lasts 30 days
+-- at most.
 --
 -- The same rules are ShareService's (apps/api/src/documents/shares.ts);
 -- this is the second wall under them, as 0030 is for a document's link.
@@ -42,7 +45,8 @@
 -- page names them, and the check reads the sharer's role), the keys and
 -- the places that hold its files, and nothing else; and writes only its
 -- own lines in the activity log, whose chain it reads through
--- audit_chain_head() rather than by reading the log.
+-- audit_chain_head() rather than by reading the log — each held, as it goes
+-- in, to the log's head and to the log's own hash (audit_event_link_line).
 
 -- ------------------------------------------------------------- the link
 
@@ -332,6 +336,17 @@ create function app_link_may_name(p_type text, p_id uuid) returns boolean
         where s.id = app_share() and s.household_id = app_household()), false) $$;
 grant execute on function app_link_may_name(text, uuid) to fdv_app;
 
+-- Whether the asking link has locked: its tenth wrong PIN taken (shares.ts
+-- tryPin), which is what its line saying so must be true of (the second
+-- review). Asked of it whether or not it is live, as it stops.
+create function app_link_locked() returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select coalesce((select s.attempts >= 10
+                        from share_link s
+                       where s.id = app_share() and s.household_id = app_household()), false) $$;
+grant execute on function app_link_locked() to fdv_app;
+
 -- The last hash of the caller's own household's activity log, which the
 -- next line is chained to (packages/db/src/audit.ts). With the owner's
 -- rights, so that a caller who may not read the log — a link — can still
@@ -532,23 +547,95 @@ create policy vault_link_delete on vault as restrictive for delete
 create policy audit_event_link on audit_event as restrictive for select
   using (case app_actor() when 'link' then false else true end);
 -- Its own lines, and only as its own (the 5.19 review): about its own
--- document or collection, or a document it gives; under its own name; and
--- chained to the log's head, as appendAudit chains every line, within a
--- few minutes of now.
+-- document or collection, or a document it gives; under its own name;
+-- chained to the log's head, as appendAudit chains every line; and dated
+-- by the database's own clock — appendAudit takes the time from it, so no
+-- other clock is compared with it — within a few minutes of now. That it
+-- locked, only once it has (its tenth wrong PIN): nothing else may say so.
 create policy audit_event_link_insert on audit_event as restrictive for insert
   with check (case app_actor()
                 when 'link' then actor_account_id is null
                                  and action in ('share.opened', 'share.viewed',
                                                 'share.downloaded', 'share.locked')
+                                 and case when action = 'share.locked' then app_link_locked()
+                                          else true end
                                  and detail->>'share_id' = app_share()::text
                                  and actor_label is not distinct from app_link_label()
                                  and object_type in ('document', 'collection')
                                  and app_link_may_name(object_type, object_id)
                                  and prev_hash is not distinct from audit_chain_head(household_id)
                                  and at between clock_timestamp() - interval '15 minutes'
-                                            and clock_timestamp() + interval '15 minutes'
+                                            and clock_timestamp() + interval '1 minute'
                 else true
               end);
+
+-- And each of its lines as it goes in, one row at a time (the second
+-- review): on the head of the log as it is then — a line written earlier
+-- by the same statement included, so one statement cannot write two lines
+-- on the same head and fork the chain; saying only which link it is and in
+-- what browser; and hashed exactly as appendAudit hashes, and
+-- verifyAuditChain checks, every line (packages/db/src/audit.ts):
+--
+--   sha256(prev_hash | household | actor | action | object type | object id
+--          | detail as canonical JSON | at, to the millisecond, in UTC)
+--
+-- With the owner's rights, to read the head; volatile, to see the rows the
+-- statement has written so far. Anybody else's lines are not looked at.
+create function audit_event_link_line() returns trigger
+  language plpgsql volatile security definer
+  set search_path = pg_catalog, public, pg_temp as
+$$
+declare
+  head bytea;
+  canon text;
+begin
+  if app_actor() is distinct from 'link' then
+    return new;
+  end if;
+  -- One writer at a time on a household's log: the lock appendAudit takes.
+  perform pg_advisory_xact_lock(hashtext('audit:' || new.household_id::text));
+  select e.hash into head
+    from audit_event e
+   where e.household_id = new.household_id
+   order by e.id desc
+   limit 1;
+  if new.prev_hash is distinct from head then
+    raise exception 'a link''s line goes on the head of the activity log'
+      using errcode = 'check_violation';
+  end if;
+  if jsonb_typeof(new.detail) is distinct from 'object'
+     or exists (select 1 from jsonb_object_keys(new.detail) k
+                 where k not in ('share_id', 'user_agent'))
+     or jsonb_typeof(new.detail -> 'share_id') is distinct from 'string'
+     or coalesce(jsonb_typeof(new.detail -> 'user_agent'), 'null') not in ('string', 'null') then
+    raise exception 'a link''s line says only which link it is, and in what browser'
+      using errcode = 'check_violation';
+  end if;
+  -- Its keys in order, each value as JSON writes it (a string, or null).
+  select '{' || string_agg(to_json(k)::text || ':' || (new.detail -> k)::text, ','
+                           order by k collate "C") || '}'
+    into canon
+    from jsonb_object_keys(new.detail) k;
+  if new.hash is distinct from sha256(
+       coalesce(new.prev_hash, ''::bytea)
+       || convert_to('|' || new.household_id::text
+                     || '|' || coalesce(new.actor_account_id::text, new.actor_label, '')
+                     || '|' || new.action
+                     || '|' || coalesce(new.object_type, '')
+                     || '|' || coalesce(new.object_id::text, '')
+                     || '|' || canon
+                     || '|' || to_char(new.at at time zone 'UTC',
+                                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                     'UTF8')) then
+    raise exception 'a link''s line is hashed as every line of the activity log is'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+
+create trigger audit_event_link_line before insert on audit_event
+  for each row execute function audit_event_link_line();
 
 -- None of the rest is a link's, to read or to write.
 create policy session_link on session as restrictive

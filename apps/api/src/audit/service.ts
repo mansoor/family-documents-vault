@@ -55,9 +55,10 @@ export interface Line {
   /**
    * A collection's link the line is about (5.19 review): who made it, and
    * whether the reader can see every document it was made with or has
-   * followed. Null when there is no such link to be found.
+   * followed. Null when it must be about one and there is none to be found;
+   * undefined for a line about no collection's link.
    */
-  link?: { made_by: string; all_seen: boolean } | null;
+  link?: { made_by: string; all_seen: boolean } | null | undefined;
 }
 
 type Audience = (reader: Reader, line: Line) => boolean;
@@ -248,7 +249,12 @@ export function hasRule(action: string): boolean {
 export function shownTo(reader: Reader, line: Line): boolean {
   const rule = RULES.get(line.action);
   const audience = rule === BY_TYPE ? TYPES.get(line.object_type) : rule;
-  return audience ? audience(reader, line) : false;
+  if (!audience || !audience(reader, line)) return false;
+  // Any line about a collection's link — a download through it, a look at
+  // a document's pages, as well as its own lines about the collection —
+  // names whom it went to: for those the list of links gives it to, too
+  // (C519-04, and the second review). A line about any other link has none.
+  return line.link === undefined || knowsTheLink(reader, line);
 }
 
 export interface ActivityPage {
@@ -338,9 +344,7 @@ export class AuditService {
       for (const r of rows) {
         // A private document belongs to one person, and so does every line
         // about it; a line nobody has said the audience of is nobody's.
-        const id = collectionLinkOf(r);
-        const line: Line = id === undefined ? r : { ...r, link: links.get(id) ?? null };
-        if (!shownTo(p, line)) continue;
+        if (!shownTo(p, { ...r, link: linkOf(r, links) })) continue;
         events.push({
           id: Number(r.id),
           at: r.at.toISOString(),
@@ -372,7 +376,9 @@ export class AuditService {
   /**
    * The collections' links the page's lines are about: who made each, and
    * whether the reader can see every document it was made with or has
-   * followed (not what it was made without) — as GET /shares asks.
+   * followed (not what it was made without) — as GET /shares asks. Every
+   * link a `share.*` line names is looked up, a document's too: which of
+   * them are a collection's is what is found out.
    */
   private async collectionLinks(
     trx: Db,
@@ -381,21 +387,31 @@ export class AuditService {
   ): Promise<Map<string, { made_by: string; all_seen: boolean }>> {
     const found = new Map<string, { made_by: string; all_seen: boolean }>();
     const ids = [
-      ...new Set(rows.map(collectionLinkOf).filter((id): id is string => id !== undefined)),
+      ...new Set(
+        rows.map((r) => linkNamed(r)?.id).filter((id): id is string => id !== undefined && !!id),
+      ),
     ];
-    if (ids.length === 0 || !can(p.role, 'document.share')) return found;
+    if (ids.length === 0) return found;
     const made = await trx
       .selectFrom('share_link')
       .select(['id', 'created_by'])
       .where('id', 'in', ids)
       .where('collection_id', 'is not', null)
       .execute();
-    for (const l of made) found.set(l.id, { made_by: l.created_by, all_seen: true });
+    // Who may not share is given no link (GET /shares), and so none of
+    // their lines; there is no more to ask.
+    const shares = can(p.role, 'document.share');
+    for (const l of made) found.set(l.id, { made_by: l.created_by, all_seen: shares });
+    if (!shares || made.length === 0) return found;
     const items = await trx
       .selectFrom('share_link_item as t')
       .innerJoin('document as d', 'd.id', 't.document_id')
       .select(['t.share_id', 'd.visibility', 'd.owner_member_id'])
-      .where('t.share_id', 'in', ids)
+      .where(
+        't.share_id',
+        'in',
+        made.map((l) => l.id),
+      )
       .where('t.kind', 'in', ['ticked', 'followed'])
       .execute();
     for (const i of items) {
@@ -409,15 +425,28 @@ export class AuditService {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The collection's link a line is about, by the id in its detail — a link
- * to a collection made, opened, taken back…, or a document that followed
- * one — or undefined for any other line.
+ * The link a `share.*` line names, by the id in its detail, and whether it
+ * must be a collection's: its lines about the collection, and a document
+ * that followed one, are; a download, a look at pages, an open about a
+ * document may be either. Undefined for any other line; an empty id for a
+ * line that names none it can be found by.
  */
-function collectionLinkOf(r: Row): string | undefined {
-  const about =
-    (r.object_type === 'collection' && r.action.startsWith('share.')) ||
-    r.action === 'share.followed';
-  if (!about) return undefined;
+function linkNamed(r: Row): { id: string; collections: boolean } | undefined {
+  if (!r.action.startsWith('share.')) return undefined;
+  const collections = r.object_type === 'collection' || r.action === 'share.followed';
   const id = (r.detail as { share_id?: unknown } | null)?.share_id;
-  return typeof id === 'string' && UUID.test(id) ? id.toLowerCase() : '';
+  return { id: typeof id === 'string' && UUID.test(id) ? id.toLowerCase() : '', collections };
+}
+
+/**
+ * What a line's rule is told of the link it names: a collection's link as
+ * found; null for one that must be a collection's and is not found (nobody's
+ * line); undefined for a line about no collection's link.
+ */
+function linkOf(r: Row, links: Map<string, { made_by: string; all_seen: boolean }>): Line['link'] {
+  const named = linkNamed(r);
+  if (!named) return undefined;
+  const link = named.id ? links.get(named.id) : undefined;
+  if (link) return link;
+  return named.collections ? null : undefined;
 }

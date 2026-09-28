@@ -155,6 +155,9 @@ describe('sharing a collection (5.19)', () => {
     expect(made[1]?.body).toMatchObject({
       document_ids: [PASSPORT.id, STATEMENT.id],
       follow_collection: true,
+      // What it offered and was left unticked, which never follows (the
+      // 5.19 review's second round) — the diary, and the deeds with no file.
+      left_out_ids: [DIARY.id, PAPER.id],
       recipient_label: 'Jane Smith',
       permission: 'download',
       with_pin: false,
@@ -419,5 +422,35 @@ describe('sharing a collection (5.19)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Share a link' }));
     const pin = await screen.findByRole('checkbox', { name: /Also ask for a four-digit PIN/ });
     boxesBesideLabels(pin.closest('section') as HTMLElement);
+  });
+
+  it('why a document is not ticked, and what Keep it up to date means, sit just under the label (second review)', async () => {
+    // In the label's own column, the next line down: not under the row's
+    // tap height, 22px below a title of one line.
+    const css = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = /(?:^|\})\s*\.check\.check-noted\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toMatch(/display:\s*grid/);
+    expect(rule).toMatch(/align-content:\s*start/);
+    expect(Number(/row-gap:\s*(\d+)px/.exec(rule)?.[1] ?? 99)).toBeLessThanOrEqual(4);
+    // Nothing sets them in by hand any more: the column does.
+    for (const said of ['.share-item-why', '.share-follow-note']) {
+      const own = new RegExp(`(?:^|\\})\\s*${said.replace('.', '\\.')}\\s*\\{([^}]*)\\}`).exec(css);
+      expect(own?.[1] ?? '', said).not.toMatch(/padding-left/);
+    }
+    at(`/collections/${BROKER.id}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Share this collection' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Share “For the broker”' });
+    const follow = await within(sheet).findByRole('checkbox', { name: 'Keep it up to date' });
+    const notes = [
+      ...[...sheet.querySelectorAll<HTMLElement>('[id$="-why"]')],
+      sheet.querySelector<HTMLElement>('#share-follow-note') as HTMLElement,
+    ];
+    expect(notes.length).toBeGreaterThan(2);
+    for (const note of notes) {
+      const row = note.parentElement as HTMLElement;
+      expect(row.className, note.id).toMatch(/\bcheck-noted\b/);
+      expect(note.previousElementSibling?.tagName, note.id).toBe('LABEL');
+    }
+    expect(follow.parentElement?.contains(sheet.querySelector('#share-follow-note'))).toBe(true);
   });
 });

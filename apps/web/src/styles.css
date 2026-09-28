@@ -1524,12 +1524,27 @@ a.btn {
   gap: 4px;
 }
 
+/* A box with something said just under its label (the share sheet's why
+   not, and what Keep it up to date means): the box in the first column,
+   the label and then what is said in the second, 2px apart — never pushed
+   down by the row's tap height, which the two of them fill together (the
+   5.19 review's second round). */
+.check.check-noted {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+  align-content: start;
+}
+
+.check.check-noted > :not(input) {
+  grid-column: 2;
+}
+
 .share-item-why {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  /* Under the title, past the box beside it (`.check`: 22px and 10px). */
-  padding-left: 32px;
 }
 
 .share-item-why.warn {
@@ -1537,10 +1552,9 @@ a.btn {
   font-weight: 600;
 }
 
-/* Keep it up to date: what it means, under its label, past its box. */
+/* Keep it up to date: what it means, just under its label. */
 .share-follow-note {
   margin: 0;
-  padding-left: 32px;
 }
 
 /* A view-only link's pages, one under another, each as wide as the card. */

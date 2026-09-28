@@ -1684,7 +1684,9 @@ forbidden` without `document.share` ("Only an adult can share a
       family. Change who it is for first.").
     - **Added:** `POST /api/v1/collections/{id}/shares` (bearer) → `201
 CreatedShare`. Body: `document_ids` (the ticked ones, at most 200; at
-      least one unless following), `follow_collection` (optional), and
+      least one unless following), `follow_collection` (optional),
+      `left_out_ids` (optional, at most 5000: what the share sheet offered
+      and was left unticked, below), and
       every 5.18 option (`expires_at` or `expires_in_days`,
       `recipient_label`, `with_pin`, `permission`, `max_opens`,
       `max_downloads`). **Every one asks to confirm it's you**, whatever is
@@ -1700,8 +1702,13 @@ not_found` ("That document is not in this collection."); one with no
       once, as it is put in: only what everybody the collection is for now,
       and was for as the link was made, may see (which a private document
       never is), and never a document in the collection as the link was
-      made that was left unticked, however it is taken out and put back; a
-      teen's never follows — and
+      made that was left unticked, however it is taken out and put back —
+      nor one in `left_out_ids`, what the sheet offered and was left
+      unticked, though it left the collection before the link was made
+      (ids the caller cannot see are dropped, never an error: a left-out
+      document only ever narrows the link); a teen's never follows; one
+      that followed and is taken out is decided again, and logged again,
+      if it is put back — and
       the link lasts 30 days at most: a later `expires_at` is `422
 expiry_out_of_range` ("A link that keeps up with its collection lasts
       30 days at most…"), and older `expires_in_days` are cut to 30 (30
@@ -1768,10 +1775,15 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       "A link to the collection “Holiday” stopped working: Sam deleted the
       collection"); `share.created`'s detail keeps the ids that went
       (`document_ids`) and `follow_collection`. `share.downloaded` and
-      `share.viewed` stay about each document. **New** `share.followed`:
+      `share.viewed` stay about each document, and are shown, for a
+      collection's link, only to whoever may see the document and is given
+      the link, too. **New** `share.followed`:
       a document put in a collection whose link keeps up with it, and
       decided then to follow, one line per link, shown to whoever may see
       the document and the collection and is given the link.
+    - **Changed (every line):** an activity line's `at` is the database's
+      clock, to the millisecond, taken as the log is held — no longer the
+      API's.
     - **Changed (the database, 5.6 review):** a share link reaches only
       what its page needs, in every table. Besides its documents, their
       newest files, its share and snapshot, its collection and its
@@ -1785,7 +1797,13 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       `audit_chain_head()` and no longer reads its insert back. Each line
       it writes is held to its own name (`shared link (label)`, by
       `app_link_label()`), about a document it gives or its own collection
-      (`app_link_may_name()`), chained to the log's head, and dated now.
+      (`app_link_may_name()`), chained to the log's head, and dated now;
+      that it locked, only once it has (`app_link_locked()`: its tenth
+      wrong PIN). And as each goes in (`audit_event_link_line`, a trigger):
+      on the head as it is then, so one statement cannot write two lines
+      on one head; saying only `share_id` and `user_agent`; and hashed as
+      `appendAudit` hashes, which the trigger works out again — the chain
+      verifies after anything a link writes.
     - `@fdv/shared`: `CollectionSharePreview`, `CollectionShareItem`,
       `CollectionShareInput`, `CollectionShareLock`, `CollectionSharedOutside`,
       `COLLECTION_SHARE_REASONS`, `FOLLOW_MAX_DAYS`,
@@ -1799,7 +1817,9 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       database as the link itself which those are. One document failing
       leaves the others drawn, and cleans up after itself as a document's
       link does (a first drawing removes all it wrote; a redraw, only what
-      no page names).
+      no page names). It holds the link FOR NO KEY UPDATE as it keeps them,
+      and a collection's addition holds each following link FOR KEY SHARE
+      before its documents, so the two never deadlock.
     - **Changed (pages that could not be drawn):** 5.18's rules now hold a
       version at a time, for a document's link and each document of a
       collection's alike. The worker's last failed try is kept for the
@@ -1823,10 +1843,11 @@ expiry_out_of_range` ("A link that keeps up with its collection lasts
       `pages_failed_at` move into it, and go — each with a rule for every
       kind of caller; `app_live_share()`, `app_link_documents()`,
       `app_link_versions()`, `app_link_collection()`, `app_link_sharer()`,
-      `app_link_label()`, `app_link_may_name()` and
-      `collection_audience_sees()` for the link's rules; and
-      `audit_chain_head()`. The restore check knows each, and a backup from
-      before 0042 is brought up to date with its failures kept.
+      `app_link_label()`, `app_link_may_name()`, `app_link_locked()` and
+      `collection_audience_sees()` for the link's rules;
+      `audit_chain_head()`; and the `audit_event_link_line` trigger. The
+      restore check knows each, and a backup from before 0042 is brought up
+      to date with its failures kept.
 
 ## Deprecations in effect
 

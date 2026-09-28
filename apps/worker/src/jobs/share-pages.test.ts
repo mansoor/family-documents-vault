@@ -1059,6 +1059,35 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
   );
 
   it.skipIf(!drawing)(
+    'keeping its pages does not wait on a document following the link, nor it on them (5.19 second review)',
+    async () => {
+      const v = await store(pagesPdf(1), 'application/pdf');
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: v.versionId });
+      const id = await link(v.documentId);
+      // A collection's addition holds each link that follows it as this:
+      // against its going, and nothing else (collections/service.ts).
+      const adding = new pg.Client({ connectionString: tdb.adminUrl });
+      await adding.connect();
+      let keeping: Promise<unknown> | undefined;
+      try {
+        await adding.query('begin');
+        await adding.query('select id from share_link where id = $1 for key share', [id]);
+        keeping = drawSharePages(deps(), { household_id: hh, share_id: id });
+        const outcome = await Promise.race([
+          keeping,
+          new Promise((res) => setTimeout(() => res('waited on the addition'), 20_000)),
+        ]);
+        expect(outcome).toEqual({ drawn: 1 });
+      } finally {
+        await adding.query('rollback').catch(() => undefined);
+        await adding.end();
+        await keeping?.catch(() => undefined);
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
     'a redraw that fails part-way leaves the pages it was redrawing, which are still shown (second review)',
     async () => {
       const v = await store(pagesPdf(3), 'application/pdf');

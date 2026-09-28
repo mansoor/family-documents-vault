@@ -450,6 +450,9 @@ const GUARDS = [
   // And what it was made for: a document, or a collection as ticked, and
   // whether it keeps up with the collection (0042).
   { name: 'share_link_target_fixed', table: 'share_link', fn: 'share_link_target_fixed' },
+  // And a link's lines in the activity log: on its head, one at a time,
+  // hashed as every line is (0042, the 5.19 review).
+  { name: 'audit_event_link_line', table: 'audit_event', fn: 'audit_event_link_line' },
 ];
 
 /**

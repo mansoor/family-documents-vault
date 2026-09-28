@@ -107,7 +107,14 @@ export function ShareCollectionPanel(props: {
         api.shareCollection(t, props.collection.id, {
           ...read.body,
           document_ids: ticked.map((i) => i.document_id),
-          ...(follow ? { follow_collection: true } : {}),
+          // What it offered and was left unticked never follows, even if it
+          // leaves the collection while this sheet is open (5.19 review).
+          ...(follow
+            ? {
+                follow_collection: true,
+                left_out_ids: items.filter((i) => !isTicked(i)).map((i) => i.document_id),
+              }
+            : {}),
         }),
       );
       if (created) {
@@ -150,8 +157,10 @@ export function ShareCollectionPanel(props: {
               const id = `share-item-${i.document_id}`;
               return (
                 <li key={i.document_id} className="share-item">
-                  {/* The app's box (`.check`): beside the start of its label. */}
-                  <div className="check">
+                  {/* The app's box (`.check`): beside the start of its label,
+                      and why it is not ticked just under the label, in the
+                      label's column (`.check-noted`). */}
+                  <div className="check check-noted">
                     <input
                       ref={i.document_id === firstOpen ? firstBox : undefined}
                       id={id}
@@ -167,15 +176,15 @@ export function ShareCollectionPanel(props: {
                       <span>{i.title ?? 'A document'}</span>
                       {i.type_label && <span className="muted">{i.type_label}</span>}
                     </label>
+                    {i.reason && (
+                      <span
+                        id={`${id}-why`}
+                        className={`share-item-why muted${i.lock === 'private' ? ' warn' : ''}`}
+                      >
+                        <LockIcon /> {i.reason}
+                      </span>
+                    )}
                   </div>
-                  {i.reason && (
-                    <span
-                      id={`${id}-why`}
-                      className={`share-item-why muted${i.lock === 'private' ? ' warn' : ''}`}
-                    >
-                      <LockIcon /> {i.reason}
-                    </span>
-                  )}
                 </li>
               );
             })}
@@ -194,21 +203,19 @@ export function ShareCollectionPanel(props: {
 
       {loaded && (
         <>
-          {/* Named by its label alone, and explained by the note beside it,
-              once (W519-5). */}
-          <div className="stack share-follow" style={{ gap: 2 }}>
-            <div className="check">
-              <input
-                ref={followBox}
-                id="share-follow"
-                type="checkbox"
-                checked={follow}
-                disabled={busy}
-                onChange={(e) => setFollow(e.target.checked)}
-                aria-describedby="share-follow-note"
-              />
-              <label htmlFor="share-follow">Keep it up to date</label>
-            </div>
+          {/* Named by its label alone, and explained by the note just under
+              it, once (W519-5). */}
+          <div className="check check-noted share-follow">
+            <input
+              ref={followBox}
+              id="share-follow"
+              type="checkbox"
+              checked={follow}
+              disabled={busy}
+              onChange={(e) => setFollow(e.target.checked)}
+              aria-describedby="share-follow-note"
+            />
+            <label htmlFor="share-follow">Keep it up to date</label>
             <p id="share-follow-note" className="muted share-follow-note">
               What an owner or an adult puts in the collection later goes too, if everybody it is
               for may see it — never a private document, nor anything in it now that you leave

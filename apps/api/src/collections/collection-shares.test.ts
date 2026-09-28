@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream, EnvKeyProvider, ScopeKeys, unwrapKey } from '@fdv/crypto';
-import { createPool, verifyAuditChain, withScope, withSystem, type Db } from '@fdv/db';
+import { computeHash, createPool, verifyAuditChain, withScope, withSystem, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   COLLECTION_SHARE_REASONS,
@@ -19,7 +19,7 @@ import { LocalAdapter } from '@fdv/storage';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { PAGES_RETRY_MS, type CreatedShare, type ShareView } from '../documents/shares.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
@@ -1136,7 +1136,8 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
             })
             .execute(),
         ),
-      ).rejects.toThrow(/row-level security/);
+        // Refused by its rule, or, first, as a line off the chain (0042).
+      ).rejects.toThrow(/row-level security|head of the activity log/);
     } finally {
       await admin.end();
     }
@@ -1250,6 +1251,154 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       expect(await followedLines(id)).toEqual([]);
     });
 
+    it('a document taken out and put back is decided again, by whoever puts it back (second review)', async () => {
+      await fresh('owner', true);
+      // Bea, an adult, makes the collection; the owner shares it, keeping up.
+      const bea = await h.join(t.owner, { name: 'Bea', email: 'bea@example.test', role: 'adult' });
+      const asBea = (method: 'POST' | 'DELETE', url: string, payload?: object) =>
+        h.app.inject({ method, url, headers: h.as(bea), ...(payload ? { payload } : {}) });
+      const made = await asBea('POST', '/api/v1/collections', {
+        name: 'Bea’s papers',
+        audience: 'everyone',
+      });
+      const id = json<CollectionDetail>(made).id;
+      expect(
+        (await asBea('POST', `/api/v1/collections/${id}/items`, { document_ids: [docs.lease] }))
+          .statusCode,
+      ).toBe(200);
+      const link = await shared('owner', id, {
+        document_ids: [docs.lease],
+        follow_collection: true,
+      });
+      const { cookie } = await opened(link.link_token);
+      const letter = await make('owner', 'Bank letter, twice');
+      const putBack = async () =>
+        expect(
+          (await asBea('POST', `/api/v1/collections/${id}/items`, { document_ids: [letter] }))
+            .statusCode,
+        ).toBe(200);
+      const takeOut = async () =>
+        expect(
+          (await asBea('DELETE', `/api/v1/collections/${id}/items/${letter}`)).statusCode,
+        ).toBe(204);
+      await putBack();
+      expect(await given(cookie)).toEqual([docs.lease, letter]);
+      expect(await followedLines(id)).toEqual([letter]);
+      await takeOut();
+      expect(await given(cookie)).toEqual([docs.lease]);
+      // Put back by an adult: decided again, and the log says it went again.
+      await putBack();
+      expect(await given(cookie)).toEqual([docs.lease, letter]);
+      expect(await followedLines(id)).toEqual([letter, letter]);
+      // Taken out, and Bea made a teen — still its maker: put back, it
+      // stays in the family, and nothing says it went.
+      await takeOut();
+      const role = await call('owner', 'POST', `/api/v1/members/${bea.member_id}/role`, {
+        role: 'teen',
+      });
+      expect(role.statusCode, role.body).toBe(200);
+      await putBack();
+      expect(await given(cookie)).toEqual([docs.lease]);
+      expect((await content(cookie, letter)).statusCode).toBe(404);
+      expect(await followedLines(id)).toEqual([letter, letter]);
+    });
+
+    it('what the sheet offered and was left unticked never follows, though it left the collection before Share (second review)', async () => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const deed = await make('owner', 'Deed, seen in the sheet');
+      const id = await collection('owner', 'Sheet left open', 'everyone', [docs.lease, deed]);
+      const offered = json<CollectionSharePreview>(await sharePreview('adult', id)).items.map(
+        (i) => i.document_id,
+      );
+      expect(offered).toEqual([docs.lease, deed]);
+      // While the sheet is open, the owner takes the deed out.
+      expect(
+        (await call('owner', 'DELETE', `/api/v1/collections/${id}/items/${deed}`)).statusCode,
+      ).toBe(204);
+      // The sheet says what it offered and was left unticked — with, here,
+      // another's private document and one that is not there, which are
+      // dropped, never an error.
+      const link = await shared('adult', id, {
+        document_ids: [docs.lease],
+        follow_collection: true,
+        left_out_ids: [deed, docs.diary, randomUUID()],
+      });
+      const { cookie } = await opened(link.link_token);
+      // Put back later: seen and left unticked, it stays in the family.
+      await put('owner', id, [deed]);
+      expect(await given(cookie)).toEqual([docs.lease]);
+      expect(await followedLines(id)).toEqual([]);
+      const rows = await withSystem(h.db, t.owner.household_id, (trx) =>
+        trx
+          .selectFrom('share_link_item')
+          .select(['document_id', 'kind'])
+          .where('share_id', '=', link.share.id)
+          .orderBy('kind')
+          .execute(),
+      );
+      expect(rows).toEqual([
+        { document_id: deed, kind: 'left_out' },
+        { document_id: docs.lease, kind: 'ticked' },
+      ]);
+    });
+
+    it("putting documents in while a link's pages are kept is never a deadlock (second review)", async () => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const id = await collection('owner', 'Pages being kept', 'everyone', [docs.lease]);
+      const link = await shared('adult', id, {
+        document_ids: [docs.lease],
+        follow_collection: true,
+        permission: 'view',
+      });
+      const extra = await make('owner', 'Put in as pages are kept');
+      const admin = createPool(h.adminUrl, 2);
+      const holder = await admin.connect();
+      const dbName = new URL(h.adminUrl).pathname.slice(1);
+      try {
+        const version = (
+          await holder.query<{ id: string }>(
+            'select id from document_version where document_id = $1 order by version_no desc limit 1',
+            [docs.lease],
+          )
+        ).rows[0]?.id;
+        // What keeps a link's pages, as it once did: the link held first,
+        // then a page of the lease written, which names the lease.
+        await holder.query('begin');
+        await holder.query('select id from share_link where id = $1 for update', [link.share.id]);
+        // The lease (already in it) and a new one put in, together.
+        const adding = call('owner', 'POST', `/api/v1/collections/${id}/items`, {
+          document_ids: [docs.lease, extra],
+        });
+        let waited = false;
+        for (let i = 0; i < 200 && !waited; i += 1) {
+          const r = await admin.query<{ n: number }>(
+            `select count(*)::int as n from pg_stat_activity
+              where datname = $1 and wait_event_type = 'Lock'`,
+            [dbName],
+          );
+          waited = (r.rows[0]?.n ?? 0) >= 1;
+          if (!waited) await new Promise((res) => setTimeout(res, 50));
+        }
+        expect(waited).toBe(true);
+        await holder.query(
+          `insert into share_page (household_id, share_id, permission, document_id, version_id, n, storage_key)
+           values ($1, $2, 'view', $3, $4, 1, 'held/while/adding')`,
+          [t.owner.household_id, link.share.id, docs.lease, version],
+        );
+        await holder.query('rollback');
+        const added = await adding;
+        expect(added.statusCode, added.body).toBe(200);
+      } finally {
+        await holder.query('rollback').catch(() => undefined);
+        holder.release();
+        await admin.end();
+      }
+      const { cookie } = await opened(link.link_token);
+      expect(await given(cookie)).toEqual([docs.lease, extra]);
+    });
+
     it("a share racing the maker's narrowing to Only me does not survive it (C519-07)", async () => {
       await fresh('adult', true);
       await fresh('owner', true);
@@ -1328,41 +1477,79 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     expect((await rows()).length).toBe(2);
   });
 
+  /**
+   * A line `link` writes in the log itself, then undone: whether it was let
+   * through. As its own (`shared link (the bank)`, the lease downloaded),
+   * hashed as appendAudit hashes unless `hash` is given; `rows` of it in
+   * one statement.
+   */
+  const linkLine = (link: CreatedShare) => {
+    const hh = t.owner.household_id;
+    const headNow = async (trx: Db) =>
+      (
+        await sql<{
+          hash: Buffer | null;
+          at: Date;
+        }>`select audit_chain_head(${hh}::uuid) as hash,
+                  date_trunc('milliseconds', clock_timestamp()) as at`.execute(trx)
+      ).rows[0] as { hash: Buffer | null; at: Date };
+    return (over: Record<string, unknown>, rows = 1) =>
+      withScopeOfLink(link.share.id, async (trx) => {
+        const { hash: prev, at } = await headNow(trx);
+        const line = {
+          household_id: hh,
+          actor_account_id: null,
+          actor_label: 'shared link (the bank)',
+          action: 'share.downloaded',
+          object_type: 'document',
+          object_id: docs.lease,
+          detail: { share_id: link.share.id },
+          at,
+          prev_hash: prev,
+          ...over,
+        } as Parameters<typeof computeHash>[0];
+        const hash = (over.hash as Buffer | undefined) ?? computeHash(line);
+        const detail = JSON.stringify(line.detail);
+        if (rows === 1) {
+          await trx
+            .insertInto('audit_event')
+            .values({
+              household_id: line.household_id,
+              actor_label: line.actor_label,
+              action: line.action,
+              object_type: line.object_type,
+              object_id: line.object_id,
+              detail,
+              at: line.at,
+              prev_hash: line.prev_hash,
+              hash,
+            })
+            .execute();
+        } else {
+          await sql`insert into audit_event (household_id, actor_label, action, object_type,
+                                             object_id, detail, at, prev_hash, hash)
+                    select ${hh}::uuid, ${line.actor_label}, ${line.action}, ${line.object_type},
+                           ${line.object_id}::uuid, ${detail}::jsonb, ${line.at}::timestamptz,
+                           ${line.prev_hash}, ${hash}
+                      from generate_series(1, ${rows})`.execute(trx);
+        }
+        throw new Error('written, and undone');
+      });
+  };
+  const chainWhole = () =>
+    withSystem(h.db, t.owner.household_id, (trx) => verifyAuditChain(trx, t.owner.household_id));
+
   it("a link writes only its own lines: its own documents, its own name, the chain's head (R519-04)", async () => {
     await fresh('owner', true);
     const link = await shared('owner', family, {
       document_ids: [docs.lease],
       recipient_label: 'the bank',
     });
-    const head = async (trx: Db) =>
-      (
-        await sql<{
-          hash: Buffer | null;
-        }>`select audit_chain_head(${t.owner.household_id}::uuid) as hash`.execute(trx)
-      ).rows[0]?.hash ?? null;
-    /** A line the link writes, then undone: whether the rule let it through. */
-    const tries = (over: Record<string, unknown>) =>
-      withScopeOfLink(link.share.id, async (trx) => {
-        await trx
-          .insertInto('audit_event')
-          .values({
-            household_id: t.owner.household_id,
-            actor_label: 'shared link (the bank)',
-            action: 'share.downloaded',
-            object_type: 'document',
-            object_id: docs.lease,
-            detail: JSON.stringify({ share_id: link.share.id }),
-            prev_hash: await head(trx),
-            hash: randomBytes(32),
-            ...over,
-          })
-          .execute();
-        throw new Error('written, and undone');
-      });
-    // Its own: written (and undone here, to keep the chain whole).
+    const tries = linkLine(link);
+    // Its own, hashed as the log hashes: written (and undone here).
     await expect(tries({})).rejects.toThrow(/written, and undone/);
     // A document it does not give, a collection it is not to, another's
-    // name, nobody's name, or a line off the chain: refused.
+    // name, nobody's, or a line off the chain: refused.
     for (const [what, over] of [
       ['a document it does not give', { object_id: docs.insurance }],
       ['the will, which it does not give', { object_id: docs.will }],
@@ -1371,8 +1558,82 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       ['as somebody else’s link', { actor_label: 'shared link (the landlord)' }],
       ['off the chain', { prev_hash: randomBytes(32) }],
     ] as const) {
-      await expect(tries(over), what).rejects.toThrow(/row-level security/);
+      await expect(tries(over), what).rejects.toThrow(
+        /row-level security|head of the activity log/,
+      );
     }
+  });
+
+  it('a link cannot fork the chain, or hash its line otherwise than the log does (second review)', async () => {
+    await fresh('owner', true);
+    const link = await shared('owner', family, {
+      document_ids: [docs.lease],
+      recipient_label: 'the bank',
+    });
+    const tries = linkLine(link);
+    // Three lines on one head in one statement: the second is refused.
+    await expect(tries({}, 3), 'three lines on one head').rejects.toThrow(
+      /head of the activity log/,
+    );
+    // A made-up hash, and a detail saying more than which link and what
+    // browser (which the hash would carry on for ever): refused.
+    await expect(tries({ hash: Buffer.from('ffff', 'hex') }), 'a made-up hash').rejects.toThrow(
+      /hashed as every line/,
+    );
+    await expect(
+      tries({ detail: { share_id: link.share.id, said: 'anything' } }),
+      'more in its detail',
+    ).rejects.toThrow(/says only which link it is/);
+    // Its own, honestly: written; and the chain is whole after all of it.
+    await expect(tries({})).rejects.toThrow(/written, and undone/);
+    await opened(link.link_token);
+    expect(await chainWhole()).toMatchObject({ ok: true });
+  });
+
+  it('a link says it locked only once it has: its tenth wrong PIN (second review)', async () => {
+    await fresh('owner', true);
+    const link = await shared('owner', family, {
+      document_ids: [docs.lease],
+      recipient_label: 'the bank',
+    });
+    const tries = linkLine(link);
+    const locked = { action: 'share.locked', object_type: 'collection', object_id: family };
+    // While it still works: refused.
+    await expect(tries(locked), 'a lock that never was').rejects.toThrow(/row-level security/);
+    // Its tenth wrong PIN taken: said.
+    await withSystem(h.db, t.owner.household_id, (trx) =>
+      trx.updateTable('share_link').set({ attempts: 10 }).where('id', '=', link.share.id).execute(),
+    );
+    await expect(tries(locked), 'its tenth wrong PIN').rejects.toThrow(/written, and undone/);
+  });
+
+  it("a recipient's request does not depend on the API's clock agreeing with the database's (second review)", async () => {
+    await fresh('owner', true);
+    const hh = t.owner.household_id;
+    const link = await shared('owner', family, { document_ids: [docs.lease] });
+    for (const skew of [20 * 60_000, -20 * 60_000]) {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(Date.now() + skew));
+      try {
+        const { cookie } = await opened(link.link_token);
+        expect((await content(cookie, docs.lease)).statusCode, `${skew}`).toBe(200);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+    // Each line dated by the database: now, whatever the API's clock said.
+    const lines = await withSystem(h.db, hh, (trx) =>
+      trx
+        .selectFrom('audit_event')
+        .select(sql<number>`extract(epoch from (now() - at))::float`.as('ago'))
+        .where(sql<boolean>`detail->>'share_id' = ${link.share.id}`)
+        .execute(),
+    );
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    for (const l of lines) expect(Math.abs(l.ago)).toBeLessThan(120);
+    expect(await withSystem(h.db, hh, (trx) => verifyAuditChain(trx, hh))).toMatchObject({
+      ok: true,
+    });
   });
 
   it('a collection link’s lines in the log are for those GET /shares gives the link (C519-04)', async () => {
@@ -1381,19 +1642,26 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       document_ids: [docs.lease, docs.diary],
       recipient_label: 'the divorce lawyer',
     });
-    await opened(withDiary.link_token);
+    const lawyer = await opened(withDiary.link_token);
     const leaseOnly = await shared('owner', family, {
       document_ids: [docs.lease],
       recipient_label: 'the landlord',
     });
-    await opened(leaseOnly.link_token);
+    const landlord = await opened(leaseOnly.link_token);
+    // And the lease downloaded through each: a line about the document, on
+    // the link (the second review).
+    expect((await content(lawyer.cookie, docs.lease)).statusCode).toBe(200);
+    expect((await content(landlord.cookie, docs.lease)).statusCode).toBe(200);
     const said = async (who: Who) => (await activity(who)).join('\n');
     // Its maker, who sees every document, reads both.
     expect(await said('owner')).toMatch(/for the divorce lawyer/);
     expect(await said('owner')).toMatch(/Shared link \(the divorce lawyer\) opened/);
-    // An adult who cannot see the diary: not a word of that link.
+    expect(await said('owner')).toMatch(/Shared link \(the divorce lawyer\) downloaded/);
+    // An adult who cannot see the diary: not a word of that link, not even
+    // of the lease they may see downloaded through it.
     expect(await said('adult')).not.toMatch(/divorce lawyer/);
     expect(await said('adult')).toMatch(/for the landlord/);
+    expect(await said('adult')).toMatch(/Shared link \(the landlord\) downloaded/);
     // A teen, who may not share: no collection link's lines at all.
     expect(await said('teen')).not.toMatch(/divorce lawyer|the landlord/);
   });
