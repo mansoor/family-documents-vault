@@ -1522,7 +1522,11 @@ a.btn {
   box-sizing: border-box;
 }
 
-.share-code-sent {
+/* What a code page says, and its always-there status line (a `.status-line`):
+   no margins of a paragraph's own, empty or filled — the box's gap is all
+   the space between the code, the line and the button (N520W-1). */
+.share-code-sent,
+.share-code-status {
   margin: 0;
 }
 

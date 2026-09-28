@@ -302,11 +302,16 @@ function Preview({
               </li>
             )}
             {/* One browser, not the device (F520-05): its cookie is what it is bound to. */}
+            {/* How to follow it from here (N520W-5): this page has already
+                taken the link out of its address, so the email app's "open
+                in your browser" would open nothing — the link itself is still
+                in the email, and nothing is bound before Open. */}
             {preview.this_device_only && (
               <li>
                 It opens only in the first browser that opens it. Open it in the browser you usually
                 use — not a private window, or the browser inside your email app — because after
-                that it will not open anywhere else.
+                that it will not open anywhere else. If this page opened inside your email app, go
+                back to the email, press and hold the link, and open it in your usual browser.
               </li>
             )}
           </ul>
@@ -364,7 +369,7 @@ function Preview({
             {/* Always in the page, so what it says is heard when it changes
                 (W520-2); it changes with every send. */}
             <p
-              className={sent ? 'status status-ok share-code-status' : 'share-code-status'}
+              className={`status-line share-code-status${sent ? ' status status-ok' : ''}`}
               role="status"
             >
               {sent

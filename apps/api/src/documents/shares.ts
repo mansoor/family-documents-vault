@@ -1931,12 +1931,19 @@ export class ShareService {
       // not (the 5.20 review, F520-04): a cookie planted in the browser before
       // the first open, whose value somebody else knows, is replaced. Two
       // browsers at once: one binds it, the other is refused — and if the
-      // open is not counted after all, the binding is undone with it.
+      // open is not counted after all, the binding is undone with it. A link
+      // bound already has matched this browser's cookie to its binding
+      // (otherDevice, above): that cookie is kept as it is, even one made
+      // under a master key since rotated (the 5.20 check, N520F-01) — a new
+      // one would lock this browser out of this link, and of every other
+      // link bound to the old one.
       let deviceCookie: string | undefined;
       let deviceHash: Buffer | null = null;
       if (link.this_device_only) {
         deviceCookie =
-          verifiedDeviceCookie(this.deviceKey, device) ?? mintDeviceCookie(this.deviceKey);
+          (link.device_hash !== null ? device : undefined) ??
+          verifiedDeviceCookie(this.deviceKey, device) ??
+          mintDeviceCookie(this.deviceKey);
         deviceHash = deviceHashOf(link.id, deviceCookie);
         if (link.device_hash === null) {
           await sql`savepoint fdv_device`.execute(trx);

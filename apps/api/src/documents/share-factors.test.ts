@@ -903,6 +903,44 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     expect(cookie(again, 'fdv_share_device')?.value).toBe(theirs);
   }, 60_000);
 
+  it('a browser bound under a master key since rotated keeps its cookie, and its links (N520F-01)', async () => {
+    // Two links bound to one browser's cookie, made before the master key
+    // was rotated (`cli rotate-master-key`): it no longer verifies under the
+    // key the vault derives now, but it is what they are bound to.
+    const before = mintDeviceCookie(
+      deviceCookieKey(`${TEST_MASTER}-before-rotation`, SHARE_DEVICE_KEY_PURPOSE),
+    );
+    expect(
+      verifiedDeviceCookie(deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE), before),
+    ).toBeNull();
+    const links = [
+      await made(lease, { this_device_only: true }),
+      await made(lease, { this_device_only: true }),
+    ];
+    for (const l of links) {
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('share_link')
+          .set({ device_hash: createHash('sha256').update(`${l.share.id}:${before}`).digest() })
+          .where('id', '=', l.share.id)
+          .execute(),
+      );
+    }
+    const [first, second] = links as [CreatedShare, CreatedShare];
+    // Reopened twice in that browser: opened, and its cookie left as it is.
+    for (let i = 0; i < 2; i++) {
+      const again = await unlock(first.link_token, {}, before);
+      expect(again.statusCode, again.body).toBe(200);
+      expect(cookie(again, 'fdv_share_device')?.value).toBe(before);
+    }
+    // So its other link still opens there too, and nowhere else.
+    const other = await unlock(second.link_token, {}, before);
+    expect(other.statusCode, other.body).toBe(200);
+    expect(cookie(other, 'fdv_share_device')?.value).toBe(before);
+    expect((await unlock(second.link_token)).statusCode).toBe(403);
+    expect(await linkRow(first.share.id)).toMatchObject({ open_count: 2, attempts: 0 });
+  });
+
   it('a second browser is refused', async () => {
     for (const kind of ['document', 'collection'] as const) {
       const created =

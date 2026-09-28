@@ -1,6 +1,8 @@
 import { SHARE_CODE_TRUTH, SHARE_CODE_UNAVAILABLE } from '@fdv/shared';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { SharePage } from './screens/SharePage.js';
@@ -271,6 +273,11 @@ describe('the page a link opens, with a second factor (5.20)', () => {
     // One browser, not the device (F520-05), and which to use.
     const said = await screen.findByText(/It opens only in the first browser that opens it/);
     expect(said).toHaveTextContent(/not a private window, or the browser inside your email app/);
+    // And how to do that from here, where the page has taken the link out
+    // of its address (N520W-5).
+    expect(said).toHaveTextContent(
+      'If this page opened inside your email app, go back to the email, press and hold the link, and open it in your usual browser.',
+    );
     expect(said).not.toHaveTextContent(/device/);
     unmount();
 
@@ -323,6 +330,39 @@ describe('the page a link opens, with a second factor (5.20)', () => {
     );
     expect(document.activeElement).toBe(screen.getByLabelText('The code from the email'));
     await expectAccessible();
+  });
+
+  it('the always-there status line takes no room of its own, empty or said (N520W-1)', async () => {
+    // The stylesheet, from disk (under Vitest an import of it is empty),
+    // comments out: the rules the line is held to.
+    const css = readFileSync(
+      ['src/styles.css', 'apps/web/src/styles.css']
+        .map((p) => resolve(process.cwd(), p))
+        .find((p) => existsSync(p)) as string,
+      'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+    const rulesFor = (selector: string) =>
+      [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, sel]) =>
+          (sel ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .includes(selector),
+        )
+        .map(([, , body]) => body ?? '');
+    expect(rulesFor('.status-line:empty').join()).toMatch(/margin:\s*0/);
+    expect(rulesFor('.share-code-status').join()).toMatch(/margin:\s*0/);
+
+    installFakeApi(fresh({ shareCode: '482915' }));
+    render(<SharePage token={TOKEN} />);
+    const box = await screen.findByTestId('share-code');
+    const status = within(box).getByRole('status');
+    // Empty: the app's line that is always there (`.status-line`).
+    expect(status).toHaveClass('status-line', 'share-code-status');
+    fireEvent.click(within(box).getByRole('button', { name: 'Email me a code' }));
+    await waitFor(() => expect(status).toHaveTextContent(/We sent a code/));
+    // Said: the same line, as a status, still with no margins of its own.
+    expect(status).toHaveClass('status-line', 'share-code-status', 'status', 'status-ok');
   });
 
   it('the password field is left as typed by a phone keyboard (W520-13)', async () => {
