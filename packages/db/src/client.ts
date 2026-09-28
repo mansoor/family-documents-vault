@@ -240,8 +240,9 @@ export interface Schema {
     /** How many downloads (0041), each document once a session; null for no limit. v2 only. */
     max_downloads: number | null;
     downloads_used: Generated<number>;
-    /** A view-only link's pages could not be drawn for this version (0041). */
+    /** A view-only link's pages could not be drawn for this version (0041), and when. */
     pages_failed_version: string | null;
+    pages_failed_at: Timestamp | null;
   };
 
   /**

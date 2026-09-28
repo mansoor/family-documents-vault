@@ -35,10 +35,12 @@ alter table share_link
   add column downloads_used int not null default 0
     constraint share_link_downloads_used check (downloads_used >= 0),
   -- A view-only link whose pages the worker could not draw, for this version
-  -- of its document (the queue's last try failed): said to both ends rather
-  -- than "being drawn" for ever. A newer version, or an owner turning the
-  -- link back on, tries again; drawing them clears it.
-  add column pages_failed_version uuid references document_version(id) on delete set null;
+  -- of its document (the queue's last try failed), and when: said to both
+  -- ends rather than "being drawn" for ever. An hour later, somebody looking
+  -- at the link asks again (a storage outage passes); so do a newer
+  -- version and an owner turning the link back on. Drawing them clears it.
+  add column pages_failed_version uuid references document_version(id) on delete set null,
+  add column pages_failed_at timestamptz;
 
 alter table share_link
   add constraint share_link_permission_v2 check (flow = 'v2' or permission = 'download'),

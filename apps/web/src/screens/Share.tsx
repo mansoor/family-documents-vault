@@ -1,6 +1,7 @@
 import {
   can,
   canShareToView,
+  defaultShareEnd,
   latestShareEnd,
   PREVIEW_MAX_PAGES,
   SHARE_LIMIT_MAX,
@@ -86,12 +87,11 @@ export function SharePanel(props: {
   const now = new Date();
   // The longest the vault takes (FDV_SHARE_MAX_DAYS, 90 unless its operator
   // shortened it): only picks within it are offered, and the default is a
-  // week or, when that is too long, the longest it allows.
+  // week or, when that is too long, an hour safely inside the longest it
+  // allows (defaultShareEnd), never the very edge of it.
   const maxDays = caps?.limits.share_max_days ?? SHARE_MAX_DAYS;
   const picks = shareQuickPicks(timezone, now, maxDays);
-  const week = picks.find((p) => p.key === 'week');
-  const chosen =
-    end ?? (week ? zonedParts(week.at, timezone) : latestShareEnd(timezone, now, maxDays));
+  const chosen = end ?? defaultShareEnd(timezone, now, maxDays);
   const endAt = zonedTime(chosen.date, chosen.time, timezone);
   const endProblem = endAt ? shareEndProblem(endAt, { now, maxDays }) : 'Choose a date and a time.';
   const viewable = !data?.newest || canShareToView(data.newest.mime);

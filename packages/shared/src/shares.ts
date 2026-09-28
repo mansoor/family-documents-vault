@@ -212,6 +212,44 @@ export function latestShareEnd(timezone: string, now = new Date(), maxDays = SHA
   return zonedParts(new Date(now.getTime() + maxDays * 864e5), timezone);
 }
 
+/**
+ * The end a new link starts with: In a week, or — where the vault allows
+ * less (`maxDays` under 7) — its longest, brought safely inside it: a
+ * quarter of an hour back, down to the hour on the household's clock, and
+ * back an hour more while that is still refused. So neither a clock a few
+ * minutes out nor the night the clocks go back (when 01:30 happens twice)
+ * puts it past the limit.
+ */
+export function defaultShareEnd(
+  timezone: string,
+  now = new Date(),
+  maxDays = SHARE_MAX_DAYS,
+): { date: string; time: string } {
+  const week = shareQuickPicks(timezone, now, maxDays).find((p) => p.key === 'week');
+  if (week) {
+    const { date, time } = zonedParts(week.at, timezone);
+    return { date, time };
+  }
+  const limit = now.getTime() + maxDays * 864e5;
+  for (let back = 0; back < 6; back += 1) {
+    const { date, time } = zonedParts(new Date(limit - 15 * 60_000 - back * 3_600_000), timezone);
+    const hour = `${time.slice(0, 2)}:00`;
+    const at = zonedTime(date, hour, timezone);
+    if (at && at.getTime() <= limit - 5 * 60_000 && !shareEndProblem(at, { now, maxDays })) {
+      return { date, time: hour };
+    }
+  }
+  const { date, time } = zonedParts(new Date(limit - 6 * 3_600_000), timezone);
+  return { date, time };
+}
+
+/**
+ * How far past its longest the vault still takes an end, for a client whose
+ * clock is a few minutes out: the web offers nothing past the longest, and
+ * the vault does not refuse what it offered.
+ */
+export const SHARE_END_GRACE_MINUTES = 5;
+
 function quickPicks(timezone: string, now: Date): ShareQuickPick[] {
   const soonest = now.getTime() + SHARE_MIN_MINUTES * 60_000;
   const today = zonedParts(now, timezone);
@@ -261,10 +299,14 @@ export function shareEndWords(
   return `${opts.weekday === false ? '' : `${WEEKDAYS[p.weekday] ?? ''} `}${onDay} at ${p.time}`;
 }
 
-/** Why an end is refused, in the words the vault answers with; null when it is fine. */
+/**
+ * Why an end is refused, in the words the vault answers with; null when it
+ * is fine. `graceMinutes` past the longest are let through (the vault's
+ * SHARE_END_GRACE_MINUTES); a client checks with none.
+ */
 export function shareEndProblem(
   at: Date,
-  opts: { now?: Date; maxDays?: number } = {},
+  opts: { now?: Date; maxDays?: number; graceMinutes?: number } = {},
 ): string | null {
   const now = (opts.now ?? new Date()).getTime();
   const maxDays = opts.maxDays ?? SHARE_MAX_DAYS;
@@ -272,7 +314,7 @@ export function shareEndProblem(
   if (at.getTime() < now + SHARE_MIN_MINUTES * 60_000) {
     return `Choose a time at least ${SHARE_MIN_MINUTES} minutes from now.`;
   }
-  if (at.getTime() > now + maxDays * 864e5) {
+  if (at.getTime() > now + maxDays * 864e5 + (opts.graceMinutes ?? 0) * 60_000) {
     return `A link can last ${maxDays} days at most.`;
   }
   return null;

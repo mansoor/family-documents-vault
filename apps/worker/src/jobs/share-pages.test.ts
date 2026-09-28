@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -67,7 +67,7 @@ const corners = (width: number, height: number) => {
   };
 };
 
-/** How much of an image's foot band is ink (anything not near white), 0 to 1. */
+/** How many pixels of an image's foot band are ink (anything not near white). */
 async function footInk(file: string, band: number): Promise<number> {
   const { stdout } = await run(await magickBin(), [
     file,
@@ -82,7 +82,7 @@ async function footInk(file: string, band: number): Promise<number> {
     '85%',
     '-negate',
     '-format',
-    '%[fx:mean]',
+    '%[fx:mean*w*h]',
     'info:',
   ]);
   return Number(stdout.trim());
@@ -119,6 +119,74 @@ function pagesPdf(pages: number): Buffer {
   for (const off of offsets) out += `${String(off).padStart(10, '0')} 00000 n \n`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, 'latin1');
+}
+
+/**
+ * A scanner's TIFF, built by hand: `frames` pages of `width`×`height` 8-bit
+ * RGB, uncompressed, each page's directory pointing at one shared run of
+ * pixels (a colour gradient), so the file is one page's size however many
+ * pages it has, while every page decodes to its full size.
+ */
+function scannedTiff(frames: number, width: number, height: number): Buffer {
+  const pixels = width * height * 3;
+  const data = Buffer.alloc(pixels);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width * 3;
+    for (let x = 0; x < width; x += 1) {
+      data[row + x * 3] = (x * 255) / width;
+      data[row + x * 3 + 1] = (y * 255) / height;
+      data[row + x * 3 + 2] = 160;
+    }
+  }
+  const entries = 13;
+  const ifdSize = 2 + entries * 12 + 4;
+  const extra = 6 + 16; // BitsPerSample, then two resolutions
+  const start = 8 + pixels;
+  const out = Buffer.alloc(start + frames * (ifdSize + extra));
+  out.write('II', 0, 'latin1');
+  out.writeUInt16LE(42, 2);
+  out.writeUInt32LE(start, 4);
+  data.copy(out, 8);
+  for (let f = 0; f < frames; f += 1) {
+    const at = start + f * (ifdSize + extra);
+    const bits = at + ifdSize;
+    const xres = bits + 6;
+    const yres = xres + 8;
+    out.writeUInt16LE(entries, at);
+    const tags: Array<[number, number, number, number]> = [
+      [256, 4, 1, width], // ImageWidth
+      [257, 4, 1, height], // ImageLength
+      [258, 3, 3, bits], // BitsPerSample -> 8,8,8
+      [259, 3, 1, 1], // no compression
+      [262, 3, 1, 2], // RGB
+      [273, 4, 1, 8], // the pixels
+      [277, 3, 1, 3], // three samples a pixel
+      [278, 4, 1, height], // one strip
+      [279, 4, 1, pixels],
+      [282, 5, 1, xres], // 300 dpi
+      [283, 5, 1, yres],
+      [284, 3, 1, 1], // chunky
+      [296, 3, 1, 2], // inches
+    ];
+    tags.forEach(([tag, type, count, value], i) => {
+      const e = at + 2 + i * 12;
+      out.writeUInt16LE(tag, e);
+      out.writeUInt16LE(type, e + 2);
+      out.writeUInt32LE(count, e + 4);
+      if (type === 3 && count === 1) out.writeUInt16LE(value, e + 8);
+      else out.writeUInt32LE(value, e + 8);
+    });
+    out.writeUInt32LE(
+      f + 1 < frames ? start + (f + 1) * (ifdSize + extra) : 0,
+      at + 2 + entries * 12,
+    );
+    for (let s = 0; s < 3; s += 1) out.writeUInt16LE(8, bits + s * 2);
+    out.writeUInt32LE(300, xres);
+    out.writeUInt32LE(1, xres + 4);
+    out.writeUInt32LE(300, yres);
+    out.writeUInt32LE(1, yres + 4);
+  }
+  return out;
 }
 
 /** A JPEG's width and height, from its first start-of-frame marker. */
@@ -608,6 +676,201 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
       expect(await pagesOf(id)).toEqual([]);
       for (const n of [1, 2]) {
         expect(await exists(sharePageKey(v.storageKey, id, n)), `page ${n}`).toBe(false);
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
+    'a redraw that fails part-way leaves the pages it was redrawing, which are still shown (second review)',
+    async () => {
+      const v = await store(pagesPdf(3), 'application/pdf');
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: v.versionId });
+      const id = await link(v.documentId);
+      expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({
+        drawn: 3,
+      });
+      const kept = await pagesOf(id);
+      // Asked to draw them again (a restore, or a page gone from storage),
+      // and failing at page 2: page 1 is written where the kept page 1 is.
+      await adapter().delete(previewKey(v.storageKey, 2));
+      await expect(
+        drawSharePages(deps(), { household_id: hh, share_id: id, redraw: true }, { final: false }),
+      ).rejects.toThrow();
+      // Every page a row names is still there, and still opens.
+      expect(await pagesOf(id)).toEqual(kept);
+      for (const r of kept) {
+        expect(await exists(r.storage_key), `page ${r.n}`).toBe(true);
+        const jpeg = await decryptToBuffer(adapter(), r.storage_key, v.fileKey);
+        expect(jpeg.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])), `page ${r.n}`).toBe(
+          true,
+        );
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
+    'a 20-page colour scan at 300 dpi, as a TIFF, is counted from its headers and drawn page by page (second review)',
+    async () => {
+      const v = await store(scannedTiff(20, 2480, 3508), 'image/tiff');
+      await processVersion(deps(), { household_id: hh, version_id: v.versionId });
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: v.versionId });
+      const got = await admin.query<{ page_count: number; preview_pages: number; state: string }>(
+        `select page_count, preview_pages, preview_state as state
+           from document_version where id = $1`,
+        [v.versionId],
+      );
+      expect(got.rows[0]).toEqual({ page_count: 20, preview_pages: 20, state: 'ready' });
+    },
+    300_000,
+  );
+
+  it.skipIf(!everyScript)(
+    "a watermark is drawn where the system's ImageMagick refuses @files, and a label's look-alikes stay as typed (second review)",
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-policy-'));
+      const was = process.env.MAGICK_CONFIGURE_PATH;
+      try {
+        // Debian's and Ubuntu's stock rule: ImageMagick reads no @file.
+        const policies = path.join(scratch, 'policy');
+        await mkdir(policies);
+        await writeFile(
+          path.join(policies, 'policy.xml'),
+          '<policymap><policy domain="path" rights="none" pattern="@*"/></policymap>\n',
+        );
+        process.env.MAGICK_CONFIGURE_PATH = policies;
+        const page = path.join(scratch, 'page.jpg');
+        await run(bin, ['-size', '1236x1600', 'xc:white', `jpeg:${page}`]);
+        const out = path.join(scratch, 'out.jpg');
+        const label = '100% %[fx:1] <b>x</b> &amp; @/etc/hostname';
+        await watermarkPage(
+          page,
+          out,
+          watermarkText({ recipient_label: label, created_at: new Date('2026-09-27') }, 'UTC'),
+        );
+        // The foot line, read back: every look-alike drawn as it was typed.
+        const { height } = jpegSize(await readFile(out));
+        const foot = path.join(scratch, 'foot.png');
+        await run(bin, [
+          `jpeg:${out}`,
+          '-gravity',
+          'south',
+          '-crop',
+          `0x${height - 1600}+0+0`,
+          '+repage',
+          '-resize',
+          '200%',
+          `png:${foot}`,
+        ]);
+        if (tools.tesseract) {
+          const { stdout } = await run('tesseract', [foot, '-', '--psm', '7'], {
+            timeout: 60_000,
+          });
+          expect(stdout).toContain('<b>x</b>');
+          expect(stdout).toContain('&amp;');
+          expect(stdout).toContain('%[fx:1]');
+          expect(stdout).toContain('@/etc/hostname');
+        }
+      } finally {
+        if (was === undefined) delete process.env.MAGICK_CONFIGURE_PATH;
+        else process.env.MAGICK_CONFIGURE_PATH = was;
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!everyScript)(
+    "an Arabic label's foot line fits its band, and covers none of the page (second review)",
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-foot-'));
+      try {
+        const page = path.join(scratch, 'black.jpg');
+        await run(bin, ['-size', '1236x1600', 'xc:black', `jpeg:${page}`]);
+        const out = path.join(scratch, 'out.jpg');
+        await watermarkPage(
+          page,
+          out,
+          watermarkText(
+            { recipient_label: 'أحمد علي کے', created_at: new Date('2026-09-27') },
+            'UTC',
+          ),
+        );
+        // The last rows of the page itself, just above the band: dark, with
+        // nothing of the band's white laid over them.
+        const { stdout } = await run(bin, [
+          `jpeg:${out}`,
+          '-crop',
+          '1236x30+0+1570',
+          '+repage',
+          '-colorspace',
+          'gray',
+          '-threshold',
+          '90%',
+          '-format',
+          '%[fx:mean]',
+          'info:',
+        ]);
+        expect(Number(stdout.trim())).toBeLessThan(0.01);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!drawing)(
+    'a strip or a small page has a whole mark across it, not the gap between marks (second review)',
+    async () => {
+      const bin = await magickBin();
+      const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-strip-'));
+      const text = watermarkText(
+        { recipient_label: 'the letting agent', created_at: new Date('2026-09-27') },
+        'UTC',
+      );
+      try {
+        // A strip: its page area, read level, says whom it is for.
+        const strip = path.join(scratch, 'strip.jpg');
+        await run(bin, ['-size', '1600x200', 'xc:white', `jpeg:${strip}`]);
+        const out = path.join(scratch, 'strip-out.jpg');
+        await watermarkPage(strip, out, text);
+        const level = path.join(scratch, 'level.png');
+        await run(bin, [
+          `jpeg:${out}`,
+          '-crop',
+          '1600x200+0+0',
+          '+repage',
+          '-background',
+          'white',
+          '-rotate',
+          '30',
+          '-colorspace',
+          'gray',
+          '-threshold',
+          '80%',
+          '-resize',
+          '200%',
+          `png:${level}`,
+        ]);
+        if (tools.tesseract) {
+          const { stdout } = await run('tesseract', [level, '-', '--psm', '6'], {
+            timeout: 60_000,
+          });
+          expect(stdout).toMatch(/letting\W{0,3}agent/i);
+        }
+        // A page sixty pixels square carries some of the mark.
+        const tiny = path.join(scratch, 'tiny.jpg');
+        await run(bin, ['-size', '60x60', 'xc:white', `jpeg:${tiny}`]);
+        const tinyOut = path.join(scratch, 'tiny-out.jpg');
+        await watermarkPage(tiny, tinyOut, text);
+        expect(
+          await markedShare(`jpeg:${tiny}`, `jpeg:${tinyOut}`, { x: 0, y: 0, w: 60, h: 60 }),
+        ).toBeGreaterThan(0.01);
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
       }
     },
     120_000,

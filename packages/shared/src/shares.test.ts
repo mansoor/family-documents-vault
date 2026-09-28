@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canShareToView,
+  defaultShareEnd,
   latestShareEnd,
   pagesNotSharedNote,
   shareEndProblem,
@@ -75,6 +76,44 @@ describe("a link's options", () => {
     expect(latest).toEqual({ date: '2026-09-30', time: '10:00', weekday: 3 });
     const at = zonedTime(latest.date, latest.time, 'Europe/London') as Date;
     expect(shareEndProblem(at, { now: sunday, maxDays: 3 })).toBeNull();
+  });
+
+  it('starts a link safely inside the longest, even the night the clocks go back (second review)', () => {
+    const at = (p: { date: string; time: string }) =>
+      zonedTime(p.date, p.time, 'Europe/London') as Date;
+    // Three days on from here is 01:30 on the night British Summer Time
+    // ends, a time that happens twice: the very edge, read back, is the
+    // second, an hour past the longest.
+    const before = new Date('2026-10-22T00:30:00Z');
+    const edge = latestShareEnd('Europe/London', before, 3);
+    expect(edge).toMatchObject({ date: '2026-10-25', time: '01:30' });
+    expect(shareEndProblem(at(edge), { now: before, maxDays: 3 })).toBe(
+      'A link can last 3 days at most.',
+    );
+    // The default is on the hour, and inside it.
+    const start = defaultShareEnd('Europe/London', before, 3);
+    expect(start).toEqual({ date: '2026-10-25', time: '00:00' });
+    expect(shareEndProblem(at(start), { now: before, maxDays: 3 })).toBeNull();
+    // On an ordinary day: the hour below a quarter of an hour inside it.
+    const sunday = new Date('2026-09-27T09:40:00Z');
+    expect(defaultShareEnd('Europe/London', sunday, 3)).toEqual({
+      date: '2026-09-30',
+      time: '10:00',
+    });
+    expect(defaultShareEnd('Europe/London', new Date('2026-09-27T09:50:00Z'), 3)).toEqual({
+      date: '2026-09-30',
+      time: '10:00',
+    });
+    // Where a week is allowed, a week.
+    expect(defaultShareEnd('Europe/London', sunday, 90)).toEqual({
+      date: '2026-10-04',
+      time: '10:40',
+    });
+    // The vault lets a few minutes past the longest through, for a clock that
+    // is ahead; a client checks with none.
+    const late = new Date(sunday.getTime() + 3 * 864e5 + 3 * 60_000);
+    expect(shareEndProblem(late, { now: sunday, maxDays: 3 })).not.toBeNull();
+    expect(shareEndProblem(late, { now: sunday, maxDays: 3, graceMinutes: 5 })).toBeNull();
   });
 
   it('refuses an end in the past, under 5 minutes, or past the longest', () => {

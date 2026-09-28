@@ -19,7 +19,13 @@ import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
-import type { CreatedShare, SharedDocument, SharePreview, ShareView } from './shares.js';
+import {
+  PAGES_RETRY_MS,
+  type CreatedShare,
+  type SharedDocument,
+  type SharePreview,
+  type ShareView,
+} from './shares.js';
 
 const testKeys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
 
@@ -1367,11 +1373,11 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       await drawnAlready(doc, 1);
       const created = await made(doc, { permission: 'view' });
       const { cookie } = await opened(created.link_token);
-      // The worker's last try failed, for this version.
+      // The worker's last try failed, for this version, a moment ago.
       await withSystem(h.db, owner.household_id, async (trx) =>
         trx
           .updateTable('share_link')
-          .set({ pages_failed_version: (await newestOf(doc)).id })
+          .set({ pages_failed_version: (await newestOf(doc)).id, pages_failed_at: new Date() })
           .where('id', '=', created.share.id)
           .execute(),
       );
@@ -1394,6 +1400,54 @@ describe.skipIf(!testAdminUrl())('share links', () => {
             .execute(),
         ),
       ).rejects.toThrow(/only count its opens|row-level security/);
+    });
+
+    it('pages that failed an hour ago or more are asked for again: an outage passes (second review)', async () => {
+      const doc = await make('Scanned in an outage', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view' });
+      const { cookie } = await opened(created.link_token);
+      const v = (await newestOf(doc)).id;
+      const failedAgo = (ms: number) =>
+        withSystem(h.db, owner.household_id, (trx) =>
+          trx
+            .updateTable('share_link')
+            .set({ pages_failed_version: v, pages_failed_at: new Date(Date.now() - ms) })
+            .where('id', '=', created.share.id)
+            .execute(),
+        );
+      // Under an hour: failed, and not asked for.
+      await failedAgo(PAGES_RETRY_MS - 60_000);
+      const before = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+      // Past it: being drawn again, and the worker asked, by whoever looks.
+      await failedAgo(PAGES_RETRY_MS + 60_000);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('drawing');
+      expect(jobsFor('share.pages', created.share.id).length).toBeGreaterThan(before);
+      expect(jobsFor('share.pages', created.share.id).at(-1)?.data).toEqual({
+        household_id: owner.household_id,
+        share_id: created.share.id,
+        version_id: v,
+      });
+      // The version's own previews failing is for good, however long ago.
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ preview_state: 'failed' })
+          .where('id', '=', v)
+          .execute(),
+      );
+      const now = jobsFor('share.pages', created.share.id).length;
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(now);
+    });
+
+    it('an end a few minutes past the longest, from a clock that is ahead, is taken (second review)', async () => {
+      const edge = new Date(Date.now() + 90 * 864e5 + 3 * 60_000).toISOString();
+      expect((await share(lease, { expires_at: edge })).statusCode).toBe(201);
+      const far = new Date(Date.now() + 90 * 864e5 + 10 * 60_000).toISOString();
+      expect(code(await share(lease, { expires_at: far }))).toBe('expiry_out_of_range');
     });
 
     it('a document this page has downloaded stays downloadable here once downloads are used up (5.18 review)', async () => {

@@ -79,6 +79,8 @@ export interface FakeState {
   shareDownloaded?: boolean;
   /** How many times /api/v1/shared/items was asked. */
   shareItemsAsked?: number;
+  /** Answer the next this-many asks of /api/v1/shared/items with a 503. */
+  shareItemsFailing?: number;
   documents: Array<Record<string, unknown>>;
   /** Hold a document's DELETE until this settles (5.1). */
   holdDelete?: Promise<void>;
@@ -956,6 +958,12 @@ export function installFakeApi(state: FakeState) {
     }
     if (path === '/api/v1/shared/items' && method === 'GET') {
       state.shareItemsAsked = (state.shareItemsAsked ?? 0) + 1;
+      // The vault out of reach for a moment.
+      if ((state.shareItemsFailing ?? 0) > 0) {
+        state.shareItemsFailing = (state.shareItemsFailing ?? 0) - 1;
+        return refuse(503, 'not_ready', 'The vault is starting up or cannot reach its database.');
+      }
+      if (!state.shareValid) return linkGone();
       if (!state.shareSession) {
         return refuse(
           401,

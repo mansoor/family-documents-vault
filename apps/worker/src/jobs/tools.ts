@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -628,11 +628,26 @@ async function identify(args: string[], timeout = 60_000): Promise<string> {
 export async function imageFrames(file: string, mime: string): Promise<number> {
   const coder = IMAGE_CODERS[mime];
   if (coder !== 'tiff') return 1;
-  // `%n` is the number of frames, said once for each frame.
-  const out = await identify(['-format', '%n\n', `tiff:${file}`]);
-  const n = Number(out.trim().split(/\s+/)[0]);
-  return Number.isInteger(n) && n > 0 ? n : 1;
+  // Counted from the frames' headers alone (`-ping`), over a bounded range:
+  // decoding a twenty-page colour scan's every frame to count them fills
+  // the pixel cache, and its pages were never drawn (the second review).
+  // `%s` is each frame's number; the last, plus one, is how many.
+  const out = await identify([
+    '-ping',
+    '-format',
+    '%s\n',
+    `tiff:${file}[0-${TIFF_MAX_FRAMES - 1}]`,
+  ]);
+  const scenes = out
+    .trim()
+    .split(/\s+/)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 0);
+  return scenes.length ? Math.min(Math.max(...scenes) + 1, TIFF_MAX_FRAMES) : 1;
 }
+
+/** The most frames a TIFF is counted to: past this, it is said to have this many. */
+export const TIFF_MAX_FRAMES = 1000;
 
 let pangoFound: Promise<boolean> | null = null;
 
@@ -685,15 +700,22 @@ export function watermarkLine(text: string): string {
 }
 
 /**
- * What ImageMagick is given to write where it reads its own escapes (the
- * `label:` coder, without pango): `%` and `\` made plain — a label is the
- * family's text, and `%[…]` in it would otherwise be read as a question
- * about the image — and never an `@file`. Pango is given its text in a
- * file, which it draws as it is.
+ * What ImageMagick is given to write, inline after `pango:` or `label:`:
+ * `%` and `\` made plain — a label is the family's text, and `%[…]` in it
+ * would otherwise be read as a question about the image — and never an
+ * `@file`, which ImageMagick would read (and which a distribution's policy
+ * may refuse outright, as Debian's and Ubuntu's `@*` rule does: the second
+ * review). With pango, markup is off, so `<b>` is drawn as it is written;
+ * ImageMagick still reads `&amp;`, `&lt;` and their like in what `pango:` is
+ * given inline, so every `&` is given as `&amp;` and a label's own `&amp;`
+ * is drawn as it was typed. The bidirectional isolates are kept for pango
+ * to order the line by; the one font `label:` draws with has no use for
+ * them.
  */
-export function magickText(text: string): string {
-  const line = watermarkLine(text).replace(/[⁦-⁩]/g, '');
-  const escaped = line.replace(/\\/g, '\\\\').replace(/%/g, '%%');
+export function magickText(text: string, opts: { pango?: boolean } = {}): string {
+  const line = watermarkLine(text);
+  const kept = opts.pango ? line.replace(/&/g, '&amp;') : line.replace(/[⁦-⁩]/g, '');
+  const escaped = kept.replace(/\\/g, '\\\\').replace(/%/g, '%%');
   return escaped.startsWith('@') ? ` ${escaped}` : escaped;
 }
 
@@ -717,9 +739,10 @@ const MARK_OPACITY = 0.5;
  * line, never the grid). JPEG, as the previews are, and nothing but the
  * picture.
  *
- * With pango the text is laid out as the family wrote it, in any script,
- * from a file (no ImageMagick escapes); without it, with the one sans-serif
- * font fontconfig gives, which draws Latin, Greek and Cyrillic.
+ * With pango the text is laid out as the family wrote it, in any script;
+ * without it, with the one sans-serif font fontconfig gives, which draws
+ * Latin, Greek and Cyrillic. Either way the text goes inline, escaped
+ * (magickText), never through a file ImageMagick is asked to read.
  */
 export async function watermarkPage(
   input: string,
@@ -728,22 +751,25 @@ export async function watermarkPage(
   opts: { pango?: boolean } = {},
 ): Promise<void> {
   const bin = await MAGICK();
-  const [width = PREVIEW_EDGE, height = PREVIEW_EDGE] = (
-    await identify(['-format', '%w %h', `jpeg:${input}`])
-  )
-    .trim()
-    .split(/\s+/)
-    .map(Number);
+  const size = async (file: string) => {
+    const [w = 0, h = 0] = (await identify(['-format', '%w %h', file]))
+      .trim()
+      .split(/\s+/)
+      .map(Number);
+    return { w, h };
+  };
+  const page = await size(`jpeg:${input}`);
+  const width = page.w || PREVIEW_EDGE;
+  const height = page.h || PREVIEW_EDGE;
   const clamp = (n: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, n)));
-  const markSize = clamp(width / 44, 14, 44);
+  // Sized to the page, and on a strip to its height, a little: so that on a
+  // strip or a small page a whole mark still crosses it, big enough to read
+  // (the second review).
+  const markSize = clamp(Math.min(width / 44, (3 * height) / 30), 10, 44);
   const footSize = clamp(width / 48, 12, 40);
-  const band = Math.round(footSize * 2.4);
   const pango = opts.pango ?? (await hasPango());
   const dir = await mkdtemp(path.join(path.dirname(output), 'wm-'));
   try {
-    // The words, as the coder in use reads them.
-    const textFile = path.join(dir, 'text.txt');
-    await writeFile(textFile, watermarkLine(text), 'utf8');
     const font = pango ? null : await sansFont();
     const words = (size: number, fill: string): string[] =>
       pango
@@ -756,7 +782,7 @@ export async function watermarkPage(
             fill,
             '-define',
             'pango:markup=false',
-            `pango:@${textFile}`,
+            `pango:${magickText(text, { pango: true })}`,
           ]
         : [
             ...(font ? ['-font', font] : []),
@@ -809,10 +835,7 @@ export async function watermarkPage(
       ],
       { timeout: 60_000 },
     );
-    const [markWidth = 0] = (await identify(['-format', '%w %h', `png:${mark}`]))
-      .trim()
-      .split(/\s+/)
-      .map(Number);
+    const { w: markWidth, h: markHeight } = await size(`png:${mark}`);
     const tile = path.join(dir, 'tile.png');
     await run(
       bin,
@@ -833,14 +856,16 @@ export async function watermarkPage(
       ],
       { timeout: 60_000 },
     );
-    // The line at the foot, never wider than the page.
+    // The line at the foot, never wider than the page, on nothing: the band
+    // it sits on is made as tall as it is, whatever the script (Arabic and
+    // Urdu stand taller than Latin), so it never covers the page.
     const footLine = path.join(dir, 'foot.png');
     await run(
       bin,
       [
         ...MAGICK_LIMITS,
         '-background',
-        'white',
+        'none',
         ...words(footSize, '#1f1f1f'),
         '-resize',
         `${Math.max(1, width - 2 * footSize)}x>`,
@@ -848,6 +873,14 @@ export async function watermarkPage(
       ],
       { timeout: 60_000 },
     );
+    const foot = await size(`png:${footLine}`);
+    const band = Math.max(Math.round(footSize * 2.4), foot.h + Math.round(footSize * 0.6));
+    // The grid, laid so that one mark's middle is the page's middle: a small
+    // page, or a strip, has a whole mark across it, not the empty corner
+    // between marks. Tiled wider than the page and cut to it, so the pattern
+    // carries on unbroken to every edge.
+    const cut = (page: number, period: number) =>
+      period > 0 ? ((Math.round(period / 2 - page / 2) % period) + period) % period : 0;
     await run(
       bin,
       [
@@ -861,8 +894,11 @@ export async function watermarkPage(
         'TrueColor',
         '(',
         '-size',
-        `${width}x${height}`,
+        `${width + markWidth}x${height + markHeight}`,
         `tile:png:${tile}`,
+        '-crop',
+        `${width}x${height}+${cut(width, markWidth)}+${cut(height, markHeight)}`,
+        '+repage',
         ')',
         '-compose',
         'over',
@@ -877,7 +913,7 @@ export async function watermarkPage(
         '-gravity',
         'south',
         '-geometry',
-        `+0+${Math.round((band - footSize * 1.4) / 2)}`,
+        `+0+${Math.round((band - foot.h) / 2)}`,
         '-composite',
         '-type',
         'TrueColor',

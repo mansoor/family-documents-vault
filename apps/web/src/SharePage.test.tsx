@@ -1,4 +1,10 @@
-import { latestShareEnd, shareQuickPicks, zonedParts } from '@fdv/shared';
+import {
+  defaultShareEnd,
+  latestShareEnd,
+  shareQuickPicks,
+  zonedParts,
+  zonedTime,
+} from '@fdv/shared';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
@@ -265,19 +271,34 @@ describe('until a date and time, view or download, so many opens', () => {
     }
     const latest = latestShareEnd('Europe/London', new Date(), 3);
     expect(screen.getByLabelText('Date')).toHaveAttribute('max', latest.date);
-    // A date past it is said to be too far before anything is sent.
+    // Its default, before anything is touched: safely inside the longest, on
+    // the hour, said without a problem, and ready to be made (second review).
+    const expected = defaultShareEnd('Europe/London', new Date(), 3);
+    expect(screen.getByLabelText('Date')).toHaveValue(expected.date);
+    expect(screen.getByLabelText('Time')).toHaveValue(expected.time);
+    expect(expected.time).toMatch(/:00$/);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Make the link' })).toBeEnabled();
+    const at = zonedTime(expected.date, expected.time, 'Europe/London') as Date;
+    expect(at.getTime()).toBeLessThanOrEqual(Date.now() + 3 * 864e5 - 15 * 60_000);
+    expect(at.getTime()).toBeGreaterThan(Date.now() + 3 * 864e5 - 3 * 3_600_000);
+
+    // Made as it is, it is taken, and within the longest.
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    await screen.findByText(/\/s#share-secret-0123456789abcdef$/);
+    const sent = Date.parse(String(shareBody(state)?.expires_at));
+    expect(sent).toBe(at.getTime());
+    expect(sent).toBeLessThanOrEqual(Date.now() + 3 * 864e5);
+  });
+
+  it('under a vault limit shorter than a week, a date past it is said to be too far before anything is sent (5.18 review)', async () => {
+    const state = await openSheet({ shareMaxDays: 3 });
     fireEvent.change(screen.getByLabelText('Date'), {
       target: { value: latestShareEnd('Europe/London', new Date(), 5).date },
     });
     expect(screen.getByRole('alert')).toHaveTextContent('A link can last 3 days at most.');
     expect(screen.getByRole('button', { name: 'Make the link' })).toBeDisabled();
-    // Its default, left as it is, is taken.
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: latest.date } });
-    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
-    await screen.findByText(/\/s#share-secret-0123456789abcdef$/);
-    const sent = Date.parse(String(shareBody(state)?.expires_at));
-    expect(sent).toBeLessThanOrEqual(Date.now() + 3 * 864e5);
-    expect(sent).toBeGreaterThan(Date.now() + 3 * 864e5 - 2 * 60_000);
+    expect(shareBody(state)).toBeUndefined();
   });
 
   it('a limit typed wrong is said, never taken as no limit (5.18 review)', async () => {
@@ -457,8 +478,13 @@ describe('until a date and time, view or download, so many opens', () => {
     const later = Date.now() + 4 * 60_000;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => later);
     try {
-      const said = await screen.findByRole('alert', {}, { timeout: 6000 });
-      expect(said).toHaveTextContent(/The pages could not be prepared\. Ask whoever sent the link/);
+      await screen.findByText(
+        /The pages could not be prepared\. Ask whoever sent the link/,
+        {},
+        {
+          timeout: 6000,
+        },
+      );
       expect(screen.queryByText(/They will appear here in a minute/)).not.toBeInTheDocument();
       await expectAccessible();
       // Tried again, and drawn meanwhile: they come.
@@ -468,6 +494,76 @@ describe('until a date and time, view or download, so many opens', () => {
     } finally {
       clock.mockRestore();
     }
+  }, 30_000);
+
+  it('Try again keeps the focus on the one line that says how the wait is going, and asks at once (second review)', async () => {
+    const state = fresh({
+      sharePermission: 'view',
+      shareSession: true,
+      sharePages: { state: 'drawing', shown: 2, total: 2 },
+    });
+    installFakeApi(state);
+    render(<SharePage token={null} />);
+    const waiting = await screen.findByText(/still being drawn/);
+    expect(waiting).toHaveAttribute('role', 'status');
+    const later = Date.now() + 4 * 60_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => later);
+    try {
+      await screen.findByText(/could not be prepared/, {}, { timeout: 6000 });
+      // One line, the same one, its words changed: heard as they change.
+      expect(screen.getByRole('status')).toBe(waiting);
+      const asked = state.shareItemsAsked ?? 0;
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      // The button is gone; the focus is on the line, not lost to the page.
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(waiting);
+      expect(waiting).toHaveTextContent(/still being drawn/);
+      // Asked at once, not after the next wait.
+      await waitFor(() => expect(state.shareItemsAsked ?? 0).toBeGreaterThan(asked), {
+        timeout: 1000,
+      });
+      await expectAccessible();
+    } finally {
+      clock.mockRestore();
+    }
+  }, 30_000);
+
+  it('a session or link that is over while the pages are awaited says so, not "could not be prepared" (second review)', async () => {
+    for (const [over, words] of [
+      [(s: ReturnType<typeof fresh>) => (s.shareSession = false), /open too long/],
+      [(s: ReturnType<typeof fresh>) => (s.shareValid = false), /not valid any more/],
+    ] as const) {
+      const state = fresh({
+        sharePermission: 'view',
+        shareSession: true,
+        sharePages: { state: 'drawing', shown: 2, total: 2 },
+      });
+      installFakeApi(state);
+      const { unmount } = render(<SharePage token={null} />);
+      await screen.findByText(/still being drawn/);
+      over(state);
+      await screen.findByRole('heading', { name: 'This link cannot be opened' }, { timeout: 6000 });
+      expect(screen.getByRole('alert')).toHaveTextContent(words);
+      expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument();
+      unmount();
+    }
+  }, 30_000);
+
+  it('the vault out of reach for a moment is asked again, and the pages come (second review)', async () => {
+    const state = fresh({
+      sharePermission: 'view',
+      shareSession: true,
+      sharePages: { state: 'drawing', shown: 2, total: 2 },
+    });
+    installFakeApi(state);
+    render(<SharePage token={null} />);
+    await screen.findByText(/still being drawn/);
+    // The next ask finds the vault out of reach.
+    state.shareItemsFailing = 1;
+    await waitFor(() => expect(state.shareItemsFailing).toBe(0), { timeout: 6000 });
+    expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument();
+    state.sharePages = { state: 'ready', shown: 2, total: 2 };
+    await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
   }, 30_000);
 });
 

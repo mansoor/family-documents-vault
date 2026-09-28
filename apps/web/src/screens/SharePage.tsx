@@ -1,5 +1,5 @@
 import { pagesNotSharedNote } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import {
   api,
   ApiRequestError,
@@ -62,6 +62,14 @@ export function SharePage({ token }: { token: string | null }) {
   useEffect(() => {
     if (phase.kind !== 'loading') heading.current?.focus();
   }, [phase.kind]);
+
+  // While a page is open: what it asks again brings a newer answer, or
+  // tells it the session or the link is over.
+  const onSession = useCallback(
+    (session: SharedSession) => setPhase({ kind: 'open', session }),
+    [],
+  );
+  const onOver = useCallback((message: string) => setPhase({ kind: 'dead', message }), []);
 
   useEffect(() => {
     let live = true;
@@ -143,11 +151,7 @@ export function SharePage({ token }: { token: string | null }) {
       )}
 
       {phase.kind === 'open' && (
-        <Opened
-          session={phase.session}
-          heading={heading}
-          onSession={(session) => setPhase({ kind: 'open', session })}
-        />
+        <Opened session={phase.session} heading={heading} onSession={onSession} onOver={onOver} />
       )}
     </main>
   );
@@ -241,14 +245,24 @@ function Preview({
 const DRAWING_POLL_MS = 4000;
 const DRAWING_PATIENCE_MS = 3 * 60_000;
 
+/**
+ * What a session's answers mean the page is over, not only waiting: its
+ * session ended, the link taken back or gone, or opened as often as it
+ * allows. The page then says so, as Open does, in the vault's words.
+ */
+const OVER = new Set(['share_session_ended', 'link_not_valid', 'link_used_up']);
+
 function Opened({
   session,
   heading,
   onSession,
+  onOver,
 }: {
   session: SharedSession;
   heading: RefObject<HTMLHeadingElement | null>;
   onSession: (session: SharedSession) => void;
+  /** The session or its link is over: the page says so, with this. */
+  onOver: (message: string) => void;
 }) {
   const from = session.shared_by ? <strong>{session.shared_by}</strong> : 'Somebody';
   const single = session.items.length === 1 ? session.items[0] : undefined;
@@ -257,11 +271,14 @@ function Opened({
   const [asked, setAsked] = useState(0);
   const [since, setSince] = useState(() => Date.now());
   const [gaveUp, setGaveUp] = useState(false);
+  const [wait, setWait] = useState(DRAWING_POLL_MS);
 
   // Pages still being drawn: asked again, inside the session (which counts
   // nothing, and asks the worker for them again each time), until they are
   // there — for a few minutes. After that the page says they could not be
   // prepared, rather than "in a minute" for ever, and offers to try again.
+  // A session or link that is over says so at once; anything else (the
+  // vault out of reach for a moment) is asked again while there is time.
   useEffect(() => {
     if (!drawing || gaveUp) return;
     const timer = window.setTimeout(() => {
@@ -271,17 +288,27 @@ function Opened({
       }
       void api.linkItems().then(
         (next) => {
+          setWait(DRAWING_POLL_MS);
           setAsked((n) => n + 1);
           onSession(next);
         },
-        () => setGaveUp(true),
+        (err: unknown) => {
+          if (err instanceof ApiRequestError && OVER.has(err.code)) {
+            onOver(err.message);
+            return;
+          }
+          setWait(DRAWING_POLL_MS);
+          setAsked((n) => n + 1);
+        },
       );
-    }, DRAWING_POLL_MS);
+    }, wait);
     return () => window.clearTimeout(timer);
-  }, [drawing, asked, gaveUp, since, onSession]);
+  }, [drawing, asked, gaveUp, since, wait, onSession, onOver]);
+  // Try again: waited for afresh, and asked at once.
   const tryAgain = () => {
     setSince(Date.now());
     setGaveUp(false);
+    setWait(0);
     setAsked((n) => n + 1);
   };
   const downloadedAll =
@@ -365,6 +392,10 @@ function SharedPages({
 }) {
   const pages = item.pages;
   const [broken, setBroken] = useState<number[]>([]);
+  // One line says how the wait is going, and stays while it does: its words
+  // change, and a screen reader hears them; Try again gives it the focus,
+  // since the button it pressed goes (the second review).
+  const status = useRef<HTMLParagraphElement>(null);
   if (!pages || pages.state === 'failed') {
     return (
       <p className="muted" role="note">
@@ -373,23 +404,31 @@ function SharedPages({
       </p>
     );
   }
-  if ((pages.state === 'drawing' || !pages.shown) && gaveUp) {
-    return (
-      <div className="stack" style={{ gap: 8 }}>
-        <p className="status status-danger" role="alert">
-          The pages could not be prepared. Ask whoever sent the link, or try again in a while.
-        </p>
-        <Button kind="quiet" onClick={onTryAgain}>
-          Try again
-        </Button>
-      </div>
-    );
-  }
   if (pages.state === 'drawing' || !pages.shown) {
     return (
-      <p className="status status-warn" role="status">
-        The pages are still being drawn. They will appear here in a minute.
-      </p>
+      <div className="stack" style={{ gap: 8 }}>
+        <p
+          className={`status ${gaveUp ? 'status-danger' : 'status-warn'}`}
+          role="status"
+          tabIndex={-1}
+          ref={status}
+        >
+          {gaveUp
+            ? 'The pages could not be prepared. Ask whoever sent the link, or try again in a while.'
+            : 'The pages are still being drawn. They will appear here in a minute.'}
+        </p>
+        {gaveUp && (
+          <Button
+            kind="quiet"
+            onClick={() => {
+              status.current?.focus();
+              onTryAgain();
+            }}
+          >
+            Try again
+          </Button>
+        )}
+      </div>
     );
   }
   const title = item.title ?? 'the document';

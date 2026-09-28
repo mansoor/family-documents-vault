@@ -132,8 +132,10 @@ const openSessionsOf = async (trx: Db, shareId: string) =>
 /**
  * Draws one view-only link's pages. `final` is the queue's last try, as for
  * the previews: then a drawing that fails is recorded on the link
- * (`pages_failed_version`), and the API says so to the sharer and the
- * recipient rather than "being drawn" for ever.
+ * (`pages_failed_version`, `pages_failed_at`), and the API says so to the
+ * sharer and the recipient rather than "being drawn" for ever — for an
+ * hour, after which somebody looking at the link asks for them again (a
+ * storage outage passes; the version's own previews failing does not).
  */
 export async function drawSharePages(
   deps: ProcessDeps,
@@ -271,14 +273,16 @@ export async function drawSharePages(
         .execute();
       await trx
         .updateTable('share_link')
-        .set({ pages_failed_version: null })
+        .set({ pages_failed_version: null, pages_failed_at: null })
         .where('id', '=', link.id)
         .where('pages_failed_version', 'is not', null)
         .execute();
       return { stale: old.map((o) => o.storage_key).filter((k) => !keys.includes(k)) };
     });
     if (!kept) {
-      await removeAll(ctx.adapter, keys);
+      // What this drawing wrote and no row names; a file a row still names
+      // is the prune's, with its row.
+      await removeAll(ctx.adapter, await unnamed(deps.db, hh, link.id, keys));
       deps.log('info', 'a link ended while its pages were drawn: they were not kept', {
         share_id: link.id,
       });
@@ -289,14 +293,19 @@ export async function drawSharePages(
     deps.log('info', "drew a link's pages", { share_id: link.id, pages: keys.length });
     return { drawn: keys.length };
   } catch (err) {
-    // What was written of a drawing that did not finish is named by no row,
-    // so nothing else would ever remove it.
-    if (adapter) await removeAll(adapter, keys);
+    // What was written of a drawing that did not finish, and no row names,
+    // would never be removed by anything else. A redraw writes where the
+    // pages it redraws are kept (5.18 review): those files are still the
+    // pages a row names, and are served, so they stay.
+    if (adapter) {
+      const orphans = await unnamed(deps.db, hh, link.id, keys).catch(() => [] as string[]);
+      await removeAll(adapter, orphans);
+    }
     if (attempt.final) {
       await withSystem(deps.db, hh, (trx) =>
         trx
           .updateTable('share_link')
-          .set({ pages_failed_version: versionId })
+          .set({ pages_failed_version: versionId, pages_failed_at: new Date() })
           .where('id', '=', link.id)
           .execute(),
       ).catch(() => undefined);
@@ -312,6 +321,21 @@ export async function drawSharePages(
 
 async function removeAll(adapter: StorageAdapter, keys: string[]) {
   for (const key of keys) await adapter.delete(key).catch(() => undefined);
+}
+
+/** Of the keys a drawing wrote, those no `share_page` row of the link names. */
+async function unnamed(db: Db, hh: string, shareId: string, keys: string[]): Promise<string[]> {
+  if (!keys.length) return [];
+  const named = await withSystem(db, hh, (trx) =>
+    trx
+      .selectFrom('share_page')
+      .select('storage_key')
+      .where('share_id', '=', shareId)
+      .where('storage_key', 'in', keys)
+      .execute(),
+  );
+  const kept = new Set(named.map((r) => r.storage_key));
+  return keys.filter((k) => !kept.has(k));
 }
 
 async function putEncrypted(adapter: StorageAdapter, key: string, fileKey: Buffer, plain: Buffer) {

@@ -29,6 +29,7 @@ import {
   canShareToView,
   PREVIEW_MAX_PAGES,
   SHARE_LIMIT_MAX,
+  SHARE_END_GRACE_MINUTES,
   SHARE_MAX_DAYS,
   shareEndProblem,
   shareEndWords,
@@ -98,6 +99,8 @@ export const SESSION_MAX_MS = 4 * 3_600_000;
 export const SHARE_PAGES_JOB = 'share.pages';
 export const SHARE_PAGES_PRUNE_JOB = 'share.pages.prune';
 const sharePagesKey = (shareId: string, versionId: string) => `share-pages:${shareId}:${versionId}`;
+/** How long pages the worker could not draw are said to have failed before they are asked for again. */
+export const PAGES_RETRY_MS = 60 * 60_000;
 
 const limit = z.number().int().min(1).max(SHARE_LIMIT_MAX).nullable().optional();
 
@@ -228,6 +231,7 @@ type LinkRow = {
   downloads_used: number;
   max_downloads: number | null;
   pages_failed_version: string | null;
+  pages_failed_at: Date | null;
 };
 
 /** How one try of a link's PIN went. */
@@ -350,7 +354,12 @@ export class ShareService {
       input.expires_at !== undefined
         ? new Date(input.expires_at)
         : new Date(Date.now() + days * 864e5);
-    const problem = shareEndProblem(end, { maxDays: this.maxDays });
+    // A few minutes past the longest are let through: a client's clock may
+    // be that far ahead of this one, and it offered only what it could.
+    const problem = shareEndProblem(end, {
+      maxDays: this.maxDays,
+      graceMinutes: SHARE_END_GRACE_MINUTES,
+    });
     if (problem) throw expiryRefused(problem);
     return end;
   }
@@ -521,6 +530,7 @@ export class ShareService {
           'share_link.max_downloads',
           'share_link.downloads_used',
           'share_link.pages_failed_version',
+          'share_link.pages_failed_at',
           'document.title',
           'document.visibility',
           'document.owner_member_id',
@@ -582,10 +592,21 @@ export class ShareService {
    * is what keeps it from waiting for ever (5.18 review): a newer version
    * uploaded, a job lost on its way, a worker that started after the API.
    * Once for each link and version, however often it is asked.
+   *
+   * Pages the worker's last try could not draw are said to have failed, and
+   * not asked for, for PAGES_RETRY_MS; after that, they are asked for again
+   * (the second review: a storage outage of a minute must not end a link's
+   * pages for good). The version's own previews failing, or a kind of file
+   * the vault cannot draw, is for good.
    */
   private async pagesOf(
     trx: Db,
-    link: { id: string; document_id: string; pages_failed_version: string | null },
+    link: {
+      id: string;
+      document_id: string;
+      pages_failed_version: string | null;
+      pages_failed_at: Date | null;
+    },
     ask?: string,
   ): Promise<SharePages> {
     const v = await trx
@@ -604,11 +625,11 @@ export class ShareService {
     const n = Number(drawn.n);
     const total = v.page_count ?? (v.preview_state === 'ready' ? v.preview_pages : null);
     if (n > 0) return { state: 'ready', shown: n, total: total ?? n };
-    if (
-      v.preview_state === 'unsupported' ||
-      v.preview_state === 'failed' ||
-      link.pages_failed_version === v.id
-    ) {
+    const failedLately =
+      link.pages_failed_version === v.id &&
+      (link.pages_failed_at === null ||
+        Date.now() - link.pages_failed_at.getTime() < PAGES_RETRY_MS);
+    if (v.preview_state === 'unsupported' || v.preview_state === 'failed' || failedLately) {
       return { state: 'failed', shown: 0, total };
     }
     if (ask) void this.drawPages(ask, link.id, v.id);
@@ -707,7 +728,12 @@ export class ShareService {
       // Turned back on, a link whose pages could not be drawn is tried afresh.
       const row = await trx
         .updateTable('share_link')
-        .set({ paused_at: null, paused_reason: null, pages_failed_version: null })
+        .set({
+          paused_at: null,
+          paused_reason: null,
+          pages_failed_version: null,
+          pages_failed_at: null,
+        })
         .where('id', '=', id)
         .where('paused_at', 'is not', null)
         .returning(['id', 'document_id', 'permission'])

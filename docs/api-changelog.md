@@ -1590,8 +1590,13 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       link and version however often it is asked, so a newer version, a
       lost job or a worker that started after the API never leaves a link
       "being drawn" for ever. Pages the worker could not draw, on its last
-      try, are `pages.state: "failed"` for that version (a newer version,
-      or an owner turning the link back on, tries again).
+      try, are `pages.state: "failed"` for that version for an hour; after
+      that, somebody looking at the link asks for them again (a newer
+      version, or an owner turning the link back on, does so at once). A
+      version whose own previews failed, or a kind of file the vault cannot
+      draw, is `failed` for good.
+    - An `expires_at` up to 5 minutes past the longest is taken, for a
+      client whose clock is ahead.
     - **Added:** `GET /api/v1/shared/items/{document_id}/pages/{n}` (the
       cookie) → a JPEG: page `n` of a view-only link's document, drawn by
       the worker from the vault's page previews with the link's
@@ -1621,24 +1626,35 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       of “Lease”".
     - **Added:** `FDV_SHARE_MAX_DAYS` (1 to 90, default 90): the longest a
       link may last.
-    - The worker: `share.pages` draws a view-only link's pages (queued when
-      the link is made, when a page is asked for and there are none, and
-      when an owner turns the link back on after a restore);
-      `share.pages.prune` removes them when the link is taken back, and
+    - The worker: `share.pages` draws a view-only link's pages. It is queued
+      when the link is made, when an owner turns it back on after a
+      restore, and whenever a live link's pages are still to be drawn and
+      somebody looks at it (the preview, Open, `GET /shared/items`, a page,
+      `GET /shares`), once for each link and version. Its last try failing
+      is recorded on the link, and the link is asked for again an hour
+      later. A drawing that fails part-way removes what it wrote and no
+      page names; one whose link ended meanwhile keeps nothing.
+      `share.pages.prune` removes a link's pages when it is taken back, and
       nightly for links that have ended or been used up and a version a
       newer one replaced.
     - `@fdv/shared`: `SharePermission`, `SharePages`, `ShareInput`,
       `SHARE_MIN_MINUTES`, `SHARE_MAX_DAYS`, `SHARE_LIMIT_MAX`,
-      `canShareToView`, `sharePagesNote`, `pagesNotSharedNote`,
-      `shareUses`, `zonedParts`, `zonedTime`, `shareQuickPicks`,
-      `shareEndWords`, `shareEndProblem`; `CapabilityFeatures.share_options`.
+      `SHARE_END_GRACE_MINUTES`, `canShareToView`, `sharePagesNote`,
+      `pagesNotSharedNote`, `shareUses`, `zonedParts`, `zonedTime`,
+      `shareQuickPicks(timezone, now, maxDays)` (only the picks within the
+      vault's longest), `latestShareEnd`, `defaultShareEnd` (a week, or an
+      hour safely inside a shorter longest), `shareEndWords`,
+      `shareEndProblem` (with `maxDays` and `graceMinutes`);
+      `CapabilityFeatures.share_options`, `CapabilityLimits.share_max_days`,
+      `SharedItem.downloaded`.
       `@fdv/client`: `share` takes a `ShareInput`; `linkItemPageUrl`. The
       fake says `share_options: true`.
     - A multi-page TIFF (a document scanner's) is a page a frame: its
-      `page_count` counts them, and its previews, and so a view-only link,
-      draw up to 30.
+      `page_count` counts them (from the frames' headers, up to 1000), and
+      its previews, and so a view-only link, draw up to 30.
     - The database: 0041 adds `share_link.permission`, `max_opens`,
-      `max_downloads`, `downloads_used` and `pages_failed_version`, each 5.18 option checked to a
+      `max_downloads`, `downloads_used`, `pages_failed_version` and
+      `pages_failed_at`, each 5.18 option checked to a
       v2 link (`flow = 'v2' or …`), the counts held within their limits,
       and a link's own writes to the counts alone; `share_session_use`
       (what each session has had) and `share_page` (a view-only link's
