@@ -2,6 +2,7 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { can, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
+import { closeLostRequests } from '../uploads/requests.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { AlertRequest } from '../alert-job.js';
@@ -109,6 +110,10 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .execute();
       if (!can(to, 'document.see_adults')) await expireExportsOf(trx, target.account_id);
+      // Made a teen or a viewer: their requests to send documents close (A39).
+      if (!can(to, 'upload_request.create')) {
+        await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -155,6 +160,9 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .execute();
       if (!can(to, 'document.see_adults')) await expireExportsOf(trx, p.accountId);
+      if (!can(to, 'upload_request.create')) {
+        await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
+      }
       // A request to take the owner role off somebody who has now given it
       // up has nothing left to do — carried out, it would make them an
       // adult, whatever they chose to be, and tell them they had lost a role
@@ -210,6 +218,8 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .execute();
       await expireExportsOf(trx, target.account_id);
+      // And their requests to send documents close (A39).
+      await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
       // Remembered so that the sign-in can be given back to this account,
       // and only to it: their private documents are locked to its password.
       await trx

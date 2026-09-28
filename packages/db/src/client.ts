@@ -384,6 +384,124 @@ export interface Schema {
     user_agent: string | null;
   };
 
+  /**
+   * Somebody outside the family asked to send documents in (0044): a
+   * write-only link with an end, caps, the types it takes and who reviews
+   * what comes in; optionally a password, a visit limit, an emailed code,
+   * this device only, and closing once sent.
+   */
+  upload_request: {
+    id: Generated<string>;
+    household_id: string;
+    created_by: string;
+    requester_member_id: string;
+    title: string;
+    message: string | null;
+    recipient_label: string | null;
+    /** Where an emailed code goes; cleared when the request ends. */
+    recipient_email: string | null;
+    token_hash: Buffer;
+    /** The password, as Argon2id. */
+    secret_hash: string | null;
+    email_code: Generated<boolean>;
+    this_device_only: Generated<boolean>;
+    device_hash: Buffer | null;
+    created_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    max_visits: number | null;
+    visits_used: Generated<number>;
+    max_files: Generated<number>;
+    files_used: Generated<number>;
+    max_total_bytes: ColumnType<string | number, number | undefined, string | number>;
+    bytes_used: ColumnType<string | number, number | undefined, string | number>;
+    accept_types: Generated<'standard' | 'office'>;
+    review_by: Generated<'me' | 'adults'>;
+    suggested_member_id: string | null;
+    suggested_type_key: string | null;
+    close_after_submit: Generated<boolean>;
+    attempts: Generated<number>;
+    paused_at: Timestamp | null;
+    paused_reason: 'restored' | null;
+    revoked_at: Timestamp | null;
+    revoked_by: string | null;
+    closed_at: Timestamp | null;
+    closed_reason: 'submitted' | 'requester_lost_right' | null;
+  };
+
+  /** What a request asks for, by name (0044): "W-2", "1099". */
+  upload_request_item: {
+    id: Generated<string>;
+    household_id: string;
+    request_id: string;
+    position: number;
+    label: string;
+  };
+
+  /** An upload link opened in one browser (0044): the cookie's SHA-256, never the cookie. */
+  upload_session: {
+    id: Generated<string>;
+    household_id: string;
+    request_id: string;
+    cookie_hash: Buffer;
+    verified_by: ColumnType<string[], string[] | undefined, string[]>;
+    created_at: GeneratedTimestamp;
+    last_seen_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    ip: string | null;
+    user_agent: string | null;
+  };
+
+  /** An emailed code for an upload link (0044): an HMAC under the server's key. */
+  upload_code: {
+    id: Generated<string>;
+    household_id: string;
+    request_id: string;
+    code_hash: Buffer;
+    sent_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    attempts: Generated<number>;
+    used_at: Timestamp | null;
+  };
+
+  /**
+   * A file sent through a request (0044), held apart from the documents
+   * until it is reviewed (5.23), encrypted under the reviewer's key.
+   */
+  incoming_file: {
+    id: Generated<string>;
+    household_id: string;
+    request_id: string;
+    review_by: 'me' | 'adults';
+    requester_member_id: string;
+    item_id: string | null;
+    session_id: string | null;
+    state: ColumnType<
+      'uploading' | 'received' | 'accepted' | 'rejected',
+      'uploading' | 'received' | 'accepted' | 'rejected' | undefined,
+      'uploading' | 'received' | 'accepted' | 'rejected'
+    >;
+    original_name: string;
+    mime: string | null;
+    byte_size: ColumnType<string | number | null, number | null | undefined, number | null>;
+    sha256: Buffer | null;
+    cipher_bytes: ColumnType<string | number | null, number | null | undefined, number | null>;
+    cipher_sha256: Buffer | null;
+    storage_key: string;
+    vault_id: string;
+    file_key_wrapped: Buffer;
+    wrapped_by_scope: string;
+    scope: 'adults' | 'member';
+    sender_note: string | null;
+    scan_state: Generated<'pending' | 'unscanned' | 'clean' | 'infected'>;
+    created_at: GeneratedTimestamp;
+    received_at: Timestamp | null;
+    submitted_at: Timestamp | null;
+    decided_by: string | null;
+    decided_at: Timestamp | null;
+    document_id: string | null;
+    version_id: string | null;
+  };
+
   owner_change_request: {
     id: Generated<string>;
     household_id: string;
@@ -871,7 +989,8 @@ export function createDb(pool: pg.Pool): Db {
  * - `link`: whoever holds a share link, once the link is found — its one
  *   document, or what it gives of its collection (5.19), while the link is
  *   live; of the household's other tables, only what its page names;
- * - `upload`: whoever holds an upload request's link — nothing;
+ * - `upload`: whoever holds an upload request's link — its own request,
+ *   and the files of its own session (0044);
  * - `anonymous`: a caller not yet known — a sign-in page, an invitation,
  *   a reset — nothing.
  *
@@ -881,7 +1000,12 @@ export type Actor =
   | { kind: 'account'; accountId: string; memberId: string; role: Role }
   | { kind: 'system' }
   | { kind: 'link'; shareId: string }
-  | { kind: 'upload'; requestId: string }
+  /**
+   * Whoever holds an upload request's link (0044): its own request, and,
+   * once an Open has given it one, its own session, whose files alone it
+   * reaches.
+   */
+  | { kind: 'upload'; requestId: string; sessionId?: string }
   | { kind: 'anonymous' };
 
 /**
@@ -950,7 +1074,8 @@ async function inScope<T>(
       set_config('app.member_id', ${account?.memberId ?? ''}, true),
       set_config('app.role', ${account?.role ?? ''}, true),
       set_config('app.share_id', ${actor.kind === 'link' ? actor.shareId : ''}, true),
-      set_config('app.upload_request_id', ${actor.kind === 'upload' ? actor.requestId : ''}, true)
+      set_config('app.upload_request_id', ${actor.kind === 'upload' ? actor.requestId : ''}, true),
+      set_config('app.upload_session_id', ${actor.kind === 'upload' ? (actor.sessionId ?? '') : ''}, true)
     `.execute(trx);
     return fn(trx);
   });

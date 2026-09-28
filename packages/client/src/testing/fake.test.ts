@@ -198,3 +198,40 @@ describe('the fake vault, for somebody who is not an owner', () => {
     expect(bad).toMatchObject({ status: 422, code: 'validation_failed' });
   });
 });
+
+/** Asking to be sent documents (0.5.21), as the real vault answers it. */
+describe('the fake vault, asking to be sent documents', () => {
+  it('an owner asks; a teen is told there is nothing here', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const tokens = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const made = await api.createUploadRequest(tokens.access_token, {
+      title: 'Tax papers',
+      items: ['W-2'],
+      expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      with_password: true,
+    });
+    expect(made.password).toBeTruthy();
+    expect(made.request).toMatchObject({ state: 'active', protection: ['password'] });
+    const listed = await api.uploadRequests(tokens.access_token);
+    expect(listed.items.map((r) => r.id)).toEqual([made.request.id]);
+    await expect(
+      api.createUploadRequest(tokens.access_token, {
+        title: 'For ever',
+        expires_at: new Date(Date.now() + 91 * 864e5).toISOString(),
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+    await api.revokeUploadRequest(tokens.access_token, made.request.id);
+    expect((await api.uploadRequests(tokens.access_token)).items[0]?.state).toBe('revoked');
+
+    vault.state.role = 'teen';
+    const teen = await api.signIn('owner@example.test', 'a long enough password');
+    if (!('access_token' in teen)) throw new Error('no second step in the fake');
+    await expect(api.uploadRequests(teen.access_token)).rejects.toMatchObject({ status: 404 });
+  });
+});

@@ -53,6 +53,12 @@ export interface Line {
   collection_audience?: string | null;
   collection_owner?: string | null;
   /**
+   * Whether the reader is given the request to send documents a line is
+   * about, or that a file came in through (5.21): the database keeps a
+   * review-by-me request, and its files, from everybody but its requester.
+   */
+  request_visible?: boolean | null;
+  /**
    * A collection's link the line is about (5.19 review). Null when it must
    * be about one and there is none to be found; undefined for a line about
    * no collection's link.
@@ -129,6 +135,16 @@ const seesTheCollectionsLink: Audience = (reader, line) =>
 
 const seesTheDocumentFollowTheLink: Audience = (reader, line) =>
   seesTheDocumentInTheCollection(reader, line) && knowsTheLink(reader, line);
+
+/**
+ * A request to send documents, and every file that came in through it
+ * (5.21): its reviewers' alone — its requester, or for a request any adult
+ * reviews, the owners and adults. A teen, a viewer, and another adult of a
+ * review-by-me request see no line, and so no title, label or file name.
+ * No row to go by is nobody's line.
+ */
+const reviewsTheRequest: Audience = (reader, line) =>
+  line.request_visible === true && can(reader.role, 'upload_request.create');
 
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
@@ -232,6 +248,15 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['collection.deleted', seesTheCollection],
   ['collection.item_added', seesTheDocumentInTheCollection],
   ['collection.item_removed', seesTheDocumentInTheCollection],
+  // asking somebody to send documents (5.21): the request's reviewers'.
+  ['upload_request.created', BY_TYPE],
+  ['upload_request.revoked', BY_TYPE],
+  ['upload_request.opened', BY_TYPE],
+  ['upload_request.code_sent', BY_TYPE],
+  ['upload_request.locked', BY_TYPE],
+  ['upload_request.submitted', BY_TYPE],
+  ['upload_request.resumed', BY_TYPE],
+  ['upload_request.closed', BY_TYPE],
 ]);
 
 /**
@@ -255,6 +280,9 @@ const TYPES: ReadonlyMap<string | null, Audience> = new Map<string | null, Audie
   ['export', everyone],
   ['session', everyone],
   ['credential', everyone],
+  // A request to send documents, and a file sent through one (5.21).
+  ['upload_request', reviewsTheRequest],
+  ['incoming_file', reviewsTheRequest],
   // About nobody but the person who did it: a sign-in, a step down, the
   // household's own details.
   [null, everyone],
@@ -301,6 +329,7 @@ interface Row {
   collection_name: string | null;
   collection_audience: string | null;
   collection_owner: string | null;
+  request_visible: boolean | null;
 }
 
 export class AuditService {
@@ -334,7 +363,8 @@ export class AuditService {
                object_member.display_name as member_name,
                l.name                    as collection_name,
                l.audience                as collection_audience,
-               l.owner_member_id         as collection_owner
+               l.owner_member_id         as collection_owner,
+               ur.id is not null         as request_visible
           from audit_event e
           left join account_household ah
             on ah.account_id = e.actor_account_id
@@ -352,6 +382,13 @@ export class AuditService {
                                              'share.followed')
                              then (e.detail->>'collection_id')::uuid
                       end
+          -- A request to send documents, as the reader is given it (5.21):
+          -- its own lines, and those of the files that came in through it.
+          left join upload_request ur
+            on ur.id = case when e.object_type = 'upload_request' then e.object_id
+                            when e.object_type = 'incoming_file'
+                              then (e.detail->>'request_id')::uuid
+                       end
          where e.household_id = ${p.householdId}
            ${opts.before ? sql`and e.id < ${opts.before}` : sql``}
          order by e.id desc

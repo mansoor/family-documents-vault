@@ -77,6 +77,13 @@ export type Capability =
    */
   | 'member.photo'
   /**
+   * Ask somebody outside the family to send documents in (5.21, A39): a
+   * request link. Anybody else is not refused but answered as if there
+   * were no such thing (404): a teen or a viewer never learns that a
+   * request, or a file sent through one, exists.
+   */
+  | 'upload_request.create'
+  /**
    * Turn back on what a restore paused (A55): every link to a document the
    * owner can see (5.16). Without it, nothing — not even a link you made
    * to your own Only me document, which no owner can see: that one stays
@@ -201,6 +208,14 @@ const MATRIX: Record<Capability, Rule> = {
     // not even their own; they may take their own away.
     roles: ['owner', 'adult', 'teen'],
     refusal: 'Viewers can open and download documents, but not add photos.',
+  },
+  'upload_request.create': {
+    // What comes in through a request is reviewed before it is filed, by
+    // whoever asked or by any adult (A43): the adults' to ask for, as it is
+    // theirs to share out (A39). The database's own copy of these roles is
+    // app_live_upload_request() and the request's rule (0044).
+    roles: ['owner', 'adult'],
+    refusal: 'Only an adult can ask someone outside the family to send documents.',
   },
   'restore.review': {
     // A backup brings back links taken back since it was made, so after a

@@ -273,6 +273,40 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
         true,
       );
 
+    // ---------------------------------- asking to be sent documents (5.21)
+    // Shown to whoever reviews the request only; never its title, and
+    // never a file's name.
+    case 'upload_request.created': {
+      const whom = text(detail.recipient_label);
+      return line(`${who} asked ${whom || 'somebody outside the family'} to send documents`, true);
+    }
+    case 'upload_request.revoked':
+      return line(`${who} took back a request to send documents`);
+    case 'upload_request.opened':
+      return line(`${who} opened a request to send documents`);
+    case 'upload_request.code_sent':
+      return line(
+        `A code was sent to ${text(detail.sent_to) || 'the address given'} for a request to send documents`,
+      );
+    case 'upload_request.locked':
+      return line(
+        'A request to send documents stopped working: a password or code was typed wrong ten times',
+        true,
+      );
+    case 'upload_request.submitted': {
+      const n = typeof detail.files === 'number' ? detail.files : 0;
+      return line(
+        n > 0 ? `${who} sent ${n === 1 ? 'a file' : `${n} files`}` : `${who} sent files`,
+        true,
+      );
+    }
+    case 'upload_request.resumed':
+      return line(`${who} turned a request to send documents back on after a restore`, true);
+    case 'upload_request.closed':
+      return line(
+        'A request to send documents was closed: whoever asked can no longer ask for documents',
+      );
+
     // ------------------------------------------------------- the vault
     case 'household.created':
       return line(`${who} set up the vault`);

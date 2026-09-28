@@ -14,7 +14,12 @@ import type {
   Counts,
   CreatedInvitation,
   CreatedShare,
+  CreatedUploadRequest,
   DeviceRow,
+  DropCodeSent,
+  DropFinished,
+  DropPreview,
+  DropSession,
   DocumentAttributeInput,
   DocumentAttributeView,
   DocumentInput,
@@ -61,6 +66,8 @@ import type {
   SuggestionView,
   TestOutcome,
   Tokens,
+  UploadRequestInput,
+  UploadRequestView,
   VaultRow,
   VersionView,
   Visibility,
@@ -717,10 +724,57 @@ export function createApi(http: Http) {
      * to take back.
      */
     afterRestore: (token: string) =>
-      request<{ links: Share[] }>('/api/v1/after-restore', { token }),
+      request<{ links: Share[]; upload_requests?: UploadRequestView[] }>('/api/v1/after-restore', {
+        token,
+      }),
     /** Owners only (`restore.review`): anybody else is `403 forbidden`. */
     resumeShare: (token: string, id: string) =>
       request<Share>(`/api/v1/shares/${id}/resume`, { method: 'POST', token }),
+
+    // ------------------------------- asking to be sent documents (0.5.21)
+    // Owners and adults; a teen or a viewer is answered 404, as if there
+    // were no such thing. The link and a made-up password are in the
+    // answer to making one, and nowhere else.
+    createUploadRequest: (token: string, body: UploadRequestInput) =>
+      request<CreatedUploadRequest>('/api/v1/upload-requests', { method: 'POST', body, token }),
+    uploadRequests: (token: string) =>
+      request<{ items: UploadRequestView[]; email_code_available: boolean }>(
+        '/api/v1/upload-requests',
+        { token },
+      ),
+    revokeUploadRequest: (token: string, id: string) =>
+      request<void>(`/api/v1/upload-requests/${enc(id)}`, { method: 'DELETE', token }),
+    /** After a restore, owners only (`restore.review`). */
+    resumeUploadRequest: (token: string, id: string) =>
+      request<UploadRequestView>(`/api/v1/upload-requests/${enc(id)}/resume`, {
+        method: 'POST',
+        token,
+      }),
+
+    // The sender's page, /drop#<token>: the token in a body, never a path.
+    // Open gives this browser a session cookie for /api/v1/drop alone.
+    /** Whose vault and who asked, and what Open asks for. Nothing is counted. */
+    dropPreview: (linkToken: string) =>
+      request<DropPreview>('/api/v1/drop/preview', { method: 'POST', body: { token: linkToken } }),
+    /** An emailed code, to the address the requester gave (operator mail only). */
+    dropCode: (linkToken: string) =>
+      request<DropCodeSent>('/api/v1/drop/code', { method: 'POST', body: { token: linkToken } }),
+    /** Open: counted, and a session for this browser. */
+    dropUnlock: (linkToken: string, secrets: { password?: string; code?: string } = {}) =>
+      request<DropSession>('/api/v1/drop/unlock', {
+        method: 'POST',
+        body: { token: linkToken, ...secrets },
+      }),
+    dropSession: () => request<DropSession>('/api/v1/drop/session'),
+    /** Where a file is sent, multipart: an optional `item_id`, then `file`. */
+    dropFilesUrl: () => http.url('/api/v1/drop/files'),
+    dropRemoveFile: (id: string) =>
+      request<void>(`/api/v1/drop/files/${enc(id)}`, { method: 'DELETE' }),
+    dropFinish: (note?: string) =>
+      request<DropFinished>('/api/v1/drop/finish', {
+        method: 'POST',
+        body: note ? { note } : {},
+      }),
   };
 }
 

@@ -41,6 +41,7 @@ import {
   type DocumentTypeView,
   type TypeField,
   type DocumentView,
+  type UploadRequestView,
   type IssuerSuggestions,
   type OfflineGrant,
   type OfflineItem,
@@ -140,6 +141,13 @@ export interface FakeVaultState {
    * deleted, never removed.
    */
   collections: FakeCollection[];
+  /**
+   * Requests to send documents (0.5.21), as GET /upload-requests answers
+   * them: made by the one member the fake signs in as. A test may set a
+   * request's `files_received` to stand for files that came in (5.31's
+   * incoming push).
+   */
+  uploadRequests: UploadRequestView[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -407,6 +415,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     photosOnTheirWay: new Map(),
     role: 'owner',
     collections: [],
+    uploadRequests: [],
     calls: [],
     offline: false,
   };
@@ -1754,6 +1763,97 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           l.items.splice(at, 1);
           return empty();
         }
+      }
+    }
+    // Asking somebody to send documents (0.5.21): the family's side. A teen
+    // or a viewer is told there is nothing here, as the vault tells them.
+    const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume)?)?$/.exec(path);
+    if (uploadAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(state.role, 'upload_request.create')) {
+        return fail(404, 'not_found', 'That page does not exist.');
+      }
+      const [, id, resume] = uploadAt;
+      if (!id && init.method === 'GET') {
+        return ok({ items: state.uploadRequests, email_code_available: false });
+      }
+      if (!id && init.method === 'POST') {
+        const title = typeof body.title === 'string' ? body.title.trim() : '';
+        if (!title) return fail(422, 'validation_failed', 'Give the request a title.');
+        const end = new Date(typeof body.expires_at === 'string' ? body.expires_at : NaN);
+        const now = Date.now();
+        if (Number.isNaN(end.getTime()) || end.getTime() < now + 5 * 60_000) {
+          return fail(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
+        }
+        if (end.getTime() > now + 90 * 864e5 + 5 * 60_000) {
+          return fail(422, 'expiry_out_of_range', 'A request can last 90 days at most.');
+        }
+        if (body.email_code === true) {
+          return fail(
+            422,
+            'email_code_unavailable',
+            'This vault cannot send email codes: whoever runs it has not given it a mail server.',
+          );
+        }
+        const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+        const made: UploadRequestView = {
+          id: next('upload-request'),
+          title,
+          message: text(body.message),
+          items: (Array.isArray(body.items) ? (body.items as string[]) : []).map((label) => ({
+            id: next('item'),
+            label,
+          })),
+          recipient_label: text(body.recipient_label),
+          recipient_email: text(body.recipient_email),
+          requested_by_name: state.members.find((m) => m.is_me)?.display_name ?? null,
+          mine: true,
+          created_at: new Date(now).toISOString(),
+          expires_at: end.toISOString(),
+          protection: body.with_password || body.password ? ['password'] : [],
+          max_visits: typeof body.max_visits === 'number' ? body.max_visits : null,
+          visits_used: 0,
+          max_files: typeof body.max_files === 'number' ? body.max_files : 10,
+          files_used: 0,
+          max_total_bytes:
+            typeof body.max_total_bytes === 'number' ? body.max_total_bytes : 200 * 1024 * 1024,
+          bytes_used: 0,
+          accept_types: body.accept_types === 'office' ? 'office' : 'standard',
+          review_by: body.review_by === 'adults' ? 'adults' : 'me',
+          suggested_member_id: text(body.suggested_member_id),
+          suggested_type_key: text(body.suggested_type_key),
+          close_after_submit: body.close_after_submit === true,
+          state: 'active',
+          paused_reason: null,
+          closed_reason: null,
+          files_received: 0,
+        };
+        state.uploadRequests.unshift(made);
+        return ok(
+          {
+            request: made,
+            link_token: next('drop-token'),
+            link_url: null,
+            ...(body.with_password ? { password: 'abcd-efgh-jkmn' } : {}),
+          },
+          201,
+        );
+      }
+      const r = state.uploadRequests.find((x) => x.id === id);
+      if (!r) return fail(404, 'not_found', 'That request does not exist.');
+      if (!resume && init.method === 'DELETE') {
+        Object.assign(r, { state: 'revoked', recipient_email: null });
+        return empty();
+      }
+      if (resume && init.method === 'POST') {
+        if (!can(state.role, 'restore.review')) {
+          return fail(403, 'forbidden', refusalFor('restore.review'));
+        }
+        if (r.state !== 'paused')
+          return fail(404, 'not_found', 'That paused request does not exist.');
+        Object.assign(r, { state: 'active', paused_reason: null });
+        return ok(r);
       }
     }
     if (path === '/api/v1/members' && init.method === 'GET') {

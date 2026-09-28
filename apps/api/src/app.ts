@@ -3,7 +3,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { SHARE_COOKIE_PATH } from './documents/shares.js';
-import { errorForLog, requestForLog } from './log-redaction.js';
+import { errorForLog, LOG_REDACTED_PATHS, requestForLog } from './log-redaction.js';
 import { registerOffline } from './offline/routes.js';
 import type { OfflineService } from './offline/service.js';
 import { registerAudit } from './audit/routes.js';
@@ -37,6 +37,8 @@ import { registerSuggestions } from './suggestions/routes.js';
 import type { SuggestionService } from './suggestions/service.js';
 import type { ReminderService } from './reminders/service.js';
 import type { ExportService } from './exports/service.js';
+import { registerUploads } from './uploads/routes.js';
+import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
@@ -74,6 +76,8 @@ export interface AppDeps {
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
+  /** Asking somebody outside the family to send documents (5.21). */
+  uploads: UploadRequestService;
   audit: AuditService;
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
@@ -82,7 +86,8 @@ export interface AppDeps {
 }
 
 /**
- * What every answer under /api/v1/shared carries (5.16), on top of the
+ * What every answer under /api/v1/shared and /api/v1/drop carries (5.16,
+ * 5.21), on top of the
  * public pages' own (docker/nginx.conf): no referrer, no sniffing, never in
  * a frame, and nothing in it runs — a shared HTML file opened by mistake is
  * a sandboxed page with no script and no fetch.
@@ -113,8 +118,14 @@ function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
  * are cut from every request line (log-redaction.ts).
  */
 function loggerOptions(config: ApiConfig, given: AppDeps['logger']): boolean | object {
-  // And never an address from an error (5.20): a refused row, a mail server's words.
-  const base = { level: config.LOG_LEVEL, serializers: { req: requestForLog, err: errorForLog } };
+  const base = {
+    level: config.LOG_LEVEL,
+    // And never an address from an error (5.20): a refused row, a mail server's words.
+    serializers: { req: requestForLog, err: errorForLog },
+    // A multipart upload's parser writes, at trace level, the request's
+    // headers — a sign-in's bearer token, a sender's session cookie (5.21).
+    redact: { paths: LOG_REDACTED_PATHS, censor: '[redacted]' },
+  };
   if (given === undefined) return base;
   if (typeof given !== 'object' || given === null) return given;
   const theirs = (given as { serializers?: object }).serializers ?? {};
@@ -122,6 +133,7 @@ function loggerOptions(config: ApiConfig, given: AppDeps['logger']): boolean | o
     ...base,
     ...given,
     serializers: { ...base.serializers, ...theirs, req: requestForLog, err: errorForLog },
+    redact: base.redact,
   };
 }
 
@@ -145,7 +157,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     // What a stranger's browser is sent (5.16): the share routes answer
     // people outside the family, and whatever they are sent — a file of
     // any kind included — is never framed, sniffed, run or passed on.
-    if (req.url.startsWith(`${SHARE_COOKIE_PATH}/`)) {
+    if (req.url.startsWith(`${SHARE_COOKIE_PATH}/`) || req.url.startsWith(`${DROP_COOKIE_PATH}/`)) {
       for (const [name, value] of Object.entries(PUBLIC_API_HEADERS)) reply.header(name, value);
     }
   });
@@ -290,7 +302,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.sealedSearch,
     deps.stepUp,
     deps.shares,
+    deps.uploads,
   );
+  registerUploads(app, deps.uploads);
 
   return app;
 }

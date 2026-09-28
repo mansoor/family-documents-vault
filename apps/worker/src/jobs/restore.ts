@@ -39,8 +39,9 @@ import { backupKeyFor, onCurrentKey, type MasterKeys, type RekeyReport } from '.
  * — everybody signs in again — and what else can be ended safely is (see
  * UNDO). A share link cannot tell whether it was taken back since, so every
  * live one is paused until an owner turns it back on (5.16, A55), and no
- * session opened with one survives. What only the family can decide
- * (passkeys, invitations) is reported.
+ * session opened with one survives; so is every live request to send
+ * documents, with its sessions and codes (5.21). What only the family can
+ * decide (passkeys, invitations) is reported.
  */
 
 export interface RestoreTarget {
@@ -76,6 +77,12 @@ export interface RestoreReport {
    * made would otherwise work again.
    */
   linksPaused: number;
+  /**
+   * Requests to send documents paused (5.21, A55): each waits for an owner
+   * to turn it back on, as a link does, and no sender's session or emailed
+   * code survives.
+   */
+  requestsPaused: number;
   /**
    * People's photos that were on their way when the backup was made
    * (5.17c), marked failed: their jobs are gone, and the nightly prune
@@ -162,6 +169,7 @@ interface Undone {
   sessionsEnded: number;
   ownerChangesWithdrawn: number;
   linksPaused: number;
+  requestsPaused: number;
   photosUnfinished: number;
 }
 
@@ -366,6 +374,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     sessionsEnded: counted('sessions'),
     ownerChangesWithdrawn: counted('owner_changes'),
     linksPaused: counted('links_paused'),
+    requestsPaused: counted('requests_paused'),
     photosUnfinished: counted('photos_unfinished'),
   };
 }
@@ -384,7 +393,10 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * (5.20); and a person's photo that
  * was on its way, whose job the restore did not bring back, is marked
  * failed for the nightly prune to take away with its upload (5.17c). Ready
- * photos come back as they were that night. Guarded for older schemas.
+ * photos come back as they were that night. Every live request to send
+ * documents is paused for an owner to turn back on, since one taken back
+ * or closed since would open again, and no sender's session or emailed
+ * code survives (5.21). Guarded for older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 do $undo$
@@ -438,6 +450,15 @@ begin
   if to_regclass('public.share_code') is not null then
     delete from public.share_code;
   end if;
+  if to_regclass('public.upload_request') is not null then
+    update public.upload_request set paused_at = now(), paused_reason = 'restored'
+     where paused_at is null and revoked_at is null and closed_at is null
+       and expires_at > now() and attempts < 10;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('requests_paused', n);
+    delete from public.upload_session;
+    delete from public.upload_code;
+  end if;
   if to_regclass('public.member_photo') is not null then
     update public.member_photo set state = 'failed' where state = 'processing';
     get diagnostics n = row_count;
@@ -487,6 +508,18 @@ const GUARDS = [
   { name: 'share_link_factors_fixed', table: 'share_link', fn: 'share_link_factors_fixed' },
   // A code sent keeps what it was: its tries only go up, it is used once (0043).
   { name: 'share_code_writes', table: 'share_code', fn: 'share_code_writes' },
+  // An upload link counts its visits, tries and files on its own request,
+  // and finishes and sends its own files, and changes nothing else (0044).
+  {
+    name: 'upload_request_upload_writes',
+    table: 'upload_request',
+    fn: 'upload_request_upload_writes',
+  },
+  {
+    name: 'incoming_file_upload_writes',
+    table: 'incoming_file',
+    fn: 'incoming_file_upload_writes',
+  },
 ];
 
 /**
@@ -537,6 +570,13 @@ const ACTOR_GUARDED = [
   'share_page_failure',
   // A link's emailed codes: its own, and the vault's; nobody else's (0043).
   'share_code',
+  // Requests to send documents, what they ask for, their senders' sessions
+  // and codes, and the files that came in (0044).
+  'upload_request',
+  'upload_request_item',
+  'upload_session',
+  'upload_code',
+  'incoming_file',
 ];
 
 /**
@@ -573,13 +613,26 @@ const LINK_NARROWED = [
 /**
  * The tables where a member's own is theirs alone, by a rule that asks who
  * the member is: an Only me collection is its maker's (0036); a photo is
- * the family's and, to anybody else, only their own (0040). Each must have
+ * the family's and, to anybody else, only their own (0040); a request to
+ * send documents that its requester reviews, and its files, are theirs
+ * (0044). Each must have
  * such a rule, and somebody signed in as no member, with no role of the
  * family's, is given none.
  */
 const MAKER_ONLY = [
   { table: 'doc_collection', where: "audience = 'only_me'", what: 'an Only me collection' },
   { table: 'member_photo', where: 'true', what: "a person's photo" },
+  // A request its requester alone reviews, and what came in through it (0044).
+  {
+    table: 'upload_request',
+    where: "review_by = 'me'",
+    what: 'a request for one person to review',
+  },
+  {
+    table: 'incoming_file',
+    where: "review_by = 'me'",
+    what: 'a file sent for one person to review',
+  },
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */

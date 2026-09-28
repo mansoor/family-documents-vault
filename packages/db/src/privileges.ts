@@ -93,6 +93,18 @@ begin
   if to_regprocedure('public.doc_collection_stranded(uuid, text)') is not null then
     grant execute on function public.doc_collection_stranded(uuid, text) to fdv_app;
   end if;
+  -- Asking someone to send documents (0044): which request a token names
+  -- and which session a cookie, before either is known; an upload link's
+  -- own request while it can be used, which its rules ask; and the
+  -- household's files waiting for review, counted for its cap.
+  if to_regprocedure('public.upload_request_find(bytea)') is not null then
+    grant execute on function public.upload_request_find(bytea) to fdv_app;
+    grant execute on function public.upload_session_find(bytea) to fdv_app;
+    grant execute on function public.app_live_upload_request() to fdv_app;
+    grant execute on function public.incoming_pending_bytes() to fdv_app;
+    -- Requests whose requester can no longer ask, closed by whoever changed them (A39).
+    grant execute on function public.upload_requests_close_lost() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

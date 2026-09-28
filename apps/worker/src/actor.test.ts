@@ -13,6 +13,7 @@ import {
   memberPhotoSourceBinding,
   newKey,
   ScopeKeys,
+  sealBytes,
   wrapKey,
 } from '@fdv/crypto';
 import { appendAudit, createDb, createPool, withSystem, type Db, type Schema } from '@fdv/db';
@@ -35,6 +36,7 @@ import { sealPrivateValues } from './jobs/seal.js';
 import { drawSharePages, pruneSharePages } from './jobs/share-pages.js';
 import { regenerateTypeReminders } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
+import { sendUploadCode } from './jobs/upload-code.js';
 import { verifyAllAuditChains } from './jobs/verify-audit.js';
 
 /**
@@ -478,6 +480,46 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
         },
       ],
       [
+        'upload.code',
+        async () => {
+          // A request to send documents with an emailed code, and a code on
+          // its way (5.21): sent by operator mail, and saying nothing else.
+          const request = (
+            await admin.query<{ id: string }>(
+              `insert into upload_request (household_id, created_by, requester_member_id, title,
+                                           token_hash, expires_at, email_code, recipient_email)
+               values ($1, $2, $3, 'Tax papers', $4, now() + interval '1 day', true,
+                       'jane@actors.test') returning id`,
+              [hh, ids.account, ids.member, randomBytes(32)],
+            )
+          ).rows[0]?.id as string;
+          const code = (
+            await admin.query<{ id: string }>(
+              `insert into upload_code (household_id, request_id, code_hash, expires_at)
+               values ($1, $2, $3, now() + interval '10 minutes') returning id`,
+              [hh, request, randomBytes(32)],
+            )
+          ).rows[0]?.id as string;
+          const codeJobKey = deriveKey(MASTER, 'upload-code-job');
+          expect(
+            await sendUploadCode(
+              { app, codeJobKey, operatorMail: alertDeps.operatorMail, log },
+              {
+                household_id: hh,
+                request_id: request,
+                code_id: code,
+                sealed: sealBytes(
+                  codeJobKey,
+                  Buffer.from('123456'),
+                  `upload-code:${code}`,
+                ).toString('base64'),
+              },
+            ),
+          ).toBe(true);
+          expect(smtp.received.at(-1)).toBe('Your code');
+        },
+      ],
+      [
         'status.refresh',
         async () => {
           expect(await refreshStatus(reminderDeps)).toEqual({ documents: 1 });
@@ -488,7 +530,7 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
         async () => {
           expect(
             await pruneUploads({ admin, app, credentialsKey, localRoot: vaultDir, now: () => now }),
-          ).toEqual({ done: 0, abandoned: 1, photos: 0 });
+          ).toEqual({ done: 0, abandoned: 1, photos: 0, incoming: 0 });
         },
       ],
       [

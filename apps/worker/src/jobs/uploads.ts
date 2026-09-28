@@ -12,7 +12,11 @@ import type pg from 'pg';
  *  - claims whose try died without cleaning up (the process stopped
  *    mid-upload). After 15 minutes the same account may take one over;
  *    after a day it goes, and its temporary object with it;
- *  - a person's photo left half made for a day (5.17c), and its upload.
+ *  - a person's photo left half made for a day (5.17c), and its upload;
+ *  - a file sent through a request whose try died before it was whole
+ *    (5.21), a day on, with its object; the senders' sessions and codes
+ *    that have ended; and the address of a request that has ended, which is
+ *    kept no longer than it can be used.
  */
 export interface PruneUploadsDeps {
   admin: pg.Pool;
@@ -53,13 +57,14 @@ async function deleteObject(
 
 export async function pruneUploads(
   deps: PruneUploadsDeps,
-): Promise<{ done: number; abandoned: number; photos: number }> {
+): Promise<{ done: number; abandoned: number; photos: number; incoming: number }> {
   const now = deps.now?.() ?? new Date();
   const doneBefore = new Date(now.getTime() - DONE_KEPT_DAYS * DAY);
   const claimedBefore = new Date(now.getTime() - DAY);
   let done = 0;
   let abandoned = 0;
   let photos = 0;
+  let incoming = 0;
   const { rows } = await deps.admin.query<{ id: string }>('select id from household');
   for (const hh of rows) {
     await withSystem(deps.app, hh.id, async (trx) => {
@@ -83,6 +88,44 @@ export async function pruneUploads(
           .executeTakeFirst();
         photos += Number(r.numDeletedRows);
       }
+
+      // A file whose sending died before it was whole (5.21): never
+      // received, never counted, never shown; it goes with its object.
+      const dead = await trx
+        .selectFrom('incoming_file')
+        .select(['id', 'storage_key', 'vault_id'])
+        .where('state', '=', 'uploading')
+        .where('created_at', '<', claimedBefore)
+        .execute();
+      for (const f of dead) {
+        if (!(await deleteObject(trx, deps, { key: f.storage_key, vaultId: f.vault_id }))) continue;
+        const r = await trx
+          .deleteFrom('incoming_file')
+          .where('id', '=', f.id)
+          .where('state', '=', 'uploading')
+          .executeTakeFirst();
+        incoming += Number(r.numDeletedRows);
+      }
+      // A sender's sessions and codes that have ended, and the address of a
+      // request that has: kept no longer than they can be used.
+      await trx.deleteFrom('upload_session').where('expires_at', '<=', now).execute();
+      await trx
+        .deleteFrom('upload_code')
+        .where('expires_at', '<', new Date(now.getTime() - DAY))
+        .execute();
+      await trx
+        .updateTable('upload_request')
+        .set({ recipient_email: null })
+        .where('recipient_email', 'is not', null)
+        .where((eb) =>
+          eb.or([
+            eb('expires_at', '<=', now),
+            eb('revoked_at', 'is not', null),
+            eb('closed_at', 'is not', null),
+            eb('attempts', '>=', 10),
+          ]),
+        )
+        .execute();
 
       const gone = await trx
         .deleteFrom('upload_idempotency')
@@ -114,5 +157,5 @@ export async function pruneUploads(
       }
     });
   }
-  return { done, abandoned, photos };
+  return { done, abandoned, photos, incoming };
 }

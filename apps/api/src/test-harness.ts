@@ -37,6 +37,7 @@ import {
 } from './documents/shares.js';
 import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
+import { UploadRequestService } from './uploads/requests.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -130,6 +131,8 @@ export interface HarnessOptions {
    * test whose queue fails (the 5.20 review, M520-02).
    */
   mail?: (m: MailRequest) => Promise<void>;
+  /** The household's room for files waiting for review, in bytes (5.21). */
+  incomingMaxBytes?: number;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -253,6 +256,17 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       codeKey: deriveKey(TEST_MASTER, SHARE_CODE_KEY_PURPOSE),
       mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
       deviceKey: deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE),
+    }),
+    uploads: new UploadRequestService(db, keys, vaults, {
+      maxDays: config.FDV_SHARE_MAX_DAYS,
+      maxFileBytes: 5 * 1024 * 1024,
+      publicUrl: opts.publicUrl ?? null,
+      operatorMail: opts.operatorMail ?? true,
+      codeKey: deriveKey(TEST_MASTER, 'upload-code-hmac'),
+      codeJobKey: deriveKey(TEST_MASTER, 'upload-code-job'),
+      enqueue,
+      alert,
+      ...(opts.incomingMaxBytes ? { householdMaxBytes: opts.incomingMaxBytes } : {}),
     }),
     audit: new AuditService(db),
     reminders,
