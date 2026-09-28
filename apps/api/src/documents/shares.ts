@@ -625,9 +625,13 @@ export class ShareService {
     const n = Number(drawn.n);
     const total = v.page_count ?? (v.preview_state === 'ready' ? v.preview_pages : null);
     if (n > 0) return { state: 'ready', shown: n, total: total ?? n };
+    // The hour is lifted only for a caller about to ask again: a link that
+    // is not live says what it has, "failed", not "being drawn" by nobody
+    // (the third review).
     const failedLately =
       link.pages_failed_version === v.id &&
-      (link.pages_failed_at === null ||
+      (!ask ||
+        link.pages_failed_at === null ||
         Date.now() - link.pages_failed_at.getTime() < PAGES_RETRY_MS);
     if (v.preview_state === 'unsupported' || v.preview_state === 'failed' || failedLately) {
       return { state: 'failed', shown: 0, total };

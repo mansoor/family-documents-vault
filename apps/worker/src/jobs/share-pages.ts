@@ -296,9 +296,15 @@ export async function drawSharePages(
     // What was written of a drawing that did not finish, and no row names,
     // would never be removed by anything else. A redraw writes where the
     // pages it redraws are kept (5.18 review): those files are still the
-    // pages a row names, and are served, so they stay.
+    // pages a row names, and are served, so they stay. Only a redraw's keys
+    // can be named: a first drawing's are all removed, without asking the
+    // database — which may be why it failed (the third review). (The queue
+    // draws one link and version at a time, so nothing else names them.)
     if (adapter) {
-      const orphans = await unnamed(deps.db, hh, link.id, keys).catch(() => [] as string[]);
+      const orphans =
+        found.drawn > 0
+          ? await unnamed(deps.db, hh, link.id, keys).catch(() => [] as string[])
+          : keys;
       await removeAll(adapter, orphans);
     }
     if (attempt.final) {

@@ -213,24 +213,26 @@ export function latestShareEnd(timezone: string, now = new Date(), maxDays = SHA
 }
 
 /**
- * The end a new link starts with: In a week, or — where the vault allows
- * less (`maxDays` under 7) — its longest, brought safely inside it: a
- * quarter of an hour back, down to the hour on the household's clock, and
- * back an hour more while that is still refused. So neither a clock a few
- * minutes out nor the night the clocks go back (when 01:30 happens twice)
- * puts it past the limit.
+ * The end a new link starts with: In a week, or — where a week is at, or
+ * past, the vault's longest (`maxDays` of 7 or less) — its longest, brought
+ * safely inside it: a quarter of an hour back, down to the hour on the
+ * household's clock, and back an hour more while that is still refused. So
+ * neither a clock a few minutes out nor the night the clocks go back (when
+ * 01:30 happens twice) puts it past the limit.
  */
 export function defaultShareEnd(
   timezone: string,
   now = new Date(),
   maxDays = SHARE_MAX_DAYS,
 ): { date: string; time: string } {
+  const limit = now.getTime() + maxDays * 864e5;
   const week = shareQuickPicks(timezone, now, maxDays).find((p) => p.key === 'week');
-  if (week) {
+  // A week, only while it is a quarter of an hour or more inside the
+  // longest: at exactly seven days it is the very edge (the third review).
+  if (week && week.at.getTime() <= limit - 15 * 60_000) {
     const { date, time } = zonedParts(week.at, timezone);
     return { date, time };
   }
-  const limit = now.getTime() + maxDays * 864e5;
   for (let back = 0; back < 6; back += 1) {
     const { date, time } = zonedParts(new Date(limit - 15 * 60_000 - back * 3_600_000), timezone);
     const hour = `${time.slice(0, 2)}:00`;

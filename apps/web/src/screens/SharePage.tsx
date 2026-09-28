@@ -396,6 +396,18 @@ function SharedPages({
   // change, and a screen reader hears them; Try again gives it the focus,
   // since the button it pressed goes (the second review).
   const status = useRef<HTMLParagraphElement>(null);
+  // And when the pages come after Try again, that line goes with the wait:
+  // the pages take the focus, so it is not left on nothing (the third
+  // review) — unless it has been moved on meanwhile.
+  const list = useRef<HTMLOListElement>(null);
+  const triedAgain = useRef(false);
+  const ready = pages?.state === 'ready' && Boolean(pages.shown);
+  useEffect(() => {
+    if (!ready || !triedAgain.current) return;
+    triedAgain.current = false;
+    const where = document.activeElement;
+    if (where === null || where === document.body) list.current?.focus();
+  }, [ready]);
   if (!pages || pages.state === 'failed') {
     return (
       <p className="muted" role="note">
@@ -422,6 +434,7 @@ function SharedPages({
             kind="quiet"
             onClick={() => {
               status.current?.focus();
+              triedAgain.current = true;
               onTryAgain();
             }}
           >
@@ -435,7 +448,7 @@ function SharedPages({
   const cut = pagesNotSharedNote(pages);
   return (
     <>
-      <ol className="shared-pages" aria-label={`The pages of ${title}`}>
+      <ol className="shared-pages" aria-label={`The pages of ${title}`} tabIndex={-1} ref={list}>
         {Array.from({ length: pages.shown }, (_, i) => i + 1).map((n) => (
           <li key={n}>
             {broken.includes(n) ? (

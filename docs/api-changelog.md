@@ -1630,9 +1630,10 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       when the link is made, when an owner turns it back on after a
       restore, and whenever a live link's pages are still to be drawn and
       somebody looks at it (the preview, Open, `GET /shared/items`, a page,
-      `GET /shares`), once for each link and version. Its last try failing
-      is recorded on the link, and the link is asked for again an hour
-      later. A drawing that fails part-way removes what it wrote and no
+      `GET /shares`), once for each link and version. The last try failing
+      is recorded on the link, and somebody looking at the link an hour or
+      more later asks for its pages again. A drawing that fails part-way
+      removes what it wrote (even with the database out of reach) and no
       page names; one whose link ended meanwhile keeps nothing.
       `share.pages.prune` removes a link's pages when it is taken back, and
       nightly for links that have ended or been used up and a version a

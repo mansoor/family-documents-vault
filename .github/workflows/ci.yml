@@ -140,6 +140,10 @@ jobs:
       # A service is reached by its name from a job in a container.
       DATABASE_ADMIN_URL: postgres://fdv:fdv@postgres:5432/fdv
       COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      # The worker image's tools, all here: the checks that need exactly them
+      # (OCR reading a view-only page's watermark back, where a line in each
+      # script falls) run here, and are skipped everywhere else.
+      FDV_IMAGE_PARITY: '1'
     steps:
       # The worker image's packages (Dockerfile, worker stage) — pango and the
       # fonts a view-only link's pages are written in (5.18), pruned to one

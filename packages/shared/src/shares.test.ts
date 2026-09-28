@@ -109,6 +109,13 @@ describe("a link's options", () => {
       date: '2026-10-04',
       time: '10:40',
     });
+    // Where the longest is exactly a week, a week is its very edge: the
+    // hour safely inside it instead (the third review).
+    const seven = defaultShareEnd('Europe/London', sunday, 7);
+    expect(seven).toEqual({ date: '2026-10-04', time: '10:00' });
+    const limit = sunday.getTime() + 7 * 864e5;
+    expect(at(seven).getTime()).toBeLessThanOrEqual(limit - 15 * 60_000);
+    expect(shareEndProblem(at(seven), { now: sunday, maxDays: 7 })).toBeNull();
     // The vault lets a few minutes past the longest through, for a clock that
     // is ahead; a client checks with none.
     const late = new Date(sunday.getTime() + 3 * 864e5 + 3 * 60_000);

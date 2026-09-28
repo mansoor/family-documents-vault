@@ -631,19 +631,17 @@ export async function imageFrames(file: string, mime: string): Promise<number> {
   // Counted from the frames' headers alone (`-ping`), over a bounded range:
   // decoding a twenty-page colour scan's every frame to count them fills
   // the pixel cache, and its pages were never drawn (the second review).
-  // `%s` is each frame's number; the last, plus one, is how many.
+  // One line a frame, counted: a frame's number (`%s`) is taken from the
+  // file's PageNumber tag, which a scanner may start at 1, or a page split
+  // out of a scan keep as 3 (the third review), and is no count.
   const out = await identify([
     '-ping',
     '-format',
-    '%s\n',
+    'frame\n',
     `tiff:${file}[0-${TIFF_MAX_FRAMES - 1}]`,
   ]);
-  const scenes = out
-    .trim()
-    .split(/\s+/)
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n >= 0);
-  return scenes.length ? Math.min(Math.max(...scenes) + 1, TIFF_MAX_FRAMES) : 1;
+  const frames = out.split('\n').filter((line) => line.trim() === 'frame').length;
+  return Math.min(Math.max(frames, 1), TIFF_MAX_FRAMES);
 }
 
 /** The most frames a TIFF is counted to: past this, it is said to have this many. */
@@ -729,6 +727,20 @@ const MARK_HALO = 'white';
 const MARK_OPACITY = 0.5;
 
 /**
+ * The watermark's type sizes, in pixels, for a page `width` by `height`:
+ * the mark's sized to the page, and on a strip to its height, a little, so
+ * that on a strip or a small page a whole mark still crosses it, big enough
+ * to read (the second review); the foot line's to the page's width.
+ */
+export function watermarkSizes(width: number, height: number): { mark: number; foot: number } {
+  const clamp = (n: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, n)));
+  return {
+    mark: clamp(Math.min(width / 44, (3 * height) / 30), 10, 44),
+    foot: clamp(width / 48, 12, 40),
+  };
+}
+
+/**
  * A view-only link's page (5.18): one of the vault's drawn pages, with
  * `text` — whom the link is for, and the day it was made — written across
  * the whole of it on the slant, again and again in a grid, so that any part
@@ -761,12 +773,7 @@ export async function watermarkPage(
   const page = await size(`jpeg:${input}`);
   const width = page.w || PREVIEW_EDGE;
   const height = page.h || PREVIEW_EDGE;
-  const clamp = (n: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, n)));
-  // Sized to the page, and on a strip to its height, a little: so that on a
-  // strip or a small page a whole mark still crosses it, big enough to read
-  // (the second review).
-  const markSize = clamp(Math.min(width / 44, (3 * height) / 30), 10, 44);
-  const footSize = clamp(width / 48, 12, 40);
+  const { mark: markSize, foot: footSize } = watermarkSizes(width, height);
   const pango = opts.pango ?? (await hasPango());
   const dir = await mkdtemp(path.join(path.dirname(output), 'wm-'));
   try {

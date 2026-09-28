@@ -490,7 +490,10 @@ describe('until a date and time, view or download, so many opens', () => {
       // Tried again, and drawn meanwhile: they come.
       state.sharePages = { state: 'ready', shown: 2, total: 2 };
       fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-      await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
+      const pages = await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
+      // The line that had the focus went with the wait: the pages have it,
+      // not the page's body (the third review).
+      await waitFor(() => expect(document.activeElement).toBe(pages));
     } finally {
       clock.mockRestore();
     }
@@ -563,7 +566,9 @@ describe('until a date and time, view or download, so many opens', () => {
     await waitFor(() => expect(state.shareItemsFailing).toBe(0), { timeout: 6000 });
     expect(screen.queryByText(/could not be prepared/)).not.toBeInTheDocument();
     state.sharePages = { state: 'ready', shown: 2, total: 2 };
-    await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
+    const pages = await screen.findByRole('list', { name: /The pages of/ }, { timeout: 8000 });
+    // Nobody pressed anything: the pages come without taking the focus.
+    expect(document.activeElement).not.toBe(pages);
   }, 30_000);
 });
 

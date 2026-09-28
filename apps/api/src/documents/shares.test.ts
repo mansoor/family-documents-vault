@@ -1443,6 +1443,31 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(jobsFor('share.pages', created.share.id)).toHaveLength(now);
     });
 
+    it('a link that is not live, whose pages failed long ago, says they failed, not "being drawn" (third review)', async () => {
+      const doc = await make('Used up and failed', 'household');
+      await drawnAlready(doc, 1);
+      const created = await made(doc, { permission: 'view', max_opens: 1 });
+      await opened(created.link_token);
+      await withSystem(h.db, owner.household_id, async (trx) =>
+        trx
+          .updateTable('share_link')
+          .set({
+            pages_failed_version: (await newestOf(doc)).id,
+            pages_failed_at: new Date(Date.now() - 2 * PAGES_RETRY_MS),
+          })
+          .where('id', '=', created.share.id)
+          .execute(),
+      );
+      const before = jobsFor('share.pages', created.share.id).length;
+      const listed = json<{ items: ShareView[] }>(
+        await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),
+      ).items.find((s) => s.id === created.share.id);
+      // Opened as often as it allows: nobody will ask for its pages again.
+      expect(listed?.state).toBe('used_up');
+      expect(listed?.pages?.state).toBe('failed');
+      expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
+    });
+
     it('an end a few minutes past the longest, from a clock that is ahead, is taken (second review)', async () => {
       const edge = new Date(Date.now() + 90 * 864e5 + 3 * 60_000).toISOString();
       expect((await share(lease, { expires_at: edge })).statusCode).toBe(201);
