@@ -13,6 +13,7 @@ import {
   type SendPreviews,
 } from './jobs/previews.js';
 import { createNotifier } from './jobs/notify.js';
+import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
@@ -120,6 +121,22 @@ async function main(): Promise<void> {
       if (queued) log('info', 'page previews queued for Essentials', { queued });
     })
     .catch((err: unknown) => log('warn', 'page preview backfill failed', { err: String(err) }));
+
+  // People's photos (5.17c), one at a time: the upload opened into a folder
+  // of the worker's own, made into the square, and deleted. Tried twice; on
+  // the second failure it is refused and its upload goes at once.
+  await boss.createQueue(JOBS.memberPhoto, { retryLimit: 1, retryDelay: 30 });
+  await boss.work(
+    JOBS.memberPhoto,
+    { batchSize: 1, includeMetadata: true },
+    async (jobs: JobWithMetadata<MemberPhotoJob>[]) => {
+      for (const job of jobs) {
+        await makeMemberPhoto(processDeps, job.data, {
+          final: job.retryCount >= job.retryLimit,
+        });
+      }
+    },
+  );
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

@@ -63,6 +63,8 @@ describe('buildCapabilities', () => {
       // 0.5.15: reminders from any date, on the server (5.16a); switched on
       // with the web's editor for them (5.16b, 0.5.16).
       reminder_dates: true,
+      // 0.5.19: people's photos (5.17c).
+      member_photos: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

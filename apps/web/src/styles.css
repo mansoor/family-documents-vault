@@ -511,6 +511,102 @@ h3 {
   color: #fff;
   font-weight: 700;
   flex-shrink: 0;
+  overflow: hidden;
+  line-height: 1;
+}
+
+/* 5.17c: a person's photo fills their circle; their colour shows behind it
+   while it loads. */
+.avatar-photo {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+  display: block;
+}
+
+/* 5.17c: a person's profile — their circle, their one line, the photo's
+   buttons — and the facts about them. */
+.profile-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.profile-line {
+  margin: 0;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.photo-controls {
+  align-items: center;
+  width: 100%;
+}
+
+.photo-controls .row {
+  justify-content: center;
+}
+
+.quiet-link {
+  align-self: flex-start;
+  text-decoration: underline;
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The crop sheet: the photo in a square, a round guide over it, and the
+   rest of the frame dimmed. The room around it is measured, and the frame
+   is as wide as that allows and as tall (Person.tsx): square on any screen. */
+.crop-room {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.crop-frame {
+  position: relative;
+  overflow: hidden;
+  flex: none;
+  border-radius: var(--radius-m);
+  background: var(--ink);
+  touch-action: none;
+  cursor: grab;
+}
+
+.crop-frame:focus-visible {
+  outline: 3px solid var(--accent-glow);
+  outline-offset: 3px;
+}
+
+.field input[type='range'] {
+  min-height: var(--tap);
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
+}
+
+.crop-photo {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+.crop-guide {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 999px var(--scrim);
+  pointer-events: none;
 }
 
 .avatar-add {

@@ -19,6 +19,8 @@ import {
   libraryHasName,
   missingFields,
   nextReminder,
+  PHOTO_MAX_BYTES,
+  PHOTO_TYPES,
   PREVIEW_MAX_PAGES,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
@@ -95,7 +97,19 @@ export interface FakeVaultState {
   /** What GET /document-attributes answers (0.5.6). */
   attributes: DocumentAttributeView[];
   /** What GET /members answers: the one person the fake signs in as, by default. */
-  members: Array<{ id: string; display_name: string; role: string; is_me: boolean }>;
+  members: Array<{
+    id: string;
+    display_name: string;
+    role: string;
+    is_me: boolean;
+    /** Their photo, once made (0.5.19). */
+    photo?: { id: string } | null;
+    /** A photo on its way: the next GET /members answers it made, as the vault's worker would. */
+    photo_status?: 'processing' | 'failed' | null;
+    can_change_photo?: boolean;
+  }>;
+  /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
+  photosOnTheirWay: Map<string, string>;
   /**
    * The role the fake signs everybody in as: an owner, unless a test says
    * otherwise. A viewer is not told who added each version (0.5.11).
@@ -390,6 +404,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     })),
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
+    photosOnTheirWay: new Map(),
     role: 'owner',
     collections: [],
     calls: [],
@@ -609,6 +624,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           // Reminders from any date (0.5.15), said on since the web's
           // editor for them shipped (0.5.16), as the vault says.
           reminder_dates: true,
+          // People's photos (0.5.19).
+          member_photos: true,
         },
         limits: { max_upload_bytes: 104_857_600, max_members: null, max_storage_bytes: null },
         deprecations: [],
@@ -1727,7 +1744,51 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/members' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
-      return ok({ items: state.members });
+      // The worker, as far as the fake has one: a photo on its way is made
+      // by the time anybody asks again.
+      for (const [memberId, photoId] of state.photosOnTheirWay) {
+        const m = state.members.find((x) => x.id === memberId);
+        if (m) Object.assign(m, { photo: { id: photoId }, photo_status: null });
+      }
+      state.photosOnTheirWay.clear();
+      return ok({ items: state.members.map(memberAnswer) });
+    }
+    // A person's photo (0.5.19), as the vault takes one: the crop first, then
+    // the picture, and nothing else; a photo, by what it says it is.
+    const photoAt = /^\/api\/v1\/members\/([^/]+)\/photo(?:\/([^/]+))?$/.exec(path);
+    if (photoAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const m = state.members.find((x) => x.id === decodeURIComponent(photoAt[1] as string));
+      if (photoAt[2] !== undefined) {
+        if (init.method !== 'GET') return fail(404, 'not_found', 'Not here.');
+        return m?.photo && m.photo.id === decodeURIComponent(photoAt[2])
+          ? picture(FAKE_PAGE)
+          : fail(404, 'no_photo', 'There is no photo here.');
+      }
+      if (!m) return fail(404, 'not_found', 'That person is not in the family.');
+      if (init.method === 'DELETE') {
+        Object.assign(m, { photo: null, photo_status: null });
+        state.photosOnTheirWay.delete(m.id);
+        return empty();
+      }
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      if (state.role === 'viewer') return fail(403, 'forbidden', refusalFor('member.photo'));
+      const parts = partsOf(init.body) ?? [];
+      const order = parts.map((p) => (p.value === null ? `file:${p.name}` : p.name)).join(',');
+      if (order !== 'file:file' && order !== 'crop,file:file') {
+        return fail(422, 'validation_failed', 'Send the crop first, then the photo.');
+      }
+      const file = parts[parts.length - 1] as Part;
+      if (!PHOTO_TYPES.includes(file.type ?? '')) {
+        return fail(415, 'unsupported_type', 'Choose a photo: JPEG, PNG, WebP or HEIC.');
+      }
+      if ((file.size ?? 0) > PHOTO_MAX_BYTES) {
+        return fail(413, 'too_large', 'That photo is too big. Choose one of 20 MB or less.');
+      }
+      state.photosOnTheirWay.set(m.id, next('photo'));
+      m.photo_status = 'processing';
+      return ok(memberAnswer(m), 202);
     }
     if (path === '/api/v1/reminders' && init.method === 'GET') {
       const s = session();
@@ -1834,6 +1895,8 @@ function documentView(
     notes: sealed ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,
     extra: sealed ? {} : (doc.extra ?? {}),
+    // The fake's one signed-in person files every document it holds.
+    filed_by_me: true,
     etag: etagOf(doc),
     status: deriveStatus(
       {
@@ -1845,6 +1908,16 @@ function documentView(
       new Date().toISOString().slice(0, 10),
     ),
   } as DocumentView;
+}
+
+/** A person as GET /members answers one: their photo's three fields always said (0.5.19). */
+function memberAnswer(m: FakeVaultState['members'][number]) {
+  return {
+    ...m,
+    photo: m.photo ?? null,
+    photo_status: m.photo_status ?? null,
+    can_change_photo: m.can_change_photo ?? m.role !== 'viewer',
+  };
 }
 
 /** A refusal the fake has already made, rather than a value to use. */

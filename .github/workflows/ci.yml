@@ -113,6 +113,55 @@ jobs:
           OLDER_CLIENT_REF: v0.5.11
       - run: pnpm build
 
+  # The worker draws people's photos and page previews with ImageMagick. The
+  # job above has Ubuntu's ImageMagick 6 (Q16), which needs half the memory
+  # per pixel and reads files differently; the worker image runs Alpine's
+  # ImageMagick 7 (Q16-HDRI) with HEIC. What fails only there (5.17c: a 48
+  # megapixel HEIC out of room; a WebP turned twice) is caught here, on the
+  # worker image's own packages.
+  image-tests:
+    name: Image tests on the worker's ImageMagick 7
+    runs-on: ubuntu-latest
+    needs: guard
+    container: node:22-alpine
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fdv
+          POSTGRES_PASSWORD: fdv
+          POSTGRES_DB: fdv
+        options: >-
+          --health-cmd "pg_isready -U fdv"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      # A service is reached by its name from a job in a container.
+      DATABASE_ADMIN_URL: postgres://fdv:fdv@postgres:5432/fdv
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+    steps:
+      # The worker image's packages (Dockerfile, worker stage), and what the
+      # tests make their pictures with: libheif's encoders and heif-enc (the
+      # worker only reads HEIC), and git, for the checkout.
+      - name: Install the worker image's tools
+        run: |
+          apk add --no-cache git tesseract-ocr tesseract-ocr-data-eng poppler-utils \
+            imagemagick imagemagick-heic fontconfig font-dejavu font-liberation \
+            postgresql16-client libheif-plugins-all libheif-tools
+          fc-cache -f
+          magick -version | head -1
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: The worker's ImageMagick tests
+        run: >-
+          pnpm exec vitest run
+          apps/worker/src/jobs/member-photo.test.ts
+          apps/worker/src/jobs/previews.test.ts
+
   images:
     name: Build images
     runs-on: ubuntu-latest

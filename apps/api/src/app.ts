@@ -1,4 +1,5 @@
 import cookie from '@fastify/cookie';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { SHARE_COOKIE_PATH } from './documents/shares.js';
@@ -18,6 +19,7 @@ import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
 import { registerHousehold } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
+import type { PhotoService } from './household/photos.js';
 import type { InvitationService } from './household/invitations.js';
 import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
@@ -67,6 +69,8 @@ export interface AppDeps {
   suggestions: SuggestionService;
   notifications: NotificationService;
   household: HouseholdService;
+  /** People's photos (5.17c). */
+  photos: PhotoService;
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
@@ -171,6 +175,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(422).send(refused.toBody(req.id));
       return;
     }
+    // An id that is no id at all — `/documents/abc` — reached the database
+    // as one: there is nothing by it, so it is answered as nothing there, on
+    // every route, never as the server's fault (the 5.17c review). A valid
+    // id never raises this.
+    if (pgCode === '22P02' && /\btype uuid\b/.test((err as Error).message ?? '')) {
+      const nothing = new ApiError(404, 'not_found', 'Nothing in the vault has that id.');
+      void reply.status(404).send(nothing.toBody(req.id));
+      return;
+    }
     const status =
       typeof (err as { statusCode?: number }).statusCode === 'number'
         ? (err as { statusCode: number }).statusCode
@@ -245,9 +258,16 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     });
   });
 
+  // Multipart bodies, for every route that takes one: a document's upload
+  // (one file of FDV_MAX_UPLOAD_BYTES at most) and, since 5.17c, a person's
+  // photo, whose route narrows the limits for itself. Registered ahead of
+  // every route, not inside one group of them, so that no route's parsing
+  // rests on the order the groups happen to be registered in.
+  await app.register(multipart, { limits: { fileSize: config.FDV_MAX_UPLOAD_BYTES, files: 1 } });
+
   registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp, deps.passwords);
   registerVaults(app, deps.vaults, deps.stepUp);
-  registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners);
+  registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners, deps.photos);
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
@@ -256,11 +276,10 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerOffline(app, deps.offline);
   registerTypes(app, deps.types);
   registerCollections(app, deps.collections);
-  await registerDocuments(
+  registerDocuments(
     app,
     deps.documents,
     deps.visibility,
-    config.FDV_MAX_UPLOAD_BYTES,
     deps.sealedSearch,
     deps.stepUp,
     deps.shares,

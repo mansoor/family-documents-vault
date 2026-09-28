@@ -46,6 +46,46 @@ describe('the activity log, in sentences', () => {
     );
   });
 
+  it('says whose photo was added, changed or removed, and never anything of the picture (5.17c)', () => {
+    const aisha = { object_type: 'member', object_id: 'm-aisha', object_title: 'Aisha' };
+    const photo = (action: string, actorMember: string, detail: Record<string, unknown> = {}) =>
+      describeEvent(
+        ev({
+          action,
+          actor: actorMember === 'm-aisha' ? 'Aisha' : 'Mansoor',
+          ...aisha,
+          actor_member_id: actorMember,
+          detail,
+        }),
+      )?.text;
+    expect(photo('member.photo_changed', 'm-mansoor', { replaced: false })).toBe(
+      'Mansoor added a photo of Aisha',
+    );
+    expect(photo('member.photo_changed', 'm-mansoor', { replaced: true })).toBe(
+      'Mansoor changed Aisha’s photo',
+    );
+    expect(photo('member.photo_changed', 'm-aisha', { replaced: false })).toBe(
+      'Aisha added their photo',
+    );
+    expect(photo('member.photo_changed', 'm-aisha', { replaced: true })).toBe(
+      'Aisha changed their photo',
+    );
+    expect(photo('member.photo_removed', 'm-mansoor')).toBe('Mansoor removed Aisha’s photo');
+    expect(photo('member.photo_removed', 'm-aisha')).toBe('Aisha removed their photo');
+    // Nobody resolved, nobody named: still a sentence, and no id.
+    const nobody = describeEvent(
+      ev({
+        action: 'member.photo_removed',
+        actor: null,
+        object_type: 'member',
+        object_id: 'm-x',
+        object_title: null,
+      }),
+    );
+    expect(nobody?.text).toBe('Somebody removed somebody’s photo');
+    expect(nobody?.document_id).toBeNull();
+  });
+
   it('never prints an id when it has no name', () => {
     const line = describeEvent(ev({ actor: null, actor_label: null, object_title: null }));
     expect(line?.text).toBe('Somebody downloaded a document');

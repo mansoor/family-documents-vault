@@ -1,8 +1,11 @@
 import { createApi, createHttp, type FetchLike } from '@fdv/client';
 import { contractScenarios, type ContractContext } from '@fdv/client/testing';
+import { EnvKeyProvider, memberPhotoBinding, ScopeKeys, sealBytes } from '@fdv/crypto';
+import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
+import { LocalAdapter } from '@fdv/storage';
 import { afterAll, beforeAll, describe, it } from 'vitest';
-import { createHarness, type Harness } from './test-harness.js';
+import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
  * The contract every client relies on, against the real API.
@@ -66,6 +69,47 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
         remoteAddress: `10.66.${++peer >> 8}.${peer & 0xff}`,
       });
       if (res.statusCode !== 200) throw new Error(`hiding ${key}: ${res.body}`);
+    },
+    // What the worker commits once a photo's square is made (5.17c,
+    // jobs/member-photo.ts), with a square made elsewhere: the worker is not
+    // here, and its own tests make real ones.
+    makePhotos: async () => {
+      const householdId = ctx.tokens?.household_id as string;
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      const square = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
+      const uploads = await withSystem(h.db, householdId, async (trx) => {
+        const scope = await keys.unwrap(trx, { householdId, kind: 'household' });
+        const on = await trx
+          .selectFrom('member_photo')
+          .select(['id', 'member_id', 'source_key'])
+          .where('state', '=', 'processing')
+          .execute();
+        for (const p of on) {
+          await trx
+            .deleteFrom('member_photo')
+            .where('member_id', '=', p.member_id)
+            .where('state', '=', 'ready')
+            .execute();
+          await trx
+            .updateTable('member_photo')
+            .set({
+              state: 'ready',
+              sealed: sealBytes(
+                scope.key,
+                square,
+                memberPhotoBinding(householdId, p.member_id, p.id),
+              ),
+              ready_at: new Date(),
+              source_key: null,
+              source_vault_id: null,
+              source_key_wrapped: null,
+            })
+            .where('id', '=', p.id)
+            .execute();
+        }
+        return on.map((p) => p.source_key);
+      });
+      for (const key of uploads) if (key) await new LocalAdapter(h.vaultDir).delete(key);
     },
   };
 

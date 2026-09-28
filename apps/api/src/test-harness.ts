@@ -20,6 +20,7 @@ import { ExportService } from './exports/service.js';
 import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { HouseholdService } from './household/service.js';
+import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { ShareService } from './documents/shares.js';
@@ -201,6 +202,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
     household: new HouseholdService(db, keys),
+    photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations,
     coOwners: new CoOwnerService(db, alert, push),
     suggestions: new SuggestionService(db),

@@ -1,4 +1,4 @@
-import { can, type Visibility } from '@fdv/shared';
+import { visibilityChoices, type Visibility } from '@fdv/shared';
 import { useState } from 'react';
 import { api } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
@@ -31,6 +31,8 @@ export function VisibilityControl(props: {
   documentId: string;
   current: Visibility;
   isMine: boolean;
+  /** Whether the reader filed it: a teen changes only the ones they filed (A72). */
+  filedByMe: boolean;
   onChanged: () => Promise<void>;
   /**
    * Opened from a row's ⋯ (5.4): it starts at the choice, and Cancel, a
@@ -50,11 +52,16 @@ export function VisibilityControl(props: {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ title: string; body: string } | null>(null);
 
-  if (!can(storedRole(), 'document.visibility')) return null;
-  // Making something private, or taking it back, belongs to the person it
-  // is about — no role changes that, so the button does not pretend.
-  const choices = props.isMine ? CHOICES : CHOICES.filter((c) => c.value !== 'private');
-  if (props.current === 'private' && !props.isMine) return null;
+  // What this reader may change it to (visibilityChoices, @fdv/shared):
+  // making something private, or taking it back, belongs to the person it
+  // is about, so the button does not pretend; a teen, on their own that
+  // they filed, has Only me and Everyone (A72); nothing to choose, no button.
+  const allowed = visibilityChoices(
+    { role: storedRole(), mine: props.isMine, filedByMe: props.filedByMe },
+    props.current,
+  );
+  if (allowed.length === 0) return null;
+  const choices = CHOICES.filter((c) => allowed.includes(c.value));
 
   const working = (on: boolean) => {
     setBusy(on);

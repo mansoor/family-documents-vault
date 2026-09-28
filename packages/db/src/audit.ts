@@ -68,33 +68,56 @@ export function computeHash(row: Omit<ChainRow, 'id' | 'hash'>): Buffer {
   return h.digest();
 }
 
+/** The event's hashed values, as the table will hold them. */
+interface Stored {
+  household_id: string;
+  actor_account_id: string | null;
+  object_id: string | null;
+  detail: unknown;
+}
+
 /**
  * Appends one event. Must run inside a transaction scoped to the household
  * (see withScope). Serialises per household with a transaction-level
  * advisory lock so that concurrent writers cannot both read the same
  * `prev_hash`.
+ *
+ * What is hashed is what the table will hold, as the database gives it
+ * back: the ids through its own `uuid` type (lower case, with hyphens,
+ * however the caller spelled them), and the detail through `jsonb`. A
+ * route given an id in capitals used to hash it as given while the column
+ * kept it lower case, and the chain then read as tampered with for ever
+ * after (the 5.17c review). The rows already written are unchanged, and so
+ * is the rule `verifyAuditChain` checks.
  */
 export async function appendAudit(trx: Db, input: AuditInput): Promise<number> {
-  await sql`select pg_advisory_xact_lock(hashtext('audit:' || ${input.householdId}))`.execute(trx);
+  const detailJson = JSON.stringify(input.detail ?? {});
+  // The lock is taken in the same statement, on the household as stored.
+  const stored = await sql<Stored>`
+    select pg_advisory_xact_lock(hashtext('audit:' || ${input.householdId}::uuid::text)),
+           ${input.householdId}::uuid::text as household_id,
+           ${input.actorAccountId ?? null}::uuid::text as actor_account_id,
+           ${input.objectId ?? null}::uuid::text as object_id,
+           ${detailJson}::jsonb as detail`.execute(trx);
+  const canon = stored.rows[0] as Stored;
 
   const last = await trx
     .selectFrom('audit_event')
     .select('hash')
-    .where('household_id', '=', input.householdId)
+    .where('household_id', '=', canon.household_id)
     .orderBy('id', 'desc')
     .limit(1)
     .executeTakeFirst();
 
   const at = new Date();
-  const detail = input.detail ?? {};
   const row = {
-    household_id: input.householdId,
-    actor_account_id: input.actorAccountId ?? null,
+    household_id: canon.household_id,
+    actor_account_id: canon.actor_account_id,
     actor_label: input.actorLabel ?? null,
     action: input.action,
     object_type: input.objectType ?? null,
-    object_id: input.objectId ?? null,
-    detail,
+    object_id: canon.object_id,
+    detail: canon.detail,
     at,
     prev_hash: last?.hash ?? null,
   };
@@ -109,7 +132,7 @@ export async function appendAudit(trx: Db, input: AuditInput): Promise<number> {
       action: row.action,
       object_type: row.object_type,
       object_id: row.object_id,
-      detail: JSON.stringify(detail),
+      detail: detailJson,
       ip: input.ip ?? null,
       at,
       prev_hash: row.prev_hash,

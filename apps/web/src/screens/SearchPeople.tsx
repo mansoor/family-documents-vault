@@ -2,9 +2,11 @@ import {
   aboutDate,
   addDays,
   can,
+  initialsFor,
   localToday,
   roleLabel,
   shortDate,
+  shortName,
   type DocumentTypeView,
   type DocumentView,
   type ReminderView,
@@ -13,14 +15,14 @@ import {
 } from '@fdv/shared';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { flushSync } from 'react-dom';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
+import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, collectionsOffered, documentsWord } from '../collections.js';
 import { DocActions } from '../DocActions.js';
+import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
-  Avatar,
   BottomNav,
   Button,
   categoryLabel,
@@ -36,7 +38,7 @@ import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 /** The most documents put in a collection at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
 import { InvitePanel } from './Invite.js';
-import { OwnerChangeNotices, RoleControls } from './Roles.js';
+import { OwnerChangeNotices } from './Roles.js';
 
 /** How many of the household's issuers are offered as filter chips. */
 const ISSUER_CHIPS = 8;
@@ -87,6 +89,8 @@ export function SearchScreen() {
   // would go, and the note and the focus on the row that acted with it.
   const asked = useRef('');
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
+  // First names, or whole names where two first names match (5.17c).
+  const pillNames = shortName(members ?? []);
   const { data: types } = useLoad(async (t) => (await api.documentTypes(t)).items, [authVersion]);
   // Who issued what, among what is being looked at: the chips narrow it further.
   const { data: issuers } = useLoad(
@@ -226,7 +230,7 @@ export function SearchScreen() {
             aria-pressed={memberId === m.id}
             onClick={() => set('member', memberId === m.id ? '' : m.id)}
           >
-            {m.display_name.split(' ')[0]}
+            {pillNames.get(m.id) ?? m.display_name}
           </button>
         ))}
         {category && (
@@ -538,8 +542,10 @@ export function PeopleScreen() {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
   const [dob, setDob] = useState('');
+  const [relationship, setRelationship] = useState('');
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const letters = initialsFor(data?.members ?? []);
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -547,9 +553,16 @@ export function PeopleScreen() {
     setBusy(true);
     setAddError(null);
     try {
-      await guarded((t) => api.addMember(t, { display_name: name, date_of_birth: dob || null }));
+      await guarded((t) =>
+        api.addMember(t, {
+          display_name: name,
+          date_of_birth: dob || null,
+          relationship: relationship.trim() || null,
+        }),
+      );
       setName('');
       setDob('');
+      setRelationship('');
       setAdding(false);
       await reload();
     } catch (err) {
@@ -565,6 +578,7 @@ export function PeopleScreen() {
       <OwnerChangeNotices items={data?.changes ?? []} onChanged={reload} />
       <p className="muted">{data ? `${data.members.length} in the household` : ''}</p>
       <ul className="list">
+        {/* A name here opens the person's profile (A64); back comes here. */}
         {(data?.members ?? []).map((m) => (
           <li key={m.id}>
             <button
@@ -572,7 +586,7 @@ export function PeopleScreen() {
               className="rowbtn person"
               onClick={() => void navigate(`/people/${m.id}`)}
             >
-              <Avatar name={m.display_name} colour={m.colour} />
+              <PersonAvatar person={m} initials={letters.get(m.id)} size={44} />
               <span>
                 <strong>{m.display_name}</strong>
                 <span className="muted">
@@ -602,6 +616,15 @@ export function PeopleScreen() {
             required={false}
             hint="Optional. It is how we know whose birth certificate to ask about."
           />
+          <Field
+            id="member-relationship"
+            label="Relationship (optional)"
+            value={relationship}
+            onChange={setRelationship}
+            required={false}
+            maxLength={60}
+            hint="For example: Mum, Son, Grandad"
+          />
           <div className="row">
             <Button type="submit" disabled={busy}>
               {busy ? 'Adding…' : 'Add'}
@@ -619,47 +642,6 @@ export function PeopleScreen() {
         invitations={data?.invitations ?? []}
         onChanged={reload}
       />
-      <BottomNav />
-    </main>
-  );
-}
-
-export function PersonScreen() {
-  const { id } = useParams<{ id: string }>();
-  const { authVersion } = useApp();
-  const navigate = useNavigate();
-  const { data, error, reload } = useLoad(
-    async (t) => {
-      const [members, docs, types] = await Promise.all([
-        api.members(t),
-        api.documents(t, { member_id: id, limit: 100 }),
-        api.documentTypes(t),
-      ]);
-      return {
-        member: members.items.find((m) => m.id === id),
-        docs: docs.items,
-        types: types.items,
-      };
-    },
-    [id, authVersion],
-  );
-  return (
-    <main className="page page-top has-nav">
-      <TopBar title={data?.member?.display_name ?? 'Person'} back="/people" />
-      <ErrorNote message={error} />
-      <ul className="list">
-        {(data?.docs ?? []).map((d) => (
-          <DocRow
-            key={d.id}
-            doc={d}
-            types={data?.types}
-            onOpen={() => void navigate(`/documents/${d.id}`)}
-            onChanged={reload}
-          />
-        ))}
-        {data && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
-      </ul>
-      {data?.member && <RoleControls member={data.member} onChanged={reload} />}
       <BottomNav />
     </main>
   );

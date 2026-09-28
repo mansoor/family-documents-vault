@@ -18,6 +18,12 @@ export const JOBS = {
    * worker's backfill at startup. The name matches the API's enqueue.
    */
   renderPreviews: 'version.previews',
+  /**
+   * A person's photo made from its upload (5.17c): queued by the API's PUT
+   * /members/{id}/photo, whose PHOTO_JOB is this name. Its own queue, so a
+   * vault reading a hundred pages never keeps somebody's photo waiting.
+   */
+  memberPhoto: 'member.photo',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
   /**

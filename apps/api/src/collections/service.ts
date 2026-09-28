@@ -648,7 +648,7 @@ export class CollectionService {
     const { n } = await given()
       .select(sql<number>`count(*)::int`.as('n'))
       .executeTakeFirstOrThrow();
-    const documents: DocumentView[] = await this.documents.listed(trx, shown);
+    const documents: DocumentView[] = await this.documents.listed(trx, p, shown);
     // Its maker is told who in its audience is not given each one; nobody
     // else is told anything a document they cannot see would leave behind.
     const maker = isMaker(p, collection);

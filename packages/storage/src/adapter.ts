@@ -118,3 +118,20 @@ export function objectKey(p: {
   const prefix = (p.prefix ?? '').replace(/^\/+|\/+$/g, '');
   return prefix ? `${prefix}/${parts.join('/')}` : parts.join('/');
 }
+
+/**
+ * Where a person's photo rests while the vault makes it (5.17c):
+ *
+ *   <household-id>/members/<member-id>/incoming/<photo-id>.enc
+ *
+ * Sealed as it arrived, for seconds, and deleted once the square is made or
+ * refused; the photo itself is kept in the database. Nothing in the name
+ * says anything about the file.
+ */
+export function memberPhotoUploadKey(p: {
+  householdId: string;
+  memberId: string;
+  photoId: string;
+}): string {
+  return `${p.householdId}/members/${p.memberId}/incoming/${p.photoId}.enc`;
+}

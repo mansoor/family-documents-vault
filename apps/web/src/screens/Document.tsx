@@ -241,6 +241,7 @@ export function DocumentScreen() {
         documentId={doc.id}
         current={doc.visibility}
         isMine={doc.owner_member_id !== null && doc.owner_member_id === session.info?.member_id}
+        filedByMe={doc.filed_by_me === true}
         onChanged={reload}
       />
       <ErrorNote message={actionError} />

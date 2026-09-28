@@ -63,6 +63,12 @@ export interface RestoreReport {
    * made would otherwise work again.
    */
   linksPaused: number;
+  /**
+   * People's photos that were on their way when the backup was made
+   * (5.17c), marked failed: their jobs are gone, and the nightly prune
+   * takes them and their uploads away. Ready photos come back as they were.
+   */
+  photosUnfinished: number;
   openInvitations: number;
 }
 
@@ -139,6 +145,7 @@ interface Undone {
   sessionsEnded: number;
   ownerChangesWithdrawn: number;
   linksPaused: number;
+  photosUnfinished: number;
 }
 
 interface StillOpen {
@@ -337,6 +344,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     sessionsEnded: counted('sessions'),
     ownerChangesWithdrawn: counted('owner_changes'),
     linksPaused: counted('links_paused'),
+    photosUnfinished: counted('photos_unfinished'),
   };
 }
 
@@ -348,10 +356,12 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * to change who is an owner is withdrawn, to be asked again with fresh
  * notice (one refused since would otherwise be open, and past its seven
  * days); browsers registered for notifications before 0.4.2, which no
- * session ties to, are forgotten; and every live share link is paused for
- * an owner to turn back on, since one taken back since would work again,
- * and no session opened with a link survives (5.16). Guarded for older
- * schemas.
+ * session ties to, are forgotten; every live share link is paused for an
+ * owner to turn back on, since one taken back since would work again, and
+ * no session opened with a link survives (5.16); and a person's photo that
+ * was on its way, whose job the restore did not bring back, is marked
+ * failed for the nightly prune to take away with its upload (5.17c). Ready
+ * photos come back as they were that night. Guarded for older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 do $undo$
@@ -398,6 +408,11 @@ begin
   end if;
   if to_regclass('public.share_session') is not null then
     delete from public.share_session;
+  end if;
+  if to_regclass('public.member_photo') is not null then
+    update public.member_photo set state = 'failed' where state = 'processing';
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('photos_unfinished', n);
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
@@ -470,15 +485,20 @@ const ACTOR_GUARDED = [
   'doc_collection_item',
   // What a share link's Open gives a browser (0037).
   'share_session',
+  // People's photos: the family's, and a viewer's own (0040).
+  'member_photo',
 ];
 
 /**
  * The tables where a member's own is theirs alone, by a rule that asks who
- * the member is: an Only me collection is its maker's (0036). Each must have such
- * a rule, and somebody signed in who made none is given none.
+ * the member is: an Only me collection is its maker's (0036); a photo is
+ * the family's and, to anybody else, only their own (0040). Each must have
+ * such a rule, and somebody signed in as no member, with no role of the
+ * family's, is given none.
  */
 const MAKER_ONLY = [
   { table: 'doc_collection', where: "audience = 'only_me'", what: 'an Only me collection' },
+  { table: 'member_photo', where: 'true', what: "a person's photo" },
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
@@ -704,8 +724,9 @@ export async function checkRestored(
           throw new Error(`household ${h.id}: ${who} is given its documents (${where.join(', ')})`);
         }
       }
-      // Somebody signed in who is no member of it — so the maker of none —
-      // is given no Only me collection (0036).
+      // Somebody signed in who is no member of it — so the maker of none,
+      // with no role of the family's — is given no Only me collection (0036)
+      // and nobody's photo (0040).
       for (const m of MAKER_ONLY) {
         const [open] = await asHousehold<{ n: number }>(
           h.id,
@@ -713,7 +734,9 @@ export async function checkRestored(
           'account',
         );
         if ((open?.n ?? 0) > 0) {
-          throw new Error(`household ${h.id}: ${m.what} is open to everybody in the family`);
+          throw new Error(
+            `household ${h.id}: ${m.what} is open to somebody signed in who is not given it`,
+          );
         }
       }
     }

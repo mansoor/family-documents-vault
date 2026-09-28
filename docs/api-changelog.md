@@ -1432,6 +1432,120 @@ invitation_not_valid` — where each used to read the count and all were
       their rules, trigger, functions, keys and indexes, in place. Every row
       keeps its id and every item its place, and a backup made before 0039
       restores and is brought up to date.
+  - A person's profile, and their photo (5.17c). The family sees
+    everyone's photo; a viewer sees only their own, and initials for
+    everybody else (A65). Owners set anyone's; adults their own and those
+    of people without a sign-in; teens their own; viewers none; anybody may
+    remove a photo of themselves (A66).
+    - **Added:** `features.member_photos` in the capability document, `true`.
+    - **Added:** `Member.photo` — `{ id }` once a photo is ready, else null;
+      null for everybody but themselves to a viewer. `Member.photo_status` —
+      `'processing'` while one is being made, `'failed'` when the vault
+      could not use it, else null; told only to whoever may change their
+      photo. `Member.can_change_photo`. All absent from older vaults.
+    - **Added:** `PUT /api/v1/members/{id}/photo`, multipart: an optional
+      `crop` field (JSON `{ x, y, w, h }`, fractions of the upright picture,
+      each 0–1, inside it, at least 0.05 a side; none for the middle; up to
+      0.001 over an edge, as rounding leaves it, is taken as the edge), then
+      the picture as `file`, and nothing else. `202` with the person
+      (`photo_status: "processing"`); the worker makes a 512-pixel square
+      JPEG, from a picture of up to 16,000 pixels a side: a JPEG of up to 128
+      megapixels, a HEIC, WebP or PNG of up to about 50 (an iPhone's "HEIF
+      Max" is 48), turned upright by its EXIF orientation (a WebP's too), and
+      GET /members says `photo` when it is ready. Refused, in this
+      order: a person the caller cannot see, `404`; `403 forbidden` (a
+      viewer, in the matrix's words; anybody else not allowed, "Only an
+      owner or the person themselves can change this photo. For someone
+      without a sign-in, any adult can."); a crop that is not one, `422
+validation_failed` (`detail: "crop"`); a crop after the file, a
+      second file or any other part, `422` "Send the crop first, then the
+      photo."; anything but JPEG, PNG, WebP or HEIC/HEIF by its bytes,
+      whatever it is called or declared, `415 unsupported_type`; over 20 MB
+      (or the vault's `max_upload_bytes`, if smaller), `413 too_large`.
+      Nothing of a refused photo is kept. No step-up and no idempotency
+      key: the newest photo sent wins, and one still being made is dropped.
+    - **Added:** `DELETE /api/v1/members/{id}/photo` → `204`, also when
+      there was none; by whoever may change it, or the person themselves.
+    - **Added:** `GET /api/v1/members/{id}/photo/{photo_id}` → the JPEG,
+      `cache-control: private, no-store`, `x-content-type-options:
+nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
+      else: `404 no_photo`, the same every time.
+    - The three take the ids in any case, as every uuid in the API is
+      taken: a photo is filed, sealed and answered by the person's own id,
+      so the `202` is the person as `GET /members` gives them, and a photo
+      opens however its address is spelled.
+    - **Changed:** `Member.relationship` follows the family's details, as
+      `date_of_birth` has since 0.5.3: a viewer gets null, except their own.
+    - **Changed:** a teen's own document of a kind that is Adults only by
+      default — a social security card, a medical record — is their Only me
+      (`visibility: "private"`), where it was for Everyone, viewers
+      included (the owner's decision). This is only the default: what a
+      document made or captured is when it says nothing about who sees it,
+      and where the web's card starts; a teen who sends `visibility` as
+      `household` gets Everyone, as before. A teen's documents are always
+      their own, so it is always theirs. Nobody else can open it, and only
+      they can change who sees it afterwards (next).
+      `effectiveVisibility` in `@fdv/shared` says the same; a phone that
+      sends the visibility its own copy preselected keeps sending Everyone
+      until it is updated.
+    - **Changed:** a teen can change who sees their own documents that they
+      filed, between Only me and Everyone (A72).
+      `POST /api/v1/documents/{id}/visibility`, and
+      `PATCH /api/v1/documents/{id}` with `visibility`, take `private` or
+      `household` from a teen, for a document whose `owner_member_id` is
+      theirs and that they filed, and answer as they do anybody: out of
+      Only me asks what opening it asks (`step_up_required`,
+      `open_private_document`), and the activity log says it as any change
+      of who can see a document. Adults only is refused, `403 forbidden`:
+      "Adults only would hide it from you too. You can make the documents
+      you filed Only me or Everyone." Anybody else's document, and one an
+      owner or adult filed for them (which, made Only me, the family would
+      lose with no trace), is refused as before, `403` "Only an adult can
+      change who is able to see a document."; one they cannot see is
+      `404`, as it is for everybody (it was a `403` before the vault
+      looked). Owners, adults and viewers are unchanged; so is the role
+      matrix, whose `document.visibility` is still an owner's and an
+      adult's.
+    - **Added:** `DocumentView.filed_by_me`: whether the one asking filed
+      the document, so a screen offers a teen the change only where it is
+      theirs to make. Only ever about the caller, never who else did.
+      Absent from older vaults (read it as false).
+    - `@fdv/shared`: `visibilityRefusal`, `visibilityChoices` (both take
+      `{ role, mine, filedByMe }`), `VisibilityAsker`,
+      `mayChangeVisibilityAtAll`, `PRIVATE_OWNER_ONLY`,
+      `TEEN_NOT_ADULTS_ONLY`.
+    - The activity log says "Mansoor added a photo of Aisha", "Sara changed
+      their photo", "Mansoor removed Aisha’s photo" (owners, adults, teens).
+    - Nothing of a photo is in the capability document, an invitation's
+      page, a link's preview, an email, a push or the digest.
+    - `@fdv/shared`: capability `member.photo`, `canChangePerson`,
+      `canChangePhoto`, `canRemovePhoto`, `PHOTO_REFUSAL`; `initialsFor`
+      and `shortName` (people.ts); `PHOTO_MAX_BYTES`, `PHOTO_EDGE`,
+      `PHOTO_TYPES`, `PhotoCrop`; `ActivityEvent.actor_member_id`.
+      `@fdv/client`: `setMemberPhoto` (the crop sent first),
+      `removeMemberPhoto`, `memberPhoto`, `memberPhotoUrl`, `photoUpload`;
+      the fake makes a photo by the next GET /members.
+    - `initialsFor` keeps going until two people's letters differ: after
+      the first letter, the second, and the last name's, the letter where
+      their first names part ("Sr" and "Sm" for Sara and Sam Khan), then a
+      middle name's ("MA" and "MU"); letters are whole graphemes, never
+      two people's in different cases, and shared only by the same name.
+      `graphemesOf` splits a word as a reader sees its letters.
+  - An id that is not one, for every route (5.17c review). **Fixed:** a
+    path given something that is not a uuid where one belongs —
+    `GET /api/v1/documents/abc`, a `PATCH` of it, `POST .../visibility` —
+    reached the database and could answer `500 internal_error`. It is now
+    `404 not_found`, "Nothing in the vault has that id.", as for any id
+    that names nothing. A valid id is answered as before.
+  - The activity log's chain, for every route (5.17c review). **Fixed:** an
+    id sent in capitals — a `DELETE` of `/api/v1/auth/sessions/{ID}`, a
+    `PATCH` of `/documents/{ID}`, any route — was hashed as sent, while the
+    table kept it in lower case, so the row never verified and the chain
+    read as tampered with from then on. Every row is now hashed as the
+    table keeps it (ids as the database's `uuid` gives them back, the
+    detail as `jsonb` does). Rows already written are unchanged, and so is
+    the rule that checks them; a chain broken this way before stays broken
+    at that row.
 
 ## Deprecations in effect
 

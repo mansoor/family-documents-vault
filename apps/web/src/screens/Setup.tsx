@@ -1,3 +1,4 @@
+import { initialsFor } from '@fdv/shared';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type Member, type Profile } from '../api.js';
@@ -267,7 +268,12 @@ export function SetupScreen() {
         <ul className="list" aria-label="Family members">
           {(members ?? []).map((m) => (
             <li key={m.id} className="person">
-              <Avatar name={m.display_name} colour={m.colour} />
+              <Avatar
+                name={m.display_name}
+                colour={m.colour}
+                size={44}
+                initials={initialsFor(members ?? []).get(m.id)}
+              />
               <span>
                 <strong>{m.display_name}</strong>
                 <span className="muted">

@@ -1,6 +1,8 @@
 import {
   can,
   documentLine,
+  initialsFor,
+  shortName,
   type DateValue,
   type DocumentTypeView,
   type DocumentView,
@@ -12,15 +14,9 @@ import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
 import { DocActions, type RowCollection } from '../DocActions.js';
+import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
-import {
-  Avatar,
-  BottomNav,
-  categoryLabel,
-  CollapsibleSection,
-  ErrorNote,
-  StatusBadge,
-} from '../ui.js';
+import { BottomNav, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -81,6 +77,8 @@ export function HomeScreen() {
     return reload();
   };
 
+  const letters = initialsFor(data?.members ?? []);
+  const names = shortName(data?.members ?? []);
   const categories = (data?.counts.by_category ?? [])
     .filter((c) => c.category)
     .sort((a, b) => b.count - a.count);
@@ -114,10 +112,18 @@ export function HomeScreen() {
           People
         </h2>
         <div className="people-row">
+          {/* A name here opens that person's documents; their profile is
+              People's (A64). Back from there comes back here. */}
           {(data?.members ?? []).map((m: Member) => (
-            <Link key={m.id} to={`/people/${m.id}`} className="person-chip">
-              <Avatar name={m.display_name} colour={m.colour} size={52} />
-              <span>{m.display_name.split(' ')[0]}</span>
+            <Link
+              key={m.id}
+              to={`/people/${m.id}/documents`}
+              state={{ from: '/' }}
+              className="person-chip"
+              aria-label={`${m.display_name}’s documents`}
+            >
+              <PersonAvatar person={m} initials={letters.get(m.id)} size={52} />
+              <span>{names.get(m.id) ?? m.display_name}</span>
             </Link>
           ))}
           {can(storedRole(), 'member.add') && (

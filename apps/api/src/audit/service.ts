@@ -134,6 +134,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.role_changed', BY_TYPE],
   ['member.stepped_down', BY_TYPE],
   ['member.sign_in_removed', BY_TYPE],
+  // 5.17c: a person's photo added, changed or taken away — the family's,
+  // as a member's lines are: owners, adults and teens. Never the picture,
+  // a crop or a file's name.
+  ['member.photo_changed', BY_TYPE],
+  ['member.photo_removed', BY_TYPE],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
@@ -225,6 +230,7 @@ interface Row {
   object_id: string | null;
   detail: unknown;
   actor_name: string | null;
+  actor_member_id: string | null;
   document_title: string | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
@@ -258,6 +264,7 @@ export class AuditService {
                e.object_id,
                e.detail,
                actor_member.display_name as actor_name,
+               actor_member.id           as actor_member_id,
                d.title                   as document_title,
                d.visibility              as document_visibility,
                d.owner_member_id         as document_owner,
@@ -299,6 +306,7 @@ export class AuditService {
           action: r.action,
           actor: r.actor_name,
           actor_id: r.actor_account_id,
+          actor_member_id: r.actor_member_id,
           actor_label: r.actor_label,
           object_type: r.object_type,
           object_id: r.object_id,

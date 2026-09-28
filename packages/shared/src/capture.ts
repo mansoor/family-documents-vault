@@ -199,7 +199,12 @@ const LIMITS = [
 /**
  * Who a new document is for when the details do not say: the type's
  * default — except that a role that cannot see Adults only documents (a
- * teen) never files one, so their own stays theirs to see.
+ * teen) never files one, so their own stays theirs to see. A teen files
+ * only their own documents, and one of a kind kept for the adults — a
+ * social security card, a medical record — is their Only me (5.17c, the
+ * owner's decision): until then it was for Everyone, viewers included.
+ * What a teen chooses on the card is theirs, as before; this is only
+ * where the card starts, and what the vault files when nothing is said.
  */
 export function effectiveVisibility(
   meta: Pick<CaptureMetadata, 'visibility'>,
@@ -208,7 +213,7 @@ export function effectiveVisibility(
 ): Visibility {
   if (meta.visibility) return meta.visibility;
   const fallback = type?.default_visibility ?? 'household';
-  return fallback === 'adults' && !can(role, 'document.see_adults') ? 'household' : fallback;
+  return fallback === 'adults' && !can(role, 'document.see_adults') ? 'private' : fallback;
 }
 
 /**

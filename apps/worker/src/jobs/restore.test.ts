@@ -61,6 +61,8 @@ const KEY = deriveKey(MASTER, 'database-backup');
 const KEYS = new ScopeKeys(new EnvKeyProvider(MASTER));
 const quiet = () => undefined;
 const TAG = 16; // AES-GCM tag after each sealed chunk
+/** A person's photo as a backup holds it: sealed bytes, whatever they are (0040). */
+const PHOTO_SEALED = randomBytes(600);
 
 /**
  * pg_dump and psql of the server's own major version, as the worker image
@@ -184,6 +186,29 @@ async function seed(url: string): Promise<string> {
            from ${names.table} c join document d on d.household_id = c.household_id
           where c.household_id = $1`,
         [hh],
+      );
+    }
+
+    // People's photos, where the schema has them (0040): the first member's
+    // made, the second's still on its way when the backup was taken.
+    const photos = await c.query<{ has: boolean }>(
+      "select to_regclass('public.member_photo') is not null as has",
+    );
+    if (photos.rows[0]?.has) {
+      const vault = await c.query<{ id: string }>(
+        "insert into vault (household_id, kind, label) values ($1, 'local', 'This computer') returning id",
+        [hh],
+      );
+      await c.query(
+        `insert into member_photo (household_id, member_id, state, sealed, ready_at)
+         values ($1, $2, 'ready', $3, now())`,
+        [hh, m.rows[0]?.id, PHOTO_SEALED],
+      );
+      await c.query(
+        `insert into member_photo
+           (household_id, member_id, state, source_key, source_vault_id, source_key_wrapped)
+         values ($1, $2, 'processing', $3, $4, '\\x00')`,
+        [hh, m.rows[1]?.id, `${hh}/members/${m.rows[1]?.id}/incoming/x.enc`, vault.rows[0]?.id],
       );
     }
 
@@ -642,7 +667,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     );
     try {
       await expect(checkRestored(target())).rejects.toThrow(
-        /an Only me collection is open to everybody in the family/,
+        /an Only me collection is open to somebody signed in who is not given it/,
       );
     } finally {
       await restoreRule();
@@ -676,6 +701,46 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       await sql(
         vault.adminUrl,
         'alter table public.doc_collection enable trigger doc_collection_owner_writes',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
+  it("notices a person's photo open to a caller it is not for, or photos that lost their rule (0040)", async () => {
+    const actor = (
+      await sql(
+        vault.adminUrl,
+        "select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'member_photo_actor'",
+      )
+    ).rows[0]?.rule as string;
+    const put = () =>
+      sql(
+        vault.adminUrl,
+        `alter policy member_photo_actor on public.member_photo using (${actor})`,
+      );
+    // Anybody signed in, whatever their role or whoever they are.
+    await sql(
+      vault.adminUrl,
+      `alter policy member_photo_actor on public.member_photo
+         using ((${actor}) or (app_actor() = 'account' and app_member() is null))`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a person's photo is open to somebody signed in who is not given it/,
+      );
+    } finally {
+      await put();
+    }
+    // Every kind of caller, a link and a signed-out page among them.
+    await sql(vault.adminUrl, 'drop policy member_photo_actor on public.member_photo');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on member_photo/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_photo_actor on public.member_photo as restrictive using (${actor})`,
       );
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
@@ -964,6 +1029,40 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     });
     // And a collection is still marked deleted, never taken away, by the vault.
     await expect(sql(t.appUrl, 'delete from doc_collection')).rejects.toThrow(/permission denied/);
+  }, 60_000);
+
+  it('photos come back as they were that night, and none is left half made', async () => {
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    expect(report.photosUnfinished).toBe(1);
+    const { rows } = await sql(
+      t.adminUrl,
+      `select p.state, p.sealed, p.source_key is not null as has_source
+         from member_photo p join member m on m.id = p.member_id order by m.display_name`,
+    );
+    // The first member's, byte for byte; the second's, which the backup
+    // caught on its way, failed for the nightly prune to take away.
+    expect(rows.map((r) => r.state)).toEqual(['ready', 'failed']);
+    expect(Buffer.compare(rows[0]?.sealed as Buffer, PHOTO_SEALED)).toBe(0);
+    expect(rows[1]?.has_source).toBe(true);
+    // And the vault, asking as the family, sees the one that is ready.
+    const [first] = (
+      await sql(t.adminUrl, "select id, household_id from member where display_name = 'One'")
+    ).rows as Array<{ id: string; household_id: string }>;
+    const seen = await withClient(t.appUrl, async (c) => {
+      await c.query('begin');
+      await c.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                set_config('app.member_id', $2, true), set_config('app.role', 'teen', true)`,
+        [first?.household_id, first?.id],
+      );
+      const { rows: r } = await c.query<{ n: number }>(
+        "select count(*)::int as n from member_photo where state = 'ready'",
+      );
+      await c.query('commit');
+      return r[0]?.n;
+    });
+    expect(seen).toBe(1);
   }, 60_000);
 
   it('refuses a database that is not empty, and leaves it as it was', async () => {

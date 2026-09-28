@@ -1110,6 +1110,7 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
     const spy = vi.spyOn(DocumentService.prototype, 'listed').mockImplementation(async function (
       this: DocumentService,
       trx,
+      p,
       rows,
     ) {
       // While the answer is drawn, from another connection: is anything
@@ -1128,7 +1129,7 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
           [target.documents],
         ),
       });
-      return listed.call(this, trx, rows);
+      return listed.call(this, trx, p, rows);
     });
     try {
       const added = await call('owner', 'POST', `/api/v1/collections/${collection.id}/items`, {

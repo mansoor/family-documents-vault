@@ -1,4 +1,4 @@
-import multipart, { type MultipartFile } from '@fastify/multipart';
+import type { MultipartFile } from '@fastify/multipart';
 import type { CaptureMetadata } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -138,16 +138,19 @@ function parseRange(
   return { start: Number(a), end: b === '' ? total - 1 : Number(b) };
 }
 
-export async function registerDocuments(
+/**
+ * The document routes. Multipart bodies are read by @fastify/multipart,
+ * registered in app.ts ahead of every route (5.17c): a document's upload
+ * takes one file of FDV_MAX_UPLOAD_BYTES at most, as it always has.
+ */
+export function registerDocuments(
   app: FastifyInstance,
   docs: DocumentService,
   visibility: VisibilityService,
-  maxUploadBytes: number,
   sealed: SealedSearchService,
   stepUp?: StepUpService,
   shares?: ShareService,
 ) {
-  await app.register(multipart, { limits: { fileSize: maxUploadBytes, files: 1 } });
   const auth = { preHandler: app.requireAuth };
   const principal = (req: FastifyRequest) => req.principal as Principal;
 

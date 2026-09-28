@@ -26,6 +26,11 @@ export interface ActivityEvent {
   actor: string | null;
   /** Who, as an id: two people with the same name are still two (0.4.12). */
   actor_id?: string | null;
+  /**
+   * The member who did it, where they are one of the household's: a line
+   * about a person says "their photo" when it was theirs (5.17c).
+   */
+  actor_member_id?: string | null;
   /** For things nobody signed in for: "shared link (the letting agent)". */
   actor_label: string | null;
   object_type: string | null;
@@ -179,6 +184,20 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} stepped down to ${roleWords(detail.to)}`, true);
     case 'member.sign_in_removed':
       return line(`${who} took away ${e.object_title ?? 'somebody'}’s sign-in`, true);
+    // A person's photo (5.17c): never the picture, a crop or a file's name.
+    case 'member.photo_changed': {
+      const own = isOwn(e);
+      if (detail.replaced === true) {
+        return line(
+          own ? `${who} changed their photo` : `${who} changed ${possessive(personOf(e))} photo`,
+        );
+      }
+      return line(own ? `${who} added their photo` : `${who} added a photo of ${personOf(e)}`);
+    }
+    case 'member.photo_removed':
+      return line(
+        isOwn(e) ? `${who} removed their photo` : `${who} removed ${possessive(personOf(e))} photo`,
+      );
     case 'invitation.created':
       return line(`${who} invited ${nameOf(detail, 'email')} to sign in`, true);
     case 'invitation.accepted':
@@ -285,6 +304,18 @@ export function describeEvents(events: ActivityEvent[]): ActivityLine[] {
       e.action === 'document.viewed' ? { actor: e.actor_id ?? null, doc: e.object_id, at } : null;
   }
   return lines;
+}
+
+/** The person a line about a member is about, by name. */
+function personOf(e: ActivityEvent): string {
+  return e.object_title ?? 'somebody';
+}
+
+/** Whether the person a line is about did it themselves. */
+function isOwn(e: ActivityEvent): boolean {
+  return (
+    e.object_type === 'member' && e.actor_member_id != null && e.actor_member_id === e.object_id
+  );
 }
 
 /** "Sarah’s", "Chris’", "Somebody’s". */

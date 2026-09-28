@@ -1424,7 +1424,7 @@ describe('App', () => {
     expect(passport.visibility).toBe('household');
   });
 
-  it('a teen is never offered Adults only, and a type that defaults to it starts as Everyone', async () => {
+  it('a teen is never offered Adults only, and a type that defaults to it starts as their Only me', async () => {
     const medical = {
       ...TYPES[0],
       key: 'medical_record',
@@ -1441,6 +1441,15 @@ describe('App', () => {
     await toCard();
     fireEvent.change(screen.getByLabelText('What it is'), { target: { value: 'medical_record' } });
     expect(screen.getByRole('button', { name: 'Adults only' })).toBeDisabled();
+    // Their own, and for them alone (5.17c, the owner's decision): it
+    // started as Everyone, viewers included.
+    expect(screen.getByRole('button', { name: 'Only me' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    // Everyone is still theirs to choose, and is what is sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Everyone' }));
     expect(screen.getByRole('button', { name: 'Everyone' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -1546,6 +1555,31 @@ describe('App', () => {
       'POST /api/v1/documents/doc-new/visibility',
       'PATCH /api/v1/documents/doc-new',
     ]);
+  });
+
+  it("a teen's edit card offers Only me and Everyone on what they filed, and nothing on what was filed for them", async () => {
+    // A72, narrowed in the 5.17c review: their own documents that they filed.
+    const pills = () =>
+      ['Everyone', 'Adults only', 'Only me'].map(
+        (name) => !screen.getByRole<HTMLButtonElement>('button', { name }).disabled,
+      );
+    for (const [filed, offered] of [
+      [true, [true, false, true]],
+      [false, [true, false, false]],
+    ] as const) {
+      const state = fresh({
+        members: [{ ...ME, role: 'teen' }],
+        documents: [{ ...PASSPORT, filed_by_me: filed }],
+      });
+      installFakeApi(state);
+      signedIn('teen');
+      window.history.replaceState({}, '', `/documents/${PASSPORT.id}/confirm`);
+      const { unmount } = render(<App />);
+      await screen.findByRole('button', { name: 'Everyone' });
+      // Filed for them, only the choice it has now stays: nothing to change.
+      expect(pills(), String(filed)).toEqual(offered);
+      unmount();
+    }
   });
 
   it("a teen's retry after a lost answer changes only what changed, never who can see it", async () => {

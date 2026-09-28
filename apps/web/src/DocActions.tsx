@@ -1,4 +1,4 @@
-import { can, type DocumentView, type Role } from '@fdv/shared';
+import { can, visibilityChoices, type DocumentView, type Role } from '@fdv/shared';
 import {
   useId,
   useLayoutEffect,
@@ -80,7 +80,10 @@ export function mayChange(
 export function actionsFor(
   role: Role,
   memberId: string | null | undefined,
-  doc: Pick<DocumentView, 'owner_member_id' | 'visibility' | 'latest_version_id'> | null,
+  doc: Pick<
+    DocumentView,
+    'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me'
+  > | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
     uncollect: false,
@@ -99,8 +102,12 @@ export function actionsFor(
   if (changes) actions.push('edit');
   // A link sends the file: with none yet, the vault has nothing to send.
   if (hasFile && can(role, 'document.share')) actions.push('share');
-  // Making something Only me, or taking it back, is its owner's alone.
-  if (can(role, 'document.visibility') && (doc.visibility !== 'private' || mine)) {
+  // Only what may be chosen: making something Only me, or taking it back,
+  // is its owner's alone; a teen's own, Only me or Everyone (A72).
+  if (
+    visibilityChoices({ role, mine, filedByMe: doc.filed_by_me === true }, doc.visibility).length >
+    0
+  ) {
     actions.push('visibility');
   }
   // Whoever may see it may put it in a collection of their own: it widens nothing.
@@ -470,6 +477,7 @@ export function DocActions(props: {
             documentId={props.documentId}
             current={doc.visibility}
             isMine={doc.owner_member_id !== null && doc.owner_member_id === memberId}
+            filedByMe={doc.filed_by_me === true}
             onChanged={async () => {
               changedInSheet.current = true;
             }}

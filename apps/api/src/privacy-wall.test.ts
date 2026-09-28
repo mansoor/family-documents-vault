@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EnvKeyProvider, memberPhotoBinding, ScopeKeys, sealBytes } from '@fdv/crypto';
 import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { ActivityLine, DocumentView, SuggestionView } from '@fdv/shared';
@@ -6,7 +7,7 @@ import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
 import type { MemberView } from './household/service.js';
-import { createHarness, type Harness } from './test-harness.js';
+import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
  * The Phase 3 exit condition, as an adversarial suite.
@@ -1662,5 +1663,131 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
         .execute(),
     );
     expect(live).toEqual([{ email: 'sara@example.test', revoked_at: null }]);
+  });
+});
+
+describe.skipIf(!testAdminUrl())("the privacy wall: people's photos (5.17c)", () => {
+  let h: Harness;
+  let owner: Tokens;
+  let viewer: Tokens;
+  let child: string;
+  const photos: Record<string, string> = {};
+  const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+  const SQUARE = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 9)]);
+
+  /** A ready photo, as the worker leaves one: the square sealed for its person. */
+  const readyPhoto = (householdId: string, memberId: string) =>
+    withSystem(h.db, householdId, async (trx) => {
+      const id = randomUUID();
+      const scope = await keys.unwrap(trx, { householdId, kind: 'household' });
+      await trx
+        .insertInto('member_photo')
+        .values({
+          id,
+          household_id: householdId,
+          member_id: memberId,
+          state: 'ready',
+          sealed: sealBytes(scope.key, SQUARE, memberPhotoBinding(householdId, memberId, id)),
+          ready_at: new Date(),
+        })
+        .execute();
+      return id;
+    });
+
+  beforeAll(async () => {
+    h = await createHarness();
+    owner = await h.setup();
+    viewer = await h.join(owner, { name: 'Val', email: 'val@example.test', role: 'viewer' });
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: h.as(owner),
+      payload: { display_name: 'Aisha' },
+    });
+    child = added.json<MemberView>().id;
+    photos.child = await readyPhoto(owner.household_id, child);
+    photos.viewer = await readyPhoto(owner.household_id, viewer.member_id);
+  }, 60_000);
+  afterAll(() => h.close());
+
+  const get = (as: Tokens, memberId: string, photoId: string) =>
+    h.app.inject({ url: `/api/v1/members/${memberId}/photo/${photoId}`, headers: h.as(as) });
+  const noPhoto = (res: { statusCode: number; json: () => unknown }) => {
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ error: { code: 'no_photo' } });
+  };
+  const put = (as: Tokens, memberId: string) => {
+    const form = new FormData();
+    form.append('file', SQUARE, { filename: 'me.jpg', contentType: 'image/jpeg' });
+    return h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${memberId}/photo`,
+      headers: { ...h.as(as), ...form.getHeaders() },
+      payload: form.getBuffer(),
+    });
+  };
+
+  it("a viewer gets 404 no_photo for everyone else's photo, by member id and by photo id, and 403 for setting one", async () => {
+    // Their own, they are given.
+    expect((await get(viewer, viewer.member_id, photos.viewer as string)).statusCode).toBe(200);
+    // By the person's id, and by the photo's under their own: nothing there.
+    noPhoto(await get(viewer, child, photos.child as string));
+    noPhoto(await get(viewer, viewer.member_id, photos.child as string));
+    noPhoto(await get(viewer, owner.member_id, photos.child as string));
+    // Told nothing of it among the people either: initials.
+    const people = (await h.app.inject({ url: '/api/v1/members', headers: h.as(viewer) })).json<{
+      items: MemberView[];
+    }>().items;
+    expect(people.find((m) => m.id === child)?.photo).toBeNull();
+    expect(people.find((m) => m.id === viewer.member_id)?.photo).toEqual({ id: photos.viewer });
+    expect(JSON.stringify(people)).not.toContain(photos.child as string);
+    // And may set none, their own included, or take anybody else's away.
+    for (const memberId of [child, viewer.member_id, owner.member_id]) {
+      expect((await put(viewer, memberId)).statusCode).toBe(403);
+    }
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${child}/photo`,
+      headers: h.as(viewer),
+    });
+    expect(removed.statusCode).toBe(403);
+  });
+
+  it('a second household learns nothing of a photo', async () => {
+    // Another household on the same server, with a person and a photo.
+    const other = randomUUID();
+    await withSystem(h.db, other, async (trx) => {
+      await trx.insertInto('household').values({ id: other, name: 'The Others' }).execute();
+      await keys.mintHouseholdKeys(trx, other);
+    });
+    const stranger = await withSystem(h.db, other, (trx) =>
+      trx
+        .insertInto('member')
+        .values({ household_id: other, display_name: 'Stranger' })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    );
+    const theirs = await readyPhoto(other, stranger.id);
+    // Asked for by their person, by their photo, under one of ours.
+    noPhoto(await get(owner, stranger.id, theirs));
+    noPhoto(await get(owner, child, theirs));
+    noPhoto(await get(owner, owner.member_id, theirs));
+    expect((await put(owner, stranger.id)).statusCode).toBe(404);
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${stranger.id}/photo`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode).toBe(404);
+    const people = await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) });
+    expect(people.body).not.toContain(theirs);
+    expect(people.body).not.toContain(stranger.id);
+    // Theirs is still there, untouched, for their own household.
+    const kept = await withSystem(h.db, other, (trx) =>
+      trx.selectFrom('member_photo').select('id').execute(),
+    );
+    expect(kept).toEqual([{ id: theirs }]);
+    // Ours, asked for under their person: nothing there either.
+    noPhoto(await get(owner, stranger.id, photos.child as string));
   });
 });

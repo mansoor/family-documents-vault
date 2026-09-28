@@ -21,6 +21,7 @@ import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
+import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { ShareService } from './documents/shares.js';
@@ -159,6 +160,7 @@ async function main(): Promise<void> {
       { push, allowPrivateEndpoints: config.FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS === 'true' },
     ),
     household: new HouseholdService(db, keys),
+    photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push),
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null),
