@@ -178,6 +178,28 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     });
   };
 
+  /** An upload whose body stops after `first` bytes (64 KB, or all but its last 64), until let go. */
+  const holding = (cookie: Record<string, string>, file: Buffer, name = 'held.pdf') => {
+    const form = new FormData();
+    form.append('file', file, { filename: name, contentType: 'application/pdf' });
+    const body = form.getBuffer();
+    const first = Math.min(64 * 1024, body.length - 64);
+    const stream = new PassThrough();
+    stream.write(body.subarray(0, first));
+    const reply = h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/files',
+      headers: { ...form.getHeaders(), 'content-length': String(body.length) },
+      cookies: cookie,
+      payload: stream,
+      remoteAddress: addr(),
+    });
+    return { reply, release: () => stream.end(body.subarray(first)) };
+  };
+  /** An answer within five seconds, or 'held'. */
+  const soon = <T>(p: Promise<T>) =>
+    Promise.race([p, new Promise<'held'>((r) => setTimeout(() => r('held'), 5000))]);
+
   const admin = async <T extends object>(text: string, params: unknown[] = []): Promise<T[]> => {
     const pool = createPool(h.adminUrl, 1);
     try {
@@ -1037,6 +1059,83 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     );
     expect(await stored(made.request.id)).toBe(0);
 
+    // A plain template is no document: not refused as macros, but as a kind
+    // not taken (N521T-3).
+    await refused(
+      docx([], 'application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml'),
+      'unsupported_type',
+    );
+    const rels = (body: string) =>
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      body +
+      '</Relationships>';
+    // An ActiveX control, by its relationship, its part named anything.
+    await refused(
+      docx([
+        [
+          'word/_rels/document.xml.rels',
+          rels(
+            '<Relationship Id="rId7" Type="http://schemas.microsoft.com/office/2006/relationships/activeXControlBinary" Target="controls/c1.bin"/>',
+          ),
+        ],
+        ['word/controls/c1.bin', 'x'],
+      ]),
+      'macros_refused',
+    );
+    // An embedded OLE object.
+    await refused(
+      docx([
+        [
+          'word/_rels/document.xml.rels',
+          rels(
+            '<Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/oleObject" Target="embeddings/e1.dat"/>',
+          ),
+        ],
+        ['word/embeddings/e1.dat', 'x'],
+      ]),
+      'macros_refused',
+    );
+    // A frame fetched from elsewhere when it opens.
+    await refused(
+      docx([
+        [
+          'word/_rels/document.xml.rels',
+          rels(
+            '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/frame" Target="https://evil.example/f.html" TargetMode="External"/>',
+          ),
+        ],
+      ]),
+      'macros_refused',
+    );
+    // An Excel 4 macro sheet in a workbook.
+    const workbook = (extraTypes: string, extra: Array<[string, string]> = []) =>
+      zip([
+        [
+          '[Content_Types].xml',
+          types(
+            '<Default Extension="xml" ContentType="application/xml"/>' +
+              '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+              extraTypes,
+          ),
+        ],
+        [
+          '_rels/.rels',
+          rels(
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>',
+          ),
+        ],
+        ['xl/workbook.xml', '<workbook/>'],
+        ...extra,
+      ]);
+    await refused(
+      workbook(
+        '<Override PartName="/xl/macrosheets/sheet1.xml" ContentType="application/vnd.ms-excel.macrosheet+xml"/>',
+        [['xl/macrosheets/sheet1.xml', '<xm:macrosheet/>']],
+      ),
+      'macros_refused',
+    );
+    expect(await stored(made.request.id)).toBe(0);
+
     // An ordinary workbook is taken, as Excel.
     const xlsx = zip([
       [
@@ -1122,6 +1221,48 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     );
     expect(after).toEqual({ files_used: 1, bytes_used: String(file.length) });
     expect(await stored(made.request.id)).toBe(1);
+  });
+
+  it('files still arriving count against max_files: one past it is refused at once', async () => {
+    const made = await make(adult, { max_files: 2 });
+    const { cookie } = await opened(made.link_token);
+    expect((await send(cookie, { name: 'one.pdf', bytes: PDF() })).statusCode).toBe(201);
+    const second = holding(cookie, PDF(200_000));
+    for (let i = 0; i < 100; i++) {
+      const [n] = await admin<{ n: number }>(
+        "select count(*)::int as n from incoming_file where request_id = $1 and state = 'uploading'",
+        [made.request.id],
+      );
+      if (n?.n === 1) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const third = holding(cookie, PDF(200_000));
+    const answer = await soon(third.reply);
+    expect(answer === 'held' ? 'held' : answer.statusCode).toBe(409);
+    if (answer !== 'held') {
+      expect(answer.json<{ error: { code: string } }>().error.code).toBe('files_used_up');
+    }
+    third.release();
+    second.release();
+    expect((await second.reply).statusCode).toBe(201);
+  });
+
+  it('a kind the request does not take is stopped by its first bytes, before the rest arrives', async () => {
+    const made = await make(adult);
+    const { cookie } = await opened(made.link_token);
+    const notAPdf = Buffer.concat([Buffer.from('MZ an executable'), Buffer.alloc(200_000, 0x41)]);
+    const up = holding(cookie, notAPdf, 'invoice.pdf');
+    const answer = await soon(up.reply);
+    up.release();
+    expect(answer === 'held' ? 'held' : answer.statusCode).toBe(415);
+    expect(await stored(made.request.id)).toBe(0);
+  });
+
+  it('an upload refused before its file is read is answered at once, not when its body ends', async () => {
+    const up = holding({ fdv_drop_s_00000000000000000000000000000000: 'ended' }, PDF(200_000));
+    const answer = await soon(up.reply);
+    up.release();
+    expect(answer === 'held' ? 'held' : answer.statusCode).toBe(401);
   });
 
   it('a file past what is left is cut off as it arrives, not stored whole first', async () => {
@@ -1245,8 +1386,12 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     const device = jar.fdv_drop_device;
     const b = await open(second.link_token);
     expect(b.statusCode).toBe(200);
-    // One device cookie for the browser, made once.
-    expect(b.cookies.find((c) => c.name === 'fdv_drop_device')).toBeUndefined();
+    // One device cookie for the browser, made once, and sent back with its
+    // full life by every Open that uses it (N521D-2): the second request,
+    // bound to it later, never outlives it.
+    const renewed = b.cookies.find((c) => c.name === 'fdv_drop_device');
+    expect(renewed?.value).toBe(device);
+    expect(renewed?.maxAge).toBe(90 * 86_400);
     expect(jar.fdv_drop_device).toBe(device);
     // The first opens again in it.
     expect((await open(first.link_token)).statusCode).toBe(200);
@@ -1428,6 +1573,58 @@ describe.skipIf(!testAdminUrl())('a vault with little room and no operator mail'
       remoteAddress: addr(),
     });
   };
+
+  it('the household cap holds at commit, when a slow upload has outlived its reservation', async () => {
+    const one = (await make()).json<CreatedUploadRequest>();
+    const two = (await make()).json<CreatedUploadRequest>();
+    const opened = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: one.link_token },
+      remoteAddress: addr(),
+    });
+    const set = opened.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
+    const form = new FormData();
+    form.append('file', PDF(3000), { filename: 'slow.pdf', contentType: 'application/pdf' });
+    const body = form.getBuffer();
+    const stream = new PassThrough();
+    stream.write(body.subarray(0, body.length - 64));
+    const slow = h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/files',
+      headers: { ...form.getHeaders(), 'content-length': String(body.length) },
+      cookies: { [set?.name as string]: set?.value as string },
+      payload: stream,
+      remoteAddress: addr(),
+    });
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await pool.query<{ n: number }>(
+          "select count(*)::int as n from incoming_file where state = 'uploading'",
+        );
+        if (rows[0]?.n === 1) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // Arriving for 16 minutes, as through a site that sets no limit on a
+      // body: its reservation no longer counts, and another takes the room.
+      await pool.query(
+        "update incoming_file set created_at = now() - interval '16 minutes' where state = 'uploading'",
+      );
+      expect((await sendTo(two.link_token, PDF(3000))).statusCode).toBe(201);
+      stream.end(body.subarray(body.length - 64));
+      const late = await slow;
+      expect(late.statusCode).toBe(413);
+      const { rows } = await pool.query<{ received: string }>(
+        "select coalesce(sum(byte_size), 0)::text as received from incoming_file where state = 'received'",
+      );
+      expect(Number(rows[0]?.received)).toBeLessThanOrEqual(5000);
+      // Room for the next test.
+      await pool.query('delete from incoming_file');
+    } finally {
+      await pool.end();
+    }
+  });
 
   it("the household's room for files waiting is shared by every request", async () => {
     const one = (await make()).json<CreatedUploadRequest>();

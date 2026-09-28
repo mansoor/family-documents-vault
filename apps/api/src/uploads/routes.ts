@@ -115,8 +115,9 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
       metaOf(req),
     );
     void reply.setCookie(opened.cookieName, opened.cookie, cookieOptions(opened.maxAge));
-    // Only when this browser had none: one device cookie serves every
-    // request it opens, so a second never unbinds the first.
+    // One device cookie serves every request a browser opens, so a second
+    // never unbinds the first: made once, and its life renewed by every
+    // Open that uses it, so it outlives each request bound to it.
     if (opened.device) {
       void reply.setCookie(
         DROP_DEVICE_COOKIE,

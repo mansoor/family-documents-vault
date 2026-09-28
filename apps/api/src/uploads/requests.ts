@@ -229,7 +229,10 @@ export interface DropUnlocked {
   cookieName: string;
   /** Seconds until the session ends at the latest: the cookie's Max-Age. */
   maxAge: number;
-  /** "This device only": the browser's device cookie, when this Open minted it. */
+  /**
+   * "This device only": the browser's device cookie, made now if it had
+   * none, and sent back with its full life on every Open that uses it.
+   */
   device?: { cookie: string; maxAge: number };
   session: DropSession;
 }
@@ -872,16 +875,20 @@ export class UploadRequestService {
       if (r.max_visits !== null && r.visits_used >= r.max_visits) return refused('used up');
       const browser = deviceCookie && deviceCookie.length <= 128 ? deviceCookie : null;
       let binding: Buffer | null = null;
+      // The browser's device cookie, sent back with every Open that uses it
+      // (made now if it has none), so it lasts its full 90 days from the
+      // latest: a request bound to it never outlives it in its own browser.
       let minted: string | undefined;
       if (r.this_device_only) {
         if (r.device_hash) {
           if (!browser || !timingSafeEqual(deviceBinding(browser, r.id), r.device_hash)) {
             return refused('other device');
           }
+          minted = browser;
         } else {
           // One device cookie per browser: made now only if it has none.
-          const cookie = browser ?? (minted = randomBytes(32).toString('base64url'));
-          binding = deviceBinding(cookie, r.id);
+          minted = browser ?? randomBytes(32).toString('base64url');
+          binding = deviceBinding(minted, r.id);
         }
       }
       const tried = await this.trySecrets(trx, r, input, meta);
@@ -1359,7 +1366,38 @@ export class UploadRequestService {
     }
 
     try {
-      const view = await this.inSession(cookie, async (trx, r) => {
+      const view = await this.inSession(cookie, async (trx, r, _session, scope) => {
+        // The household's room, again, under the lock its reservations are
+        // made under: what is in, and what other files still arriving hold,
+        // and this file must fit. A reservation stops counting when its
+        // file has been arriving for 15 minutes — the public-only site cuts
+        // a body off at 5, but the vault itself sets no such limit — so this
+        // is the floor under the reservations.
+        await sql`select pg_advisory_xact_lock(hashtextextended(${`incoming:${scope.householdId}`}, 0))`.execute(
+          trx,
+        );
+        const [taken] = (
+          await sql<{ household_bytes: string }>`
+            select household_bytes from incoming_room(${r.id})
+          `.execute(trx)
+        ).rows;
+        const own = await trx
+          .selectFrom('incoming_file')
+          .select([
+            'reserved_bytes',
+            sql<boolean>`created_at > now() - interval '15 minutes'`.as('counted'),
+          ])
+          .where('id', '=', ctx.fileId)
+          .executeTakeFirst();
+        const others =
+          Number(taken?.household_bytes ?? 0) - (own?.counted ? Number(own.reserved_bytes) : 0);
+        if (others + bytes > this.householdMax) {
+          throw tooBigFor(
+            { ...ctx.limits, household: this.householdMax - others },
+            bytes,
+            ctx.maxTotal,
+          );
+        }
         // Within the request's files and bytes, however many arrive at once:
         // one statement counts it, or finds there is no room. (Its room was
         // reserved; this is the floor under that.)

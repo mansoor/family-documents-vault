@@ -2049,8 +2049,9 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         request was just opened with, pressed again, is `409 code_used` and
         uses up no try. Past `max_visits`, `410 request_used_up`, however
         many press Open at once. This device only: one `fdv_drop_device`
-        cookie per browser, set by the first Open that needs one and never
-        replaced; each request is bound to it by the first Open that works,
+        cookie per browser, made by the first Open that needs one and never
+        replaced, and set again with its full 90 days by every Open that
+        uses it; each request is bound to it by the first Open that works,
         and every other Open, at once or later, from another browser is
         `403 other_device`.
       - Inside an opened request, a call says which request it is about
@@ -2078,10 +2079,15 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         document type refused), a package of more than 500 parts not at
         all; `415 macros_refused` for a Word or Excel file with anything
         that runs or reaches outside — a VBA project by its content type,
-        relationship or name, a macro-enabled or template main part, a
-        macro sheet, ActiveX, an embedded OLE object, or a template, frame
-        or object fetched from elsewhere; `413 too_large` when more arrives
-        than the room reserved.
+        relationship or name, a macro-enabled document or template main
+        part (.docm, .dotm, .xlsm, .xltm), a macro sheet, ActiveX, an
+        embedded OLE object, or a template, frame or object fetched from
+        elsewhere. A plain template (.dotx, .xltx), or any package whose
+        main part is not exactly a Word document or an Excel workbook, is
+        `415 unsupported_type`. `413 too_large` when more arrives than the
+        room reserved, and at the commit when the household's room is
+        taken meanwhile (a reservation stops counting once its file has
+        been arriving for 15 minutes).
       - `DELETE /api/v1/drop/files/{id}` → `204`: a file this session sent,
         before Finish. `POST /api/v1/drop/finish` `{ note? }` (up to 1,000
         characters) → `{ files, closed }`; `422 nothing_to_send` with no
