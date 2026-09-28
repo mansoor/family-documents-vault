@@ -23,7 +23,7 @@ import { repairMasterKeyCommand, rotateMasterKeyCommand } from './rotate-master-
  * `docker compose up -d`.
  *
  * `repair-master-key` moves a vault left partly under the key before —
- * rotated by a release before 0.5.0, which rewrapped only the scope keys —
+ * rotated by a release whose rotate-master-key rewrapped only the scope keys —
  * wholly onto FDV_MASTER_KEY, from FDV_MASTER_KEY_PREVIOUS.
  *
  * `reset-password` prints a one-time link for an account that cannot get

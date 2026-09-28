@@ -74,7 +74,7 @@ export async function backupKeyFor(
  * Everything the master key protects in the restored database, opening
  * with the vault's current key: whatever is under the previous key moved
  * there, value by value, in one transaction. That also mends a backup of a
- * vault rotated by a release before 0.5.0, whose scope keys moved and whose
+ * vault rotated by the old rotate-master-key, whose scope keys moved and whose
  * secrets did not. When something opens with neither key, nothing is moved
  * and the restore fails, rather than leave a vault part of which cannot be
  * opened.

@@ -48,7 +48,7 @@ import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
  */
 
 const NEW = 'the-new-master-key-that-is-long-enough-9876543210';
-/** A rotation after that one, by a release before 0.5.0: the scope keys alone. */
+/** A rotation after that one, by the old rotate-master-key: the scope keys alone. */
 const NEWER = 'a-newer-master-key-that-is-long-enough-5555555555';
 const FOREIGN = 'a-master-key-from-some-other-vault-0123456789';
 const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key' };
@@ -284,6 +284,35 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     expect(await sealedBytes()).toEqual(before);
   });
 
+  it('stops, says nothing was changed, and changes nothing, when something else holds the tables', async () => {
+    const before = await sealedBytes();
+    const sessions = await liveSessions();
+    // Something with an open transaction that has written to account.
+    const held = await admin.connect();
+    try {
+      await held.query('begin');
+      await held.query('update account set email = email where id = $1', [accountId]);
+      const waited = await run(NEW, TEST_MASTER, { evenIfConnected: true, lockTimeoutSeconds: 1 });
+      expect(waited.code).toBe(2);
+      expect(waited.err).toBe(
+        "Something else is writing to the vault's tables (waited 1 s). Nothing was changed: " +
+          'stop what is connected (docker compose stop api worker) and run this again.',
+      );
+    } finally {
+      await held.query('rollback');
+      held.release();
+    }
+    expect(await sealedBytes()).toEqual(before);
+    expect(await liveSessions()).toBe(sessions);
+
+    // Anything else that goes wrong once it has begun says so too.
+    const unreachable = await run(NEW, TEST_MASTER, {
+      adminUrl: 'postgres://nobody@127.0.0.1:1/none',
+    });
+    expect(unreachable.code).toBe(1);
+    expect(unreachable.err).toMatch(/^Nothing was changed: .*ECONNREFUSED/);
+  });
+
   it('stops at anything that does not open, and leaves everything as it was', async () => {
     // The mail password is the last thing a rotation reaches: by then the
     // scope keys, the two-step secret and the S3 credentials have been
@@ -467,7 +496,7 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
     });
   });
 
-  describe('a vault a rotation before 0.5.0 left part under each key', () => {
+  describe('a vault the old rotate-master-key left part under each key', () => {
     /** The old command's rotation from NEW to NEWER: the scope keys, nothing else. */
     beforeAll(async () => {
       const { rows } = await admin.query<{
@@ -507,6 +536,12 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       const same = await repair(NEWER, NEWER);
       expect(same.code).toBe(2);
       expect(same.err).toMatch(/is the key the vault runs with/);
+      // Given the key in .env as the one before, the rotation's own key was
+      // lost: only a backup from before it helps.
+      expect(same.err).toContain('repair-master-key cannot help');
+      expect(same.err).toContain(
+        'Restore a backup made before that rotation,\nwith this .env and without FDV_MASTER_KEY_PREVIOUS',
+      );
     });
 
     it('the repair refuses, naming it, what opens with neither key, and changes nothing', async () => {

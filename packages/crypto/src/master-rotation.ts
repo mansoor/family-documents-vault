@@ -96,6 +96,8 @@ export class MasterKeyMismatch extends Error {
     readonly unopened: readonly string[],
     /** How many values did open with one of them. */
     readonly opened: number,
+    /** Of those, scope keys; and how many scope keys did not open. */
+    readonly scopeKeys: { opened: number; unopened: number } = { opened: 0, unopened: 0 },
   ) {
     super(`${listed(unopened)} ${unopened.length === 1 ? 'does' : 'do'} not open`);
   }
@@ -111,6 +113,31 @@ export class MasterKeyMismatch extends Error {
  * some households' rows, and move only those.
  */
 export class CannotSeeVault extends Error {}
+
+/**
+ * The releases whose rotation moved the scope keys alone — up to 0.5.0-rc.1,
+ * and on the develop line until this fix: named by what their command said,
+ * since the version numbers do not tell them apart.
+ */
+export const OLD_ROTATION = `a release whose rotate-master-key only reported "rewrapped N scope key(s)"`;
+
+/**
+ * Such a rotation, run as its README said, made the new key inside the
+ * command and never showed it: the operator kept the old key in .env, the
+ * scope keys went under a key nobody has, and the secrets stayed under the
+ * old one. No repair can help; only a backup from before it.
+ */
+export const LOST_ROTATION_KEY = [
+  `If the master key was rotated by ${OLD_ROTATION}, and its new key was`,
+  'never kept (that README made it inside the command and did not show it), the scope keys',
+  'are under a key nobody has: documents do not open, while two-step sign-in, mail and',
+  'storage do. repair-master-key cannot help. Restore a backup made before that rotation,',
+  'with this .env and without FDV_MASTER_KEY_PREVIOUS (see "Rotating the master key" in the',
+  'README). Nothing made after that backup can be opened without the lost key.',
+].join('\n');
+
+/** How long a move waits for what else is writing to the tables it locks. */
+export const LOCK_TIMEOUT_SECONDS = 30;
 
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
@@ -152,10 +179,11 @@ export async function rotateMasterKey(
   admin: pg.Pool,
   current: string,
   next: string,
+  opts: MoveOptions = {},
 ): Promise<RotationReport> {
   if (current === next) throw new Error('the new master key is the one in use');
   return inTransaction(admin, async (client) => {
-    const moved = await rekey(client, { to: next, from: [current], write: true });
+    const moved = await rekey(client, { ...opts, to: next, from: [current], write: true });
     if (movedCount(moved) === 0 && moved.unchanged > 0) {
       return { ...moved, sessionsEnded: 0, alreadyDone: true };
     }
@@ -165,9 +193,9 @@ export async function rotateMasterKey(
 }
 
 /**
- * Repair: a vault left partly under `previous` — rotated by a release
- * before 0.5.0, which moved only the scope keys, or written to by a vault
- * still running on the old key — is moved wholly onto `current`, and, as a
+ * Repair: a vault left partly under `previous` — rotated by OLD_ROTATION,
+ * which moved only the scope keys, or written to by a vault still running
+ * on the old key — is moved wholly onto `current`, and, as a
  * rotation would have, every session is ended. Throws MasterKeyMismatch,
  * changing nothing, if anything opens with neither key.
  */
@@ -175,10 +203,11 @@ export async function repairMasterKey(
   admin: pg.Pool,
   current: string,
   previous: string,
+  opts: MoveOptions = {},
 ): Promise<RekeyReport & { sessionsEnded: number }> {
   if (current === previous) throw new Error('the previous master key is the one in use');
   return inTransaction(admin, async (client) => {
-    const moved = await rekey(client, { to: current, from: [previous], write: true });
+    const moved = await rekey(client, { ...opts, to: current, from: [previous], write: true });
     const sessionsEnded =
       movedCount(moved) > 0 ? await endSessions(client, 'master key repaired') : 0;
     return { ...moved, sessionsEnded };
@@ -188,8 +217,8 @@ export async function repairMasterKey(
 /**
  * After a restore: makes everything the master key protects open with
  * `current`. A backup made before a rotation holds it under the key it was
- * made with, and one of a vault rotated by a release before 0.5.0 holds
- * some of it under each; given that key as `previous`, whatever is under it
+ * made with, and one of a vault rotated by OLD_ROTATION holds some of it
+ * under each; given that key as `previous`, whatever is under it
  * is moved across, value by value, in one transaction. Null when all of it
  * opens with `current` already.
  *
@@ -255,16 +284,29 @@ export function wrongMasterKeyMessage(err: MasterKeyMismatch): string {
     'your FDV_MASTER_KEY_FILE) and run: docker compose up -d',
     'Not "docker compose start" or "restart": they keep the key the containers were made with.',
   ];
-  if (err.opened > 0) {
+  if (err.opened > 0 && err.scopeKeys.opened === 0 && err.scopeKeys.unopened > 0) {
+    // The secrets open and no scope key does: a rotation whose key was lost.
+    lines.push(
+      'No scope key opens with this key, but the secrets beside them do.',
+      LOST_ROTATION_KEY,
+    );
+  } else if (err.opened > 0) {
     lines.push(
       'Part of the vault opens with this key and part does not. If the master key was rotated',
-      'by a release before 0.5.0, repair it: see "Rotating the master key" in the README.',
+      `by ${OLD_ROTATION}, repair it with the key from before that rotation: see "Rotating`,
+      'the master key" in the README. If this is already that key, the README says what to do.',
     );
   }
   return lines.join('\n');
 }
 
-interface Rekey {
+/** What a rotation or a repair may be told, for tests of what happens while it waits. */
+export interface MoveOptions {
+  /** How long to wait for the tables it locks (LOCK_TIMEOUT_SECONDS). */
+  lockTimeoutSeconds?: number;
+}
+
+interface Rekey extends MoveOptions {
   /** The key everything ends under. */
   to: string;
   /** Other keys a value may be under now. */
@@ -279,14 +321,18 @@ interface Rekey {
  * under `to`. Throws MasterKeyMismatch, having written nothing that will
  * be kept, if anything opens with none of them.
  */
-async function rekey(client: pg.ClientBase, { to, from, write }: Rekey): Promise<RekeyReport> {
+async function rekey(
+  client: pg.ClientBase,
+  { to, from, write, lockTimeoutSeconds = LOCK_TIMEOUT_SECONDS }: Rekey,
+): Promise<RekeyReport> {
   await assertSeesEverything(client);
-  if (write) await lockProtected(client);
+  if (write) await lockProtected(client, lockTimeoutSeconds);
   const secrets = [to, ...from.filter((k) => k !== to)];
   const lock = write ? ' for update' : '';
   const unopened: string[] = [];
   let opened = 0;
   let unchanged = 0;
+  const scopeKeys = { opened: 0, unopened: 0 };
 
   let rewrapped = 0;
   if (await hasColumn(client, 'scope_key', 'key_wrapped')) {
@@ -303,9 +349,11 @@ async function rekey(client: pg.ClientBase, { to, from, write }: Rekey): Promise
       const found = firstOpening(keks, (kek) => unwrapKey(r.key_wrapped, kek, b));
       if (!found) {
         unopened.push(`the ${r.kind} scope key ${r.id}`);
+        scopeKeys.unopened += 1;
         continue;
       }
       opened += 1;
+      scopeKeys.opened += 1;
       if (found.index === 0) {
         unchanged += 1;
         continue;
@@ -355,7 +403,7 @@ async function rekey(client: pg.ClientBase, { to, from, write }: Rekey): Promise
       resealed[s.name] += 1;
     }
   }
-  if (unopened.length) throw new MasterKeyMismatch(unopened, opened);
+  if (unopened.length) throw new MasterKeyMismatch(unopened, opened, scopeKeys);
   return { rewrapped, resealed, unchanged };
 }
 
@@ -421,13 +469,14 @@ async function assertSeesEverything(client: pg.ClientBase): Promise<void> {
  * the move commits: a vault still running on the old key waits, and sees
  * the new rows after.
  */
-async function lockProtected(client: pg.ClientBase): Promise<void> {
+async function lockProtected(client: pg.ClientBase, timeoutSeconds: number): Promise<void> {
   const { rows } = await client.query<{ t: string }>(
     `select t from unnest($1::text[]) t where to_regclass('public.' || t) is not null`,
     [PROTECTED],
   );
   if (!rows.length) return;
-  await client.query("set local lock_timeout = '30s'");
+  const timeout = Math.max(1, Math.round(timeoutSeconds));
+  await client.query(`set local lock_timeout = '${timeout}s'`);
   await client.query(`lock table ${rows.map((r) => r.t).join(', ')} in share row exclusive mode`);
 }
 

@@ -544,13 +544,17 @@ docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> worker no
 
 The restore drill takes it the same way: `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<old key> worker sh scripts/restore-drill.sh <file>`. If anything a backup holds opens with neither key, nothing in it is moved and the restore fails, saying what to do: a vault is never left partly under one key and partly under the other. After more than one rotation, give the key that particular backup was made with. Once the last backup made with the old key is gone, the old key can go too.
 
-**If you rotated the master key with a release before 0.5.0**, that rotation moved only the per-household keys: the two-step sign-in secrets, an S3 bucket's credentials and the mail password stayed under the key before. You can tell: after it, owners with two-step sign-in could not sign in (the code step failed with "Something went wrong"), and mail or an S3 bucket stopped working. From 0.5.0 the vault does not start on it, and says that part of it opens and part does not. Repair it with the key you had before that rotation, with the vault stopped:
+**If you rotated the master key with an earlier release** whose `rotate-master-key` only reported `rewrapped N scope key(s)`, that rotation moved only the per-household keys: the two-step sign-in secrets, an S3 bucket's credentials and the mail password stayed under the key before. Such a vault now does not start, and says that part of it opens and part does not. What to do depends on which key your `.env` holds.
+
+If you put the rotation's new key in `.env`, as that README asked: after it, owners with two-step sign-in could not sign in (the code step failed with "Something went wrong"), and mail or an S3 bucket stopped working, while documents opened. Repair it with the key you had before that rotation, with the vault stopped:
 
 ```bash
 docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<old key> api node apps/api/dist/cli.mjs repair-master-key
 ```
 
 It moves whatever is still under the old key onto the one in `.env` and signs everybody out; if anything opens with neither key, it changes nothing and says what. Then `docker compose up -d`. A backup made since that rotation is restored the same way, with `FDV_MASTER_KEY_PREVIOUS` set to the key before it.
+
+If you ran that README's command exactly as written, it made the new key inside the command and never showed it, and `.env` still holds the key from before. Then it is the other way round: after it, documents would not open (downloads failed), while signing in, two-step sign-in, mail and an S3 bucket kept working; and the vault now says that no scope key opens but the secrets do. The per-household keys are under a key nobody has, and no repair can bring them back. Restore a backup made before that rotation, as in [Restoring](#restoring), with your `.env` as it is and without `FDV_MASTER_KEY_PREVIOUS`. Nothing made after that backup can be opened without the lost key.
 
 ## Upgrading
 

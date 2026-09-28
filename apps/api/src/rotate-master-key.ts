@@ -1,8 +1,11 @@
 import {
   CannotSeeVault,
+  LOCK_TIMEOUT_SECONDS,
+  LOST_ROTATION_KEY,
   MASTER_SEALED,
   MasterKeyMismatch,
   movedCount,
+  OLD_ROTATION,
   repairMasterKey,
   rotateMasterKey,
   type RekeyReport,
@@ -17,8 +20,9 @@ import { createPool } from '@fdv/db';
  * FDV_MASTER_KEY (see repairMasterKey). What they print is counts and row
  * ids, never a key or a secret.
  *
- * Exit codes: 0 done (or nothing to do), 1 something does not open with
- * the keys given, 2 refused before anything was changed.
+ * Exit codes: 0 done (or nothing to do); 1 something does not open with
+ * the keys given, or another error, and nothing was changed; 2 refused, or
+ * stopped by something else writing to the tables, and nothing was changed.
  */
 
 /**
@@ -59,6 +63,8 @@ export interface CommandOptions {
   adminUrl: string | undefined;
   /** --even-if-connected: go ahead although something is connected to the database. */
   evenIfConnected?: boolean | undefined;
+  /** Tests: how long to wait for the tables a move locks (LOCK_TIMEOUT_SECONDS). */
+  lockTimeoutSeconds?: number | undefined;
   out?: (line: string) => void;
   err?: (line: string) => void;
 }
@@ -79,16 +85,16 @@ export async function rotateMasterKeyCommand(
   return guarded(o, 'rotate', async (admin) => {
     let moved;
     try {
-      moved = await rotateMasterKey(admin, o.current, next);
+      moved = await rotateMasterKey(admin, o.current, next, moveOptions(o));
     } catch (e) {
       if (!(e instanceof MasterKeyMismatch)) throw e;
       io.err('Nothing was changed. These open with neither FDV_MASTER_KEY nor FDV_MASTER_KEY_NEW:');
       unopened(e, io.err);
       io.err(
         e.opened > 0
-          ? 'The rest opens. If the master key was rotated by a release before 0.5.0, part of the ' +
-              'vault is still under the key before: repair it first with repair-master-key (see ' +
-              '"Rotating the master key" in the README).'
+          ? `The rest opens. If the master key was rotated by ${OLD_ROTATION}, part of ` +
+              'the vault is still under the key before: repair it first with repair-master-key ' +
+              '(see "Rotating the master key" in the README).'
           : 'FDV_MASTER_KEY is read from .env (or FDV_MASTER_KEY_FILE): is it the key this vault ' +
               'runs with?',
       );
@@ -129,12 +135,14 @@ export async function repairMasterKeyCommand(
           ? 'FDV_MASTER_KEY_PREVIOUS is the key the vault runs with: give the one before it.'
           : 'FDV_MASTER_KEY_PREVIOUS must be at least 32 characters.') + ' Nothing was changed.',
     );
+    // The key before that rotation is the one in .env: the key it made was lost.
+    if (previous === o.current) io.err(LOST_ROTATION_KEY);
     return 2;
   }
   return guarded(o, 'repair', async (admin) => {
     let moved;
     try {
-      moved = await repairMasterKey(admin, o.current, previous);
+      moved = await repairMasterKey(admin, o.current, previous, moveOptions(o));
     } catch (e) {
       if (!(e instanceof MasterKeyMismatch)) throw e;
       io.err(
@@ -154,6 +162,10 @@ export async function repairMasterKeyCommand(
     io.out('Start the vault: docker compose up -d');
     return 0;
   });
+}
+
+function moveOptions(o: CommandOptions) {
+  return o.lockTimeoutSeconds === undefined ? {} : { lockTimeoutSeconds: o.lockTimeoutSeconds };
 }
 
 function streams(o: CommandOptions) {
@@ -179,6 +191,9 @@ function unopened(e: MasterKeyMismatch, err: (line: string) => void): void {
 /**
  * What both commands refuse before they change anything: no owning role,
  * the vault still connected, a connection that cannot see every household.
+ * And what goes wrong once they have begun: every move is one transaction,
+ * rolled back on any error, so whatever it was, nothing was changed — and
+ * they say so, rather than leave the operator a stack trace to guess from.
  */
 async function guarded(
   o: CommandOptions,
@@ -212,7 +227,19 @@ async function guarded(
       io.err(`DATABASE_ADMIN_URL cannot be used here: ${e.message}. Nothing was changed.`);
       return 2;
     }
-    throw e;
+    const code = (e as { code?: unknown }).code;
+    if (code === '55P03' || code === '40P01') {
+      // lock_not_available, deadlock_detected: something else holds or takes
+      // what the move locks.
+      const waited = o.lockTimeoutSeconds ?? LOCK_TIMEOUT_SECONDS;
+      io.err(
+        `Something else is writing to the vault's tables (waited ${waited} s). Nothing was ` +
+          'changed: stop what is connected (docker compose stop api worker) and run this again.',
+      );
+      return 2;
+    }
+    io.err(`Nothing was changed: ${(e as Error).message}`);
+    return 1;
   } finally {
     await admin.end();
   }

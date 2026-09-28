@@ -11,6 +11,7 @@ import {
   MasterKeyMismatch,
   openBound,
   sealBound,
+  wrongMasterKeyMessage,
 } from './master-rotation.js';
 import { binding, type ScopeRef } from './scope-keys.js';
 import { newKey, unwrapKey, wrapKey } from './wrap.js';
@@ -162,7 +163,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     expect(await bytes()).toBe(after);
   });
 
-  /** What a rotation before 0.5.0 left: the scope keys moved to `to`, the secrets not. */
+  /** What the old rotate-master-key left: the scope keys moved to `to`, the secrets not. */
   async function rewrapScopeKeysOnly(from: string, to: string): Promise<void> {
     const { rows } = await admin.query<{
       id: string;
@@ -181,7 +182,7 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     }
   }
 
-  it('mends a database a rotation before 0.5.0 left part under each key, value by value', async () => {
+  it('mends a database the old rotate-master-key left part under each key, value by value', async () => {
     await seed(OLD);
     await rewrapScopeKeysOnly(OLD, NEW);
     // Neither key alone opens it.
@@ -217,6 +218,32 @@ describe.skipIf(!testAdminUrl())('a restored database and the master key', () =>
     // Everything else opened, with one key or the other.
     expect((refused as MasterKeyMismatch).opened).toBe(5);
     expect(await bytes()).toBe(before);
+  });
+
+  it('tells a vault whose rotation key was lost from one to repair, by what opens', async () => {
+    // The old command, run as its README said: the new key made inside the
+    // command and never shown, .env still on OLD.
+    await seed(OLD);
+    await rewrapScopeKeysOnly(OLD, OTHER);
+    const lost = await checkMasterKey(admin, OLD).catch((e: unknown) => e);
+    expect(lost).toBeInstanceOf(MasterKeyMismatch);
+    expect((lost as MasterKeyMismatch).scopeKeys).toEqual({ opened: 0, unopened: 3 });
+    const told = wrongMasterKeyMessage(lost as MasterKeyMismatch);
+    expect(told).toContain('No scope key opens with this key, but the secrets beside them do.');
+    expect(told).toContain('repair-master-key cannot help');
+    expect(told).toContain('Restore a backup made before that rotation');
+    expect(told).toContain('without FDV_MASTER_KEY_PREVIOUS');
+    expect(told).toContain('Nothing made after that backup can be opened without the lost key');
+    expect(told).toContain('only reported "rewrapped N scope key(s)"');
+    expect(told).not.toMatch(/0\.5\.0/);
+
+    // The same command with its key kept: the scope keys open, the secrets
+    // do not, and the repair is the way.
+    await rewrapScopeKeysOnly(OTHER, NEW);
+    const mixed = await checkMasterKey(admin, NEW).catch((e: unknown) => e);
+    const repair = wrongMasterKeyMessage(mixed as MasterKeyMismatch);
+    expect(repair).toContain('repair it with the key from before that rotation');
+    expect(repair).not.toContain('No scope key opens');
   });
 
   it('the check reads only, and names what does not open and whether the rest does', async () => {

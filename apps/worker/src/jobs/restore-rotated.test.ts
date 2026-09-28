@@ -261,7 +261,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))(
       await expect(opensUnder(t, OLD)).rejects.toThrow();
     }, 120_000);
 
-    it('a backup of a vault a rotation before 0.5.0 left part under each key comes back whole', async () => {
+    it('a backup of a vault the old rotate-master-key left part under each key comes back whole', async () => {
       // The old command's rotation from OLD to NEW moved the scope keys and
       // nothing else, and the worker has made its backups on NEW since.
       const mixed = await vaultUnder(OLD);
