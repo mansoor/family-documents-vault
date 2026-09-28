@@ -761,10 +761,13 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
       // names it, so nothing else would ever remove it.
       expect(await exists(sharePageKey(v.storageKey, id, 1))).toBe(false);
       expect(await pagesOf(id)).toEqual([]);
+      // What the link says of its pages that could not be drawn: a version,
+      // and when (share_page_failure, 0042; 0041 kept it on the link).
       const failed = async () =>
         (
           await admin.query<{ version: string | null; at: Date | null }>(
-            'select pages_failed_version as version, pages_failed_at as at from share_link where id = $1',
+            `select (select version_id from share_page_failure where share_id = $1) as version,
+                    (select failed_at from share_page_failure where share_id = $1) as at`,
             [id],
           )
         ).rows[0];
@@ -819,6 +822,202 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
     },
     120_000,
   );
+
+  /**
+   * A collection's link to view (5.19): the documents it was made with, in
+   * a collection for everybody, the link to view made by the owner.
+   */
+  async function collectionLink(documents: string[], ticked: string[]) {
+    const c = await admin.query<{ id: string }>(
+      `insert into doc_collection (household_id, name, audience, owner_member_id)
+       values ($1, 'For the valuer', 'everyone', $2) returning id`,
+      [hh, memberId],
+    );
+    const collectionId = c.rows[0]?.id as string;
+    for (const [i, doc] of documents.entries()) {
+      await admin.query(
+        `insert into doc_collection_item (collection_id, document_id, household_id, position)
+         values ($1, $2, $3, $4)`,
+        [collectionId, doc, hh, i + 1],
+      );
+    }
+    const l = await admin.query<{ id: string }>(
+      `insert into share_link (household_id, collection_id, token_hash, created_by, expires_at,
+                               permission, recipient_label, created_at)
+       values ($1, $2, $3, $4, now() + interval '7 days', 'view', 'the valuer',
+               '2026-09-27T10:00:00Z') returning id`,
+      [hh, collectionId, randomBytes(32), accountId],
+    );
+    const id = l.rows[0]?.id as string;
+    for (const [i, doc] of ticked.entries()) {
+      await admin.query(
+        `insert into share_link_item (share_id, household_id, collection_id, document_id, position)
+         values ($1, $2, $3, $4, $5)`,
+        [id, hh, collectionId, doc, i + 1],
+      );
+    }
+    return { id, collectionId };
+  }
+  const pagesByDocument = async (shareId: string) =>
+    (
+      await admin.query<{ document_id: string; n: number }>(
+        'select document_id, count(*)::int as n from share_page where share_id = $1 group by 1',
+        [shareId],
+      )
+    ).rows;
+
+  it('a collection’s link draws nothing for what it does not give (5.19)', async () => {
+    const a = await store(pagesPdf(1), 'application/pdf');
+    const left = await store(pagesPdf(1), 'application/pdf');
+    const { id, collectionId } = await collectionLink(
+      [a.documentId, left.documentId],
+      [a.documentId],
+    );
+    // Named by the job, a version of a document the link was not made with
+    // is not drawn: the database gives the link no such version.
+    expect(
+      await drawSharePages(deps(), { household_id: hh, share_id: id, version_id: left.versionId }),
+    ).toEqual({ drawn: 0 });
+    // Nor anything at all once the collection is deleted.
+    await admin.query('update doc_collection set deleted_at = now() where id = $1', [collectionId]);
+    expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({ drawn: 0 });
+    expect(await pagesByDocument(id)).toEqual([]);
+  });
+
+  it.skipIf(!drawing)(
+    'a collection’s link to view has each document it gives drawn, and only those (5.19)',
+    async () => {
+      const a = await store(pagesPdf(2), 'application/pdf');
+      const b = await store(pagesPdf(1), 'application/pdf');
+      const left = await store(pagesPdf(1), 'application/pdf');
+      const { id } = await collectionLink(
+        [a.documentId, b.documentId, left.documentId],
+        [a.documentId, b.documentId],
+      );
+      expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({
+        drawn: 3,
+      });
+      const drawn = await pagesByDocument(id);
+      expect(Object.fromEntries(drawn.map((d) => [d.document_id, d.n]))).toEqual({
+        [a.documentId]: 2,
+        [b.documentId]: 1,
+      });
+      // Each is kept beside its own version, marked for whom it is for.
+      const [first] = await pagesOf(id);
+      expect(first?.storage_key).toMatch(new RegExp(`\\.share-${id}\\.p\\d\\.enc$`));
+      // Asked for one version, that one; already drawn, nothing twice.
+      expect(
+        await drawSharePages(deps(), { household_id: hh, share_id: id, version_id: b.versionId }),
+      ).toEqual({ drawn: 1 });
+      // A newer version of one: drawn again, that document's older pages go,
+      // and the other's stay.
+      const newer = await store(pagesPdf(1), 'application/pdf', a.documentId, 2);
+      expect(
+        await drawSharePages(deps(), {
+          household_id: hh,
+          share_id: id,
+          version_id: newer.versionId,
+        }),
+      ).toEqual({ drawn: 1 });
+      expect(
+        Object.fromEntries((await pagesByDocument(id)).map((d) => [d.document_id, d.n])),
+      ).toEqual({ [a.documentId]: 1, [b.documentId]: 1 });
+      expect(await exists(sharePageKey(a.storageKey, id, 2))).toBe(false);
+      expect(await exists(sharePageKey(b.storageKey, id, 1))).toBe(true);
+
+      // One whose drawing fails is cleaned up after, and said — on the last
+      // try — for its version and when, as a document's link's is; the
+      // other document's pages are drawn all the same.
+      const broken = await store(pagesPdf(2), 'application/pdf');
+      await renderVersionPreviews(deps(), { household_id: hh, version_id: broken.versionId });
+      const page2 = previewKey(broken.storageKey, 2);
+      const kept2 = await readAll(await adapter().get(page2));
+      await adapter().delete(page2);
+      const second = await collectionLink(
+        [broken.documentId, b.documentId],
+        [broken.documentId, b.documentId],
+      );
+      const failures = async () =>
+        (
+          await admin.query<{ document_id: string; version_id: string; failed_at: Date }>(
+            'select document_id, version_id, failed_at from share_page_failure where share_id = $1',
+            [second.id],
+          )
+        ).rows;
+      const job = { household_id: hh, share_id: second.id };
+      await expect(drawSharePages(deps(), job, { final: false })).rejects.toThrow();
+      expect(await failures()).toEqual([]);
+      await expect(drawSharePages(deps(), job, { final: true })).rejects.toThrow();
+      // Page 1 of the broken one was written before it stopped, and is gone.
+      expect(await exists(sharePageKey(broken.storageKey, second.id, 1))).toBe(false);
+      expect(
+        Object.fromEntries((await pagesByDocument(second.id)).map((d) => [d.document_id, d.n])),
+      ).toEqual({ [b.documentId]: 1 });
+      const said = await failures();
+      expect(said.map(({ document_id, version_id }) => ({ document_id, version_id }))).toEqual([
+        { document_id: broken.documentId, version_id: broken.versionId },
+      ]);
+      expect(Math.abs(Date.now() - (said[0]?.failed_at.getTime() ?? 0))).toBeLessThan(60_000);
+      // Drawn at last, when it is asked for again: the failure is over.
+      await adapter().put(page2, Readable.from([kept2]));
+      expect(await drawSharePages(deps(), job)).toEqual({ drawn: 3 });
+      expect(await failures()).toEqual([]);
+      expect(
+        Object.fromEntries((await pagesByDocument(second.id)).map((d) => [d.document_id, d.n])),
+      ).toEqual({ [broken.documentId]: 2, [b.documentId]: 1 });
+    },
+    180_000,
+  );
+
+  it('the mark on every page of a collection’s link says whom it is for, to a machine too (5.19)', async ({
+    skip,
+  }) => {
+    skip(!parity, NOT_PARITY);
+    const a = await store(pagesPdf(2), 'application/pdf');
+    const b = await store(pagesPdf(1), 'application/pdf');
+    const { id } = await collectionLink([a.documentId, b.documentId], [a.documentId, b.documentId]);
+    expect(await drawSharePages(deps(), { household_id: hh, share_id: id })).toEqual({
+      drawn: 3,
+    });
+    const scratch = await mkdtemp(path.join(tmpdir(), 'fdv-sp-ocr-c-'));
+    try {
+      const rows = (
+        await admin.query<{ document_id: string; n: number; storage_key: string }>(
+          'select document_id, n, storage_key from share_page where share_id = $1 order by 1, 2',
+          [id],
+        )
+      ).rows;
+      expect(rows).toHaveLength(3);
+      for (const r of rows) {
+        const v = r.document_id === a.documentId ? a : b;
+        const dir = await mkdtemp(path.join(scratch, 'doc-'));
+        const { pageFile } = await pageAsShown(v, r, dir);
+        const level = path.join(dir, `level${r.n}.png`);
+        await run(await magickBin(), [
+          `png:${pageFile}`,
+          '-rotate',
+          '30',
+          '-colorspace',
+          'HSL',
+          '-channel',
+          'G',
+          '-separate',
+          '+channel',
+          '-threshold',
+          '45%',
+          '-negate',
+          `png:${level}`,
+        ]);
+        const { stdout } = await run('tesseract', [level, '-', '--psm', '6'], {
+          timeout: 120_000,
+        });
+        expect(stdout, `${r.document_id} page ${r.n}`).toMatch(/valuer/i);
+        expect(stdout, `${r.document_id} page ${r.n}`).toMatch(/2026/);
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }, 180_000);
 
   it.skipIf(!drawing)(
     'a link taken back while its pages are drawn keeps none of them (5.18 review)',

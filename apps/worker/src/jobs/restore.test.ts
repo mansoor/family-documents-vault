@@ -263,6 +263,27 @@ async function seed(url: string): Promise<string> {
                   as v(hash, expires_at, revoked_at)`,
         [hh, account, randomBytes(32), randomBytes(32), randomBytes(32)],
       );
+      // And, where the schema has them (0042), a live link to the collection
+      // for everyone, made with one of its documents.
+      const collectionLinks = await c.query<{ has: boolean }>(
+        "select to_regclass('public.share_link_item') is not null as has",
+      );
+      if (collectionLinks.rows[0]?.has) {
+        const made = await c.query<{ id: string; collection_id: string }>(
+          `insert into share_link (household_id, collection_id, token_hash, created_by, expires_at)
+           select $1, c.id, $2, $3, now() + interval '7 days'
+             from doc_collection c where c.household_id = $1 and c.audience = 'everyone'
+           returning id, collection_id`,
+          [hh, randomBytes(32), account],
+        );
+        await c.query(
+          `insert into share_link_item (share_id, household_id, collection_id, document_id, position)
+           select $1, $2, $3, i.document_id, 1
+             from doc_collection_item i where i.collection_id = $3
+            order by i.position limit 1`,
+          [made.rows[0]?.id, hh, made.rows[0]?.collection_id],
+        );
+      }
       const sessions = await c.query<{ has: boolean }>(
         "select to_regclass('public.share_session') is not null as has",
       );
@@ -270,7 +291,8 @@ async function seed(url: string): Promise<string> {
         await c.query(
           `insert into share_session (household_id, share_id, cookie_hash, expires_at)
            select $1, s.id, $2, now() + interval '1 hour' from share_link s
-            where s.household_id = $1 and s.revoked_at is null and s.expires_at > now()`,
+            where s.household_id = $1 and s.revoked_at is null and s.expires_at > now()
+              and s.document_id is not null`,
           [hh, randomBytes(32)],
         );
         // And, where the schema counts them (0041), the download that
@@ -760,6 +782,114 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices a share link let into the household's other tables, or its snapshot unguarded (0042)", async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+
+    // The rule that keeps a link to its sharer's own row, gone.
+    const members = await ruleOf('member_link');
+    await sql(vault.adminUrl, 'drop policy member_link on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a share link out of member/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_link on public.member as restrictive using (${members})`,
+      );
+    }
+    // Still asking, but letting a link through to every membership.
+    const memberships = await ruleOf('account_household_link');
+    await sql(
+      vault.adminUrl,
+      `alter policy account_household_link on public.account_household
+         using ((${memberships}) or app_actor() = 'link')`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a share link it never made is given account_household/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy account_household_link on public.account_household using (${memberships})`,
+      );
+    }
+    // The sign-ins, which belong to no household, opened to a link: their
+    // wall down, or their rule letting it through.
+    await sql(vault.adminUrl, 'alter table public.account disable row level security');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/row-level security is off on account/);
+    } finally {
+      await sql(vault.adminUrl, 'alter table public.account enable row level security');
+    }
+    const accounts = await ruleOf('credential_not_a_link');
+    await sql(
+      vault.adminUrl,
+      'alter policy credential_not_a_link on public.credential using (true)',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a share link out of credential/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy credential_not_a_link on public.credential using (${accounts})`,
+      );
+    }
+    // A collection's snapshot, its rule for each kind of caller gone.
+    const snapshotRule = await ruleOf('share_link_item_actor');
+    await sql(vault.adminUrl, 'drop policy share_link_item_actor on public.share_link_item');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on share_link_item/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy share_link_item_actor on public.share_link_item as restrictive using (${snapshotRule})`,
+      );
+    }
+    // A view-only link's pages that could not be drawn, their rule opened
+    // up in place: it asks nobody anything.
+    const failedRule = await ruleOf('share_page_failure_actor');
+    await sql(
+      vault.adminUrl,
+      'alter policy share_page_failure_actor on public.share_page_failure using (true)',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on share_page_failure/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy share_page_failure_actor on public.share_page_failure using (${failedRule})`,
+      );
+    }
+    // And what a link is to, free to change.
+    await sql(
+      vault.adminUrl,
+      'alter table public.share_link disable trigger share_link_target_fixed',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.share_link enable trigger share_link_target_fixed',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -983,8 +1113,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     expect(before.rows[0]).toEqual({ sessions: 1, uses: 1 });
     const t = await empty();
     const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
-    // The live link, and only that: one taken back or run out stays as it was.
-    expect(report.linksPaused).toBe(1);
+    // The live links — the document's, and the collection's (5.19) — and
+    // only those: one taken back or run out stays as it was.
+    expect(report.linksPaused).toBe(2);
     const { rows } = await sql(
       t.adminUrl,
       `select (select count(*)::int from share_link
@@ -996,25 +1127,48 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from share_session_use) as uses`,
     );
     // What those sessions had had goes with them (0041).
-    expect(rows[0]).toEqual({ live: 0, paused: 1, dead_paused: 0, sessions: 0, uses: 0 });
+    expect(rows[0]).toEqual({ live: 0, paused: 2, dead_paused: 0, sessions: 0, uses: 0 });
     // And a link asking as itself, as the vault will let it, reaches nothing.
-    const [link] = (
-      await sql(t.adminUrl, `select id, household_id from share_link where paused_at is not null`)
-    ).rows as Array<{ id: string; household_id: string }>;
-    const reached = await withClient(t.appUrl, async (c) => {
-      await c.query('begin');
-      await c.query(
-        `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
-                set_config('app.share_id', $2, true)`,
-        [link?.household_id, link?.id],
-      );
-      const { rows: r } = await c.query<{ n: number }>(
-        'select (select count(*)::int from document) + (select count(*)::int from share_link) as n',
-      );
-      await c.query('commit');
-      return r[0]?.n;
-    });
-    expect(reached).toBe(0);
+    const links = (
+      await sql(
+        t.adminUrl,
+        `select id, household_id, collection_id from share_link where paused_at is not null`,
+      )
+    ).rows as Array<{ id: string; household_id: string; collection_id: string | null }>;
+    const reach = (link: { id: string; household_id: string } | undefined) =>
+      withClient(t.appUrl, async (c) => {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                  set_config('app.share_id', $2, true)`,
+          [link?.household_id, link?.id],
+        );
+        const { rows: r } = await c.query<{ n: number }>(
+          `select (select count(*)::int from document) + (select count(*)::int from share_link)
+                + (select count(*)::int from share_link_item)
+                + (select count(*)::int from doc_collection) as n`,
+        );
+        await c.query('commit');
+        return r[0]?.n;
+      });
+    expect(links).toHaveLength(2);
+    for (const link of links) expect(await reach(link), link.id).toBe(0);
+
+    // The collection's link came back with what it was made with (0042),
+    // and turned back on — an owner's to do — gives that and nothing more.
+    const theCollections = links.find((l) => l.collection_id !== null);
+    const ticked = await sql(
+      t.adminUrl,
+      `select count(*)::int as n from share_link_item where share_id = '${theCollections?.id}'`,
+    );
+    expect(ticked.rows[0]?.n).toBe(1);
+    await sql(
+      t.adminUrl,
+      `update share_link set paused_at = null, paused_reason = null where id = '${theCollections?.id}'`,
+    );
+    // Its share, its line and its collection. (The documents seeded here
+    // have no file, and a collection's link gives none without one.)
+    expect(await reach(theCollections)).toBe(3);
   }, 60_000);
 
   it("a household's collections come back, and an Only me collection is still its maker's alone (0036)", async () => {
@@ -1383,6 +1537,83 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       await expect(sql(t.appUrl, 'delete from doc_collection')).rejects.toThrow(
         /permission denied/,
       );
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a backup from before 0042 keeps what a view-only link could not draw, a version at a time', async () => {
+    // 0.5.20: a view-only link kept the one version whose pages failed, and
+    // when, on the link (pages_failed_version, pages_failed_at).
+    const older = await empty();
+    const migrations = await migrationsUpTo(41);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0041-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const hh = await seed(older.adminUrl);
+      const failedAt = new Date(Date.now() - 20 * 60_000);
+      const made = await sql(
+        older.adminUrl,
+        `with v as (insert into vault (household_id, kind, label) values ('${hh}', 'local', 'v')
+                    returning id),
+              k as (insert into scope_key (household_id, kind, key_wrapped)
+                    values ('${hh}', 'household', '\\x00') returning id),
+              d as (select id from document where household_id = '${hh}' order by id limit 1),
+              ver as (insert into document_version
+                        (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+                         cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped,
+                         wrapped_by_scope)
+                      select '${hh}', d.id, 1, 'scan.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00',
+                             'k-failed', v.id, '\\x00', k.id from d, v, k
+                      returning id, document_id)
+         insert into share_link (household_id, document_id, token_hash, created_by, expires_at,
+                                 permission, pages_failed_version, pages_failed_at)
+         select '${hh}', ver.document_id, '\\x0102', a.account_id, now() + interval '7 days',
+                'view', ver.id, '${failedAt.toISOString()}'
+           from ver, (select account_id from account_household where household_id = '${hh}'
+                       limit 1) a
+         returning id, document_id, pages_failed_version`,
+      );
+      const link = made.rows[0] as {
+        id: string;
+        document_id: string;
+        pages_failed_version: string;
+      };
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, households: 1 });
+      // The failure moved, the link's own columns went, and the rule is the hour's as before.
+      const { rows } = await sql(
+        t.adminUrl,
+        `select share_id, document_id, version_id, failed_at from share_page_failure`,
+      );
+      expect(rows).toEqual([
+        {
+          share_id: link.id,
+          document_id: link.document_id,
+          version_id: link.pages_failed_version,
+          failed_at: failedAt,
+        },
+      ]);
+      const { rows: columns } = await sql(
+        t.adminUrl,
+        `select count(*)::int as n from pg_attribute
+          where attrelid = 'public.share_link'::regclass
+            and attname in ('pages_failed_version', 'pages_failed_at') and not attisdropped`,
+      );
+      expect(columns).toEqual([{ n: 0 }]);
     } finally {
       await rm(migrations, { recursive: true, force: true });
       await rm(olderDir, { recursive: true, force: true });

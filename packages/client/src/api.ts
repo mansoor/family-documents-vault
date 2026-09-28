@@ -8,6 +8,8 @@ import type {
   CollectionAudience,
   CollectionDetail,
   CollectionInput,
+  CollectionSharePreview,
+  CollectionShareInput,
   CollectionView,
   Counts,
   CreatedInvitation,
@@ -625,6 +627,26 @@ export function createApi(http: Http) {
         body,
         token,
       }),
+    /**
+     * What the share sheet offers for a collection (5.19, `features.collection_shares`):
+     * the documents in it the caller can see, each ticked or not, with why.
+     * `403` for a teen or a viewer; `422 collection_only_me` for an Only me one.
+     */
+    collectionSharePreview: (token: string, collectionId: string) =>
+      request<CollectionSharePreview>(`/api/v1/collections/${enc(collectionId)}/share-preview`, {
+        token,
+      }),
+    /**
+     * A link to a collection (5.19): always asks to confirm it's you first
+     * (`403 step_up_required`, action `share_collection`).
+     */
+    shareCollection: (token: string, collectionId: string, body: CollectionShareInput) =>
+      request<CreatedShare>(`/api/v1/collections/${enc(collectionId)}/shares`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** Every link the caller may know about: a document's, and since 5.19 a collection's. */
     shares: (token: string) => request<{ items: Share[] }>('/api/v1/shares', { token }),
     revokeShare: (token: string, id: string) =>
       request<void>(`/api/v1/shares/${id}`, { method: 'DELETE', token }),

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EnvKeyProvider, memberPhotoBinding, ScopeKeys, sealBytes } from '@fdv/crypto';
-import { withSystem } from '@fdv/db';
+import { withScope, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { ActivityLine, DocumentView, SuggestionView } from '@fdv/shared';
 import FormData from 'form-data';
@@ -887,6 +887,97 @@ describe.skipIf(!testAdminUrl())('the privacy wall, from the other side', () => 
     expect(theirs).toContain(
       'Owner added “Home insurance policy” to the collection “Divorce papers”',
     );
+  });
+
+  it("adult A's collection share never includes adult B's Only me document", async () => {
+    const send = (t: Tokens, method: 'GET' | 'POST', url: string, payload?: object) =>
+      h.app.inject({ method, url, headers: as(t), ...(payload ? { payload } : {}) });
+    // The owner's collection for everybody, the owner's secret in it, and
+    // it keeping up with what is put in it.
+    const made = await send(owner, 'POST', '/api/v1/collections', {
+      name: 'House papers',
+      audience: 'everyone',
+    });
+    const collectionId = json<{ id: string }>(made).id;
+    await send(owner, 'POST', `/api/v1/collections/${collectionId}/items`, {
+      document_ids: [sharedId, secretId],
+    });
+
+    // Sam, fresh from confirming it is him, is offered what he can see.
+    await withSystem(h.db, sam.household_id, (trx) =>
+      trx
+        .updateTable('session')
+        .set({ verified_at: new Date() })
+        .where('household_id', '=', sam.household_id)
+        .execute(),
+    );
+    const offered = json<{ items: Array<{ document_id: string }> }>(
+      await send(sam, 'GET', `/api/v1/collections/${collectionId}/share-preview`),
+    );
+    expect(offered.items.map((i) => i.document_id)).toEqual([sharedId]);
+    // The secret, ticked by id, is a document that is not in the collection.
+    const body = (r: { json: () => unknown }) => ({
+      ...(r.json() as { error: Record<string, unknown> }).error,
+      request_id: null,
+    });
+    const tried = await send(sam, 'POST', `/api/v1/collections/${collectionId}/shares`, {
+      document_ids: [sharedId, secretId],
+    });
+    expect(tried.statusCode).toBe(404);
+    expect(body(tried)).toEqual(
+      body(
+        await send(sam, 'POST', `/api/v1/collections/${collectionId}/shares`, {
+          document_ids: [sharedId, randomUUID()],
+        }),
+      ),
+    );
+
+    // Shared as it keeps up, the owner's next secret does not follow.
+    const link = json<{ link_token: string; share: { id: string } }>(
+      await send(sam, 'POST', `/api/v1/collections/${collectionId}/shares`, {
+        document_ids: [sharedId],
+        follow_collection: true,
+      }),
+    );
+    const later = json<DocumentView>(
+      await send(owner, 'POST', '/api/v1/documents', {
+        title: 'Second secret',
+        type_key: 'medical_record',
+        owner_member_id: owner.member_id,
+        visibility: 'private',
+      }),
+    ).id;
+    await upload(later);
+    await send(owner, 'POST', `/api/v1/collections/${collectionId}/items`, {
+      document_ids: [later],
+    });
+    const unlocked = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/shared/unlock',
+      payload: { token: link.link_token },
+      remoteAddress: '10.44.0.1',
+    });
+    expect(unlocked.statusCode, unlocked.body).toBe(200);
+    const cookie = unlocked.cookies.find((c) => c.name === 'fdv_share')?.value as string;
+    const session = unlocked.json<{ items: Array<{ id: string }> }>();
+    expect(session.items.map((i) => i.id)).toEqual([sharedId]);
+    expect(unlocked.body).not.toContain('Therapy notes');
+    for (const doc of [secretId, later]) {
+      const res = await h.app.inject({
+        url: `/api/v1/shared/items/${doc}/content`,
+        cookies: { fdv_share: cookie },
+        remoteAddress: '10.44.0.2',
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.rawPayload.includes(Buffer.from(SECRET_TEXT))).toBe(false);
+    }
+    // Nor does the link's own scope reach them, whatever it asks.
+    const reached = await withScope(
+      h.db,
+      { householdId: owner.household_id, actor: { kind: 'link', shareId: link.share.id } },
+      (trx) => trx.selectFrom('document').select('id').execute(),
+    );
+    expect(reached.map((r) => r.id)).toEqual([sharedId]);
   });
 
   it('and after all of that, the owner can still open their own document', async () => {

@@ -709,6 +709,162 @@ describe.skipIf(!testAdminUrl())('a rule for each kind of caller', () => {
     expect(await documents()).toBe(1);
   });
 
+  it("a collection's link is given what it was made with, as its sharer may see it now (0042)", async () => {
+    // The adult's link to a collection for everyone with both documents in
+    // it, made with the lease alone.
+    const collection = await one<{ id: string }>(
+      `insert into doc_collection (household_id, name, audience, owner_member_id)
+       values ($1, 'For the valuer', 'everyone', $2) returning id`,
+      [hh, ids.member],
+    );
+    // Both in it before the links are made.
+    await admin.query(
+      `insert into doc_collection_item (collection_id, document_id, household_id, position, added_at)
+       values ($1, $2, $3, 1, now() - interval '2 hours'), ($1, $4, $3, 2, now() - interval '2 hours')`,
+      [collection.id, ids.lease, hh, ids.will],
+    );
+    const made = async (follow: boolean) => {
+      const { id } = await one<{ id: string }>(
+        `insert into share_link (household_id, collection_id, follow_collection, token_hash,
+                                 created_by, expires_at, created_at)
+         values ($1, $2, $3, $4, $5, now() + interval '7 days', now() - interval '1 hour')
+         returning id`,
+        [hh, collection.id, follow, randomBytes(32), ids.adultAccount],
+      );
+      await admin.query(
+        `insert into share_link_item (share_id, household_id, collection_id, document_id, position)
+         values ($1, $2, $3, $4, 1)`,
+        [id, hh, collection.id, ids.lease],
+      );
+      return id;
+    };
+    const snapshot = await made(false);
+    const following = await made(true);
+    const given = (shareId: string) =>
+      as(link(shareId), async (trx) => ({
+        documents: (await trx.selectFrom('document').select('id').execute()).map((r) => r.id),
+        versions: (await trx.selectFrom('document_version').select('id').execute()).map(
+          (r) => r.id,
+        ),
+        shares: (await trx.selectFrom('share_link').select('id').execute()).map((r) => r.id),
+      }));
+    // The lease, its newest file and the share; not the will, which was in
+    // the collection when it was made and was not ticked.
+    expect(await given(snapshot)).toEqual({
+      documents: [ids.lease],
+      versions: [ids.leaseV2],
+      shares: [snapshot],
+    });
+    // Put in the collection since, the will goes on the link that follows
+    // it — everybody the collection is for may see it — and not on the other.
+    await admin.query(
+      'update doc_collection_item set added_at = now() where collection_id = $1 and document_id = $2',
+      [collection.id, ids.will],
+    );
+    expect((await given(following)).documents.sort()).toEqual([ids.lease, ids.will].sort());
+    expect((await given(snapshot)).documents).toEqual([ids.lease]);
+    // For the adults, it is not everybody's: it does not follow.
+    await admin.query("update document set visibility = 'adults' where id = $1", [ids.will]);
+    expect((await given(following)).documents).toEqual([ids.lease]);
+    await admin.query("update document set visibility = 'household' where id = $1", [ids.will]);
+
+    const nothing = { documents: [], versions: [], shares: [] };
+    const ends: Array<[string, string, string, unknown[]]> = [
+      [
+        'the sharer made a teen, who never shares outside',
+        "update account_household set role = 'teen' where account_id = $1",
+        "update account_household set role = 'adult' where account_id = $1",
+        [ids.adultAccount],
+      ],
+      [
+        'the collection made Only me',
+        "update doc_collection set audience = 'only_me' where id = $1",
+        "update doc_collection set audience = 'everyone' where id = $1",
+        [collection.id],
+      ],
+      [
+        'the collection deleted',
+        'update doc_collection set deleted_at = now() where id = $1',
+        'update doc_collection set deleted_at = null where id = $1',
+        [collection.id],
+      ],
+      [
+        'the link paused after a restore',
+        "update share_link set paused_at = now(), paused_reason = 'restored' where id = $1",
+        'update share_link set paused_at = null, paused_reason = null where id = $1',
+        [snapshot],
+      ],
+    ];
+    for (const [why, end, back, values] of ends) {
+      await admin.query(end, values);
+      try {
+        expect(await given(snapshot), why).toEqual(nothing);
+      } finally {
+        await admin.query(back, values);
+      }
+    }
+    // The lease made the owner's own: the adult cannot see it, so neither
+    // can the link; taken out of the collection, or put in the Trash, too.
+    const items: Array<[string, () => Promise<unknown>, () => Promise<unknown>]> = [
+      [
+        'made somebody else’s Only me',
+        () =>
+          admin.query(
+            "update document set visibility = 'private', owner_member_id = $2 where id = $1",
+            [ids.lease, ids.member],
+          ),
+        () =>
+          admin.query(
+            "update document set visibility = 'household', owner_member_id = null where id = $1",
+            [ids.lease],
+          ),
+      ],
+      [
+        'taken out of the collection',
+        () =>
+          admin.query(
+            'delete from doc_collection_item where document_id = $1 and collection_id = $2',
+            [ids.lease, collection.id],
+          ),
+        () =>
+          admin.query(
+            `insert into doc_collection_item (collection_id, document_id, household_id, position)
+             values ($1, $2, $3, 1)`,
+            [collection.id, ids.lease, hh],
+          ),
+      ],
+      [
+        'in the Trash',
+        () => admin.query('update document set deleted_at = now() where id = $1', [ids.lease]),
+        () => admin.query('update document set deleted_at = null where id = $1', [ids.lease]),
+      ],
+    ];
+    for (const [why, end, back] of items) {
+      await end();
+      try {
+        // The link is still there; the document is simply not given.
+        expect(await given(snapshot), why).toEqual({ ...nothing, shares: [snapshot] });
+      } finally {
+        await back();
+      }
+    }
+    expect((await given(snapshot)).documents).toEqual([ids.lease]);
+    // Nor can a link be turned into another: what it is to is fixed.
+    await expect(
+      admin.query('update share_link set collection_id = null, document_id = $2 where id = $1', [
+        snapshot,
+        ids.will,
+      ]),
+    ).rejects.toThrow(/a link keeps what it was made for/);
+    await expect(
+      admin.query('update share_link set follow_collection = true where id = $1', [snapshot]),
+    ).rejects.toThrow(/a link keeps what it was made for/);
+
+    // Gone again, so the counts the other tests take are as they were.
+    await admin.query('delete from share_link where id = any($1)', [[snapshot, following]]);
+    await admin.query('delete from doc_collection where id = $1', [collection.id]);
+  });
+
   it('an upload actor and an anonymous page see no document', async () => {
     for (const actor of [{ kind: 'upload', requestId: randomUUID() } as const, ANONYMOUS]) {
       expect(await as(actor, counts), actor.kind).toEqual(nothing);

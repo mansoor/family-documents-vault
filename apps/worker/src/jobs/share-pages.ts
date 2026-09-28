@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream, unwrapKey } from '@fdv/crypto';
-import { withSystem, type Db } from '@fdv/db';
+import { withScope, withSystem, type Db } from '@fdv/db';
 import { shareEndWords } from '@fdv/shared';
 import { adapterFromRow, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
@@ -31,12 +31,21 @@ import { watermarkPage } from './tools.js';
  * it is taken back, and every night for the rest. A drawing that fails
  * part-way removes what it wrote, and one that finishes after its link has
  * ended keeps nothing (5.18 review).
+ *
+ * A collection's link to view (5.19) has pages for each document it gives
+ * now. Which those are is asked of the database as the link itself (0042's
+ * rules decide, and nothing here says them again); the job names one of
+ * their versions, or none for all of them.
  */
 
 export interface SharePagesJob {
   household_id: string;
   share_id: string;
-  /** The version the API saw (its queue key); the newest is drawn whatever it says. */
+  /**
+   * The version the API saw (its queue key). A document's link draws its
+   * newest whatever this says; a collection's draws this one, when it is
+   * the newest of a document the link gives, or all of them when unsaid.
+   */
   version_id?: string;
   /** Draw them again even where they are drawn: their files may be gone (a restore). */
   redraw?: boolean;
@@ -105,6 +114,7 @@ function ended(
 const LINK_COLUMNS = [
   'id',
   'document_id',
+  'collection_id',
   'permission',
   'recipient_label',
   'created_at',
@@ -131,11 +141,13 @@ const openSessionsOf = async (trx: Db, shareId: string) =>
 
 /**
  * Draws one view-only link's pages. `final` is the queue's last try, as for
- * the previews: then a drawing that fails is recorded on the link
- * (`pages_failed_version`, `pages_failed_at`), and the API says so to the
- * sharer and the recipient rather than "being drawn" for ever — for an
- * hour, after which somebody looking at the link asks for them again (a
- * storage outage passes; the version's own previews failing does not).
+ * the previews: then a drawing that fails is recorded for the link, the
+ * version and when (`share_page_failure`, 0042 — 0041 kept one on the
+ * link), and the API says so to the sharer and the recipient rather than
+ * "being drawn" for ever — for an hour, after which somebody looking at the
+ * link asks for them again (a storage outage passes; the version's own
+ * previews failing does not). A collection's link, each of its documents
+ * alike: one failing leaves the others drawn.
  */
 export async function drawSharePages(
   deps: ProcessDeps,
@@ -150,27 +162,91 @@ export async function drawSharePages(
       .where('id', '=', job.share_id)
       .executeTakeFirst();
     if (!link) return null;
-    const version = await trx
-      .selectFrom('document_version')
-      .select(['id', 'preview_state', 'preview_pages'])
-      .where('document_id', '=', link.document_id)
-      .orderBy('version_no', 'desc')
-      .executeTakeFirst();
-    const drawn = version
-      ? await trx
-          .selectFrom('share_page')
-          .select('n')
-          .where('share_id', '=', link.id)
-          .where('version_id', '=', version.id)
-          .execute()
-      : [];
-    return { link, version, drawn: drawn.length, open: await openSessionsOf(trx, link.id) };
+    // A document's link: its document's newest version, in the same
+    // transaction, as 5.18 found it.
+    const first =
+      link.document_id !== null ? await newestDrawn(trx, link.id, link.document_id) : null;
+    return { link, first, open: await openSessionsOf(trx, link.id) };
   });
   // Nothing to draw for a link that gives the file, or has ended (its pages
   // are the prune's), or is paused (turned back on, it asks again).
-  if (!found?.version) return { drawn: 0 };
+  if (!found) return { drawn: 0 };
   const { link } = found;
   if (link.permission !== 'view' || ended(link, found.open)) return { drawn: 0 };
+  if (link.document_id !== null) {
+    return drawDocumentPages(deps, job, link, link.document_id, attempt, found.first);
+  }
+
+  // A collection's: the documents it gives now, as the database gives them
+  // to the link itself — the newest version of each — or the one the job
+  // names.
+  const documents = (
+    await withScope(
+      deps.db,
+      { householdId: hh, actor: { kind: 'link', shareId: link.id } },
+      (trx) => trx.selectFrom('document_version').select(['id', 'document_id']).execute(),
+    )
+  )
+    .filter((v) => !job.version_id || v.id === job.version_id)
+    .map((v) => v.document_id);
+
+  let drawn = 0;
+  let failure: Error | null = null;
+  for (const documentId of documents) {
+    try {
+      drawn += (await drawDocumentPages(deps, job, link, documentId, attempt)).drawn;
+    } catch (err) {
+      // The others are drawn all the same; the queue tries again for this one.
+      failure ??= err instanceof Error ? err : new Error(String(err));
+    }
+  }
+  if (failure) throw failure;
+  return { drawn };
+}
+
+type LinkOf = {
+  id: string;
+  document_id: string | null;
+  collection_id: string | null;
+  recipient_label: string | null;
+  created_at: Date;
+};
+
+/** A document's newest version, and how many of its pages the link has drawn. */
+async function newestDrawn(trx: Db, shareId: string, documentId: string) {
+  const version = await trx
+    .selectFrom('document_version')
+    .select(['id', 'preview_state', 'preview_pages'])
+    .where('document_id', '=', documentId)
+    .orderBy('version_no', 'desc')
+    .executeTakeFirst();
+  const drawn = version
+    ? await trx
+        .selectFrom('share_page')
+        .select('n')
+        .where('share_id', '=', shareId)
+        .where('version_id', '=', version.id)
+        .execute()
+    : [];
+  return { version, drawn: drawn.length };
+}
+
+/**
+ * One document's pages of a link to view: its newest version's, drawn and
+ * kept. `given` is that version as the caller found it already.
+ */
+async function drawDocumentPages(
+  deps: ProcessDeps,
+  job: SharePagesJob,
+  link: LinkOf,
+  documentId: string,
+  attempt: { final: boolean },
+  given?: Awaited<ReturnType<typeof newestDrawn>> | null,
+): Promise<{ drawn: number }> {
+  const hh = job.household_id;
+  const found =
+    given ?? (await withSystem(deps.db, hh, (trx) => newestDrawn(trx, link.id, documentId)));
+  if (!found.version) return { drawn: 0 };
   if (found.drawn > 0 && !job.redraw) return { drawn: found.drawn };
 
   const versionId = found.version.id;
@@ -253,9 +329,11 @@ export async function drawSharePages(
         .forUpdate()
         .executeTakeFirst();
       if (!now || ended(now, await openSessionsOf(trx, link.id))) return null;
+      // This document's pages of the link: a collection's has others'.
       const old = await trx
         .deleteFrom('share_page')
         .where('share_id', '=', link.id)
+        .where('document_id', '=', ctx.documentId)
         .returning('storage_key')
         .execute();
       await trx
@@ -271,11 +349,12 @@ export async function drawSharePages(
           })),
         )
         .execute();
+      // Drawn: any failure this document's pages had on this link, of this
+      // version or an older one, is over (0042, a version at a time).
       await trx
-        .updateTable('share_link')
-        .set({ pages_failed_version: null, pages_failed_at: null })
-        .where('id', '=', link.id)
-        .where('pages_failed_version', 'is not', null)
+        .deleteFrom('share_page_failure')
+        .where('share_id', '=', link.id)
+        .where('document_id', '=', ctx.documentId)
         .execute();
       return { stale: old.map((o) => o.storage_key).filter((k) => !keys.includes(k)) };
     });
@@ -308,11 +387,21 @@ export async function drawSharePages(
       await removeAll(adapter, orphans);
     }
     if (attempt.final) {
+      // This version of this document, and when: a document's link and each
+      // document of a collection's alike (0042). Tried again an hour later.
       await withSystem(deps.db, hh, (trx) =>
         trx
-          .updateTable('share_link')
-          .set({ pages_failed_version: versionId, pages_failed_at: new Date() })
-          .where('id', '=', link.id)
+          .insertInto('share_page_failure')
+          .values({
+            household_id: hh,
+            share_id: link.id,
+            document_id: documentId,
+            version_id: versionId,
+            failed_at: new Date(),
+          })
+          .onConflict((oc) =>
+            oc.columns(['share_id', 'version_id']).doUpdateSet({ failed_at: new Date() }),
+          )
           .execute(),
       ).catch(() => undefined);
     }

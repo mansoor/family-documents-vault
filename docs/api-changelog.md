@@ -1660,6 +1660,148 @@ nosniff`, with a sign-in. Not allowed, no photo, an old id, anything
       and a link's own writes to the counts alone; `share_session_use`
       (what each session has had) and `share_page` (a view-only link's
       pages), each with a rule for every kind of caller.
+  - Share a collection (5.19, `features.collection_shares`). A collection
+    can be shared outside the family by a link, as its sharer ticked it:
+    exactly those documents, each checked again on every request. One the
+    sharer can no longer see, taken out of the collection, in the Trash or
+    with no file is simply not given, and nothing says it was there.
+    - **Added:** `features.collection_shares` in the capability document,
+      `true` from this release and absent before it.
+    - **Added:** `GET /api/v1/collections/{id}/share-preview` (bearer) →
+      `CollectionSharePreview { collection_id, collection_name, audience,
+items: [{ document_id, title, type_label, ticked, lock, reason,
+viewable }] }`: the documents in the collection the caller can see,
+      out of the Trash, in the collection's order — none they cannot, and
+      no count of them. `ticked` when everybody the collection is for may
+      see it; otherwise `lock` says why: `adults` ("Adults only — include
+      anyway?"), `private` ("Only you can see this. It is private.", never
+      ticked for you) or `no_file` (it cannot go). Refusals: `403
+forbidden` without `document.share` ("Only an adult can share a
+      document outside the family.": a teen never shares a collection,
+      A18); `404 not_found` for a collection the caller is not given;
+      `422 collection_only_me` for an Only me collection ("An Only me
+      collection is yours alone, so it cannot be shared outside the
+      family. Change who it is for first.").
+    - **Added:** `POST /api/v1/collections/{id}/shares` (bearer) → `201
+CreatedShare`. Body: `document_ids` (the ticked ones, at most 200; at
+      least one unless following), `follow_collection` (optional), and
+      every 5.18 option (`expires_at` or `expires_in_days`,
+      `recipient_label`, `with_pin`, `permission`, `max_opens`,
+      `max_downloads`). **Every one asks to confirm it's you**, whatever is
+      in it: `403 step_up_required` with `action: "share_collection"` ("…to
+      share a collection outside the family"), asked after who may and
+      after the collection is found, so a collection that is not there for
+      the caller is `404`, never a question first. A document that is not
+      in the collection now, or that the caller cannot see, is `404
+not_found` ("That document is not in this collection."); one with no
+      file `422 nothing_to_share`; a Word or Excel file on a link to view
+      `422 view_not_possible`, naming it. With `follow_collection`, what is
+      put in the collection later goes too — only what everybody the
+      collection is for may see, which a private document never is — and
+      the link lasts 30 days at most: a later `expires_at` is `422
+expiry_out_of_range` ("A link that keeps up with its collection lasts
+      30 days at most…"), and older `expires_in_days` are cut to 30 (30
+      days is counted on the database's clock: an end chosen within
+      `SHARE_END_GRACE_MINUTES` past it, as every link's end is let through,
+      is cut to it; the answer's `expires_at` says). When
+      somebody other than the collection's maker shares it, the maker is
+      told by `alert.send` (email): who shared one of their collections,
+      and nothing of which, with whom, or what.
+    - A collection's link gives, on every request, the documents that are
+      in the collection now, out of the Trash, with a file, that its
+      sharer can still see, and that were ticked — or, following, put in
+      after the link was made and for the whole of its audience. It stops
+      altogether when the collection is deleted or made Only me (its links
+      are taken back for good: widening it again does not bring them
+      back), or when its sharer can no longer see the collection or is no
+      longer an owner or an adult.
+    - **Changed:** `Share` (in `GET /shares`, `GET /after-restore` and a
+      `CreatedShare`): `document_id` is `null` for a link to a collection,
+      which carries **new** `collection_id`, `collection_name` (its name
+      now) and `follow_collection`; `document_title` is null for it, and
+      `pages` too. A client that finds a document's links by `document_id`
+      finds none of these. `GET /shares` lists a collection's link only to
+      a reader who may share and can see the collection and every document
+      it was made with (or made it), and never says how many went; the
+      summary adds "Keeps up with the collection." for a live following link.
+    - **Changed:** `DELETE /shares/{id}` takes back a collection's link for
+      its sharer, an owner who can see the collection, or anybody who may
+      share and can see the collection and every document it was made with;
+      anybody else is `404`, as for a link that does not exist. `POST
+/shares/{id}/resume` turns one back on for an owner, and always asks
+      to confirm it's you (`share_collection`). A restore pauses
+      collections' links as it does every link.
+    - **Added:** `ShareLinkPreview` and `SharedSession` gain `kind`
+      (`document` or `collection`; absent from older vaults: a document)
+      and `collection_name` (withheld behind a PIN, as a title is). A
+      collection's session's `items` are what it gives now, in the
+      collection's order; `content` and `pages/{n}` answer only those,
+      anything else `404`. A download counts once per document per session,
+      as before.
+    - **Added:** `CollectionView.shared_outside`: `{ with, following }`
+      while a link outside still works for the collection — `with` the
+      recipient labels of the links `GET /shares` gives the reader (a
+      reader who may share, and made the link or can see every document it
+      was made with; empty for anybody else) — or null. Absent from older
+      vaults.
+    - The activity log: `share.created`, `share.opened`, `share.revoked`,
+      `share.locked` and `share.resumed` of a collection's link are about
+      the collection (`object_type: "collection"`), shown to whoever may
+      see it, with its name now and never a count ("Sam made a link to the
+      collection “For the lawyer” for Jane Smith, which keeps up with it";
+      "A link to the collection “Holiday” stopped working: Sam deleted the
+      collection"); `share.created`'s detail keeps the ids that went
+      (`document_ids`) and `follow_collection`. `share.downloaded` and
+      `share.viewed` stay about each document. **New** `share.followed`:
+      a document put in a collection whose link keeps up with it, and so
+      sent out, one line per link, shown to whoever may see the document
+      and the collection.
+    - **Changed (the database, 5.6 review):** a share link reaches only
+      what its page needs, in every table. Besides its documents, their
+      newest files, its share and snapshot, its collection and its
+      sessions, it reads its household, its sharer's member and membership,
+      and the scope key and vault its files are under — and nothing else of
+      the household's tables or of the sign-ins (accounts, credentials,
+      reset links, passkey challenges), which gain a rule for it. It writes
+      only its own counts and sessions and its own lines in the activity
+      log, which it no longer reads: `appendAudit` chains through a new
+      `audit_chain_head()` and no longer reads its insert back.
+    - `@fdv/shared`: `CollectionSharePreview`, `CollectionShareItem`,
+      `CollectionShareInput`, `CollectionShareLock`, `CollectionSharedOutside`,
+      `COLLECTION_SHARE_REASONS`, `FOLLOW_MAX_DAYS`,
+      `withinCollectionAudience`, `collectionShareItem`,
+      `sharedOutsideWords`; `CapabilityFeatures.collection_shares`.
+      `@fdv/client`: `collectionSharePreview` and `shareCollection`. The
+      fake says `collection_shares: true`, and its collections
+      `shared_outside: null`.
+    - The worker: `share.pages` draws a collection's link to view for each
+      document it gives (the job's `version_id` names one), asking the
+      database as the link itself which those are. One document failing
+      leaves the others drawn, and cleans up after itself as a document's
+      link does (a first drawing removes all it wrote; a redraw, only what
+      no page names).
+    - **Changed (pages that could not be drawn):** 5.18's rules now hold a
+      version at a time, for a document's link and each document of a
+      collection's alike. The worker's last failed try is kept for the
+      link, the version and when (`share_page_failure`); that document's
+      `pages.state` is `failed`, and an hour on (`PAGES_RETRY_MS`) whoever
+      looks at a live link has it asked for again. The version's own
+      previews failing, or a file the vault cannot draw, stays failed; a
+      link that is not live says failed. Drawing a document's pages clears
+      its failures; an owner turning a link back on clears all of the
+      link's. Nothing on the wire changes.
+    - The database: 0042 lets `share_link.document_id` be null and adds
+      `collection_id` and `follow_collection` (30 days at most, held by a
+      check), exactly one of a document and a collection, each a v2 link's
+      alone; `share_link_target_fixed` keeps what a link is to;
+      `share_link_item`, the snapshot, and `share_page_failure`, what a
+      view-only link could not draw — 0041's `pages_failed_version` and
+      `pages_failed_at` move into it, and go — each with a rule for every
+      kind of caller; `app_live_share()`, `app_link_documents()`,
+      `app_link_versions()`, `app_link_collection()`, `app_link_sharer()`
+      and `collection_audience_sees()` for the link's rules; and
+      `audit_chain_head()`. The restore check knows each, and a backup from
+      before 0042 is brought up to date with its failures kept.
 
 ## Deprecations in effect
 

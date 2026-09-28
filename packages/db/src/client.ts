@@ -208,7 +208,15 @@ export interface Schema {
   share_link: {
     id: Generated<string>;
     household_id: string;
-    document_id: string;
+    /** The one document it gives; null for a link to a collection (0042). */
+    document_id: string | null;
+    /** The collection it gives, as ticked (share_link_item); null for a document's (0042). */
+    collection_id: ColumnType<string | null, string | null | undefined, never>;
+    /**
+     * A collection's link that also gives what is put in the collection
+     * later, for the whole of its audience (0042, A19): 30 days at most.
+     */
+    follow_collection: ColumnType<boolean, boolean | undefined, never>;
     token_hash: Buffer;
     pin_hash: string | null;
     recipient_label: string | null;
@@ -240,9 +248,33 @@ export interface Schema {
     /** How many downloads (0041), each document once a session; null for no limit. v2 only. */
     max_downloads: number | null;
     downloads_used: Generated<number>;
-    /** A view-only link's pages could not be drawn for this version (0041), and when. */
-    pages_failed_version: string | null;
-    pages_failed_at: Timestamp | null;
+  };
+
+  /**
+   * What a collection's link was made with (0042): the documents its sharer
+   * ticked, in the collection's order. Checked again on every request.
+   */
+  share_link_item: {
+    share_id: string;
+    household_id: string;
+    collection_id: string;
+    document_id: string;
+    position: number;
+  };
+
+  /**
+   * A view-only link's pages that the worker's last try could not draw, a
+   * version at a time, and when (0042; 0041 kept one on the link): said to
+   * both ends as failed, and asked for again an hour later. A document's
+   * link and each document of a collection's link alike.
+   */
+  share_page_failure: {
+    household_id: string;
+    share_id: string;
+    permission: Generated<'view'>;
+    document_id: string;
+    version_id: string;
+    failed_at: GeneratedTimestamp;
   };
 
   /**
@@ -781,7 +813,8 @@ export function createDb(pool: pg.Pool): Db {
  * - `system`: the vault itself — the worker's jobs, and the few lookups
  *   that must happen before any caller is known — everything;
  * - `link`: whoever holds a share link, once the link is found — its one
- *   document, while the link is live;
+ *   document, or what it gives of its collection (5.19), while the link is
+ *   live; of the household's other tables, only what its page names;
  * - `upload`: whoever holds an upload request's link — nothing;
  * - `anonymous`: a caller not yet known — a sign-in page, an invitation,
  *   a reset — nothing.

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
+  can,
+  canSee,
   COLLECTION_AUDIENCES,
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_ITEMS_PAGE,
@@ -8,10 +10,12 @@ import {
   COLLECTION_NAME_MAX,
   collectionItemHint,
   inCollectionAudience,
+  withinCollectionAudience,
   type CollectionAudience,
   type CollectionDetail,
   type CollectionInput,
   type CollectionItemView,
+  type CollectionSharedOutside,
   type CollectionView,
   type DocumentView,
 } from '@fdv/shared';
@@ -50,6 +54,12 @@ import { seenDocument, type DocumentService } from '../documents/service.js';
  *    database holds both (0036).
  *  - **You add only what you can see**: a document the maker is not given
  *    is answered as one that does not exist.
+ *  - **Shared outside, it says so** (5.19): each reader is told whether a
+ *    link outside the family still works for it, with whom — only those who
+ *    may share are told names — and whether it keeps up with the
+ *    collection. Deleting a collection, or making it Only me, ends its
+ *    links for good; a document put in one whose link keeps up with it, and
+ *    that goes out, is a line of its own in the log.
  *
  * Every change is checked against the collection as it is, held (FOR UPDATE),
  * and the documents put in it are held while they are checked; everything
@@ -217,7 +227,14 @@ export class CollectionService {
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      return rows.map((r) => this.view(p, r as CollectionRow, r.item_count));
+      const shared = await this.sharedOutside(
+        trx,
+        p,
+        rows.map((r) => r.id),
+      );
+      return rows.map((r) =>
+        this.view(p, r as CollectionRow, r.item_count, shared.get(r.id) ?? null),
+      );
     });
   }
 
@@ -258,7 +275,14 @@ export class CollectionService {
         .orderBy('l.created_at')
         .orderBy('l.id')
         .execute();
-      return rows.map((r) => this.view(p, r as CollectionRow, r.item_count));
+      const shared = await this.sharedOutside(
+        trx,
+        p,
+        rows.map((r) => r.id),
+      );
+      return rows.map((r) =>
+        this.view(p, r as CollectionRow, r.item_count, shared.get(r.id) ?? null),
+      );
     });
   }
 
@@ -341,6 +365,11 @@ export class CollectionService {
           ip: meta.ip,
         });
       }
+      // Made its maker's alone, it goes nowhere any more (5.19): its links
+      // end for good, and do not come back should it be widened again.
+      if (audience === 'only_me' && current.audience !== 'only_me') {
+        await this.endLinks(trx, p, current.id, 'collection_only_me', meta);
+      }
       return { id: current.id, stale: false };
     });
     // Read afresh, the change made and let go.
@@ -382,6 +411,8 @@ export class CollectionService {
         objectId: current.id,
         ip: meta.ip,
       });
+      // And its links outside the family end with it (5.19).
+      await this.endLinks(trx, p, current.id, 'collection_deleted', meta);
     });
   }
 
@@ -408,7 +439,7 @@ export class CollectionService {
       // Only me, or taken to the Trash, meanwhile, one is not added.
       const found = await trx
         .selectFrom('document as d')
-        .select('d.id')
+        .select(['d.id', 'd.visibility'])
         .where('d.id', 'in', asked)
         .where('d.deleted_at', 'is', null)
         .where(seenDocument(p))
@@ -417,8 +448,11 @@ export class CollectionService {
         .execute();
       if (found.length !== asked.length) throw noDocument();
       // In the order asked, by the rows' own ids.
-      const byId = new Map(found.map((d) => [d.id.toLowerCase(), d.id]));
-      const ordered = asked.map((a) => byId.get(a) as string);
+      const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
+      const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
+      // Its links that keep up with it (5.19): what goes in now, and is for
+      // the whole of its audience, goes out on each, and the log says so.
+      const following = await this.linksOf(trx, collection.id, { following: true });
 
       const last = await trx
         .selectFrom('doc_collection_item')
@@ -426,7 +460,7 @@ export class CollectionService {
         .where('collection_id', '=', collection.id)
         .executeTakeFirst();
       let position = Number(last?.position ?? 0);
-      for (const documentId of ordered) {
+      for (const { id: documentId, visibility } of ordered) {
         const added = await trx
           .insertInto('doc_collection_item')
           .values({
@@ -450,6 +484,18 @@ export class CollectionService {
           detail: { collection_id: collection.id },
           ip: meta.ip,
         });
+        if (!withinCollectionAudience(collection.audience, visibility)) continue;
+        for (const link of following) {
+          await appendAudit(trx, {
+            householdId: p.householdId,
+            actorAccountId: p.accountId,
+            action: 'share.followed',
+            objectType: 'document',
+            objectId: documentId,
+            detail: { collection_id: collection.id, share_id: link.id },
+            ip: meta.ip,
+          });
+        }
       }
       return collection.id;
     });
@@ -587,7 +633,12 @@ export class CollectionService {
     return !maker || !inCollectionAudience(maker.role, collection.audience);
   }
 
-  private view(p: Principal, row: CollectionRow, itemCount: number): CollectionView {
+  private view(
+    p: Principal,
+    row: CollectionRow,
+    itemCount: number,
+    shared: CollectionSharedOutside | null,
+  ): CollectionView {
     return {
       id: row.id,
       name: row.name,
@@ -599,7 +650,126 @@ export class CollectionService {
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
       etag: collectionEtag(row),
+      shared_outside: shared,
     };
+  }
+
+  // ------------------------------------------------ shared outside (5.19)
+
+  /**
+   * A collection's links outside the family that still work: not taken
+   * back, paused, run out or locked, made by somebody who may still share
+   * (an owner or an adult, still in the household). What ShareService.live()
+   * asks of each; `following`, only those that keep up with it.
+   */
+  private linksOf(trx: Db, collectionIds: string | string[], opts: { following?: boolean } = {}) {
+    const ids = Array.isArray(collectionIds) ? collectionIds : [collectionIds];
+    let q = trx
+      .selectFrom('share_link as s')
+      .innerJoin('account_household as ah', (j) =>
+        j
+          .onRef('ah.account_id', '=', 's.created_by')
+          .onRef('ah.household_id', '=', 's.household_id'),
+      )
+      .select([
+        's.id',
+        's.collection_id',
+        's.recipient_label',
+        's.follow_collection',
+        's.created_by',
+      ])
+      .where('s.collection_id', 'in', ids)
+      .where('s.revoked_at', 'is', null)
+      .where('s.paused_at', 'is', null)
+      .where('s.expires_at', '>', new Date())
+      .where('s.attempts', '<', 10)
+      .where('ah.role', 'in', ['owner', 'adult']);
+    if (opts.following) q = q.where('s.follow_collection', '=', true);
+    return q.orderBy('s.created_at').execute();
+  }
+
+  /**
+   * Whether each collection is shared outside, and with whom. A link's name
+   * only to a reader GET /shares would give the link: one who may share,
+   * and made it or can see every document it was made with. To anybody
+   * else, only that the collection is shared.
+   */
+  private async sharedOutside(
+    trx: Db,
+    p: Principal,
+    collectionIds: string[],
+  ): Promise<Map<string, CollectionSharedOutside>> {
+    const found = new Map<string, CollectionSharedOutside>();
+    if (collectionIds.length === 0) return found;
+    const links = await this.linksOf(trx, collectionIds);
+    const named = can(p.role, 'document.share');
+    const unseen = new Set<string>();
+    if (named && links.length) {
+      const reader = { role: p.role, memberId: p.memberId };
+      const items = await trx
+        .selectFrom('share_link_item as t')
+        .innerJoin('document as d', 'd.id', 't.document_id')
+        .select(['t.share_id', 'd.visibility', 'd.owner_member_id'])
+        .where(
+          't.share_id',
+          'in',
+          links.map((l) => l.id),
+        )
+        .execute();
+      for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
+    }
+    for (const link of links) {
+      const id = link.collection_id as string;
+      const now = found.get(id) ?? { with: [], following: false };
+      const label = link.recipient_label?.trim();
+      const told = named && (link.created_by === p.accountId || !unseen.has(link.id));
+      if (told && label && !now.with.includes(label)) now.with.push(label);
+      now.following ||= link.follow_collection;
+      found.set(id, now);
+    }
+    return found;
+  }
+
+  /**
+   * Ends a collection's links outside the family for good (5.19): deleted,
+   * or made Only me. Each is taken back — its sessions ended — and the log
+   * says so, and why. A link that has already run out is left as it is.
+   */
+  private async endLinks(
+    trx: Db,
+    p: Principal,
+    collectionId: string,
+    why: 'collection_deleted' | 'collection_only_me',
+    meta: RequestMeta,
+  ): Promise<void> {
+    const ended = await trx
+      .updateTable('share_link')
+      .set({ revoked_at: new Date(), revoked_by: p.accountId })
+      .where('collection_id', '=', collectionId)
+      .where('revoked_at', 'is', null)
+      .where('expires_at', '>', new Date())
+      .returning('id')
+      .execute();
+    if (ended.length === 0) return;
+    await trx
+      .deleteFrom('share_session')
+      .where(
+        'share_id',
+        'in',
+        ended.map((e) => e.id),
+      )
+      .execute();
+    for (const link of ended) {
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'share.revoked',
+        objectType: 'collection',
+        objectId: collectionId,
+        detail: { share_id: link.id, why },
+        ip: meta.ip,
+      });
+    }
   }
 
   /**
@@ -659,8 +829,9 @@ export class CollectionService {
     }));
     const last = shown[shown.length - 1];
     const more = rows.length > limit;
+    const shared = await this.sharedOutside(trx, p, [collection.id]);
     return {
-      ...this.view(p, collection, n),
+      ...this.view(p, collection, n, shared.get(collection.id) ?? null),
       items,
       next_cursor: more && last ? encodeCursor(last.id) : null,
       has_more: more,

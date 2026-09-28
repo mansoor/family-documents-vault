@@ -447,6 +447,9 @@ const GUARDS = [
   },
   // A link keeps the flow it was made with: a new one never opens on an old route (0037).
   { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
+  // And what it was made for: a document, or a collection as ticked, and
+  // whether it keeps up with the collection (0042).
+  { name: 'share_link_target_fixed', table: 'share_link', fn: 'share_link_target_fixed' },
 ];
 
 /**
@@ -491,6 +494,41 @@ const ACTOR_GUARDED = [
   // pages (0041).
   'share_session_use',
   'share_page',
+  // What a collection's link was made with: the documents ticked; and a
+  // view-only link's pages that could not be drawn, a version at a time (0042).
+  'share_link_item',
+  'share_page_failure',
+];
+
+/**
+ * The household's other tables, and the sign-ins that belong to no
+ * household, each with a rule that takes rows away from a share link (0042,
+ * from the 5.6 review): a link reads its household, its sharer and what
+ * opens its files, and nothing here but that. Other callers keep what
+ * they had, so the check asks only that a link the household never made is
+ * given none of them.
+ */
+const LINK_NARROWED = [
+  'account_household',
+  'member',
+  'scope_key',
+  'vault',
+  'audit_event',
+  'session',
+  'household_profile',
+  'invitation',
+  'owner_change_request',
+  'known_device',
+  'notification_digest',
+  'device',
+  'smtp_settings',
+  'notification_preference',
+  'suggestion_dismissal',
+  'client_event_receipt',
+  'account',
+  'credential',
+  'password_reset',
+  'webauthn_challenge',
 ];
 
 /**
@@ -593,6 +631,22 @@ export async function checkRestored(
     if (unguarded.length) {
       throw new Error(
         `no rule for each kind of caller on ${unguarded.map((u) => u.name).join(', ')}`,
+      );
+    }
+    // And the rule that keeps a share link to what its page needs (0042),
+    // on the household's other tables and the sign-ins: one that governs
+    // what is read, and asks who is asking.
+    const { rows: unnarrowed } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%')`,
+      [LINK_NARROWED],
+    );
+    if (unnarrowed.length) {
+      throw new Error(
+        `no rule keeps a share link out of ${unnarrowed.map((u) => u.name).join(', ')}`,
       );
     }
     // And the rule that keeps a member's own theirs (0036): one that
@@ -727,6 +781,21 @@ export async function checkRestored(
         if (where.length) {
           throw new Error(`household ${h.id}: ${who} is given its documents (${where.join(', ')})`);
         }
+      }
+      // A share link reaches nothing of the household's other tables but
+      // what its own page names (0042): one it never made, nothing at all.
+      const linked = await asHousehold<{ t: string; n: number }>(
+        h.id,
+        LINK_NARROWED.map((t) => `select '${t}' as t, count(*)::int as n from ${t}`).join(
+          ' union all ',
+        ),
+        'link',
+      );
+      const reached = linked.filter((g) => g.n > 0).map((g) => g.t);
+      if (reached.length) {
+        throw new Error(
+          `household ${h.id}: a share link it never made is given ${reached.join(', ')}`,
+        );
       }
       // Somebody signed in who is no member of it — so the maker of none,
       // with no role of the family's — is given no Only me collection (0036)

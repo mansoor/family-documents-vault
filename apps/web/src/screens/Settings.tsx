@@ -60,6 +60,16 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {mayShare && (
+          <li>
+            <Link to="/settings/sharing" className="rowbtn">
+              <span className="doc-title">Sharing</span>
+              <span className="muted">
+                Links to documents and collections outside the family, and taking them back
+              </span>
+            </Link>
+          </li>
+        )}
         {can(storedRole(), 'audit.read') && (
           <li>
             <Link to="/settings/activity" className="rowbtn">

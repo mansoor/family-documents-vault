@@ -131,6 +131,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['share.resumed', BY_TYPE],
   // 5.18: a view-only link's pages looked at, once a session.
   ['share.viewed', BY_TYPE],
+  // 5.19: a document put in a collection whose link keeps up with it, and
+  // so sent outside the family: a line about the document, in the collection.
+  ['share.followed', seesTheDocumentInTheCollection],
   // people
   ['member.added', BY_TYPE],
   ['member.role_changed', BY_TYPE],
@@ -191,6 +194,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
  */
 const TYPES: ReadonlyMap<string | null, Audience> = new Map<string | null, Audience>([
   ['document', seesTheDocument],
+  // 5.19: a link to a collection — made, opened, taken back, locked, turned
+  // back on — is its collection's line, for whoever may see the collection.
+  // The collection's own actions (collection.*) keep their rows above.
+  ['collection', seesTheCollection],
   ['member', everyone],
   ['invitation', everyone],
   ['owner_change_request', everyone],
@@ -287,7 +294,8 @@ export class AuditService {
           -- or taken out, keeps the collection's id in its detail (5.14).
           left join doc_collection l
             on l.id = case when e.object_type = 'collection' then e.object_id
-                           when e.action in ('collection.item_added', 'collection.item_removed')
+                           when e.action in ('collection.item_added', 'collection.item_removed',
+                                             'share.followed')
                              then (e.detail->>'collection_id')::uuid
                       end
          where e.household_id = ${p.householdId}

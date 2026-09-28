@@ -1,6 +1,7 @@
 import {
   can,
   inCollectionAudience,
+  sharedOutsideWords,
   type CollectionItemView,
   type CollectionView,
   type Member,
@@ -22,8 +23,9 @@ import {
   VIEWERS_NEED_A_GRANT,
 } from '../collections.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '../ui.js';
+import { BottomNav, Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
 import { DocRow } from './Home.js';
+import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 
 /**
  * Collections of documents (5.15): the Collections screen, and a collection's own page.
@@ -164,7 +166,7 @@ function whose(collection: CollectionView, members: Member[]): string {
 
 export function CollectionScreen() {
   const { id } = useParams<{ id: string }>();
-  const { withToken, authVersion } = useApp();
+  const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
   const role = storedRole();
   const first = useLoad(
@@ -188,6 +190,10 @@ export function CollectionScreen() {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // Sharing it outside the family (5.19), in a sheet over the page.
+  const [sharing, setSharing] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const shareButton = useRef<HTMLButtonElement>(null);
   // The collection is not there for the reader any more — deleted, or no longer
   // for them — since the page was drawn: then that is all the page says,
   // as it would have been had it been so when the page opened.
@@ -374,7 +380,37 @@ export function CollectionScreen() {
             stranded={stranded}
             maker={maker?.display_name ?? null}
           />
+          {collection.shared_outside && (
+            <p className="status status-warn">{sharedOutsideWords(collection.shared_outside)}</p>
+          )}
+          {collectionShareOffered(caps, role, collection) && (
+            <div className="row">
+              <button
+                ref={shareButton}
+                type="button"
+                className="btn btn-quiet"
+                onClick={() => setSharing(true)}
+              >
+                Share this collection
+              </button>
+            </div>
+          )}
         </div>
+      )}
+      {sharing && (
+        <Sheet
+          label={`Share “${collection.name}”`}
+          busy={shareBusy}
+          returnFocus={shareButton}
+          onClose={() => setSharing(false)}
+        >
+          <ShareCollectionPanel
+            collection={collection}
+            onBusy={setShareBusy}
+            onShared={() => void again()}
+            onClose={() => setSharing(false)}
+          />
+        </Sheet>
       )}
       <p role="status" ref={statusRef} tabIndex={-1} className="notice status-line">
         {notice}

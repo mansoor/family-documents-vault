@@ -1506,6 +1506,33 @@ a.btn {
   gap: 4px;
 }
 
+/* 5.19: a collection's documents in its share sheet — a box and a title,
+   and under the title, with a padlock, why one is not ticked for you. */
+.share-items {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.list li.share-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.share-item-why {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  /* Under the title, past the box beside it. */
+  padding-left: 28px;
+}
+
+.share-item-why.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 /* A view-only link's pages, one under another, each as wide as the card. */
 .shared-pages {
   list-style: none;

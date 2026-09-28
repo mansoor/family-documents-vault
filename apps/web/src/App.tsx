@@ -14,6 +14,7 @@ import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
+import { SharingScreen } from './screens/Sharing.js';
 import { NotificationsScreen } from './screens/Notifications.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
@@ -251,6 +252,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <AfterRestoreScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/sharing"
+            element={
+              <Gate need="signed-in">
+                <SharingScreen />
               </Gate>
             }
           />

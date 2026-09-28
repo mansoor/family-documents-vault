@@ -83,6 +83,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       member_photos: true,
       // 5.18: a link until a date and time, to view or to download, so many opens.
       share_options: true,
+      // 5.19: a collection shared outside, as its sharer ticked it, checked on every request.
+      collection_shares: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

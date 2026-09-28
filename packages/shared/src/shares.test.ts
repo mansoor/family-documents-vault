@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { sharedOutsideWords } from './collections.js';
 import {
   canShareToView,
+  collectionShareItem,
+  COLLECTION_SHARE_REASONS,
   defaultShareEnd,
+  withinCollectionAudience,
   latestShareEnd,
   pagesNotSharedNote,
   shareEndProblem,
@@ -190,5 +194,56 @@ describe("a link's options", () => {
       'Pages after 30 were not shared.',
     );
     expect(pagesNotSharedNote({ state: 'ready', shown: 3, total: 3 })).toBeNull();
+  });
+});
+
+/** Sharing a collection (5.19): what the sheet ticks, and what a following link sends. */
+describe('sharing a collection', () => {
+  it('ticks what the whole audience may see, and a private one never', () => {
+    for (const audience of ['everyone', 'teens']) {
+      expect(withinCollectionAudience(audience, 'household')).toBe(true);
+      expect(withinCollectionAudience(audience, 'adults')).toBe(false);
+      expect(withinCollectionAudience(audience, 'private')).toBe(false);
+    }
+    expect(withinCollectionAudience('adults', 'household')).toBe(true);
+    expect(withinCollectionAudience('adults', 'adults')).toBe(true);
+    expect(withinCollectionAudience('adults', 'private')).toBe(false);
+    // Only me is never shared, and what the code has never heard of is nobody's.
+    expect(withinCollectionAudience('only_me', 'household')).toBe(false);
+    expect(withinCollectionAudience('public', 'household')).toBe(false);
+    expect(withinCollectionAudience('everyone', 'secret')).toBe(false);
+
+    expect(collectionShareItem('everyone', { visibility: 'household', has_file: true })).toEqual({
+      ticked: true,
+      lock: null,
+    });
+    expect(collectionShareItem('everyone', { visibility: 'adults', has_file: true })).toEqual({
+      ticked: false,
+      lock: 'adults',
+    });
+    expect(collectionShareItem('adults', { visibility: 'private', has_file: true })).toEqual({
+      ticked: false,
+      lock: 'private',
+    });
+    expect(collectionShareItem('everyone', { visibility: 'household', has_file: false })).toEqual({
+      ticked: false,
+      lock: 'no_file',
+    });
+    expect(COLLECTION_SHARE_REASONS.adults).toBe('Adults only — include anyway?');
+    expect(COLLECTION_SHARE_REASONS.private).toBe('Only you can see this. It is private.');
+  });
+
+  it('warns that a collection is shared, with whom, and whether what goes in goes too', () => {
+    expect(sharedOutsideWords({ with: ['Jane Smith'], following: false })).toBe(
+      'This collection is shared with Jane Smith. What you put in it now is not sent.',
+    );
+    expect(
+      sharedOutsideWords({ with: ['Jane Smith', 'the bank', 'Dr Rao'], following: true }),
+    ).toBe(
+      'This collection is shared with Jane Smith, the bank and Dr Rao. What you put in it goes to them too, if everybody the collection is for may see it.',
+    );
+    expect(sharedOutsideWords({ with: [], following: true })).toMatch(
+      /^This collection is shared outside the family\. What you put in it goes to them too/,
+    );
   });
 });

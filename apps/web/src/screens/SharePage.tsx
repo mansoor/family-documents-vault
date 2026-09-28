@@ -173,10 +173,21 @@ function Preview({
   const needsPin = preview.protection.includes('pin');
   const from = preview.shared_by ? <strong>{preview.shared_by}</strong> : 'Somebody';
   const canOpen = secure();
+  // A collection (5.19): its name, withheld behind a PIN as a title is.
+  const collection = preview.kind === 'collection';
+  const what = collection
+    ? preview.collection_name
+      ? 'this collection'
+      : 'a collection of documents'
+    : preview.document_title
+      ? 'this'
+      : 'a document';
   return (
     <>
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
-        {preview.document_title ?? 'A shared document'}
+        {collection
+          ? (preview.collection_name ?? 'Shared documents')
+          : (preview.document_title ?? 'A shared document')}
       </h1>
       <form
         className="card stack"
@@ -185,8 +196,7 @@ function Preview({
         data-testid="share-preview"
       >
         <p>
-          {from} shared {preview.document_title ? 'this' : 'a document'} with you from{' '}
-          {preview.household_name}
+          {from} shared {what} with you from {preview.household_name}
           {needsPin ? ', and put a PIN on it.' : '.'}
         </p>
         {(preview.permission === 'view' || preview.opens_left != null) && (
@@ -265,7 +275,9 @@ function Opened({
   onOver: (message: string) => void;
 }) {
   const from = session.shared_by ? <strong>{session.shared_by}</strong> : 'Somebody';
-  const single = session.items.length === 1 ? session.items[0] : undefined;
+  // A collection (5.19) is its name and what it gives now; a document's link, its one document.
+  const collection = session.kind === 'collection';
+  const single = !collection && session.items.length === 1 ? session.items[0] : undefined;
   const viewOnly = session.permission === 'view';
   const drawing = session.items.some((i) => i.pages?.state === 'drawing');
   const [asked, setAsked] = useState(0);
@@ -317,13 +329,22 @@ function Opened({
   return (
     <>
       <h1 id="share-h" style={{ fontSize: 26 }} tabIndex={-1} ref={heading}>
-        {single?.title ?? 'Shared documents'}
+        {collection
+          ? (session.collection_name ?? 'Shared documents')
+          : (single?.title ?? 'Shared documents')}
       </h1>
       <section className="card stack" aria-labelledby="share-h">
         <p>
-          {from} shared {single ? 'this' : 'these'} with you from {session.household_name}
+          {from} shared {collection ? 'these documents' : single ? 'this' : 'these'} with you from{' '}
+          {session.household_name}
           {viewOnly ? ', to look at here.' : '.'}
         </p>
+        {collection && session.items.length === 0 && (
+          <p className="muted" role="note">
+            There is nothing here to see any more. Ask whoever sent the link if you still need
+            something.
+          </p>
+        )}
         {viewOnly && (
           <p className="status status-warn" role="note">
             This page cannot stop screenshots or photos of the screen. Every page shows who it was

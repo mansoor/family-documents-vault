@@ -31,7 +31,8 @@ export type StepUpAction =
   | 'export_everything'
   | 'change_password'
   | 'change_sign_in'
-  | 'widen_type_visibility';
+  | 'widen_type_visibility'
+  | 'share_collection';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -51,6 +52,11 @@ const WHY: Record<StepUpAction, string> = {
   // will or tax return anybody files, a phone's queued scan among them,
   // is in front of them (0.5.10).
   widen_type_visibility: 'to let more people see a kind of document',
+  // Every collection shared outside, whatever is in it (5.19, A19): a
+  // session picked up from an unlocked device could otherwise send the
+  // will, the tax returns and the medical file out in one link. Turning a
+  // shared collection back on after a restore asks the same.
+  share_collection: 'to share a collection outside the family',
 };
 
 export class StepUpService {

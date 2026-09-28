@@ -466,6 +466,18 @@ The link is shown once — the vault keeps only a hash of it — so a lost link 
 replaced rather than recovered. A document moved to the trash stops being
 shared straight away, without anyone having to remember the link exists.
 
+A whole collection can go the same way: on the collection's page, **Share this
+collection** lists what is in it that you can see, with what everybody the
+collection is for may see already ticked. Only what you tick goes, and each is
+checked again every time the link is used: one you can no longer see, one taken
+out of the collection or moved to the trash, stops being sent, and the other end
+is never told how many there were. **Keep it up to date** also sends what is put
+in the collection later — only what the whole of its audience may see, never a
+private document — and such a link lasts 30 days at most. Sharing a collection
+always asks you to confirm it is you; a teen cannot share one; and deleting the
+collection, or making it Only me, ends its links. Every link, to a document or a
+collection, is in **Settings → Sharing**, to take back.
+
 ### When a new device signs in
 
 If somebody signs in on a device your account has not used before, you are

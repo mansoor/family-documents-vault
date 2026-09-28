@@ -264,6 +264,27 @@ describe.skipIf(!testAdminUrl())('share links', () => {
   };
   const jobsFor = (name: string, shareId: string) =>
     h.jobs.filter((j) => j.name === name && j.data.share_id === shareId);
+  /**
+   * What the worker's last try leaves when it cannot draw a link's pages of
+   * a document's newest version: that version, and when (share_page_failure,
+   * 0042; 0041 kept it on the link).
+   */
+  const failedPages = async (shareId: string, documentId: string, at: Date) => {
+    const v = await newestOf(documentId);
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .insertInto('share_page_failure')
+        .values({
+          household_id: owner.household_id,
+          share_id: shareId,
+          document_id: documentId,
+          version_id: v.id,
+          failed_at: at,
+        })
+        .onConflict((oc) => oc.columns(['share_id', 'version_id']).doUpdateSet({ failed_at: at }))
+        .execute(),
+    );
+  };
   /** A link's pages gone from storage, their rows left: a restore's view of them. */
   const rmPages = async (documentId: string, shareId: string) => {
     const v = await newestOf(documentId);
@@ -1374,13 +1395,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       const created = await made(doc, { permission: 'view' });
       const { cookie } = await opened(created.link_token);
       // The worker's last try failed, for this version, a moment ago.
-      await withSystem(h.db, owner.household_id, async (trx) =>
-        trx
-          .updateTable('share_link')
-          .set({ pages_failed_version: (await newestOf(doc)).id, pages_failed_at: new Date() })
-          .where('id', '=', created.share.id)
-          .execute(),
-      );
+      await failedPages(created.share.id, doc, new Date());
       const before = jobsFor('share.pages', created.share.id).length;
       expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
       const listed = json<{ items: ShareView[] }>(
@@ -1390,16 +1405,15 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(sharePagesNote(listed?.pages)).toMatch(/could not draw the pages/);
       expect(code(await page(cookie, doc, 1))).toBe('no_preview');
       expect(jobsFor('share.pages', created.share.id)).toHaveLength(before);
-      // A link cannot clear it for itself.
-      await expect(
-        withScopeOfLink(created.share.id, (trx) =>
-          trx
-            .updateTable('share_link')
-            .set({ pages_failed_version: null })
-            .where('id', '=', created.share.id)
-            .execute(),
-        ),
-      ).rejects.toThrow(/only count its opens|row-level security/);
+      // A link cannot clear it for itself (0042: the failure is a row of its own).
+      const cleared = await withScopeOfLink(created.share.id, (trx) =>
+        trx
+          .deleteFrom('share_page_failure')
+          .where('share_id', '=', created.share.id)
+          .executeTakeFirst(),
+      );
+      expect(cleared.numDeletedRows).toBe(0n);
+      expect(json<SharedSession>(await items(cookie)).items[0]?.pages?.state).toBe('failed');
     });
 
     it('pages that failed an hour ago or more are asked for again: an outage passes (second review)', async () => {
@@ -1409,13 +1423,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       const { cookie } = await opened(created.link_token);
       const v = (await newestOf(doc)).id;
       const failedAgo = (ms: number) =>
-        withSystem(h.db, owner.household_id, (trx) =>
-          trx
-            .updateTable('share_link')
-            .set({ pages_failed_version: v, pages_failed_at: new Date(Date.now() - ms) })
-            .where('id', '=', created.share.id)
-            .execute(),
-        );
+        failedPages(created.share.id, doc, new Date(Date.now() - ms));
       // Under an hour: failed, and not asked for.
       await failedAgo(PAGES_RETRY_MS - 60_000);
       const before = jobsFor('share.pages', created.share.id).length;
@@ -1448,16 +1456,7 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       await drawnAlready(doc, 1);
       const created = await made(doc, { permission: 'view', max_opens: 1 });
       await opened(created.link_token);
-      await withSystem(h.db, owner.household_id, async (trx) =>
-        trx
-          .updateTable('share_link')
-          .set({
-            pages_failed_version: (await newestOf(doc)).id,
-            pages_failed_at: new Date(Date.now() - 2 * PAGES_RETRY_MS),
-          })
-          .where('id', '=', created.share.id)
-          .execute(),
-      );
+      await failedPages(created.share.id, doc, new Date(Date.now() - 2 * PAGES_RETRY_MS));
       const before = jobsFor('share.pages', created.share.id).length;
       const listed = json<{ items: ShareView[] }>(
         await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) }),

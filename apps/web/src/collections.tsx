@@ -3,6 +3,7 @@ import {
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_NAME_MAX,
   inCollectionAudience,
+  sharedOutsideWords,
   type Capabilities,
   type CollectionAudience,
   type CollectionView,
@@ -420,6 +421,10 @@ export function AddToCollection(props: {
                 <span className="muted">
                   {audienceLabel(l.audience)} · {documentsWord(l.item_count)}
                 </span>
+                {/* Shared outside the family (5.19): said before anything goes in. */}
+                {l.shared_outside && (
+                  <span className="status status-warn">{sharedOutsideWords(l.shared_outside)}</span>
+                )}
               </span>
               {on.has(l.id) ? (
                 <span className="muted">

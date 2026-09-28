@@ -1,5 +1,6 @@
 import { PREVIEW_MAX_PAGES } from './documents.js';
 import { addDays } from './reminders.js';
+import { canSee } from './roles.js';
 
 /**
  * A link's options (5.18): until a date and time, to view or to download,
@@ -70,6 +71,60 @@ export function pagesNotSharedNote(pages: SharePages | null | undefined): string
     return null;
   }
   return `Pages after ${pages.shown} were not shared.`;
+}
+
+// ------------------------------------------------ sharing a collection (5.19)
+
+/**
+ * A collection's link that keeps up with it — what is put in the
+ * collection later goes out too — lasts this many days at most (A19).
+ */
+export const FOLLOW_MAX_DAYS = 30;
+
+/**
+ * Whether every one of a collection's audience may see a document: what a
+ * link that follows its collection sends later must be (A19), and what the
+ * share sheet ticks for you. A private document never is, and neither is
+ * anything in an Only me collection, which is never shared. The database's
+ * own copy is collection_audience_sees (0042); a test holds them equal.
+ */
+export function withinCollectionAudience(audience: string, visibility: string): boolean {
+  switch (audience) {
+    case 'everyone':
+    case 'teens':
+      // Owners, adults and teens: what a teen may see.
+      return canSee({ role: 'teen', memberId: null }, { visibility, owner_member_id: null });
+    case 'adults':
+      return canSee({ role: 'adult', memberId: null }, { visibility, owner_member_id: null });
+    default:
+      return false;
+  }
+}
+
+/** Why a document in a collection is not ticked for you when you share it. */
+export type CollectionShareLock = 'adults' | 'private' | 'no_file';
+
+/** What the share sheet says beside each, and asks. */
+export const COLLECTION_SHARE_REASONS: Readonly<Record<CollectionShareLock, string>> = {
+  adults: 'Adults only — include anyway?',
+  private: 'Only you can see this. It is private.',
+  no_file: 'There is no file on this document yet, so there is nothing to send.',
+};
+
+/**
+ * Whether the share sheet ticks a document for you, and if not why: ticked
+ * when everybody the collection is for may see it; an adults-only one in a
+ * collection for everybody is asked about; a private one — yours, or you
+ * would not be shown it — is never ticked for you; one with no file cannot
+ * go at all.
+ */
+export function collectionShareItem(
+  audience: string,
+  doc: { visibility: string; has_file: boolean },
+): { ticked: boolean; lock: CollectionShareLock | null } {
+  if (!doc.has_file) return { ticked: false, lock: 'no_file' };
+  if (withinCollectionAudience(audience, doc.visibility)) return { ticked: true, lock: null };
+  return { ticked: false, lock: doc.visibility === 'private' ? 'private' : 'adults' };
 }
 
 /** The counts on a link, as the family reads them: "Opened 2 of 5 times; 3 downloads". */
