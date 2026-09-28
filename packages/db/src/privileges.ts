@@ -67,6 +67,9 @@ begin
     grant execute on function public.app_link_label() to fdv_app;
     grant execute on function public.app_link_may_name(text, uuid) to fdv_app;
     grant execute on function public.app_link_locked() to fdv_app;
+    -- What a link's lines may be and say, one place each (the third review).
+    grant execute on function public.app_link_audit_actions() to fdv_app;
+    grant execute on function public.app_link_line_keys(text) to fdv_app;
   end if;
   -- The migrations' own record, and the suggestion rules every household
   -- shares, are the vault's: the application only reads them.

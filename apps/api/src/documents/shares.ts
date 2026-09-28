@@ -121,6 +121,8 @@ export const SHARE_PAGES_PRUNE_JOB = 'share.pages.prune';
 const sharePagesKey = (shareId: string, versionId: string) => `share-pages:${shareId}:${versionId}`;
 /** How long pages the worker could not draw are said to have failed before they are asked for again. */
 export const PAGES_RETRY_MS = 60 * 60_000;
+/** The most `left_out_ids` a collection's share takes: a household's worth (NFR-05). */
+export const LEFT_OUT_MAX = 10_000;
 
 const limit = z.number().int().min(1).max(SHARE_LIMIT_MAX).nullable().optional();
 
@@ -152,10 +154,18 @@ export const collectionShareBody = z
     follow_collection: z.boolean().optional(),
     // What the share sheet offered and was left unticked (the 5.19 review's
     // second round): for a link that keeps up, never to follow — even one
-    // taken out of the collection while the sheet was open.
-    left_out_ids: z.array(z.string().uuid()).max(5000).optional(),
+    // taken out of the collection while the sheet was open. As many as a
+    // household may hold (NFR-05: 10,000 documents), the third round.
+    left_out_ids: z.array(z.string().uuid()).max(LEFT_OUT_MAX).optional(),
   })
   .strict();
+
+/**
+ * A collection link's snapshot rows written in one statement: six values
+ * each, well within the 65,535 one statement may carry, however many
+ * documents the collection, and the sheet's left-out ones, come to.
+ */
+const SNAPSHOT_ROWS = 2000;
 
 /** A legacy link's open and download: the PIN, if it has one. */
 export const openBody = z.object({ pin: z.string().trim().max(12).optional() }).strict();
@@ -793,9 +803,12 @@ export class ShareService {
       // put in afterwards, and was never in it as the link was made, can.
       // And what the sheet offered and the sharer left unticked, though it
       // has left the collection since the sheet was opened (the second
-      // review). Those are taken as said, of the documents the sharer can
-      // see — what the sheet offers — and nothing else: a row that is left
-      // out only ever keeps a document from going, so a sharer can only
+      // review) — and though it has been made one the sharer cannot see
+      // since, too (the third). Every one of the household's documents it
+      // names is kept so, whoever may see it; an id of nothing, or of
+      // another household's (the tenant rule), is dropped. A row that is
+      // left out only ever keeps a document from going, nobody is shown
+      // one, and the answer is the same either way: a sharer can only
       // narrow their own link by it, and nothing more need be proved.
       const leftOut = new Map<string, number>();
       if (follow) {
@@ -808,38 +821,46 @@ export class ShareService {
         for (const i of inIt)
           if (!ticked.has(i.document_id)) leftOut.set(i.document_id, i.position);
         const offered = [...new Set((input.left_out_ids ?? []).map((d) => d.toLowerCase()))];
-        const seen = offered.length
+        const named = offered.length
           ? await trx
               .selectFrom('document as d')
               .select('d.id')
-              .where('d.id', 'in', offered)
-              .where(seenDocument(p))
+              .where(sql<boolean>`d.id = any(${offered}::uuid[])`)
               .execute()
           : [];
-        for (const d of seen) if (!ticked.has(d.id) && !leftOut.has(d.id)) leftOut.set(d.id, 0);
+        for (const d of named) if (!ticked.has(d.id) && !leftOut.has(d.id)) leftOut.set(d.id, 0);
       }
-      if (found.length || leftOut.size) {
-        await trx
-          .insertInto('share_link_item')
-          .values([
-            ...found.map((d) => ({
-              share_id: row.id,
-              household_id: p.householdId,
-              collection_id: c.id,
-              document_id: d.id,
-              position: d.position,
-              kind: 'ticked' as const,
-            })),
-            ...[...leftOut].map(([documentId, position]) => ({
-              share_id: row.id,
-              household_id: p.householdId,
-              collection_id: c.id,
-              document_id: documentId,
-              position,
-              kind: 'left_out' as const,
-            })),
-          ])
-          .execute();
+      const snapshot = [
+        ...found.map((d) => ({ document_id: d.id, position: d.position, kind: 'ticked' as const })),
+        ...[...leftOut].map(([documentId, position]) => ({
+          document_id: documentId,
+          position,
+          kind: 'left_out' as const,
+        })),
+      ].sort((a, b) => (a.document_id < b.document_id ? -1 : 1));
+      if (snapshot.length) {
+        // Its documents held first, in id order — the order a collection's
+        // addition holds them in (FOR UPDATE) — before each row names one
+        // (the third review): named in the collection's order instead, the
+        // two could each wait on what the other held.
+        await sql`select id from document
+                   where id = any(${snapshot.map((s) => s.document_id)}::uuid[])
+                   order by id
+                   for key share`.execute(trx);
+        // A few thousand at a time, within what one statement may carry.
+        for (let at = 0; at < snapshot.length; at += SNAPSHOT_ROWS) {
+          await trx
+            .insertInto('share_link_item')
+            .values(
+              snapshot.slice(at, at + SNAPSHOT_ROWS).map((s) => ({
+                share_id: row.id,
+                household_id: p.householdId,
+                collection_id: c.id,
+                ...s,
+              })),
+            )
+            .execute();
+        }
       }
       // About the collection, for whoever may see it; the documents that
       // went by id only, so that the chain says exactly what was sent and

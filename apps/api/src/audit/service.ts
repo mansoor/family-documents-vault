@@ -53,12 +53,25 @@ export interface Line {
   collection_audience?: string | null;
   collection_owner?: string | null;
   /**
-   * A collection's link the line is about (5.19 review): who made it, and
-   * whether the reader can see every document it was made with or has
-   * followed. Null when it must be about one and there is none to be found;
-   * undefined for a line about no collection's link.
+   * A collection's link the line is about (5.19 review). Null when it must
+   * be about one and there is none to be found; undefined for a line about
+   * no collection's link.
    */
-  link?: { made_by: string; all_seen: boolean } | null | undefined;
+  link?: LinkFacts | null | undefined;
+}
+
+/** What a line's rule is told of the collection's link it is about. */
+export interface LinkFacts {
+  /** Who made it. */
+  made_by: string;
+  /** The reader can see every document it was made with or has followed. */
+  all_seen: boolean;
+  /**
+   * The reader is in its collection's audience now, as the collection's own
+   * lines ask (5.14): not once it is made another's Only me. A deleted
+   * collection's lines are its history, and stay (the third review).
+   */
+  collection_seen: boolean;
 }
 
 type Audience = (reader: Reader, line: Line) => boolean;
@@ -99,12 +112,16 @@ const seesTheDocumentInTheCollection: Audience = (reader, line) =>
 /**
  * A collection's link outside the family (5.19 review, C519-04): its lines
  * say who it went to, so they are for those the list of links (GET /shares)
- * gives it to — one who may share, and made it or can see every document
- * it was made with or has followed — as well as the collection's audience.
+ * gives it to — one who may share, in the collection's audience now, and
+ * made it or can see every document it was made with or has followed. A
+ * download through it, a look at pages, as much as its lines about the
+ * collection (the third review: once the collection was made Only me, its
+ * links' downloads still named their recipients to the adults).
  */
 const knowsTheLink: Audience = (reader, line) =>
   can(reader.role, 'document.share') &&
   line.link != null &&
+  line.link.collection_seen &&
   (line.link.made_by === reader.accountId || line.link.all_seen);
 
 const seesTheCollectionsLink: Audience = (reader, line) =>
@@ -384,24 +401,36 @@ export class AuditService {
     trx: Db,
     p: Principal,
     rows: Row[],
-  ): Promise<Map<string, { made_by: string; all_seen: boolean }>> {
-    const found = new Map<string, { made_by: string; all_seen: boolean }>();
+  ): Promise<Map<string, LinkFacts>> {
+    const found = new Map<string, LinkFacts>();
     const ids = [
       ...new Set(
         rows.map((r) => linkNamed(r)?.id).filter((id): id is string => id !== undefined && !!id),
       ),
     ];
     if (ids.length === 0) return found;
+    // With its collection as the reader is given it: the database gives
+    // nobody another member's Only me collection (0036), and a deleted one
+    // is still given, its lines being its history.
     const made = await trx
-      .selectFrom('share_link')
-      .select(['id', 'created_by'])
-      .where('id', 'in', ids)
-      .where('collection_id', 'is not', null)
+      .selectFrom('share_link as s')
+      .leftJoin('doc_collection as c', 'c.id', 's.collection_id')
+      .select(['s.id', 's.created_by', 'c.audience', 'c.owner_member_id'])
+      .where('s.id', 'in', ids)
+      .where('s.collection_id', 'is not', null)
       .execute();
     // Who may not share is given no link (GET /shares), and so none of
     // their lines; there is no more to ask.
     const shares = can(p.role, 'document.share');
-    for (const l of made) found.set(l.id, { made_by: l.created_by, all_seen: shares });
+    for (const l of made) {
+      found.set(l.id, {
+        made_by: l.created_by,
+        all_seen: shares,
+        collection_seen:
+          l.audience != null &&
+          canSeeCollection(p, { audience: l.audience, owner_member_id: l.owner_member_id }),
+      });
+    }
     if (!shares || made.length === 0) return found;
     const items = await trx
       .selectFrom('share_link_item as t')
@@ -443,7 +472,7 @@ function linkNamed(r: Row): { id: string; collections: boolean } | undefined {
  * found; null for one that must be a collection's and is not found (nobody's
  * line); undefined for a line about no collection's link.
  */
-function linkOf(r: Row, links: Map<string, { made_by: string; all_seen: boolean }>): Line['link'] {
+function linkOf(r: Row, links: Map<string, LinkFacts>): Line['link'] {
   const named = linkNamed(r);
   if (!named) return undefined;
   const link = named.id ? links.get(named.id) : undefined;

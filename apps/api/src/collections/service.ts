@@ -348,6 +348,9 @@ export class CollectionService {
       const renamed = name !== current.name;
       const changed = description !== current.description || audience !== current.audience;
       if (!renamed && !changed) return { id: current.id, stale: false };
+      // Made Only me, its links end: held before the log is (endLinks).
+      const ending = audience === 'only_me' && current.audience !== 'only_me';
+      if (ending) await this.holdLinks(trx, current.id);
 
       await trx
         .updateTable('doc_collection')
@@ -367,9 +370,7 @@ export class CollectionService {
       }
       // Made its maker's alone, it goes nowhere any more (5.19): its links
       // end for good, and do not come back should it be widened again.
-      if (audience === 'only_me' && current.audience !== 'only_me') {
-        await this.endLinks(trx, p, current.id, 'collection_only_me', meta);
-      }
+      if (ending) await this.endLinks(trx, p, current.id, 'collection_only_me', meta);
       return { id: current.id, stale: false };
     });
     // Read afresh, the change made and let go.
@@ -394,6 +395,8 @@ export class CollectionService {
   async remove(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     await withPrincipal(this.db, p, async (trx) => {
       const current = await this.deletable(trx, p, id);
+      // Its links end with it: held before the log is (endLinks).
+      await this.holdLinks(trx, current.id);
       const marked = await trx
         .updateTable('doc_collection')
         .set({ deleted_at: new Date() })
@@ -781,9 +784,32 @@ export class CollectionService {
   }
 
   /**
+   * The collection's links that may still be ended, held (FOR NO KEY
+   * UPDATE, in id order) before the household's log is — the order every
+   * other writer of a link takes the two in: taking one back, an Open, a
+   * wrong PIN, a download (the 5.19 review's third round). Deleting a
+   * collection, or making it Only me, took the log first and then waited on
+   * a link an Open held, which waited on the log: one of them was ended as a
+   * deadlock. The collection itself is already held (deletable, mine), so a
+   * link being made meanwhile either is here, or waits and then finds the
+   * collection gone or Only me (C519-07).
+   */
+  private async holdLinks(trx: Db, collectionId: string): Promise<void> {
+    await trx
+      .selectFrom('share_link')
+      .select('id')
+      .where('collection_id', '=', collectionId)
+      .where('revoked_at', 'is', null)
+      .orderBy('id')
+      .forNoKeyUpdate()
+      .execute();
+  }
+
+  /**
    * Ends a collection's links outside the family for good (5.19): deleted,
    * or made Only me. Each is taken back — its sessions ended — and the log
    * says so, and why. A link that has already run out is left as it is.
+   * Its links are held first (holdLinks).
    */
   private async endLinks(
     trx: Db,
@@ -792,10 +818,11 @@ export class CollectionService {
     why: 'collection_deleted' | 'collection_only_me',
     meta: RequestMeta,
   ): Promise<void> {
-    // Called after the change is in the log: appendAudit has taken the
-    // household's log lock, which a link being made takes too before it
-    // looks at the collection again (C519-07). Made first, it is here to
-    // be ended; made after, it finds the collection Only me, or deleted.
+    // Called after the change is in the log, its links held since before:
+    // appendAudit has taken the household's log lock, which a link being
+    // made takes too before it looks at the collection again (C519-07).
+    // Made first, it is here to be ended; made after, it finds the
+    // collection Only me, or deleted.
     const ended = await trx
       .updateTable('share_link')
       .set({ revoked_at: new Date(), revoked_by: p.accountId, revoked_why: why })

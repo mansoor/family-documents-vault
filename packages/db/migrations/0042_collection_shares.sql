@@ -347,6 +347,27 @@ create function app_link_locked() returns boolean
                        where s.id = app_share() and s.household_id = app_household()), false) $$;
 grant execute on function app_link_locked() to fdv_app;
 
+-- What a link may say in the activity log, each in one place, so that a
+-- later release adds to them with `create or replace function` alone, and
+-- restates neither the rule nor the trigger that ask them (the third
+-- review, for 5.20): the actions its lines may be (audit_event_link_insert)
+-- and, for each, the keys its detail may carry (audit_event_link_line).
+-- Stable, not immutable: a later release redefines them.
+create function app_link_audit_actions() returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select array['share.opened', 'share.viewed', 'share.downloaded', 'share.locked']::text[] $$;
+grant execute on function app_link_audit_actions() to fdv_app;
+
+-- Today the same for every action: which link, and in what browser. (An
+-- action a link may not write at all is refused by the rule, whatever it
+-- says.)
+create function app_link_line_keys(p_action text) returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select array['share_id', 'user_agent']::text[] $$;
+grant execute on function app_link_line_keys(text) to fdv_app;
+
 -- The last hash of the caller's own household's activity log, which the
 -- next line is chained to (packages/db/src/audit.ts). With the owner's
 -- rights, so that a caller who may not read the log — a link — can still
@@ -555,8 +576,7 @@ create policy audit_event_link on audit_event as restrictive for select
 create policy audit_event_link_insert on audit_event as restrictive for insert
   with check (case app_actor()
                 when 'link' then actor_account_id is null
-                                 and action in ('share.opened', 'share.viewed',
-                                                'share.downloaded', 'share.locked')
+                                 and action = any(app_link_audit_actions())
                                  and case when action = 'share.locked' then app_link_locked()
                                           else true end
                                  and detail->>'share_id' = app_share()::text
@@ -572,8 +592,9 @@ create policy audit_event_link_insert on audit_event as restrictive for insert
 -- And each of its lines as it goes in, one row at a time (the second
 -- review): on the head of the log as it is then — a line written earlier
 -- by the same statement included, so one statement cannot write two lines
--- on the same head and fork the chain; saying only which link it is and in
--- what browser; and hashed exactly as appendAudit hashes, and
+-- on the same head and fork the chain; saying only what a line of its
+-- action may (app_link_line_keys: today which link it is and in what
+-- browser), each a string or null; and hashed exactly as appendAudit hashes, and
 -- verifyAuditChain checks, every line (packages/db/src/audit.ts):
 --
 --   sha256(prev_hash | household | actor | action | object type | object id
@@ -603,12 +624,14 @@ begin
     raise exception 'a link''s line goes on the head of the activity log'
       using errcode = 'check_violation';
   end if;
+  -- Only the keys its action may carry (app_link_line_keys), each a string
+  -- or null — which link, and in what browser — its share always.
   if jsonb_typeof(new.detail) is distinct from 'object'
-     or exists (select 1 from jsonb_object_keys(new.detail) k
-                 where k not in ('share_id', 'user_agent'))
-     or jsonb_typeof(new.detail -> 'share_id') is distinct from 'string'
-     or coalesce(jsonb_typeof(new.detail -> 'user_agent'), 'null') not in ('string', 'null') then
-    raise exception 'a link''s line says only which link it is, and in what browser'
+     or exists (select 1 from jsonb_each(new.detail) e
+                 where not (e.key = any(app_link_line_keys(new.action)))
+                    or jsonb_typeof(e.value) not in ('string', 'null'))
+     or jsonb_typeof(new.detail -> 'share_id') is distinct from 'string' then
+    raise exception 'a link''s line says only what a line of its kind may say'
       using errcode = 'check_violation';
   end if;
   -- Its keys in order, each value as JSON writes it (a string, or null).

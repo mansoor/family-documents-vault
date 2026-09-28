@@ -165,6 +165,33 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
   };
   const withScopeOfLink = <T>(shareId: string, fn: (trx: Db) => Promise<T>) =>
     withScope(h.db, { householdId: t.owner.household_id, actor: { kind: 'link', shareId } }, fn);
+  const bySnapshot = (a: { document_id: string }, b: { document_id: string }) =>
+    a.document_id < b.document_id ? -1 : 1;
+  /** A link's snapshot as the database holds it: each document, and why, by id. */
+  const snapshotOf = async (shareId: string) =>
+    (
+      await withSystem(h.db, t.owner.household_id, (trx) =>
+        trx
+          .selectFrom('share_link_item')
+          .select(['document_id', 'kind'])
+          .where('share_id', '=', shareId)
+          .execute(),
+      )
+    ).sort(bySnapshot);
+  /** Waits until `n` statements in the test's database wait on a lock. */
+  const lockWaiters = async (admin: ReturnType<typeof createPool>, n: number) => {
+    const dbName = new URL(h.adminUrl).pathname.slice(1);
+    for (let i = 0; i < 200; i += 1) {
+      const r = await admin.query<{ n: number }>(
+        `select count(*)::int as n from pg_stat_activity
+          where datname = $1 and wait_event_type = 'Lock'`,
+        [dbName],
+      );
+      if ((r.rows[0]?.n ?? 0) >= n) return;
+      await new Promise((res) => setTimeout(res, 50));
+    }
+    throw new Error(`fewer than ${n} statements waiting on a lock`);
+  };
   const linksFor = async (who: Who) =>
     json<{ items: ShareView[] }>(await call(who, 'GET', '/api/v1/shares')).items;
   const activity = async (who: Who) =>
@@ -1317,8 +1344,9 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
         (await call('owner', 'DELETE', `/api/v1/collections/${id}/items/${deed}`)).statusCode,
       ).toBe(204);
       // The sheet says what it offered and was left unticked — with, here,
-      // another's private document and one that is not there, which are
-      // dropped, never an error.
+      // another's private document, kept as left out too (it only ever
+      // narrows the link: the third review), and one that is not there,
+      // which is dropped, never an error.
       const link = await shared('adult', id, {
         document_ids: [docs.lease],
         follow_collection: true,
@@ -1329,18 +1357,56 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       await put('owner', id, [deed]);
       expect(await given(cookie)).toEqual([docs.lease]);
       expect(await followedLines(id)).toEqual([]);
-      const rows = await withSystem(h.db, t.owner.household_id, (trx) =>
-        trx
-          .selectFrom('share_link_item')
-          .select(['document_id', 'kind'])
-          .where('share_id', '=', link.share.id)
-          .orderBy('kind')
-          .execute(),
+      expect(await snapshotOf(link.share.id)).toEqual(
+        [
+          { document_id: deed, kind: 'left_out' },
+          { document_id: docs.diary, kind: 'left_out' },
+          { document_id: docs.lease, kind: 'ticked' },
+        ].sort(bySnapshot),
       );
-      expect(rows).toEqual([
-        { document_id: deed, kind: 'left_out' },
-        { document_id: docs.lease, kind: 'ticked' },
+    });
+
+    it('what the sheet offered and was left unticked never follows, though it was made private and taken out while the sheet was open (third review)', async () => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const deed = await make('owner', 'Deed, private for a while');
+      const id = await collection('owner', 'Sheet open, deed hidden', 'everyone', [
+        docs.lease,
+        deed,
       ]);
+      const offered = json<CollectionSharePreview>(await sharePreview('adult', id)).items.map(
+        (i) => i.document_id,
+      );
+      expect(offered).toEqual([docs.lease, deed]);
+      // While the sheet is open, the owner makes the deed their own, and
+      // takes it out: the adult can no longer see it.
+      const hidden = await call('owner', 'POST', `/api/v1/documents/${deed}/visibility`, {
+        visibility: 'private',
+      });
+      expect(hidden.statusCode, hidden.body).toBe(200);
+      expect(
+        (await call('owner', 'DELETE', `/api/v1/collections/${id}/items/${deed}`)).statusCode,
+      ).toBe(204);
+      const link = await shared('adult', id, {
+        document_ids: [docs.lease],
+        follow_collection: true,
+        left_out_ids: [deed],
+      });
+      const { cookie } = await opened(link.link_token);
+      expect(await snapshotOf(link.share.id)).toEqual(
+        [
+          { document_id: deed, kind: 'left_out' },
+          { document_id: docs.lease, kind: 'ticked' },
+        ].sort(bySnapshot),
+      );
+      // Later, the family's again, and put back: still left out.
+      const shown = await call('owner', 'POST', `/api/v1/documents/${deed}/visibility`, {
+        visibility: 'household',
+      });
+      expect(shown.statusCode, shown.body).toBe(200);
+      await put('owner', id, [deed]);
+      expect(await given(cookie)).toEqual([docs.lease]);
+      expect(await followedLines(id)).toEqual([]);
     });
 
     it("putting documents in while a link's pages are kept is never a deadlock (second review)", async () => {
@@ -1583,7 +1649,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     await expect(
       tries({ detail: { share_id: link.share.id, said: 'anything' } }),
       'more in its detail',
-    ).rejects.toThrow(/says only which link it is/);
+    ).rejects.toThrow(/says only what a line of its kind may say/);
     // Its own, honestly: written; and the chain is whole after all of it.
     await expect(tries({})).rejects.toThrow(/written, and undone/);
     await opened(link.link_token);
@@ -1686,4 +1752,278 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       /It stopped when the collection was made Only me\.$/,
     );
   });
+
+  it("a collection link's download lines follow the collection's audience: made Only me, the adults read none (third review)", async () => {
+    await fresh('owner', true);
+    const said = async (who: Who) => (await activity(who)).join('\n');
+    const downloaded = async (name: string, label: string) => {
+      const id = await collection('owner', name, 'everyone', [docs.lease]);
+      const link = await shared('owner', id, {
+        document_ids: [docs.lease],
+        recipient_label: label,
+      });
+      const { cookie } = await opened(link.link_token);
+      expect((await content(cookie, docs.lease)).statusCode).toBe(200);
+      return id;
+    };
+    const surveyed = await downloaded('Made Only me later', 'the surveyor');
+    expect(await said('adult')).toMatch(/Shared link \(the surveyor\) downloaded/);
+    // Made the owner's alone: GET /shares gives the adult no such link, and
+    // the log names its recipient to them no more.
+    const narrowed = await call('owner', 'PATCH', `/api/v1/collections/${surveyed}`, {
+      audience: 'only_me',
+    });
+    expect(narrowed.statusCode, narrowed.body).toBe(200);
+    expect(await said('adult')).not.toMatch(/the surveyor/);
+    expect(await said('owner')).toMatch(/Shared link \(the surveyor\) downloaded/);
+    // Deleted, its lines are its history, as the collection's own are.
+    const valued = await downloaded('Deleted later', 'the valuer');
+    expect((await call('owner', 'DELETE', `/api/v1/collections/${valued}`)).statusCode).toBe(204);
+    expect(await said('adult')).toMatch(/Shared link \(the valuer\) downloaded/);
+  });
+
+  it('sharing one collection while documents go into another is never a deadlock (third review)', async () => {
+    await fresh('adult', true);
+    await fresh('owner', true);
+    // Three documents, A < X < B by id, in the shared collection against
+    // that order: B, X, A.
+    const made = [
+      await make('owner', 'Lock order one'),
+      await make('owner', 'Lock order two'),
+      await make('owner', 'Lock order three'),
+    ];
+    const [A, X, B] = [...made].sort() as [string, string, string];
+    const sharedOne = await collection('owner', 'Shared against id order', 'everyone', [B, X, A]);
+    const other = await collection('owner', 'Being added to', 'everyone', []);
+    const admin = createPool(h.adminUrl, 3);
+    const holder = await admin.connect();
+    try {
+      // X held a moment, so the share stops part-way through its documents.
+      await holder.query('begin');
+      await holder.query('select id from document where id = $1 for update', [X]);
+      const sharing = share('adult', sharedOne, { document_ids: [B, X, A] });
+      await lockWaiters(admin, 1);
+      // Meanwhile A and B go into the other collection, held in id order.
+      const adding = call('owner', 'POST', `/api/v1/collections/${other}/items`, {
+        document_ids: [A, B],
+      });
+      await lockWaiters(admin, 2);
+      await holder.query('rollback');
+      const [s, a] = await Promise.all([sharing, adding]);
+      expect(s.statusCode, s.body).toBe(201);
+      expect(a.statusCode, a.body).toBe(200);
+    } finally {
+      await holder.query('rollback').catch(() => undefined);
+      holder.release();
+      await admin.end();
+    }
+  });
+
+  const endings: Array<[string, (id: string) => Promise<LightMyRequestResponse>, number]> = [
+    ['deleted', (id) => call('owner', 'DELETE', `/api/v1/collections/${id}`), 204],
+    [
+      'made Only me',
+      (id) => call('owner', 'PATCH', `/api/v1/collections/${id}`, { audience: 'only_me' }),
+      200,
+    ],
+  ];
+  for (const [what, end, answer] of endings) {
+    it(`an Open as its collection is ${what} is never a deadlock (third review)`, async () => {
+      await fresh('adult', true);
+      await fresh('owner', true);
+      const id = await collection('owner', `Ending as it opens: ${what}`, 'everyone', [docs.lease]);
+      const link = await shared('adult', id, { document_ids: [docs.lease] });
+      await opened(link.link_token);
+      const admin = createPool(h.adminUrl, 3);
+      const holder = await admin.connect();
+      try {
+        // Its session run out, so the next Open — its link counted, and held
+        // — stops to clear it, where it is held here a moment.
+        await admin.query(
+          `update share_session set expires_at = now() - interval '1 minute' where share_id = $1`,
+          [link.share.id],
+        );
+        await holder.query('begin');
+        await holder.query('select id from share_session where share_id = $1 for update', [
+          link.share.id,
+        ]);
+        const opening = h.app.inject({
+          method: 'POST',
+          url: '/api/v1/shared/unlock',
+          payload: { token: link.link_token },
+          ...peer(),
+        });
+        await lockWaiters(admin, 1);
+        // Meanwhile the collection is ended: it waits on the link, not on
+        // the log the Open is about to write to.
+        const ending = end(id);
+        await lockWaiters(admin, 2);
+        await holder.query('rollback');
+        const [o, e] = await Promise.all([opening, ending]);
+        expect(e.statusCode, `${what}: ${e.body}`).toBe(answer);
+        expect(o.statusCode, `${what}: ${o.body}`).toBe(200);
+        // And the link ended with it.
+        expect(code(await preview(link.link_token)), what).toBe('link_not_valid');
+      } finally {
+        await holder.query('rollback').catch(() => undefined);
+        holder.release();
+        await admin.end();
+      }
+    });
+  }
+
+  it('what a link may write is said in one place each, for a later release to add to (third review, for 5.20)', async () => {
+    await fresh('owner', true);
+    const hh = t.owner.household_id;
+    // Exactly what the rule and the trigger asked before.
+    const said = await withSystem(h.db, hh, async (trx) => {
+      const r = await sql<{
+        actions: string[];
+        keys: string[];
+        none: string[];
+      }>`select app_link_audit_actions() as actions,
+                app_link_line_keys('share.downloaded') as keys,
+                app_link_line_keys('share.created') as none`.execute(trx);
+      return r.rows[0];
+    });
+    expect(said).toEqual({
+      actions: ['share.opened', 'share.viewed', 'share.downloaded', 'share.locked'],
+      keys: ['share_id', 'user_agent'],
+      // The same for any action: one a link may not write is the rule's to refuse.
+      none: ['share_id', 'user_agent'],
+    });
+    const link = await shared('owner', family, {
+      document_ids: [docs.lease],
+      recipient_label: 'the bank',
+    });
+    const tries = linkLine(link);
+    for (const action of ['share.opened', 'share.viewed', 'share.downloaded']) {
+      await expect(tries({ action }), action).rejects.toThrow(/written, and undone/);
+    }
+    await expect(
+      tries({ detail: { share_id: link.share.id, user_agent: 'Firefox' } }),
+      'with its browser',
+    ).rejects.toThrow(/written, and undone/);
+    for (const [what, over] of [
+      ['an action a link does not write', { action: 'share.created' }],
+      ['another action', { action: 'document.deleted' }],
+    ] as const) {
+      await expect(tries(over), what).rejects.toThrow(/row-level security/);
+    }
+    for (const [what, over] of [
+      ['a browser that is not a string', { detail: { share_id: link.share.id, user_agent: 42 } }],
+      ['another key', { detail: { share_id: link.share.id, to: 'a***@example.test' } }],
+      ['no share', { detail: { user_agent: 'Firefox' } }],
+    ] as const) {
+      await expect(tries(over), what).rejects.toThrow(/says only what a line of its kind may say/);
+    }
+
+    // A later release adds an action, and a key for it, by redefining the
+    // two alone — the rule and the trigger unchanged. (Tried here in a
+    // transaction that is rolled back, as the application's role.)
+    const admin = createPool(h.adminUrl, 1);
+    const c = await admin.connect();
+    try {
+      await c.query('begin');
+      await c.query(`create or replace function app_link_audit_actions() returns text[]
+                       language sql stable parallel safe set search_path = pg_catalog, public, pg_temp as
+                       $$ select array['share.opened', 'share.viewed', 'share.downloaded',
+                                       'share.locked', 'share.code_sent']::text[] $$`);
+      await c.query(`create or replace function app_link_line_keys(p_action text) returns text[]
+                       language sql stable parallel safe set search_path = pg_catalog, public, pg_temp as
+                       $$ select case when p_action = 'share.code_sent'
+                                      then array['share_id', 'user_agent', 'to']::text[]
+                                      else array['share_id', 'user_agent']::text[] end $$`);
+      await c.query('set local role fdv_app_test');
+      await c.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                set_config('app.share_id', $2, true)`,
+        [hh, link.share.id],
+      );
+      const head = (
+        await c.query<{ hash: Buffer | null; at: Date }>(
+          `select audit_chain_head($1::uuid) as hash,
+                  date_trunc('milliseconds', clock_timestamp()) as at`,
+          [hh],
+        )
+      ).rows[0] as { hash: Buffer | null; at: Date };
+      const line = {
+        household_id: hh,
+        actor_account_id: null,
+        actor_label: 'shared link (the bank)',
+        action: 'share.code_sent',
+        object_type: 'collection',
+        object_id: family,
+        detail: { share_id: link.share.id, to: 'a***@example.test' },
+        at: head.at,
+        prev_hash: head.hash,
+      };
+      await c.query(
+        `insert into audit_event (household_id, actor_label, action, object_type, object_id,
+                                  detail, at, prev_hash, hash)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          hh,
+          line.actor_label,
+          line.action,
+          line.object_type,
+          line.object_id,
+          JSON.stringify(line.detail),
+          line.at,
+          line.prev_hash,
+          computeHash(line),
+        ],
+      );
+    } finally {
+      await c.query('rollback');
+      c.release();
+      await admin.end();
+    }
+    // Rolled back: as it was.
+    await expect(tries({ action: 'share.code_sent' })).rejects.toThrow(/row-level security/);
+  });
+
+  it('a following link takes as many left-out documents as a household holds, in any number of rows (third review)', async () => {
+    await fresh('adult', true);
+    const hh = t.owner.household_id;
+    // More than the old cap, of documents that are not there: dropped.
+    const id = await collection('owner', 'Many left out', 'everyone', [docs.lease]);
+    const many = await share('adult', id, {
+      document_ids: [docs.lease],
+      follow_collection: true,
+      left_out_ids: Array.from({ length: 5001 }, () => randomUUID()),
+    });
+    expect(many.statusCode, many.body).toBe(201);
+    // A household's worth, and a thousand in the collection besides: more
+    // snapshot rows than one statement could carry.
+    const bulk = (
+      await withSystem(h.db, hh, (trx) =>
+        sql<{ id: string }>`insert into document (household_id, title, visibility)
+                            select ${hh}::uuid, 'Bulk ' || g, 'household'
+                              from generate_series(1, 11000) g
+                            returning id`.execute(trx),
+      )
+    ).rows.map((r) => r.id);
+    const big = await collection('owner', 'A big collection', 'everyone', []);
+    await withSystem(h.db, hh, (trx) =>
+      sql`insert into doc_collection_item (collection_id, document_id, household_id, position)
+          select ${big}::uuid, d, ${hh}::uuid, n
+            from unnest(${bulk.slice(0, 1000)}::uuid[]) with ordinality as u(d, n)`.execute(trx),
+    );
+    await fresh('adult', true);
+    const link = await shared('adult', big, {
+      document_ids: [],
+      follow_collection: true,
+      left_out_ids: bulk.slice(1000),
+    });
+    const counted = await withSystem(h.db, hh, (trx) =>
+      trx
+        .selectFrom('share_link_item')
+        .select((eb) => eb.fn.countAll<number>().as('n'))
+        .where('share_id', '=', link.share.id)
+        .where('kind', '=', 'left_out')
+        .executeTakeFirstOrThrow(),
+    );
+    expect(Number(counted.n)).toBe(11000);
+  }, 120_000);
 });
