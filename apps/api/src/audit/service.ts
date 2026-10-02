@@ -10,6 +10,7 @@ import {
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
+import { madeWith } from '../documents/made-with.js';
 
 /**
  * The household activity log (SHR-07).
@@ -40,10 +41,11 @@ export interface Reader {
 }
 
 /**
- * What a rule is told about a row: what happened, to what, the document's
- * live row, and the live row of the collection it was about or in (5.14) — null
- * when the reader is not given it (another member's Only me collection), or when
- * there is none.
+ * What a rule is told about a row: what happened, to what, who may see the
+ * document — as its live row says, or once it has been removed for good, as
+ * its tombstone does (5.24) — and the live row of the collection it was
+ * about or in (5.14): null when the reader is not given it (another member's
+ * Only me collection), or when there is none.
  */
 export interface Line {
   action: string;
@@ -87,8 +89,9 @@ const everyone: Audience = () => true;
 
 /**
  * A document's lines follow the document: whoever may see it now, as its
- * live row says. No row to see it through — one the reader is not given, or
- * one that has gone — is nobody's line (5.24 keeps a tombstone).
+ * live row says — or, removed for good, as its tombstone says whoever could
+ * see it then (5.24). Neither to see it through — a row the reader is not
+ * given, or a document gone with nothing left behind — is nobody's line.
  */
 const seesTheDocument: Audience = (reader, line) =>
   line.document_visibility !== null &&
@@ -172,6 +175,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
 >([
   // documents, and the links made to them
   ['document.created', BY_TYPE],
+  // 5.24: an owner asked to remove somebody else's document for good, and
+  // removed one for good — each the document's line, for whoever may (or,
+  // removed, could) see it, by its tombstone once the row has gone.
+  ['document.purge_requested', BY_TYPE],
+  ['document.purged', BY_TYPE],
   ['document.updated', BY_TYPE],
   ['document.version_added', BY_TYPE],
   ['document.downloaded', BY_TYPE],
@@ -358,8 +366,12 @@ export class AuditService {
                actor_member.display_name as actor_name,
                actor_member.id           as actor_member_id,
                d.title                   as document_title,
-               d.visibility              as document_visibility,
-               d.owner_member_id         as document_owner,
+               -- The live row while there is one; removed for good, its
+               -- tombstone (5.24); neither, nobody (the rule fails closed).
+               case when d.id is not null then d.visibility
+                    else gone.visibility end as document_visibility,
+               case when d.id is not null then d.owner_member_id
+                    else gone.owner_member_id end as document_owner,
                object_member.display_name as member_name,
                l.name                    as collection_name,
                l.audience                as collection_audience,
@@ -372,6 +384,8 @@ export class AuditService {
           left join member actor_member on actor_member.id = ah.member_id
           left join document d
             on e.object_type = 'document' and d.id = e.object_id
+          left join document_tombstone gone
+            on e.object_type = 'document' and gone.id = e.object_id
           left join member object_member
             on e.object_type = 'member' and object_member.id = e.object_id
           -- A collection's own lines name it; a line about a document put in one,
@@ -472,17 +486,11 @@ export class AuditService {
       });
     }
     if (!shares || made.length === 0) return found;
-    const items = await trx
-      .selectFrom('share_link_item as t')
-      .innerJoin('document as d', 'd.id', 't.document_id')
-      .select(['t.share_id', 'd.visibility', 'd.owner_member_id'])
-      .where(
-        't.share_id',
-        'in',
-        made.map((l) => l.id),
-      )
-      .where('t.kind', 'in', ['ticked', 'followed'])
-      .execute();
+    // Removed for good since, as its tombstone says, too (5.24).
+    const items = await madeWith(
+      trx,
+      made.map((l) => l.id),
+    );
     for (const i of items) {
       const link = found.get(i.share_id);
       if (link && !canSee(p, i)) link.all_seen = false;

@@ -82,7 +82,7 @@ export function actionsFor(
   memberId: string | null | undefined,
   doc: Pick<
     DocumentView,
-    'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me'
+    'owner_member_id' | 'visibility' | 'latest_version_id' | 'filed_by_me' | 'file_removed'
   > | null,
   collections: { collections: boolean; uncollect: boolean } = {
     collections: false,
@@ -91,7 +91,9 @@ export function actionsFor(
 ): DocAction[] {
   const actions: DocAction[] = ['open'];
   if (!doc) return actions;
-  const hasFile = doc.latest_version_id !== null;
+  // A file a restore found removed for good is none to open, download or
+  // send (5.24, the review's W524-7).
+  const hasFile = doc.latest_version_id !== null && doc.file_removed !== true;
   if (hasFile) actions.push('download');
   // Somebody who can change nothing (a viewer) is given what they came
   // for: Open and Download.

@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
 import { libpqConnection, withDatabase } from './libpq.js';
+import { markRemovedFiles, type FileStorage, type RemovedFiles } from './removed-files.js';
 import { sealPrivateValues } from './seal.js';
 
 // For a backup made before the master key was rotated.
@@ -42,6 +43,14 @@ import { backupKeyFor, onCurrentKey, type MasterKeys, type RekeyReport } from '.
  * session opened with one survives; so is every live request to send
  * documents, with its sessions and codes (5.21). What only the family can
  * decide (passkeys, invitations) is reported.
+ *
+ * A backup holds only the database (backup.ts). A document removed for good
+ * after it was made (5.24) comes back as a record whose file is gone: told
+ * where the files are kept (`storage`), the restore looks for every
+ * version's file, marks each one not there as removed (file_removed_at) —
+ * its document then says "The file was removed for good" instead of
+ * failing — and the report lists them. A place that holds none of the files
+ * it should is left alone, and said (removed-files.ts).
  */
 
 export interface RestoreTarget {
@@ -89,8 +98,35 @@ export interface RestoreReport {
    * takes them and their uploads away. Ready photos come back as they were.
    */
   photosUnfinished: number;
+  /**
+   * Owners' requests to remove a document for good (5.24), ended: a filer's
+   * Bring it back made since the backup would otherwise be undone, its 24
+   * hours perhaps already past. An owner asks again, and the filer is told
+   * again.
+   */
+  purgeRequestsCleared: number;
   openInvitations: number;
+  /**
+   * Versions whose file was not where it is kept (5.24): removed for good
+   * after the backup was made. Each is marked, and its document says so.
+   * Empty when the restore was not told where the files are.
+   */
+  filesRemoved: Array<{ household_id: string; document_id: string; version_id: string }>;
+  /**
+   * Versions whose file could not be looked for — where it is kept could not
+   * be reached, or held none of the files it should — and so not marked.
+   */
+  filesUnchecked: number;
+  /** Why, a sentence a place. */
+  filesUncheckedWhy: string[];
 }
+
+/**
+ * Where the files are kept, for a restore to look for each version's file
+ * (5.24): the key that opens a vault's bucket credentials, and the folder a
+ * local vault's files are in — the worker's own.
+ */
+export type RestoreStorage = FileStorage;
 
 export type Log = (level: string, msg: string, extra?: Record<string, unknown>) => void;
 
@@ -107,6 +143,8 @@ export async function restoreBackup(
   log: Log,
   /** The vault's scope keys, under its master key: what private.seal seals with. */
   keys: ScopeKeys,
+  /** Where the files are kept: each version's is looked for (5.24). */
+  storage?: RestoreStorage,
 ): Promise<RestoreReport> {
   await assertEmpty(target.adminUrl);
   const known = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
@@ -120,6 +158,7 @@ export async function restoreBackup(
     const rekeyed = target.master ? await onCurrentKey(target.adminUrl, target.master, log) : null;
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
+    let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0, filesUncheckedWhy: [] };
     try {
       // What the vault's own start does: bring an older backup up to date,
       // then give the application role its privileges.
@@ -133,10 +172,11 @@ export async function restoreBackup(
       // the migrations have run: its links are paused now.
       undone.linksPaused += await pauseLinks(admin);
       open = await stillOpen(admin);
+      if (storage) files = await markRemovedFiles(admin, storage, log);
     } finally {
       await admin.end();
     }
-    return { ...(await checkRestored(target)), ...undone, ...open, rekeyed };
+    return { ...(await checkRestored(target)), ...undone, ...open, ...files, rekeyed };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
   }
@@ -171,6 +211,7 @@ interface Undone {
   linksPaused: number;
   requestsPaused: number;
   photosUnfinished: number;
+  purgeRequestsCleared: number;
 }
 
 interface StillOpen {
@@ -376,6 +417,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     linksPaused: counted('links_paused'),
     requestsPaused: counted('requests_paused'),
     photosUnfinished: counted('photos_unfinished'),
+    purgeRequestsCleared: counted('purge_requests'),
   };
 }
 
@@ -396,7 +438,10 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * photos come back as they were that night. Every live request to send
  * documents is paused for an owner to turn back on, since one taken back
  * or closed since would open again, and no sender's session or emailed
- * code survives (5.21). Guarded for older schemas.
+ * code survives (5.21). And an owner's request to remove a document for
+ * good is ended (5.24): a filer's Bring it back made since would otherwise
+ * be undone with its 24 hours perhaps already past; an owner asks again,
+ * and the filer is told again. Guarded for older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 do $undo$
@@ -464,6 +509,13 @@ begin
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('photos_unfinished', n);
   end if;
+  if exists (select 1 from pg_attribute where attrelid = to_regclass('public.document')
+              and attname = 'purge_requested_at' and not attisdropped) then
+    update public.document set purge_requested_at = null, purge_requested_by = null
+     where purge_requested_at is not null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('purge_requests', n);
+  end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
 
@@ -497,6 +549,12 @@ const GUARDS = [
   },
   // A link keeps the flow it was made with: a new one never opens on an old route (0037).
   { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
+  // Only an owner asks, as themselves and now, to remove a document for good (0045).
+  {
+    name: 'document_purge_request_owner',
+    table: 'document',
+    fn: 'document_purge_request_owner',
+  },
   // And what it was made for: a document, or a collection as ticked, and
   // whether it keeps up with the collection (0042).
   { name: 'share_link_target_fixed', table: 'share_link', fn: 'share_link_target_fixed' },
@@ -586,6 +644,10 @@ const ACTOR_GUARDED = [
   'upload_session',
   'upload_code',
   'incoming_file',
+  // What a document removed for good leaves behind: who could see it, and
+  // the files still to be deleted (0045).
+  'document_tombstone',
+  'purge_leftover',
 ];
 
 /**
@@ -665,7 +727,7 @@ const HOUSEHOLD_ROWS: Record<string, string> = {
  */
 export async function checkRestored(
   target: RestoreTarget,
-): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | 'rekeyed'>> {
+): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | keyof RemovedFiles | 'rekeyed'>> {
   const admin = createPool(target.adminUrl, 1);
   const app = createPool(target.appUrl, 1);
   try {
@@ -802,6 +864,7 @@ export async function checkRestored(
       privileged: boolean;
       queue: boolean;
       audit_mutable: boolean;
+      tombstones_mutable: boolean;
       tenant_tables: string[];
     }>(
       `with ours as (
@@ -815,6 +878,10 @@ export async function checkRestored(
               has_schema_privilege('pgboss', 'usage') as queue,
               has_table_privilege('public.audit_event', 'update')
                 or has_table_privilege('public.audit_event', 'delete') as audit_mutable,
+              -- What a document removed for good leaves behind (0045).
+              has_table_privilege('public.document_tombstone', 'update')
+                or has_table_privilege('public.document_tombstone', 'delete')
+                as tombstones_mutable,
               array(select c.oid::regclass::text from pg_class c
                      join pg_namespace n on n.oid = c.relnamespace
                     where n.nspname = 'public' and c.relkind in ('r', 'p')
@@ -835,6 +902,9 @@ export async function checkRestored(
     if (r.privileged) throw new Error('the application role can bypass row-level security');
     if (!r.queue) throw new Error('the application role cannot use the job queue');
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
+    if (r.tombstones_mutable) {
+      throw new Error("a removed document's tombstone can be changed or removed");
+    }
 
     // Outside withScope, so it says for itself what withSystem would: this
     // household, asked by the vault itself. Since 0030 a transaction that

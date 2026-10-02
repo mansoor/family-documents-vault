@@ -85,6 +85,10 @@ export async function renderVersionPreviews(
   }
 
   const dir = await mkdtemp(path.join(tmpdir(), 'fdv-pv-'));
+  // What this drawing wrote, and where: removed again should its version be
+  // removed for good meanwhile (5.24).
+  const written: string[] = [];
+  let into: StorageAdapter | null = null;
   try {
     const ctx = await withSystem(deps.db, hh, async (trx) => {
       const v = await trx
@@ -104,6 +108,7 @@ export async function renderVersionPreviews(
         fileKey: unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`),
       };
     });
+    into = ctx.adapter;
     const tools = await detectTools();
     if (!tools.magick || (current.mime === 'application/pdf' && !tools.pdftoppm)) {
       throw new Error('the tools to draw pages are not installed');
@@ -114,16 +119,27 @@ export async function renderVersionPreviews(
     const pages = await renderPreviews(plainFile, current.mime, out, PREVIEW_MAX_PAGES);
     if (!pages.length) throw new Error('no pages came out');
     for (const [i, file] of pages.entries()) {
-      await putEncrypted(
-        ctx.adapter,
-        previewKey(ctx.storageKey, i + 1),
-        ctx.fileKey,
-        await readFile(file),
-      );
+      const key = previewKey(ctx.storageKey, i + 1);
+      written.push(key);
+      await putEncrypted(ctx.adapter, key, ctx.fileKey, await readFile(file));
     }
     await record('ready', pages.length);
+    // Removed for good while they were drawn (5.24): the removal held the
+    // version until it was gone, and deleted what it found; what was written
+    // after it looked is deleted here, so nothing is left that nothing names.
+    if (!(await versionThere(deps, hh, version_id))) {
+      await removeAll(ctx.adapter, written);
+      deps.log('info', 'a version was removed for good while its pages were drawn', {
+        version_id,
+      });
+      return;
+    }
     deps.log('info', 'drew page previews', { version_id, pages: pages.length });
   } catch (err) {
+    // Removed for good part-way (5.24): what was written goes too.
+    if (into && written.length && !(await versionThere(deps, hh, version_id).catch(() => true))) {
+      await removeAll(into, written);
+    }
     if (attempt.final) {
       await record('failed', 0).catch(() => undefined);
     } else {
@@ -146,6 +162,23 @@ export async function renderVersionPreviews(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** Whether a version is still there: one removed for good (5.24) is not. */
+export async function versionThere(
+  deps: Pick<ProcessDeps, 'db'>,
+  householdId: string,
+  versionId: string,
+): Promise<boolean> {
+  const row = await withSystem(deps.db, householdId, (trx) =>
+    trx.selectFrom('document_version').select('id').where('id', '=', versionId).executeTakeFirst(),
+  );
+  return row !== undefined;
+}
+
+/** Deleted, each, a missing one being fine: what a job wrote that nothing names. */
+export async function removeAll(adapter: StorageAdapter, keys: string[]): Promise<void> {
+  for (const key of keys) await adapter.delete(key).catch(() => undefined);
 }
 
 async function putEncrypted(adapter: StorageAdapter, key: string, fileKey: Buffer, plain: Buffer) {

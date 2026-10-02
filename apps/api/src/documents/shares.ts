@@ -33,6 +33,7 @@ import { seenCollection } from '../collections/service.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
+import { madeWith } from './made-with.js';
 import { endSessions } from './share-sessions.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
@@ -41,7 +42,9 @@ import {
   canSeeCollection,
   canShareToView,
   collectionShareItem,
+  COLLECTION_SHARE_FILE_REMOVED,
   COLLECTION_SHARE_REASONS,
+  FILE_REMOVED,
   FOLLOW_MAX_DAYS,
   isShareAddress,
   maskEmail,
@@ -624,6 +627,9 @@ const codeUnavailable = (status: 422 | 503) =>
 const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
 const noCollection = () => new ApiError(404, 'not_found', 'That collection does not exist.');
+
+/** A record a restore brought back whose file had been removed for good (5.24). */
+const fileRemoved = () => new ApiError(410, 'file_removed', FILE_REMOVED);
 const notInCollection = () =>
   new ApiError(404, 'not_found', 'That document is not in this collection.');
 
@@ -880,7 +886,7 @@ export class ShareService {
       }
       const newest = await trx
         .selectFrom('document_version')
-        .select(['id', 'mime'])
+        .select(['id', 'mime', 'file_removed_at'])
         .where('document_id', '=', documentId)
         .orderBy('version_no', 'desc')
         .executeTakeFirst();
@@ -890,6 +896,11 @@ export class ShareService {
           'nothing_to_share',
           'There is no file on this document yet, so there is nothing to send.',
         );
+      }
+      // A restore found its file removed for good (5.24): a link to it would
+      // open on nothing (the review, W524-7).
+      if (newest.file_removed_at) {
+        throw new ApiError(422, 'file_removed', COLLECTION_SHARE_FILE_REMOVED);
       }
       // To view is to see the pages the vault draws, and it draws PDFs and
       // photos; a Word or an Excel file can only go as itself (A22).
@@ -991,9 +1002,11 @@ export class ShareService {
         collection_name: c.name,
         audience: c.audience,
         items: rows.map((r) => {
+          // A file removed for good is no file to send (5.24, W524-7).
+          const removed = r.mime !== null && r.file_removed === true;
           const offer = collectionShareItem(c.audience, {
             visibility: r.visibility,
-            has_file: r.mime !== null,
+            has_file: r.mime !== null && !removed,
           });
           return {
             document_id: r.id,
@@ -1001,7 +1014,11 @@ export class ShareService {
             type_label: r.type_label,
             ticked: offer.ticked,
             lock: offer.lock,
-            reason: offer.lock ? COLLECTION_SHARE_REASONS[offer.lock] : null,
+            reason: removed
+              ? COLLECTION_SHARE_FILE_REMOVED
+              : offer.lock
+                ? COLLECTION_SHARE_REASONS[offer.lock]
+                : null,
             viewable: canShareToView(r.mime),
           };
         }),
@@ -1035,6 +1052,16 @@ export class ShareService {
           .orderBy('v.version_no', 'desc')
           .limit(1)
           .as('mime'),
+      )
+      // And whether a restore found that file removed for good (5.24).
+      .select((eb) =>
+        eb
+          .selectFrom('document_version as v')
+          .select(sql<boolean>`v.file_removed_at is not null`.as('removed'))
+          .whereRef('v.document_id', '=', 'd.id')
+          .orderBy('v.version_no', 'desc')
+          .limit(1)
+          .as('file_removed'),
       )
       .where('i.collection_id', '=', collectionId)
       .where('d.deleted_at', 'is', null)
@@ -1107,6 +1134,14 @@ export class ShareService {
       const found = asked.length ? await this.collectionDocuments(trx, p, c.id, asked) : [];
       // One the sharer cannot see is answered as one that is not in it.
       if (found.length !== asked.length) throw notInCollection();
+      const gone = found.find((d) => d.file_removed === true);
+      if (gone) {
+        throw new ApiError(
+          422,
+          'file_removed',
+          `The file on “${gone.title ?? 'a document'}” was removed for good, so there is nothing to send. Untick it.`,
+        );
+      }
       const empty = found.find((d) => d.mime === null);
       if (empty) {
         throw new ApiError(
@@ -1195,16 +1230,20 @@ export class ShareService {
         // addition holds them in (FOR UPDATE) — before each row names one
         // (the third review): named in the collection's order instead, the
         // two could each wait on what the other held.
-        await sql`select id from document
+        const held = await sql<{ id: string }>`select id from document
                    where id = any(${snapshot.map((s) => s.document_id)}::uuid[])
                    order by id
                    for key share`.execute(trx);
+        // One removed for good as this waited for it (5.24) is not there to
+        // name: it goes with nothing, as anything the link no longer gives.
+        const there = new Set(held.rows.map((r) => r.id));
+        const kept = snapshot.filter((s) => there.has(s.document_id));
         // A few thousand at a time, within what one statement may carry.
-        for (let at = 0; at < snapshot.length; at += SNAPSHOT_ROWS) {
+        for (let at = 0; at < kept.length; at += SNAPSHOT_ROWS) {
           await trx
             .insertInto('share_link_item')
             .values(
-              snapshot.slice(at, at + SNAPSHOT_ROWS).map((s) => ({
+              kept.slice(at, at + SNAPSHOT_ROWS).map((s) => ({
                 share_id: row.id,
                 household_id: p.householdId,
                 collection_id: c.id,
@@ -1401,13 +1440,8 @@ export class ShareService {
       const collectionLinks = rows.filter((r) => r.collection_id !== null).map((r) => r.id);
       const unseen = new Set<string>();
       if (collectionLinks.length) {
-        const items = await trx
-          .selectFrom('share_link_item')
-          .innerJoin('document', 'document.id', 'share_link_item.document_id')
-          .select(['share_link_item.share_id', 'document.visibility', 'document.owner_member_id'])
-          .where('share_link_item.share_id', 'in', collectionLinks)
-          .where('share_link_item.kind', 'in', ['ticked', 'followed'])
-          .execute();
+        // Removed for good since, as its tombstone says, too (5.24).
+        const items = await madeWith(trx, collectionLinks);
         for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
       }
       // A link names its document, so the list shows only links to what the
@@ -1589,13 +1623,8 @@ export class ShareService {
           throw notFound('That link');
         }
         if (target.created_by !== p.accountId && p.role !== 'owner') {
-          const items = await trx
-            .selectFrom('share_link_item')
-            .innerJoin('document', 'document.id', 'share_link_item.document_id')
-            .select(['document.visibility', 'document.owner_member_id'])
-            .where('share_link_item.share_id', '=', id)
-            .where('share_link_item.kind', 'in', ['ticked', 'followed'])
-            .execute();
+          // Removed for good since, as its tombstone says, too (5.24).
+          const items = await madeWith(trx, [id]);
           if (items.some((i) => !canSee(reader, i))) throw notFound('That link');
         }
       }
@@ -2104,6 +2133,9 @@ export class ShareService {
           'This link is for viewing only: the file itself was not shared.',
         );
       }
+      // Its record came back with a restore, its file did not (5.24): said
+      // so, before a download is counted or written down that cannot happen.
+      if ((await this.newestVersion(trx, documentId)).file_removed_at) throw fileRemoved();
       const first = await this.used(trx, link, session.id, documentId, 'downloaded');
       if (first) {
         // Within the link's downloads, however many ask at once: one
@@ -2173,6 +2205,8 @@ export class ShareService {
         );
       }
       const v = await this.newestVersion(trx, documentId);
+      // Its record came back with a restore, its file did not (5.24).
+      if (v.file_removed_at) throw fileRemoved();
       const page = await trx
         .selectFrom('share_page')
         .select('storage_key')
@@ -2521,6 +2555,8 @@ export class ShareService {
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
       if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
       const v = await this.newestVersion(trx, documentOf(link));
+      // Its record came back with a restore, its file did not (5.24).
+      if (v.file_removed_at) throw fileRemoved();
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
@@ -2875,14 +2911,16 @@ export class ShareService {
       .selectFrom('doc_collection_item as i')
       .innerJoin('document as d', 'd.id', 'i.document_id')
       .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at'])
+      // A file to give: its newest version, unless a restore found that
+      // file removed for good (5.24; the check's N524S-01). It is given again
+      // once recheck-files finds it back.
       .select((eb) =>
         eb
-          .exists(
-            eb
-              .selectFrom('document_version as v')
-              .select('v.id')
-              .whereRef('v.document_id', '=', 'd.id'),
-          )
+          .selectFrom('document_version as v')
+          .select(sql<boolean>`v.file_removed_at is null`.as('has'))
+          .whereRef('v.document_id', '=', 'd.id')
+          .orderBy('v.version_no', 'desc')
+          .limit(1)
           .as('has_file'),
       )
       .where('i.collection_id', '=', collection.id)

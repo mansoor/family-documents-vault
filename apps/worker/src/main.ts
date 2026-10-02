@@ -15,6 +15,7 @@ import {
 import { createNotifier } from './jobs/notify.js';
 import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
 import { drawSharePages, pruneSharePages, type SharePagesJob } from './jobs/share-pages.js';
+import { removeLeftovers, type PurgeLeftoversJob } from './jobs/purge-leftovers.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
 import { isMailJob, pruneShareCodes, sendToAddress } from './jobs/mail.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
@@ -183,6 +184,20 @@ async function main(): Promise<void> {
     }
   });
   await boss.schedule(JOBS.sharePagesPrune, '35 4 * * *');
+  // One queued and one running a household (the API's singletonKey): each
+  // run finishes all the household has, so more would only repeat it.
+  await boss.createQueue(JOBS.purgeLeftovers, {
+    policy: 'stately',
+    retryLimit: 3,
+    retryDelay: 300,
+  });
+  await boss.work<PurgeLeftoversJob>(JOBS.purgeLeftovers, async (jobs) => {
+    for (const job of jobs) {
+      const hh = job.data?.household_id;
+      await removeLeftovers(pruneDeps, hh ? { household_id: hh } : undefined);
+    }
+  });
+  await boss.schedule(JOBS.purgeLeftovers, '40 4 * * *');
 
   await boss.createQueue(JOBS.exportBuild, { retryLimit: 2, retryDelay: 60 });
   await boss.work<ExportJob>(JOBS.exportBuild, { batchSize: 1 }, async (jobs) => {

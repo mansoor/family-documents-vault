@@ -167,6 +167,8 @@ export interface FakeState {
   lastQuery?: string;
   /** True until a credential has been presented again (SEC-17). */
   stepUpNeeded: boolean;
+  /** When an owner's request to remove for good is said to be made (5.24); left out, now. */
+  purgeAskedAt?: string;
   /**
    * The passport's pages as the vault drew them (0.4.12): how many, or a
    * kind it cannot draw; and how many more times a page is still "being
@@ -1447,6 +1449,9 @@ export function installFakeApi(state: FakeState) {
       // The Trash is its own list (5.1), as the vault's `deleted=true` is.
       const inTrash = query.get('deleted') === 'true';
       let items = state.documents.filter((d) => Boolean(d.deleted_at) === inTrash);
+      // An owner's requests to remove for good, by themselves (5.24).
+      const asked = query.get('purge_requested');
+      if (asked) items = items.filter((d) => Boolean(d.purge_requested_at) === (asked === 'true'));
       if (state.pageSize) {
         const start = Number(query.get('cursor') ?? 0);
         const more = start + state.pageSize < items.length;
@@ -1550,8 +1555,54 @@ export function installFakeApi(state: FakeState) {
     const restoreMatch = /^\/api\/v1\/documents\/([^/]+)\/restore$/.exec(path);
     if (restoreMatch && method === 'POST') {
       const doc = state.documents.find((d) => d.id === restoreMatch[1]);
-      if (doc) doc.deleted_at = null;
+      // Bringing it back cancels an owner's request to remove it (5.24).
+      if (doc)
+        Object.assign(doc, {
+          deleted_at: null,
+          purge_requested_at: null,
+          purge_allowed_from: null,
+        });
       return json(doc);
+    }
+    // Removing for good (5.24), as the vault does it: owners only, asking to
+    // confirm it's you; at once for one they filed;
+    // anybody else's asked about first, and removed a day after.
+    const purgeMatch = /^\/api\/v1\/documents\/([^/]+)\/purge$/.exec(path);
+    if (purgeMatch && method === 'POST') {
+      const doc = state.documents.find((d) => d.id === purgeMatch[1]);
+      if (!doc) return refuse(404, 'not_found', 'That document is not in the vault.');
+      if (!doc.deleted_at) {
+        return refuse(409, 'not_in_trash', 'Only a document in the Trash can be removed for good.');
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to remove a document for good.',
+          {
+            action: 'remove_for_good',
+          },
+        );
+      }
+      // At once what the vault says may go at once (purge_at_once): one they
+      // filed, or theirs when its filer has gone.
+      const theirs = doc.purge_at_once === true;
+      if (!theirs && !doc.purge_requested_at) {
+        doc.purge_requested_at = state.purgeAskedAt ?? new Date().toISOString();
+        doc.purge_allowed_from = new Date(
+          Date.parse(doc.purge_requested_at as string) + 24 * 3_600_000,
+        ).toISOString();
+        return json(listed(doc), 202);
+      }
+      if (!theirs && Date.parse(doc.purge_allowed_from as string) > Date.now()) {
+        return refuse(
+          409,
+          'purge_not_yet',
+          'Whoever filed it has been told, and can bring it back until then.',
+        );
+      }
+      state.documents = state.documents.filter((d) => d !== doc);
+      return Promise.resolve(new Response(null, { status: 204 }));
     }
     const docMatch = /^\/api\/v1\/documents\/([^/]+)$/.exec(path);
     if (docMatch) {
@@ -1650,6 +1701,8 @@ export function installFakeApi(state: FakeState) {
                 : state.pagesPending > 0
                   ? null
                   : state.pagesDrawn,
+            // Its record came back with a restore, its file did not (5.24).
+            file_removed: doc?.file_removed === true,
           },
         ],
       });

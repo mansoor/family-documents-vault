@@ -73,6 +73,8 @@ describe('buildCapabilities', () => {
       share_second_factor: true,
       // 5.20: an emailed code, only with the operator's mail server (A21).
       share_email_code: false,
+      // 5.24: an owner removes a document in the Trash for good.
+      remove_for_good: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

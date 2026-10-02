@@ -45,6 +45,7 @@ async function make(
       auth: authStub,
       vaults: vaultsStub,
       documents: documentsStub,
+      purge: anyStub,
       types: anyStub,
       collections: anyStub,
       sealedSearch: anyStub,

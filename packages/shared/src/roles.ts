@@ -90,7 +90,12 @@ export type Capability =
    * paused, and you take it back and make a new one. Taking a link back
    * stays with `document.share`.
    */
-  | 'restore.review';
+  | 'restore.review'
+  /**
+   * Remove a document in the Trash for good (5.24): one they filed or that
+   * is theirs at once, anybody else's 24 hours after its filer was told.
+   */
+  | 'document.purge';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -222,6 +227,13 @@ const MATRIX: Record<Capability, Rule> = {
     // restore every link waits for an owner to say it still stands (A55).
     roles: ['owner'],
     refusal: 'Only an owner can turn things back on after a restore.',
+  },
+  'document.purge': {
+    // Nothing empties the Trash by itself (D1): removing a mistaken upload
+    // for good is an owner's decision, and somebody else's document waits
+    // a day for whoever filed it to bring it back.
+    roles: ['owner'],
+    refusal: 'Only an owner can remove a document for good.',
   },
 };
 

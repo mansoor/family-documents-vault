@@ -14,8 +14,14 @@ import {
   type ScopeKeys,
 } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
-import { formatDate, wellFormedDate, type DateValue, type TypeField } from '@fdv/shared';
-import { adapterFromRow } from '@fdv/storage';
+import {
+  FILE_REMOVED,
+  formatDate,
+  wellFormedDate,
+  type DateValue,
+  type TypeField,
+} from '@fdv/shared';
+import { adapterFromRow, StorageError } from '@fdv/storage';
 import { decryptToBuffer } from './process-version.js';
 import { sql } from 'kysely';
 
@@ -63,6 +69,11 @@ interface Entry {
   /** The type's own details, by field key, as the vault keeps them (0.5.7). */
   extra: Record<string, unknown>;
   file: string | null;
+  /**
+   * Why it has no file, when it had one (5.24): removed for good after the
+   * backup the vault was restored from, or not where the files are kept.
+   */
+  file_note: string | null;
   version_no: number | null;
   sha256: string | null;
 }
@@ -79,6 +90,9 @@ const safe = (s: string) =>
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80) || 'untitled';
+
+/** What an export says of a file not where the files are kept as it was built (5.24). */
+export const FILE_NOT_THERE = 'The file was not where your files are kept when this was made.';
 
 export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<void> {
   const { household_id: hh, export_id } = job;
@@ -215,14 +229,27 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
     for (const d of ctx.docs) {
       const v = latestOf.get(d.id);
       let file: string | null = null;
-      if (v) {
+      let fileNote: string | null = null;
+      // Its record came back with a restore, its file did not (5.24): listed,
+      // with no file and why, rather than failing everybody's export.
+      if (v?.file_removed_at) fileNote = FILE_REMOVED;
+      if (v && !fileNote) {
         const scopeKey = await withSystem(deps.db, hh, (trx) =>
           deps.keys.unwrapById(trx, v.wrapped_by_scope),
         );
         const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${d.id}`);
         const adapter = adapters.get(v.vault_id);
+        let bytes: Buffer | null = null;
         if (adapter) {
-          const bytes = await decryptToBuffer(adapter, v.storage_key, fileKey);
+          // One file not where it is kept — removed for good while this was
+          // built, say — is that document's, not the whole export's.
+          bytes = await decryptToBuffer(adapter, v.storage_key, fileKey).catch((err: unknown) => {
+            if (err instanceof StorageError && err.code === 'not_found') return null;
+            throw err;
+          });
+          if (!bytes) fileNote = FILE_NOT_THERE;
+        }
+        if (adapter && bytes) {
           const ext = path.extname(v.filename) || '';
           const base = `${safe(d.category ?? 'other')}/${safe(d.title ?? d.id)}`;
           let name = `${base}${ext}`;
@@ -248,6 +275,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         notes: valuesOf(d.id).notes,
         extra: valuesOf(d.id).extra,
         file,
+        file_note: fileNote,
         version_no: v?.version_no ?? null,
         sha256: v ? v.sha256.toString('hex') : null,
       });
@@ -376,7 +404,8 @@ function csv(entries: Entry[], details: DetailColumn[]): string {
     'tags',
     'notes',
   ] as const;
-  const tail = ['file', 'version_no', 'sha256', 'document_id'] as const;
+  // file_note last (5.24): why a document that had a file has none here.
+  const tail = ['file', 'version_no', 'sha256', 'document_id', 'file_note'] as const;
   // A detail's name is somebody's writing too, so the header is guarded as
   // every cell is.
   const header = [...cols, ...details.map((c) => c.label), ...tail].map(csvCell);
@@ -415,7 +444,7 @@ function html(entries: Entry[], details: DetailColumn[]): string {
   const rows = entries
     .map(
       (e) =>
-        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
+        `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
     )
     .join('\n');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Family Document Vault export</title>
@@ -431,5 +460,6 @@ const README = `This folder is a complete export from Family Document Vault.
 - Each file is the original as it was uploaded, in a folder named after its category.
 - index.html opens in any browser and lists every document with its details.
 - index.csv is the same list for a spreadsheet; index.json is the same list for software.
+- A document listed with no file says why (file_note): its file was removed for good.
 - Nothing here depends on the vault software. Keep it somewhere safe.
 `;

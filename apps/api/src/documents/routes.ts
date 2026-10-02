@@ -9,6 +9,7 @@ import { errorForLog } from '../log-redaction.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
 import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
+import type { PurgeService } from './purge.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
 import type { UploadRequestService } from '../uploads/requests.js';
@@ -125,6 +126,11 @@ const listQuery = z.object({
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .optional(),
+  // 5.24: those an owner has asked to remove for good (in the Trash), or not.
+  purge_requested: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .optional(),
   updated_since: z.string().datetime().optional(),
   sort: z.enum(['recent', 'expiring', 'alpha']).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
@@ -158,6 +164,7 @@ export function registerDocuments(
   stepUp?: StepUpService,
   shares?: ShareService,
   uploads?: UploadRequestService,
+  purge?: PurgeService,
 ) {
   const auth = { preHandler: app.requireAuth };
   const principal = (req: FastifyRequest) => req.principal as Principal;
@@ -338,6 +345,31 @@ export function registerDocuments(
   app.post<{ Params: { id: string } }>('/api/v1/documents/:id/restore', auth, async (req) =>
     docs.restore(principal(req), req.params.id, metaOf(req)),
   );
+
+  /**
+   * Remove a document in the Trash for good (5.24): owners only, and always
+   * confirming it's you — asked after who may and after the document is
+   * found, so a refusal is never a question first. One they filed or that
+   * is theirs goes at once (204). Anybody else's is asked about first
+   * (202, with the document): whoever filed it and the other owners are
+   * told, and a call once the day is over removes it; before then, `409
+   * purge_not_yet`.
+   */
+  if (purge) {
+    app.post<{ Params: { id: string } }>(
+      '/api/v1/documents/:id/purge',
+      auth,
+      async (req, reply) => {
+        const p = principal(req);
+        const { id } = req.params;
+        await purge.check(p, id);
+        if (stepUp) await stepUp.require(p, 'remove_for_good');
+        const outcome = await purge.purge(p, id, metaOf(req));
+        if (outcome.removed) return reply.status(204).send();
+        return reply.status(202).send(outcome.document);
+      },
+    );
+  }
 
   app.get<{ Params: { id: string } }>('/api/v1/documents/:id/versions', auth, async (req) => ({
     items: await docs.versions(principal(req), req.params.id),

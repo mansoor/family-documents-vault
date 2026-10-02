@@ -675,4 +675,19 @@ describe('quick actions on every document (5.4)', () => {
     signedIn('teen');
     expect((await share()).status).toBe(403);
   });
+
+  it('a document whose file was removed for good offers no Download and no new link (the review, W524-7)', async () => {
+    home([{ ...PASSPORT, file_removed: true }], 'adult');
+    const { menu } = await openMenu();
+    const items = offered(menu);
+    expect(items).toContain('Open');
+    expect(items).not.toContain('Download');
+    expect(items).not.toContain('Share a link');
+    // Its own page says why, and makes no link.
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Open' }));
+    expect(
+      await screen.findByText('The file was removed for good, so there is nothing to send.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Share a link' })).not.toBeInTheDocument();
+  });
 });

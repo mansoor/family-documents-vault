@@ -24,6 +24,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
+import { madeWith } from '../documents/made-with.js';
 import { endSessions } from '../documents/share-sessions.js';
 
 /**
@@ -759,17 +760,11 @@ export class CollectionService {
     const unseen = new Set<string>();
     if (named && links.length) {
       const reader = { role: p.role, memberId: p.memberId };
-      const items = await trx
-        .selectFrom('share_link_item as t')
-        .innerJoin('document as d', 'd.id', 't.document_id')
-        .select(['t.share_id', 'd.visibility', 'd.owner_member_id'])
-        .where(
-          't.share_id',
-          'in',
-          links.map((l) => l.id),
-        )
-        .where('t.kind', 'in', ['ticked', 'followed'])
-        .execute();
+      // Removed for good since, as its tombstone says, too (5.24).
+      const items = await madeWith(
+        trx,
+        links.map((l) => l.id),
+      );
       for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
     }
     for (const link of links) {

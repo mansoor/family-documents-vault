@@ -558,6 +558,41 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     expect(view.shared_outside).toEqual({ with: ['the travel agent'], following: true });
   });
 
+  it('a link that keeps up gives no document whose file a restore found removed for good, until the file is back (the 5.24 check, N524S-01)', async () => {
+    await fresh('owner', true);
+    const trip = await collection('owner', 'Restored trip', 'everyone', [docs.lease]);
+    const link = await shared('owner', trip, {
+      document_ids: [docs.lease],
+      follow_collection: true,
+    });
+    const { cookie } = await opened(link.link_token);
+    // What a restore marks (removed-files.ts), and what recheck-files clears.
+    const marked = (documentId: string, removed: boolean) =>
+      withSystem(h.db, t.owner.household_id, (trx) =>
+        trx
+          .updateTable('document_version')
+          .set({ file_removed_at: removed ? new Date() : null })
+          .where('document_id', '=', documentId)
+          .execute(),
+      );
+    const gone = await make('owner', 'Restored without its file');
+    await marked(gone, true);
+    await put('owner', trip, [gone]);
+    // Not given: neither listed nor opened, by the API or by the database.
+    expect(await given(cookie)).toEqual([docs.lease]);
+    expect((await content(cookie, gone)).statusCode).toBe(404);
+    const seen = () =>
+      withScopeOfLink(link.share.id, async (trx) =>
+        (await trx.selectFrom('document').select('id').execute()).map((r) => r.id).sort(),
+      );
+    expect(await seen()).toEqual([docs.lease]);
+    // Its file found back: given again.
+    await marked(gone, false);
+    expect(await given(cookie)).toEqual([docs.lease, gone]);
+    expect(await seen()).toEqual([docs.lease, gone].sort());
+    expect((await content(cookie, gone)).statusCode).toBe(200);
+  });
+
   it('a following link ends at 30 days', async () => {
     const days = (n: number) => new Date(Date.now() + n * 864e5).toISOString();
     const tooLong = await share('owner', family, {

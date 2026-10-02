@@ -557,6 +557,14 @@ A restore goes into an empty database, never over a vault that is running: it re
 
 **Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **Settings → After a restore**, and nobody else can, not even whoever made the link. They can take their own links back there. A link to somebody's Only me document, which no owner can see, stays paused: if it is still needed, they take it back and make a new one. The restore lists what else to look at.
 
+**A document removed for good can come back from an older backup as a record, never as a file.** A backup holds only the database; an owner removing a document from the Trash for good deletes its files there and then. So a restore from a backup made before the removal brings its details back without its file: the restore looks for every file, lists the documents whose files are gone, and each of them says "The file was removed for good" when it is opened. An owner can remove such a record for good again, from the Trash. The restore also clears every request to remove a document for good: an owner who still wants one gone asks again, and whoever filed it has a day again.
+
+**Put your files in place before you restore.** The restore marks a file removed only when the place your files are kept clearly holds the others: if that folder is not there (a drive not mounted, say), the bucket cannot be reached, or none of the files it should hold is there, it marks nothing and says why. If you put files back after a restore, have the vault look again, and their documents open as before:
+
+```bash
+docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs recheck-files
+```
+
 **If you lost the database but not the `fdv_vault-data` volume** (your files, and the backups in `/data/backups`), stop the vault, clear the database, and restore the newest backup into it:
 
 ```bash

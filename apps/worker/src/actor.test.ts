@@ -29,6 +29,7 @@ import { makeMemberPhoto } from './jobs/member-photo.js';
 import { createNotifier } from './jobs/notify.js';
 import { backfillPreviews, renderVersionPreviews } from './jobs/previews.js';
 import { processVersion } from './jobs/process-version.js';
+import { removeLeftovers } from './jobs/purge-leftovers.js';
 import { pushDepsOf, sendPushJob } from './jobs/push.js';
 import { deliver, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { sealPrivateValues } from './jobs/seal.js';
@@ -653,6 +654,22 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
             [rows[0]?.id],
           );
           expect(left.rows[0]?.code_email).toBeNull();
+        },
+      ],
+      [
+        'purge.leftovers',
+        async () => {
+          // A file of a document removed for good that could not be deleted then.
+          const key = `${hh}/${randomUUID()}/1/left-over.enc`;
+          await new LocalAdapter(vaultDir).put(key, Readable.from([Buffer.from('ciphertext')]));
+          await admin.query(
+            `insert into purge_leftover (household_id, vault_id, object_key, removed_document)
+             select $1, v.id, $2, $3 from vault v where v.household_id = $1`,
+            [hh, key, randomUUID()],
+          );
+          expect(
+            await removeLeftovers({ admin, app, credentialsKey, localRoot: vaultDir }),
+          ).toEqual({ removed: 1, left: 0 });
         },
       ],
     ];

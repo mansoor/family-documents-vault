@@ -168,6 +168,66 @@ describe('the fake vault, for somebody who is not an owner', () => {
     });
   });
 
+  it('removing for good as the real vault does (5.24): somebody else’s is asked about first, a day ahead', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    // Filed by somebody else, though it is the owner's own now: asked about
+    // first all the same (the 5.24 review, M524-1).
+    const made = await api.createDocument(token, {
+      title: 'Their letter',
+      owner_member_id: 'fake-member',
+    });
+    const kept = vault.state.documents.find((d) => d.id === made.id);
+    if (kept) kept.filedBySomeoneElse = true;
+    await api.deleteDocument(token, made.id);
+    const offered = (await api.documents(token, { deleted: 'true' })).items;
+    expect(offered.map((d) => [d.id, d.purge_at_once])).toEqual([[made.id, false]]);
+
+    // Asked about, not removed: and from when it may be.
+    const asked = await api.purgeDocument(token, made.id);
+    expect(asked.removed).toBe(false);
+    const document = asked.removed ? null : asked.document;
+    expect(document?.filed_by_me).toBe(false);
+    expect(Date.parse(document?.purge_allowed_from ?? '')).toBe(
+      Date.parse(document?.purge_requested_at ?? '') + 24 * 3_600_000,
+    );
+    expect(
+      (await api.documents(token, { deleted: 'true', purge_requested: 'true' })).items.map(
+        (d) => d.id,
+      ),
+    ).toEqual([made.id]);
+    // Again before the day is out: refused, saying from when.
+    expect(await refusal(api.purgeDocument(token, made.id))).toMatchObject({
+      status: 409,
+      code: 'purge_not_yet',
+      detail: document?.purge_allowed_from,
+    });
+    // Brought back, the request goes with it.
+    expect((await api.restoreDocument(token, made.id)).purge_requested_at).toBeNull();
+    await api.deleteDocument(token, made.id);
+    const binned = (await api.documents(token, { deleted: 'true' })).items;
+    expect(binned.map((d) => [d.id, d.purge_requested_at])).toEqual([[made.id, null]]);
+
+    // Asked again, and the day over: removed. Never by anybody but an owner.
+    await api.purgeDocument(token, made.id);
+    if (kept) kept.purge_requested_at = new Date(Date.now() - 25 * 3_600_000).toISOString();
+    vault.state.role = 'adult';
+    expect(await refusal(api.purgeDocument(token, made.id))).toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+    vault.state.role = 'owner';
+    expect(await api.purgeDocument(token, made.id)).toEqual({ removed: true });
+    expect((await api.documents(token, { deleted: 'true' })).items).toEqual([]);
+  });
+
   it("pages a collection's documents as the real vault does", async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));

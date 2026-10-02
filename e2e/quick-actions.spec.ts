@@ -5,7 +5,8 @@ import { expect, test } from '@playwright/test';
  * reaches the ⋯ beside a row, Enter opens its menu, the arrows move
  * through it, Escape closes it and gives focus back, and an action chosen
  * with Enter is done. It makes a document of its own on the vault
- * first-run.spec.ts made, and moves it to the Trash at the end.
+ * first-run.spec.ts made, moves it to the Trash at the end, and then
+ * removes it from the Trash for good (5.24).
  */
 
 const EMAIL = 'e2e-owner@example.test';
@@ -106,4 +107,18 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   await expect(dialog.getByRole('button', { name: 'Move to Trash' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(row).toHaveCount(0);
+
+  // And out of the Trash for good (5.24): the owner's own goes at once,
+  // through the app's own dialog — which starts on Cancel — and, signed in
+  // a moment ago, without asking again who it is.
+  await page.getByRole('link', { name: 'Settings' }).click();
+  await page.getByRole('link', { name: /^Trash/ }).click();
+  await expect(page.getByRole('heading', { name: 'Trash' })).toBeVisible();
+  const binned = page.getByRole('listitem').filter({ hasText: title });
+  await binned.getByRole('button', { name: `Remove for good: ${title}` }).click();
+  const forGood = page.getByRole('alertdialog', { name: 'Remove for good?' });
+  await expect(forGood.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await forGood.getByRole('button', { name: 'Remove for good' }).click();
+  await expect(page.getByText(`“${title}” was removed for good.`)).toBeVisible();
+  await expect(binned).toHaveCount(0);
 });

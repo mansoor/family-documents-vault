@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -119,6 +120,44 @@ describe('LocalAdapter specifics', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('S3Adapter against a place that never answers', () => {
+  // Connections are taken, and nothing is ever said back: a server hung, or
+  // a proxy in front of one switched off.
+  let server: net.Server;
+  let port = 0;
+  const held: net.Socket[] = [];
+  beforeAll(async () => {
+    server = net.createServer((s) => void held.push(s));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    port = (server.address() as net.AddressInfo).port;
+  });
+  afterAll(async () => {
+    for (const s of held) s.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  it('a stat or a delete is out of reach in its own time, not waited on (the 5.24 check, N524R-3)', async () => {
+    const adapter = new S3Adapter({
+      endpoint: `http://127.0.0.1:${port}`,
+      bucket: 'hung',
+      pathStyle: true,
+      accessKeyId: 'k',
+      secretAccessKey: 's',
+      quickTimeoutMs: 400,
+    });
+    for (const call of [() => adapter.delete('a/b.enc'), () => adapter.stat('a/b.enc')]) {
+      const started = Date.now();
+      const err = await call().then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(StorageError);
+      expect((err as StorageError).code).toBe('unreachable');
+      expect(Date.now() - started).toBeLessThan(5_000);
+    }
+  }, 15_000);
 });
 
 const S3_ENDPOINT = process.env.S3_TEST_ENDPOINT ?? '';

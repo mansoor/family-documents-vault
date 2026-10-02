@@ -1123,6 +1123,38 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'an owner removes their own document from the Trash for good, and it is gone (5.24)',
+    run: async (api, ctx) => {
+      // Signed in afresh: removing for good asks to confirm it's you, and a
+      // sign-in is that, for five minutes.
+      const { access_token: token } = await signIn(api, ctx);
+      const made = await api.createDocument(token, { title: 'A mistaken upload' });
+      // Only from the Trash.
+      const early = await refusal(api.purgeDocument(token, made.id));
+      expect(early).toMatchObject({ status: 409, code: 'not_in_trash' });
+      expect((await api.document(token, made.id)).id).toBe(made.id);
+
+      await api.deleteDocument(token, made.id);
+      const trash = await api.documents(token, { deleted: 'true' });
+      const binned = trash.items.find((d) => d.id === made.id);
+      // Nobody has asked: it is the owner's own, and goes at once.
+      expect(binned).toMatchObject({
+        purge_requested_at: null,
+        purge_allowed_from: null,
+        purge_at_once: true,
+      });
+      expect(await api.purgeDocument(token, made.id)).toEqual({ removed: true });
+
+      const gone = await refusal(api.document(token, made.id));
+      expect(gone.status).toBe(404);
+      const after = await api.documents(token, { deleted: 'true' });
+      expect(after.items.map((d) => d.id)).not.toContain(made.id);
+      // Gone is gone: asked again, there is nothing to remove.
+      const again = await refusal(api.purgeDocument(token, made.id));
+      expect(again).toMatchObject({ status: 404, code: 'not_found' });
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

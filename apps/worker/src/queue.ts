@@ -37,6 +37,12 @@ export const JOBS = {
    * (the API's SHARE_PAGES_PRUNE_JOB), and every household's each night.
    */
   sharePagesPrune: 'share.pages.prune',
+  /**
+   * The files of documents removed for good that could not be deleted then
+   * (5.24): one household's when the API's removal asks (its
+   * PURGE_LEFTOVERS_JOB), and every household's each night.
+   */
+  purgeLeftovers: 'purge.leftovers',
   /** Builds a full export ZIP with indexes. */
   exportBuild: 'export.build',
   /**
