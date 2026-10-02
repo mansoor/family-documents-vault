@@ -25,6 +25,13 @@
 -- and the link's (0042) still hold every write as before. And that
 -- somebody has passed away is an owner's to say, or the vault's
 -- (member_versioned refuses anybody else signed in).
+--
+-- Nobody signs in as somebody who has passed away. Their sign-in is taken
+-- away first: member_versioned refuses to record the passing of somebody
+-- who still has one; and account_household_not_deceased refuses them one
+-- afterwards — an invitation accepted, a sign-in given back — whoever asks.
+-- It holds the person's row while it looks, so a passing recorded at the
+-- same moment is waited for, and seen.
 
 alter table member
   add column version    integer not null default 1
@@ -48,6 +55,11 @@ begin
     raise exception 'only an owner records that somebody has passed away'
       using errcode = 'insufficient_privilege';
   end if;
+  if new.is_deceased and not old.is_deceased
+     and exists (select 1 from account_household ah where ah.member_id = new.id) then
+    raise exception 'somebody who can still sign in is not recorded as passed away'
+      using errcode = 'check_violation';
+  end if;
   new.version := old.version + 1;
   new.updated_at := now();
   new.updated_by := app_account();
@@ -56,6 +68,27 @@ end $$;
 
 create trigger member_versioned before update on member
   for each row execute function member_versioned();
+
+-- With the owner's rights, so that it sees and holds the person's row
+-- whoever is asking: a signed-out page accepting an invitation, the vault
+-- itself, an owner giving a sign-in back.
+create function account_household_not_deceased() returns trigger
+  language plpgsql security definer
+  set search_path = pg_catalog, public, pg_temp as $$
+declare
+  dead boolean;
+begin
+  select m.is_deceased into dead from member m where m.id = new.member_id for share;
+  if dead then
+    raise exception 'somebody recorded as passed away is not given a sign-in'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end $$;
+
+create trigger account_household_not_deceased before insert or update of member_id
+  on account_household
+  for each row execute function account_household_not_deceased();
 
 -- The roles of A66, each named, so a role added later changes nobody until
 -- it is taught here. Change them with canChangePerson (roles.ts);

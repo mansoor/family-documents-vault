@@ -2329,7 +2329,18 @@ conflict`; `is_deceased: true` for somebody who can still sign in, `409
 signed_in` ("… Take their sign-in away first, then record that they
       have passed away."); and a change to `is_deceased`, either way, asks
       for a step-up, `403 step_up_required` with `action: "change_people"`
-      (any credential, as `change_people` always has).
+      (any credential, as `change_people` always has). Recording a passing
+      takes back, in the same change, every invitation still waiting for
+      them (an `invitation.revoked` line each, as one taken back by hand).
+    - **Changed:** nobody recorded as passed away is given a sign-in. `POST
+/members/{id}/invite` (and `POST /invitations` with their `member_id`),
+      accepting an invitation for them (`POST /invitations/accept` and the
+      path form), and `POST /members/{id}/sign-in` answer `409 passed_away`
+      ("Grandad is recorded as having passed away, so they can't be given a
+      sign-in."), and nothing is made.
+    - **Changed:** `POST /api/v1/members` checks `date_of_birth` as the
+      PATCH does: a real day, not after tomorrow; otherwise `422
+validation_failed`. It took any `YYYY-MM-DD` before.
     - **Added:** `GET /api/v1/members/{id}/account` — an owner's view of
       somebody's sign-in, read-only: `{ member_id, role, email, two_step,
 passkeys, last_signed_in_at, devices: [{ label, client, last_used_at,
@@ -2343,7 +2354,8 @@ offline }] }` — `two_step` is two-step sign-in with an authenticator app,
       account id, and nothing secret. Anybody but an owner: `404 not_found`
       ("That page does not exist."), whoever's card they ask for, their own
       included. A person with no sign-in: `404 not_found` ("They have no
-      sign-in to show."). Not audited, as a thumbnail is not.
+      sign-in to show."). Each card given is a line in the activity log
+      (below); a refusal writes none.
     - **Changed (A54): new owner powers refuse an owner without two-step
       sign-in.** A power added from this release on — today only `GET
 /api/v1/members/{id}/account`; later the locks, owner-started resets and
@@ -2367,7 +2379,9 @@ step_up_required` with **new** `action: "manage_sign_ins"` ("Please
       `member.deceased` ("Mansoor recorded that Grandad has passed away",
       or "took back the record that…"), notable, with `detail.deceased`.
       Both are the family's, as a member's lines are: owners, adults and
-      teens.
+      teens. And `member.account_viewed` ("Mansoor looked at Sara's
+      sign-in"), notable, with no detail at all, for the owners and for the
+      person looked at, nobody else (a viewer reads no log).
     - The database: 0046 adds `member.version`, `updated_at` and
       `updated_by` (an account; null for the vault itself), which the
       trigger `member_versioned` keeps — nobody sets them — and which
@@ -2376,8 +2390,11 @@ step_up_required` with **new** `action: "manage_sign_ins"` ("Please
       that holds A66 for every kind of caller (the vault itself; an owner;
       an adult, themselves and anybody with no sign-in; a teen, themselves;
       nobody else); and `session.factor_verified_at`, when the session last
-      saw a passkey or a code. The restore check knows the trigger and the
-      rule.
+      saw a passkey or a code. `member_versioned` also refuses to record the
+      passing of somebody who has a sign-in, and the trigger
+      `account_household_not_deceased` refuses a sign-in to somebody
+      recorded as passed away, whoever asks, holding the person's row while
+      it looks. The restore check knows both triggers and the rule.
     - `@fdv/shared`: `MemberEdit`, `MemberAccount`, `MemberAccountDevice`,
       `FACTOR_STEP_UPS`, `canChangeDetails`, `DETAILS_REFUSAL`,
       `DECEASED_REFUSAL`, `DECEASED_SIGNED_IN`, and the capability

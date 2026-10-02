@@ -274,6 +274,7 @@ function AboutCard(props: {
             setSaid('Details saved.');
             setEditing(false);
           }}
+          onStale={props.onChanged}
           onCancel={() => setEditing(false)}
         />
       ) : props.rows.length > 0 ? (
@@ -316,6 +317,12 @@ function EditDetails(props: {
   name: string;
   owner: boolean;
   onSaved: () => Promise<void>;
+  /**
+   * Somebody else saved first: the screen reads them again, so that the
+   * card, the name above it and the next form are what they saved, not
+   * what this one was opened with (the 5.25 review).
+   */
+  onStale: () => Promise<void>;
   onCancel: () => void;
 }) {
   const { guarded } = useApp();
@@ -371,6 +378,7 @@ function EditDetails(props: {
         setConflict(
           `Someone else changed ${props.name}’s details while you were editing. What they saved is shown now: make your changes again, then save.`,
         );
+        void props.onStale();
       } else {
         setError(describeError(err));
       }
@@ -521,7 +529,7 @@ function AccountCard(props: { member: Member; name: string }) {
           <p className="muted">
             The address {props.name} signs in with, how, and where they are signed in. Only owners
             can see it, after confirming it’s them with a passkey or a code from their authenticator
-            app.
+            app. Each look is noted in the activity log, for the owners and {props.name}.
           </p>
           <ErrorNote message={error} />
           <Button kind="quiet" disabled={busy} onClick={() => void show()}>

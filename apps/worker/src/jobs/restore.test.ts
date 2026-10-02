@@ -1182,6 +1182,19 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     } finally {
       await sql(vault.adminUrl, 'alter table public.member enable trigger member_versioned');
     }
+    // A sign-in, free to be given to somebody recorded as passed away.
+    await sql(
+      vault.adminUrl,
+      'alter table public.account_household disable trigger account_household_not_deceased',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.account_household enable trigger account_household_not_deceased',
+      );
+    }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 });

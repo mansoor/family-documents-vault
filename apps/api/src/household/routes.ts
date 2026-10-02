@@ -201,7 +201,7 @@ export function registerHousehold(
       if (p.role !== 'owner') throw notFound();
       const id = params(idParam, req).id;
       await stepUp.requireOwnerPower(p, 'manage_sign_ins');
-      return household.account(p, id);
+      return household.account(p, id, metaOf(req));
     });
   }
 

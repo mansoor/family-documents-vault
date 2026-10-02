@@ -590,6 +590,12 @@ const GUARDS = [
   // A person's version moves on with every change to their details, and an
   // owner alone says somebody has passed away (0046).
   { name: 'member_versioned', table: 'member', fn: 'member_versioned' },
+  // And nobody recorded as passed away is given a sign-in (0046).
+  {
+    name: 'account_household_not_deceased',
+    table: 'account_household',
+    fn: 'account_household_not_deceased',
+  },
 ];
 
 /**

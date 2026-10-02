@@ -379,6 +379,199 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
     expect(lines.some((l) => l.text === 'Owner changed Aisha Khan’s relationship')).toBe(true);
   });
 
+  it('a date of birth is checked the same way when a person is added: a real day, not to come', async () => {
+    const add = (date_of_birth: string) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/members',
+        headers: h.as(owner),
+        payload: { display_name: 'Baby', date_of_birth },
+      });
+    const soon = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    for (const day of ['2016-02-30', '12/05/2016', soon]) {
+      const refused = await add(day);
+      expect(refused.statusCode, day).toBe(422);
+      expect(code(refused).code).toBe('validation_failed');
+    }
+    const added = await add('2020-02-29');
+    expect(added.statusCode, added.body).toBe(201);
+    expect(json<MemberView>(added).date_of_birth).toBe('2020-02-29');
+  });
+
+  describe('nobody signs in as somebody recorded as passed away', () => {
+    let peer = 0;
+    const from = () => `10.53.${++peer >> 8}.${peer & 0xff}`;
+    const add = async (display_name: string) => {
+      const r = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/members',
+        headers: h.as(owner),
+        payload: { display_name },
+      });
+      expect(r.statusCode, r.body).toBe(201);
+      return json<MemberView>(r).id;
+    };
+    const invite = (who: Tokens, id: string, email: string, role = 'adult') =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${id}/invite`,
+        headers: h.as(who),
+        payload: { email, role },
+      });
+    const accept = (made: { link_token: string; code: string }) =>
+      h.app.inject({
+        method: 'POST',
+        url: `/api/v1/invitations/${made.link_token}/accept`,
+        payload: { code: made.code, password: 'a long enough password' },
+        remoteAddress: from(),
+      });
+    const memberships = (id: string) =>
+      withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('account_household')
+          .select('account_id')
+          .where('member_id', '=', id)
+          .execute(),
+      );
+
+    it('an invitation waiting when the passing is recorded is taken back, and can no longer be accepted', async () => {
+      const nana = await add('Nana');
+      const made = await invite(owner, nana, 'nana-525@example.test');
+      expect(made.statusCode, made.body).toBe(201);
+      const link = json<{ link_token: string; code: string; invitation: { id: string } }>(made);
+      expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+      const passed = await edit(owner, nana, { is_deceased: true });
+      expect(passed.statusCode, passed.body).toBe(200);
+      // Taken back, and the log says so, as one taken back by hand.
+      const invitations = json<{ items: Array<{ id: string; state: string }> }>(
+        await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+      ).items;
+      expect(invitations.find((i) => i.id === link.invitation.id)?.state).toBe('revoked');
+      const lines = (await activity()).slice(0, 2).map((l) => l.text);
+      expect(lines).toContain('Owner cancelled the invitation to nana-525@example.test');
+      expect(lines).toContain('Owner recorded that Nana has passed away');
+      const late = await accept(link);
+      expect(late.statusCode).toBe(404);
+      expect(code(late).code).toBe('invitation_not_valid');
+      expect(await memberships(nana)).toEqual([]);
+    });
+
+    it('an invitation still live for somebody recorded as passed away is refused at its acceptance', async () => {
+      // Recorded by some other way than the API's (the vault itself), so
+      // the invitation is still live: its acceptance asks for itself.
+      const aunt = await add('Great-aunt');
+      const link = json<{ link_token: string; code: string }>(
+        await invite(owner, aunt, 'aunt-525@example.test'),
+      );
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx.updateTable('member').set({ is_deceased: true }).where('id', '=', aunt).execute(),
+      );
+      const refused = await accept(link);
+      expect(refused.statusCode).toBe(409);
+      expect(code(refused)).toMatchObject({
+        code: 'passed_away',
+        message: "Great-aunt is recorded as having passed away, so they can't be given a sign-in.",
+      });
+      expect(await memberships(aunt)).toEqual([]);
+    });
+
+    it('nobody is invited to sign in as them, by an owner or an adult', async () => {
+      const grandpa = await add('Grandpa');
+      expect((await edit(owner, grandpa, { is_deceased: true })).statusCode).toBe(200);
+      for (const [who, role] of [
+        [owner, 'adult'],
+        [adult, 'teen'],
+      ] as const) {
+        const refused = await invite(who, grandpa, `grandpa-${role}-525@example.test`, role);
+        expect(refused.statusCode, `${who.role}`).toBe(409);
+        expect(code(refused).code).toBe('passed_away');
+      }
+      const listed = json<{ items: Array<{ member_id: string }> }>(
+        await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+      ).items;
+      expect(listed.some((i) => i.member_id === grandpa)).toBe(false);
+    });
+
+    it('a sign-in taken away is not given back to somebody recorded as passed away', async () => {
+      const bob = await h.join(owner, {
+        name: 'Uncle Bob',
+        email: 'bob-525@example.test',
+        role: 'adult',
+      });
+      const removed = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${bob.member_id}/sign-in`,
+        headers: h.as(owner),
+      });
+      expect(removed.statusCode, removed.body).toBe(204);
+      expect((await edit(owner, bob.member_id, { is_deceased: true })).statusCode).toBe(200);
+      const back = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${bob.member_id}/sign-in`,
+        headers: h.as(owner),
+        payload: { role: 'adult' },
+      });
+      expect(back.statusCode).toBe(409);
+      expect(code(back)).toMatchObject({
+        code: 'passed_away',
+        message: "Uncle Bob is recorded as having passed away, so they can't be given a sign-in.",
+      });
+      expect(await memberships(bob.member_id)).toEqual([]);
+      // And his password signs nobody in.
+      const signIn = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        payload: { email: 'bob-525@example.test', password: 'another correct horse' },
+        remoteAddress: from(),
+      });
+      expect(signIn.statusCode).toBe(403);
+      expect(code(signIn).code).toBe('no_household');
+    });
+
+    it('the database holds it too, whoever asks: no sign-in for them, no passing for somebody signed in', async () => {
+      const gran = await add('Gran');
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx.updateTable('member').set({ is_deceased: true }).where('id', '=', gran).execute(),
+      );
+      const given = withSystem(h.db, owner.household_id, async (trx) => {
+        const account = await trx
+          .insertInto('account')
+          .values({ email: 'gran-525@example.test', password_hash: 'x' })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        await trx
+          .insertInto('account_household')
+          .values({
+            account_id: account.id,
+            household_id: owner.household_id,
+            member_id: gran,
+            role: 'adult',
+          })
+          .execute();
+      });
+      await expect(given).rejects.toMatchObject({ code: '23514' });
+      // Nor moved onto them.
+      const moved = withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('account_household')
+          .set({ member_id: gran })
+          .where('member_id', '=', teen.member_id)
+          .execute(),
+      );
+      await expect(moved).rejects.toMatchObject({ code: '23514' });
+      // And somebody who can still sign in is not recorded as passed away.
+      const passing = withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('member')
+          .set({ is_deceased: true })
+          .where('id', '=', teen.member_id)
+          .execute(),
+      );
+      await expect(passing).rejects.toMatchObject({ code: '23514' });
+      expect((await person(owner, teen.member_id)).is_deceased).toBe(false);
+    });
+  });
+
   it('an owner with a passkey and no two-step is let see a sign-in, after the passkey and never the password', async () => {
     // This owner signed in with a password alone: A54 refuses them first.
     const refused = await h.app.inject({
@@ -698,6 +891,51 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     // The owner's own: theirs to see, as anybody's.
     const own = await card(owner, owner.member_id);
     expect(json<MemberAccount>(own)).toMatchObject({ role: 'owner', two_step: true });
+  });
+
+  it('a look at a sign-in is a line for the owners and the person looked at, written only when the card is given', async () => {
+    const looks = () =>
+      withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('audit_event')
+          .select(['object_type', 'object_id', 'detail', 'actor_account_id'])
+          .where('action', '=', 'member.account_viewed')
+          .orderBy('id')
+          .execute(),
+      );
+    const before = (await looks()).length;
+    // Refused, however: nothing written.
+    expect((await card(teen, adult.member_id)).statusCode).toBe(404);
+    await goStale();
+    expect(code(await card(owner, adult.member_id)).code).toBe('step_up_required');
+    expect((await stepUp(owner, { code: codeFor(secret) })).statusCode).toBe(200);
+    expect((await card(owner, child)).statusCode).toBe(404);
+    expect(await looks()).toHaveLength(before);
+
+    // Given: one line, about Sara, saying nothing of what the card said.
+    expect((await card(owner, adult.member_id)).statusCode).toBe(200);
+    const after = await looks();
+    expect(after).toHaveLength(before + 1);
+    expect(after.at(-1)).toMatchObject({
+      object_type: 'member',
+      object_id: adult.member_id,
+      detail: {},
+    });
+
+    const lines = async (who: Tokens) =>
+      json<{ items: ActivityLine[] }>(
+        await h.app.inject({ url: '/api/v1/audit?limit=100', headers: h.as(who) }),
+      ).items;
+    const said = 'Owner looked at Sara’s sign-in';
+    // The owners, and Sara herself: as news.
+    for (const who of [owner, adult]) {
+      expect((await lines(who)).find((l) => l.text === said)?.notable, who.role).toBe(true);
+    }
+    // Not a teen of the family; a viewer reads no log at all.
+    expect((await lines(teen)).some((l) => /looked at .* sign-in/.test(l.text))).toBe(false);
+    expect((await h.app.inject({ url: '/api/v1/audit', headers: h.as(viewer) })).statusCode).toBe(
+      403,
+    );
   });
 
   it('no route changes another person’s sign-in email', async () => {

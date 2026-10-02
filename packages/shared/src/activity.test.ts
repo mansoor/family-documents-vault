@@ -98,6 +98,14 @@ describe('the activity log, in sentences', () => {
       text: 'Mansoor took back the record that Aisha Khan has passed away',
       notable: true,
     });
+    // An owner's look at a sign-in: news, and nothing of what it showed.
+    expect(said('member.account_viewed', 'm-mansoor', { email: 'x@example.test' })).toMatchObject({
+      text: 'Mansoor looked at Aisha Khan’s sign-in',
+      notable: true,
+    });
+    expect(said('member.account_viewed', 'm-aisha', {})?.text).toBe(
+      'Aisha Khan looked at their own sign-in',
+    );
   });
 
   it('says whose photo was added, changed or removed, and never anything of the picture (5.17c)', () => {

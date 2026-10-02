@@ -30,7 +30,10 @@ export function InvitePanel(props: {
   const pending = props.invitations.filter((i) => i.state === 'pending');
   // Somebody whose sign-in was taken away is given it back, not invited:
   // an invitation would hand their private documents to whoever accepts it.
-  const withoutSignIn = props.members.filter((m) => !m.has_account && !m.sign_in_removed);
+  // Nobody signs in as somebody who has passed away (5.25).
+  const withoutSignIn = props.members.filter(
+    (m) => !m.has_account && !m.sign_in_removed && !m.is_deceased,
+  );
 
   if (created) {
     return <HandOver created={created} onDone={() => setCreated(null)} />;

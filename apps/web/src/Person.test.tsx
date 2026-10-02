@@ -769,6 +769,68 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     expect(aisha.relationship).toBe('Niece');
   });
 
+  it('after a conflict, Cancel shows what they saved, and the next save is made to their version', async () => {
+    const aisha = { ...AISHA_KHAN, version: 1 };
+    const state = fresh({ members: [ME, aisha] });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const about = await screen.findByRole('region', { name: 'About' });
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    // Meanwhile, somebody else saves her relationship.
+    Object.assign(aisha, { relationship: 'Sister', version: 2 });
+    const form = within(about).getByRole('form', { name: 'Aisha’s details' });
+    fireEvent.change(within(form).getByLabelText('Relationship (optional)'), {
+      target: { value: 'Niece' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(about).findByRole('alert');
+    // Gone without saving: the card says what they saved.
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    expect(await within(about).findByText('Sister')).toBeInTheDocument();
+    expect(within(about).queryByText('Daughter')).not.toBeInTheDocument();
+    // Opened again, it starts from their version, and saves first time.
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    const again = within(about).getByRole('form', { name: 'Aisha’s details' });
+    expect(within(again).getByLabelText('Relationship (optional)')).toHaveValue('Sister');
+    fireEvent.change(within(again).getByLabelText('Relationship (optional)'), {
+      target: { value: 'Niece' },
+    });
+    fireEvent.click(within(again).getByRole('button', { name: 'Save' }));
+    expect(await within(about).findByText('Details saved.')).toBeInTheDocument();
+    expect(edits(state).map((e) => e.ifMatch)).toEqual(['"1"', '"2"']);
+    expect(within(about).getByText('Niece')).toBeInTheDocument();
+  });
+
+  it('nobody is offered a sign-in for somebody recorded as passed away', async () => {
+    // Bob had a sign-in, taken away; then he passed away. Gran never had one.
+    const bob = {
+      ...AISHA,
+      id: 'm-3',
+      display_name: 'Uncle Bob',
+      sign_in_removed: true,
+      is_deceased: true,
+    };
+    const gran = { ...AISHA, id: 'm-4', display_name: 'Gran', is_deceased: true };
+    installFakeApi(fresh({ members: [ME, bob, gran, { ...AISHA_KHAN }] }));
+    signedIn();
+    at('/people/m-3');
+    const { unmount } = render(<App />);
+    expect(await screen.findByText('Passed away')).toBeInTheDocument();
+    await screen.findByRole('region', { name: 'About' });
+    expect(
+      screen.queryByRole('heading', { name: 'Give Uncle Bob their sign-in back' }),
+    ).not.toBeInTheDocument();
+    unmount();
+    // Nor named among those who could be invited.
+    at('/people');
+    render(<App />);
+    const line = await screen.findByText(/no sign-in yet/);
+    expect(line).toHaveTextContent('Aisha Khan has no sign-in yet.');
+    expect(line).not.toHaveTextContent(/Gran|Uncle Bob/);
+  });
+
   it('who is offered Edit details: an adult, themselves and anybody with no sign-in; a teen themselves; a viewer nobody', async () => {
     const me = { ...ME, relationship: 'Me' };
     const offered = async (role: 'adult' | 'teen' | 'viewer', id: string) => {

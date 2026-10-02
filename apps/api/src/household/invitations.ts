@@ -1,7 +1,15 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, withSystem, type Db } from '@fdv/db';
-import { can, capabilityToInvite, refusalFor, roleLabel, ROLES, type Role } from '@fdv/shared';
+import {
+  can,
+  capabilityToInvite,
+  DECEASED_NO_SIGN_IN,
+  refusalFor,
+  roleLabel,
+  ROLES,
+  type Role,
+} from '@fdv/shared';
 import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -244,10 +252,12 @@ export class InvitationService {
   private async existingMember(trx: Db, memberId: string): Promise<string> {
     const member = await trx
       .selectFrom('member')
-      .select(['id', 'display_name'])
+      .select(['id', 'display_name', 'is_deceased'])
       .where('id', '=', memberId)
       .executeTakeFirst();
     if (!member) throw notFound('That person');
+    // Nobody signs in as somebody who has passed away (5.25).
+    if (member.is_deceased) throw passedAway(member.display_name);
     const held = await trx
       .selectFrom('account_household')
       .select(['account_id'])
@@ -512,12 +522,17 @@ export class InvitationService {
     const accountId = await withSystem(this.db, householdId, async (trx) => {
       // Read it again inside the writing transaction: between the check and
       // here, somebody may have revoked it.
-      const row = await this.live(trx, token);
+      const invited = await this.live(trx, token);
+      // The person, held: a passing recorded at the same moment (5.25) is
+      // waited for, and seen — and so is the invitation it takes back.
       const member = await trx
         .selectFrom('member')
-        .select(['display_name'])
-        .where('id', '=', row.member_id)
+        .select(['display_name', 'is_deceased'])
+        .where('id', '=', invited.member_id)
+        .forUpdate()
         .executeTakeFirstOrThrow();
+      const row = await this.live(trx, token);
+      if (member.is_deceased) throw passedAway(member.display_name);
       await this.mustNeverHaveSignedIn(trx, row.member_id, member.display_name);
       const passwordHash = await argon2.hash(input.password, ARGON2);
       const email = input.email ?? row.email;
@@ -606,6 +621,9 @@ function stateOf(r: {
   if (r.expires_at.getTime() < Date.now()) return 'expired';
   return 'pending';
 }
+
+/** Somebody recorded as passed away is not given a sign-in (5.25). */
+const passedAway = (name: string) => new ApiError(409, 'passed_away', DECEASED_NO_SIGN_IN(name));
 
 /** "j•••@example.com": enough for its owner to recognise, not enough to use (5.3). */
 export function maskedEmail(email: string): string {

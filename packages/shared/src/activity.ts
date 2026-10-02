@@ -220,6 +220,15 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           : `${who} changed ${possessive(personOf(e))} ${what}`,
       );
     }
+    // An owner's look at somebody's sign-in (5.25): news, to the owners and
+    // to them, and never what the card said.
+    case 'member.account_viewed':
+      return line(
+        isOwn(e)
+          ? `${who} looked at their own sign-in`
+          : `${who} looked at ${possessive(personOf(e))} sign-in`,
+        true,
+      );
     case 'member.deceased':
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)

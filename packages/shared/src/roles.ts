@@ -441,6 +441,13 @@ export const DECEASED_SIGNED_IN = (name: string) =>
   `${name} can still sign in. Take their sign-in away first, then record that they have passed away.`;
 
 /**
+ * Said to whoever would give a sign-in to somebody recorded as passed away
+ * (5.25): an invitation made or accepted, a sign-in given back.
+ */
+export const DECEASED_NO_SIGN_IN = (name: string) =>
+  `${name} is recorded as having passed away, so they can't be given a sign-in.`;
+
+/**
  * Whether someone may change a person's details (5.25): their name, date of
  * birth and relationship. Whose, as a photo's, is `canChangePerson` (A66);
  * that somebody has passed away, an owner's alone (`DECEASED_REFUSAL`).

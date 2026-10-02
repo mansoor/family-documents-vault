@@ -36,16 +36,6 @@ export const profileBody = z
   .partial()
   .strict();
 
-export const memberBody = z.object({
-  display_name: z.string().trim().min(1).max(120),
-  date_of_birth: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .nullable()
-    .optional(),
-  relationship: z.string().trim().max(60).nullable().optional(),
-});
-
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A day that is one, and has come: tomorrow too, for a family a time zone ahead. */
@@ -59,17 +49,29 @@ function bornOn(day: string): boolean {
 }
 
 /**
+ * A date of birth (5.25), as a person is added (POST /members) and as they
+ * are changed (PATCH): a day that is one, and has come.
+ */
+const dateOfBirth = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Give the date of birth as a date.')
+  .refine(bornOn, 'That date of birth is not a day that has been yet.');
+
+/** POST /members: a person with no sign-in. Their date of birth as a change takes it (5.25). */
+export const memberBody = z.object({
+  display_name: z.string().trim().min(1).max(120),
+  date_of_birth: dateOfBirth.nullable().optional(),
+  relationship: z.string().trim().max(60).nullable().optional(),
+});
+
+/**
  * PATCH /members/{id} (5.25): what is sent is changed, and nothing else. A
  * blank relationship is none.
  */
 export const memberEditBody = z
   .object({
     display_name: z.string().trim().min(1, 'Give them a name.').max(120),
-    date_of_birth: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Give the date of birth as a date.')
-      .refine(bornOn, 'That date of birth is not a day that has been yet.')
-      .nullable(),
+    date_of_birth: dateOfBirth.nullable(),
     relationship: z.string().trim().max(60).nullable(),
     is_deceased: z.boolean(),
   })
@@ -384,6 +386,13 @@ export class HouseholdService {
         .forUpdate()
         .executeTakeFirst();
       if (!current) throw new ApiError(403, 'forbidden', DETAILS_REFUSAL);
+      // Whether they can sign in, as it is now they are held: an invitation
+      // accepted a moment ago is a sign-in.
+      const signedIn = await trx
+        .selectFrom('account_household')
+        .select(['role'])
+        .where('member_id', '=', current.id)
+        .executeTakeFirst();
       const next = {
         display_name: input.display_name ?? current.display_name,
         date_of_birth:
@@ -401,13 +410,27 @@ export class HouseholdService {
         (k) => next[k] !== current[k],
       );
       if (fields.length === 0 && !passing) return { id: current.id, stale: false };
-      if (passing && next.is_deceased && role !== null) {
+      if (passing && next.is_deceased && signedIn) {
         throw new ApiError(409, 'signed_in', DECEASED_SIGNED_IN(current.display_name));
       }
       // Asked here, with the person held: whether it is asked depends on
       // what they are now (as a kind of document made visible to more
       // people asks, 0.5.10).
       if (passing) await this.stepUp?.require(p, 'change_people', trx);
+      // Nobody signs in as them afterwards: an invitation still waiting for
+      // them is taken back with the passing, and said so, as one taken back
+      // by hand is.
+      const withdrawn =
+        passing && next.is_deceased
+          ? await trx
+              .updateTable('invitation')
+              .set({ revoked_at: new Date(), revoked_by: p.accountId })
+              .where('member_id', '=', current.id)
+              .where('accepted_at', 'is', null)
+              .where('revoked_at', 'is', null)
+              .returning(['id', 'email'])
+              .execute()
+          : [];
       const changed = await trx
         .updateTable('member')
         .set(next)
@@ -442,6 +465,17 @@ export class HouseholdService {
           ip: meta.ip,
         });
       }
+      for (const invitation of withdrawn) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'invitation.revoked',
+          objectType: 'invitation',
+          objectId: invitation.id,
+          detail: { email: invitation.email, why: 'passed_away' },
+          ip: meta.ip,
+        });
+      }
       return { id: current.id, stale: false };
     });
     // Read afresh, the change made and let go.
@@ -466,8 +500,12 @@ export class HouseholdService {
    * offline. Never an address a device signed in from, a user agent, an id,
    * or anything secret. The route has asked who is asking (A54); a person
    * with no sign-in, or nobody of the family, is 404.
+   *
+   * Each look is a line in the activity log, `member.account_viewed`, for
+   * the owners and the person looked at: written as the card is given, so
+   * a refusal writes none, and saying nothing of what the card said.
    */
-  async account(p: Principal, requested: string): Promise<MemberAccount> {
+  async account(p: Principal, requested: string, meta: RequestMeta): Promise<MemberAccount> {
     if (p.role !== 'owner' || !UUID.test(requested)) throw notInFamily();
     return withPrincipal(this.db, p, async (trx) => {
       const row = await trx
@@ -528,6 +566,14 @@ export class HouseholdService {
           last_used_at: s.last_used_at.toISOString(),
           offline: s.offline_expires_at !== null && new Date(s.offline_expires_at).getTime() > now,
         }));
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.account_viewed',
+        objectType: 'member',
+        objectId: row.id,
+        ip: meta.ip,
+      });
       return {
         member_id: row.id,
         role: row.role,
