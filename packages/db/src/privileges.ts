@@ -52,6 +52,25 @@ begin
   if to_regprocedure('public.share_session_find(bytea)') is not null then
     grant execute on function public.share_session_find(bytea) to fdv_app;
   end if;
+  -- A link's rules since 0042 ask them what it reaches now: its share while
+  -- live, its documents and their files, its collection and its sharer. And
+  -- the activity log's next line is chained through its last hash, which a
+  -- link may not read the log for.
+  if to_regprocedure('public.app_live_share()') is not null then
+    grant execute on function public.app_live_share() to fdv_app;
+    grant execute on function public.app_link_documents() to fdv_app;
+    grant execute on function public.app_link_versions() to fdv_app;
+    grant execute on function public.app_link_collection() to fdv_app;
+    grant execute on function public.app_link_sharer() to fdv_app;
+    grant execute on function public.audit_chain_head(uuid) to fdv_app;
+    -- And what a link's own lines in the activity log may say (5.19 review).
+    grant execute on function public.app_link_label() to fdv_app;
+    grant execute on function public.app_link_may_name(text, uuid) to fdv_app;
+    grant execute on function public.app_link_locked() to fdv_app;
+    -- What a link's lines may be and say, one place each (the third review).
+    grant execute on function public.app_link_audit_actions() to fdv_app;
+    grant execute on function public.app_link_line_keys(text) to fdv_app;
+  end if;
   -- The migrations' own record, and the suggestion rules every household
   -- shares, are the vault's: the application only reads them.
   if to_regclass('public.schema_migration') is not null then

@@ -163,8 +163,14 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
     const byName = (a: { name: string }, b: { name: string }) => (a.name < b.name ? -1 : 1);
     expect(rules.sort(byName)).toEqual([
       { name: 'doc_collection_actor', tbl: 'doc_collection', restrictive: true },
+      // 0042's (5.19): a collection's link reads, and nobody but the family
+      // and the vault writes.
+      { name: 'doc_collection_actor_insert', tbl: 'doc_collection', restrictive: true },
       { name: 'doc_collection_changes', tbl: 'doc_collection', restrictive: true },
       { name: 'doc_collection_item_actor', tbl: 'doc_collection_item', restrictive: true },
+      { name: 'doc_collection_item_actor_delete', tbl: 'doc_collection_item', restrictive: true },
+      { name: 'doc_collection_item_actor_insert', tbl: 'doc_collection_item', restrictive: true },
+      { name: 'doc_collection_item_actor_update', tbl: 'doc_collection_item', restrictive: true },
       { name: 'doc_collection_item_collection', tbl: 'doc_collection_item', restrictive: true },
       { name: 'doc_collection_item_tenant', tbl: 'doc_collection_item', restrictive: false },
       { name: 'doc_collection_only_me', tbl: 'doc_collection', restrictive: true },

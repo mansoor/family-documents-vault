@@ -102,6 +102,71 @@ describe('the activity log, in sentences', () => {
     ).toBe('Shared link (the GP) looked at the pages of “Home insurance policy”');
   });
 
+  it('says a collection was shared, and what followed it out, never how many (5.19)', () => {
+    const aCollection = (over: Partial<ActivityEvent>) =>
+      ev({
+        object_type: 'collection',
+        object_id: 'col-1',
+        object_title: null,
+        collection_name: 'For the lawyer',
+        ...over,
+      });
+    expect(
+      describeEvent(
+        aCollection({
+          action: 'share.created',
+          detail: {
+            recipient_label: 'Jane Smith',
+            follow_collection: true,
+            document_ids: ['doc-1', 'doc-2'],
+          },
+        }),
+      )?.text,
+    ).toBe(
+      'Sarah made a link to the collection “For the lawyer” for Jane Smith, which keeps up with it',
+    );
+    expect(
+      describeEvent(
+        aCollection({
+          action: 'share.opened',
+          actor: null,
+          actor_label: 'shared link (Jane Smith)',
+        }),
+      )?.text,
+    ).toBe('Shared link (Jane Smith) opened the collection “For the lawyer”');
+    expect(describeEvent(aCollection({ action: 'share.revoked' }))?.text).toBe(
+      'Sarah took back a link to the collection “For the lawyer”',
+    );
+    expect(
+      describeEvent(aCollection({ action: 'share.revoked', detail: { why: 'collection_deleted' } }))
+        ?.text,
+    ).toBe(
+      'A link to the collection “For the lawyer” stopped working: Sarah deleted the collection',
+    );
+    expect(
+      describeEvent(aCollection({ action: 'share.revoked', detail: { why: 'collection_only_me' } }))
+        ?.text,
+    ).toBe(
+      'A link to the collection “For the lawyer” stopped working: Sarah made the collection Only me',
+    );
+    expect(describeEvent(aCollection({ action: 'share.resumed' }))?.text).toBe(
+      'Sarah turned a link to the collection “For the lawyer” back on after a restore',
+    );
+    const followed = describeEvent(
+      ev({ action: 'share.followed', collection_name: 'For the lawyer' }),
+    );
+    expect(followed).toMatchObject({
+      text: 'Sarah put “Home insurance policy” in the collection “For the lawyer”, and a link that keeps up with it sent it outside the family',
+      notable: true,
+      document_id: 'doc-1',
+    });
+    // No line says how many went, nor gives an id.
+    const said = describeEvent(
+      aCollection({ action: 'share.created', detail: { document_ids: ['doc-1', 'doc-2'] } }),
+    )?.text;
+    expect(said).not.toMatch(/doc-|2|two/);
+  });
+
   it('never prints an id when it has no name', () => {
     const line = describeEvent(ev({ actor: null, actor_label: null, object_title: null }));
     expect(line?.text).toBe('Somebody downloaded a document');

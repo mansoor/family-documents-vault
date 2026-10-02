@@ -67,6 +67,8 @@ describe('buildCapabilities', () => {
       member_photos: true,
       // 5.18: a link until a date and time, to view or to download, so many opens.
       share_options: true,
+      // 5.19: a collection shared outside, as ticked, checked on every request.
+      collection_shares: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

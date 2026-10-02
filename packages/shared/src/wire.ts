@@ -1,6 +1,6 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
-import type { Role } from './roles.js';
-import type { SharePages, SharePermission } from './shares.js';
+import type { CollectionAudience, Role } from './roles.js';
+import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 
 /**
  * The shapes that travel over the wire, written once.
@@ -217,8 +217,21 @@ export interface ResetPreview {
 
 export interface Share {
   id: string;
-  document_id: string;
+  /**
+   * The document it gives. Null for a link to a collection (5.19), which
+   * says `collection_id` instead: a client that looks for a document's
+   * links finds none of those.
+   */
+  document_id: string | null;
   document_title: string | null;
+  /** A link to a collection (5.19): which, and its name now. Absent from older vaults. */
+  collection_id?: string | null;
+  collection_name?: string | null;
+  /**
+   * It also gives what is put in the collection later, for the whole of its
+   * audience, and lasts 30 days at most (5.19, A19).
+   */
+  follow_collection?: boolean;
   recipient_label: string | null;
   created_by_name: string | null;
   created_at: string;
@@ -292,6 +305,49 @@ export interface CreatedShare {
   pin?: string;
 }
 
+/**
+ * `GET /collections/{id}/share-preview` (5.19): what the share sheet
+ * offers. The documents in the collection the sharer can see — none they
+ * cannot, and no count of them — each ticked when everybody the collection
+ * is for may see it, and otherwise not, with why (`collectionShareItem`).
+ */
+export interface CollectionSharePreview {
+  collection_id: string;
+  collection_name: string;
+  audience: CollectionAudience;
+  items: CollectionShareItem[];
+}
+
+export interface CollectionShareItem {
+  document_id: string;
+  title: string | null;
+  type_label: string | null;
+  /** Ticked for you: everybody the collection is for may see it. */
+  ticked: boolean;
+  /** Why not: 'adults' and 'private' may be ticked anyway; 'no_file' cannot go. */
+  lock: CollectionShareLock | null;
+  /** In words, beside it: COLLECTION_SHARE_REASONS[lock]. */
+  reason: string | null;
+  /** The vault can draw its pages, so it can go on a link to view (A22). */
+  viewable: boolean;
+}
+
+/**
+ * `POST /collections/{id}/shares` (5.19): the documents ticked, at least one
+ * unless the link follows the collection, and 5.18's options. Always asks to
+ * confirm it's you (`step_up_required`, action `share_collection`).
+ * `follow_collection` sends what an owner or an adult puts in the collection
+ * later too, for the whole of its audience, and such a link lasts 30 days
+ * at most. `left_out_ids`, what the sheet offered and was left unticked: for
+ * a link that keeps up, never to follow, even if it leaves the collection
+ * before the link is made (absent from older clients: what is in it then).
+ */
+export interface CollectionShareInput extends ShareInput {
+  document_ids: string[];
+  follow_collection?: boolean;
+  left_out_ids?: string[];
+}
+
 /** What protects a link (0.5.14): its PIN. 5.20 adds a password and an emailed code. */
 export type ShareProtection = 'pin';
 
@@ -311,6 +367,10 @@ export interface ShareLinkPreview {
   permission?: SharePermission;
   /** How many more times Open will work; null for no limit (5.18). */
   opens_left?: number | null;
+  /** A document, or a collection (5.19). Absent from older vaults: a document. */
+  kind?: 'document' | 'collection';
+  /** A collection's name, withheld while a protection is on, as a title is (5.19). */
+  collection_name?: string | null;
 }
 
 /** A document inside an opened link (0.5.14). */
@@ -350,6 +410,13 @@ export interface SharedSession {
   permission?: SharePermission;
   /** How many more documents may be downloaded; null for no limit (5.18). */
   downloads_left?: number | null;
+  /**
+   * A document, or a collection (5.19): then `items` are the documents it
+   * gives now, as its sharer may still see them, and nothing says how many
+   * others there are. Absent from older vaults: a document.
+   */
+  kind?: 'document' | 'collection';
+  collection_name?: string | null;
 }
 
 export interface SharePreview {

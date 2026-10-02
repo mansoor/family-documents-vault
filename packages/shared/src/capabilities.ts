@@ -98,6 +98,14 @@ export interface CapabilityFeatures {
    * is true.
    */
   share_options?: boolean;
+  /**
+   * A collection can be shared outside the family (5.19): GET
+   * /collections/{id}/share-preview, POST /collections/{id}/shares (always
+   * with step-up), links to collections in GET /shares, and the recipient's
+   * page giving each document the link still gives. Absent from older
+   * vaults.
+   */
+  collection_shares?: boolean;
 }
 
 export interface CapabilityLimits {

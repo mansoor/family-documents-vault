@@ -1,5 +1,5 @@
 import type { DocumentView } from './documents.js';
-import type { CollectionAudience } from './roles.js';
+import type { CollectionAudience, Role } from './roles.js';
 
 /**
  * Collections of documents (5.14), as the API answers them.
@@ -32,6 +32,46 @@ export interface CollectionView {
   updated_at: string;
   /** For If-Match on a change. */
   etag: string;
+  /**
+   * Shared outside the family by a link that still works (5.19): with whom,
+   * as each link names them — only to readers GET /shares would give the
+   * link, and never how many documents went — and whether any of them
+   * keeps up with it, so that what is put in it goes too. Null when it is
+   * not. Absent from older vaults.
+   */
+  shared_outside?: CollectionSharedOutside | null;
+}
+
+/** A collection's links outside the family, as the family is told of them (5.19). */
+export interface CollectionSharedOutside {
+  /**
+   * Whom each is for, as its sharer named them: only the links GET /shares
+   * gives the reader (who may share, and made it or can see all it holds).
+   */
+  with: string[];
+  /** A link keeps up with the collection: what is put in it goes too, if its audience may see it. */
+  following: boolean;
+}
+
+/**
+ * The warning beside a collection shared outside, where documents are put
+ * in it (5.19): "This collection is shared with Jane Smith", and whether
+ * what goes in now goes to them too. Only what an owner or an adult puts in
+ * a collection follows its link (the 5.19 review): a teen, `role`, is told
+ * that what they put in stays in the family.
+ */
+export function sharedOutsideWords(shared: CollectionSharedOutside, role?: Role | null): string {
+  const names = shared.with.filter((n) => n.trim() !== '');
+  const whom =
+    names.length === 0
+      ? 'This collection is shared outside the family'
+      : names.length === 1
+        ? `This collection is shared with ${names[0]}`
+        : `This collection is shared with ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  if (!shared.following) return `${whom}. What you put in it now is not sent.`;
+  return role === 'owner' || role === 'adult' || role == null
+    ? `${whom}. What you put in it goes to them too, if everybody the collection is for may see it.`
+    : `${whom}. What you put in it stays in the family: only what an owner or an adult puts in goes to them.`;
 }
 
 export interface CollectionItemView {

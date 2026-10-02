@@ -2,6 +2,8 @@ import {
   canSee,
   canSeeCollection,
   collectionItemHint,
+  collectionShareItem,
+  COLLECTION_SHARE_REASONS,
   inCollectionAudience,
   nextReminder,
   reminderOf,
@@ -26,6 +28,8 @@ export interface FakeCollection {
   etag: string;
   /** The documents in it, by id, in the order they were put there. */
   items: string[];
+  /** Shared outside by a link that still works (5.19); left out, it is not. */
+  shared_outside?: { with: string[]; following: boolean } | null;
 }
 
 export interface FakeState {
@@ -179,6 +183,19 @@ export interface FakeState {
     fields: string[];
     crop: Record<string, number> | null;
   }>;
+  /**
+   * `features.collection_shares` (5.19): a collection can be shared outside.
+   * Left out, the vault says so when it has collections.
+   */
+  collectionShares?: boolean;
+  /**
+   * The link the page at /s opens is to a collection (5.19): its name, and
+   * the documents it gives now. Left out, it is to one document.
+   */
+  shareCollection?: {
+    name: string | null;
+    items: Array<{ id: string; title: string; filename: string }>;
+  };
   /**
    * GET /documents/{id}/issuer-suggestions, by document id: who its pages
    * say issued it. A document not here answers 'unavailable'.
@@ -468,6 +485,9 @@ export function installFakeApi(state: FakeState) {
           passkeys: true,
           custom_types: true,
           ...(state.collections ? { collections: true } : {}),
+          ...(state.collections && state.collectionShares !== false
+            ? { collection_shares: true }
+            : {}),
           reminder_dates: state.reminderDates ?? true,
           share_options: true,
         },
@@ -901,25 +921,29 @@ export function installFakeApi(state: FakeState) {
         'That link is not valid any more. Ask whoever sent it for a new one.',
       );
     const view = state.sharePermission === 'view';
+    const sharedItem = (id: string, title: string, filename: string) => ({
+      id,
+      title,
+      type_label: 'Lease or tenancy agreement',
+      filename,
+      content_type: 'application/pdf',
+      byte_size: 1024,
+      pages: view ? (state.sharePages ?? { state: 'ready', shown: 2, total: 2 }) : null,
+      downloaded: Boolean(state.shareDownloaded),
+    });
     const linkSession = () => ({
       household_name: 'The Seikh family',
       shared_by: 'Mansoor Seikh',
       expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
       session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
-      items: [
-        {
-          id: 'doc-shared',
-          title: 'Flat 3 tenancy agreement',
-          type_label: 'Lease or tenancy agreement',
-          filename: 'tenancy.pdf',
-          content_type: 'application/pdf',
-          byte_size: 1024,
-          pages: view ? (state.sharePages ?? { state: 'ready', shown: 2, total: 2 }) : null,
-          downloaded: Boolean(state.shareDownloaded),
-        },
-      ],
+      items: state.shareCollection
+        ? state.shareCollection.items.map((i) => sharedItem(i.id, i.title, i.filename))
+        : [sharedItem('doc-shared', 'Flat 3 tenancy agreement', 'tenancy.pdf')],
       permission: state.sharePermission ?? 'download',
       downloads_left: view ? null : (state.shareDownloadsLeft ?? null),
+      ...(state.shareCollection
+        ? { kind: 'collection', collection_name: state.shareCollection.name }
+        : { kind: 'document' }),
     });
     // Opened as often as it allows (5.18): said plainly, before and at Open.
     const usedUp = () =>
@@ -936,9 +960,15 @@ export function installFakeApi(state: FakeState) {
         shared_by: 'Mansoor Seikh',
         protection: state.sharePin ? ['pin'] : [],
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
-        document_title: state.sharePin ? null : 'Flat 3 tenancy agreement',
+        document_title: state.sharePin || state.shareCollection ? null : 'Flat 3 tenancy agreement',
         permission: state.sharePermission ?? 'download',
         opens_left: state.shareOpensLeft ?? null,
+        ...(state.shareCollection
+          ? {
+              kind: 'collection',
+              collection_name: state.sharePin ? null : state.shareCollection.name,
+            }
+          : { kind: 'document' }),
       });
     }
     if (path === '/api/v1/shared/unlock' && method === 'POST') {
@@ -1673,6 +1703,7 @@ function answerCollections(
     created_at: '2026-09-26T10:00:00Z',
     updated_at: '2026-09-26T10:00:00Z',
     etag: l.etag,
+    shared_outside: l.shared_outside ?? null,
   });
   const detail = (l: FakeCollection, from = 0, limit = state.collectionPageSize ?? 50) => {
     const docs = docsOn(l);
@@ -1787,6 +1818,114 @@ function answerCollections(
     // Never pushed: the array may be another test's.
     state.collections = [...all, made];
     return json(detail(made), 201);
+  }
+  // Sharing a collection outside (5.19), as the vault answers it: who may,
+  // then the collection, then — for a link — confirming it's you, always.
+  const sharing = /^\/api\/v1\/collections\/([^/]+)\/(share-preview|shares)$/.exec(path);
+  if (sharing) {
+    if (!['owner', 'adult'].includes(role)) {
+      return refuse(403, 'forbidden', 'Only an adult can share a document outside the family.');
+    }
+    const l = all.find((x) => x.id === sharing[1]);
+    if (!l || !seesCollection(l)) return noCollection();
+    if (l.audience === 'only_me') {
+      return refuse(
+        422,
+        'collection_only_me',
+        'An Only me collection is yours alone, so it cannot be shared outside the family. Change who it is for first.',
+      );
+    }
+    const drawable = !state.versionMime || state.versionMime === 'application/pdf';
+    if (sharing[2] === 'share-preview' && method === 'GET') {
+      return json({
+        collection_id: l.id,
+        collection_name: l.name,
+        audience: l.audience,
+        items: docsOn(l).map((d) => {
+          const offer = collectionShareItem(l.audience, {
+            visibility: String(d.visibility),
+            has_file: Boolean(d.latest_version_id),
+          });
+          return {
+            document_id: d.id,
+            title: d.title ?? null,
+            type_label: null,
+            ticked: offer.ticked,
+            lock: offer.lock,
+            reason: offer.lock ? COLLECTION_SHARE_REASONS[offer.lock] : null,
+            viewable: drawable,
+          };
+        }),
+      });
+    }
+    if (sharing[2] === 'shares' && method === 'POST') {
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to share a collection outside the family.',
+          { action: 'share_collection' },
+        );
+      }
+      const b = body as {
+        document_ids: string[];
+        follow_collection?: boolean;
+        recipient_label?: string;
+        expires_at?: string;
+        permission?: 'view' | 'download';
+        max_opens?: number | null;
+        with_pin?: boolean;
+      };
+      if (!b.document_ids.every((id) => docsOn(l).some((d) => d.id === id))) {
+        return refuse(404, 'not_found', 'That document is not in this collection.');
+      }
+      const end = new Date(b.expires_at ?? Date.now() + 7 * 864e5);
+      const share = {
+        id: `sh-${state.shares.length}`,
+        document_id: null,
+        document_title: null,
+        collection_id: l.id,
+        collection_name: l.name,
+        follow_collection: Boolean(b.follow_collection),
+        recipient_label: b.recipient_label ?? null,
+        created_by_name: 'Mansoor Seikh',
+        created_at: new Date().toISOString(),
+        expires_at: end.toISOString(),
+        has_pin: Boolean(b.with_pin),
+        open_count: 0,
+        last_opened_at: null,
+        state: 'active',
+        flow: 'v2',
+        permission: b.permission ?? 'download',
+        max_opens: b.max_opens ?? null,
+        max_downloads: null,
+        downloads_used: 0,
+        pages: null,
+        summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September at 17:00.${b.follow_collection ? ' Keeps up with the collection.' : ''}`,
+      };
+      state.shares.push(share);
+      const was = l.shared_outside ?? { with: [], following: false };
+      state.collections = all.map((x) =>
+        x.id === l.id
+          ? {
+              ...x,
+              shared_outside: {
+                with: b.recipient_label ? [...was.with, b.recipient_label] : was.with,
+                following: was.following || Boolean(b.follow_collection),
+              },
+            }
+          : x,
+      );
+      return json(
+        {
+          share,
+          link_token: 'share-secret-0123456789abcdef',
+          link_url: state.shareLinkUrl ?? null,
+          ...(b.with_pin ? { pin: '4821' } : {}),
+        },
+        201,
+      );
+    }
   }
   const at = /^\/api\/v1\/collections\/([^/]+)(\/items(?:\/([^/]+))?)?$/.exec(path);
   if (at?.[2] && !at[3] && method === 'POST') {

@@ -6,6 +6,31 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.21] - 2026-09-28 — iteration 5.19
+
+Share a collection.
+
+### Added
+
+- **Share a collection** with someone outside the family — the solicitor, the mortgage adviser — in one link. The sheet ticks what everyone the collection is for may see; anything else is shown unticked with the reason ("Adults only — include anyway?"), and a private document can never go. The recipient gets exactly what was ticked, each document checked again on every visit, and never learns how many were left out.
+- **Keep it up to date**: a collection's link can follow it, so documents an owner or adult puts in later go out too — only those everyone the collection is for, now and when the link was made, may see, never one left unticked, never a teen's. Such a link lasts 30 days at most. Adding to a collection that is shared outside says who it is shared with.
+- Sharing a collection always asks you to confirm it's you, and when someone else shares one of your collections you are told by email (who, not what or with whom).
+- The end date, view only and "opened so many times" options from 0.5.20 work for a collection's link too.
+- Settings → Sharing lists a collection's links to those who may share and can see the collection and everything in it; they can take one back.
+
+### Changed
+
+- Deleting a collection or making it Only me ends its links at once, even while someone is opening them; turning it back does not bring them back.
+- A link taken back says who took it back, and a collection's link says when it ended with its collection.
+- A recipient whose link ends while a page or a download is on its way is told the link has stopped working, and nothing is counted.
+- Activity times now come from the database's clock.
+
+### Security
+
+- A shared link's own activity lines are checked by the database as they are written: its own name, only documents it gives, the log's latest line, and only what a line of its kind may say — so the tamper check always verifies.
+- A share link reaches only what its page needs, in every table of the household and none of the sign-in tables.
+- A collection's link's activity (opened, downloaded, looked at) is shown only to those who are given the link.
+
 ## [0.5.20] - 2026-09-28 — iteration 5.18
 
 Share links: until a date and time, view or download, so many opens.

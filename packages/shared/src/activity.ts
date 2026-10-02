@@ -214,26 +214,57 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} withdrew a request about an owner’s role`);
 
     // ---------------------------------------------------------- shares
-    case 'share.created':
+    // 5.19: a link to a collection is a line about the collection, said
+    // only to whoever may see it, by its name now and never with how many
+    // documents went; each document's download or look is a line about
+    // that document, as for any link.
+    case 'share.created': {
+      const to = e.object_type === 'collection' ? collection : doc;
+      const follows =
+        e.object_type === 'collection' && detail.follow_collection === true
+          ? ', which keeps up with it'
+          : '';
       return line(
-        `${who} made a ${detail.permission === 'view' ? 'view-only ' : ''}link to ${doc}${text(detail.recipient_label) ? ` for ${text(detail.recipient_label)}` : ''}`,
+        `${who} made a ${detail.permission === 'view' ? 'view-only ' : ''}link to ${to}${text(detail.recipient_label) ? ` for ${text(detail.recipient_label)}` : ''}${follows}`,
         true,
       );
+    }
     case 'share.opened':
-      return line(`${who} opened ${doc}`);
+      return line(`${who} opened ${e.object_type === 'collection' ? collection : doc}`);
+    // 5.19: put in a collection whose link keeps up with it, so sent out too.
+    case 'share.followed':
+      return line(
+        `${who} put ${doc} in ${collection}, and a link that keeps up with it sent it outside the family`,
+        true,
+      );
     case 'share.downloaded':
       return line(`${who} downloaded ${doc}`);
     // 5.18: a view-only link's pages, looked at; once a session, as a download is.
     case 'share.viewed':
       return line(`${who} looked at the pages of ${doc}`);
-    case 'share.revoked':
-      return line(`${who} took back a link to ${doc}`);
+    case 'share.revoked': {
+      const to = e.object_type === 'collection' ? collection : doc;
+      // 5.19: a collection deleted, or made Only me, ends its links.
+      if (detail.why === 'collection_deleted') {
+        return line(`A link to ${to} stopped working: ${who} deleted the collection`);
+      }
+      if (detail.why === 'collection_only_me') {
+        return line(`A link to ${to} stopped working: ${who} made the collection Only me`);
+      }
+      return line(`${who} took back a link to ${to}`);
+    }
     // 0.5.14: the tenth wrong PIN, written down once; the tries before it
     // are counted, never logged.
     case 'share.locked':
-      return line(`A link to ${doc} stopped working: its PIN was typed wrong ten times`, true);
+      return line(
+        `A link to ${e.object_type === 'collection' ? collection : doc} stopped working: its PIN was typed wrong ten times`,
+        true,
+      );
     case 'share.resumed':
-      return line(`${who} turned a link to ${doc} back on after a restore`, true);
+      return line(
+        `${who} turned a link to ${e.object_type === 'collection' ? collection : doc} back on after a restore`,
+        true,
+      );
 
     // ------------------------------------------------------- the vault
     case 'household.created':

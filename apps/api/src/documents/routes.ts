@@ -10,6 +10,7 @@ import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
 import {
+  collectionShareBody,
   openBody,
   previewBody,
   SHARE_COOKIE,
@@ -554,6 +555,37 @@ export function registerDocuments(
     return reply.status(201).send(created);
   });
 
+  // ------------------------------------------------ a collection (5.19)
+
+  /**
+   * What the share sheet offers: the documents in the collection the sharer
+   * can see, each ticked or not, with why. A teen is refused (A18); a
+   * collection that is not there for the caller is 404.
+   */
+  app.get<{ Params: { id: string } }>('/api/v1/collections/:id/share-preview', auth, async (req) =>
+    shares.collectionPreview(principal(req), parse(idParam, req.params).id),
+  );
+
+  /**
+   * A link to a collection. Every one asks to confirm it's you, whatever is
+   * in it (A19): otherwise one session picked up from an unlocked device
+   * could send the adults' will, tax and medical papers out in one link.
+   * Who may, and that the collection is there for them, first: nobody is
+   * asked for a credential about a collection they are not given.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/v1/collections/:id/shares',
+    auth,
+    async (req, reply) => {
+      const id = parse(idParam, req.params).id;
+      const body = parse(collectionShareBody, req.body ?? {});
+      await shares.shareableCollection(principal(req), id);
+      if (stepUp) await stepUp.require(principal(req), 'share_collection');
+      const created = await shares.createForCollection(principal(req), id, body, metaOf(req));
+      return reply.status(201).send(created);
+    },
+  );
+
   app.get('/api/v1/shares', auth, async (req) => ({ items: await shares.list(principal(req)) }));
 
   app.delete<{ Params: { id: string } }>('/api/v1/shares/:id', auth, async (req, reply) => {
@@ -573,10 +605,15 @@ export function registerDocuments(
   app.post<{ Params: { id: string } }>('/api/v1/shares/:id/resume', auth, async (req) => {
     const id = parse(idParam, req.params).id;
     // Who may, first; then, since a link turned back on opens its document
-    // without a sign-in again, what making it asked (SEC-17).
-    const documentId = await shares.resumable(principal(req), id);
-    const ask = stepUp ? await docs.stepUpForDocument(principal(req), documentId) : null;
-    if (stepUp && ask) await stepUp.require(principal(req), ask);
+    // without a sign-in again, what making it asked (SEC-17): for a
+    // collection's, always (5.19).
+    const target = await shares.resumable(principal(req), id);
+    if (target.collection_id !== null) {
+      if (stepUp) await stepUp.require(principal(req), 'share_collection');
+    } else if (target.document_id !== null) {
+      const ask = stepUp ? await docs.stepUpForDocument(principal(req), target.document_id) : null;
+      if (stepUp && ask) await stepUp.require(principal(req), ask);
+    }
     return shares.resume(principal(req), id, metaOf(req));
   });
 

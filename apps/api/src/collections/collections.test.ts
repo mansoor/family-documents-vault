@@ -18,6 +18,7 @@ import {
   inCollectionAudience,
   refusalFor,
   ROLES,
+  withinCollectionAudience,
   type ActivityLine,
   type Capabilities,
   type CollectionDetail,
@@ -289,6 +290,8 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
       ).items;
       expect(ofDoc.find((x) => x.id === collection.id)?.item_count, who).toBe(expected[who].length);
       // Nothing says how many are hidden: no field but these, anywhere.
+      // (shared_outside, 5.19, says whether a link outside still works for
+      // it, with whom — never what or how many.)
       expect(Object.keys(l ?? {}).sort()).toEqual(
         [
           'audience',
@@ -303,6 +306,7 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
           'name',
           'next_cursor',
           'owner_member_id',
+          'shared_outside',
           'updated_at',
         ].sort(),
       );
@@ -1284,6 +1288,29 @@ describe.skipIf(!testAdminUrl())('collections of documents', () => {
             const known = ROLES.find((r) => r === role);
             expect(rows[0]?.has, `${role} ${audience}`).toBe(
               known ? inCollectionAudience(known, audience) : false,
+            );
+          }
+        }
+      } finally {
+        await admin.end();
+      }
+    });
+
+    it('what a whole audience may see is the same here as in @fdv/shared (5.19)', async () => {
+      // What a link that keeps up with its collection sends later
+      // (collection_audience_sees, 0042; withinCollectionAudience).
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        for (const audience of [...COLLECTION_AUDIENCES, 'public', '', null]) {
+          for (const visibility of ['household', 'adults', 'private', 'secret', '', null]) {
+            const { rows } = await admin.query<{ sees: boolean }>(
+              'select collection_audience_sees($1, $2) as sees',
+              [audience, visibility],
+            );
+            expect(rows[0]?.sees, `${audience} ${visibility}`).toBe(
+              audience !== null && visibility !== null
+                ? withinCollectionAudience(audience, visibility)
+                : false,
             );
           }
         }

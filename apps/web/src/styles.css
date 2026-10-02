@@ -963,9 +963,13 @@ h3 {
 }
 
 .check input {
+  /* Its size whatever the label: a long one wraps, it does not squeeze the box. */
+  flex: none;
   width: 22px;
   height: 22px;
-  margin-top: 2px;
+  /* Flush with the text around it: its label starts 32px in, and what is
+     said under a label (a share sheet's notes) is set in by as much. */
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 
@@ -1504,6 +1508,53 @@ a.btn {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* 5.19: a collection's documents in its share sheet — a box and a title,
+   and under the title, with a padlock, why one is not ticked for you. */
+.share-items {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.list li.share-item {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+/* A box with something said just under its label (the share sheet's why
+   not, and what Keep it up to date means): the box in the first column,
+   the label and then what is said in the second, 2px apart — never pushed
+   down by the row's tap height, which the two of them fill together (the
+   5.19 review's second round). */
+.check.check-noted {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 2px;
+  align-content: start;
+}
+
+.check.check-noted > :not(input) {
+  grid-column: 2;
+}
+
+.share-item-why {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.share-item-why.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* Keep it up to date: what it means, just under its label. */
+.share-follow-note {
+  margin: 0;
 }
 
 /* A view-only link's pages, one under another, each as wide as the card. */

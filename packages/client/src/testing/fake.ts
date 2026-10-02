@@ -628,6 +628,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           member_photos: true,
           // A link's options (5.18): an end at a time, to view, so many opens.
           share_options: true,
+          // A collection shared outside (5.19), as the vault says.
+          collection_shares: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1508,6 +1510,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         created_at: l.created_at,
         updated_at: l.updated_at,
         etag: collectionTag(l),
+        // The fake shares nothing outside the family (5.19): no link works for any.
+        shared_outside: null,
       });
       /** A collection and a page of what is in it: its first, unless asked. */
       const detail = (

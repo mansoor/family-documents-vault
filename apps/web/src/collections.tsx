@@ -3,6 +3,7 @@ import {
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_NAME_MAX,
   inCollectionAudience,
+  sharedOutsideWords,
   type Capabilities,
   type CollectionAudience,
   type CollectionView,
@@ -420,6 +421,13 @@ export function AddToCollection(props: {
                 <span className="muted">
                   {audienceLabel(l.audience)} · {documentsWord(l.item_count)}
                 </span>
+                {/* Shared outside the family (5.19): said before anything goes
+                    in, and heard with its Add button (W519-3). */}
+                {l.shared_outside && (
+                  <span id={`add-shared-${l.id}`} className="status status-warn">
+                    {sharedOutsideWords(l.shared_outside, role)}
+                  </span>
+                )}
               </span>
               {on.has(l.id) ? (
                 <span className="muted">
@@ -430,6 +438,7 @@ export function AddToCollection(props: {
                 <Button
                   kind="quiet"
                   ariaLabel={`Add to “${l.name}”`}
+                  {...(l.shared_outside ? { describedBy: `add-shared-${l.id}` } : {})}
                   disabled={adding !== null}
                   onClick={() => void add(l)}
                 >

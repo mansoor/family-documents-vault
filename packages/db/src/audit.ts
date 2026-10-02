@@ -89,27 +89,43 @@ interface Stored {
  * kept it lower case, and the chain then read as tampered with for ever
  * after (the 5.17c review). The rows already written are unchanged, and so
  * is the rule `verifyAuditChain` checks.
+ *
+ * The previous hash is read through `audit_chain_head()` (0042), with the
+ * database owner's rights and only for the caller's own household: a share
+ * link writes its own lines to the log, and may read none of it (5.19). For
+ * the same reason nothing is read back from the insert.
  */
-export async function appendAudit(trx: Db, input: AuditInput): Promise<number> {
+export async function appendAudit(trx: Db, input: AuditInput): Promise<void> {
   const detailJson = JSON.stringify(input.detail ?? {});
-  // The lock is taken in the same statement, on the household as stored.
-  const stored = await sql<Stored>`
+  // The lock is taken in the same statement, on the household as stored;
+  // and whether the database has the chain's head to ask (a schema from
+  // before 0042, which the migrations' own tests write to, has not).
+  const stored = await sql<Stored & { chained: boolean }>`
     select pg_advisory_xact_lock(hashtext('audit:' || ${input.householdId}::uuid::text)),
            ${input.householdId}::uuid::text as household_id,
            ${input.actorAccountId ?? null}::uuid::text as actor_account_id,
            ${input.objectId ?? null}::uuid::text as object_id,
-           ${detailJson}::jsonb as detail`.execute(trx);
-  const canon = stored.rows[0] as Stored;
+           ${detailJson}::jsonb as detail,
+           to_regprocedure('public.audit_chain_head(uuid)') is not null as chained`.execute(trx);
+  const canon = stored.rows[0] as Stored & { chained: boolean };
 
-  const last = await trx
-    .selectFrom('audit_event')
-    .select('hash')
-    .where('household_id', '=', canon.household_id)
-    .orderBy('id', 'desc')
-    .limit(1)
-    .executeTakeFirst();
-
-  const at = new Date();
+  // The line's time is the database's, to the millisecond the hash keeps,
+  // taken once the log is held: the rule a link's line is checked by
+  // compares it with the database's clock, never with this process's (the
+  // 5.19 review's second round) — however far apart the two drift.
+  const head = canon.chained
+    ? await sql<{ hash: Buffer | null; at: Date }>`
+        select audit_chain_head(${canon.household_id}::uuid) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at
+      `.execute(trx)
+    : await sql<{ hash: Buffer | null; at: Date }>`
+        select (select e.hash from audit_event e
+                 where e.household_id = ${canon.household_id}::uuid
+                 order by e.id desc limit 1) as hash,
+               date_trunc('milliseconds', clock_timestamp()) as at
+      `.execute(trx);
+  const last = head.rows[0]?.hash ? { hash: head.rows[0].hash } : undefined;
+  const at = head.rows[0]?.at ?? new Date();
   const row = {
     household_id: canon.household_id,
     actor_account_id: canon.actor_account_id,
@@ -123,7 +139,7 @@ export async function appendAudit(trx: Db, input: AuditInput): Promise<number> {
   };
   const hash = computeHash(row);
 
-  const inserted = await trx
+  await trx
     .insertInto('audit_event')
     .values({
       household_id: row.household_id,
@@ -138,9 +154,7 @@ export async function appendAudit(trx: Db, input: AuditInput): Promise<number> {
       prev_hash: row.prev_hash,
       hash,
     })
-    .returning('id')
-    .executeTakeFirstOrThrow();
-  return inserted.id;
+    .execute();
 }
 
 export interface ChainVerification {

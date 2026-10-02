@@ -4,6 +4,7 @@ import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { BottomNav, Button, ErrorNote, TopBar } from '../ui.js';
+import { linkTarget } from './Sharing.js';
 
 /**
  * Settings → After a restore (5.16).
@@ -39,7 +40,7 @@ export function AfterRestoreScreen() {
           ? await guarded((t) => api.resumeShare(t, link.id))
           : await withToken((t) => api.revokeShare(t, link.id));
       if (done === null) return;
-      const what = `The link to “${link.document_title ?? 'a document'}”`;
+      const what = `The link to ${linkTarget(link, true)}`;
       setSaid(how === 'resume' ? `${what} works again.` : `${what} is taken back for good.`);
       await reload();
       status.current?.focus();
@@ -87,7 +88,9 @@ export function AfterRestoreScreen() {
           <ul className="list">
             {links.map((link) => (
               <li key={link.id} className="place">
-                <div className="place-title">{link.document_title ?? 'A document'}</div>
+                <div className="place-title">
+                  {link.collection_id ? linkTarget(link) : (link.document_title ?? 'A document')}
+                </div>
                 <div className="muted">
                   {[
                     link.recipient_label ? `For ${link.recipient_label}` : 'Shared by link',

@@ -100,6 +100,12 @@ export interface HarnessOptions {
   publicUrl?: string;
   /** FDV_SHARE_MAX_DAYS: the longest a share link may last (5.18). */
   shareMaxDays?: number;
+  /**
+   * FDV_RATE_LIMIT_PER_MINUTE: for a file whose signed-in calls, all from one
+   * address, pass the 300 a minute on a fast runner. Routes with their own
+   * limit keep it.
+   */
+  rateLimitPerMinute?: number;
 }
 
 export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -115,6 +121,9 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     FDV_LOCAL_VAULT_DIR: vaultDir,
     LOG_LEVEL: 'error',
     ...(opts.shareMaxDays ? { FDV_SHARE_MAX_DAYS: String(opts.shareMaxDays) } : {}),
+    ...(opts.rateLimitPerMinute
+      ? { FDV_RATE_LIMIT_PER_MINUTE: String(opts.rateLimitPerMinute) }
+      : {}),
   });
   const vaults = new VaultService(db, deriveKey(TEST_MASTER, 'vault-credentials'), vaultDir);
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
