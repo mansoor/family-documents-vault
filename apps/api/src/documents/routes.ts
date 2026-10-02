@@ -6,6 +6,7 @@ import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { errorForLog } from '../log-redaction.js';
+import { presentedDeviceCookies } from '../public/device-cookie.js';
 import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
@@ -542,6 +543,12 @@ export function registerDocuments(
   if (!shares) return;
 
   const idParam = z.object({ id: z.string().uuid() });
+  /**
+   * The "this device only" cookies a browser brought (5.20): every
+   * `fdv_share_device_<kid>`, whichever key made it (ROT-C-03).
+   */
+  const devicesOf = (req: FastifyRequest) =>
+    presentedDeviceCookies(req.cookies, SHARE_DEVICE_COOKIE);
   const tokenParam = z.object({ token: z.string().min(16).max(256) });
 
   app.post<{ Params: { id: string } }>('/api/v1/documents/:id/share', auth, async (req, reply) => {
@@ -634,7 +641,7 @@ export function registerDocuments(
   // cookie for this path alone, whose hash is all the vault keeps.
 
   app.post('/api/v1/shared/preview', tight, async (req) =>
-    shares.previewLink(parse(previewBody, req.body ?? {}).token, req.cookies[SHARE_DEVICE_COOKIE]),
+    shares.previewLink(parse(previewBody, req.body ?? {}).token, devicesOf(req)),
   );
 
   /**
@@ -645,7 +652,7 @@ export function registerDocuments(
     try {
       return await shares.sendCode(
         parse(codeBody, req.body ?? {}).token,
-        req.cookies[SHARE_DEVICE_COOKIE],
+        devicesOf(req),
         metaOf(req),
       );
     } catch (err) {
@@ -666,7 +673,7 @@ export function registerDocuments(
     const opened = await shares.unlock(
       parse(unlockBody, req.body ?? {}),
       metaOf(req),
-      req.cookies[SHARE_DEVICE_COOKIE],
+      devicesOf(req),
     );
     // Always Secure: browsers keep a Secure cookie from http://localhost,
     // and a vault that outsiders reach is reached over https (the
@@ -682,7 +689,7 @@ export function registerDocuments(
     // A link for one device (5.20): which browser this is, sent back on its
     // next Open, and kept by the vault only as a hash.
     if (opened.device) {
-      void reply.setCookie(SHARE_DEVICE_COOKIE, opened.device, {
+      void reply.setCookie(opened.device.name, opened.device.value, {
         ...scoped,
         maxAge: SHARE_DEVICE_MAX_AGE_S,
       });
@@ -691,7 +698,7 @@ export function registerDocuments(
   });
 
   app.get('/api/v1/shared/items', inSession, async (req) =>
-    shares.sessionItems(req.cookies[SHARE_COOKIE], req.cookies[SHARE_DEVICE_COOKIE]),
+    shares.sessionItems(req.cookies[SHARE_COOKIE], devicesOf(req)),
   );
 
   app.get<{ Params: { doc: string } }>(
@@ -703,7 +710,7 @@ export function registerDocuments(
         req.cookies[SHARE_COOKIE],
         doc,
         metaOf(req),
-        req.cookies[SHARE_DEVICE_COOKIE],
+        devicesOf(req),
       );
       return sendShared(reply, file);
     },
@@ -728,7 +735,7 @@ export function registerDocuments(
         doc,
         n,
         metaOf(req),
-        req.cookies[SHARE_DEVICE_COOKIE],
+        devicesOf(req),
       );
       reply.header('content-type', 'image/jpeg');
       reply.header('cache-control', 'private, no-store');

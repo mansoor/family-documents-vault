@@ -332,7 +332,9 @@ test('a password link for this device only opens in the first browser, and no ot
   await expect(page.getByRole('link', { name: 'Download tenancy.pdf' })).toBeVisible();
   expect(await opens(request, made)).toBe(1);
   // Which browser this is: a cookie its script cannot read, for the share routes alone.
-  const device = (await page.context().cookies()).find((c) => c.name === 'fdv_share_device');
+  const device = (await page.context().cookies()).find((c) =>
+    c.name.startsWith('fdv_share_device_'),
+  );
   expect(device).toMatchObject({ path: '/api/v1/shared', httpOnly: true, secure: true });
   expect(device?.sameSite).toBe('Strict');
 

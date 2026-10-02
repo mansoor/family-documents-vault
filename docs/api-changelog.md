@@ -1923,12 +1923,18 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       word: `401 secret_wrong`. A PIN alone still answers `401 pin_wrong`.
       The tenth locks the link (`share.locked`, the sharer told), as
       before. A link for one device binds the browser of the first Open
-      that works with a cookie, `fdv_share_device` (httpOnly, Secure,
-      SameSite=Strict, `/api/v1/shared`, kept only as a hash with the
-      link's id). Only the vault makes one — random bytes and their HMAC
-      under a key derived from the master key — and a cookie the browser
-      brings is kept only when it is one of those; any other is replaced,
-      so a cookie planted before the first open is never bound. From any
+      that works with a cookie, `fdv_share_device_<kid>` (httpOnly,
+      Secure, SameSite=Strict, `/api/v1/shared`, kept only as a hash with
+      the link's id), whose name carries a short id of the key it was made
+      under, so that after the master key is rotated the browser keeps its
+      earlier cookie beside the next and every link bound before still
+      finds its own: a binding is matched against every
+      `fdv_share_device*` cookie the browser brings. Only the vault makes
+      one — random bytes and their HMAC under a key derived from the master
+      key — and a new binding keeps the browser's cookie only when it is
+      the current key's own; any other is replaced, so a cookie planted
+      before the first open is never bound. A link bound already keeps the
+      cookie it matched, whatever key made it. From any
       other browser Open is `403 other_device` ("…opened in another
       browser already…") before anything is tried or counted, and a
       session cookie taken to another browser is refused there (`items`,
@@ -1966,9 +1972,14 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       vault, and nobody else, the family included — and
       `share_code_writes`. `share_session.verified_by` may say `password`,
       `code`, `pin+code` or `password+code`. A link may write
-      `share.code_sent`, held as 0042 holds its other lines (its own label,
-      its own document or collection, the chain's head, now). A restore
-      deletes every code.
+      `share.code_sent`, with `to` (masked) beside `share_id` and
+      `user_agent`: 0043 redefines 0042's `app_link_audit_actions()` and
+      `app_link_line_keys(action)` (as 0042 has them: stable, parallel
+      safe, its search_path, the application's to call) and nothing else,
+      so the line is held by 0042's own rule and trigger — its own label,
+      its own document or collection, the chain's head, the database's
+      clock (15 minutes behind to 1 ahead). `to` on any other line is
+      refused. A restore deletes every code.
     - `@fdv/shared`: `ShareSecretKind`, `ShareCodeSent`, `maskEmail`,
       `readShareCode`, `SHARE_PASSWORD_MIN`/`MAX`, `SHARE_CODE_*`,
       `SHARE_CODE_TRUTH`, `SHARE_CODE_UNAVAILABLE`, `SHARE_CODE_CANNOT_SEND`,

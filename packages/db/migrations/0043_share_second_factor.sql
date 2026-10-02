@@ -194,22 +194,27 @@ create trigger share_code_writes before update on share_code
 
 -- ------------------------------------------------- the activity log (0042)
 --
--- A link writes its own lines, and now one more: a code sent, with the
--- address masked. Held as 0042 holds the rest: under its own name, about
--- its own document or collection (or a document it gives), chained to the
--- log's head, and within a few minutes of now.
-alter policy audit_event_link_insert on audit_event
-  with check (case app_actor()
-                when 'link' then actor_account_id is null
-                                 and action in ('share.opened', 'share.viewed',
-                                                'share.downloaded', 'share.locked',
-                                                'share.code_sent')
-                                 and detail->>'share_id' = app_share()::text
-                                 and actor_label is not distinct from app_link_label()
-                                 and object_type in ('document', 'collection')
-                                 and app_link_may_name(object_type, object_id)
-                                 and prev_hash is not distinct from audit_chain_head(household_id)
-                                 and at between clock_timestamp() - interval '15 minutes'
-                                            and clock_timestamp() + interval '15 minutes'
-                else true
-              end);
+-- A link writes its own lines, and now one more: a code sent, which says
+-- where it went — masked (j•••@e•••.com), never the address — beside which
+-- link it is and in what browser. 0042 keeps what a link may say in two
+-- functions, which its rule (audit_event_link_insert) and its trigger
+-- (audit_event_link_line) ask; they are redefined here, and nothing else:
+-- the rule, its clock window and its other pins stay as 0042 has them.
+-- Stable, parallel safe and with 0042's search_path, as there.
+create or replace function app_link_audit_actions() returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select array['share.opened', 'share.viewed', 'share.downloaded', 'share.locked',
+                  'share.code_sent']::text[] $$;
+grant execute on function app_link_audit_actions() to fdv_app;
+
+-- Which link, and in what browser, for every action; and for a code sent,
+-- where it went, masked: `to` on any other line is refused.
+create or replace function app_link_line_keys(p_action text) returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select case p_action
+              when 'share.code_sent' then array['share_id', 'user_agent', 'to']::text[]
+              else array['share_id', 'user_agent']::text[]
+            end $$;
+grant execute on function app_link_line_keys(text) to fdv_app;

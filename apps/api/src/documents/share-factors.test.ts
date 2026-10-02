@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { deriveKey } from '@fdv/crypto';
-import { withSystem } from '@fdv/db';
+import { verifyAuditChain, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   maskEmail,
@@ -31,6 +31,11 @@ import { SHARE_CODE_KEY_PURPOSE, type CreatedShare, type ShareView } from './sha
 
 /** What "this device only" cookies are made with (shares.ts SHARE_DEVICE_KEY_PURPOSE). */
 const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
+/** The key a test vault makes them under, and the name it gives them (ROT-C-03). */
+const NOW_KEY = deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE);
+const nameOf = (key: Buffer) =>
+  `fdv_share_device_${createHmac('sha256', key).update('kid').digest('hex').slice(0, 8)}`;
+const NOW_NAME = nameOf(NOW_KEY);
 
 const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
@@ -130,37 +135,53 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
 
   // ------------------------------------------------- the recipient's calls
 
-  const preview = (token: string, device?: string) =>
+  /**
+   * A browser's "this device only" cookies, as it sends them: a value alone
+   * goes under the name the vault gives its cookies now (`fdv_share_device_<kid>`
+   * of the key in use) — where a cookie planted to be bound would be put —
+   * and a jar is sent as it is (ROT-C-03: a browser may hold one a key).
+   */
+  type Jar = Record<string, string>;
+  const jarOf = (device?: string | Jar): Jar | undefined =>
+    device === undefined ? undefined : typeof device === 'string' ? { [NOW_NAME]: device } : device;
+  const preview = (token: string, device?: string | Jar) =>
     h.app.inject({
       method: 'POST',
       url: '/api/v1/shared/preview',
       payload: { token },
-      ...(device ? { cookies: { fdv_share_device: device } } : {}),
+      ...(device ? { cookies: jarOf(device) as Jar } : {}),
       ...peer(),
     });
-  const sendCode = (token: string, extra: Record<string, unknown> = {}, device?: string) =>
+  const sendCode = (token: string, extra: Record<string, unknown> = {}, device?: string | Jar) =>
     h.app.inject({
       method: 'POST',
       url: '/api/v1/shared/code',
       payload: { token, ...extra },
-      ...(device ? { cookies: { fdv_share_device: device } } : {}),
+      ...(device ? { cookies: jarOf(device) as Jar } : {}),
       ...peer(),
     });
-  const unlock = (token: string, given: { secret?: string; code?: string } = {}, device?: string) =>
+  const unlock = (
+    token: string,
+    given: { secret?: string; code?: string } = {},
+    device?: string | Jar,
+  ) =>
     h.app.inject({
       method: 'POST',
       url: '/api/v1/shared/unlock',
       payload: { token, ...given },
-      ...(device ? { cookies: { fdv_share_device: device } } : {}),
+      ...(device ? { cookies: jarOf(device) as Jar } : {}),
       ...peer(),
     });
   const cookiesOf = (r: LightMyRequestResponse) => r.cookies as Cookie[];
+  /** A cookie the answer set: by name, or `fdv_share_device` for its device cookie, whatever its key id. */
   const cookie = (r: LightMyRequestResponse, name: string) =>
-    cookiesOf(r).find((c) => c.name === name);
-  const items = (session: string, device?: string) =>
+    cookiesOf(r).find((c) =>
+      name === 'fdv_share_device' ? /^fdv_share_device_[0-9a-f]{8}$/.test(c.name) : c.name === name,
+    );
+  const items = (session: string, device?: string | Jar) =>
     h.app.inject({
       url: '/api/v1/shared/items',
-      cookies: { fdv_share: session, ...(device ? { fdv_share_device: device } : {}) },
+      cookies: { fdv_share: session, ...(jarOf(device) ?? {}) },
       ...peer(),
     });
 
@@ -907,12 +928,13 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     // Two links bound to one browser's cookie, made before the master key
     // was rotated (`cli rotate-master-key`): it no longer verifies under the
     // key the vault derives now, but it is what they are bound to.
-    const before = mintDeviceCookie(
-      deviceCookieKey(`${TEST_MASTER}-before-rotation`, SHARE_DEVICE_KEY_PURPOSE),
-    );
+    const oldKey = deviceCookieKey(`${TEST_MASTER}-before-rotation`, SHARE_DEVICE_KEY_PURPOSE);
+    const before = mintDeviceCookie(oldKey);
     expect(
       verifiedDeviceCookie(deviceCookieKey(TEST_MASTER, SHARE_DEVICE_KEY_PURPOSE), before),
     ).toBeNull();
+    // Under the name that key gave it (ROT-C-03).
+    const jar = { [nameOf(oldKey)]: before };
     const links = [
       await made(lease, { this_device_only: true }),
       await made(lease, { this_device_only: true }),
@@ -929,17 +951,79 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     const [first, second] = links as [CreatedShare, CreatedShare];
     // Reopened twice in that browser: opened, and its cookie left as it is.
     for (let i = 0; i < 2; i++) {
-      const again = await unlock(first.link_token, {}, before);
+      const again = await unlock(first.link_token, {}, jar);
       expect(again.statusCode, again.body).toBe(200);
-      expect(cookie(again, 'fdv_share_device')?.value).toBe(before);
+      expect(cookie(again, nameOf(oldKey))?.value).toBe(before);
     }
     // So its other link still opens there too, and nowhere else.
-    const other = await unlock(second.link_token, {}, before);
+    const other = await unlock(second.link_token, {}, jar);
     expect(other.statusCode, other.body).toBe(200);
-    expect(cookie(other, 'fdv_share_device')?.value).toBe(before);
+    expect(cookie(other, nameOf(oldKey))?.value).toBe(before);
     expect((await unlock(second.link_token)).statusCode).toBe(403);
     expect(await linkRow(first.share.id)).toMatchObject({ open_count: 2, attempts: 0 });
   });
+
+  it('after a rotation a new link gives a new cookie beside the old, and the old links still open (ROT-C-03)', async () => {
+    // A link bound before the master key was rotated, to the cookie that key
+    // made, under that key's name.
+    const oldKey = deviceCookieKey(`${TEST_MASTER}-before-rotation`, SHARE_DEVICE_KEY_PURPOSE);
+    const oldName = nameOf(oldKey);
+    expect(oldName).not.toBe(NOW_NAME);
+    const before = mintDeviceCookie(oldKey);
+    const l1 = await made(lease, { this_device_only: true });
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('share_link')
+        .set({ device_hash: createHash('sha256').update(`${l1.share.id}:${before}`).digest() })
+        .where('id', '=', l1.share.id)
+        .execute(),
+    );
+    // A new link, opened in that browser: a new cookie, under the name of
+    // the key in use now — beside the old one, not over it.
+    const l2 = await made(lease, { this_device_only: true });
+    const opened2 = await unlock(l2.link_token, {}, { [oldName]: before });
+    expect(opened2.statusCode, opened2.body).toBe(200);
+    const now = cookie(opened2, 'fdv_share_device');
+    expect(now?.name).toBe(NOW_NAME);
+    expect(now?.value).not.toBe(before);
+    expect(verifiedDeviceCookie(NOW_KEY, now?.value)).toBe(now?.value);
+    expect(now).toMatchObject({
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      path: '/api/v1/shared',
+    });
+    // The browser holds both now, and each link opens with its own.
+    const jar = { [oldName]: before, [NOW_NAME]: now?.value as string };
+    const opened1 = await unlock(l1.link_token, {}, jar);
+    expect(opened1.statusCode, opened1.body).toBe(200);
+    expect(cookie(opened1, 'fdv_share_device')).toMatchObject({ name: oldName, value: before });
+    const session1 = cookie(opened1, 'fdv_share')?.value as string;
+    expect((await items(session1, jar)).statusCode).toBe(200);
+    expect((await unlock(l2.link_token, {}, jar)).statusCode).toBe(200);
+    // Neither opens with the other's alone.
+    expect((await unlock(l1.link_token, {}, { [NOW_NAME]: now?.value as string })).statusCode).toBe(
+      403,
+    );
+    expect((await unlock(l2.link_token, {}, { [oldName]: before })).statusCode).toBe(403);
+    // And a cookie the vault did not make is still never bound (F520-04),
+    // whatever the browser holds besides.
+    const l3 = await made(lease, { this_device_only: true });
+    const opened3 = await unlock(
+      l3.link_token,
+      {},
+      {
+        [oldName]: before,
+        [NOW_NAME]: 'planted-by-somebody-else',
+      },
+    );
+    expect(opened3.statusCode, opened3.body).toBe(200);
+    const bound3 = cookie(opened3, 'fdv_share_device');
+    expect(bound3?.name).toBe(NOW_NAME);
+    expect(bound3?.value).not.toBe('planted-by-somebody-else');
+    expect(verifiedDeviceCookie(NOW_KEY, bound3?.value)).toBe(bound3?.value);
+    expect((await unlock(l3.link_token, {}, 'planted-by-somebody-else')).statusCode).toBe(403);
+  }, 60_000);
 
   it('a second browser is refused', async () => {
     for (const kind of ['document', 'collection'] as const) {
@@ -1026,6 +1110,13 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     expect(masked).toBe('r•••@e•••.test');
     expect(rows[0]?.detail).toMatchObject({ code_to: masked });
     expect(rows[1]?.detail).toMatchObject({ to: masked });
+    // Written as the link, past 0042's rule and its line trigger as 0043
+    // redefines what they ask (F520-01): the chain is whole after it.
+    expect(
+      await withSystem(h.db, owner.household_id, (trx) =>
+        verifyAuditChain(trx, owner.household_id),
+      ),
+    ).toMatchObject({ ok: true });
     // Not the address, nor its name, anywhere in the log; nor in what the
     // family reads of it, nor in the list of links.
     const everything = await withSystem(h.db, owner.household_id, (trx) =>

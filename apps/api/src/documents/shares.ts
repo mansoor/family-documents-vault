@@ -26,7 +26,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { MailRequest } from '../mail-job.js';
-import { mintDeviceCookie, verifiedDeviceCookie } from '../public/device-cookie.js';
+import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { seenCollection } from '../collections/service.js';
@@ -150,7 +150,10 @@ export const SESSION_MAX_MS = 4 * 3_600_000;
  * set by the first Open that works and sent back on every later one. Scoped
  * as the session's is, and kept only as a hash on the link (with the link's
  * id, so one browser's links cannot be matched up in a dump). It lasts as
- * long as the longest link may.
+ * long as the longest link may. This is its names' prefix: each is
+ * `fdv_share_device_<kid>`, the id of the key it was made under
+ * (public/device-cookie.ts, ROT-C-03), so a rotation of the master key
+ * leaves a browser's earlier one beside its new one.
  */
 export const SHARE_DEVICE_COOKIE = 'fdv_share_device';
 export const SHARE_DEVICE_MAX_AGE_S = SHARE_MAX_DAYS * 86_400;
@@ -331,8 +334,8 @@ export interface Unlocked {
   /** Seconds until the session ends at the latest: the cookie's Max-Age. */
   maxAge: number;
   session: SharedSession;
-  /** A link for this device only (5.20): the device cookie, to set again. */
-  device?: string;
+  /** A link for this device only (5.20): its device cookie, under its own name, to set again. */
+  device?: DeviceCookie;
 }
 
 /** Whether a link turned back on after a restore is a document's or a collection's. */
@@ -354,18 +357,34 @@ const deviceHashOf = (shareId: string, cookie: string) =>
   createHash('sha256').update(`${shareId}:${cookie}`, 'utf8').digest();
 
 /**
+ * Which of the device cookies a browser brought (any `fdv_share_device*`,
+ * under whichever key it was made — ROT-C-03) a binding names; null when
+ * none does.
+ */
+function boundCookie(
+  shareId: string,
+  binding: Buffer,
+  devices: readonly DeviceCookie[],
+): DeviceCookie | null {
+  for (const c of devices) {
+    const hash = deviceHashOf(shareId, c.value);
+    if (hash.length === binding.length && timingSafeEqual(hash, binding)) return c;
+  }
+  return null;
+}
+
+/**
  * Whether this browser is not the one a link for one device was first
- * opened in (5.20). A link for any device, or one not yet opened, is
+ * opened in (5.20): none of the device cookies it brought is the one the
+ * link is bound to. A link for any device, or one not yet opened, is
  * nobody's other device.
  */
 function otherDevice(
   link: { id: string; this_device_only: boolean; device_hash: Buffer | null },
-  cookie: string | undefined,
+  devices: readonly DeviceCookie[],
 ): boolean {
   if (!link.this_device_only || link.device_hash === null) return false;
-  if (!cookie || cookie.length > 128) return true;
-  const hash = deviceHashOf(link.id, cookie);
-  return !(hash.length === link.device_hash.length && timingSafeEqual(hash, link.device_hash));
+  return boundCookie(link.id, link.device_hash, devices) === null;
 }
 
 /** Letters and digits nobody misreads on a phone call: no 0/o, 1/l/i. */
@@ -1735,14 +1754,17 @@ export class ShareService {
    * counted and nothing is written down — a link scanner fetching the page
    * is not somebody opening the document.
    */
-  async previewLink(token: string, device?: string): Promise<ShareLinkPreview> {
+  async previewLink(
+    token: string,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<ShareLinkPreview> {
     const scope = await this.linkScope(token, 'v2');
     return withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
       if (usedUp(link)) throw opensUsedUp();
       // For another browser than the one it was opened in (5.20): nothing
       // will open here, so nothing is asked of the worker for it either.
-      const elsewhere = otherDevice(link, device);
+      const elsewhere = otherDevice(link, devices);
       // A view-only link's pages still to be drawn are asked for while the
       // recipient reads this: nothing is counted or written down for it.
       if (link.permission === 'view' && !elsewhere) {
@@ -1788,7 +1810,7 @@ export class ShareService {
    */
   async sendCode(
     token: string,
-    device: string | undefined,
+    devices: readonly DeviceCookie[],
     meta: RequestMeta,
   ): Promise<ShareCodeSent> {
     const scope = await this.linkScope(token, 'v2');
@@ -1802,7 +1824,7 @@ export class ShareService {
       }
       // A link for one device, in another browser: a forwarded link cannot
       // fill its recipient's inbox with codes it could never use.
-      if (otherDevice(link, device)) throw otherDeviceRefused();
+      if (otherDevice(link, devices)) throw otherDeviceRefused();
       if (!mail) throw codeUnavailable(503);
       // One send at a time for the link, so its limits hold however many
       // ask at once: the second waits for the first, and counts it.
@@ -1907,7 +1929,7 @@ export class ShareService {
   async unlock(
     input: z.infer<typeof unlockBody>,
     meta: RequestMeta,
-    device?: string,
+    devices: readonly DeviceCookie[] = [],
   ): Promise<Unlocked> {
     const scope = await this.linkScope(input.token, 'v2');
     const { householdId } = scope;
@@ -1917,7 +1939,7 @@ export class ShareService {
       if (usedUp(link)) return { refused: 'used up', link } as const;
       // For one device, and this is another (5.20): refused before anything
       // is tried, so a forwarded link cannot even be used to guess.
-      if (otherDevice(link, device)) return { refused: 'other device', link } as const;
+      if (otherDevice(link, devices)) return { refused: 'other device', link } as const;
       const tried = await this.tryFactors(
         trx,
         householdId,
@@ -1936,15 +1958,17 @@ export class ShareService {
       // (otherDevice, above): that cookie is kept as it is, even one made
       // under a master key since rotated (the 5.20 check, N520F-01) — a new
       // one would lock this browser out of this link, and of every other
-      // link bound to the old one.
-      let deviceCookie: string | undefined;
+      // link bound to the old one. A new binding takes the cookie made under
+      // the key in use now, under that key's own name, or a new one: an
+      // earlier key's cookie stays in the browser beside it, for the links
+      // bound to it (the master-key rotation review, ROT-C-03).
+      let deviceCookie: DeviceCookie | undefined;
       let deviceHash: Buffer | null = null;
       if (link.this_device_only) {
         deviceCookie =
-          (link.device_hash !== null ? device : undefined) ??
-          verifiedDeviceCookie(this.deviceKey, device) ??
-          mintDeviceCookie(this.deviceKey);
-        deviceHash = deviceHashOf(link.id, deviceCookie);
+          (link.device_hash !== null ? boundCookie(link.id, link.device_hash, devices) : null) ??
+          cookieForNewBinding(this.deviceKey, SHARE_DEVICE_COOKIE, devices);
+        deviceHash = deviceHashOf(link.id, deviceCookie.value);
         if (link.device_hash === null) {
           await sql`savepoint fdv_device`.execute(trx);
           const bound = await trx
@@ -2019,8 +2043,11 @@ export class ShareService {
   }
 
   /** What is open in a session: the same answer Open gave. Free: nothing is counted. */
-  async sessionItems(cookie: string | undefined, device?: string): Promise<SharedSession> {
-    return this.inSession(cookie, device, (trx, link, session) =>
+  async sessionItems(
+    cookie: string | undefined,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<SharedSession> {
+    return this.inSession(cookie, devices, (trx, link, session) =>
       this.sessionView(trx, link, session.expires_at, session.id),
     );
   }
@@ -2052,9 +2079,9 @@ export class ShareService {
     cookie: string | undefined,
     documentId: string,
     meta: RequestMeta,
-    device?: string,
+    devices: readonly DeviceCookie[] = [],
   ): Promise<{ stream: Readable; total: number; contentType: string; filename: string }> {
-    const found = await this.inSession(cookie, device, async (trx, link, session) => {
+    const found = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return null;
       if (link.permission !== 'download') {
         throw new ApiError(
@@ -2120,9 +2147,9 @@ export class ShareService {
     documentId: string,
     n: number,
     meta: RequestMeta,
-    device?: string,
+    devices: readonly DeviceCookie[] = [],
   ): Promise<Buffer> {
-    const outcome = await this.inSession(cookie, device, async (trx, link, session) => {
+    const outcome = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return { kind: 'missing' } as const;
       if (link.permission !== 'view') {
         throw new ApiError(
@@ -2243,7 +2270,7 @@ export class ShareService {
    */
   private async inSession<T>(
     cookie: string | undefined,
-    device: string | undefined,
+    devices: readonly DeviceCookie[],
     fn: (trx: Db, link: InSession, session: { id: string; expires_at: Date }) => Promise<T>,
   ): Promise<T> {
     if (!cookie || cookie.length > 128) throw sessionEnded();
@@ -2283,9 +2310,8 @@ export class ShareService {
         throw err;
       }
       if (link.this_device_only) {
-        const here = device && device.length <= 128 ? deviceHashOf(link.id, device) : null;
         const bound = session.device_hash ?? link.device_hash;
-        if (!here || !bound || here.length !== bound.length || !timingSafeEqual(here, bound)) {
+        if (!bound || boundCookie(link.id, bound, devices) === null) {
           return { ended: 'device' } as const;
         }
       }
