@@ -29,6 +29,7 @@ import { alertJob, type AlertRequest } from './alert-job.js';
 import { pushJob, type PushRequest } from './push-job.js';
 import { instanceIdReader } from './instance.js';
 import { serverVersion } from './version.js';
+import { masterKeyOpensVault } from './master-key-check.js';
 
 /** The one secret behind the installation: from the variable, or a file. */
 async function resolveMasterSecret(config: ApiConfig): Promise<string> {
@@ -64,6 +65,12 @@ async function main(): Promise<void> {
     await installer.start();
     await installer.stop({ graceful: false });
     console.log('[migrate] job queue schema ready');
+  }
+  if (
+    !(await masterKeyOpensVault(config.DATABASE_ADMIN_URL ?? config.DATABASE_URL, masterSecret))
+  ) {
+    process.exitCode = 1;
+    return;
   }
 
   const pool = createPool(config.DATABASE_URL);

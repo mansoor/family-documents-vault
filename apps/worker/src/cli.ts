@@ -14,6 +14,7 @@ import {
   restoreDrill,
   type RestoreReport,
 } from './jobs/restore.js';
+import { backupKeyFor } from './jobs/restore-keys.js';
 
 /**
  * Operator commands, run inside the worker container:
@@ -24,7 +25,10 @@ import {
  *   node apps/worker/dist/cli.mjs decrypt-backup <in.sql.enc> <out.sql>
  *
  * All of them need only the normal configuration (the master key and the
- * database). The README's "Restoring" section says when to use which.
+ * database). The README's "Restoring" section says when to use which. A
+ * backup made before the master key was rotated is restored, or drilled,
+ * with FDV_MASTER_KEY_PREVIOUS set to the key it was made with: what it
+ * holds is then moved onto the current key (restore-keys.ts).
  */
 async function main() {
   const [command, a, b] = process.argv.slice(2);
@@ -36,6 +40,10 @@ async function main() {
   const log = (level: string, msg: string, extra?: Record<string, unknown>) =>
     console.log(JSON.stringify({ level, msg, ...extra }));
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
+  const master = {
+    current: masterSecret,
+    previous: process.env.FDV_MASTER_KEY_PREVIOUS || undefined,
+  };
   const backupNow = async () =>
     (
       await backupDatabase({
@@ -44,6 +52,7 @@ async function main() {
         dir: config.FDV_BACKUP_DIR,
         retainDays: config.FDV_BACKUP_RETAIN_DAYS,
         log,
+        masterSecret,
       })
     ).file;
 
@@ -66,6 +75,7 @@ async function main() {
         adminUrl,
         appUrl: config.DATABASE_URL,
         log,
+        master,
       });
       console.log(
         `restored: households=${report.households} people=${report.members} ` +
@@ -79,6 +89,12 @@ async function main() {
       console.log('restore drill OK: the vault would read it as it reads itself');
     } catch (err) {
       console.error(`restore drill FAILED: ${(err as Error).message}`);
+      const hint = previousKeyHint(
+        err,
+        master.previous,
+        `docker compose exec -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker sh scripts/restore-drill.sh ${file}`,
+      );
+      if (hint) console.error(hint);
       process.exitCode = 1;
     }
     return;
@@ -100,7 +116,7 @@ async function main() {
       const report = await restoreBackup(
         file,
         backupKey,
-        { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL },
+        { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL, master },
         log,
       );
       console.log(summary(file, report));
@@ -119,11 +135,20 @@ async function main() {
         return;
       }
       console.error(`Nothing was restored; the database is as it was. ${(err as Error).message}`);
+      const hint = previousKeyHint(
+        err,
+        master.previous,
+        'docker compose run --rm --no-deps -e FDV_MASTER_KEY_PREVIOUS=<the old key> worker ' +
+          `node apps/worker/dist/cli.mjs restore-backup ${a}`,
+      );
+      if (hint) console.error(hint);
       const older = a === 'latest' ? await backupBefore(file, config.FDV_BACKUP_DIR) : null;
       if (older) {
+        // With the old key again, if it was given: the one before is as likely to need it.
+        const withPrevious = master.previous ? '-e FDV_MASTER_KEY_PREVIOUS=<the old key> ' : '';
         console.error(
           `\nIf this backup is damaged, restore the one before it:\n\n` +
-            `  docker compose run --rm --no-deps worker node apps/worker/dist/cli.mjs restore-backup ${older}`,
+            `  docker compose run --rm --no-deps ${withPrevious}worker node apps/worker/dist/cli.mjs restore-backup ${older}`,
         );
       }
       process.exitCode = 1;
@@ -132,8 +157,17 @@ async function main() {
   }
 
   if (command === 'decrypt-backup' && a && b) {
-    await pipeline(createReadStream(a), new DecryptStream(backupKey), createWriteStream(b));
+    const key = await backupKeyFor(a, backupKey, master.previous);
+    await pipeline(createReadStream(a), new DecryptStream(key), createWriteStream(b));
     console.log(`wrote ${b}`);
+    if (key !== backupKey) {
+      console.error(
+        'This backup was made before the master key was rotated: it opened with\n' +
+          'FDV_MASTER_KEY_PREVIOUS, and what is in it is under that key too. A database loaded\n' +
+          'from it by hand would not open with the current key. Restore it with restore-backup\n' +
+          'and FDV_MASTER_KEY_PREVIOUS instead, which moves it onto the current key.',
+      );
+    }
     return;
   }
   console.error(
@@ -141,6 +175,18 @@ async function main() {
       'decrypt-backup <in.sql.enc> <out.sql>',
   );
   process.exitCode = 2;
+}
+
+/**
+ * A backup that did not open with this vault's key may have been made
+ * before a rotation: how to give the key it was made with, if it was not.
+ */
+function previousKeyHint(err: unknown, previous: string | undefined, command: string) {
+  if (previous || !/failed authentication/.test((err as Error).message)) return null;
+  return (
+    '\nIf the backup was made before the master key was rotated, give the key it was\n' +
+    `made with, beside the current one:\n\n  ${command}`
+  );
 }
 
 /** The empty database a restore needs, reached without touching the files. */
@@ -169,6 +215,15 @@ function summary(file: string, r: RestoreReport): string {
     '  - Passkeys and two-step sign-in are as they were then too. Anybody who removed a',
     '    passkey or reset two-step sign-in since does it again, in Settings.',
   ];
+  if (r.rekeyed) {
+    const secrets = Object.values(r.rekeyed.resealed).reduce((n, c) => n + c, 0);
+    lines.push(
+      '  - It was made before the master key was rotated. What it holds is now under the',
+      `    current key, as the vault's own is: ${plural(r.rekeyed.rewrapped, 'scope key')} and ` +
+        `${plural(secrets, 'secret')} (two-step`,
+      '    sign-in, storage and mail) were moved across.',
+    );
+  }
   if (r.ownerChangesWithdrawn > 0) {
     lines.push(
       `  - ${plural(r.ownerChangesWithdrawn, 'request')} to change who is an owner ` +

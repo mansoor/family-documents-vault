@@ -1,5 +1,4 @@
 import type { Db } from '@fdv/db';
-import type pg from 'pg';
 import type { KeyProvider } from './master.js';
 import { credentialKey, newKdfParams, newKey, unwrapKey, wrapKey, type KdfParams } from './wrap.js';
 
@@ -162,49 +161,5 @@ export class ScopeKeys {
       .where('kind', '=', 'member')
       .where('member_id', '=', ref.memberId ?? '')
       .execute();
-  }
-}
-
-/**
- * Master-key rotation (SEC-02): every scope key is unwrapped with the old
- * KEK and rewrapped with the new one. File content is never read or
- * rewritten. Runs with the owning role because it crosses households; each
- * row is rewrapped in one statement, and the whole run is one transaction
- * so a half-rotated database cannot exist.
- */
-export async function rotateMasterKey(
-  admin: pg.Pool,
-  oldProvider: KeyProvider,
-  newProvider: KeyProvider,
-): Promise<{ rewrapped: number }> {
-  const [oldKek, newKek] = await Promise.all([
-    oldProvider.keyEncryptionKey(),
-    newProvider.keyEncryptionKey(),
-  ]);
-  const client = await admin.connect();
-  try {
-    await client.query('begin');
-    const { rows } = await client.query<{
-      id: string;
-      household_id: string;
-      kind: ScopeKind;
-      member_id: string | null;
-      key_wrapped: Buffer;
-    }>('select id, household_id, kind, member_id, key_wrapped from scope_key for update');
-    for (const r of rows) {
-      const ref: ScopeRef = { householdId: r.household_id, kind: r.kind, memberId: r.member_id };
-      const key = unwrapKey(r.key_wrapped, oldKek, binding(ref));
-      await client.query(
-        'update scope_key set key_wrapped = $1, rotated_at = now() where id = $2',
-        [wrapKey(key, newKek, binding(ref)), r.id],
-      );
-    }
-    await client.query('commit');
-    return { rewrapped: rows.length };
-  } catch (err) {
-    await client.query('rollback');
-    throw err;
-  } finally {
-    client.release();
   }
 }

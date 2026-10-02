@@ -20,6 +20,10 @@ export interface KeyProvider {
  * bytes with HKDF. The same function derives every other purpose-bound key
  * (session signing, for one) with a different `info`, so one secret backs
  * the whole installation and purposes cannot collide.
+ *
+ * A purpose whose sealed values are kept in the database must be listed in
+ * MASTER_SEALED (master-rotation.ts): rotating the master key moves only
+ * what is there, and anything else would stay sealed under the old key.
  */
 export function deriveKey(masterSecret: string | Buffer, purpose: string): Buffer {
   const secret =
