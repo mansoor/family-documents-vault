@@ -256,6 +256,44 @@ export interface Schema {
     /** How many downloads (0041), each document once a session; null for no limit. v2 only. */
     max_downloads: number | null;
     downloads_used: Generated<number>;
+    /**
+     * What `pin_hash` is the hash of (0043): a PIN, a password the sharer
+     * typed, or one the vault made up (`generated`: hashed and checked in its
+     * canonical form, lowercase without dashes or spaces). Passwords are v2
+     * only. Null with a hash is a PIN, as every link before 0043 had.
+     */
+    secret_kind: ColumnType<
+      'pin' | 'password' | 'generated' | null,
+      'pin' | 'password' | 'generated' | null | undefined,
+      never
+    >;
+    /**
+     * Where an emailed code goes (0043, v2 only): the address the sharer
+     * typed, sent to through the operator's mail server alone. Cleared, and
+     * only then, when the link has ended.
+     */
+    code_email: ColumnType<string | null, string | null | undefined, null>;
+    /** The first browser to open it is the only one it opens in (0043, v2 only). */
+    this_device_only: ColumnType<boolean, boolean | undefined, never>;
+    /** That browser: SHA-256 of the link and its device cookie, set once (0043). */
+    device_hash: ColumnType<Buffer | null, never, Buffer>;
+  };
+
+  /**
+   * An emailed code (0043): its HMAC under the server's key (never the code),
+   * 10 minutes, 5 tries, used once. The family never reads these; a link its
+   * own, the vault every one.
+   */
+  share_code: {
+    id: string;
+    household_id: string;
+    share_id: string;
+    flow: Generated<'v2'>;
+    code_hash: Buffer;
+    sent_at: GeneratedTimestamp;
+    expires_at: Timestamp;
+    attempts: Generated<number>;
+    used_at: Timestamp | null;
   };
 
   /**
@@ -336,8 +374,8 @@ export interface Schema {
     flow: Generated<'v2'>;
     cookie_hash: Buffer;
     device_hash: Buffer | null;
-    /** What opened it: its PIN, or the link alone (null). */
-    verified_by: 'pin' | null;
+    /** What opened it: the link alone (null), its PIN or password, an emailed code, or both (0043). */
+    verified_by: 'pin' | 'password' | 'code' | 'pin+code' | 'password+code' | null;
     created_at: GeneratedTimestamp;
     last_seen_at: GeneratedTimestamp;
     expires_at: Timestamp;

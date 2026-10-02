@@ -1,4 +1,11 @@
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomInt,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import { isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -18,6 +25,8 @@ import argon2 from 'argon2';
 import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
+import type { MailRequest } from '../mail-job.js';
+import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { seenCollection } from '../collections/service.js';
@@ -34,22 +43,35 @@ import {
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   FOLLOW_MAX_DAYS,
+  isShareAddress,
+  maskEmail,
   PREVIEW_MAX_PAGES,
+  readShareCode,
+  SHARE_CODE_CANNOT_SEND,
+  SHARE_CODE_MINUTES,
+  SHARE_CODE_SENDS,
+  SHARE_NEWEST_CODE_ONLY,
+  SHARE_CODE_TRIES,
+  SHARE_CODE_UNAVAILABLE,
   SHARE_END_GRACE_MINUTES,
   SHARE_LIMIT_MAX,
   SHARE_MAX_DAYS,
+  SHARE_PASSWORD_MAX,
+  SHARE_PASSWORD_MIN,
   shareEndProblem,
   shareEndWords,
   shareUses,
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionSharePreview,
+  type ShareCodeSent,
   type ShareLinkPreview,
   type SharePages,
   type SharePermission,
   type SharedItem,
   type SharedSession,
   type ShareProtection,
+  type ShareSecretKind,
 } from '@fdv/shared';
 
 /**
@@ -95,6 +117,16 @@ import {
  * it lasts 30 days at most. Every collection's link asks to confirm it's
  * you, and the collection's maker is told when somebody else shares it.
  * The database holds all of it a second time (0042).
+ *
+ * Since 5.20 a link can ask for more than itself, in any combination: a PIN
+ * or a password (made up by the vault, or typed by the sharer), a code
+ * emailed to an address the sharer typed — through the operator's mail
+ * server alone, never the household's (A21) — and to open in the first
+ * browser that opened it and no other. Every failed PIN, password or code
+ * uses up the link's one counter of ten (A23), reserved before anything is
+ * checked; with a password and a code, the code is tried only once the
+ * password is right, and whichever is wrong, the answer is the same. A code
+ * is kept only as an HMAC under a key derived from the master key.
  */
 
 const MAX_PIN_ATTEMPTS = 10;
@@ -112,6 +144,22 @@ export const SHARE_COOKIE_PATH = '/api/v1/shared';
 /** A session lasts 30 minutes from its last use, and 4 hours at most (A26). */
 export const SESSION_IDLE_MS = 30 * 60_000;
 export const SESSION_MAX_MS = 4 * 3_600_000;
+
+/**
+ * "This device only" (5.20): the cookie that says which browser this is,
+ * set by the first Open that works and sent back on every later one. Scoped
+ * as the session's is, and kept only as a hash on the link (with the link's
+ * id, so one browser's links cannot be matched up in a dump). It lasts as
+ * long as the longest link may. This is its names' prefix: each is
+ * `fdv_share_device_<kid>`, the id of the key it was made under
+ * (public/device-cookie.ts, ROT-C-03), so a rotation of the master key
+ * leaves a browser's earlier one beside its new one.
+ */
+export const SHARE_DEVICE_COOKIE = 'fdv_share_device';
+export const SHARE_DEVICE_MAX_AGE_S = SHARE_MAX_DAYS * 86_400;
+
+/** What a link's codes are HMACed under: a key of its own, derived from the master key. */
+export const SHARE_CODE_KEY_PURPOSE = 'share-code-hmac';
 
 /**
  * The worker's jobs for a view-only link's pages (5.18): drawing them, and
@@ -140,6 +188,20 @@ const shareOptions = {
   permission: z.enum(['view', 'download']).optional(),
   max_opens: limit,
   max_downloads: limit,
+  /** A password the vault makes up (5.20), shown once. */
+  with_password: z.boolean().optional(),
+  /** Or one the sharer types (5.20): what the recipient will type, spaces at its ends aside. */
+  password: z.string().trim().min(SHARE_PASSWORD_MIN).max(SHARE_PASSWORD_MAX).optional(),
+  /** Where an emailed code goes (5.20): only this address, through operator mail only. */
+  // The share sheet's own rule (isShareAddress), so it never offers one this refuses.
+  code_email: z
+    .string()
+    .trim()
+    .max(254)
+    .refine(isShareAddress, 'That is not an email address. Check it: name@example.com.')
+    .optional(),
+  /** The first browser to open it is the only one it opens in (5.20). */
+  this_device_only: z.boolean().optional(),
 };
 
 export const shareBody = z.object(shareOptions).strict();
@@ -176,10 +238,20 @@ const linkToken = z.string().min(16).max(256);
 /** What the page sends to show who sent what (5.16): the token, in a body. */
 export const previewBody = z.object({ token: linkToken }).strict();
 
-/** Pressing Open (5.16): the token and, when there is one, the secret. */
+/**
+ * Pressing Open (5.16): the token and, when there is one, the secret — a
+ * PIN or a password — and, since 5.20, the code that was emailed.
+ */
 export const unlockBody = z
-  .object({ token: linkToken, secret: z.string().trim().max(64).optional() })
+  .object({
+    token: linkToken,
+    secret: z.string().trim().max(SHARE_PASSWORD_MAX).optional(),
+    code: z.string().trim().max(16).optional(),
+  })
   .strict();
+
+/** Asking for a code (5.20): the token, in a body. */
+export const codeBody = z.object({ token: linkToken }).strict();
 
 export interface ShareView {
   id: string;
@@ -210,6 +282,12 @@ export interface ShareView {
   downloads_used: number;
   /** A view-only link's pages: how many, of how many, and whether drawn yet. A document's link only. */
   pages: SharePages | null;
+  /** What Open asks for besides the link (5.20): its PIN or password, an emailed code. */
+  protection: ShareProtection[];
+  /** Where its code goes, masked; null when it asks for none, or has ended (5.20). */
+  code_to: string | null;
+  /** It opens in the first browser that opened it, and no other (5.20). */
+  this_device_only: boolean;
   /** One sentence for the list on the home screen. */
   summary: string;
 }
@@ -226,6 +304,8 @@ export interface CreatedShare {
   link_url: string | null;
   /** Present only when one was asked for. */
   pin?: string;
+  /** A password the vault made up (5.20): present only when one was asked for. */
+  password?: string;
 }
 
 /** What the person at the other end sees before they have the PIN. */
@@ -254,6 +334,8 @@ export interface Unlocked {
   /** Seconds until the session ends at the latest: the cookie's Max-Age. */
   maxAge: number;
   session: SharedSession;
+  /** A link for this device only (5.20): its device cookie, under its own name, to set again. */
+  device?: DeviceCookie;
 }
 
 /** Whether a link turned back on after a restore is a document's or a collection's. */
@@ -265,6 +347,88 @@ export interface Resumable {
 type Flow = 'legacy' | 'v2';
 
 const hashToken = (token: string) => createHash('sha256').update(token, 'utf8').digest();
+
+/**
+ * A browser, as a link for one device keeps it (5.20): the SHA-256 of the
+ * link and the browser's device cookie. The cookie itself is never kept, and
+ * one browser's links cannot be matched up by it in a dump.
+ */
+const deviceHashOf = (shareId: string, cookie: string) =>
+  createHash('sha256').update(`${shareId}:${cookie}`, 'utf8').digest();
+
+/**
+ * Which of the device cookies a browser brought (any `fdv_share_device*`,
+ * under whichever key it was made — ROT-C-03) a binding names; null when
+ * none does.
+ */
+function boundCookie(
+  shareId: string,
+  binding: Buffer,
+  devices: readonly DeviceCookie[],
+): DeviceCookie | null {
+  for (const c of devices) {
+    const hash = deviceHashOf(shareId, c.value);
+    if (hash.length === binding.length && timingSafeEqual(hash, binding)) return c;
+  }
+  return null;
+}
+
+/**
+ * Whether this browser is not the one a link for one device was first
+ * opened in (5.20): none of the device cookies it brought is the one the
+ * link is bound to. A link for any device, or one not yet opened, is
+ * nobody's other device.
+ */
+function otherDevice(
+  link: { id: string; this_device_only: boolean; device_hash: Buffer | null },
+  devices: readonly DeviceCookie[],
+): boolean {
+  if (!link.this_device_only || link.device_hash === null) return false;
+  return boundCookie(link.id, link.device_hash, devices) === null;
+}
+
+/** Letters and digits nobody misreads on a phone call: no 0/o, 1/l/i. */
+const PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+/**
+ * A password the vault makes up (5.20): three groups of four, `k7mq-p2xa-9htw`
+ * — about 59 bits, easy to read out, and far past ten guesses.
+ */
+function madeUpPassword(): string {
+  const group = () =>
+    Array.from({ length: 4 }, () => PASSWORD_ALPHABET[randomInt(PASSWORD_ALPHABET.length)]).join(
+      '',
+    );
+  return `${group()}-${group()}-${group()}`;
+}
+
+/**
+ * A made-up password as it is hashed and checked (the 5.20 review, F520-06):
+ * lowercase, with its dashes and any spaces taken out. It is read out over
+ * the phone and typed without being seen, so `K7MQ P2XA 9HTW` and
+ * `k7mqp2xa9htw` are the same password and use up none of the link's ten.
+ * A password the sharer typed is theirs, and is checked as typed.
+ */
+const canonicalMadeUp = (password: string) => password.toLowerCase().replace(/[\s-]/g, '');
+
+/**
+ * What a link's secret is (0043): a PIN, a password the sharer typed, or a
+ * password the vault made up (`generated`: checked in its canonical form).
+ * A hash with no kind is a PIN's. The page is told a password for either.
+ */
+type SecretKind = 'pin' | 'password' | 'generated';
+
+/** The secret as the page and the wire name it: a made-up password is a password. */
+const wireKind = (kind: SecretKind | null): ShareSecretKind =>
+  kind === 'generated' ? 'password' : (kind ?? 'pin');
+
+/** The recipient's try, as it is checked against the secret's hash. */
+const asChecked = (kind: SecretKind | null, given: string) =>
+  kind === 'generated' ? canonicalMadeUp(given) : given;
+
+/** A try that opened: what it proved. */
+const isRight = (a: Attempt): a is { right: NonNullable<Verified> } =>
+  typeof a === 'object' && 'right' in a;
 
 /** A transaction asked for by whoever holds one link, in its household: never anybody else. */
 type LinkScope = Scope & { householdId: string; actor: Extract<Actor, { kind: 'link' }> };
@@ -293,6 +457,13 @@ type LinkRow = {
   max_opens: number | null;
   downloads_used: number;
   max_downloads: number | null;
+  /** What pin_hash is the hash of (5.20); null with a hash is a PIN. */
+  secret_kind: SecretKind | null;
+  /** Where its code goes (5.20), until it ends. */
+  code_email: string | null;
+  this_device_only: boolean;
+  /** The browser it was first opened in (5.20). */
+  device_hash: Buffer | null;
 };
 
 /** A collection, as its link reads it (5.19). */
@@ -315,11 +486,21 @@ type Live = LinkRow & {
 /** A live link inside a session, with its household. */
 type InSession = Live & { household_id: string };
 
-/** How one try of a link's PIN went. */
-type Attempt = 'right' | 'no pin' | { wrong: number } | 'locked' | 'gone';
+/**
+ * How one try of a link's factors went (5.20: its PIN or password, and its
+ * code): all right (and what they were), nothing to try, or a refusal.
+ */
+type Attempt = { right: NonNullable<Verified> } | 'no pin' | { wrong: number } | 'locked' | 'gone';
 
-/** Why Open did not open: a PIN's try, or the link's opens used up (5.18). */
-type Refusal = Exclude<Attempt, 'right' | 'no pin'> | 'used up';
+/** What was proved to open a session (share_session.verified_by). */
+type Verified = 'pin' | 'password' | 'code' | 'pin+code' | 'password+code' | null;
+
+/**
+ * Why Open did not open: a factor's try, the link's opens used up (5.18),
+ * or another browser than the one it is for (5.20).
+ */
+type Refusal =
+  Exclude<Attempt, { right: NonNullable<Verified> } | 'no pin'> | 'used up' | 'other device';
 
 /** A try that did not open the link, and the link it was made on. */
 type Refused = { readonly refused: Refusal; readonly link: LinkRow };
@@ -369,14 +550,76 @@ const sessionEnded = () =>
     'This page has been open too long, or was opened somewhere else. Open the link you were sent again.',
   );
 
-const pinWrong = (left: number) =>
-  new ApiError(
+/**
+ * What a link asks for besides itself (5.20), as the page is told: its PIN
+ * or its password, and a code. A hash with no kind is a PIN's.
+ */
+const protectionOf = (link: {
+  pin_hash: string | null;
+  secret_kind: SecretKind | null;
+  code_email: string | null;
+}): ShareProtection[] => [
+  ...(link.pin_hash ? [wireKind(link.secret_kind)] : []),
+  ...(link.code_email ? (['code'] as const) : []),
+];
+
+/**
+ * A try that did not open the link. The answer depends on what the link
+ * asks for, never on which of it was wrong (A23): with a password and a
+ * code, a wrong password and a wrong code read the same, word for word. A
+ * link with a PIN alone answers as it always has.
+ */
+const factorWrong = (asks: ShareProtection[], left: number) => {
+  if (left <= 0) {
+    return new ApiError(
+      401,
+      asks.length === 1 && asks[0] === 'pin' ? 'pin_wrong' : 'secret_wrong',
+      asks.length === 1 && asks[0] === 'pin'
+        ? 'That PIN was wrong too many times, so the link has stopped working.'
+        : 'That was wrong too many times, so the link has stopped working.',
+    );
+  }
+  const secret = asks.includes('password') ? 'password' : asks.includes('pin') ? 'PIN' : null;
+  if (!asks.includes('code')) {
+    return new ApiError(
+      401,
+      secret === 'PIN' ? 'pin_wrong' : 'secret_wrong',
+      `That ${secret ?? 'PIN'} is not right. Check with whoever sent you the link.`,
+    );
+  }
+  // Only the newest code works (the 5.20 review, F520-03): an earlier one
+  // typed from an earlier email is refused like any wrong one, and says so.
+  return new ApiError(
     401,
-    'pin_wrong',
-    left > 0
-      ? 'That PIN is not right. Check with whoever sent you the link.'
-      : 'That PIN was wrong too many times, so the link has stopped working.',
+    'secret_wrong',
+    secret
+      ? `The ${secret} or the code is not right. Check the ${secret} with whoever sent you the link. Only the newest code works, once, for ${SHARE_CODE_MINUTES} minutes: send a new one if it has run out.`
+      : `That code is not right, or it has run out. Only the newest code works, once, for ${SHARE_CODE_MINUTES} minutes: send a new one.`,
   );
+};
+
+/**
+ * Another browser than the one a link for this device only was opened in
+ * (5.20). It is one browser, not the device (the 5.20 review, F520-05): its
+ * cookie is what it was bound to.
+ */
+const otherDeviceRefused = () =>
+  new ApiError(
+    403,
+    'other_device',
+    'This link has been opened in another browser already, and it only opens there. Open it in the browser you opened it in first, or ask whoever sent it for a new one.',
+  );
+
+/**
+ * A code asked for where there is no way to send one: the operator's mail
+ * server is unset (A21). To the sharer (422), why the option is not there;
+ * to the person the link is for (503, the 5.20 review, W520-14), what they
+ * can do.
+ */
+const codeUnavailable = (status: 422 | 503) =>
+  status === 422
+    ? new ApiError(422, 'email_code_unavailable', SHARE_CODE_UNAVAILABLE)
+    : new ApiError(503, 'email_code_unavailable', SHARE_CODE_CANNOT_SEND);
 
 const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
@@ -420,11 +663,36 @@ export interface ShareOptions {
   enqueue?: Enqueue;
   /** FDV_SHARE_MAX_DAYS: the longest a link may last (A20). */
   maxDays?: number;
+  /**
+   * The key a link's codes are HMACed under (5.20): derived from the master
+   * key for this alone (SHARE_CODE_KEY_PURPOSE). Without one, a key made up
+   * for this process, which no code outlives.
+   */
+  codeKey?: Buffer;
+  /**
+   * How a code is sent (5.20): to one address, through the operator's mail
+   * server (FDV_SMTP_URL) and nothing else (A21). Null or absent when it is
+   * unset: then no link can ask for a code.
+   */
+  mail?: ((m: MailRequest) => Promise<void>) | null;
+  /**
+   * The key "this device only" cookies are made and checked with (the 5.20
+   * review, F520-04): derived from the master key for this alone
+   * (SHARE_DEVICE_KEY_PURPOSE, public/device-cookie.ts). Without one, a key
+   * made up for this process.
+   */
+  deviceKey?: Buffer;
 }
+
+/** What "this device only" cookies are made with: deviceCookieKey(master, this). */
+export const SHARE_DEVICE_KEY_PURPOSE = 'share-device';
 
 export class ShareService {
   private readonly enqueue: Enqueue;
   private readonly maxDays: number;
+  private readonly codeKey: Buffer;
+  private readonly deviceKey: Buffer;
+  private readonly mail: ((m: MailRequest) => Promise<void>) | null;
 
   constructor(
     private readonly db: Db,
@@ -438,6 +706,23 @@ export class ShareService {
   ) {
     this.enqueue = opts.enqueue ?? (async () => undefined);
     this.maxDays = Math.min(opts.maxDays ?? SHARE_MAX_DAYS, SHARE_MAX_DAYS);
+    this.codeKey = opts.codeKey ?? randomBytes(32);
+    this.deviceKey = opts.deviceKey ?? randomBytes(32);
+    this.mail = opts.mail ?? null;
+  }
+
+  /** Whether a link can ask for an emailed code here: the operator's mail server is set (A21). */
+  get emailCodes(): boolean {
+    return this.mail !== null;
+  }
+
+  /**
+   * A code as the vault keeps it (5.20): an HMAC under the server's key,
+   * over the link, the code's own row and the code — never a plain hash,
+   * which a dump of six-digit codes gives back at once.
+   */
+  private codeHash(shareId: string, codeId: string, code: string): Buffer {
+    return createHmac('sha256', this.codeKey).update(`${shareId}:${codeId}:${code}`).digest();
   }
 
   // -------------------------------------------------------------- making
@@ -488,11 +773,48 @@ export class ShareService {
     return permission;
   }
 
-  /** The link's secret, and its PIN when one is asked for. */
-  private async secrets(withPin: boolean | undefined) {
+  /**
+   * The link's secret, and what else it asks for (5.20): one PIN or
+   * password at most — the vault's four digits, a password it makes up, or
+   * one the sharer typed — and a code by email, which only the operator's
+   * mail server may carry (A21): without it, asking for one is refused.
+   */
+  private async secrets(input: z.infer<typeof shareBody>) {
+    const asked = [
+      input.with_pin === true,
+      input.with_password === true,
+      input.password !== undefined,
+    ];
+    if (asked.filter(Boolean).length > 1) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Choose one: a PIN, a password made up for you, or a password of your own.',
+      );
+    }
+    if (input.code_email !== undefined && !this.mail) throw codeUnavailable(422);
     const token = randomBytes(32).toString('base64url');
-    const pin = withPin ? String(randomInt(0, 10000)).padStart(4, '0') : null;
-    return { token, pin, pinHash: pin ? await argon2.hash(pin, ARGON2) : null };
+    const pin = input.with_pin ? String(randomInt(0, 10000)).padStart(4, '0') : null;
+    const password = input.with_password ? madeUpPassword() : null;
+    // A made-up password is kept (and checked) in its canonical form
+    // (F520-06); a PIN and a typed password as they are.
+    const secretKind: SecretKind | null = pin
+      ? 'pin'
+      : password
+        ? 'generated'
+        : input.password !== undefined
+          ? 'password'
+          : null;
+    const secret = pin ?? (password ? canonicalMadeUp(password) : null) ?? input.password ?? null;
+    return {
+      token,
+      pin,
+      password,
+      secretKind,
+      pinHash: secret ? await argon2.hash(secret, ARGON2) : null,
+      codeEmail: input.code_email ?? null,
+      thisDeviceOnly: input.this_device_only === true,
+    };
   }
 
   /** What the maker of a link is handed, once. */
@@ -500,15 +822,36 @@ export class ShareService {
     p: Principal,
     id: string,
     token: string,
-    pin: string | null,
+    secrets: { pin: string | null; password: string | null },
   ): Promise<CreatedShare> {
     const share = (await this.list(p)).find((s) => s.id === id) as ShareView;
     // The whole link to send, on the public-only site, when the vault has
     // one: the secret after the #, which no server is sent.
     const link_url = this.publicUrl ? `${this.publicUrl.replace(/\/+$/, '')}/s#${token}` : null;
-    return pin
-      ? { share, link_token: token, link_url, pin }
-      : { share, link_token: token, link_url };
+    return {
+      share,
+      link_token: token,
+      link_url,
+      ...(secrets.pin ? { pin: secrets.pin } : {}),
+      ...(secrets.password ? { password: secrets.password } : {}),
+    };
+  }
+
+  /** What a link's line in the activity log says it asks for (5.20): never the secret, the address masked. */
+  private static protectionDetail(s: {
+    pin: string | null;
+    secretKind: SecretKind | null;
+    codeEmail: string | null;
+    thisDeviceOnly: boolean;
+  }) {
+    return {
+      with_pin: Boolean(s.pin),
+      ...(s.secretKind === 'password' || s.secretKind === 'generated'
+        ? { with_password: true }
+        : {}),
+      ...(s.codeEmail ? { code_to: maskEmail(s.codeEmail) } : {}),
+      ...(s.thisDeviceOnly ? { this_device_only: true } : {}),
+    };
   }
 
   async create(
@@ -520,7 +863,8 @@ export class ShareService {
     requireCapability(p, 'document.share');
     const expiresAt = this.endOf(input);
     const permission = this.permissionOf(input);
-    const { token, pin, pinHash } = await this.secrets(input.with_pin);
+    const secrets = await this.secrets(input);
+    const { token, pinHash } = secrets;
 
     const { id, versionId } = await withPrincipal(this.db, p, async (trx) => {
       const doc = await trx
@@ -566,6 +910,9 @@ export class ShareService {
           document_id: documentId,
           token_hash: hashToken(token),
           pin_hash: pinHash,
+          secret_kind: secrets.secretKind,
+          code_email: secrets.codeEmail,
+          this_device_only: secrets.thisDeviceOnly,
           recipient_label: input.recipient_label ?? null,
           created_by: p.accountId,
           expires_at: expiresAt,
@@ -584,7 +931,7 @@ export class ShareService {
         detail: {
           share_id: row.id,
           recipient_label: input.recipient_label ?? null,
-          with_pin: Boolean(pin),
+          ...ShareService.protectionDetail(secrets),
           expires_at: expiresAt.toISOString(),
           permission,
           max_opens: input.max_opens ?? null,
@@ -598,7 +945,7 @@ export class ShareService {
     // A link to view shows the pages the worker draws for it, with whom it
     // is for across each: asked for now, so they are there when it opens.
     if (permission === 'view') await this.drawPages(p.householdId, id, versionId);
-    return this.handOver(p, id, token, pin);
+    return this.handOver(p, id, token, secrets);
   }
 
   // ------------------------------------------------- a collection (5.19)
@@ -736,7 +1083,8 @@ export class ShareService {
       follow ? Math.min(this.maxDays, FOLLOW_MAX_DAYS) : this.maxDays,
     );
     const permission = this.permissionOf(input);
-    const { token, pin, pinHash } = await this.secrets(input.with_pin);
+    const secrets = await this.secrets(input);
+    const { token, pinHash } = secrets;
 
     const made = await withPrincipal(this.db, p, async (trx) => {
       const c = await this.collectionFor(trx, p, collectionId);
@@ -789,6 +1137,9 @@ export class ShareService {
           follow_audience: follow && c.audience !== 'only_me' ? c.audience : null,
           token_hash: hashToken(token),
           pin_hash: pinHash,
+          secret_kind: secrets.secretKind,
+          code_email: secrets.codeEmail,
+          this_device_only: secrets.thisDeviceOnly,
           recipient_label: input.recipient_label ?? null,
           created_by: p.accountId,
           expires_at: expiresAt,
@@ -875,7 +1226,7 @@ export class ShareService {
         detail: {
           share_id: row.id,
           recipient_label: input.recipient_label ?? null,
-          with_pin: Boolean(pin),
+          ...ShareService.protectionDetail(secrets),
           expires_at: expiresAt.toISOString(),
           permission,
           max_opens: input.max_opens ?? null,
@@ -932,7 +1283,7 @@ export class ShareService {
         await this.drawPages(p.householdId, made.id, v.id);
       }
     }
-    return this.handOver(p, made.id, token, pin);
+    return this.handOver(p, made.id, token, secrets);
   }
 
   /**
@@ -1018,6 +1369,9 @@ export class ShareService {
           'share_link.last_opened_at',
           'share_link.attempts',
           'share_link.pin_hash',
+          'share_link.secret_kind',
+          'share_link.code_email',
+          'share_link.this_device_only',
           'share_link.flow',
           'share_link.paused_at',
           'share_link.paused_reason',
@@ -1088,7 +1442,8 @@ export class ShareService {
           created_by_name: r.created_by_name,
           created_at: r.created_at.toISOString(),
           expires_at: r.expires_at.toISOString(),
-          has_pin: r.pin_hash !== null,
+          // A PIN, as older clients read it; a password is in `protection` (5.20).
+          has_pin: r.pin_hash !== null && (r.secret_kind ?? 'pin') === 'pin',
           open_count: r.open_count,
           last_opened_at: r.last_opened_at?.toISOString() ?? null,
           state,
@@ -1109,6 +1464,15 @@ export class ShareService {
                   state === 'active' ? p.householdId : undefined,
                 )
               : null,
+          protection: protectionOf(r),
+          // The address itself is the sharer's to know; the list says which
+          // inbox, masked — and nothing once the link has ended, whose
+          // address the worker's nightly prune has not cleared yet.
+          code_to:
+            r.code_email && (state === 'active' || state === 'paused')
+              ? maskEmail(r.code_email)
+              : null,
+          this_device_only: r.this_device_only,
           summary: summarise(r, state, household.timezone, p.accountId),
           created_by: r.created_by,
         });
@@ -1235,9 +1599,11 @@ export class ShareService {
           if (items.some((i) => !canSee(reader, i))) throw notFound('That link');
         }
       }
+      // The address its code went to goes with it (5.20): a link that has
+      // ended keeps nobody's address.
       const row = await trx
         .updateTable('share_link')
-        .set({ revoked_at: new Date(), revoked_by: p.accountId })
+        .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
         .where('id', '=', id)
         .where('revoked_at', 'is', null)
         .returning(['id', 'document_id', 'collection_id', 'permission'])
@@ -1388,23 +1754,31 @@ export class ShareService {
    * counted and nothing is written down — a link scanner fetching the page
    * is not somebody opening the document.
    */
-  async previewLink(token: string): Promise<ShareLinkPreview> {
+  async previewLink(
+    token: string,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<ShareLinkPreview> {
     const scope = await this.linkScope(token, 'v2');
     return withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
       if (usedUp(link)) throw opensUsedUp();
+      // For another browser than the one it was opened in (5.20): nothing
+      // will open here, so nothing is asked of the worker for it either.
+      const elsewhere = otherDevice(link, devices);
       // A view-only link's pages still to be drawn are asked for while the
       // recipient reads this: nothing is counted or written down for it.
-      if (link.permission === 'view') {
+      if (link.permission === 'view' && !elsewhere) {
         for (const doc of await this.liveItems(trx, link)) {
           await this.pagesFor(trx, link, doc, scope.householdId);
         }
       }
       const from = await this.from(trx, link.created_by);
-      const protection: ShareProtection[] = link.pin_hash ? ['pin'] : [];
+      const protection = protectionOf(link);
       // With a protection on it, even the title waits: "Divorce
       // settlement" is information, and the PIN is there because somebody
-      // wanted a second lock on exactly that. A collection's name too.
+      // wanted a second lock on exactly that. A collection's name too — and
+      // both, in a browser a link for one device will not open in.
+      const withheld = protection.length > 0 || elsewhere;
       const title =
         link.document_id !== null ? (await this.documentWords(trx, link.document_id)).title : null;
       return {
@@ -1412,15 +1786,145 @@ export class ShareService {
         shared_by: from.shared_by,
         protection,
         expires_at: link.expires_at.toISOString(),
-        document_title: protection.length ? null : title,
+        document_title: withheld ? null : title,
         permission: link.permission,
         opens_left: link.max_opens === null ? null : link.max_opens - link.open_count,
         kind: link.collection ? 'collection' : 'document',
-        ...(link.collection
-          ? { collection_name: protection.length ? null : link.collection.name }
-          : {}),
+        ...(link.collection ? { collection_name: withheld ? null : link.collection.name } : {}),
+        // Which inbox its code goes to, masked: the recipient never types it.
+        code_to: link.code_email && !elsewhere ? maskEmail(link.code_email) : null,
+        this_device_only: link.this_device_only,
+        other_device: elsewhere,
       };
     });
+  }
+
+  /**
+   * Sends the code a link asks for (5.20), to the address its sharer typed
+   * and no other — the page never says one — through the operator's mail
+   * server alone (A21). Six digits, good for 10 minutes and 5 tries, and
+   * used once; a newer one ends those before it. At most 3 a link in 15
+   * minutes and 10 in a day, however many ask at once. Written down as
+   * `share.code_sent`, the address masked. Nothing is tried or counted
+   * against the link's ten: sending proves nothing.
+   */
+  async sendCode(
+    token: string,
+    devices: readonly DeviceCookie[],
+    meta: RequestMeta,
+  ): Promise<ShareCodeSent> {
+    const scope = await this.linkScope(token, 'v2');
+    const { householdId } = scope;
+    const mail = this.mail;
+    const sent = await withScope(this.db, scope, async (trx) => {
+      const link = await this.live(trx, scope.actor.shareId, 'v2');
+      if (usedUp(link)) throw opensUsedUp();
+      if (!link.code_email) {
+        throw new ApiError(409, 'no_code_needed', 'This link does not ask for a code.');
+      }
+      // A link for one device, in another browser: a forwarded link cannot
+      // fill its recipient's inbox with codes it could never use.
+      if (otherDevice(link, devices)) throw otherDeviceRefused();
+      if (!mail) throw codeUnavailable(503);
+      // One send at a time for the link, so its limits hold however many
+      // ask at once: the second waits for the first, and counts it.
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`share_code:${link.id}`}, 0))`.execute(
+        trx,
+      );
+      const now = new Date();
+      const windowStart = new Date(now.getTime() - SHARE_CODE_SENDS.windowMinutes * 60_000);
+      const dayStart = new Date(now.getTime() - 864e5);
+      const recent = await trx
+        .selectFrom('share_code')
+        .select('sent_at')
+        .where('share_id', '=', link.id)
+        .where('sent_at', '>', dayStart)
+        .orderBy('sent_at')
+        .execute();
+      const inWindow = recent.filter((r) => r.sent_at.getTime() > windowStart.getTime());
+      const tooMany = (held: Date, message: string) =>
+        new ApiError(429, 'code_limit', message, {
+          retriable: true,
+          retryAfter: Math.max(1, Math.ceil((held.getTime() - now.getTime()) / 1000)),
+        });
+      if (inWindow.length >= SHARE_CODE_SENDS.perWindow) {
+        const oldest = inWindow[0]?.sent_at ?? now;
+        throw tooMany(
+          new Date(oldest.getTime() + SHARE_CODE_SENDS.windowMinutes * 60_000),
+          `${SHARE_CODE_SENDS.perWindow} codes have been sent in the last ${SHARE_CODE_SENDS.windowMinutes} minutes. Use the newest one, or wait a little and send another.`,
+        );
+      }
+      if (recent.length >= SHARE_CODE_SENDS.perDay) {
+        const oldest = recent[0]?.sent_at ?? now;
+        throw tooMany(
+          new Date(oldest.getTime() + 864e5),
+          `${SHARE_CODE_SENDS.perDay} codes have been sent for this link today, which is as many as it allows. Use the newest one, or try again tomorrow.`,
+        );
+      }
+      // Only the newest code works: the ones before it end now.
+      await trx
+        .updateTable('share_code')
+        .set({ expires_at: now })
+        .where('share_id', '=', link.id)
+        .where('used_at', 'is', null)
+        .where('expires_at', '>', now)
+        .execute();
+      const id = randomUUID();
+      const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      const expiresAt = new Date(now.getTime() + SHARE_CODE_MINUTES * 60_000);
+      await trx
+        .insertInto('share_code')
+        .values({
+          id,
+          household_id: householdId,
+          share_id: link.id,
+          code_hash: this.codeHash(link.id, id, code),
+          sent_at: now,
+          expires_at: expiresAt,
+        })
+        .execute();
+      await this.record(trx, householdId, link, 'share.code_sent', meta, undefined, {
+        to: maskEmail(link.code_email),
+      });
+      // Asked again now the household's log is held (record() takes its
+      // lock): the link may have ended since live() looked — taken back,
+      // its collection deleted or made Only me, its tenth wrong try — and
+      // whatever ended it either committed before this, and is seen here,
+      // or writes its line after this one. Ended, nothing is sent to an
+      // address the ending has just cleared, and nothing of this is kept
+      // (the 5.20 check, N520R-01).
+      if (!(await this.stillLive(trx, link.id))) throw gone();
+      // Queued before any of it is kept (the 5.20 review, M520-02): if the
+      // email cannot be queued, the code, its line in the activity log, its
+      // place in the count of sends and the end of the code before it are
+      // all undone with the transaction, and the error goes to the log.
+      // Nothing in it names the vault's documents, and nothing in it is a
+      // link: whoever reads it types the code where they asked for it.
+      await mail({
+        householdId,
+        to: link.code_email,
+        subject: 'Your code to open a shared link',
+        text:
+          `Your code is ${code.slice(0, 3)} ${code.slice(3)}.\n\n` +
+          `Type it on the page where you opened the link you were sent. It works once, ` +
+          `for the next ${SHARE_CODE_MINUTES} minutes. ${SHARE_NEWEST_CODE_ONLY}: if you ` +
+          'asked for more than one, use the one in the newest email.\n\n' +
+          'If you did not ask for a code, somebody else may have the link. You can ignore ' +
+          'this email; it opens nothing by itself. Tell whoever sent you the link if it keeps happening.\n',
+      }).catch((err: unknown) => {
+        throw Object.assign(
+          new ApiError(
+            503,
+            'code_not_sent',
+            'The code could not be sent just now. Try again in a minute.',
+            { retriable: true, retryAfter: 60 },
+          ),
+          { cause: err },
+        );
+      });
+      return { to: link.code_email, expiresAt };
+    });
+    return { sent_to: maskEmail(sent.to), expires_at: sent.expiresAt.toISOString() };
   }
 
   /**
@@ -1430,17 +1934,77 @@ export class ShareService {
    * counted — within the link's opens, however many press Open at once —
    * and a session is made for this browser.
    */
-  async unlock(input: z.infer<typeof unlockBody>, meta: RequestMeta): Promise<Unlocked> {
+  async unlock(
+    input: z.infer<typeof unlockBody>,
+    meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<Unlocked> {
     const scope = await this.linkScope(input.token, 'v2');
     const { householdId } = scope;
     const outcome = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'v2');
       // Used up already: no PIN is tried on a link that cannot open.
       if (usedUp(link)) return { refused: 'used up', link } as const;
-      const tried = await this.tryPin(trx, householdId, link, input.secret, meta);
-      if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
+      // For one device, and this is another (5.20): refused before anything
+      // is tried, so a forwarded link cannot even be used to guess.
+      if (otherDevice(link, devices)) return { refused: 'other device', link } as const;
+      const tried = await this.tryFactors(
+        trx,
+        householdId,
+        link,
+        { secret: input.secret, code: input.code },
+        meta,
+      );
+      if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
+      // The first Open that works binds a link for one device to this
+      // browser: its cookie (5.20) — one the vault made, and never one it did
+      // not (the 5.20 review, F520-04): a cookie planted in the browser before
+      // the first open, whose value somebody else knows, is replaced. Two
+      // browsers at once: one binds it, the other is refused — and if the
+      // open is not counted after all, the binding is undone with it. A link
+      // bound already has matched this browser's cookie to its binding
+      // (otherDevice, above): that cookie is kept as it is, even one made
+      // under a master key since rotated (the 5.20 check, N520F-01) — a new
+      // one would lock this browser out of this link, and of every other
+      // link bound to the old one. A new binding takes the cookie made under
+      // the key in use now, under that key's own name, or a new one: an
+      // earlier key's cookie stays in the browser beside it, for the links
+      // bound to it (the master-key rotation review, ROT-C-03).
+      let deviceCookie: DeviceCookie | undefined;
+      let deviceHash: Buffer | null = null;
+      if (link.this_device_only) {
+        deviceCookie =
+          (link.device_hash !== null ? boundCookie(link.id, link.device_hash, devices) : null) ??
+          cookieForNewBinding(this.deviceKey, SHARE_DEVICE_COOKIE, devices);
+        deviceHash = deviceHashOf(link.id, deviceCookie.value);
+        if (link.device_hash === null) {
+          await sql`savepoint fdv_device`.execute(trx);
+          const bound = await trx
+            .updateTable('share_link')
+            .set({ device_hash: deviceHash })
+            .where('id', '=', link.id)
+            .where('device_hash', 'is', null)
+            .returning('id')
+            .executeTakeFirst();
+          if (!bound) {
+            await sql`rollback to savepoint fdv_device`.execute(trx);
+            // Not bound because the link ended as it was opened — its
+            // document trashed, its collection deleted or made Only me while
+            // the password was checked — and the database no longer gives
+            // it its own row: gone, not another browser (the 5.20 check,
+            // N520R-02). Only a binding made by another browser first is.
+            if (!(await this.stillLive(trx, link.id))) return { refused: 'gone', link } as const;
+            return { refused: 'other device', link } as const;
+          }
+        }
+      }
       const counted = await this.countOpen(trx, link.id);
-      if (counted !== 'counted') return { refused: counted, link } as const;
+      if (counted !== 'counted') {
+        if (link.this_device_only && link.device_hash === null) {
+          await sql`rollback to savepoint fdv_device`.execute(trx);
+        }
+        return { refused: counted, link } as const;
+      }
 
       const cookie = randomBytes(32).toString('base64url');
       const now = Date.now();
@@ -1459,7 +2023,8 @@ export class ShareService {
           household_id: householdId,
           share_id: link.id,
           cookie_hash: hashToken(cookie),
-          verified_by: tried === 'right' ? 'pin' : null,
+          device_hash: deviceHash,
+          verified_by: isRight(tried) ? tried.right : null,
           created_at: new Date(now),
           last_seen_at: new Date(now),
           expires_at: expiresAt,
@@ -1475,10 +2040,11 @@ export class ShareService {
         expiresAt,
         made.id,
       );
-      return { cookie, expiresAt, session } as const;
+      return { cookie, expiresAt, session, deviceCookie } as const;
     });
     if (isRefused(outcome)) {
       if (outcome.refused === 'used up') throw opensUsedUp();
+      if (outcome.refused === 'other device') throw otherDeviceRefused();
       await this.refuse(householdId, outcome.link, outcome.refused);
       throw gone();
     }
@@ -1486,12 +2052,16 @@ export class ShareService {
       cookie: outcome.cookie,
       maxAge: Math.max(1, Math.floor((outcome.expiresAt.getTime() - Date.now()) / 1000)),
       session: outcome.session,
+      ...(outcome.deviceCookie ? { device: outcome.deviceCookie } : {}),
     };
   }
 
   /** What is open in a session: the same answer Open gave. Free: nothing is counted. */
-  async sessionItems(cookie: string | undefined): Promise<SharedSession> {
-    return this.inSession(cookie, (trx, link, session) =>
+  async sessionItems(
+    cookie: string | undefined,
+    devices: readonly DeviceCookie[] = [],
+  ): Promise<SharedSession> {
+    return this.inSession(cookie, devices, (trx, link, session) =>
       this.sessionView(trx, link, session.expires_at, session.id),
     );
   }
@@ -1523,8 +2093,9 @@ export class ShareService {
     cookie: string | undefined,
     documentId: string,
     meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
   ): Promise<{ stream: Readable; total: number; contentType: string; filename: string }> {
-    const found = await this.inSession(cookie, async (trx, link, session) => {
+    const found = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return null;
       if (link.permission !== 'download') {
         throw new ApiError(
@@ -1590,8 +2161,9 @@ export class ShareService {
     documentId: string,
     n: number,
     meta: RequestMeta,
+    devices: readonly DeviceCookie[] = [],
   ): Promise<Buffer> {
-    const outcome = await this.inSession(cookie, async (trx, link, session) => {
+    const outcome = await this.inSession(cookie, devices, async (trx, link, session) => {
       if (!(await this.gives(trx, link, documentId))) return { kind: 'missing' } as const;
       if (link.permission !== 'view') {
         throw new ApiError(
@@ -1705,10 +2277,14 @@ export class ShareService {
    * for a collection's, the collection and its sharer as they are now.
    * A session that fails is removed, and its next request is refused too.
    * A link opened as many times as it allows is not ended by that: each
-   * session is one of its opens, and lasts to its own end.
+   * session is one of its opens, and lasts to its own end. A link for one
+   * device (5.20) is used inside its session only from the browser it was
+   * opened in: a session cookie taken to another is refused there, and the
+   * session goes on where it belongs.
    */
   private async inSession<T>(
     cookie: string | undefined,
+    devices: readonly DeviceCookie[],
     fn: (trx: Db, link: InSession, session: { id: string; expires_at: Date }) => Promise<T>,
   ): Promise<T> {
     if (!cookie || cookie.length > 128) throw sessionEnded();
@@ -1725,7 +2301,7 @@ export class ShareService {
     const outcome = await withScope(this.db, scope, async (trx) => {
       const session = await trx
         .selectFrom('share_session')
-        .select(['id', 'share_id', 'expires_at', 'last_seen_at'])
+        .select(['id', 'share_id', 'expires_at', 'last_seen_at', 'device_hash'])
         .where('cookie_hash', '=', cookieHash)
         .executeTakeFirst();
       if (!session) return { ended: 'session' } as const;
@@ -1746,6 +2322,12 @@ export class ShareService {
       } catch (err) {
         if (err instanceof ApiError && err.code === 'link_not_valid') return end('link');
         throw err;
+      }
+      if (link.this_device_only) {
+        const bound = session.device_hash ?? link.device_hash;
+        if (!bound || boundCookie(link.id, bound, devices) === null) {
+          return { ended: 'device' } as const;
+        }
       }
       const touched = await trx
         .updateTable('share_session')
@@ -1787,7 +2369,10 @@ export class ShareService {
       await sql`release savepoint fdv_in_session`.execute(trx);
       return { value } as const;
     });
-    if ('ended' in outcome) throw outcome.ended === 'session' ? sessionEnded() : gone();
+    if ('ended' in outcome) {
+      if (outcome.ended === 'device') throw otherDeviceRefused();
+      throw outcome.ended === 'session' ? sessionEnded() : gone();
+    }
     return outcome.value;
   }
 
@@ -1889,7 +2474,7 @@ export class ShareService {
     const outcome = await withScope(this.db, scope, async (trx) => {
       const link = await this.live(trx, scope.actor.shareId, 'legacy');
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
-      if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
+      if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
       if ((await this.countOpen(trx, link.id)) !== 'counted') {
         return { refused: 'gone', link } as const;
       }
@@ -1934,7 +2519,7 @@ export class ShareService {
       const link = await this.live(trx, scope.actor.shareId, 'legacy');
       if (link.permission !== 'download') return { refused: 'gone', link } as const;
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
-      if (tried !== 'right' && tried !== 'no pin') return { refused: tried, link } as const;
+      if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
       const v = await this.newestVersion(trx, documentOf(link));
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
@@ -1949,27 +2534,66 @@ export class ShareService {
     return this.decrypted(outcome.file);
   }
 
-  // ------------------------------------------------------------- the PIN
+  // ------------------------------------------- the PIN, password and code
 
-  /**
-   * One try of the link's PIN, in the link's own transaction.
-   *
-   * The try is reserved before the PIN is checked — `attempts + 1 where
-   * attempts < 10`, which takes the row — so tries made at the same moment
-   * queue behind it, and no more than ten are ever made however many
-   * arrive at once. A right PIN gives its try back (the reservation is
-   * rolled back to its savepoint, which also lets the next try in). A wrong
-   * one keeps it; the tenth locks the link, once: its sessions end, the
-   * family's log says so, and the sharer is told (refuse()).
-   */
-  private async tryPin(
+  /** A legacy link's PIN (A25): its one factor, tried as every link's are. */
+  private tryPin(
     trx: Db,
     householdId: string,
     link: LinkRow,
     pin: string | undefined,
     meta: RequestMeta,
   ): Promise<Attempt> {
-    if (!link.pin_hash) return 'no pin';
+    return this.tryFactors(trx, householdId, link, { secret: pin }, meta);
+  }
+
+  /**
+   * One try of what the link asks for besides itself, in the link's own
+   * transaction: its PIN or password, and its emailed code (5.20).
+   *
+   * The try is reserved before anything is checked — `attempts + 1 where
+   * attempts < 10`, which takes the row — so tries made at the same moment
+   * queue behind it, and no more than ten are ever made however many
+   * arrive at once. One counter for every factor (A23): a wrong PIN, a
+   * wrong password and a wrong code each use up one of the link's ten.
+   * With a password and a code, the code is tried only once the password
+   * is right — it uses up one of its own five only then — and whichever was
+   * wrong, the answer is the same (factorWrong): the code is looked up and
+   * its HMAC worked out either way, so it is not even slower. Only the
+   * newest code, not used, not past its 10 minutes or its 5 tries, can be
+   * right.
+   *
+   * All right gives its try back (the reservation is rolled back to its
+   * savepoint, which also lets the next try in) and uses the code. Wrong
+   * keeps it; the tenth locks the link, once: its sessions end, the address
+   * its code went to is cleared, the family's log says so, and the sharer is
+   * told (refuse()).
+   */
+  private async tryFactors(
+    trx: Db,
+    householdId: string,
+    link: LinkRow,
+    given: { secret: string | undefined; code?: string | undefined },
+    meta: RequestMeta,
+  ): Promise<Attempt> {
+    const needsCode = link.code_email !== null;
+    if (!link.pin_hash && !needsCode) return 'no pin';
+    // The code that could be right: the newest, taken with its row before
+    // anything else, and held to the end, so two Opens with the same code
+    // cannot both use it.
+    const live = needsCode
+      ? await trx
+          .selectFrom('share_code')
+          .select(['id', 'code_hash'])
+          .where('share_id', '=', link.id)
+          .where('used_at', 'is', null)
+          .where('expires_at', '>', new Date())
+          .where('attempts', '<', SHARE_CODE_TRIES)
+          .orderBy('sent_at', 'desc')
+          .limit(1)
+          .forUpdate()
+          .executeTakeFirst()
+      : undefined;
     await sql`savepoint fdv_pin_attempt`.execute(trx);
     const reserved = await trx
       .updateTable('share_link')
@@ -1982,10 +2606,45 @@ export class ShareService {
       await sql`release savepoint fdv_pin_attempt`.execute(trx);
       return 'gone';
     }
-    const right = pin ? await argon2.verify(link.pin_hash, pin).catch(() => false) : false;
-    if (right) {
+    // A made-up password is checked in its canonical form (F520-06).
+    const secretRight = link.pin_hash
+      ? given.secret
+        ? await argon2
+            .verify(link.pin_hash, asChecked(link.secret_kind, given.secret))
+            .catch(() => false)
+        : false
+      : true;
+    let codeRight = !needsCode;
+    let codeId: string | null = null;
+    if (needsCode) {
+      const typed = readShareCode(given.code);
+      const expected = this.codeHash(link.id, live?.id ?? '', typed ?? '');
+      codeRight = live !== undefined && typed !== null && timingSafeEqual(expected, live.code_hash);
+      codeId = live?.id ?? null;
+      // Tried only after a right password: then a wrong code uses one of its five.
+      if (secretRight && !codeRight && live) {
+        await trx
+          .updateTable('share_code')
+          .set((eb) => ({ attempts: eb('attempts', '+', 1) }))
+          .where('id', '=', live.id)
+          .execute();
+      }
+    }
+    if (secretRight && codeRight) {
       await sql`rollback to savepoint fdv_pin_attempt`.execute(trx);
-      return 'right';
+      if (codeId) {
+        await trx
+          .updateTable('share_code')
+          .set({ used_at: new Date() })
+          .where('id', '=', codeId)
+          .where('used_at', 'is', null)
+          .execute();
+      }
+      const secret: 'pin' | 'password' | null = link.pin_hash ? wireKind(link.secret_kind) : null;
+      const verified = (
+        secret && needsCode ? `${secret}+code` : (secret ?? 'code')
+      ) as NonNullable<Verified>;
+      return { right: verified };
     }
     await sql`release savepoint fdv_pin_attempt`.execute(trx);
     if (reserved.attempts < MAX_PIN_ATTEMPTS)
@@ -1993,7 +2652,8 @@ export class ShareService {
     // The tenth: only one try ever takes the count to ten, so this happens
     // once in a link's life. Failed tries are counters, never audit rows;
     // the lock is one row. Its sessions end — but one in use this moment,
-    // which is not waited on (endSessions).
+    // which is not waited on (endSessions). The link has ended, and the
+    // statement that took it to ten cleared its code's address (0043).
     await endSessions(trx, [link.id]);
     await this.record(trx, householdId, link, 'share.locked', meta);
     return 'locked';
@@ -2004,27 +2664,33 @@ export class ShareService {
    * with, telling the sharer first if it locked the link.
    */
   private async refuse(householdId: string, link: LinkRow, why: Refusal) {
-    if (why === 'gone' || why === 'used up') return;
+    if (why === 'gone' || why === 'used up' || why === 'other device') return;
+    const asks = protectionOf(link);
     if (why === 'locked') {
+      const what =
+        asks.length === 1 && asks[0] === 'pin'
+          ? 'typed the wrong PIN ten times'
+          : 'got what it asks for wrong ten times';
       await this.alert({
         householdId,
         accountIds: [link.created_by],
         subject: 'A link you shared has stopped working',
         body:
-          'Somebody typed the wrong PIN ten times on a link you shared, so it has stopped ' +
+          `Somebody ${what} on a link you shared, so it has stopped ` +
           'working and opens nothing now. The activity log shows which one; make a new link ' +
           'if they still need the document.',
       });
-      throw pinWrong(0);
+      throw factorWrong(asks, 0);
     }
-    throw pinWrong(why.wrong);
+    throw factorWrong(asks, why.wrong);
   }
 
   /**
    * One more open, counted in one statement, and only while the link is
    * live and has opens left (5.18): of any number pressing Open at once on
    * a link with one open left, the statement counts one, and the rest find
-   * none. Otherwise says which: used up, or gone since.
+   * none. Otherwise says which: used up, or gone since. The open that uses
+   * the link up ends it, and the address its code went to with it (0043).
    */
   private async countOpen(trx: Db, id: string): Promise<'counted' | 'used up' | 'gone'> {
     const row = await trx
@@ -2076,6 +2742,8 @@ export class ShareService {
     action: string,
     meta: RequestMeta,
     documentId?: string,
+    /** More to say (5.20: where a code went, masked). Never a secret. */
+    extra: Record<string, string> = {},
   ): Promise<void> {
     return appendAudit(trx, {
       householdId,
@@ -2084,7 +2752,7 @@ export class ShareService {
       actorLabel: link.recipient_label ? `shared link (${link.recipient_label})` : 'shared link',
       action,
       ...(documentId ? { objectType: 'document', objectId: documentId } : objectOf(link)),
-      detail: { share_id: link.id, user_agent: meta.userAgent ?? null },
+      detail: { ...extra, share_id: link.id, user_agent: meta.userAgent ?? null },
       // An outsider's address is kept only as far as their network (A24).
       ip: truncatedIp(meta.ip),
     });
@@ -2318,6 +2986,10 @@ function summarise(
     revoked_by?: string | null;
     revoked_by_name?: string | null;
     revoked_why?: 'collection_only_me' | 'collection_deleted' | null;
+    pin_hash?: string | null;
+    secret_kind?: SecretKind | null;
+    code_email?: string | null;
+    this_device_only?: boolean;
   },
   state: ShareView['state'],
   timezone: string,
@@ -2328,9 +3000,18 @@ function summarise(
   const opened = `${uses.charAt(0).toLowerCase()}${uses.slice(1)}`;
   const end = shareEndWords(r.expires_at, timezone, { weekday: false });
   const follows = r.follow_collection ? ' Keeps up with the collection.' : '';
+  // 5.20's protections, said where the link is listed (a PIN, as before, is not).
+  const asks = [
+    r.pin_hash && wireKind(r.secret_kind ?? null) === 'password' ? 'a password' : null,
+    r.code_email ? `a code emailed to ${maskEmail(r.code_email)}` : null,
+  ].filter((a): a is string => a !== null);
+  // One browser (F520-05): the one it was first opened in.
+  const guarded =
+    (asks.length ? ` Asks for ${asks.join(' and ')}.` : '') +
+    (r.this_device_only ? ' Opens in one browser only.' : '');
   switch (state) {
     case 'active':
-      return `${who}, ${opened}. Stops working on ${end}.${follows}`;
+      return `${who}, ${opened}. Stops working on ${end}.${follows}${guarded}`;
     case 'used_up':
       return `${who}, ${opened}. Used up: it cannot be opened again.`;
     case 'expired':
@@ -2338,7 +3019,11 @@ function summarise(
     case 'revoked':
       return `${who}, ${opened}. ${takenBack(r, reader)}`;
     case 'locked':
-      return `${who}. The PIN was wrong too many times, so it stopped working.`;
+      // A PIN's, as ever; a password's or a code's (5.20) — whose address
+      // went when it locked — in words that fit either.
+      return (r.secret_kind ?? 'pin') === 'pin' && r.pin_hash
+        ? `${who}. The PIN was wrong too many times, so it stopped working.`
+        : `${who}. What it asks for was wrong too many times, so it stopped working.`;
     case 'paused':
       return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
   }

@@ -170,6 +170,28 @@ A link can say more than who it is for:
 - **How many opens.** Each press of Open that works is one; reloading the page it opened,
   turning its pages or downloading the file again there is not. A download is counted
   once per document for each open, and so is the line the activity log gets for it.
+- **A second lock**, as many as you like of:
+  - **a PIN or a password**: four digits, or a password the vault makes up (three short
+    groups, easy to read out, and taken however they type its capitals, dashes and spaces)
+    or one you type (8 characters or more, checked exactly). You tell them it some other
+    way; the vault keeps only a scrambled copy.
+  - **a code by email**: when they open the link, they ask for a six-digit code, which the
+    vault emails to the address you typed — they never type one, and see it with most of it
+    hidden. It works once, for 10 minutes, and only the newest code works; at most 3 are
+    sent in 15 minutes and 10 a day.
+    It proves they can read that inbox: it protects against a forwarded or misposted link,
+    not a hacked mailbox. It goes **only through `FDV_SMTP_URL`**, the mail server whoever
+    runs the vault sets, never the household's own, which any owner can point anywhere;
+    without it the option is not offered, and the share sheet says why. The code is kept
+    only as a keyed hash (from the master key), and the address is forgotten when the link
+    ends.
+  - **this browser only**: the first browser that opens it is the only one it opens in — one
+    browser, not the whole device, so tell them to open it in the one they usually use, not
+    a private window or their email app's own browser.
+
+  Every wrong PIN, password or code counts against the same ten tries for the life of the
+  link, and a wrong password and a wrong code get the same answer. After the tenth the link
+  stops working, and you are told.
 
 ## Phones and other apps
 
@@ -259,7 +281,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_PUBLIC_HTTPS_PORT`            | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`             | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |
 | `FDV_TRUST_PROXY`                  | `private`                                 | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.                                                                            |
-| `FDV_SMTP_URL`                     | unset                                     | Your own mail server for password-reset links only, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. See [Passwords](#passwords).                                                                                |
+| `FDV_SMTP_URL`                     | unset                                     | Your own mail server for password-reset links and the codes a share link can ask for, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. Set it on the API and the worker. See [Passwords](#passwords).            |
 | `FDV_SMTP_FROM`                    | `Family Document Vault <vault@localhost>` | Who those emails come from.                                                                                                                                                                                             |
 | `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` | `false`                                   | Let notifications go to addresses inside your own network — a UnifiedPush distributor (ntfy) on your LAN. Set it on both the API and the worker. See [Notifications on the phone app](#notifications-on-the-phone-app). |
 
@@ -456,7 +478,8 @@ return. On the document, **Share a link** makes a read-only link to that one
 document:
 
 - it stops working after seven days, or whatever you set;
-- it can carry a four-digit PIN, which you give them some other way;
+- it can carry a four-digit PIN or a password, which you give them some other way, ask
+  for a code emailed to them, and open in one browser only;
 - you can take it back at any moment;
 - every time it is opened you see it, next to the link;
 - and it reaches nothing else in the vault. There is no account at the other

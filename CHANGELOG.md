@@ -6,6 +6,30 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.23] - 2026-10-02 — iteration 5.20
+
+A second factor for someone with no account.
+
+### Added
+
+- **Protect a link** — a document's or a collection's — with more than a PIN:
+  - **A password**, either one the vault makes up (three short groups, easy to read out over the phone; capitals, spaces and dashes don't matter when it is typed) or one you type (at least 8 characters).
+  - **A code emailed to the recipient**, which they ask for on the page. Each code works once, for 10 minutes, and only the newest one works. The email carries no link, no title and no names. This needs the mail server of whoever runs the vault (`FDV_SMTP_URL`). The household's own mail settings are never used for it, and without operator mail the option is not offered.
+  - **This browser only**: the link opens only in the first browser that opens it. The page tells the recipient to use their usual browser, not a private window or their email app's.
+- A link has one count of ten wrong tries for its whole life, whatever was wrong — a password, a code or a PIN — and every wrong answer reads the same.
+- Codes can be sent three times in 15 minutes and ten times a day per link.
+
+### Changed
+
+- A link's activity notes when a code was emailed, and to which inbox, masked.
+- The address a code goes to is cleared as soon as the link ends.
+- After a master-key rotation, a browser keeps opening the links it opened before.
+
+### Security
+
+- The cookie that ties a link to one browser is made by the vault and signed. A cookie planted in the browser beforehand is never adopted.
+- A code is stored only as a keyed hash. Neither a database dump nor a backup can check one without the master key.
+
 ## [0.5.22] - 2026-10-02 — the master key, from 0.5.0-rc.2
 
 The 0.5.0 line's fix for rotating the master key, brought into this line.

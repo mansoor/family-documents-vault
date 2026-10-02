@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { sharedOutsideWords } from './collections.js';
 import {
   canShareToView,
+  isShareAddress,
+  maskEmail,
+  readShareCode,
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   defaultShareEnd,
@@ -252,5 +255,40 @@ describe('sharing a collection', () => {
     expect(sharedOutsideWords({ with: [], following: false }, 'teen')).toBe(
       'This collection is shared outside the family. What you put in it now is not sent.',
     );
+  });
+});
+
+/** A second factor (5.20): the rules every client and the vault share. */
+describe('a second factor, as every client and the vault read it (5.20)', () => {
+  it('an address is one the vault takes, by the one rule both sides check (W520-5)', () => {
+    for (const taken of [
+      'jane@example.com',
+      'jane.smith+b520@example.co.uk',
+      "o'brien@example.ie",
+      'a_b-c@sub.example.org',
+    ]) {
+      expect(isShareAddress(taken), taken).toBe(true);
+    }
+    // What zod's email rule — the API's — refuses, so the sheet does too.
+    for (const refused of [
+      'jane@example.c',
+      'jane..smith@example.com',
+      '.jane@example.com',
+      'jane@-example.com',
+      'jané@example.com',
+      'jane@example',
+      '@example.com',
+      'jane smith@example.com',
+      `${'a'.repeat(250)}@example.com`,
+    ]) {
+      expect(isShareAddress(refused), refused).toBe(false);
+    }
+  });
+
+  it('masks an address, and reads a code as it is typed', () => {
+    expect(maskEmail('jane.smith@example.com')).toBe('j•••@e•••.com');
+    expect(readShareCode('482 915')).toBe('482915');
+    expect(readShareCode('48-29-15')).toBe('482915');
+    expect(readShareCode('48291')).toBeNull();
   });
 });

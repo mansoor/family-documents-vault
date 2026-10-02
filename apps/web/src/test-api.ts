@@ -5,6 +5,7 @@ import {
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   inCollectionAudience,
+  maskEmail,
   nextReminder,
   reminderOf,
   type DocumentTypeView,
@@ -17,6 +18,24 @@ import { vi } from 'vitest';
  * An in-memory stand-in for the API, good enough to drive the screens.
  * Each test starts from `fresh()` and can tweak the state before rendering.
  */
+
+/** What a link made here asks for besides itself (5.20), as the vault says it. */
+function factorsOf(b: {
+  with_pin?: boolean;
+  with_password?: boolean;
+  password?: string;
+  code_email?: string;
+  this_device_only?: boolean;
+}) {
+  return {
+    protection: [
+      ...(b.with_pin ? ['pin'] : b.with_password || b.password ? ['password'] : []),
+      ...(b.code_email ? ['code'] : []),
+    ],
+    code_to: b.code_email ? maskEmail(b.code_email) : null,
+    this_device_only: b.this_device_only === true,
+  };
+}
 
 /** A collection of documents as the vault keeps it (0.5.12). The signed-in member is "me". */
 export interface FakeCollection {
@@ -81,6 +100,23 @@ export interface FakeState {
   shareMaxDays?: number;
   /** Whether this session has downloaded the shared document already (SharedItem.downloaded). */
   shareDownloaded?: boolean;
+  /**
+   * 5.20: `features.share_second_factor` (left out: said) and
+   * `features.share_email_code` — the operator's mail server is set (left
+   * out: not). And the link the page at /s opens: its password instead of a
+   * PIN, the code it emails (to `shareCodeTo`, masked), whether it is for
+   * one device, and whether this browser is another.
+   */
+  shareSecondFactor?: boolean;
+  operatorMail?: boolean;
+  sharePassword?: string | null;
+  shareCode?: string | null;
+  shareCodeTo?: string;
+  shareCodesSent?: number;
+  /** The vault refuses the address a code would go to (validation_failed on code_email). */
+  refuseCodeEmail?: boolean;
+  shareDeviceOnly?: boolean;
+  shareOtherDevice?: boolean;
   /** How many times /api/v1/shared/items was asked. */
   shareItemsAsked?: number;
   /** Answer the next this-many asks of /api/v1/shared/items with a 503. */
@@ -490,6 +526,8 @@ export function installFakeApi(state: FakeState) {
             : {}),
           reminder_dates: state.reminderDates ?? true,
           share_options: true,
+          share_second_factor: state.shareSecondFactor ?? true,
+          share_email_code: state.operatorMail === true,
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -834,7 +872,28 @@ export function installFakeApi(state: FakeState) {
         expires_in_days?: number;
         permission?: 'view' | 'download';
         max_opens?: number | null;
+        with_password?: boolean;
+        password?: string;
+        code_email?: string;
+        this_device_only?: boolean;
       };
+      // 5.20: an emailed code only with the operator's mail server (A21).
+      if (b.code_email !== undefined && state.operatorMail !== true) {
+        return refuse(
+          422,
+          'email_code_unavailable',
+          'Emailing a code needs the mail server of whoever runs this vault, and none is set up.',
+        );
+      }
+      // An address the vault refuses, as its schema does (W520-5).
+      if (b.code_email !== undefined && state.refuseCodeEmail) {
+        return refuse(
+          422,
+          'validation_failed',
+          'That is not an email address. Check it: name@example.com.',
+          { detail: 'code_email: That is not an email address. Check it: name@example.com.' },
+        );
+      }
       // The vault's own refusals (5.18), in its words.
       const end = b.expires_at
         ? new Date(b.expires_at)
@@ -879,6 +938,7 @@ export function installFakeApi(state: FakeState) {
                 total: state.pageCount,
               })
             : null,
+        ...factorsOf(b),
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, ${opened}${b.permission === 'view' ? '; to view only' : ''}. Stops working on 30 September at 17:00.`,
       };
       state.shares.push(share);
@@ -888,6 +948,7 @@ export function installFakeApi(state: FakeState) {
           link_token: 'share-secret-0123456789abcdef',
           link_url: state.shareLinkUrl ?? null,
           ...(b.with_pin ? { pin: '4821' } : {}),
+          ...(b.with_password ? { password: 'k7mq-p2xa-9htw' } : {}),
         },
         201,
       );
@@ -952,33 +1013,84 @@ export function installFakeApi(state: FakeState) {
         'link_used_up',
         'This link has been opened as many times as it allows, so it cannot be opened again. Ask whoever sent it for a new one.',
       );
+    // 5.20: what Open asks for, and one device only.
+    const protection = [
+      ...(state.sharePin ? ['pin'] : state.sharePassword ? ['password'] : []),
+      ...(state.shareCode ? ['code'] : []),
+    ];
+    const otherDevice = () =>
+      refuse(
+        403,
+        'other_device',
+        'This link has been opened in another browser already, and it only opens there. Open it in the browser you opened it in first, or ask whoever sent it for a new one.',
+      );
     if (path === '/api/v1/shared/preview' && method === 'POST') {
       if (!state.shareValid) return linkGone();
       if (state.shareOpensLeft === 0) return usedUp();
+      const withheld = protection.length > 0 || Boolean(state.shareOtherDevice);
       return json({
         household_name: 'The Seikh family',
         shared_by: 'Mansoor Seikh',
-        protection: state.sharePin ? ['pin'] : [],
+        protection,
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
-        document_title: state.sharePin || state.shareCollection ? null : 'Flat 3 tenancy agreement',
+        document_title: withheld || state.shareCollection ? null : 'Flat 3 tenancy agreement',
         permission: state.sharePermission ?? 'download',
         opens_left: state.shareOpensLeft ?? null,
         ...(state.shareCollection
           ? {
               kind: 'collection',
-              collection_name: state.sharePin ? null : state.shareCollection.name,
+              collection_name: withheld ? null : state.shareCollection.name,
             }
           : { kind: 'document' }),
+        code_to: state.shareCode ? maskEmail(state.shareCodeTo ?? 'jane.smith@example.com') : null,
+        this_device_only: Boolean(state.shareDeviceOnly),
+        other_device: Boolean(state.shareOtherDevice),
+      });
+    }
+    if (path === '/api/v1/shared/code' && method === 'POST') {
+      if (!state.shareValid) return linkGone();
+      if (state.shareOtherDevice) return otherDevice();
+      if (!state.shareCode) {
+        return refuse(409, 'no_code_needed', 'This link does not ask for a code.');
+      }
+      state.shareCodesSent = (state.shareCodesSent ?? 0) + 1;
+      if (state.shareCodesSent > 3) {
+        return refuse(
+          429,
+          'code_limit',
+          '3 codes have been sent in the last 15 minutes. Use the newest one, or wait a little and send another.',
+        );
+      }
+      return json({
+        sent_to: maskEmail(state.shareCodeTo ?? 'jane.smith@example.com'),
+        expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
       });
     }
     if (path === '/api/v1/shared/unlock' && method === 'POST') {
       if (!state.shareValid) return linkGone();
       if (state.shareOpensLeft === 0) return usedUp();
-      if (state.sharePin && (body as { secret?: string }).secret !== state.sharePin) {
+      if (state.shareOtherDevice) return otherDevice();
+      const given = body as { secret?: string; code?: string };
+      if (state.sharePin && given.secret !== state.sharePin) {
         return refuse(
           401,
           'pin_wrong',
           'That PIN is not right. Check with whoever sent you the link.',
+        );
+      }
+      // Whichever is wrong, the same words (A23).
+      if (
+        (state.sharePassword && given.secret !== state.sharePassword) ||
+        (state.shareCode && given.code !== state.shareCode)
+      ) {
+        return refuse(
+          401,
+          'secret_wrong',
+          state.sharePassword && state.shareCode
+            ? 'The password or the code is not right. Check the password with whoever sent you the link. Only the newest code works, once, for 10 minutes: send a new one if it has run out.'
+            : state.sharePassword
+              ? 'That password is not right. Check with whoever sent you the link.'
+              : 'That code is not right, or it has run out. Only the newest code works, once, for 10 minutes: send a new one.',
         );
       }
       state.shareOpens += 1;
@@ -1875,6 +1987,10 @@ function answerCollections(
         permission?: 'view' | 'download';
         max_opens?: number | null;
         with_pin?: boolean;
+        with_password?: boolean;
+        password?: string;
+        code_email?: string;
+        this_device_only?: boolean;
       };
       if (!b.document_ids.every((id) => docsOn(l).some((d) => d.id === id))) {
         return refuse(404, 'not_found', 'That document is not in this collection.');
@@ -1901,6 +2017,7 @@ function answerCollections(
         max_downloads: null,
         downloads_used: 0,
         pages: null,
+        ...factorsOf(b),
         summary: `${b.recipient_label ? `Shared with ${b.recipient_label}` : 'Shared by link'}, not opened yet. Stops working on 30 September at 17:00.${b.follow_collection ? ' Keeps up with the collection.' : ''}`,
       };
       state.shares.push(share);
@@ -1922,6 +2039,7 @@ function answerCollections(
           link_token: 'share-secret-0123456789abcdef',
           link_url: state.shareLinkUrl ?? null,
           ...(b.with_pin ? { pin: '4821' } : {}),
+          ...(b.with_password ? { password: 'k7mq-p2xa-9htw' } : {}),
         },
         201,
       );

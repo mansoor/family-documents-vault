@@ -2,21 +2,27 @@ import {
   can,
   canShareToView,
   defaultShareEnd,
+  isShareAddress,
   latestShareEnd,
   PREVIEW_MAX_PAGES,
+  SHARE_CODE_TRUTH,
+  SHARE_CODE_UNAVAILABLE,
   SHARE_LIMIT_MAX,
   SHARE_MAX_DAYS,
+  SHARE_PASSWORD_MAX,
+  SHARE_PASSWORD_MIN,
   shareEndProblem,
   shareEndWords,
   sharePagesNote,
   shareQuickPicks,
   zonedParts,
   zonedTime,
+  type Capabilities,
   type ShareInput,
   type SharePermission,
 } from '@fdv/shared';
 import { useState, type ReactNode } from 'react';
-import { api, type CreatedShare, type Share } from '../api.js';
+import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { Button, ErrorNote, Field } from '../ui.js';
@@ -90,6 +96,7 @@ export function SharePanel(props: {
     timezone,
     maxDays: caps?.limits.share_max_days ?? SHARE_MAX_DAYS,
     viewable,
+    factors: linkFactors(caps),
   });
 
   const working = (on: typeof busy) => {
@@ -110,7 +117,10 @@ export function SharePanel(props: {
         await reload();
       }
     } catch (err) {
-      setError(describeError(err));
+      // About the address a code goes to: said under it (W520-5).
+      const refused = codeAddressRefusal(err);
+      if (refused) options.set({ codeRefused: refused });
+      else setError(describeError(err));
     } finally {
       working(null);
     }
@@ -215,7 +225,7 @@ export function SharePanel(props: {
 
 // ------------------------------------------------------- a link's options
 
-/** A link's options as they are being chosen (5.18). */
+/** A link's options as they are being chosen (5.18; 5.20's protection). */
 export interface LinkOptionsValue {
   label: string;
   /** The end as chosen, on the family's clock; null is the default, In a week. */
@@ -223,6 +233,20 @@ export interface LinkOptionsValue {
   permission: SharePermission;
   opens: string;
   withPin: boolean;
+  /** A password (5.20): one the vault makes up, or one typed here. Never with a PIN. */
+  withPassword: boolean;
+  passwordMode: 'made' | 'typed';
+  password: string;
+  /** A code emailed to this address when they ask (5.20). */
+  withCode: boolean;
+  codeEmail: string;
+  /**
+   * The vault's own refusal of that address, said under it (W520-5), until
+   * it is changed.
+   */
+  codeRefused: string | null;
+  /** The first browser to open it is the only one it opens in (5.20). */
+  thisDeviceOnly: boolean;
 }
 
 const NO_OPTIONS: LinkOptionsValue = {
@@ -231,6 +255,13 @@ const NO_OPTIONS: LinkOptionsValue = {
   permission: 'download',
   opens: '',
   withPin: false,
+  withPassword: false,
+  passwordMode: 'made',
+  password: '',
+  withCode: false,
+  codeEmail: '',
+  codeRefused: null,
+  thisDeviceOnly: false,
 };
 
 export function useLinkOptions() {
@@ -238,15 +269,61 @@ export function useLinkOptions() {
   return {
     value,
     set: (change: Partial<LinkOptionsValue>) => setValue((v) => ({ ...v, ...change })),
-    // What was typed goes; View or not, and the PIN, stay as they were chosen.
-    reset: () => setValue((v) => ({ ...NO_OPTIONS, permission: v.permission, withPin: v.withPin })),
+    // What was typed goes — a password and an address with it; View or
+    // not, and which protections, stay as they were chosen.
+    reset: () =>
+      setValue((v) => ({
+        ...NO_OPTIONS,
+        permission: v.permission,
+        withPin: v.withPin,
+        withPassword: v.withPassword,
+        passwordMode: v.passwordMode,
+        withCode: v.withCode,
+        thisDeviceOnly: v.thisDeviceOnly,
+      })),
   };
+}
+
+/**
+ * What this vault can ask for besides the link (5.20): a password and one
+ * browser only (`share_second_factor`), and an emailed code, only when its
+ * operator has given it a mail server (`share_email_code`, A21).
+ */
+export interface LinkFactors {
+  second: boolean;
+  email: boolean;
+}
+
+export function linkFactors(caps: Capabilities | null): LinkFactors {
+  return {
+    second: caps?.features.share_second_factor === true,
+    email: caps?.features.share_email_code === true,
+  };
+}
+
+/**
+ * The vault's refusal of what a link asks for, when it is about the address
+ * a code goes to (W520-5): said under that field, where it can be put right,
+ * rather than at the top of the card. Null for anything else.
+ */
+export function codeAddressRefusal(err: unknown): string | null {
+  if (!(err instanceof ApiRequestError)) return null;
+  if (err.code === 'email_code_unavailable') return err.message;
+  if (err.code === 'validation_failed' && err.detail?.startsWith('code_email')) return err.message;
+  return null;
 }
 
 /** What the options come to: the end, what is wrong, and what to send when nothing is. */
 export function readLinkOptions(
   value: LinkOptionsValue,
-  ctx: { timezone: string; maxDays: number; viewable: boolean; now?: Date },
+  ctx: {
+    timezone: string;
+    maxDays: number;
+    viewable: boolean;
+    now?: Date;
+    /** What the vault can ask for besides the link (5.20); none, when not said. */
+    factors?: LinkFactors;
+  },
 ) {
   const now = ctx.now ?? new Date();
   const { timezone, maxDays } = ctx;
@@ -268,17 +345,54 @@ export function readLinkOptions(
     (!Number.isInteger(opensCount) || opensCount < 1 || opensCount > SHARE_LIMIT_MAX)
       ? `A number from 1 to ${SHARE_LIMIT_MAX}, or leave it empty for no limit.`
       : null;
+  // 5.20: a password (made up, or typed: 8 characters at least), a code by
+  // email (only where the vault can send one), and one browser only.
+  const factors = ctx.factors ?? { second: false, email: false };
+  const password = factors.second && value.withPassword && !value.withPin;
+  const typed = value.password.trim();
+  const passwordProblem =
+    password && value.passwordMode === 'typed' && typed.length < SHARE_PASSWORD_MIN
+      ? `At least ${SHARE_PASSWORD_MIN} characters. Something they can type, and you can say to them.`
+      : null;
+  const code = factors.email && value.withCode;
+  const address = value.codeEmail.trim();
+  // The vault's own rule (isShareAddress, W520-5): nothing it would refuse
+  // is offered; and a refusal it gave anyway is said here too.
+  const codeProblem = code
+    ? !isShareAddress(address)
+      ? 'Their email address, which the code will go to: name@example.com.'
+      : value.codeRefused
+    : null;
   const body: ShareInput | null =
-    endAt && !endProblem && !opensProblem
+    endAt && !endProblem && !opensProblem && !passwordProblem && !codeProblem
       ? {
           ...(value.label.trim() ? { recipient_label: value.label.trim() } : {}),
           expires_at: endAt.toISOString(),
           permission: ctx.viewable ? value.permission : 'download',
           ...(opensCount !== null ? { max_opens: opensCount } : {}),
           with_pin: value.withPin,
+          ...(password
+            ? value.passwordMode === 'made'
+              ? { with_password: true }
+              : { password: typed }
+            : {}),
+          ...(code ? { code_email: address } : {}),
+          ...(factors.second && value.thisDeviceOnly ? { this_device_only: true } : {}),
         }
       : null;
-  return { now, picks, chosen, endAt, endProblem, opensProblem, body, maxDays };
+  return {
+    now,
+    picks,
+    chosen,
+    endAt,
+    endProblem,
+    opensProblem,
+    passwordProblem,
+    codeProblem,
+    body,
+    maxDays,
+    factors,
+  };
 }
 
 /**
@@ -431,20 +545,183 @@ export function LinkOptions(props: {
         </span>
       </div>
 
-      {/* The app's box (`.check`): beside the start of its label, never
-          wrapped onto a line of its own on a phone. */}
-      <div className="check">
-        <input
-          id="share-pin"
-          type="checkbox"
-          checked={value.withPin}
-          onChange={(e) => options.set({ withPin: e.target.checked })}
-        />
-        <label htmlFor="share-pin">
-          Also ask for a four-digit PIN, which you tell them separately
-        </label>
-      </div>
+      <Protection options={options} read={read} />
     </>
+  );
+}
+
+/**
+ * What a link asks for besides itself (5.20): a PIN or a password, a code
+ * emailed to them, and to open in one browser only — any of them, each
+ * said plainly. Where the vault cannot email a code (its operator has set
+ * no mail server, A21), that option is not there, and the reason is.
+ */
+function Protection(props: {
+  options: ReturnType<typeof useLinkOptions>;
+  read: ReturnType<typeof readLinkOptions>;
+}) {
+  const { options, read } = props;
+  const { value } = options;
+  const { factors, passwordProblem, codeProblem } = read;
+  // The app's box (`.check`, 5.19): beside the start of its label, never
+  // wrapped onto a line of its own on a phone.
+  const check = (
+    id: string,
+    checked: boolean,
+    onChange: (on: boolean) => void,
+    label: ReactNode,
+    describedBy?: string,
+  ) => (
+    <div className="check">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        aria-describedby={describedBy}
+      />
+      <label htmlFor={id}>{label}</label>
+    </div>
+  );
+  return (
+    <div className="share-protect" role="group" aria-labelledby="share-protect-h">
+      <span id="share-protect-h" className="field-label">
+        Protect it
+      </span>
+      {check(
+        'share-pin',
+        value.withPin,
+        (on) => options.set({ withPin: on, ...(on ? { withPassword: false } : {}) }),
+        'Also ask for a four-digit PIN, which you tell them separately',
+      )}
+      {factors.second && (
+        <>
+          {check(
+            'share-with-password',
+            value.withPassword,
+            (on) => options.set({ withPassword: on, ...(on ? { withPin: false } : {}) }),
+            'Also ask for a password, which you tell them separately',
+          )}
+          {value.withPassword && (
+            <div className="stack share-indent" style={{ gap: 8 }}>
+              <div className="pills" role="group" aria-label="Which password">
+                <button
+                  type="button"
+                  className={`pill${value.passwordMode === 'made' ? ' pill-on' : ''}`}
+                  aria-pressed={value.passwordMode === 'made'}
+                  onClick={() => options.set({ passwordMode: 'made' })}
+                >
+                  Make one up for me
+                </button>
+                <button
+                  type="button"
+                  className={`pill${value.passwordMode === 'typed' ? ' pill-on' : ''}`}
+                  aria-pressed={value.passwordMode === 'typed'}
+                  onClick={() => options.set({ passwordMode: 'typed' })}
+                >
+                  I’ll type one
+                </button>
+              </div>
+              {value.passwordMode === 'typed' ? (
+                <div className="field">
+                  <label htmlFor="share-password">The password</label>
+                  {/* Left as typed by a phone keyboard (W520-13), and not
+                      marked wrong before anything is typed (W520-6). */}
+                  <input
+                    id="share-password"
+                    type="text"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    maxLength={SHARE_PASSWORD_MAX}
+                    value={value.password}
+                    onChange={(e) => options.set({ password: e.target.value })}
+                    aria-invalid={passwordProblem && value.password ? true : undefined}
+                    aria-describedby="share-password-note"
+                  />
+                  <span
+                    id="share-password-note"
+                    className={passwordProblem && value.password ? 'field-error' : 'muted'}
+                    role={passwordProblem && value.password ? 'alert' : undefined}
+                  >
+                    {passwordProblem && value.password
+                      ? passwordProblem
+                      : `At least ${SHARE_PASSWORD_MIN} characters. The vault keeps only a scrambled copy, so write it down before you send the link.`}
+                  </span>
+                </div>
+              ) : (
+                <span className="muted">
+                  Three short groups of letters and numbers, easy to read out. You see it once, with
+                  the link.
+                </span>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {factors.email ? (
+        <>
+          {check(
+            'share-with-code',
+            value.withCode,
+            (on) => options.set({ withCode: on }),
+            'Also email them a code when they open it',
+            'share-code-truth',
+          )}
+          {value.withCode && (
+            <div className="stack share-indent" style={{ gap: 8 }}>
+              <div className="field">
+                <label htmlFor="share-code-email">Their email address</label>
+                <input
+                  id="share-code-email"
+                  type="email"
+                  autoComplete="off"
+                  maxLength={254}
+                  value={value.codeEmail}
+                  onChange={(e) => options.set({ codeEmail: e.target.value, codeRefused: null })}
+                  aria-invalid={codeProblem && value.codeEmail ? true : undefined}
+                  aria-describedby="share-code-note"
+                />
+                <span
+                  id="share-code-note"
+                  className={codeProblem && value.codeEmail ? 'field-error' : 'muted'}
+                  role={codeProblem && value.codeEmail ? 'alert' : undefined}
+                >
+                  {codeProblem && value.codeEmail
+                    ? codeProblem
+                    : 'The code goes only to this address, from the vault’s own mail server. They never type an address; they see it with most of it hidden.'}
+                </span>
+              </div>
+            </div>
+          )}
+          <span id="share-code-truth" className="muted share-indent">
+            {SHARE_CODE_TRUTH}
+          </span>
+        </>
+      ) : (
+        factors.second && (
+          <p className="muted share-indent" role="note" data-testid="share-code-unavailable">
+            <strong>An emailed code is not available.</strong> {SHARE_CODE_UNAVAILABLE}
+          </p>
+        )
+      )}
+      {factors.second && (
+        <>
+          {check(
+            'share-device-only',
+            value.thisDeviceOnly,
+            (on) => options.set({ thisDeviceOnly: on }),
+            'This browser only',
+            'share-device-note',
+          )}
+          <span id="share-device-note" className="muted share-indent">
+            The first browser that opens it is the only one it will open in. If they open it on
+            their phone, it will not open on their computer.
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -510,6 +787,19 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
           </span>
         </div>
       )}
+      {/* A password the vault made up (5.20): here, once, and nowhere else. */}
+      {props.created.password && (
+        <div className="field" data-testid="share-password">
+          <span className="field-label">The password</span>
+          <code style={{ fontSize: 22, letterSpacing: 2, wordBreak: 'break-all' }}>
+            {props.created.password}
+          </code>
+          <span className="muted">
+            Tell them this some other way — a phone call, not the same message. It is shown only
+            now: the vault keeps a scrambled copy it cannot show again.
+          </span>
+        </div>
+      )}
       <ul className="share-terms">
         <li>Until {shareEndWords(new Date(share.expires_at), props.timezone)}.</li>
         <li>
@@ -522,6 +812,17 @@ export function HandOver(props: { created: CreatedShare; timezone: string; onDon
         {share.max_opens != null && (
           <li>It can be opened {share.max_opens === 1 ? 'once' : `${share.max_opens} times`}.</li>
         )}
+        {/* What it asks for besides the link (5.20). */}
+        {share.protection?.includes('password') && !props.created.password && (
+          <li>They will be asked for the password you chose.</li>
+        )}
+        {share.code_to && (
+          <li>
+            When they open it, a code is emailed to {share.code_to}, and they type it in. It works
+            once, for 10 minutes.
+          </li>
+        )}
+        {share.this_device_only && <li>It opens only in the first browser that opens it.</li>}
         {share.follow_collection && (
           <li>
             It keeps up with the collection: what an owner or an adult puts in it goes too, if

@@ -12,6 +12,8 @@ export interface CapabilityConfig {
   instanceId: string | null;
   /** FDV_SHARE_MAX_DAYS: the longest a share link may last (5.18). 90 when not said. */
   shareMaxDays?: number;
+  /** FDV_SMTP_URL is set: the operator's mail server, which alone sends a link's code (5.20, A21). */
+  operatorMail?: boolean;
 }
 
 /**
@@ -85,6 +87,10 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       share_options: true,
       // 5.19: a collection shared outside, as its sharer ticked it, checked on every request.
       collection_shares: true,
+      // 5.20: a password, and one browser only, on any link; one counter of ten.
+      share_second_factor: true,
+      // 5.20: an emailed code, through the operator's mail server alone (A21).
+      share_email_code: config.operatorMail === true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

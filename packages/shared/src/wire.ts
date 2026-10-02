@@ -268,6 +268,15 @@ export interface Share {
   downloads_used?: number;
   /** A view-only link's pages (5.18); null for a link to download. */
   pages?: SharePages | null;
+  /**
+   * What Open asks for besides the link (5.20): a PIN or a password, an
+   * emailed code. Absent from older vaults: `has_pin` says.
+   */
+  protection?: ShareProtection[];
+  /** Where its code goes, masked; null when it asks for none or has ended (5.20). */
+  code_to?: string | null;
+  /** It opens in the first browser that opened it, and no other (5.20). */
+  this_device_only?: boolean;
   summary: string;
 }
 
@@ -286,6 +295,21 @@ export interface ShareInput {
   permission?: SharePermission;
   max_opens?: number | null;
   max_downloads?: number | null;
+  /**
+   * 5.20, to a vault with `features.share_second_factor`: a password the
+   * vault makes up (`with_password`), or one typed here (8 to 64
+   * characters) — one secret at most, a PIN included.
+   */
+  with_password?: boolean;
+  password?: string;
+  /**
+   * 5.20: an emailed code, sent to this address when they ask for it — only
+   * to a vault with `features.share_email_code` (its operator's mail server
+   * is set); any other refuses it (`422 email_code_unavailable`).
+   */
+  code_email?: string;
+  /** 5.20: the first browser to open it is the only one it opens in. */
+  this_device_only?: boolean;
 }
 
 /**
@@ -303,6 +327,8 @@ export interface CreatedShare {
    */
   link_url?: string | null;
   pin?: string;
+  /** A password the vault made up (5.20, `with_password`): here, once, and nowhere else. */
+  password?: string;
 }
 
 /**
@@ -348,8 +374,21 @@ export interface CollectionShareInput extends ShareInput {
   left_out_ids?: string[];
 }
 
-/** What protects a link (0.5.14): its PIN. 5.20 adds a password and an emailed code. */
-export type ShareProtection = 'pin';
+/**
+ * What Open asks for (0.5.14): a PIN; since 5.20 a password instead, and an
+ * emailed code (`POST /shared/code` sends it), alone or with either. A
+ * client that meets one it does not know asks for nothing it cannot say.
+ */
+export type ShareProtection = 'pin' | 'password' | 'code';
+
+/**
+ * `POST /api/v1/shared/code` (5.20): a code was sent to the address the
+ * sharer typed, masked here; it works once, until `expires_at`.
+ */
+export interface ShareCodeSent {
+  sent_to: string;
+  expires_at: string;
+}
 
 /**
  * `POST /api/v1/shared/preview` (0.5.14): what the page shows before
@@ -371,6 +410,18 @@ export interface ShareLinkPreview {
   kind?: 'document' | 'collection';
   /** A collection's name, withheld while a protection is on, as a title is (5.19). */
   collection_name?: string | null;
+  /**
+   * Where an emailed code goes, masked (`j•••@e•••.com`), when Open asks for
+   * one (5.20). The recipient never types an address.
+   */
+  code_to?: string | null;
+  /** The first browser to open it is the only one it opens in (5.20). */
+  this_device_only?: boolean;
+  /**
+   * It has been opened in another browser already, and opens only there
+   * (5.20): Open would be refused, and the title stays withheld.
+   */
+  other_device?: boolean;
 }
 
 /** A document inside an opened link (0.5.14). */

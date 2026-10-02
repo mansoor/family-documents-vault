@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { devices, expect, test, type APIRequestContext } from '@playwright/test';
 
 /**
  * A share link, the way somebody outside the family opens it (5.16):
@@ -22,6 +22,8 @@ const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
 );
 const SHOTS = process.env.FDV_E2E_SHOTS;
+/** Where the vault is, as playwright.config.ts says: a second browser starts there too. */
+const BASE_URL = process.env.FDV_E2E_URL ?? 'http://localhost:8080';
 
 /** A one-page PDF the worker can draw, built by hand: a tenancy agreement's first page. */
 function onePagePdf(): Buffer {
@@ -53,6 +55,8 @@ function onePagePdf(): Buffer {
 interface Made {
   token: string;
   pin: string;
+  /** A password the vault made up (5.20), when one was asked for. */
+  password?: string;
   shareId: string;
   documentId: string;
   title: string;
@@ -118,11 +122,13 @@ async function makeLink(
   const made = (await shared.json()) as {
     link_token: string;
     pin: string;
+    password?: string;
     share: { id: string };
   };
   return {
     token: made.link_token,
     pin: made.pin,
+    ...(made.password ? { password: made.password } : {}),
     shareId: made.share.id,
     documentId: id,
     title,
@@ -297,4 +303,120 @@ test('a link opened as many times as it allows says so (5.18)', async ({ page, r
   const res = await request.get('/api/v1/shares', { headers: made.auth });
   const { items } = (await res.json()) as { items: Array<{ id: string; state: string }> };
   expect(items.find((s) => s.id === made.shareId)?.state).toBe('used_up');
+});
+
+/**
+ * A second factor (5.20): a password and this device only, which every
+ * vault has; and an emailed code, which only a vault whose operator has set
+ * FDV_SMTP_URL offers. The compose stack in CI has none, so there the code
+ * is refused with its reason; FDV_E2E_MAILPIT names a Mailpit to read the
+ * code from where there is one.
+ */
+test('a password link for this device only opens in the first browser, and no other (5.20)', async ({
+  browser,
+  page,
+  request,
+}) => {
+  const made = await makeLink(request, { with_password: true, this_device_only: true });
+  const password = made.password as string;
+  expect(password).toMatch(/^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$/);
+
+  await page.goto(`/s#${made.token}`);
+  await expect(page.getByText(/put a password on it/)).toBeVisible();
+  await expect(page.getByText(/It opens only in the first browser that opens it/)).toBeVisible();
+  await page.getByLabel('The password they gave you').fill('not the password');
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('alert')).toContainText('That password is not right');
+  await page.getByLabel('The password they gave you').fill(password);
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('link', { name: 'Download tenancy.pdf' })).toBeVisible();
+  expect(await opens(request, made)).toBe(1);
+  // Which browser this is: a cookie its script cannot read, for the share routes alone.
+  const device = (await page.context().cookies()).find((c) =>
+    c.name.startsWith('fdv_share_device_'),
+  );
+  expect(device).toMatchObject({ path: '/api/v1/shared', httpOnly: true, secure: true });
+  expect(device?.sameSite).toBe('Strict');
+
+  // Another browser, with the whole link: told at once, and nothing counted.
+  const elsewhere = await browser.newContext({ ...devices['Pixel 7'], baseURL: BASE_URL });
+  try {
+    const other = await elsewhere.newPage();
+    await other.goto(`/s#${made.token}`);
+    await expect(other.getByRole('heading', { name: 'This link cannot be opened' })).toBeVisible();
+    await expect(other.getByRole('alert')).toContainText('opened in another browser already');
+    await expect(other.getByText(made.title)).toHaveCount(0);
+  } finally {
+    await elsewhere.close();
+  }
+  expect(await opens(request, made)).toBe(1);
+  // The first browser opens it again.
+  await page.goto('about:blank');
+  await page.goto(`/s#${made.token}`);
+  await page.getByLabel('The password they gave you').fill(password);
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('link', { name: 'Download tenancy.pdf' })).toBeVisible();
+  expect(await opens(request, made)).toBe(2);
+});
+
+test('an emailed code goes only through operator mail, and the page asks for it with the address masked (5.20)', async ({
+  page,
+  request,
+}) => {
+  const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
+    features: { share_email_code?: boolean };
+  };
+  const to = `b520-e2e-${randomUUID()}@example.test`;
+  if (!caps.features.share_email_code) {
+    // No operator mail: refused, with the reason, and nothing made.
+    const auth = { authorization: `Bearer ${await (signedIn ??= signIn(request))}` };
+    const doc = await request.post('/api/v1/documents', {
+      headers: auth,
+      data: { title: `Emailed code ${Date.now()}`, visibility: 'household' },
+    });
+    const { id } = (await doc.json()) as { id: string };
+    const refused = await request.post(`/api/v1/documents/${id}/share`, {
+      headers: auth,
+      data: { code_email: to },
+    });
+    expect(refused.status()).toBe(422);
+    expect(await refused.text()).toContain('email_code_unavailable');
+    return;
+  }
+  const made = await makeLink(request, { code_email: to });
+  await page.goto(`/s#${made.token}`);
+  await expect(page.getByText(/it asks for a code, which we email to you/)).toBeVisible();
+  await expect(page.getByText('b•••@e•••.test')).toBeVisible();
+  await page.getByRole('button', { name: 'Email me a code' }).click();
+  await expect(page.getByRole('status')).toContainText('We sent a code to b•••@e•••.test');
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/5-code-sent.png`, fullPage: true });
+  const mailpit = process.env.FDV_E2E_MAILPIT;
+  if (!mailpit) return;
+  // The code, as it arrived: no link in it, and nothing of what was shared.
+  let text = '';
+  await expect
+    .poll(
+      async () => {
+        const found = (await (
+          await request.get(`${mailpit}/api/v1/search?query=${encodeURIComponent(`to:${to}`)}`)
+        ).json()) as { messages?: Array<{ ID: string }> };
+        const id = found.messages?.[0]?.ID;
+        if (!id) return '';
+        const full = (await (await request.get(`${mailpit}/api/v1/message/${id}`)).json()) as {
+          Text: string;
+          HTML: string;
+        };
+        text = `${full.Text}${full.HTML}`;
+        return text;
+      },
+      { timeout: 60_000 },
+    )
+    .toMatch(/\d{3} \d{3}/);
+  expect(text).not.toMatch(/https?:|\/s#/);
+  expect(text).not.toContain(made.title);
+  const code = /(\d{3}) (\d{3})/.exec(text)?.slice(1).join('') ?? '';
+  await page.getByLabel('The code from the email').fill(code);
+  await page.getByRole('button', { name: 'Open' }).click();
+  await expect(page.getByRole('link', { name: 'Download tenancy.pdf' })).toBeVisible();
+  expect(await opens(request, made)).toBe(1);
 });

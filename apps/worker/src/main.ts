@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { deriveKey, EnvKeyProvider, OPERATOR_MAIL_KEY_PURPOSE, ScopeKeys } from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
@@ -16,6 +16,7 @@ import { createNotifier } from './jobs/notify.js';
 import { makeMemberPhoto, type MemberPhotoJob } from './jobs/member-photo.js';
 import { drawSharePages, pruneSharePages, type SharePagesJob } from './jobs/share-pages.js';
 import { isAlert, sendAlert } from './jobs/alerts.js';
+import { isMailJob, pruneShareCodes, sendToAddress } from './jobs/mail.js';
 import { createPushAgent, isPushJob, sendPushJob } from './jobs/push.js';
 import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/reminders.js';
 import { sealPrivateValues } from './jobs/seal.js';
@@ -176,6 +177,9 @@ async function main(): Promise<void> {
           ? { household_id: job.data.household_id, share_id: job.data.share_id }
           : undefined;
       await pruneSharePages(pruneDeps, one);
+      // Each night, too: the address an ended link's code went to, and
+      // codes past their day (5.20).
+      if (!one) await pruneShareCodes(pruneDeps);
     }
   });
   await boss.schedule(JOBS.sharePagesPrune, '35 4 * * *');
@@ -303,6 +307,24 @@ async function main(): Promise<void> {
       }
       const channels = await sendAlert(alertDeps, job.data);
       log('info', 'alert sent', { subject: job.data.subject, channels });
+    }
+  });
+  // One email to one address (5.20): a share link's code, through the
+  // operator's mail server alone. The log says one went, never to whom.
+  const mailDeps = {
+    mailKey: deriveKey(masterSecret, OPERATOR_MAIL_KEY_PURPOSE),
+    operatorMail: alertDeps.operatorMail,
+    log,
+  };
+  await boss.createQueue(JOBS.mailToAddress);
+  await boss.work(JOBS.mailToAddress, async (jobs) => {
+    for (const job of jobs) {
+      if (!isMailJob(job.data)) {
+        log('warn', 'mail job had the wrong shape', { id: job.id });
+        continue;
+      }
+      const sent = await sendToAddress(mailDeps, job.data);
+      log('info', 'email to one address', { household: job.data.household_id, sent });
     }
   });
 

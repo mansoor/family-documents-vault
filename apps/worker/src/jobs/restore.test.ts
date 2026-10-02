@@ -310,6 +310,20 @@ async function seed(url: string): Promise<string> {
           );
         }
       }
+      // And, where the schema has them (0043), a code emailed for the live
+      // document's link, not used yet.
+      const codes = await c.query<{ has: boolean }>(
+        "select to_regclass('public.share_code') is not null as has",
+      );
+      if (codes.rows[0]?.has) {
+        await c.query(
+          `insert into share_code (id, household_id, share_id, code_hash, expires_at)
+           select gen_random_uuid(), $1, s.id, $2, now() + interval '10 minutes' from share_link s
+            where s.household_id = $1 and s.revoked_at is null and s.expires_at > now()
+              and s.document_id is not null`,
+          [hh, randomBytes(32)],
+        );
+      }
     }
   });
   return hh;
@@ -890,6 +904,65 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices a link's emailed codes open to a caller, or what protects a link unguarded (0043)", async () => {
+    const rule = (
+      await sql(
+        vault.adminUrl,
+        "select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'share_code_actor'",
+      )
+    ).rows[0]?.rule as string;
+    // The codes' rule opened up in place: it asks nobody anything.
+    await sql(vault.adminUrl, 'alter policy share_code_actor on public.share_code using (true)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on share_code/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy share_code_actor on public.share_code using (${rule})`,
+      );
+    }
+    // Still asking, but letting a link through to every link's codes.
+    await sql(
+      vault.adminUrl,
+      `alter policy share_code_actor on public.share_code using ((${rule}) or app_actor() = 'link')`,
+    );
+    await sql(
+      vault.adminUrl,
+      `insert into share_code (id, household_id, share_id, code_hash, expires_at)
+       select gen_random_uuid(), s.household_id, s.id, '\\x${'00'.repeat(32)}'::bytea,
+              now() + interval '5 minutes'
+         from share_link s where s.flow = 'v2' limit 1`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a share link it never made is given its documents \(share_code\)/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy share_code_actor on public.share_code using (${rule})`,
+      );
+      await sql(vault.adminUrl, 'delete from share_code');
+    }
+    // And the guards: a link's protection free to change, or a code's.
+    for (const [table, trigger] of [
+      ['share_link', 'share_link_factors_fixed'],
+      ['share_code', 'share_code_writes'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -1105,12 +1178,14 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
 
   it('after a restore every link is paused and no session survives', async () => {
     // The backup has a session open, and a download it has had (0041).
+    // And a code emailed for it, not used yet (0043).
     const before = await sql(
       vault.adminUrl,
       `select (select count(*)::int from share_session) as sessions,
-              (select count(*)::int from share_session_use) as uses`,
+              (select count(*)::int from share_session_use) as uses,
+              (select count(*)::int from share_code) as codes`,
     );
-    expect(before.rows[0]).toEqual({ sessions: 1, uses: 1 });
+    expect(before.rows[0]).toEqual({ sessions: 1, uses: 1, codes: 1 });
     const t = await empty();
     const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
     // The live links — the document's, and the collection's (5.19) — and
@@ -1124,10 +1199,19 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
               (select count(*)::int from share_link where paused_at is not null
                   and (revoked_at is not null or expires_at <= now())) as dead_paused,
               (select count(*)::int from share_session) as sessions,
-              (select count(*)::int from share_session_use) as uses`,
+              (select count(*)::int from share_session_use) as uses,
+              (select count(*)::int from share_code) as codes`,
     );
-    // What those sessions had had goes with them (0041).
-    expect(rows[0]).toEqual({ live: 0, paused: 2, dead_paused: 0, sessions: 0, uses: 0 });
+    // What those sessions had had goes with them (0041), and no code
+    // emailed for a link survives (0043).
+    expect(rows[0]).toEqual({
+      live: 0,
+      paused: 2,
+      dead_paused: 0,
+      sessions: 0,
+      uses: 0,
+      codes: 0,
+    });
     // And a link asking as itself, as the vault will let it, reaches nothing.
     const links = (
       await sql(

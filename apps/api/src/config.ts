@@ -155,8 +155,9 @@ const schema = z.object({
     .optional()
     .describe(
       'A mail server for messages that prove who somebody is — password-reset ' +
-        'links. Set by whoever runs the server, because a mail server set in ' +
-        'the app is one an owner can point anywhere, and a reset link read ' +
+        'links, and the codes a share link can ask for (5.20). Set by whoever ' +
+        'runs the server, because a mail server set in the app is one an ' +
+        'owner can point anywhere, and a reset link or a code read ' +
         'by somebody else is a way into that person\u2019s private documents.',
     ),
 

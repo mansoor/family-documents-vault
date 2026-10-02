@@ -254,11 +254,18 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} took back a link to ${to}`);
     }
     // 0.5.14: the tenth wrong PIN, written down once; the tries before it
-    // are counted, never logged.
+    // are counted, never logged. Since 5.20 a password or a code counts
+    // against the same ten.
     case 'share.locked':
       return line(
-        `A link to ${e.object_type === 'collection' ? collection : doc} stopped working: its PIN was typed wrong ten times`,
+        `A link to ${e.object_type === 'collection' ? collection : doc} stopped working: its PIN, password or code was wrong ten times`,
         true,
+      );
+    // 5.20: a code emailed for a link, to the address its sharer typed,
+    // which the log has only masked.
+    case 'share.code_sent':
+      return line(
+        `A code to open a link to ${e.object_type === 'collection' ? collection : doc} was emailed${text(detail.to) ? ` to ${text(detail.to)}` : ''}`,
       );
     case 'share.resumed':
       return line(

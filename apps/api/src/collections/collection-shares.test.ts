@@ -426,18 +426,22 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       document_title: null,
       shared_by: 'Owner',
     });
-    // Nothing in what it is given counts anything.
+    // Nothing in what it is given counts anything. (5.20's say what Open
+    // asks for: a code's inbox, masked, and whether it is for one device.)
     expect(Object.keys(shown).sort()).toEqual(
       [
+        'code_to',
         'collection_name',
         'document_title',
         'expires_at',
         'household_name',
         'kind',
         'opens_left',
+        'other_device',
         'permission',
         'protection',
         'shared_by',
+        'this_device_only',
       ].sort(),
     );
     const { session } = await opened(link.link_token);
@@ -1635,6 +1639,42 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
         /row-level security|head of the activity log/,
       );
     }
+    // 5.20's line, a code sent (0043, F520-01), is held the same way, by the
+    // rule and the trigger as 0042 has them: about its own collection, under
+    // its own name, on the chain, and on the database's clock — no more than
+    // 15 minutes behind it, nor more than one ahead.
+    const codeSent = {
+      action: 'share.code_sent',
+      object_type: 'collection',
+      object_id: family,
+      detail: { share_id: link.share.id, to: 'j•••@e•••.com', user_agent: 'Firefox' },
+    };
+    await expect(tries(codeSent)).rejects.toThrow(/written, and undone/);
+    const dbNow = await withSystem(h.db, t.owner.household_id, async (trx) =>
+      (
+        await sql<{
+          now: Date;
+        }>`select date_trunc('milliseconds', clock_timestamp()) as now`.execute(trx)
+      ).rows[0]?.now.getTime(),
+    );
+    for (const [what, over] of [
+      ['a collection it is not to', { object_id: teens }],
+      ['as somebody else’s link', { actor_label: 'shared link (the landlord)' }],
+      ['off the chain', { prev_hash: randomBytes(32) }],
+      ['16 minutes behind the clock', { at: new Date((dbNow ?? 0) - 16 * 60_000) }],
+      ['two minutes ahead of the clock', { at: new Date((dbNow ?? 0) + 2 * 60_000) }],
+    ] as const) {
+      await expect(tries({ ...codeSent, ...over }), `a code sent, ${what}`).rejects.toThrow(
+        /row-level security|head of the activity log/,
+      );
+    }
+    // And `to` is a code sent's alone: on any other line, refused.
+    for (const action of ['share.opened', 'share.viewed', 'share.downloaded']) {
+      await expect(
+        tries({ action, detail: { share_id: link.share.id, to: 'j•••@e•••.com' } }),
+        `${action} with a to`,
+      ).rejects.toThrow(/says only what a line of its kind may say/);
+    }
   });
 
   it('a link cannot fork the chain, or hash its line otherwise than the log does (second review)', async () => {
@@ -1882,23 +1922,83 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
   it('what a link may write is said in one place each, for a later release to add to (third review, for 5.20)', async () => {
     await fresh('owner', true);
     const hh = t.owner.household_id;
-    // Exactly what the rule and the trigger asked before.
+    // What the rule and the trigger ask: 0042's, and 5.20's code sent, which
+    // 0043 adds by redefining the two alone (F520-01) — with where the code
+    // went, masked, its line's alone.
     const said = await withSystem(h.db, hh, async (trx) => {
       const r = await sql<{
         actions: string[];
         keys: string[];
+        code: string[];
         none: string[];
       }>`select app_link_audit_actions() as actions,
                 app_link_line_keys('share.downloaded') as keys,
+                app_link_line_keys('share.code_sent') as code,
                 app_link_line_keys('share.created') as none`.execute(trx);
       return r.rows[0];
     });
     expect(said).toEqual({
-      actions: ['share.opened', 'share.viewed', 'share.downloaded', 'share.locked'],
+      actions: [
+        'share.opened',
+        'share.viewed',
+        'share.downloaded',
+        'share.locked',
+        'share.code_sent',
+      ],
       keys: ['share_id', 'user_agent'],
+      code: ['share_id', 'user_agent', 'to'],
       // The same for any action: one a link may not write is the rule's to refuse.
       none: ['share_id', 'user_agent'],
     });
+    // Redefined as 0042 defined them: stable, parallel safe, its search_path,
+    // no owner's rights, and the application's to call.
+    const defined = await withSystem(
+      h.db,
+      hh,
+      async (trx) =>
+        (
+          await sql<{
+            name: string;
+            volatility: string;
+            parallel: string;
+            definer: boolean;
+            config: string[];
+            granted: boolean;
+          }>`select p.proname as name, p.provolatile as volatility, p.proparallel as parallel,
+                  p.prosecdef as definer, p.proconfig as config,
+                  has_function_privilege('fdv_app', p.oid, 'execute') as granted
+             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public'
+              and p.proname in ('app_link_audit_actions', 'app_link_line_keys')
+            order by 1`.execute(trx)
+        ).rows,
+    );
+    expect(defined).toEqual(
+      ['app_link_audit_actions', 'app_link_line_keys'].map((name) => ({
+        name,
+        volatility: 's',
+        parallel: 's',
+        definer: false,
+        config: ['search_path=pg_catalog, public, pg_temp'],
+        granted: true,
+      })),
+    );
+    // And the rule itself is 0042's, not restated: its window ends a minute
+    // ahead, and a lock is said only once it has happened.
+    const rule = await withSystem(
+      h.db,
+      hh,
+      async (trx) =>
+        (
+          await sql<{
+            rule: string;
+          }>`select pg_get_expr(polwithcheck, polrelid) as rule from pg_policy
+            where polname = 'audit_event_link_insert'`.execute(trx)
+        ).rows[0]?.rule,
+    );
+    expect(rule).toContain('app_link_audit_actions()');
+    expect(rule).toContain('app_link_locked()');
+    expect(rule).toMatch(/'00:01:00'::interval/);
     const link = await shared('owner', family, {
       document_ids: [docs.lease],
       recipient_label: 'the bank',
@@ -1926,8 +2026,9 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
     }
 
     // A later release adds an action, and a key for it, by redefining the
-    // two alone — the rule and the trigger unchanged. (Tried here in a
-    // transaction that is rolled back, as the application's role.)
+    // two alone — the rule and the trigger unchanged, as 0043 did for a code
+    // sent. (Tried here in a transaction that is rolled back, as the
+    // application's role, with an action nobody writes yet.)
     const admin = createPool(h.adminUrl, 1);
     const c = await admin.connect();
     try {
@@ -1935,12 +2036,13 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       await c.query(`create or replace function app_link_audit_actions() returns text[]
                        language sql stable parallel safe set search_path = pg_catalog, public, pg_temp as
                        $$ select array['share.opened', 'share.viewed', 'share.downloaded',
-                                       'share.locked', 'share.code_sent']::text[] $$`);
+                                       'share.locked', 'share.code_sent', 'share.later']::text[] $$`);
       await c.query(`create or replace function app_link_line_keys(p_action text) returns text[]
                        language sql stable parallel safe set search_path = pg_catalog, public, pg_temp as
-                       $$ select case when p_action = 'share.code_sent'
-                                      then array['share_id', 'user_agent', 'to']::text[]
-                                      else array['share_id', 'user_agent']::text[] end $$`);
+                       $$ select case p_action
+                                   when 'share.code_sent' then array['share_id', 'user_agent', 'to']::text[]
+                                   when 'share.later' then array['share_id', 'user_agent', 'more']::text[]
+                                   else array['share_id', 'user_agent']::text[] end $$`);
       await c.query('set local role fdv_app_test');
       await c.query(
         `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
@@ -1958,10 +2060,10 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
         household_id: hh,
         actor_account_id: null,
         actor_label: 'shared link (the bank)',
-        action: 'share.code_sent',
+        action: 'share.later',
         object_type: 'collection',
         object_id: family,
-        detail: { share_id: link.share.id, to: 'a***@example.test' },
+        detail: { share_id: link.share.id, more: 'said by a later release' },
         at: head.at,
         prev_hash: head.hash,
       };
@@ -1987,7 +2089,7 @@ describe.skipIf(!testAdminUrl())('sharing a collection (5.19)', () => {
       await admin.end();
     }
     // Rolled back: as it was.
-    await expect(tries({ action: 'share.code_sent' })).rejects.toThrow(/row-level security/);
+    await expect(tries({ action: 'share.later' })).rejects.toThrow(/row-level security/);
   });
 
   // ------------------------------------ a request in a session, as its link ends

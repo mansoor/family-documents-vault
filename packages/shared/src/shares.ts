@@ -376,3 +376,90 @@ export function shareEndProblem(
   }
   return null;
 }
+
+// ---------------------------------------------- a second factor (5.20)
+
+/**
+ * What a link may ask for besides itself (5.20), in any combination: a PIN
+ * or a password, an emailed code, and to open in one browser only. A PIN is
+ * four digits the vault makes up; a password is one it makes up, or one the
+ * sharer types.
+ */
+export type ShareSecretKind = 'pin' | 'password';
+
+/** A typed password: at least this long, and at most SHARE_PASSWORD_MAX. */
+export const SHARE_PASSWORD_MIN = 8;
+export const SHARE_PASSWORD_MAX = 64;
+
+/** An emailed code: six digits, good for 10 minutes and 5 tries, and used once. */
+export const SHARE_CODE_DIGITS = 6;
+export const SHARE_CODE_MINUTES = 10;
+export const SHARE_CODE_TRIES = 5;
+/** At most 3 codes a link in any 15 minutes, and 10 in a day. */
+export const SHARE_CODE_SENDS = { perWindow: 3, windowMinutes: 15, perDay: 10 } as const;
+
+/**
+ * What the share sheet says of an emailed code, beside the box: what it
+ * proves, and what it does not.
+ */
+export const SHARE_CODE_TRUTH =
+  'The code proves they can read that inbox. It protects against a forwarded or misposted link, not a hacked mailbox.';
+
+/**
+ * Why a vault without the operator's mail server offers no emailed code
+ * (A21): the household's own mail settings are an owner's to point
+ * anywhere, and a code read by somebody else opens the link.
+ */
+export const SHARE_CODE_UNAVAILABLE =
+  'Emailing a code needs the mail server of whoever runs this vault, and none is set up. The household’s own mail settings are not used for it: a code must not go through a server that can be pointed anywhere.';
+
+/**
+ * What the person a link is for is told when the vault cannot send the code
+ * it asks for (the 5.20 review, W520-14): not the sharer's explanation, but
+ * what they can do.
+ */
+export const SHARE_CODE_CANNOT_SEND =
+  'This link asks for a code by email, which this vault cannot send just now. Ask whoever sent it for a new link.';
+
+/**
+ * Said wherever a code is (the 5.20 review, F520-03): a new code ends the
+ * one before it, so an earlier email's code is refused, and uses up a try.
+ */
+export const SHARE_NEWEST_CODE_ONLY = 'Only the newest code works';
+
+/**
+ * An address a code can be sent to (the 5.20 review, W520-5): the rule the
+ * API holds `code_email` to, and the one the share sheet checks before it
+ * sends — so the sheet never offers an address the vault refuses. It is
+ * zod's own email rule (4.x), at most 254 characters.
+ */
+const SHARE_ADDRESS =
+  /^(?:[A-Za-z0-9_'+-]+\.)*[A-Za-z0-9_'+-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$/;
+
+export function isShareAddress(address: string): boolean {
+  return address.length <= 254 && SHARE_ADDRESS.test(address);
+}
+
+/**
+ * An address as the recipient and the activity log see it: enough to know
+ * which inbox, and no more — `jane.smith@example.com` is `j•••@e•••.com`.
+ */
+export function maskEmail(address: string): string {
+  const at = address.lastIndexOf('@');
+  if (at <= 0) return '•••';
+  const local = address.slice(0, at);
+  const domain = address.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  const name = dot > 0 ? domain.slice(0, dot) : domain;
+  const tld = dot > 0 ? domain.slice(dot) : '';
+  return `${local.charAt(0)}•••@${name.charAt(0)}•••${tld}`;
+}
+
+/**
+ * A code as somebody typed it, or null when it cannot be one: six digits,
+ * with any spaces or dashes between them (`123 456`) taken out.
+ */
+export function readShareCode(typed: string | null | undefined): string | null {
+  const digits = (typed ?? '').replace(/[\s-]/g, '');
+  return new RegExp(`^\\d{${SHARE_CODE_DIGITS}}$`).test(digits) ? digits : null;
+}

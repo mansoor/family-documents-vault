@@ -25,12 +25,14 @@ const schema = z.object({
     .string()
     .regex(/^smtps?:[/][/]/, 'Use smtp://… or smtps://…')
     .optional()
-    .describe('The operator\u2019s mail server, for password-reset links only.'),
+    .describe(
+      'The operator\u2019s mail server, for password-reset links and the codes a share link asks for.',
+    ),
   FDV_SMTP_FROM: z
     .string()
     .min(3)
     .default('Family Document Vault <vault@localhost>')
-    .describe('Who password-reset emails come from.'),
+    .describe('Who password-reset emails and share-link codes come from.'),
   FDV_VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   FDV_VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   FDV_VAPID_SUBJECT: z.string().min(1).default('mailto:vault@localhost'),

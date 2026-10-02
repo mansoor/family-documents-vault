@@ -23,6 +23,7 @@ import pg from 'pg';
 import webpush from 'web-push';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sendAlert } from './jobs/alerts.js';
+import { pruneShareCodes } from './jobs/mail.js';
 import { buildExport } from './jobs/export.js';
 import { makeMemberPhoto } from './jobs/member-photo.js';
 import { createNotifier } from './jobs/notify.js';
@@ -627,6 +628,31 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
           expect(
             await pruneSharePages({ admin, app, credentialsKey, localRoot: vaultDir }),
           ).toEqual({ removed: 1 });
+        },
+      ],
+      [
+        'share.pages.prune: codes (5.20)',
+        async () => {
+          // A link whose end has passed, still holding the address its code
+          // went to, and a code sent two days ago.
+          const { rows } = await admin.query<{ id: string }>(
+            `insert into share_link (household_id, document_id, token_hash, created_by, expires_at,
+                                     created_at, code_email)
+             values ($1, $2, $3, $4, now() - interval '1 hour', now() - interval '3 days',
+                     'jane@example.test') returning id`,
+            [hh, ids.document, randomBytes(32), ids.account],
+          );
+          await admin.query(
+            `insert into share_code (id, household_id, share_id, code_hash, sent_at, expires_at)
+             values ($1, $2, $3, $4, now() - interval '2 days', now() - interval '2 days')`,
+            [randomUUID(), hh, rows[0]?.id, randomBytes(32)],
+          );
+          expect(await pruneShareCodes({ admin, app })).toEqual({ addresses: 1, codes: 1 });
+          const left = await admin.query<{ code_email: string | null }>(
+            'select code_email from share_link where id = $1',
+            [rows[0]?.id],
+          );
+          expect(left.rows[0]?.code_email).toBeNull();
         },
       ],
     ];

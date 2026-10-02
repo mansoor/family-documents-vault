@@ -380,7 +380,8 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * days); browsers registered for notifications before 0.4.2, which no
  * session ties to, are forgotten; every live share link is paused for an
  * owner to turn back on, since one taken back since would work again, and
- * no session opened with a link survives (5.16); and a person's photo that
+ * no session opened with a link survives (5.16), nor a code emailed for one
+ * (5.20); and a person's photo that
  * was on its way, whose job the restore did not bring back, is marked
  * failed for the nightly prune to take away with its upload (5.17c). Ready
  * photos come back as they were that night. Guarded for older schemas.
@@ -431,6 +432,12 @@ begin
   if to_regclass('public.share_session') is not null then
     delete from public.share_session;
   end if;
+  -- A link's emailed codes (5.20): one sent since the backup is not in it,
+  -- and one in it may have been used since; every link that asks for one
+  -- is paused above anyway. None survives.
+  if to_regclass('public.share_code') is not null then
+    delete from public.share_code;
+  end if;
   if to_regclass('public.member_photo') is not null then
     update public.member_photo set state = 'failed' where state = 'processing';
     get diagnostics n = row_count;
@@ -475,6 +482,11 @@ const GUARDS = [
   // And a link's lines in the activity log: on its head, one at a time,
   // hashed as every line is (0042, the 5.19 review).
   { name: 'audit_event_link_line', table: 'audit_event', fn: 'audit_event_link_line' },
+  // And what protects it: its secret and "this device only" fixed, a device
+  // bound once, its code's address cleared only once it has ended (0043).
+  { name: 'share_link_factors_fixed', table: 'share_link', fn: 'share_link_factors_fixed' },
+  // A code sent keeps what it was: its tries only go up, it is used once (0043).
+  { name: 'share_code_writes', table: 'share_code', fn: 'share_code_writes' },
 ];
 
 /**
@@ -523,6 +535,8 @@ const ACTOR_GUARDED = [
   // view-only link's pages that could not be drawn, a version at a time (0042).
   'share_link_item',
   'share_page_failure',
+  // A link's emailed codes: its own, and the vault's; nobody else's (0043).
+  'share_code',
 ];
 
 /**

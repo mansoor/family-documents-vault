@@ -3,7 +3,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { SHARE_COOKIE_PATH } from './documents/shares.js';
-import { requestForLog } from './log-redaction.js';
+import { errorForLog, requestForLog } from './log-redaction.js';
 import { registerOffline } from './offline/routes.js';
 import type { OfflineService } from './offline/service.js';
 import { registerAudit } from './audit/routes.js';
@@ -113,11 +113,16 @@ function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
  * are cut from every request line (log-redaction.ts).
  */
 function loggerOptions(config: ApiConfig, given: AppDeps['logger']): boolean | object {
-  const base = { level: config.LOG_LEVEL, serializers: { req: requestForLog } };
+  // And never an address from an error (5.20): a refused row, a mail server's words.
+  const base = { level: config.LOG_LEVEL, serializers: { req: requestForLog, err: errorForLog } };
   if (given === undefined) return base;
   if (typeof given !== 'object' || given === null) return given;
   const theirs = (given as { serializers?: object }).serializers ?? {};
-  return { ...base, ...given, serializers: { ...base.serializers, ...theirs, req: requestForLog } };
+  return {
+    ...base,
+    ...given,
+    serializers: { ...base.serializers, ...theirs, req: requestForLog, err: errorForLog },
+  };
 }
 
 export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<FastifyInstance> {
@@ -248,6 +253,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       displayName: householdName ?? config.FDV_DISPLAY_NAME,
       maxUploadBytes: config.FDV_MAX_UPLOAD_BYTES,
       shareMaxDays: config.FDV_SHARE_MAX_DAYS,
+      operatorMail: Boolean(config.FDV_SMTP_URL),
       setupRequired,
       pushEnabled: Boolean(config.FDV_VAPID_PUBLIC_KEY),
       // Without it the document is still true, only less specific; say

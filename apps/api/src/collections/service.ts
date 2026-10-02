@@ -824,9 +824,15 @@ export class CollectionService {
     // made takes too before it looks at the collection again (C519-07).
     // Made first, it is here to be ended; made after, it finds the
     // collection Only me, or deleted.
+    // With the address a code went to (5.20): an ended link keeps nobody's.
     const ended = await trx
       .updateTable('share_link')
-      .set({ revoked_at: new Date(), revoked_by: p.accountId, revoked_why: why })
+      .set({
+        revoked_at: new Date(),
+        revoked_by: p.accountId,
+        revoked_why: why,
+        code_email: null,
+      })
       .where('collection_id', '=', collectionId)
       .where('revoked_at', 'is', null)
       .where('expires_at', '>', new Date())

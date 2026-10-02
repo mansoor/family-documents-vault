@@ -70,6 +70,13 @@ export const JOBS = {
    */
   alertSend: 'alert.send',
   /**
+   * One email to one address (5.20): a share link's code, to the address its
+   * sharer typed. Only through the operator's mail server (FDV_SMTP_URL),
+   * never the household's (A21); sealed on the queue. The name matches the
+   * API's MAIL_JOB.
+   */
+  mailToAddress: 'mail.to_address',
+  /**
    * A push the API asks for (4.13): a device's test, and "you were signed
    * out" to the phones of a session that just ended (their rows already
    * gone, so the job carries what sending needs).

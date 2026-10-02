@@ -1502,6 +1502,34 @@ a.btn {
   font-size: 14px;
 }
 
+/* 5.20: a link's protections — boxes, each with what it asks for under it. */
+.share-protect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* What a protection's box asks for, under the box's words, past its box
+   (`.check`: 22px and 10px). */
+.share-indent {
+  margin: 0 0 6px;
+  padding-left: 32px;
+  font-size: 14px;
+}
+
+.share-indent input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* What a code page says, and its always-there status line (a `.status-line`):
+   no margins of a paragraph's own, empty or filled — the box's gap is all
+   the space between the code, the line and the button (N520W-1). */
+.share-code-sent,
+.share-code-status {
+  margin: 0;
+}
+
 .share-terms {
   margin: 0;
   padding-left: 20px;
