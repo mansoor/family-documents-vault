@@ -1508,6 +1508,14 @@ a.btn {
   font-weight: 600;
 }
 
+/* At 320 px a card leaves each a column too narrow for a whole date: one
+   under the other there (5.22, for the share sheet and a request alike). */
+@media (max-width: 360px) {
+  .share-when {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .field-error {
   color: var(--danger);
   font-size: 14px;
@@ -1578,6 +1586,13 @@ a.btn {
 
 .check.check-noted > :not(input) {
   grid-column: 2;
+}
+
+/* What is said under a box's label, in its column (5.22: the share sheet's
+   "This browser only" too, which sat a whole tap height below it). */
+.check-note {
+  margin: 0;
+  font-size: 14px;
 }
 
 .share-item-why {
@@ -1669,4 +1684,110 @@ a.btn {
   padding-left: 12px;
   border-left: 3px solid var(--border-strong);
   white-space: pre-wrap;
+}
+
+/* 5.22: asking for documents. The things to send, each a field and its
+   Remove; the limits side by side, as the end's date and time are. */
+fieldset.ask-items {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.ask-items legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+
+.ask-items > p {
+  margin: 0;
+}
+
+.ask-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.ask-item input,
+.ask-limits input {
+  font: inherit;
+  font-size: 16px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.ask-item input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ask-limits {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+/* The page a request opens (5.22): the card's own gap is the space between
+   what it says; the requester's message as they wrote it, each file with
+   what is happening to it, and its progress. */
+.drop-page .card > p {
+  margin: 0;
+}
+
+.drop-message {
+  margin: 0;
+}
+
+.drop-message blockquote {
+  margin: 4px 0 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.drop-files {
+  margin: 0;
+}
+
+.list li.drop-file {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.drop-file-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.drop-file > .btn,
+.drop-file > .row,
+.drop-slot > .btn {
+  align-self: flex-start;
+}
+
+.drop-progress {
+  width: 100%;
+  height: 10px;
+  accent-color: var(--accent);
+}
+
+/* Sharing's requests (5.22): the way to make one, as wide as its words;
+   what each has had, and where it stands. */
+.ask-start {
+  align-self: flex-start;
+}
+
+.request-state {
+  font-size: 14px;
 }

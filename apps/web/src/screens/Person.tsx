@@ -1,4 +1,5 @@
 import {
+  can,
   canRemovePhoto,
   initialsFor,
   PHOTO_MAX_BYTES,
@@ -211,6 +212,20 @@ export function ProfileScreen() {
           {myRole === 'owner' && member.has_account && !member.is_me && (
             <AccountCard member={member} name={name} />
           )}
+
+          {/* Ask someone outside the family for their papers (5.22): the
+              request says, for whoever reviews, whose they probably are. */}
+          {can(myRole, 'upload_request.create') && !member.is_deceased && (
+            <Link
+              to={`/settings/sharing/ask?person=${encodeURIComponent(member.id)}`}
+              className="btn btn-quiet ask-start"
+            >
+              {member.is_me
+                ? 'Ask someone for your documents'
+                : `Ask someone for ${name}’s documents`}
+            </Link>
+          )}
+
           <RoleControls member={member} onChanged={reload} />
         </>
       )}

@@ -75,7 +75,7 @@ export function SettingsScreen() {
             <Link to="/settings/sharing" className="rowbtn">
               <span className="doc-title">Sharing</span>
               <span className="muted">
-                Links to documents and collections outside the family, and taking them back
+                Links outside the family, asking someone to send documents, and taking them back
               </span>
             </Link>
           </li>

@@ -6,6 +6,7 @@ import { DocumentScreen } from './screens/Document.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
+import { AskForDocumentsScreen } from './screens/AskForDocuments.js';
 import { AfterRestoreScreen } from './screens/AfterRestore.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
@@ -261,6 +262,16 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <SharingScreen />
+              </Gate>
+            }
+          />
+          {/* Ask for documents (5.22): from Sharing, and from a person's
+              page (?person=<their id>, a hint for whoever reviews). */}
+          <Route
+            path="/settings/sharing/ask"
+            element={
+              <Gate need="signed-in">
+                <AskForDocumentsScreen />
               </Gate>
             }
           />

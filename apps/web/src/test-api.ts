@@ -10,6 +10,7 @@ import {
   maskEmail,
   nextReminder,
   reminderOf,
+  uploadRequestTypes,
   type DocumentTypeView,
   type MemberAccount,
   type ReminderProblem,
@@ -37,6 +38,68 @@ function factorsOf(b: {
     ],
     code_to: b.code_email ? maskEmail(b.code_email) : null,
     this_device_only: b.this_device_only === true,
+  };
+}
+
+/**
+ * The request the page at /drop opens (5.22), as the vault keeps it: what
+ * Open asks for, what it takes, and what this browser has sent.
+ */
+export interface FakeDrop {
+  /** False once it is taken back, closed, past its end or locked: link_not_valid. */
+  valid: boolean;
+  /** Opened as many times as it allows. */
+  usedUp?: boolean;
+  /** Bound to another browser (this device only). */
+  otherDevice?: boolean;
+  password?: string | null;
+  code?: string | null;
+  codeTo?: string;
+  codesSent?: number;
+  thisDevice?: boolean;
+  /** Wrong tries left before it locks; left out, plenty. */
+  triesLeft?: number;
+  title?: string;
+  message?: string | null;
+  items: Array<{ id: string; label: string }>;
+  accept?: 'standard' | 'office';
+  maxFiles?: number;
+  maxBytes?: number;
+  /** The vault's limit for one file. */
+  maxFileBytes?: number;
+  expiresAt?: string;
+  /** This browser has it open. */
+  session: boolean;
+  opens: number;
+  files: Array<{
+    id: string;
+    name: string;
+    content_type: string;
+    byte_size: number;
+    item_id: string | null;
+  }>;
+  /** Answer the next this-many calls with 503 busy. */
+  busy?: number;
+  /** What Finish sent. */
+  finished?: { note: string | null; files: number };
+  closeAfter?: boolean;
+}
+
+/** The request's id the page at /drop is given at Open. */
+export const DROP_REQUEST_ID = '6f1c2b3a-9d8e-4c7b-8a6f-5e4d3c2b1a10';
+
+export function freshDrop(over: Partial<FakeDrop> = {}): FakeDrop {
+  return {
+    valid: true,
+    items: [
+      { id: 'item-w2', label: 'W-2' },
+      { id: 'item-1099', label: '1099' },
+    ],
+    message: 'Everything for the 2025 return, please.\nThe 1099s by Friday.',
+    session: false,
+    opens: 0,
+    files: [],
+    ...over,
   };
 }
 
@@ -70,6 +133,15 @@ export interface FakeState {
   }>;
   /** True once the "only you can open this" moment has been shown. */
   privateNoticeShown: boolean;
+  /**
+   * 5.22: requests to send documents, as GET /upload-requests gives them
+   * (UploadRequestView), newest first. Left out, none.
+   */
+  uploadRequests?: Array<Record<string, unknown> & { id: string }>;
+  /** CreatedUploadRequest.link_url: the public-only site's link, when the vault has one. */
+  dropLinkUrl?: string | null;
+  /** The request the page at /drop opens (5.22); left out, a plain one that works. */
+  drop?: FakeDrop;
   /** The password last set through either password route. */
   passwordChanged: string | null;
   /** The address the forgotten-password form was submitted with. */
@@ -1154,6 +1226,272 @@ export function installFakeApi(state: FakeState) {
       Object.assign(link, { state: 'active', paused_at: null, paused_reason: null });
       return json(link);
     }
+    // Asking for documents (5.22, the API of 5.21): owners and adults; a
+    // teen or a viewer is told there is nothing here, as the vault tells them.
+    if (path === '/api/v1/upload-requests' || path.startsWith('/api/v1/upload-requests/')) {
+      const role = storedRole();
+      if (role !== 'owner' && role !== 'adult') {
+        return refuse(404, 'not_found', 'That page does not exist.');
+      }
+      const list = (state.uploadRequests ??= []);
+      if (path === '/api/v1/upload-requests' && method === 'GET') {
+        return json({ items: list, email_code_available: state.operatorMail === true });
+      }
+      if (path === '/api/v1/upload-requests' && method === 'POST') {
+        const b = body as Record<string, unknown>;
+        const title = typeof b.title === 'string' ? b.title.trim() : '';
+        if (!title) return refuse(422, 'validation_failed', 'Give the request a title.');
+        const end = new Date(String(b.expires_at));
+        if (Number.isNaN(end.getTime()) || end.getTime() < Date.now() + 5 * 60_000) {
+          return refuse(422, 'expiry_out_of_range', 'Choose a time at least 5 minutes from now.');
+        }
+        if (end.getTime() > Date.now() + 90 * 864e5 + 5 * 60_000) {
+          return refuse(422, 'expiry_out_of_range', 'A request can last 90 days at most.');
+        }
+        if (b.email_code === true && state.operatorMail !== true) {
+          return refuse(
+            422,
+            'email_code_unavailable',
+            'This vault cannot send email codes: whoever runs it has not given it a mail server.',
+          );
+        }
+        if (b.email_code === true && state.refuseCodeEmail) {
+          return refuse(422, 'validation_failed', 'That is not an address the vault can send to.', {
+            detail: 'recipient_email',
+          });
+        }
+        const text = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+        const made = {
+          id: `req-${list.length + 1}`,
+          title,
+          message: text(b.message),
+          items: ((b.items as string[] | undefined) ?? []).map((label, i) => ({
+            id: `item-${i + 1}`,
+            label,
+          })),
+          recipient_label: text(b.recipient_label),
+          recipient_email: text(b.recipient_email),
+          requested_by_name: ME.display_name,
+          mine: true,
+          created_at: new Date().toISOString(),
+          expires_at: end.toISOString(),
+          protection: [
+            ...(b.with_password || b.password ? ['password'] : []),
+            ...(b.email_code ? ['email_code'] : []),
+            ...(b.this_device_only ? ['this_device'] : []),
+          ],
+          max_visits: typeof b.max_visits === 'number' ? b.max_visits : null,
+          visits_used: 0,
+          max_files: typeof b.max_files === 'number' ? b.max_files : 10,
+          files_used: 0,
+          max_total_bytes:
+            typeof b.max_total_bytes === 'number' ? b.max_total_bytes : 200 * 1024 * 1024,
+          bytes_used: 0,
+          accept_types: b.accept_types === 'office' ? 'office' : 'standard',
+          review_by: b.review_by === 'adults' ? 'adults' : 'me',
+          suggested_member_id: text(b.suggested_member_id),
+          suggested_type_key: null,
+          close_after_submit: b.close_after_submit === true,
+          state: 'active',
+          paused_reason: null,
+          closed_reason: null,
+          files_received: 0,
+        };
+        list.unshift(made);
+        return json(
+          {
+            request: made,
+            link_token: 'drop-secret-0123456789abcdef',
+            link_url: state.dropLinkUrl ?? null,
+            ...(b.with_password ? { password: 'k7mq-p2xa-9htw' } : {}),
+          },
+          201,
+        );
+      }
+      const at = /^\/api\/v1\/upload-requests\/([^/]+)(\/resume)?$/.exec(path);
+      const r = at ? list.find((x) => x.id === at[1]) : undefined;
+      if (!at || !r) return refuse(404, 'not_found', 'That request does not exist.');
+      if (!at[2] && method === 'DELETE') {
+        Object.assign(r, { state: 'revoked', recipient_email: null });
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (at[2] && method === 'POST') {
+        if (role !== 'owner') {
+          return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
+        }
+        if (r.state !== 'paused') {
+          return refuse(404, 'not_found', 'That paused request does not exist.');
+        }
+        Object.assign(r, { state: 'active', paused_reason: null });
+        return json(r);
+      }
+    }
+    // The page a request opens (5.22): /drop, the token in a body, Open
+    // counted, a session after, named by X-FDV-Drop-Request.
+    if (path.startsWith('/api/v1/drop/')) {
+      const d = (state.drop ??= freshDrop());
+      const dropGone = () =>
+        refuse(
+          404,
+          'link_not_valid',
+          'That link is not valid any more. Ask whoever sent it for a new one.',
+        );
+      const ended = () =>
+        refuse(
+          401,
+          'drop_session_ended',
+          'This page has been open too long, or was opened somewhere else. Open the link you were sent again.',
+        );
+      if ((d.busy ?? 0) > 0) {
+        d.busy = (d.busy ?? 0) - 1;
+        return refuse(503, 'busy', 'The vault was busy just then. Try again.', {
+          retriable: true,
+        });
+      }
+      const accept = d.accept ?? 'standard';
+      const maxBytes = d.maxBytes ?? 200 * 1024 * 1024;
+      const used = d.files.reduce((n, f) => n + f.byte_size, 0);
+      const view = () => ({
+        request_id: DROP_REQUEST_ID,
+        household_name: 'The Seikh family',
+        requested_by: 'Mansoor Seikh',
+        title: d.title ?? 'Tax papers for 2025',
+        message: d.message ?? null,
+        items: d.items,
+        accept_types: accept,
+        accepted: uploadRequestTypes(accept),
+        max_files: d.maxFiles ?? 10,
+        files_left: Math.max(0, (d.maxFiles ?? 10) - d.files.length),
+        bytes_left: maxBytes - used,
+        max_file_bytes: Math.min(d.maxFileBytes ?? 100 * 1024 * 1024, maxBytes - used),
+        expires_at: d.expiresAt ?? new Date(Date.now() + 14 * 864e5).toISOString(),
+        session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
+        files: d.files,
+      });
+      const protection = [
+        ...(d.password ? ['password'] : []),
+        ...(d.code ? ['email_code'] : []),
+        ...(d.thisDevice ? ['this_device'] : []),
+      ];
+      const usedUp = () =>
+        refuse(
+          410,
+          'request_used_up',
+          'This link has been opened as many times as it allows, so it cannot be opened again. Ask whoever sent it for a new one.',
+        );
+      const otherDevice = () =>
+        refuse(
+          403,
+          'other_device',
+          'This link was opened on another device, and works only there. Ask whoever sent it for a new one.',
+        );
+      if (path === '/api/v1/drop/preview' && method === 'POST') {
+        if (!d.valid) return dropGone();
+        if (d.usedUp) return usedUp();
+        return json({
+          household_name: 'The Seikh family',
+          requested_by: 'Mansoor Seikh',
+          protection,
+          expires_at: d.expiresAt ?? new Date(Date.now() + 14 * 864e5).toISOString(),
+        });
+      }
+      if (path === '/api/v1/drop/code' && method === 'POST') {
+        if (!d.valid) return dropGone();
+        if (d.otherDevice) return otherDevice();
+        if (!d.code) {
+          return refuse(422, 'no_email_code', 'This link does not use an emailed code.');
+        }
+        d.codesSent = (d.codesSent ?? 0) + 1;
+        return json({
+          sent_to: maskEmail(d.codeTo ?? 'jane.smith@example.com'),
+          expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+        });
+      }
+      if (path === '/api/v1/drop/unlock' && method === 'POST') {
+        if (!d.valid) return dropGone();
+        if (d.usedUp) return usedUp();
+        if (d.otherDevice) return otherDevice();
+        const given = body as { password?: string; code?: string };
+        if ((d.password && given.password !== d.password) || (d.code && given.code !== d.code)) {
+          const left = (d.triesLeft ?? 10) - 1;
+          d.triesLeft = left;
+          if (left <= 0) d.valid = false;
+          return refuse(
+            401,
+            'secret_wrong',
+            left > 0
+              ? 'That is not right. Check what you were sent, and try again.'
+              : 'That was wrong too many times, so the link has stopped working.',
+          );
+        }
+        d.opens += 1;
+        d.session = true;
+        return json(view());
+      }
+      // Inside a session: it must say which request it is about.
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (!d.session || headers['x-fdv-drop-request'] !== DROP_REQUEST_ID) return ended();
+      if (!d.valid) return dropGone();
+      if (path === '/api/v1/drop/session' && method === 'GET') return json(view());
+      if (path === '/api/v1/drop/files' && method === 'POST') {
+        const form = init?.body as FormData;
+        const file = form.get('file') as File;
+        const itemId = form.get('item_id') as string | null;
+        if (d.files.length >= (d.maxFiles ?? 10)) {
+          return refuse(
+            409,
+            'files_used_up',
+            `This request takes ${d.maxFiles ?? 10} files, and that many have been sent.`,
+          );
+        }
+        if (file.size > (d.maxFileBytes ?? 100 * 1024 * 1024)) {
+          return refuse(413, 'too_large', 'That file is too big: one file can be 100 MB at most.');
+        }
+        if (/\.(docm|xlsm)$/i.test(file.name)) {
+          return refuse(
+            415,
+            'macros_refused',
+            "Word and Excel files with macros, or that load something from elsewhere, can't be sent here. Save it as an ordinary Word or Excel file, or as a PDF, and send that.",
+          );
+        }
+        if (!uploadRequestTypes(accept).includes(file.type)) {
+          return refuse(
+            415,
+            'unsupported_type',
+            accept === 'office'
+              ? 'That kind of file cannot be sent here. PDFs, photos, and Word or Excel files are fine.'
+              : 'That kind of file cannot be sent here. PDFs and photos are fine.',
+          );
+        }
+        const sent = {
+          id: `file-${d.files.length + 1}-${file.name}`,
+          name: file.name,
+          content_type: file.type,
+          byte_size: file.size,
+          item_id: itemId,
+        };
+        d.files.push(sent);
+        return json(sent, 201);
+      }
+      const fileAt = /^\/api\/v1\/drop\/files\/([^/]+)$/.exec(path);
+      if (fileAt && method === 'DELETE') {
+        const id = decodeURIComponent(fileAt[1] as string);
+        if (!d.files.some((f) => f.id === id)) {
+          return refuse(404, 'not_found', 'That file is not here.');
+        }
+        d.files = d.files.filter((f) => f.id !== id);
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (path === '/api/v1/drop/finish' && method === 'POST') {
+        if (d.files.length === 0) {
+          return refuse(422, 'nothing_to_send', 'Add a file first, then press Finish.');
+        }
+        const note = (body as { note?: string } | undefined)?.note ?? null;
+        d.finished = { note, files: d.files.length };
+        if (d.closeAfter) d.valid = false;
+        return json({ files: d.files.length, closed: Boolean(d.closeAfter) });
+      }
+    }
     // The page at /s (5.16): the token in a body, Open counted, a session after.
     const linkGone = () =>
       refuse(
@@ -1998,6 +2336,69 @@ export function installFakeApi(state: FakeState) {
     return Promise.reject(new Error(`unmocked ${method} ${url}`));
   };
   vi.stubGlobal('fetch', fn);
+  // A file sent on the page at /drop (5.22) goes by XMLHttpRequest, for its
+  // progress: answered by the same fake, halfway first, then whole — held
+  // in between while `hold` says so.
+  class FakeXhr {
+    status = 0;
+    responseText = '';
+    upload: { onprogress: ((e: ProgressEventInit) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    onabort: (() => void) | null = null;
+    private method = 'GET';
+    private url = '';
+    private headers: Record<string, string> = {};
+    private answered = new Headers();
+    private stopped = false;
+    open(method: string, url: string) {
+      this.method = method;
+      this.url = url;
+    }
+    setRequestHeader(name: string, value: string) {
+      this.headers[name.toLowerCase()] = value;
+    }
+    getResponseHeader(name: string) {
+      return this.answered.get(name);
+    }
+    abort() {
+      if (this.stopped) return;
+      this.stopped = true;
+      this.onabort?.();
+    }
+    send(form: FormData) {
+      const path = this.url.split('?')[0] ?? this.url;
+      const file = form.get('file') as File | null;
+      const total = file?.size ?? 0;
+      state.calls.push({
+        method: this.method,
+        url: this.url,
+        body: Object.fromEntries(
+          [...form.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : v.name]),
+        ),
+        headers: this.headers,
+      });
+      void (async () => {
+        await Promise.resolve();
+        if (this.stopped) return;
+        this.upload.onprogress?.({ lengthComputable: true, loaded: Math.floor(total / 2), total });
+        await state.hold?.(this.method, path);
+        if (this.stopped) return;
+        this.upload.onprogress?.({ lengthComputable: true, loaded: total, total });
+        const res = await respond(this.url, this.method, path, new URLSearchParams(), undefined, {
+          method: this.method,
+          body: form,
+          headers: this.headers,
+        });
+        if (this.stopped) return;
+        this.status = res.status;
+        this.responseText = res.status === 204 ? '' : await res.text();
+        this.answered = res.headers;
+        this.onload?.();
+      })();
+    }
+  }
+  vi.stubGlobal('XMLHttpRequest', FakeXhr);
   return fn;
 }
 

@@ -26,7 +26,7 @@ import { useState, type ReactNode } from 'react';
 import { api, ApiRequestError, type CreatedShare, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, ErrorNote, Field } from '../ui.js';
+import { Button, Check, ErrorNote, Field } from '../ui.js';
 
 /**
  * Sharing one document with somebody outside the family (SHR-05).
@@ -420,9 +420,7 @@ export function LinkOptions(props: {
 }) {
   const { options, read, timezone, viewable } = props;
   const { value } = options;
-  const { chosen, endAt, endProblem, opensProblem, picks, now, maxDays } = read;
-  const zoneWords =
-    timezone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? ` (${timezone} time)` : '';
+  const { opensProblem } = read;
   return (
     <>
       <Field
@@ -434,60 +432,13 @@ export function LinkOptions(props: {
         hint="Only for your own list — the letting agent, the accountant. It is also written across the pages of a link to view."
       />
 
-      <div className="field" role="group" aria-labelledby="share-until-h">
-        <span id="share-until-h" className="field-label">
-          Stops working
-        </span>
-        <div className="pills">
-          {picks.map((p) => {
-            const on = endAt !== null && Math.abs(endAt.getTime() - p.at.getTime()) < 60_000;
-            return (
-              <button
-                key={p.key}
-                type="button"
-                className={`pill${on ? ' pill-on' : ''}`}
-                aria-pressed={on}
-                onClick={() => options.set({ end: zonedParts(p.at, timezone) })}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="share-when">
-          <label className="field" htmlFor="share-date">
-            <span>Date</span>
-            <input
-              id="share-date"
-              type="date"
-              value={chosen.date}
-              min={zonedParts(now, timezone).date}
-              max={latestShareEnd(timezone, now, maxDays).date}
-              onChange={(e) => options.set({ end: { date: e.target.value, time: chosen.time } })}
-              aria-describedby="share-until-note"
-            />
-          </label>
-          <label className="field" htmlFor="share-time">
-            <span>Time</span>
-            <input
-              id="share-time"
-              type="time"
-              value={chosen.time}
-              step={300}
-              onChange={(e) => options.set({ end: { date: chosen.date, time: e.target.value } })}
-              aria-describedby="share-until-note"
-            />
-          </label>
-        </div>
-        <span
-          id="share-until-note"
-          className={endProblem ? 'field-error' : 'muted'}
-          role={endProblem ? 'alert' : undefined}
-        >
-          {endProblem ?? (endAt ? `Until ${shareEndWords(endAt, timezone)}${zoneWords}.` : null)}
-        </span>
-        {props.endNote}
-      </div>
+      <EndPicker
+        idPrefix="share"
+        timezone={timezone}
+        read={read}
+        onChange={(end) => options.set({ end })}
+        endNote={props.endNote}
+      />
 
       <div className="field" role="group" aria-labelledby="share-can-h">
         <span id="share-can-h" className="field-label">
@@ -557,6 +508,159 @@ export function LinkOptions(props: {
 }
 
 /**
+ * When a link stops working (5.18), on the family's clock: Tonight, Friday
+ * 5 pm and In a week one tap away, or a date and a time; what it comes to
+ * said under them, or why it cannot be. A request to send documents (5.22)
+ * ends the same way.
+ */
+export function EndPicker(props: {
+  /** The ids' start: `share` for a link, `ask` for a request. */
+  idPrefix: string;
+  timezone: string;
+  read: Pick<
+    ReturnType<typeof readLinkOptions>,
+    'chosen' | 'endAt' | 'endProblem' | 'picks' | 'now' | 'maxDays'
+  >;
+  onChange: (end: { date: string; time: string }) => void;
+  /** Said under the end, after it ("A link that keeps up … lasts 30 days at most."). */
+  endNote?: ReactNode;
+}) {
+  const { idPrefix: p, timezone, read } = props;
+  const { chosen, endAt, endProblem, picks, now, maxDays } = read;
+  const zoneWords =
+    timezone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? ` (${timezone} time)` : '';
+  return (
+    <div className="field" role="group" aria-labelledby={`${p}-until-h`}>
+      <span id={`${p}-until-h`} className="field-label">
+        Stops working
+      </span>
+      <div className="pills">
+        {picks.map((pick) => {
+          const on = endAt !== null && Math.abs(endAt.getTime() - pick.at.getTime()) < 60_000;
+          return (
+            <button
+              key={pick.key}
+              type="button"
+              className={`pill${on ? ' pill-on' : ''}`}
+              aria-pressed={on}
+              onClick={() => props.onChange(zonedParts(pick.at, timezone))}
+            >
+              {pick.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="share-when">
+        <label className="field" htmlFor={`${p}-date`}>
+          <span>Date</span>
+          <input
+            id={`${p}-date`}
+            type="date"
+            value={chosen.date}
+            min={zonedParts(now, timezone).date}
+            max={latestShareEnd(timezone, now, maxDays).date}
+            onChange={(e) => props.onChange({ date: e.target.value, time: chosen.time })}
+            aria-describedby={`${p}-until-note`}
+          />
+        </label>
+        <label className="field" htmlFor={`${p}-time`}>
+          <span>Time</span>
+          <input
+            id={`${p}-time`}
+            type="time"
+            value={chosen.time}
+            step={300}
+            onChange={(e) => props.onChange({ date: chosen.date, time: e.target.value })}
+            aria-describedby={`${p}-until-note`}
+          />
+        </label>
+      </div>
+      <span
+        id={`${p}-until-note`}
+        className={endProblem ? 'field-error' : 'muted'}
+        role={endProblem ? 'alert' : undefined}
+      >
+        {endProblem ?? (endAt ? `Until ${shareEndWords(endAt, timezone)}${zoneWords}.` : null)}
+      </span>
+      {props.endNote}
+    </div>
+  );
+}
+
+/**
+ * A password the vault makes up, or one typed (5.20): which, and the typed
+ * one with what is wrong with it — said only once something is typed
+ * (W520-6), and left as typed by a phone keyboard (W520-13).
+ */
+export function PasswordChoice(props: {
+  /** The typed password's field: `share-password`, `ask-password`. */
+  id: string;
+  mode: 'made' | 'typed';
+  password: string;
+  problem: string | null;
+  onMode: (mode: 'made' | 'typed') => void;
+  onPassword: (password: string) => void;
+  /** What is said under the typed one: the rule, and what to do with it. */
+  typedNote: string;
+  madeNote: string;
+}) {
+  const wrong = props.problem && props.password ? props.problem : null;
+  return (
+    <div className="stack share-indent" style={{ gap: 8 }}>
+      <div className="pills" role="group" aria-label="Which password">
+        <button
+          type="button"
+          className={`pill${props.mode === 'made' ? ' pill-on' : ''}`}
+          aria-pressed={props.mode === 'made'}
+          onClick={() => props.onMode('made')}
+        >
+          Make one up for me
+        </button>
+        <button
+          type="button"
+          className={`pill${props.mode === 'typed' ? ' pill-on' : ''}`}
+          aria-pressed={props.mode === 'typed'}
+          onClick={() => props.onMode('typed')}
+        >
+          I’ll type one
+        </button>
+      </div>
+      {props.mode === 'typed' ? (
+        <div className="field">
+          <label htmlFor={props.id}>The password</label>
+          <input
+            id={props.id}
+            type="text"
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            maxLength={SHARE_PASSWORD_MAX}
+            value={props.password}
+            onChange={(e) => props.onPassword(e.target.value)}
+            aria-invalid={wrong ? true : undefined}
+            aria-describedby={`${props.id}-note`}
+          />
+          <span
+            id={`${props.id}-note`}
+            className={wrong ? 'field-error' : 'muted'}
+            role={wrong ? 'alert' : undefined}
+          >
+            {wrong ?? props.typedNote}
+          </span>
+        </div>
+      ) : (
+        <span className="muted">{props.madeNote}</span>
+      )}
+    </div>
+  );
+}
+
+/** What "This browser only" means, for whoever makes a link or a request (5.20, 5.22). */
+export const DEVICE_ONLY_NOTE =
+  'The first browser that opens it is the only one it will open in. If they open it on their phone, it will not open on their computer.';
+
+/**
  * What a link asks for besides itself (5.20): a PIN or a password, a code
  * emailed to them, and to open in one browser only — any of them, each
  * said plainly. Where the vault cannot email a code (its operator has set
@@ -609,60 +713,16 @@ function Protection(props: {
             'Also ask for a password, which you tell them separately',
           )}
           {value.withPassword && (
-            <div className="stack share-indent" style={{ gap: 8 }}>
-              <div className="pills" role="group" aria-label="Which password">
-                <button
-                  type="button"
-                  className={`pill${value.passwordMode === 'made' ? ' pill-on' : ''}`}
-                  aria-pressed={value.passwordMode === 'made'}
-                  onClick={() => options.set({ passwordMode: 'made' })}
-                >
-                  Make one up for me
-                </button>
-                <button
-                  type="button"
-                  className={`pill${value.passwordMode === 'typed' ? ' pill-on' : ''}`}
-                  aria-pressed={value.passwordMode === 'typed'}
-                  onClick={() => options.set({ passwordMode: 'typed' })}
-                >
-                  I’ll type one
-                </button>
-              </div>
-              {value.passwordMode === 'typed' ? (
-                <div className="field">
-                  <label htmlFor="share-password">The password</label>
-                  {/* Left as typed by a phone keyboard (W520-13), and not
-                      marked wrong before anything is typed (W520-6). */}
-                  <input
-                    id="share-password"
-                    type="text"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    maxLength={SHARE_PASSWORD_MAX}
-                    value={value.password}
-                    onChange={(e) => options.set({ password: e.target.value })}
-                    aria-invalid={passwordProblem && value.password ? true : undefined}
-                    aria-describedby="share-password-note"
-                  />
-                  <span
-                    id="share-password-note"
-                    className={passwordProblem && value.password ? 'field-error' : 'muted'}
-                    role={passwordProblem && value.password ? 'alert' : undefined}
-                  >
-                    {passwordProblem && value.password
-                      ? passwordProblem
-                      : `At least ${SHARE_PASSWORD_MIN} characters. The vault keeps only a scrambled copy, so write it down before you send the link.`}
-                  </span>
-                </div>
-              ) : (
-                <span className="muted">
-                  Three short groups of letters and numbers, easy to read out. You see it once, with
-                  the link.
-                </span>
-              )}
-            </div>
+            <PasswordChoice
+              id="share-password"
+              mode={value.passwordMode}
+              password={value.password}
+              problem={passwordProblem}
+              onMode={(passwordMode) => options.set({ passwordMode })}
+              onPassword={(password) => options.set({ password })}
+              typedNote={`At least ${SHARE_PASSWORD_MIN} characters. The vault keeps only a scrambled copy, so write it down before you send the link.`}
+              madeNote="Three short groups of letters and numbers, easy to read out. You see it once, with the link."
+            />
           )}
         </>
       )}
@@ -712,20 +772,17 @@ function Protection(props: {
           </p>
         )
       )}
+      {/* Its note just under its label, in the label's column (5.22): as a
+          sibling under the row it sat a whole tap height below it. */}
       {factors.second && (
-        <>
-          {check(
-            'share-device-only',
-            value.thisDeviceOnly,
-            (on) => options.set({ thisDeviceOnly: on }),
-            'This browser only',
-            'share-device-note',
-          )}
-          <span id="share-device-note" className="muted share-indent">
-            The first browser that opens it is the only one it will open in. If they open it on
-            their phone, it will not open on their computer.
-          </span>
-        </>
+        <Check
+          id="share-device-only"
+          noteId="share-device-note"
+          checked={value.thisDeviceOnly}
+          onChange={(on) => options.set({ thisDeviceOnly: on })}
+          label="This browser only"
+          note={DEVICE_ONLY_NOTE}
+        />
       )}
     </div>
   );
@@ -736,7 +793,7 @@ function Protection(props: {
  * anywhere but this computer. There Open's Secure cookie is dropped, so the
  * page refuses to open it (SharePage), and the person it is for gets nothing.
  */
-function insecureLink(link: string): boolean {
+export function insecureLink(link: string): boolean {
   try {
     const url = new URL(link);
     return url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
