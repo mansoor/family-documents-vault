@@ -210,6 +210,20 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(
         isOwn(e) ? `${who} removed their photo` : `${who} removed ${possessive(personOf(e))} photo`,
       );
+    // A person's details (5.25): which of them changed, never what they
+    // were or are. The name the line gives is the one they have now.
+    case 'member.updated': {
+      const what = detailWords(detail.fields);
+      return line(
+        isOwn(e)
+          ? `${who} changed their ${what}`
+          : `${who} changed ${possessive(personOf(e))} ${what}`,
+      );
+    }
+    case 'member.deceased':
+      return detail.deceased === true
+        ? line(`${who} recorded that ${personOf(e)} has passed away`, true)
+        : line(`${who} took back the record that ${personOf(e)} has passed away`, true);
     case 'invitation.created':
       return line(`${who} invited ${nameOf(detail, 'email')} to sign in`, true);
     case 'invitation.accepted':
@@ -436,6 +450,21 @@ function reachWords(visibility: string): string {
     default:
       return 'visible to somebody else';
   }
+}
+
+/** "name", "date of birth and relationship": the details a line says changed (5.25). */
+function detailWords(fields: unknown): string {
+  const names: Record<string, string> = {
+    display_name: 'name',
+    date_of_birth: 'date of birth',
+    relationship: 'relationship',
+  };
+  const said = (Array.isArray(fields) ? fields : [])
+    .map((f) => (typeof f === 'string' ? names[f] : undefined))
+    .filter((w): w is string => w !== undefined);
+  if (said.length === 0) return 'details';
+  if (said.length === 1) return said[0] as string;
+  return `${said.slice(0, -1).join(', ')} and ${said[said.length - 1] as string}`;
 }
 
 function roleWords(role: unknown): string {

@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
-import { ApiError } from '../errors.js';
+import { ApiError, notFound } from '../errors.js';
 import type { Principal } from '../auth/service.js';
-import { memberBody, profileBody, type HouseholdService } from './service.js';
+import {
+  memberBody,
+  memberEditBody,
+  memberEtag,
+  profileBody,
+  type HouseholdService,
+} from './service.js';
 import {
   acceptBody,
   acceptByBody,
@@ -163,6 +169,41 @@ export function registerHousehold(
 
   const params = <T>(schema: z.ZodType<T>, req: FastifyRequest) => parse(schema, req.params);
   const idParam = z.object({ id: z.string().uuid() });
+
+  /**
+   * A person's details (5.25): their name, date of birth and relationship,
+   * by whoever may change them (A66), and that they have passed away, by an
+   * owner who confirms it is them. Made to the person as the caller saw
+   * them: If-Match on their `version`; an older one is `409 conflict`.
+   */
+  app.patch('/api/v1/members/:id', guard('member.edit'), async (req, reply) => {
+    const ifMatch = req.headers['if-match'];
+    const changed = await household.updateMember(
+      principal(req),
+      params(idParam, req).id,
+      parse(memberEditBody, req.body ?? {}),
+      typeof ifMatch === 'string' ? ifMatch : undefined,
+      metaOf(req),
+    );
+    if (changed.version !== null) reply.header('etag', memberEtag(changed.version));
+    return changed;
+  });
+
+  if (stepUp) {
+    /**
+     * The owner's view of somebody's sign-in (5.25), read-only. Anybody but
+     * an owner is answered as if there were no such page. A new owner power
+     * (A54): an owner with only a password is refused it, and any other is
+     * asked for a passkey or a code, never the password.
+     */
+    app.get('/api/v1/members/:id/account', auth, async (req) => {
+      const p = principal(req);
+      if (p.role !== 'owner') throw notFound();
+      const id = params(idParam, req).id;
+      await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+      return household.account(p, id);
+    });
+  }
 
   if (coOwners) {
     // Who can do what is the most consequential setting in the vault, so

@@ -150,6 +150,59 @@ export interface Member {
   photo_status?: 'processing' | 'failed' | null;
   /** Whether the caller may give them a photo, or change it (A66; 0.5.19). */
   can_change_photo?: boolean;
+  /**
+   * Moved on by one with every change to their details (5.25): send it back
+   * as If-Match with PATCH /members/{id}, and a change made meanwhile is a
+   * `409 conflict` instead of being undone. Null to whoever is not given
+   * their details (a viewer, but for their own). Absent from older vaults.
+   */
+  version?: number | null;
+  /**
+   * Whether the caller may change their name, date of birth and
+   * relationship (A66, 5.25). That somebody has passed away is an owner's
+   * alone to say. Absent from older vaults, which change nobody's.
+   */
+  can_edit?: boolean;
+}
+
+/**
+ * PATCH /members/{id} (5.25): what is sent is changed, and nothing else.
+ * `is_deceased` is an owner's alone, and asks for a step-up
+ * (`change_people`). A blank relationship is none.
+ */
+export interface MemberEdit {
+  display_name?: string;
+  date_of_birth?: string | null;
+  relationship?: string | null;
+  is_deceased?: boolean;
+}
+
+/** One device a person is signed in on, as the owner's account card shows it (5.25). */
+export interface MemberAccountDevice {
+  /** In words: "the app on a Google Pixel 8a", "Firefox on a Mac". */
+  label: string;
+  client: 'app' | 'browser' | 'other';
+  last_used_at: string;
+  /** It keeps Essentials for offline use: its offline grant is in force. */
+  offline: boolean;
+}
+
+/**
+ * GET /members/{id}/account (5.25): an owner's view of somebody's sign-in,
+ * read-only. No address a device signed in from, and no secret of any kind:
+ * no password, code, passkey or token, and no device's own id.
+ */
+export interface MemberAccount {
+  member_id: string;
+  role: Role;
+  email: string;
+  /** Two-step sign-in with an authenticator app is on. */
+  two_step: boolean;
+  passkeys: number;
+  /** Their most recent sign-in here; null if they never have. */
+  last_signed_in_at: string | null;
+  /** Where they are signed in now, the most recently used first. */
+  devices: MemberAccountDevice[];
 }
 
 /** The largest photo a person's picture is made from (5.17c): 20 MiB. */
@@ -667,6 +720,15 @@ export interface StepUpState {
   verified_at: string | null;
   expires_in: number;
 }
+
+/**
+ * The step-ups that take a passkey or a code from an authenticator app,
+ * never the password (A54, 5.25): the owner's powers over other people's
+ * sign-ins. An owner with neither is refused those powers outright
+ * (`403 totp_required_for_owner`); a client asking for one of these offers
+ * no password field.
+ */
+export const FACTOR_STEP_UPS: readonly string[] = ['manage_sign_ins'];
 
 export interface CaptureResult {
   document_id: string;

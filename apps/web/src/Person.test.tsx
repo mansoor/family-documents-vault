@@ -661,3 +661,268 @@ describe("a person's photo (5.17c)", () => {
     expect(revoked).toHaveBeenCalledWith('blob:photo-1');
   });
 });
+
+describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
+  /** Grandad, with no sign-in. */
+  const GRANDAD = {
+    ...AISHA_KHAN,
+    id: 'm-2',
+    display_name: 'Grandad',
+    relationship: 'Grandad',
+    date_of_birth: '1940-01-09',
+  };
+  /** Tess, a teen with a sign-in. */
+  const TESS = { ...AISHA, id: 'm-1', display_name: 'Tess', has_account: true, role: 'teen' };
+  const TESS_ACCOUNT = {
+    member_id: 'm-1',
+    role: 'teen' as const,
+    email: 'tess.khan.with.a.very.long.address@example.test',
+    two_step: false,
+    passkeys: 0,
+    last_signed_in_at: new Date().toISOString(),
+    devices: [
+      {
+        label: 'Safari on a Mac',
+        client: 'browser' as const,
+        last_used_at: new Date().toISOString(),
+        offline: false,
+      },
+      {
+        label: 'the app on a Google Pixel 8a',
+        client: 'app' as const,
+        last_used_at: new Date().toISOString(),
+        offline: true,
+      },
+    ],
+  };
+  const edits = (state: { memberEdits?: Array<{ body: unknown; ifMatch: string | null }> }) =>
+    state.memberEdits ?? [];
+
+  it('Edit details sends only what changed, made to the version it opened, and says so', async () => {
+    // A copy: a change is made to the person the vault holds.
+    const state = fresh({ members: [ME, { ...AISHA_KHAN }] });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const about = await screen.findByRole('region', { name: 'About' });
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    const form = within(about).getByRole('form', { name: 'Aisha’s details' });
+    // The name first, ready to change.
+    expect(within(form).getByLabelText('Name')).toHaveFocus();
+    expect(within(form).getByLabelText('Name')).toHaveValue('Aisha Khan');
+    expect(within(form).getByLabelText('Relationship (optional)')).toHaveValue('Daughter');
+    expect(within(form).getByLabelText('Date of birth (optional)')).toHaveValue('2016-04-02');
+    // No child without a sign-in is recorded as passed away by an adult; an owner may.
+    expect(within(form).getByLabelText('They have passed away')).not.toBeChecked();
+    await expectAccessible();
+
+    fireEvent.change(within(form).getByLabelText('Relationship (optional)'), {
+      target: { value: '  Niece ' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    expect(await within(about).findByText('Details saved.')).toBeInTheDocument();
+    expect(edits(state)).toEqual([{ id: 'm-0', body: { relationship: 'Niece' }, ifMatch: '"1"' }]);
+    expect(within(about).getByText('Niece')).toBeInTheDocument();
+    expect(within(about).queryByRole('form')).not.toBeInTheDocument();
+    // Back where it began.
+    expect(within(about).getByRole('button', { name: 'Edit details' })).toHaveFocus();
+
+    // Nothing changed: nothing sent, and the form goes.
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    fireEvent.click(within(about).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(within(about).queryByRole('form')).not.toBeInTheDocument());
+    expect(edits(state)).toHaveLength(1);
+  });
+
+  it('a stale version says somebody else changed them, and shows what they saved', async () => {
+    const aisha = { ...AISHA_KHAN, version: 1 };
+    const state = fresh({ members: [ME, aisha] });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const about = await screen.findByRole('region', { name: 'About' });
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    // Meanwhile, somebody else saves her relationship.
+    Object.assign(aisha, { relationship: 'Sister', version: 2 });
+    const form = within(about).getByRole('form', { name: 'Aisha’s details' });
+    fireEvent.change(within(form).getByLabelText('Relationship (optional)'), {
+      target: { value: 'Niece' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    const said = await within(about).findByRole('alert');
+    expect(said).toHaveTextContent(
+      'Someone else changed Aisha’s details while you were editing. What they saved is shown now: make your changes again, then save.',
+    );
+    expect(within(form).getByLabelText('Relationship (optional)')).toHaveValue('Sister');
+    expect(aisha.relationship).toBe('Sister');
+    await expectAccessible();
+
+    // Made again, to the version they saved.
+    fireEvent.change(within(form).getByLabelText('Relationship (optional)'), {
+      target: { value: 'Niece' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    expect(await within(about).findByText('Details saved.')).toBeInTheDocument();
+    expect(edits(state).map((e) => e.ifMatch)).toEqual(['"1"', '"2"']);
+    expect(aisha.relationship).toBe('Niece');
+  });
+
+  it('who is offered Edit details: an adult, themselves and anybody with no sign-in; a teen themselves; a viewer nobody', async () => {
+    const me = { ...ME, relationship: 'Me' };
+    const offered = async (role: 'adult' | 'teen' | 'viewer', id: string) => {
+      installFakeApi(fresh({ members: [{ ...me, role }, AISHA_KHAN, TESS] }));
+      signedIn(role);
+      at(`/people/${id}`);
+      const { unmount } = render(<App />);
+      // Their line under their name: the profile has loaded.
+      await waitFor(() => expect(document.querySelector('.profile-line')).not.toBeNull());
+      const button = screen.queryByRole('button', { name: 'Edit details' });
+      unmount();
+      return button !== null;
+    };
+    expect(await offered('adult', 'me')).toBe(true);
+    expect(await offered('adult', 'm-0')).toBe(true);
+    expect(await offered('adult', 'm-1')).toBe(false);
+    expect(await offered('teen', 'm-0')).toBe(false);
+    expect(await offered('viewer', 'me')).toBe(false);
+    expect(await offered('viewer', 'm-0')).toBe(false);
+  });
+
+  it('an owner records that somebody without a sign-in has passed away, confirming it is them', async () => {
+    const grandad = { ...GRANDAD };
+    const state = fresh({ members: [ME, grandad, TESS], stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-2');
+    const { unmount } = render(<App />);
+    const about = await screen.findByRole('region', { name: 'About' });
+    fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
+    fireEvent.click(within(about).getByLabelText('They have passed away'));
+    fireEvent.click(within(about).getByRole('button', { name: 'Save' }));
+    // Who is in the family is asked about, and a password does for it.
+    const dialog = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(dialog).getByText(/to change who is in the family/)).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText('Or your password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    expect(await within(about).findByText('Details saved.')).toBeInTheDocument();
+    expect(grandad.is_deceased).toBe(true);
+    expect(await screen.findByText('Passed away')).toBeInTheDocument();
+    // No age once he has died.
+    expect(within(about).getByText('9 January 1940')).toBeInTheDocument();
+    unmount();
+
+    // Somebody who can still sign in is not offered it.
+    at('/people/m-1');
+    render(<App />);
+    const hers = await screen.findByRole('region', { name: 'About' });
+    fireEvent.click(within(hers).getByRole('button', { name: 'Edit details' }));
+    expect(within(hers).queryByLabelText('They have passed away')).not.toBeInTheDocument();
+  });
+
+  it("the owner's Account card asks for a passkey or a code, never the password, and shows no address", async () => {
+    const state = fresh({
+      members: [ME, TESS],
+      accounts: { 'm-1': TESS_ACCOUNT },
+      accountStepUp: true,
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-1');
+    render(<App />);
+    const card = await screen.findByRole('region', { name: 'Account' });
+    expect(within(card).queryByText(TESS_ACCOUNT.email)).not.toBeInTheDocument();
+    fireEvent.click(within(card).getByRole('button', { name: 'Show their account' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(
+      within(dialog).getByText("Please confirm it is you to manage other people's sign-ins."),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/Your password isn’t enough for this/)).toBeInTheDocument();
+    const codeField = within(dialog).getByLabelText('Code from your authenticator app');
+    expect(codeField).toHaveFocus();
+    await expectAccessible();
+    fireEvent.change(codeField, { target: { value: '000000' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+    expect(
+      await within(dialog).findByText("That code didn't match. Try the one your app shows now."),
+    ).toBeInTheDocument();
+    fireEvent.change(codeField, { target: { value: '123 456' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
+
+    expect(await within(card).findByText(TESS_ACCOUNT.email)).toBeInTheDocument();
+    expect(
+      state.calls.filter((c) => c.url === '/api/v1/auth/step-up' && c.method === 'POST').at(-1)
+        ?.body,
+    ).toEqual({ code: '123456' });
+    const facts = Object.fromEntries(
+      within(card)
+        .getAllByRole('term')
+        .map((t) => [t.textContent, t.nextElementSibling?.textContent]),
+    );
+    expect(facts).toMatchObject({
+      Role: 'Teen',
+      'Signs in as': TESS_ACCOUNT.email,
+      'Two-step sign-in': 'Off',
+      Passkeys: 'None',
+    });
+    expect(facts['Last signed in']).toMatch(/^today, /);
+    const devices = within(card).getByRole('list', { name: 'Signed in on' });
+    expect(within(devices).getByText('Safari on a Mac')).toBeInTheDocument();
+    expect(within(devices).getByText('The app on a Google Pixel 8a')).toBeInTheDocument();
+    expect(
+      within(devices).getByText(/^App · last used today, .* · Keeps Essentials for offline use$/),
+    ).toBeInTheDocument();
+    expect(within(devices).getByText(/^Browser · last used today, /)).toBeInTheDocument();
+    // Read-only: nothing on it to press.
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('an owner without two-step sign-in is told to turn it on, with the way to', async () => {
+    const state = fresh({ members: [ME, TESS], twoStep: false, accounts: { 'm-1': TESS_ACCOUNT } });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-1');
+    render(<App />);
+    const card = await screen.findByRole('region', { name: 'Account' });
+    expect(
+      await within(card).findByText('Turn on two-step sign-in to manage other people’s sign-ins.'),
+    ).toBeInTheDocument();
+    expect(within(card).getByRole('link', { name: 'Set up two-step sign-in' })).toHaveAttribute(
+      'href',
+      '/settings#two-step',
+    );
+    expect(
+      within(card).queryByRole('button', { name: 'Show their account' }),
+    ).not.toBeInTheDocument();
+    expect(state.calls.some((c) => c.url.endsWith('/account'))).toBe(false);
+    await expectAccessible();
+    // The way there: Settings, at two-step sign-in.
+    fireEvent.click(within(card).getByRole('link', { name: 'Set up two-step sign-in' }));
+    expect(await screen.findByRole('heading', { name: 'Two-step sign-in' })).toBeInTheDocument();
+    expect(window.location.hash).toBe('#two-step');
+  });
+
+  it('an adult sees no Account card on anybody, and an owner none on themselves or on somebody with no sign-in', async () => {
+    const show = async (role: 'owner' | 'adult', id: string) => {
+      const state = fresh({ members: [{ ...ME, role }, TESS, AISHA_KHAN] });
+      installFakeApi(state);
+      signedIn(role);
+      at(`/people/${id}`);
+      const { unmount } = render(<App />);
+      await screen.findByRole('region', { name: 'About' });
+      const shown = screen.queryByRole('region', { name: 'Account' }) !== null;
+      unmount();
+      return shown && !state.calls.some((c) => c.url.endsWith('/account'));
+    };
+    expect(await show('owner', 'm-1')).toBe(true);
+    expect(await show('adult', 'm-1')).toBe(false);
+    expect(await show('owner', 'me')).toBe(false);
+    expect(await show('owner', 'm-0')).toBe(false);
+  });
+});

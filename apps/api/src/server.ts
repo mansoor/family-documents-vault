@@ -183,7 +183,7 @@ async function main(): Promise<void> {
       alert,
       { push, allowPrivateEndpoints: config.FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS === 'true' },
     ),
-    household: new HouseholdService(db, keys),
+    household: new HouseholdService(db, keys, stepUpService),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push),

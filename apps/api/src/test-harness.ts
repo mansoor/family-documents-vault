@@ -291,7 +291,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       },
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
-    household: new HouseholdService(db, keys),
+    household: new HouseholdService(db, keys, stepUp),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations,
     coOwners: new CoOwnerService(db, alert, push),

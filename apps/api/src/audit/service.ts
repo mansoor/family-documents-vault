@@ -216,6 +216,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // a crop or a file's name.
   ['member.photo_changed', BY_TYPE],
   ['member.photo_removed', BY_TYPE],
+  // 5.25: a person's details changed — which of them, never their values —
+  // and that somebody has passed away, or not after all: the family's, as a
+  // member's lines are. A viewer reads none of the log.
+  ['member.updated', BY_TYPE],
+  ['member.deceased', BY_TYPE],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

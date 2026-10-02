@@ -5,6 +5,9 @@ import {
   PHOTO_TYPES,
   roleLabel,
   shortName,
+  whenWords,
+  type MemberAccount,
+  type MemberEdit,
   type PhotoCrop,
   type Role,
 } from '@fdv/shared';
@@ -14,17 +17,27 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type FormEvent,
   type KeyboardEvent,
   type PointerEvent,
   type RefObject,
 } from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
-import { api, type Member } from '../api.js';
+import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
-import { BottomNav, ConfirmDialog, ErrorNote, Sheet, TopBar } from '../ui.js';
+import {
+  BottomNav,
+  Button,
+  ConfirmDialog,
+  ErrorNote,
+  Field,
+  Sheet,
+  Switch,
+  TopBar,
+} from '../ui.js';
 import { DocRow } from './Home.js';
 import { RoleControls } from './Roles.js';
 
@@ -151,21 +164,13 @@ export function ProfileScreen() {
             <PhotoControls member={member} name={name} onChanged={reload} />
           </div>
 
-          {about.length > 0 && (
-            <section className="card stack" aria-labelledby="about-h">
-              <h2 id="about-h" style={{ fontSize: 18 }}>
-                About
-              </h2>
-              <dl className="facts">
-                {about.map((r) => (
-                  <Fragment key={r.label}>
-                    <dt>{r.label}</dt>
-                    <dd>{r.value}</dd>
-                  </Fragment>
-                ))}
-              </dl>
-            </section>
-          )}
+          <AboutCard
+            member={member}
+            name={name}
+            rows={about}
+            owner={myRole === 'owner'}
+            onChanged={reload}
+          />
 
           {myRole === 'owner' && (
             <section className="card stack" aria-labelledby="ids-h">
@@ -203,11 +208,328 @@ export function ProfileScreen() {
             )}
           </section>
 
+          {myRole === 'owner' && member.has_account && !member.is_me && (
+            <AccountCard member={member} name={name} />
+          )}
           <RoleControls member={member} onChanged={reload} />
         </>
       )}
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * About a person: their relationship and birthday, and "Edit details" for
+ * whoever may change them (A66, 5.25), which turns the card into the form
+ * and back. Shown when there is something to say, or something to do.
+ */
+function AboutCard(props: {
+  member: Member;
+  /** What the screen calls them (`nameOf`). */
+  name: string;
+  rows: Array<{ label: string; value: string }>;
+  owner: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const { member } = props;
+  const [editing, setEditing] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const edit = useRef<HTMLButtonElement>(null);
+  const may = member.can_edit === true;
+  // Back on "Edit details" once the form has gone, saved or not.
+  const wasEditing = useRef(false);
+  useEffect(() => {
+    if (wasEditing.current && !editing) edit.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+  if (props.rows.length === 0 && !may) return null;
+  return (
+    <section className="card stack" aria-labelledby="about-h">
+      <div className="card-head">
+        <h2 id="about-h" style={{ fontSize: 18 }}>
+          About
+        </h2>
+        {may && !editing && (
+          <button
+            ref={edit}
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => {
+              setSaid(null);
+              setEditing(true);
+            }}
+          >
+            Edit details
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <EditDetails
+          member={member}
+          name={props.name}
+          owner={props.owner}
+          onSaved={async () => {
+            await props.onChanged();
+            setSaid('Details saved.');
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : props.rows.length > 0 ? (
+        <dl className="facts">
+          {props.rows.map((r) => (
+            <Fragment key={r.label}>
+              <dt>{r.label}</dt>
+              <dd>{r.value}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      ) : (
+        <p className="muted">No relationship or date of birth yet.</p>
+      )}
+      <p className="notice status-line" role="status">
+        {said}
+      </p>
+    </section>
+  );
+}
+
+/** The person a 409 says they are now, from its detail; null if it does not say. */
+function personIn(detail: string | undefined): Member | null {
+  try {
+    const now = JSON.parse(detail ?? '') as Member;
+    return typeof now?.id === 'string' && typeof now.display_name === 'string' ? now : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The form "Edit details" opens (5.25): name, date of birth, relationship,
+ * and, for an owner, that somebody without a sign-in has passed away. It
+ * sends only what changed, made to the version it was opened with: if
+ * somebody else saved first, it says so, and shows what they saved.
+ */
+function EditDetails(props: {
+  member: Member;
+  name: string;
+  owner: boolean;
+  onSaved: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const { guarded } = useApp();
+  const [base, setBase] = useState<Member>(props.member);
+  const [name, setName] = useState(base.display_name);
+  const [dob, setDob] = useState(base.date_of_birth ?? '');
+  const [relationship, setRelationship] = useState(base.relationship ?? '');
+  const [deceased, setDeceased] = useState(base.is_deceased);
+  const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    document.getElementById('edit-name')?.focus();
+  }, []);
+  // Only somebody with no sign-in is recorded as passed away: whoever can
+  // still sign in has it taken away first (the vault refuses otherwise).
+  const passing = props.owner && (base.role === null || base.is_deceased);
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const body: MemberEdit = {};
+    if (name.trim() !== base.display_name) body.display_name = name.trim();
+    if ((dob || null) !== base.date_of_birth) body.date_of_birth = dob || null;
+    if ((relationship.trim() || null) !== base.relationship) {
+      body.relationship = relationship.trim() || null;
+    }
+    if (passing && deceased !== base.is_deceased) body.is_deceased = deceased;
+    if (Object.keys(body).length === 0) {
+      props.onCancel();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setConflict(null);
+    try {
+      const saved = await guarded((t) => api.updateMember(t, base.id, body, base.version));
+      if (!saved) {
+        setError('Nothing was saved.');
+        return;
+      }
+      await props.onSaved();
+    } catch (err) {
+      const now =
+        err instanceof ApiRequestError && err.code === 'conflict' ? personIn(err.detail) : null;
+      if (now) {
+        // Somebody else's change, kept: the form shows what they saved, and
+        // these changes are made again on top of it.
+        setBase(now);
+        setName(now.display_name);
+        setDob(now.date_of_birth ?? '');
+        setRelationship(now.relationship ?? '');
+        setDeceased(now.is_deceased);
+        setConflict(
+          `Someone else changed ${props.name}’s details while you were editing. What they saved is shown now: make your changes again, then save.`,
+        );
+      } else {
+        setError(describeError(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void save(e)} className="stack" aria-label={`${props.name}’s details`}>
+      {conflict && (
+        <p className="error" role="alert">
+          {conflict}
+        </p>
+      )}
+      <Field id="edit-name" label="Name" value={name} onChange={setName} maxLength={120} />
+      <Field
+        id="edit-dob"
+        label="Date of birth (optional)"
+        type="date"
+        value={dob}
+        onChange={setDob}
+        required={false}
+      />
+      <Field
+        id="edit-relationship"
+        label="Relationship (optional)"
+        value={relationship}
+        onChange={setRelationship}
+        required={false}
+        maxLength={60}
+        hint="For example: Mum, Son, Grandad"
+      />
+      {passing && (
+        <Switch
+          id="edit-deceased"
+          label="They have passed away"
+          checked={deceased}
+          onChange={setDeceased}
+        />
+      )}
+      <ErrorNote message={error} />
+      <div className="row">
+        <Button type="submit" disabled={busy || !name.trim()}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+        <Button kind="quiet" disabled={busy} onClick={props.onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** Said to an owner with neither two-step sign-in nor a passkey (A54). */
+export const TWO_STEP_FOR_SIGN_INS = 'Turn on two-step sign-in to manage other people’s sign-ins.';
+
+const CLIENT_WORDS: Record<MemberAccount['devices'][number]['client'], string> = {
+  app: 'App',
+  browser: 'Browser',
+  other: 'Something else',
+};
+
+const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * The owner's Account card (5.25), read-only: the address somebody signs in
+ * with, whether two-step sign-in is on, their passkeys, their last sign-in
+ * and their devices. Fetched only when asked for, since it asks the owner
+ * to confirm it is them with a passkey or a code, never the password; an
+ * owner with neither is told to turn two-step sign-in on (A54).
+ */
+function AccountCard(props: { member: Member; name: string }) {
+  const { guarded, authVersion } = useApp();
+  const { data: me } = useLoad((t) => api.me(t), [authVersion]);
+  const [card, setCard] = useState<MemberAccount | null>(null);
+  const [refused, setRefused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const shown = useRef<HTMLDListElement>(null);
+
+  const show = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await guarded((t) => api.memberAccount(t, props.member.id));
+      if (!got) return;
+      flushSync(() => setCard(got));
+      shown.current?.focus();
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.code === 'totp_required_for_owner') {
+        setRefused(true);
+      } else {
+        setError(describeError(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const noTwoStep = refused || me?.totp_required === true;
+  return (
+    <section className="card stack" aria-labelledby="account-h">
+      <h2 id="account-h" style={{ fontSize: 18 }}>
+        Account
+      </h2>
+      {noTwoStep ? (
+        <>
+          <p className="status status-warn">{TWO_STEP_FOR_SIGN_INS}</p>
+          <Link to="/settings#two-step" className="btn btn-quiet">
+            Set up two-step sign-in
+          </Link>
+        </>
+      ) : card ? (
+        <>
+          <dl className="facts" ref={shown} tabIndex={-1}>
+            <dt>Role</dt>
+            <dd>{roleLabel(card.role)}</dd>
+            <dt>Signs in as</dt>
+            <dd>{card.email}</dd>
+            <dt>Two-step sign-in</dt>
+            <dd>{card.two_step ? 'On' : 'Off'}</dd>
+            <dt>Passkeys</dt>
+            <dd>{card.passkeys === 0 ? 'None' : card.passkeys}</dd>
+            <dt>Last signed in</dt>
+            <dd>{card.last_signed_in_at ? whenWords(card.last_signed_in_at) : 'Never'}</dd>
+          </dl>
+          <h3 className="section-h">Signed in on</h3>
+          {card.devices.length === 0 ? (
+            <p className="muted">No device at the moment.</p>
+          ) : (
+            <ul className="list" aria-label="Signed in on">
+              {card.devices.map((d, i) => (
+                <li key={i} className="place">
+                  <span className="doc-title">{capitalised(d.label)}</span>
+                  <span className="muted">
+                    {CLIENT_WORDS[d.client]} · last used {whenWords(d.last_used_at)}
+                    {d.offline ? ' · Keeps Essentials for offline use' : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="muted">Only owners can see this.</p>
+        </>
+      ) : (
+        <>
+          <p className="muted">
+            The address {props.name} signs in with, how, and where they are signed in. Only owners
+            can see it, after confirming it’s them with a passkey or a code from their authenticator
+            app.
+          </p>
+          <ErrorNote message={error} />
+          <Button kind="quiet" disabled={busy} onClick={() => void show()}>
+            {busy ? 'Opening…' : 'Show their account'}
+          </Button>
+        </>
+      )}
+    </section>
   );
 }
 

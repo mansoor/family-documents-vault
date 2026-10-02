@@ -3,6 +3,7 @@ import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   can,
+  canChangeDetails,
   canSee,
   canSeeCollection,
   mayKeepOffline,
@@ -430,5 +431,122 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       await pool.end();
     }
     expect(rolesWith('family.details')).toEqual(['owner', 'adult', 'teen']);
+  });
+
+  it("member's rule for changing a person admits exactly canChangeDetails; an owner alone records a passing; the version is the database's (0046)", async () => {
+    const hh = people.owner.household_id;
+    // Somebody with no sign-in, whom nobody asking below is.
+    const unsigned = (
+      await withSystem(h.db, hh, (trx) =>
+        trx
+          .insertInto('member')
+          .values({ household_id: hh, display_name: 'Unsigned' })
+          .returning('id')
+          .executeTakeFirstOrThrow(),
+      )
+    ).id;
+    // The database's rules, asked as each caller would be, past the
+    // application: one statement, rolled back, and what it changed.
+    const pool = createPool(h.appUrl, 1);
+    const ask = async (
+      who: { actor: string; role?: string; member?: string },
+      id: string,
+      set: string,
+    ): Promise<number | string> => {
+      const c = await pool.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', $2, true),
+                  set_config('app.member_id', $3, true), set_config('app.role', $4, true)`,
+          [hh, who.actor, who.member ?? '', who.role ?? ''],
+        );
+        const r = await c.query(`update member set ${set} where id = $1`, [id]);
+        return r.rowCount ?? 0;
+      } catch (err) {
+        return (err as { code?: string }).code ?? 'error';
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        c.release();
+      }
+    };
+    try {
+      for (const role of ROLES) {
+        const me = people[role].member_id;
+        const other = role === 'adult' ? people.teen : people.adult;
+        for (const [id, targetRole] of [
+          [me, role],
+          [other.member_id, other.role],
+          [unsigned, null],
+        ] as const) {
+          const may = canChangeDetails({ role, memberId: me }, { id, role: targetRole });
+          expect(
+            await ask({ actor: 'account', role, member: me }, id, "relationship = 'x'"),
+            `${role} → ${targetRole ?? 'no sign-in'}`,
+          ).toBe(may ? 1 : 0);
+        }
+      }
+      // A role never heard of, however it is written, changes nobody; nor
+      // does any caller but somebody signed in and the vault itself.
+      for (const role of ['', 'guest', 'OWNER', ' owner']) {
+        expect(await ask({ actor: 'account', role }, unsigned, "relationship = 'x'"), role).toBe(0);
+      }
+      for (const actor of ['', 'anonymous', 'upload', 'link']) {
+        expect(await ask({ actor, role: 'owner' }, unsigned, "relationship = 'x'"), actor).toBe(0);
+      }
+      expect(await ask({ actor: 'system' }, unsigned, "relationship = 'x'")).toBe(1);
+
+      // That somebody has passed away: an owner's, or the vault's; anybody
+      // else signed in is refused outright, though they may change the rest.
+      const passing = 'is_deceased = true';
+      expect(await ask({ actor: 'account', role: 'owner', member: 'x' }, unsigned, passing)).toBe(
+        1,
+      );
+      expect(await ask({ actor: 'system' }, unsigned, passing)).toBe(1);
+      expect(
+        await ask(
+          { actor: 'account', role: 'adult', member: people.adult.member_id },
+          unsigned,
+          passing,
+        ),
+      ).toBe('42501');
+      expect(
+        await ask(
+          { actor: 'account', role: 'teen', member: people.teen.member_id },
+          people.teen.member_id,
+          passing,
+        ),
+      ).toBe('42501');
+    } finally {
+      await pool.end();
+    }
+
+    // The version moves by one with a detail, and with nothing else; nobody
+    // sets it, or when, or by whom.
+    const version = () =>
+      withSystem(h.db, hh, (trx) =>
+        trx
+          .selectFrom('member')
+          .select(['version', 'updated_at', 'updated_by'])
+          .where('id', '=', unsigned)
+          .executeTakeFirstOrThrow(),
+      );
+    const change = (set: Record<string, unknown>) =>
+      withSystem(h.db, hh, (trx) =>
+        trx.updateTable('member').set(set).where('id', '=', unsigned).execute(),
+      );
+    expect(await version()).toMatchObject({ version: 1, updated_at: null, updated_by: null });
+    await change({ relationship: 'Cousin' });
+    const once = await version();
+    expect(once.version).toBe(2);
+    expect(once.updated_at).toBeInstanceOf(Date);
+    // The vault itself is nobody's account.
+    expect(once.updated_by).toBeNull();
+    await change({ colour: 5, former_account_id: null });
+    expect(await version()).toEqual(once);
+    await change({ version: 99, updated_at: new Date(0), updated_by: null });
+    expect(await version()).toEqual(once);
+    await change({ version: 99, display_name: 'Unsigned Cousin' });
+    expect((await version()).version).toBe(3);
   });
 });

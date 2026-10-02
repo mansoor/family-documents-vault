@@ -93,6 +93,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       share_email_code: config.operatorMail === true,
       // 5.24: an owner removes a document in the Trash for good (D1).
       remove_for_good: true,
+      // 5.25: a person's details changed, made to the version seen; the
+      // owner's view of a sign-in, for an owner with two-step sign-in (A54).
+      member_edit: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

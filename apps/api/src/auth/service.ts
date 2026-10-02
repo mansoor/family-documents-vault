@@ -262,17 +262,24 @@ export class AuthService {
         ip: meta.ip,
         detail: { method },
       });
-      return this.openSession(trx, p, meta);
+      return this.openSession(trx, p, meta, method);
     });
   }
 
+  /**
+   * `method` is how the sign-in was proved: a passkey, or a password and a
+   * code, is also what the owner's powers over other people's sign-ins ask
+   * for (A54), so such a session starts fresh for those too.
+   */
   private async openSession(
     trx: Db,
     p: Omit<Principal, 'sessionId'>,
     meta: RequestMeta,
+    method = 'password',
   ): Promise<Tokens> {
     const refresh = newRefreshToken(p.householdId);
     const now = Date.now();
+    const factor = method === 'passkey' || method === 'password+totp';
     const expiresAt = new Date(now + REFRESH_TTL_SECONDS * 1000);
     const session = await trx
       .insertInto('session')
@@ -289,6 +296,7 @@ export class AuthService {
         // A credential was just presented, so the session starts fresh for
         // the purposes of step-up (SEC-17).
         verified_at: new Date(now),
+        factor_verified_at: factor ? new Date(now) : null,
       })
       .returning('id')
       .executeTakeFirstOrThrow();

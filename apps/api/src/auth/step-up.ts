@@ -1,6 +1,7 @@
 import argon2 from 'argon2';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import { FACTOR_STEP_UPS } from '@fdv/shared';
 import { ApiError } from '../errors.js';
 import type { PasskeyService } from './passkeys.js';
 import type { Principal, RequestMeta } from './service.js';
@@ -33,7 +34,8 @@ export type StepUpAction =
   | 'change_sign_in'
   | 'widen_type_visibility'
   | 'share_collection'
-  | 'remove_for_good';
+  | 'remove_for_good'
+  | 'manage_sign_ins';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -61,7 +63,20 @@ const WHY: Record<StepUpAction, string> = {
   // Removing a document for good (5.24), or asking to: a session picked up
   // from an unlocked device could otherwise empty the Trash for ever.
   remove_for_good: 'to remove a document for good',
+  // The owner's powers over other people's sign-ins (A54, 5.25): asked
+  // with a passkey or a code from an authenticator app, never the password
+  // (`FACTOR_STEP_UPS`).
+  manage_sign_ins: "to manage other people's sign-ins",
 };
+
+/** Said to an owner with neither two-step sign-in nor a passkey, for the powers of A54. */
+export const OWNER_NEEDS_TWO_STEP = "Turn on two-step sign-in to manage other people's sign-ins.";
+
+/**
+ * Whether an action's step-up takes only a passkey or a code (A54): the
+ * shared list, which the web reads too, so it offers no password for them.
+ */
+const factorOnly = (action: StepUpAction) => FACTOR_STEP_UPS.includes(action);
 
 export class StepUpService {
   constructor(
@@ -81,24 +96,52 @@ export class StepUpService {
    * visible to more people, 0.5.10) asks there, without a second
    * connection.
    */
-  private async verifiedAt(p: Principal, trx?: Db): Promise<Date | null> {
+  private async verifiedAt(p: Principal, trx?: Db, factor = false): Promise<Date | null> {
     const read = (t: Db) =>
       t
         .selectFrom('session')
-        .select(['verified_at'])
+        .select(['verified_at', 'factor_verified_at'])
         .where('id', '=', p.sessionId)
         .executeTakeFirst();
     const row = trx ? await read(trx) : await withPrincipal(this.db, p, read);
-    return row?.verified_at ? new Date(row.verified_at) : null;
+    // A54: the owner's powers over other people's sign-ins ask when this
+    // session last saw a passkey or a code; a password, however recent,
+    // is not that.
+    const at = factor ? row?.factor_verified_at : row?.verified_at;
+    return at ? new Date(at) : null;
   }
 
-  /** Throws `step_up_required` unless a credential was seen recently. */
+  /**
+   * Throws `step_up_required` unless a credential was seen recently: any of
+   * the account's, or for the actions of `FACTOR_STEP_UPS` (A54), a passkey
+   * or a code.
+   */
   async require(p: Principal, action: StepUpAction, trx?: Db): Promise<void> {
-    const at = (await this.verifiedAt(p, trx))?.getTime() ?? 0;
+    const at = (await this.verifiedAt(p, trx, factorOnly(action)))?.getTime() ?? 0;
     if (Date.now() - at <= STEP_UP_WINDOW_MS) return;
     throw new ApiError(403, 'step_up_required', `Please confirm it is you ${WHY[action]}.`, {
       action,
     });
+  }
+
+  /**
+   * A new owner power (A54, 5.25), for an owner — the caller has refused
+   * anybody else already, as the power's route answers them: an owner with
+   * only a password is refused it outright (`403 totp_required_for_owner`),
+   * and any other is asked for a passkey or a code within the last five
+   * minutes, never the password (`require` with a `FACTOR_STEP_UPS`
+   * action). Every route that calls this is listed in the API changelog.
+   */
+  async requireOwnerPower(p: Principal, action: StepUpAction): Promise<void> {
+    if (!factorOnly(action)) throw new Error(`${action} is not one of the owner's powers (A54)`);
+    const [code, passkey] = await Promise.all([
+      this.totp ? this.totp.isEnabled(p.accountId) : false,
+      this.passkeys ? this.passkeys.has(p.accountId) : false,
+    ]);
+    if (!code && !passkey) {
+      throw new ApiError(403, 'totp_required_for_owner', OWNER_NEEDS_TWO_STEP);
+    }
+    await this.require(p, action);
   }
 
   /** How long this session stays fresh, for the client to avoid asking twice. */
@@ -143,8 +186,15 @@ export class StepUpService {
     }
 
     const now = new Date();
+    // A passkey or a code is also what the owner's powers ask (A54); a
+    // password moves only the time any credential was last seen.
+    const factor = method === 'passkey' || method === 'totp';
     await withPrincipal(this.db, p, (trx) =>
-      trx.updateTable('session').set({ verified_at: now }).where('id', '=', p.sessionId).execute(),
+      trx
+        .updateTable('session')
+        .set(factor ? { verified_at: now, factor_verified_at: now } : { verified_at: now })
+        .where('id', '=', p.sessionId)
+        .execute(),
     );
     await withPrincipal(this.db, p, (trx) =>
       appendAudit(trx, {

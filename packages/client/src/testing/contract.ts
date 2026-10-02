@@ -1155,6 +1155,55 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "a person's details are changed as they were seen: an older version is 409 with them as they are now; an owner with only a password is refused the view of a sign-in (5.25)",
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.member_edit).toBe(true);
+      const me = await api.me(token);
+      const mine = async () => (await api.members(token)).items.find((m) => m.id === me.member_id);
+      const before = await mine();
+      expect(before?.can_edit).toBe(true);
+      expect(typeof before?.version).toBe('number');
+      const version = before?.version as number;
+
+      const changed = await api.updateMember(token, me.member_id, { relationship: 'Dad' }, version);
+      expect(changed).toMatchObject({
+        id: me.member_id,
+        relationship: 'Dad',
+        version: version + 1,
+      });
+      // Made to the version read before that change: refused, with the person
+      // as they are now, and nothing changed.
+      const stale = await refusal(
+        api.updateMember(token, me.member_id, { relationship: 'Father' }, version),
+      );
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      expect(JSON.parse(stale.detail ?? '{}')).toMatchObject({
+        id: me.member_id,
+        relationship: 'Dad',
+        version: version + 1,
+      });
+      expect((await mine())?.relationship).toBe('Dad');
+      // Nothing different sent: no new version.
+      expect(
+        (await api.updateMember(token, me.member_id, { relationship: 'Dad' }, version + 1)).version,
+      ).toBe(version + 1);
+      // Somebody who can still sign in is not recorded as passed away.
+      const signedIn = await refusal(
+        api.updateMember(token, me.member_id, { is_deceased: true }, version + 1),
+      );
+      expect(signedIn).toMatchObject({ status: 409, code: 'signed_in' });
+      const back = await api.updateMember(token, me.member_id, { relationship: null }, version + 1);
+      expect(back).toMatchObject({ relationship: null, version: version + 2, is_deceased: false });
+
+      // This owner signs in with a password alone: their view of anybody's
+      // sign-in, their own included, is refused until they have two-step
+      // sign-in or a passkey (A54).
+      const card = await refusal(api.memberAccount(token, me.member_id));
+      expect(card).toMatchObject({ status: 403, code: 'totp_required_for_owner' });
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

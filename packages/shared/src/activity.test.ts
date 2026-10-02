@@ -61,6 +61,45 @@ describe('the activity log, in sentences', () => {
     );
   });
 
+  it('says which of a person’s details changed, never what they were or are; a passing is news (5.25)', () => {
+    const aisha = { object_type: 'member', object_id: 'm-aisha', object_title: 'Aisha Khan' };
+    const said = (action: string, actorMember: string, detail: Record<string, unknown>) =>
+      describeEvent(
+        ev({
+          action,
+          actor: actorMember === 'm-aisha' ? 'Aisha Khan' : 'Mansoor',
+          ...aisha,
+          actor_member_id: actorMember,
+          detail,
+        }),
+      );
+    expect(said('member.updated', 'm-mansoor', { fields: ['relationship'] })?.text).toBe(
+      'Mansoor changed Aisha Khan’s relationship',
+    );
+    expect(
+      said('member.updated', 'm-mansoor', { fields: ['display_name', 'date_of_birth'] })?.text,
+    ).toBe('Mansoor changed Aisha Khan’s name and date of birth');
+    expect(
+      said('member.updated', 'm-aisha', {
+        fields: ['display_name', 'date_of_birth', 'relationship'],
+      })?.text,
+    ).toBe('Aisha Khan changed their name, date of birth and relationship');
+    // Anything else in it is not said, and no values are.
+    expect(said('member.updated', 'm-mansoor', { fields: ['email', 42] })?.text).toBe(
+      'Mansoor changed Aisha Khan’s details',
+    );
+    expect(said('member.updated', 'm-mansoor', {})?.notable).toBe(false);
+    const passed = said('member.deceased', 'm-mansoor', { deceased: true });
+    expect(passed).toMatchObject({
+      text: 'Mansoor recorded that Aisha Khan has passed away',
+      notable: true,
+    });
+    expect(said('member.deceased', 'm-mansoor', { deceased: false })).toMatchObject({
+      text: 'Mansoor took back the record that Aisha Khan has passed away',
+      notable: true,
+    });
+  });
+
   it('says whose photo was added, changed or removed, and never anything of the picture (5.17c)', () => {
     const aisha = { object_type: 'member', object_id: 'm-aisha', object_title: 'Aisha' };
     const photo = (action: string, actorMember: string, detail: Record<string, unknown> = {}) =>

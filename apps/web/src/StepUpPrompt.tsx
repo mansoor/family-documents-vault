@@ -1,3 +1,4 @@
+import { FACTOR_STEP_UPS } from '@fdv/shared';
 import { useRef, useState, type FormEvent } from 'react';
 import { api } from './api.js';
 import { useApp } from './app-context.js';
@@ -12,8 +13,17 @@ import { Button, ErrorNote, Field, useSheetFocus } from './ui.js';
  * itself. Cancelling is a first-class answer: nothing was done, and
  * nothing is lost. Escape is one too, and the keyboard stays inside it
  * until it is answered, over a sheet as well (5.4).
+ *
+ * The owner's powers over other people's sign-ins (A54, 5.25) take a
+ * passkey or a code from an authenticator app, never the password: for
+ * those it offers no password field, and asks for a code instead.
  */
-export function StepUpPrompt(props: { message: string; onSettled: (confirmed: boolean) => void }) {
+export function StepUpPrompt(props: {
+  /** Which action asked (`step_up_required`'s `action`). */
+  action?: string;
+  message: string;
+  onSettled: (confirmed: boolean) => void;
+}) {
   // A wrong password here answers 401 with `invalid_credentials`, which
   // `withToken` now leaves alone — only `session_ended` and
   // `unauthenticated` end a session. Going through the session directly
@@ -21,7 +31,9 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
   // somebody out, whatever the shared helper does later.
   const { session } = useApp();
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const factorOnly = FACTOR_STEP_UPS.includes(props.action ?? '');
   const [error, setError] = useState<string | null>(null);
   const canUsePasskey = passkeys.supported() && passkeys.secureEnough();
   const box = useRef<HTMLElement>(null);
@@ -38,6 +50,22 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
       props.onSettled(true);
     } catch {
       setError("That didn't match. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const withCode = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await session.token();
+      if (got.kind !== 'ok') return props.onSettled(false);
+      await api.stepUp(got.token, { code: code.replace(/\s+/g, '') });
+      props.onSettled(true);
+    } catch {
+      setError("That code didn't match. Try the one your app shows now.");
     } finally {
       setBusy(false);
     }
@@ -73,30 +101,62 @@ export function StepUpPrompt(props: { message: string; onSettled: (confirmed: bo
           Just checking it is you
         </h2>
         <p className="muted">{props.message}</p>
+        {factorOnly && (
+          <p className="muted">
+            Use your passkey, or a code from your authenticator app. Your password isn’t enough for
+            this.
+          </p>
+        )}
         {canUsePasskey && (
           <Button disabled={busy} onClick={() => void withPasskey()}>
             {busy ? 'Waiting for your device…' : 'Use your passkey'}
           </Button>
         )}
-        <form onSubmit={(e) => void withPassword(e)} className="stack">
-          <Field
-            id="stepup-password"
-            label="Or your password"
-            type="password"
-            value={password}
-            onChange={setPassword}
-            autoComplete="current-password"
-          />
-          <ErrorNote message={error} />
-          <div className="row">
-            <Button type="submit" disabled={busy || !password}>
-              {busy ? 'Checking…' : 'Confirm'}
-            </Button>
-            <Button kind="quiet" onClick={() => props.onSettled(false)}>
-              Cancel
-            </Button>
-          </div>
-        </form>
+        {factorOnly ? (
+          <form onSubmit={(e) => void withCode(e)} className="stack">
+            <Field
+              id="stepup-code"
+              label={
+                canUsePasskey
+                  ? 'Or a code from your authenticator app'
+                  : 'Code from your authenticator app'
+              }
+              value={code}
+              onChange={setCode}
+              autoComplete="one-time-code"
+              inputMode="numeric"
+            />
+            <ErrorNote message={error} />
+            <div className="row">
+              <Button type="submit" disabled={busy || code.replace(/\s+/g, '').length < 6}>
+                {busy ? 'Checking…' : 'Confirm'}
+              </Button>
+              <Button kind="quiet" onClick={() => props.onSettled(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={(e) => void withPassword(e)} className="stack">
+            <Field
+              id="stepup-password"
+              label="Or your password"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              autoComplete="current-password"
+            />
+            <ErrorNote message={error} />
+            <div className="row">
+              <Button type="submit" disabled={busy || !password}>
+                {busy ? 'Checking…' : 'Confirm'}
+              </Button>
+              <Button kind="quiet" onClick={() => props.onSettled(false)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        )}
       </section>
     </div>
   );

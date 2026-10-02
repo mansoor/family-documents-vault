@@ -61,6 +61,14 @@ export interface Schema {
     created_at: GeneratedTimestamp;
     /** The account whose sign-in was taken away, so it can be given back (0019). */
     former_account_id: Generated<string | null>;
+    /**
+     * Moved on by one with every change to the name, date of birth,
+     * relationship or passing (0046): the database's to keep, never set.
+     */
+    version: Generated<number>;
+    /** When those last changed, and by whom: null until they do (0046). */
+    updated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
+    updated_by: Generated<string | null>;
   };
 
   /**
@@ -152,6 +160,12 @@ export interface Schema {
     revoked_at: Timestamp | null;
     revoked_reason: string | null;
     verified_at: Timestamp | null;
+    /**
+     * When it last saw a passkey or a code from an authenticator app (0046):
+     * the owner's powers over other people's sign-ins ask this, never the
+     * password (A54).
+     */
+    factor_verified_at: Timestamp | null;
     /** The app installation that signed in (X-FDV-Installation); null for a browser. */
     installation_id: string | null;
     /** When the refresh token was last replaced. */

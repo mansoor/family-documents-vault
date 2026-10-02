@@ -32,6 +32,8 @@ import type {
   InvitationPreview,
   Me,
   Member,
+  MemberAccount,
+  MemberEdit,
   MfaChallenge,
   OfflineGrant,
   OfflineOpen,
@@ -280,6 +282,32 @@ export function createApi(http: Http) {
     /** The photo itself, a 512-pixel JPEG; `404 no_photo` for anything not given. */
     memberPhoto: (token: string, memberId: string, photoId: string): Promise<ResponseLike> =>
       raw(`/api/v1/members/${enc(memberId)}/photo/${enc(photoId)}`, { token }),
+    /**
+     * A person's details (5.25, when `features.member_edit`): what is sent
+     * is changed. Pass the `version` the person was read with, and a change
+     * made since is `409 conflict`, with the person as they are now in the
+     * error's `detail`. Whose is A66 (`403`); `is_deceased` an owner's, who
+     * may be asked to confirm it is them (`step_up_required`,
+     * `change_people`), and not for somebody who can still sign in (`409
+     * signed_in`).
+     */
+    updateMember: (token: string, memberId: string, body: MemberEdit, version?: number | null) =>
+      request<Member>(`/api/v1/members/${enc(memberId)}`, {
+        method: 'PATCH',
+        body,
+        token,
+        ...(version !== undefined && version !== null
+          ? { headers: { 'if-match': `"${version}"` } }
+          : {}),
+      }),
+    /**
+     * An owner's view of somebody's sign-in (5.25), read-only: no address and
+     * no secret. Anybody else: `404`. An owner with only a password: `403
+     * totp_required_for_owner`; any other is asked for a passkey or a code,
+     * never the password (`step_up_required`, `manage_sign_ins`; A54).
+     */
+    memberAccount: (token: string, memberId: string) =>
+      request<MemberAccount>(`/api/v1/members/${enc(memberId)}/account`, { token }),
     ownerChanges: (token: string) =>
       request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
     refuseOwnerChange: (token: string, id: string) =>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CAPABILITIES,
   can,
+  canChangeDetails,
   canChangePerson,
   canChangePhoto,
   canRemovePhoto,
@@ -14,6 +15,8 @@ import {
   COLLECTION_HINT_SOME,
   COLLECTION_HINT_TEENS,
   collectionItemHint,
+  DECEASED_SIGNED_IN,
+  DETAILS_REFUSAL,
   inCollectionAudience,
   mayChangeVisibilityAtAll,
   PHOTO_REFUSAL,
@@ -233,6 +236,34 @@ describe("who may change a person's photo (A66)", () => {
     expect(canRemovePhoto({ role: 'teen', memberId: me }, noSignIn)).toBe(false);
     expect(canRemovePhoto({ role: 'adult', memberId: me }, noSignIn)).toBe(true);
     expect(canRemovePhoto({ role: 'adult', memberId: me }, signedIn)).toBe(false);
+  });
+
+  it('who may change whose details (5.25): the same people, and a viewer nobody’s', () => {
+    const table = ROLES.map((role) => {
+      const viewer = { role, memberId: me };
+      return [
+        role,
+        canChangeDetails(viewer, { id: me, role }),
+        canChangeDetails(viewer, signedIn),
+        canChangeDetails(viewer, noSignIn),
+      ];
+    });
+    expect(table).toEqual([
+      ['owner', true, true, true],
+      ['adult', true, false, true],
+      ['teen', true, false, false],
+      ['viewer', false, false, false],
+    ]);
+    expect(rolesWith('member.edit')).toEqual(['owner', 'adult', 'teen']);
+    expect(refusalFor('member.edit')).toBe(
+      "Viewers can open and download documents, but not change anybody's details.",
+    );
+    expect(DETAILS_REFUSAL).toBe(
+      'Only an owner or the person themselves can change these details. For someone without a sign-in, any adult can.',
+    );
+    expect(DECEASED_SIGNED_IN('Grandad')).toBe(
+      'Grandad can still sign in. Take their sign-in away first, then record that they have passed away.',
+    );
   });
 
   it('says who may, and a viewer why not', () => {
