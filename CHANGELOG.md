@@ -6,6 +6,14 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.22] - 2026-10-02 — the master key, from 0.5.0-rc.2
+
+The 0.5.0 line's fix for rotating the master key, brought into this line.
+
+### Security
+
+- **Rotating the master key moves everything it protects.** Until now `rotate-master-key` moved only the per-household keys, so after a rotation owners could not finish two-step sign-in, mail and an S3 bucket stopped working, and nobody was signed out. It now moves all of it in one transaction and signs everybody out, and refuses while the vault is running or without `DATABASE_ADMIN_URL`. The API, the worker and every backup check that the master key opens the vault and stop with a plain message when it does not. A vault an earlier rotation left partly under each key is mended with `repair-master-key`; a backup made before a rotation is restored with `FDV_MASTER_KEY_PREVIOUS`. If you rotated the master key on any earlier 0.5 release, read "Rotating the master key" in the README before upgrading: this release will not start on a vault that rotation left half-moved, and says what to do.
+
 ## [0.5.21] - 2026-09-28 — iteration 5.19
 
 Share a collection.
@@ -366,6 +374,8 @@ may keep for when there is no signal, and a record of what was opened there;
 and notifications to phones through UnifiedPush that name nothing.
 
 ### Security
+
+- **Rotating the master key moves everything it protects.** `rotate-master-key` used to rewrap only the per-household keys: the two-step sign-in secrets, an S3 bucket's credentials and the mail password stayed under the old key, so after a rotation owners could not finish signing in and mail and S3 stopped working — and nobody was actually signed out. It now moves all of it in one transaction and signs everybody out; it refuses while the vault is running or without the owning database role (`DATABASE_ADMIN_URL`), and says when an earlier run already finished. The API, the worker and every backup now check that the master key opens the vault, and stop with a plain message when it does not — after a rotation, put the new key in `.env` and run `docker compose up -d`, not `start` or `restart`. A vault left partly under each key by an earlier rotation is mended with the new `repair-master-key`, and a backup made before a rotation is restored with `FDV_MASTER_KEY_PREVIOUS`. See "Rotating the master key" in the README.
 
 - Every phone route was attacked together for the release (`phase4-exit.test.ts`): a capture retried and overlapped a hundred ways makes one document; a second adult gets no title or id of the first adult's private documents from any phone route; signing out a phone ends its session, its permission to keep Essentials and its notifications at once, and tells it; a replayed refresh token loses the session; push addresses aimed inside the vault's network are refused however they are written.
 - `localhost` (and any name ending in `.localhost`) is refused as a push address by name, not only when DNS says it is this machine.
