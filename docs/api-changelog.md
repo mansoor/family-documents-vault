@@ -2040,12 +2040,17 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         (`429 too_many_codes`). Kept as an HMAC under a server key; the
         email has no link and no title. A request that ends as the code is
         asked for sends none (`404 link_not_valid`); one that cannot be
-        queued is `503 code_not_sent`, and nothing of it is kept.
+        queued is `503 code_not_sent`, and nothing of it is kept. A
+        this-device-only request already bound to a browser sends a code
+        only for that browser (its device cookie); any other is
+        `403 other_device`, before anything is sent or counted. A code
+        asked for while the request is being opened waits for the Open.
       - `POST /api/v1/drop/unlock` `{ token, password?, code? }` →
         `DropSession` (with its `request_id`), and a session cookie named
         for the request, `fdv_drop_s_<request id without dashes>`
         (httpOnly, Secure, SameSite=Strict, path `/api/v1/drop`; 30 minutes
-        idle, 4 hours at most, never past the request's end), so a browser
+        idle — a file still arriving is use of it — 4 hours at most, never
+        past the request's end), so a browser
         can have two requests open. Opens pressed at once wait for each
         other. A wrong password or code, in either, is `401 secret_wrong`,
         the same answer, and uses up one of the request's ten tries for its
@@ -2094,7 +2099,7 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         `415 unsupported_type`. `413 too_large` when more arrives than the
         room reserved, and at the commit when the household's room is
         taken meanwhile (a reservation stops counting once its file has
-        been arriving for 15 minutes).
+        been arriving for 15 minutes, or its session has ended).
       - `DELETE /api/v1/drop/files/{id}` → `204`: a file this session sent,
         before Finish. `POST /api/v1/drop/finish` `{ note? }` (up to 1,000
         characters) → `{ files, closed }`; `422 nothing_to_send` with no

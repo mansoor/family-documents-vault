@@ -338,19 +338,24 @@ grant execute on function upload_session_find(bytea) to fdv_app;
 -- arriving by the room each holds; and, of one request, the files still
 -- arriving and the room they hold. A file arriving for more than 15 minutes
 -- (the public-only site cuts a body off at 5) holds none: its try is dead,
--- and the nightly prune takes it away.
+-- and the nightly prune takes it away. Nor does one whose session has ended
+-- (its session_id cleared): it can never be finished, and its sender can no
+-- longer reach its row to remove it.
 create function incoming_room(p_request uuid)
   returns table (household_bytes bigint, request_files int, request_bytes bigint)
   language sql stable security definer
   set search_path = pg_catalog, public, pg_temp as
   $$ select coalesce(sum(case when f.state = 'received' then f.byte_size
-                              when f.created_at > now() - interval '15 minutes'
+                              when f.session_id is not null
+                               and f.created_at > now() - interval '15 minutes'
                                 then f.reserved_bytes
                               else 0 end), 0)::bigint,
             (count(*) filter (where f.request_id = p_request and f.state = 'uploading'
+                                and f.session_id is not null
                                 and f.created_at > now() - interval '15 minutes'))::int,
             coalesce(sum(f.reserved_bytes) filter (where f.request_id = p_request
                                                      and f.state = 'uploading'
+                                                     and f.session_id is not null
                                                      and f.created_at > now() - interval '15 minutes'),
                      0)::bigint
        from incoming_file f

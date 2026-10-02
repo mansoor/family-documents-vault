@@ -96,7 +96,11 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   );
 
   app.post('/api/v1/drop/code', tight, async (req) =>
-    uploads.sendCode(parse(dropTokenBody, req.body ?? {}).token, metaOf(req)),
+    uploads.sendCode(
+      parse(dropTokenBody, req.body ?? {}).token,
+      presentedDeviceCookies(req.cookies, DROP_DEVICE_COOKIE),
+      metaOf(req),
+    ),
   );
 
   const cookieOptions = (maxAge: number) => ({

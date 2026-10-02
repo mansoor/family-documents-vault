@@ -131,6 +131,8 @@ export const dropCookieName = (requestId: string) =>
 /** A session lasts 30 minutes from its last use, and 4 hours at most (A26, as a link's). */
 export const DROP_SESSION_IDLE_MS = 30 * 60_000;
 export const DROP_SESSION_MAX_MS = 4 * 3_600_000;
+/** A file arriving is use of its session: said so this often while its bytes come (N521F-04). */
+export const DROP_SESSION_TOUCH_MS = 5 * 60_000;
 
 /**
  * The master-derived keys a request's flow uses, each for this alone: a
@@ -290,6 +292,10 @@ export interface DropUnlocked {
 
 /** How a device cookie binds one request: its hash with the request's id. */
 const deviceBinding = (cookie: string, requestId: string) => hash(`${cookie}:${requestId}`);
+
+/** Of the device cookies a browser brought, the one a request is bound to, under any key's name. */
+const boundDevice = (bound: Buffer, requestId: string, devices: readonly DeviceCookie[]) =>
+  devices.find((c) => timingSafeEqual(deviceBinding(c.value, requestId), bound));
 
 const hash = (s: string) => createHash('sha256').update(s, 'utf8').digest();
 
@@ -849,17 +855,33 @@ export class UploadRequestService {
    * quarter of an hour and 10 a day, and only the newest works: sending one
    * ends the ones before it. Kept as an HMAC under the server's key; the
    * email carries no link and no title.
+   *
+   * It holds the request's row from the start, as Open does, so an Open and
+   * a code asked for at once wait for each other whole (N521F-01): taken
+   * the other way round — this ending the code Open is about to check, Open
+   * holding the row this code's row needs — each would wait on the other.
    */
-  async sendCode(token: string, meta: RequestMeta): Promise<DropCodeSent> {
+  async sendCode(
+    token: string,
+    devices: readonly DeviceCookie[],
+    meta: RequestMeta,
+  ): Promise<DropCodeSent> {
     const scope = await this.scopeOf(token);
     const { householdId } = scope;
     const mail = this.mail;
     const out = await withScope(this.db, scope, async (trx) => {
-      const r = await this.live(trx, scope.actor.requestId);
+      const r = await this.live(trx, scope.actor.requestId, { lock: true });
       if (!r.email_code || !r.recipient_email || !mail) {
         throw new ApiError(422, 'no_email_code', 'This link does not use an emailed code.');
       }
       if (r.max_visits !== null && r.visits_used >= r.max_visits) throw usedUp();
+      // A request for one device, bound already, asked from another browser:
+      // a forwarded link cannot end its sender's code or use up their sends
+      // for a code it could never use (N521F-03, as 5.20's shares). Before
+      // anything is counted.
+      if (r.this_device_only && r.device_hash && !boundDevice(r.device_hash, r.id, devices)) {
+        throw otherDevice();
+      }
       // One code at a time is counted: two asking at once wait for each other.
       await sql`select pg_advisory_xact_lock(hashtextextended(${`upload-code:${r.id}`}, 0))`.execute(
         trx,
@@ -983,8 +1005,7 @@ export class UploadRequestService {
       let device: DeviceCookie | undefined;
       if (r.this_device_only) {
         if (r.device_hash) {
-          const bound = r.device_hash;
-          device = devices.find((c) => timingSafeEqual(deviceBinding(c.value, r.id), bound));
+          device = boundDevice(r.device_hash, r.id, devices);
           if (!device) return refused('other device');
         } else {
           device = cookieForNewBinding(this.deviceKey, DROP_DEVICE_COOKIE, devices);
@@ -1357,8 +1378,14 @@ export class UploadRequestService {
    * take is stopped at once), cut off at the room reserved, and encrypted
    * under the reviewer's key straight to its object; then, for a Word or
    * Excel file, its package read where it is kept; then the commit, which
-   * counts it against the request. Refused anywhere, nothing of it is kept:
-   * not the object, not the row.
+   * counts it against the request. Its bytes arriving are use of its
+   * session, so a file slower than the session's idle time is still taken
+   * (N521F-04); the session's own end is not moved. Refused anywhere, its
+   * object is deleted, and its row too while its session lasts. A session
+   * that ended as it arrived — its request taken back, closed or run out,
+   * the session idle or over — takes its rows' link to it away, and the
+   * upload link can no longer reach them: such a row holds no room
+   * (incoming_room(), 0044) and the nightly prune removes it (N521F-02).
    */
   async addFile(cookie: string | undefined, upload: DropUpload): Promise<DropFile> {
     const ctx = await this.inSession(cookie, async (trx, r, session, scope) => {
@@ -1432,6 +1459,7 @@ export class UploadRequestService {
         .executeTakeFirstOrThrow();
       return {
         scope,
+        sessionId: session.id,
         fileId: row.id,
         key: row.storage_key,
         adapter: active.adapter,
@@ -1443,7 +1471,31 @@ export class UploadRequestService {
       };
     });
 
+    // Its bytes arriving are use of its session: every few minutes of them,
+    // the session is said to be in use, as a call inside it would. One at a
+    // time, and never a reason to refuse the file; the session's own end
+    // (4 hours at most) stays where it is.
+    let touchedAt = Date.now();
+    let touching: Promise<unknown> = Promise.resolve();
+    const touch = () => {
+      const now = Date.now();
+      if (now - touchedAt < DROP_SESSION_TOUCH_MS) return;
+      touchedAt = now;
+      touching = touching
+        .then(() =>
+          withScope(this.db, ctx.scope, (trx) =>
+            trx
+              .updateTable('upload_session')
+              .set({ last_seen_at: new Date(now) })
+              .where('id', '=', ctx.sessionId)
+              .execute(),
+          ),
+        )
+        .catch(() => undefined);
+    };
+
     const discard = async () => {
+      await touching;
       await ctx.adapter.delete(ctx.key).catch(() => undefined);
       await withScope(this.db, ctx.scope, (trx) =>
         trx.deleteFrom('incoming_file').where('id', '=', ctx.fileId).execute(),
@@ -1467,6 +1519,7 @@ export class UploadRequestService {
     counted.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
       plainHash.update(chunk);
+      touch();
       if (head.length < SNIFF_BYTES) {
         head = Buffer.concat([head, chunk]).subarray(0, SNIFF_BYTES);
         if (head.length >= SNIFF_BYTES) sniff();
@@ -1501,6 +1554,8 @@ export class UploadRequestService {
     }
 
     try {
+      // The session as its bytes last left it.
+      await touching;
       const view = await this.inSession(cookie, async (trx, r, _session, scope) => {
         // The household's room, again, under the lock its reservations are
         // made under: what is in, and what other files still arriving hold,
@@ -1520,7 +1575,9 @@ export class UploadRequestService {
           .selectFrom('incoming_file')
           .select([
             'reserved_bytes',
-            sql<boolean>`created_at > now() - interval '15 minutes'`.as('counted'),
+            // As incoming_room() counts it (0044).
+            sql<boolean>`state = 'uploading' and session_id is not null
+                         and created_at > now() - interval '15 minutes'`.as('counted'),
           ])
           .where('id', '=', ctx.fileId)
           .executeTakeFirst();

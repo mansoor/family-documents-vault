@@ -7,6 +7,7 @@ import { deriveKey } from '@fdv/crypto';
 import { computeHash, createPool, withPrincipal, withScope, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
+import argon2 from 'argon2';
 import {
   rolesWith,
   type ActivityLine,
@@ -1944,6 +1945,151 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     }
   });
 
+  it('an Open and a code asked for at once wait for each other: neither is refused as busy (N521F-01)', async () => {
+    const to = 'together@example.test';
+    const made = await make(adult, {
+      recipient_email: to,
+      email_code: true,
+      password: 'correct horse battery',
+    });
+    const ask = () =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/code',
+        payload: { token: made.link_token },
+        remoteAddress: addr(),
+      });
+    expect((await ask()).statusCode).toBe(200);
+    const code = codeSentTo(to);
+    // Open's password check, held, with the request's row held by it: a
+    // code is asked for meanwhile, and goes as far as it can.
+    const original = argon2.verify.bind(argon2);
+    let release!: () => void;
+    const go = new Promise<void>((res) => (release = res));
+    let reached!: () => void;
+    const arrived = new Promise<void>((res) => (reached = res));
+    let first = true;
+    const spy = vi.spyOn(argon2, 'verify').mockImplementation(async (...args) => {
+      if (first) {
+        first = false;
+        reached();
+        await go;
+      }
+      return original(...args);
+    });
+    try {
+      const opening = unlock(made.link_token, { password: 'correct horse battery', code });
+      await arrived;
+      const sending = ask();
+      for (let i = 0; i < 100; i++) {
+        const [w] = await admin<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'`,
+        );
+        if ((w?.n ?? 0) > 0) break;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      release();
+      const [open, sent] = await Promise.all([opening, sending]);
+      expect(open.statusCode, open.body).toBe(200);
+      expect(sent.statusCode, sent.body).toBe(200);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+  });
+
+  it('a code for a request bound to one browser is not sent for another: refused, and nothing sent or counted (N521F-03)', async () => {
+    const to = 'bound@example.test';
+    const made = await make(adult, {
+      recipient_email: to,
+      email_code: true,
+      this_device_only: true,
+    });
+    const ask = (cookies: Record<string, string> = {}) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/code',
+        payload: { token: made.link_token },
+        cookies,
+        remoteAddress: addr(),
+      });
+    // Not bound yet: any browser may ask, and the first Open binds it.
+    expect((await ask()).statusCode).toBe(200);
+    const first = await unlock(made.link_token, { code: codeSentTo(to) });
+    expect(first.statusCode, first.body).toBe(200);
+    const device = first.cookies.find((c) => c.name === DEVICE)?.value as string;
+    // The sender asks for a code for their next Open.
+    expect((await ask({ [DEVICE]: device })).statusCode).toBe(200);
+    const theirs = codeSentTo(to);
+    const mails = mailSent(h).filter((m) => m.to === to).length;
+    const codes = async () =>
+      (
+        await admin<{ n: number }>(
+          'select count(*)::int as n from upload_code where request_id = $1',
+          [made.request.id],
+        )
+      )[0]?.n;
+    const before = await codes();
+    // The link forwarded, in another browser, or with a cookie of its own.
+    for (const cookies of [{}, { [DEVICE]: 'not-the-one' }]) {
+      const elsewhere = await ask(cookies);
+      expect(elsewhere.statusCode).toBe(403);
+      expect(elsewhere.json<{ error: { code: string } }>().error.code).toBe('other_device');
+    }
+    expect(mailSent(h).filter((m) => m.to === to)).toHaveLength(mails);
+    expect(await codes()).toBe(before);
+    // The sender's code still works, in their browser.
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token, code: theirs },
+      cookies: { [DEVICE]: device },
+      remoteAddress: addr(),
+    });
+    expect(again.statusCode, again.body).toBe(200);
+  });
+
+  it("a file slower to arrive than the idle time is still taken, and none past its session's end (N521F-04)", async () => {
+    const made = await make(adult);
+    const { cookie } = await opened(made.link_token);
+    const arriving = async () => {
+      for (let i = 0; i < 100; i++) {
+        const [n] = await admin<{ n: number }>(
+          "select count(*)::int as n from incoming_file where request_id = $1 and state = 'uploading'",
+          [made.request.id],
+        );
+        if (n?.n === 1) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+    // Its bytes still coming 31 minutes after it began, and nothing else
+    // asked meanwhile: the file arriving is use of its session.
+    const slow = holding(cookie, PDF(200_000));
+    await arriving();
+    vi.setSystemTime(Date.now() + 31 * 60_000);
+    try {
+      slow.release();
+      const taken = await slow.reply;
+      expect(taken.statusCode, taken.body).toBe(201);
+    } finally {
+      vi.useRealTimers();
+    }
+    // Still coming past the session's 4 hours: its end is where it was.
+    const late = holding(cookie, PDF(200_000));
+    await arriving();
+    vi.setSystemTime(Date.now() + 4 * 3_600_000 + 60_000);
+    try {
+      late.release();
+      const refused = await late.reply;
+      expect(refused.statusCode).toBe(401);
+      expect(refused.json<{ error: { code: string } }>().error.code).toBe('drop_session_ended');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(await stored(made.request.id)).toBe(1);
+  });
+
   it("the database's copy of who may ask is the matrix's", async () => {
     expect(rolesWith('upload_request.create')).toEqual(['owner', 'adult']);
     const [fn] = await admin<{ src: string }>(
@@ -2047,6 +2193,57 @@ describe.skipIf(!testAdminUrl())('a vault with little room and no operator mail'
       );
       expect(Number(rows[0]?.received)).toBeLessThanOrEqual(5000);
       // Room for the next test.
+      await pool.query('delete from incoming_file');
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('an upload whose session ends as it arrives holds no room afterwards (N521F-02)', async () => {
+    const one = (await make()).json<CreatedUploadRequest>();
+    const two = (await make()).json<CreatedUploadRequest>();
+    const opened = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: one.link_token },
+      remoteAddress: addr(),
+    });
+    const set = opened.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
+    const form = new FormData();
+    form.append('file', PDF(3000), { filename: 'held.pdf', contentType: 'application/pdf' });
+    const body = form.getBuffer();
+    const stream = new PassThrough();
+    stream.write(body.subarray(0, body.length - 64));
+    const held = h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/files',
+      headers: { ...form.getHeaders(), 'content-length': String(body.length) },
+      cookies: { [set?.name as string]: set?.value as string },
+      payload: stream,
+      remoteAddress: addr(),
+    });
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await pool.query<{ n: number }>(
+          "select count(*)::int as n from incoming_file where state = 'uploading'",
+        );
+        if (rows[0]?.n === 1) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // Taken back while its bytes come: its session ends, and the upload
+      // with it.
+      const revoked = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/upload-requests/${one.request.id}`,
+        headers: h.as(owner),
+      });
+      expect(revoked.statusCode).toBe(204);
+      stream.end(body.subarray(body.length - 64));
+      expect((await held).statusCode).not.toBe(201);
+      // Its row may stay for the nightly prune, its session gone: the room
+      // it held is free at once, for another request's sender.
+      expect((await sendTo(two.link_token, PDF(3000))).statusCode).toBe(201);
       await pool.query('delete from incoming_file');
     } finally {
       await pool.end();
