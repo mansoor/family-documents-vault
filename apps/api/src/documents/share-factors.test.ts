@@ -18,7 +18,7 @@ import argon2 from 'argon2';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import type { MailRequest } from '../mail-job.js';
 import {
@@ -1023,6 +1023,115 @@ describe.skipIf(!testAdminUrl())('a second factor for someone with no account (5
     expect(bound3?.value).not.toBe('planted-by-somebody-else');
     expect(verifiedDeviceCookie(NOW_KEY, bound3?.value)).toBe(bound3?.value);
     expect((await unlock(l3.link_token, {}, 'planted-by-somebody-else')).statusCode).toBe(403);
+  }, 60_000);
+
+  it('a code asked for as the link is taken back is not sent, nor written down after it (N520R-01)', async () => {
+    const to = address('race.send');
+    const created = await made(lease, { code_email: to });
+    const shareId = created.share.id;
+    // Another send of the link's holds its lock: this one passes live() and
+    // waits on it, as a second send at the same moment would.
+    let release!: () => void;
+    const released = new Promise<void>((res) => (release = res));
+    let held!: () => void;
+    const holding = new Promise<void>((res) => (held = res));
+    const holder = h.db.connection().execute(async (conn) => {
+      await sql`select pg_advisory_lock(hashtextextended(${`share_code:${shareId}`}, 0))`.execute(
+        conn,
+      );
+      held();
+      await released;
+      await sql`select pg_advisory_unlock(hashtextextended(${`share_code:${shareId}`}, 0))`.execute(
+        conn,
+      );
+    });
+    await holding;
+    try {
+      const send = sendCode(created.link_token);
+      // Waiting on that lock, in this file's own database.
+      await expect
+        .poll(
+          async () =>
+            (
+              await sql<{ n: number }>`select count(*)::int as n from pg_locks
+                 where locktype = 'advisory' and not granted
+                   and database = (select oid from pg_database where datname = current_database())`.execute(
+                h.db,
+              )
+            ).rows[0]?.n,
+          { timeout: 10_000 },
+        )
+        .toBeGreaterThan(0);
+      // Taken back meanwhile.
+      const revoked = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/shares/${shareId}`,
+        headers: h.as(owner),
+      });
+      expect(revoked.statusCode).toBe(204);
+      release();
+      await holder;
+      const answer = await send;
+      expect(answer.statusCode, answer.body).toBe(404);
+      expect(errorOf(answer).code).toBe('link_not_valid');
+    } finally {
+      release();
+      await holder.catch(() => undefined);
+    }
+    // The log ends where the link did; no code was kept; nothing was queued.
+    expect((await auditOf(shareId)).map((a) => a.action)).toEqual([
+      'share.created',
+      'share.revoked',
+    ]);
+    expect(await codesOf(shareId)).toHaveLength(0);
+    expect(mailSent(h).filter((m) => m.to === to)).toHaveLength(0);
+    expect((await linkRow(shareId)).code_email).toBeNull();
+  }, 60_000);
+
+  it('a link that ends during its first Open is gone, not open in another browser (N520R-02)', async () => {
+    const doc = await make('Trashed while opened');
+    const created = await made(doc, { password: 'river otter lantern', this_device_only: true });
+    // The password's check, held for a moment: the document is put in the
+    // Trash meanwhile.
+    const original = argon2.verify.bind(argon2);
+    let release!: () => void;
+    const go = new Promise<void>((res) => (release = res));
+    let reached!: () => void;
+    const arrived = new Promise<void>((res) => (reached = res));
+    let first = true;
+    const spy = vi.spyOn(argon2, 'verify').mockImplementation(async (...args) => {
+      if (first) {
+        first = false;
+        reached();
+        await go;
+      }
+      return original(...args);
+    });
+    try {
+      const opening = unlock(created.link_token, { secret: 'river otter lantern' });
+      await arrived;
+      const trashed = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/documents/${doc}`,
+        headers: h.as(owner),
+      });
+      expect(trashed.statusCode).toBeLessThan(300);
+      release();
+      const answer = await opening;
+      expect(answer.statusCode, answer.body).toBe(404);
+      expect(errorOf(answer).code).toBe('link_not_valid');
+      expect(cookie(answer, 'fdv_share_device')).toBeUndefined();
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    expect(await linkRow(created.share.id)).toMatchObject({ open_count: 0, attempts: 0 });
+    // A browser that is not the one a live link was opened in is still that.
+    const live = await made(lease, { password: 'river otter lantern', this_device_only: true });
+    expect((await unlock(live.link_token, { secret: 'river otter lantern' })).statusCode).toBe(200);
+    const elsewhere = await unlock(live.link_token, { secret: 'river otter lantern' });
+    expect(elsewhere.statusCode).toBe(403);
+    expect(errorOf(elsewhere).code).toBe('other_device');
   }, 60_000);
 
   it('a second browser is refused', async () => {

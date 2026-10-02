@@ -1886,6 +1886,14 @@ export class ShareService {
       await this.record(trx, householdId, link, 'share.code_sent', meta, undefined, {
         to: maskEmail(link.code_email),
       });
+      // Asked again now the household's log is held (record() takes its
+      // lock): the link may have ended since live() looked — taken back,
+      // its collection deleted or made Only me, its tenth wrong try — and
+      // whatever ended it either committed before this, and is seen here,
+      // or writes its line after this one. Ended, nothing is sent to an
+      // address the ending has just cleared, and nothing of this is kept
+      // (the 5.20 check, N520R-01).
+      if (!(await this.stillLive(trx, link.id))) throw gone();
       // Queued before any of it is kept (the 5.20 review, M520-02): if the
       // email cannot be queued, the code, its line in the activity log, its
       // place in the count of sends and the end of the code before it are
@@ -1980,6 +1988,12 @@ export class ShareService {
             .executeTakeFirst();
           if (!bound) {
             await sql`rollback to savepoint fdv_device`.execute(trx);
+            // Not bound because the link ended as it was opened — its
+            // document trashed, its collection deleted or made Only me while
+            // the password was checked — and the database no longer gives
+            // it its own row: gone, not another browser (the 5.20 check,
+            // N520R-02). Only a binding made by another browser first is.
+            if (!(await this.stillLive(trx, link.id))) return { refused: 'gone', link } as const;
             return { refused: 'other device', link } as const;
           }
         }
