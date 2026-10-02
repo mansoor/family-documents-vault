@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.25] - 2026-10-02 — iteration 5.24
+
+Removing a document for good.
+
+### Added
+
+- **An owner can remove a document for good**, from Settings → Trash: its record, its files, its previews and pages, wherever the vault keeps them. Nothing empties the Trash by itself; that has not changed.
+- A document the owner filed goes at once. Anybody else's needs a day's notice: the owner asks, the person who filed it and the other owners are told at once, and the filer can Bring it back, which cancels the request. The owner can remove it 24 hours after asking, if it is still in the Trash. Removing always asks you to confirm it's you.
+- The activity log keeps its lines about a removed document, shown only to those who could see the document, with its title as "a document".
+
+### Changed
+
+- A restore from a backup made before a removal brings back the document's record but not its file: the document says "The file was removed for good", and the restore lists them. Put your files back before restoring; `recheck-files` clears the mark from any file that comes back. A restore also clears every request to remove.
+- Export everything lists a document whose file was removed, with a note, instead of failing.
+- An export made before a removal keeps its copy until it expires (seven days at most), and a phone that kept the document offline deletes it at its next sync.
+
+### Fixed
+
+- An S3 bucket that cannot be reached is given up on after 10 seconds to connect, and 20 to check or delete a file, rather than holding things up for minutes.
+
 ## [0.5.24] - 2026-10-02 — iteration 5.21
 
 Ask someone to send documents: the server. The pages for it come in the next releases.
