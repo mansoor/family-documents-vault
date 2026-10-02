@@ -112,6 +112,14 @@ export const COLLECTION_SHARE_REASONS: Readonly<Record<CollectionShareLock, stri
 };
 
 /**
+ * Beside a document whose file a restore found removed for good (5.24): it
+ * cannot go, as one with no file cannot (lock `no_file`, which every client
+ * already leaves unticked), and this says why.
+ */
+export const COLLECTION_SHARE_FILE_REMOVED =
+  'The file was removed for good, so there is nothing to send.';
+
+/**
  * Whether the share sheet ticks a document for you, and if not why: ticked
  * when everybody the collection is for may see it; an adults-only one in a
  * collection for everybody is asked about; a private one — yours, or you

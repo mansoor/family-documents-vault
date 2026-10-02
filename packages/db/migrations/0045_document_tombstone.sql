@@ -10,13 +10,14 @@
 -- never from before this upgrade, so a document trashed long before it
 -- lands cannot be removed by another owner the moment it does.
 --
--- A removal, in one transaction (apps/api/src/documents/purge.ts): every
--- object the document owns is deleted from storage first — each version's
--- file, its thumbnail, its page previews and any link's pages, a missing
--- one being fine — then the tombstone below is written and the row
--- deleted, every foreign key to it cascading (fk-cascade.test.ts holds them
--- to that), then the line in the activity log. A crash leaves the row, to
--- be removed again, never files that nothing names.
+-- A removal (apps/api/src/documents/purge.ts) is one transaction: every
+-- object the document owns — each version's file, its thumbnail, its page
+-- previews and any link's pages — is written down to be deleted
+-- (purge_leftover, below), the tombstone is written and the row deleted,
+-- every foreign key to it cascading (fk-cascade.test.ts holds them to
+-- that), then the line in the activity log. The objects are deleted after,
+-- each row going with its object, a missing one being fine. A crash leaves
+-- those rows, to be finished, never files that nothing names.
 --
 -- The tombstone. A line in the activity log about a document is shown to
 -- whoever may see the document now, as its live row says (5.6). With the
@@ -81,8 +82,10 @@ create trigger document_purge_request_owner before insert or update on document
 -- --------------------------------------- a file a restore found gone
 
 -- Set by a restore (apps/worker/src/jobs/restore.ts) on a version whose
--- object is not where it is kept: removed for good after the backup was
--- made. Nothing else writes it.
+-- object is not where it is kept, in a place that clearly holds the rest:
+-- removed for good after the backup was made. Cleared once the object is
+-- there again: by the worker's recheck-files, or by a removal that looks
+-- for it first (removed-files.ts, purge.ts).
 alter table document_version add column file_removed_at timestamptz;
 
 -- --------------------------------------------------------- the tombstone
@@ -138,3 +141,40 @@ create policy document_tombstone_actor_insert on document_tombstone as restricti
 
 -- Never changed, never removed: the household's own going takes them.
 revoke update, delete on document_tombstone from fdv_app;
+
+-- ------------------------------------------- what is still to be deleted
+--
+-- A removal deletes the document's rows in one transaction, and with them
+-- writes down here every object they owned; the objects are deleted after,
+-- each row going as its object does (the 5.24 review, M524-2). A removal
+-- that stops part-way — storage out of reach, a crash — leaves rows here to
+-- finish, never a document that can be brought back with half its files.
+-- The worker's `purge.leftovers` finishes them: when a removal could not,
+-- and every night. The object's key is all that is kept: its file key went
+-- with the document, so what is left in storage cannot be read.
+
+create table purge_leftover (
+  id               bigserial primary key,
+  household_id     uuid not null references household(id) on delete cascade,
+  vault_id         uuid not null references vault(id) on delete cascade,
+  object_key       text not null,
+  -- The document removed. No foreign key: it is gone.
+  removed_document uuid not null,
+  created_at       timestamptz not null default now(),
+  tries            int not null default 0,
+  last_error       text,
+  unique (vault_id, object_key)
+);
+
+alter table purge_leftover enable row level security;
+create policy purge_leftover_tenant on purge_leftover
+  using (household_id = app_household()) with check (household_id = app_household());
+
+-- An owner removing a document writes down, and clears, its own; the vault
+-- itself finishes the rest. Nobody else reads or writes a row of it.
+create policy purge_leftover_actor on purge_leftover as restrictive
+  using (case app_actor()
+           when 'account' then app_role() = 'owner'
+           when 'system' then true
+           else false
+         end);

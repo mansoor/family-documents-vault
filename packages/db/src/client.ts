@@ -728,6 +728,21 @@ export interface Schema {
     removed_at: GeneratedTimestamp;
   };
 
+  /**
+   * An object a document removed for good owned, still to be deleted from
+   * storage (0045): written with the removal, gone with its object.
+   */
+  purge_leftover: {
+    id: Generated<string>;
+    household_id: string;
+    vault_id: string;
+    object_key: string;
+    removed_document: string;
+    created_at: GeneratedTimestamp;
+    tries: Generated<number>;
+    last_error: string | null;
+  };
+
   document_version: {
     id: Generated<string>;
     household_id: string;

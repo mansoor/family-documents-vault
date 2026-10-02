@@ -1138,7 +1138,11 @@ export const contractScenarios: Scenario[] = [
       const trash = await api.documents(token, { deleted: 'true' });
       const binned = trash.items.find((d) => d.id === made.id);
       // Nobody has asked: it is the owner's own, and goes at once.
-      expect(binned).toMatchObject({ purge_requested_at: null, purge_allowed_from: null });
+      expect(binned).toMatchObject({
+        purge_requested_at: null,
+        purge_allowed_from: null,
+        purge_at_once: true,
+      });
       expect(await api.purgeDocument(token, made.id)).toEqual({ removed: true });
 
       const gone = await refusal(api.document(token, made.id));

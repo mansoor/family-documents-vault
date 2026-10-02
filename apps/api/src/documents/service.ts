@@ -66,6 +66,7 @@ import type { ReminderService } from '../reminders/service.js';
 import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
+import { removableAtOnce, signsInHere } from './purge-rule.js';
 import { allows, requireCapability } from '../authz.js';
 import { canSee, FILE_REMOVED, PREVIEW_MAX_PAGES, PURGE_NOTICE_HOURS } from '@fdv/shared';
 
@@ -709,6 +710,12 @@ export class DocumentService {
       purge_allowed_from: row.purge_requested_at
         ? new Date(row.purge_requested_at.getTime() + PURGE_NOTICE_HOURS * 3_600_000).toISOString()
         : null,
+      // Whether this caller, an owner, may remove it at once: by who filed it
+      // (removableAtOnce), so the Trash offers exactly what the vault does.
+      purge_at_once:
+        row.deleted_at !== null &&
+        p.role === 'owner' &&
+        removableAtOnce(p, row, await signsInHere(trx, row.created_by)),
       // A restore from before its removal brought the record back, not the file.
       file_removed: versions[0]?.file_removed_at != null,
       etag: etagOf(row.id, row.updated_at),

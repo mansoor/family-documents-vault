@@ -1,5 +1,5 @@
 import { can, PURGE_NOTICE_HOURS, whenExactly, type DocumentView } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -9,12 +9,30 @@ import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '
 /**
  * What its filer — and anybody else looking at the Trash — is told of an
  * owner's request to remove a document for good (5.24). Whoever filed it is
- * told how to keep it.
+ * told how to keep it: to bring it back, when they may; otherwise to ask
+ * somebody who may (a filer made a viewer since, or a teen whose filing is
+ * now somebody else's).
  */
-export function purgeAskedWords(d: Pick<DocumentView, 'purge_requested_at' | 'filed_by_me'>) {
+export function purgeAskedWords(
+  d: Pick<DocumentView, 'purge_requested_at' | 'filed_by_me'>,
+  mayBringBack: boolean,
+) {
   if (!d.purge_requested_at) return null;
   const asked = `An owner asked to remove this for good on ${whenExactly(d.purge_requested_at)}.`;
-  return d.filed_by_me ? `${asked} Bring it back to keep it.` : asked;
+  if (!d.filed_by_me) return asked;
+  return mayBringBack
+    ? `${asked} Bring it back to keep it.`
+    : `${asked} To keep it, ask an owner or another adult to bring it back.`;
+}
+
+/** Whether somebody may bring a document back out of the Trash: as the vault decides. */
+export function mayBringBack(
+  role: Parameters<typeof can>[0],
+  memberId: string | undefined,
+  d: Pick<DocumentView, 'owner_member_id'>,
+): boolean {
+  // Whoever may change documents; a teen only their own.
+  return can(role, 'document.edit') && (role !== 'teen' || d.owner_member_id === memberId);
 }
 
 /** What an owner may do about removing one for good, now. */
@@ -24,8 +42,8 @@ type Removal = { kind: 'remove' } | { kind: 'ask' } | { kind: 'wait'; from: stri
  * The Trash (5.1): what was moved there, most recent first, and the way
  * back. A document in the Trash is out of every list, search and reminder;
  * nothing in it is gone — until an owner removes it for good (5.24): one
- * they filed, or that is theirs, at once; anybody else's once whoever filed
- * it has been told, and has had a day to bring it back.
+ * they filed at once; anybody else's once whoever filed it has been told,
+ * and has had a day to bring it back.
  */
 export function TrashScreen() {
   const { withToken, guarded, authVersion, session } = useApp();
@@ -39,12 +57,17 @@ export function TrashScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [news, setNews] = useState<{ id?: string; title: string; text: string } | null>(null);
+  const [news, setNews] = useState<ReactNode>(null);
   // The one being removed for good, or asked about, in the app's own dialog.
   const [confirming, setConfirming] = useState<{ doc: DocumentView; removal: Removal } | null>(
     null,
   );
   const status = useRef<HTMLParagraphElement>(null);
+  // Each row's "Remove for good" button, and the one that opened the dialog:
+  // where focus goes back to when it closes (Safari focuses no button on a
+  // click, so the browser remembers none).
+  const removeButtons = useRef(new Map<string, HTMLButtonElement>());
+  const opener = useRef<HTMLElement | null>(null);
   // What a "from {time}" is read against: now as the page opened, moved on
   // each minute.
   const [now, setNow] = useState(() => Date.now());
@@ -55,14 +78,13 @@ export function TrashScreen() {
 
   const role = storedRole();
   const me = session.info?.member_id;
-  // As the vault decides: whoever may change documents, a teen only their own.
-  const mayRestore = (d: DocumentView) =>
-    can(role, 'document.edit') && (role !== 'teen' || d.owner_member_id === me);
-  // Owners only (5.24). One they filed, or that is theirs, goes at once;
-  // anybody else's is asked about, and goes a day after.
+  const mayRestore = (d: DocumentView) => mayBringBack(role, me, d);
+  // Owners only (5.24). What may go at once the vault says (purge_at_once:
+  // one they filed, or theirs when its filer has gone); anybody else's is
+  // asked about, and goes a day after.
   const removalOf = (d: DocumentView): Removal | null => {
     if (!can(role, 'document.purge')) return null;
-    if (d.filed_by_me === true || (me && d.owner_member_id === me)) return { kind: 'remove' };
+    if (d.purge_at_once === true) return { kind: 'remove' };
     if (!d.purge_allowed_from) return { kind: 'ask' };
     return Date.parse(d.purge_allowed_from) <= now
       ? { kind: 'remove' }
@@ -90,7 +112,7 @@ export function TrashScreen() {
   };
 
   /** What is in the Trash has changed: from the first page again, and the news has focus. */
-  const changed = async (said: { id?: string; title: string; text: string }) => {
+  const changed = async (said: ReactNode) => {
     setNews(said);
     setOlder([]);
     setCursor(undefined);
@@ -104,7 +126,11 @@ export function TrashScreen() {
     setError(null);
     try {
       await withToken((t) => api.restoreDocument(t, doc.id));
-      await changed({ id: doc.id, title: doc.title ?? 'Needs a name', text: 'is back.' });
+      await changed(
+        <>
+          <Link to={`/documents/${doc.id}`}>“{doc.title ?? 'Needs a name'}”</Link> is back.
+        </>,
+      );
     } catch (err) {
       setError(describeError(err));
     } finally {
@@ -125,16 +151,13 @@ export function TrashScreen() {
       setConfirming(null);
       if (!out) return;
       if (out.removed) {
-        await changed({ title, text: 'was removed for good.' });
+        await changed(`“${title}” was removed for good.`);
       } else {
         const from = out.document.purge_allowed_from;
-        await changed({
-          id: doc.id,
-          title,
-          text: from
-            ? `Whoever added it has been told. You can remove it for good from ${whenExactly(from)}.`
-            : 'Whoever added it has been told.',
-        });
+        await changed(
+          `You asked to remove “${title}” for good. Whoever added it, if they still sign in here, ` +
+            `and the other owners have been told${from ? `. You can remove it from ${whenExactly(from)}.` : '.'}`,
+        );
       }
     } catch (err) {
       setConfirming(null);
@@ -154,21 +177,12 @@ export function TrashScreen() {
         {can(role, 'document.purge') ? ', or an owner removes them for good.' : '.'}
       </p>
       <p role="status" ref={status} tabIndex={-1} className="status-line">
-        {news &&
-          (news.id && news.text === 'is back.' ? (
-            <>
-              <Link to={`/documents/${news.id}`}>“{news.title}”</Link> {news.text}
-            </>
-          ) : (
-            <>
-              “{news.title}” {news.text}
-            </>
-          ))}
+        {news}
       </p>
       <ul className="list">
         {items.map((d) => {
           const removal = removalOf(d);
-          const asked = purgeAskedWords(d);
+          const asked = purgeAskedWords(d, mayRestore(d));
           const title = d.title ?? 'this document';
           return (
             <li key={d.id} className="trash-row">
@@ -205,7 +219,14 @@ export function TrashScreen() {
                     danger
                     disabled={busy === d.id}
                     ariaLabel={`${removal.kind === 'ask' ? 'Ask to remove for good' : 'Remove for good'}: ${title}`}
-                    onClick={() => setConfirming({ doc: d, removal })}
+                    ref={(el) => {
+                      if (el) removeButtons.current.set(d.id, el);
+                      else removeButtons.current.delete(d.id);
+                    }}
+                    onClick={() => {
+                      opener.current = removeButtons.current.get(d.id) ?? null;
+                      setConfirming({ doc: d, removal });
+                    }}
                   >
                     {removal.kind === 'ask' ? 'Ask to remove for good' : 'Remove for good'}
                   </Button>
@@ -228,6 +249,7 @@ export function TrashScreen() {
           doc={confirming.doc}
           ask={confirming.removal.kind === 'ask'}
           busy={busy === confirming.doc.id}
+          returnFocus={opener}
           onConfirm={() => void purge()}
           onCancel={() => setConfirming(null)}
         />
@@ -239,13 +261,15 @@ export function TrashScreen() {
 
 /**
  * The app's own "are you sure?" (5.1) for removing a document for good, or
- * for asking to (5.24): what goes, that it cannot be brought back, and —
- * for somebody else's — who is told and how long they have.
+ * for asking to (5.24): what goes and what does not, that it cannot be
+ * brought back, and — for somebody else's — who is told and how long they
+ * have.
  */
 function PurgeDialog(props: {
   doc: DocumentView;
   ask: boolean;
   busy: boolean;
+  returnFocus: RefObject<HTMLElement | null>;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -258,12 +282,13 @@ function PurgeDialog(props: {
       icon={<TrashIcon />}
       danger
       busy={props.busy}
+      returnFocus={props.returnFocus}
       onConfirm={props.onConfirm}
       onCancel={props.onCancel}
     >
       <p>
-        Somebody else added “{title}”. They are told now, and so are the other owners, and they can
-        bring it back to keep it.
+        Somebody else added “{title}”. Whoever added it is told now, if they still sign in here, and
+        so are the other owners. Bringing it back keeps it.
       </p>
       <p>
         If nobody does, you can remove it for good {PURGE_NOTICE_HOURS} hours from now. You will be
@@ -278,17 +303,20 @@ function PurgeDialog(props: {
       icon={<TrashIcon />}
       danger
       busy={props.busy}
+      returnFocus={props.returnFocus}
       onConfirm={props.onConfirm}
       onCancel={props.onCancel}
     >
       <p>
-        “{title}” and its file are removed from the vault: every copy, its pages, and any link to
-        it. Nobody can bring it back.
+        “{title}” is removed from the vault: its file, its pages, and any link to it. Nobody can
+        bring it back.
       </p>
       <p>
-        A backup made before now can bring back its details, never its file. You will be asked to
-        confirm it’s you.
+        Copies made elsewhere are not reached: an export made before now keeps its copy until it
+        expires, within seven days, and a phone keeping it offline removes its copy when it next
+        connects. A backup made before now can bring back its details, never its file.
       </p>
+      <p>You will be asked to confirm it’s you.</p>
     </ConfirmDialog>
   );
 }

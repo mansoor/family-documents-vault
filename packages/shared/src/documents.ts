@@ -79,6 +79,13 @@ export interface DocumentView {
    */
   purge_allowed_from?: string | null;
   /**
+   * Whether the one asking, an owner, may remove it for good at once rather
+   * than ask first (5.24): one they filed, or one that is theirs when nobody
+   * filed it or whoever did is no longer in the household. False for anybody
+   * else, and out of the Trash. Absent from older vaults.
+   */
+  purge_at_once?: boolean;
+  /**
    * Its newest version's file was removed for good after the backup the
    * vault was restored from was made (5.24): the record is back, the file
    * is not. Absent from older vaults.

@@ -1565,7 +1565,7 @@ export function installFakeApi(state: FakeState) {
       return json(doc);
     }
     // Removing for good (5.24), as the vault does it: owners only, asking to
-    // confirm it's you; at once for one they filed or that is theirs;
+    // confirm it's you; at once for one they filed;
     // anybody else's asked about first, and removed a day after.
     const purgeMatch = /^\/api\/v1\/documents\/([^/]+)\/purge$/.exec(path);
     if (purgeMatch && method === 'POST') {
@@ -1584,7 +1584,9 @@ export function installFakeApi(state: FakeState) {
           },
         );
       }
-      const theirs = doc.filed_by_me === true || doc.owner_member_id === 'me';
+      // At once what the vault says may go at once (purge_at_once): one they
+      // filed, or theirs when its filer has gone.
+      const theirs = doc.purge_at_once === true;
       if (!theirs && !doc.purge_requested_at) {
         doc.purge_requested_at = state.purgeAskedAt ?? new Date().toISOString();
         doc.purge_allowed_from = new Date(

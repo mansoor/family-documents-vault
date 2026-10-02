@@ -251,7 +251,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     visibility: new VisibilityService(db, keys),
     vaults,
     documents,
-    purge: new PurgeService(db, vaults, documents, alert),
+    purge: new PurgeService(db, vaults, documents, alert, enqueue),
     types: new TypeService(db, enqueue, stepUp),
     collections: new CollectionService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),

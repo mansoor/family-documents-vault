@@ -171,7 +171,7 @@ async function main(): Promise<void> {
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
     documents,
-    purge: new PurgeService(db, vaults, documents, alert),
+    purge: new PurgeService(db, vaults, documents, alert, enqueue),
     types: new TypeService(db, enqueue, stepUpService),
     collections: new CollectionService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),

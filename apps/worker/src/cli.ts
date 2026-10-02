@@ -3,8 +3,10 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
+import { createPool } from '@fdv/db';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
+import { recheckRemovedFiles } from './jobs/removed-files.js';
 import {
   backupBefore,
   newestBackup,
@@ -23,6 +25,7 @@ import { backupKeyFor } from './jobs/restore-keys.js';
  *   node apps/worker/dist/cli.mjs restore-drill [<file.sql.enc>]
  *   node apps/worker/dist/cli.mjs restore-backup <file.sql.enc | latest>
  *   node apps/worker/dist/cli.mjs decrypt-backup <in.sql.enc> <out.sql>
+ *   node apps/worker/dist/cli.mjs recheck-files
  *
  * All of them need only the normal configuration (the master key and the
  * database). The README's "Restoring" section says when to use which. A
@@ -165,6 +168,33 @@ async function main() {
     return;
   }
 
+  // A file a restore marked removed for good, put back since (5.24): looked
+  // for again, and unmarked where it is found.
+  if (command === 'recheck-files') {
+    const admin = createPool(adminUrl, 1);
+    try {
+      const r = await recheckRemovedFiles(
+        admin,
+        {
+          credentialsKey: deriveKey(masterSecret, 'vault-credentials'),
+          localRoot: config.FDV_LOCAL_VAULT_DIR,
+        },
+        log,
+      );
+      console.log(
+        `${r.found} file(s) marked removed for good were found again and open as before; ` +
+          `${r.stillRemoved} still are not there.`,
+      );
+      if (r.unchecked) {
+        console.log(`${r.unchecked} could not be looked for:`);
+        for (const why of r.uncheckedWhy) console.log(`  ${why}`);
+      }
+    } finally {
+      await admin.end();
+    }
+    return;
+  }
+
   if (command === 'decrypt-backup' && a && b) {
     const key = await backupKeyFor(a, backupKey, master.previous);
     await pipeline(createReadStream(a), new DecryptStream(key), createWriteStream(b));
@@ -181,7 +211,7 @@ async function main() {
   }
   console.error(
     'usage: cli.mjs backup-now | restore-drill [<file>] | restore-backup <file|latest> | ' +
-      'decrypt-backup <in.sql.enc> <out.sql>',
+      'decrypt-backup <in.sql.enc> <out.sql> | recheck-files',
   );
   process.exitCode = 2;
 }
@@ -263,19 +293,28 @@ function summary(file: string, r: RestoreReport): string {
       '    choose it again on the person’s profile.',
     );
   }
+  if (r.purgeRequestsCleared > 0) {
+    lines.push(
+      `  - ${plural(r.purgeRequestsCleared, 'request')} to remove a document for good ` +
+        `${r.purgeRequestsCleared === 1 ? 'was' : 'were'} ended, so whoever added it`,
+      '    keeps it: an owner asks again if it still stands, and they are told afresh.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(
       `  - ${plural(documents.length, 'document')} had ${documents.length === 1 ? 'its file' : 'their files'} ` +
         'removed for good after the backup was made. The record is back, the',
       '    file is not: each says "The file was removed for good" when it is opened.',
+      '    If a file is put back later, run recheck-files and it opens again.',
       ...documents.map((d) => `      ${d}`),
     );
   }
   if (r.filesUnchecked > 0) {
     lines.push(
-      `  - ${plural(r.filesUnchecked, 'file')} could not be looked for: where ${r.filesUnchecked === 1 ? 'it is' : 'they are'} kept`,
-      '    could not be reached. Check Settings → Where your files are kept once the vault runs.',
+      `  - ${plural(r.filesUnchecked, 'file')} could not be looked for, and ${r.filesUnchecked === 1 ? 'is' : 'are'} not marked removed:`,
+      ...r.filesUncheckedWhy.map((why) => `      ${why}`),
+      '    Once the files are in place, their documents open as before.',
     );
   }
   if (r.openInvitations > 0) {

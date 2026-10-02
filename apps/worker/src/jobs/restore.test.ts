@@ -1573,6 +1573,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         await mkdir(path.dirname(path.join(root, v.storage_key)), { recursive: true });
         await writeFile(path.join(root, v.storage_key), 'ciphertext');
       }
+      // And the third in the Trash, an owner's request to remove it standing
+      // when the backup was made, a day and more old by now.
+      await sql(
+        before.adminUrl,
+        `update document
+            set deleted_at = now() - interval '2 days',
+                purge_requested_at = now() - interval '30 hours',
+                purge_requested_by = (select account_id from account_household
+                                       where household_id = '${hh}' limit 1)
+          where household_id = '${hh}'
+            and id not in (select document_id from document_version)`,
+      );
       const file = (
         await backupDatabase({
           adminUrl: before.adminUrl,
@@ -1607,6 +1619,14 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       );
       expect(report.filesUnchecked).toBe(0);
       expect(report.documents).toBe(3);
+      // The owner's request ended with the restore (D524-03): asked again,
+      // and the filer told again, before anything is removed.
+      expect(report.purgeRequestsCleared).toBe(1);
+      const asked = await sql(
+        t.adminUrl,
+        'select count(*)::int as n from document where purge_requested_at is not null',
+      );
+      expect(asked.rows[0]?.n).toBe(0);
 
       // And the document says so, as the vault reads it: its versions are
       // marked removed for good; the other's file is there, and unmarked.
@@ -1632,12 +1652,37 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       // Told nothing of where the files are, a restore marks nothing.
       const blind = await empty();
       const unmarked = await restoreBackup(file, KEY, into(blind), quiet, KEYS);
-      expect(unmarked).toMatchObject({ filesRemoved: [], filesUnchecked: 0 });
+      expect(unmarked).toMatchObject({
+        filesRemoved: [],
+        filesUnchecked: 0,
+        filesUncheckedWhy: [],
+      });
       const none = await sql(
         blind.adminUrl,
         'select count(*)::int as n from document_version where file_removed_at is not null',
       );
       expect(none.rows[0]?.n).toBe(0);
+
+      // Told, but the files are not in place yet — an empty folder, a volume
+      // not mounted (D524-02): nothing is marked, and the report says why.
+      const bare = await mkdtemp(path.join(tmpdir(), 'fdv-restore-bare-'));
+      try {
+        const early = await empty();
+        const r = await restoreBackup(file, KEY, into(early), quiet, KEYS, {
+          credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+          localRoot: bare,
+        });
+        expect(r.filesRemoved).toEqual([]);
+        expect(r.filesUnchecked).toBe(3);
+        expect(r.filesUncheckedWhy.join(' ')).toMatch(/None of the 3 file\(s\)/);
+        const unmarkedEarly = await sql(
+          early.adminUrl,
+          'select count(*)::int as n from document_version where file_removed_at is not null',
+        );
+        expect(unmarkedEarly.rows[0]?.n).toBe(0);
+      } finally {
+        await rm(bare, { recursive: true, force: true });
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(backups, { recursive: true, force: true });

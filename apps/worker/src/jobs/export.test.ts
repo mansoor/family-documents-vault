@@ -281,6 +281,84 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(entries.get('index.html')?.toString()).toContain('<td>March 2031</td>');
   }, 60_000);
 
+  it('a document whose file was removed for good, or is not there, is listed without it; the export is made (5.24)', async () => {
+    const removed = await addDoc('Restored without its file', 'household', ownerMember, 'GONE');
+    const vanished = await addDoc('Removed as it was built', 'household', ownerMember, 'GONE TOO');
+    const kept = await addDoc('Still has its file', 'household', ownerMember, 'STILL HERE');
+    const keyOf = async (id: string) =>
+      (
+        await admin.query<{ storage_key: string }>(
+          'select storage_key from document_version where document_id = $1',
+          [id],
+        )
+      ).rows[0]?.storage_key as string;
+    // A restore from before its removal marked it (restore.ts); the other's
+    // object went as the export was made, with no mark.
+    await new LocalAdapter(vaultDir).delete(await keyOf(removed));
+    await admin.query(
+      'update document_version set file_removed_at = now() where document_id = $1',
+      [removed],
+    );
+    await new LocalAdapter(vaultDir).delete(await keyOf(vanished));
+
+    const exportId = await withSystem(db, hh, (trx) =>
+      trx
+        .insertInto('export')
+        .values({ household_id: hh, requested_by: ownerAccount })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.id);
+    await buildExport(
+      {
+        db,
+        keys,
+        credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+        localRoot: vaultDir,
+        log: () => undefined,
+      },
+      { household_id: hh, export_id: exportId },
+    );
+    const row = await withSystem(db, hh, (trx) =>
+      trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
+    );
+    expect(row.error).toBeNull();
+    expect(row.state).toBe('done');
+    const memberKey = await withSystem(db, hh, (trx) =>
+      keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: ownerMember }),
+    );
+    const entries = zipEntries(
+      await decryptToBuffer(
+        new LocalAdapter(vaultDir),
+        row.storage_key as string,
+        unwrapKey(row.file_key_wrapped as Buffer, memberKey.key, `export:${exportId}`),
+      ),
+    );
+    const index = JSON.parse(entries.get('index.json')?.toString() ?? '{}') as {
+      documents: Array<{ document_id: string; file: string | null; file_note: string | null }>;
+    };
+    const of = (id: string) => index.documents.find((d) => d.document_id === id);
+    expect(of(removed)).toMatchObject({ file: null, file_note: 'The file was removed for good.' });
+    expect(of(vanished)).toMatchObject({
+      file: null,
+      file_note: 'The file was not where your files are kept when this was made.',
+    });
+    expect(of(kept)).toMatchObject({ file_note: null });
+    expect(entries.get(of(kept)?.file as string)?.toString()).toBe('STILL HERE');
+    const csvRow = entries
+      .get('index.csv')
+      ?.toString()
+      .split('\n')
+      .find((l) => l.startsWith('Restored without its file,'));
+    expect(csvRow?.endsWith(',The file was removed for good.')).toBe(true);
+    expect(entries.get('index.html')?.toString()).toContain(
+      'Restored without its file<br><small>The file was removed for good.</small>',
+    );
+    // Taken out again, so the tests after this one see the vault as before.
+    await admin.query('delete from document where id = any($1::uuid[])', [
+      [removed, vanished, kept],
+    ]);
+  }, 60_000);
+
   it('detail columns are labelled and formula-guarded', async () => {
     // A type of the household's own, whose field somebody named like a formula.
     const own = 'h_abcdefghij';
@@ -373,7 +451,7 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
         'retired_key',
       ]),
     );
-    expect(cols.slice(-4)).toEqual(['file', 'version_no', 'sha256', 'document_id']);
+    expect(cols.slice(-5)).toEqual(['file', 'version_no', 'sha256', 'document_id', 'file_note']);
     const cell = (title: string, column: string) =>
       lines.find((l) => l.startsWith(`${title},`))?.split(',')[cols.indexOf(column)];
     expect(cell('Estate car', 'VIN')).toBe("'=2+5");

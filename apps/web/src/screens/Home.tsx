@@ -17,7 +17,7 @@ import { DocActions, type RowCollection } from '../DocActions.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import { BottomNav, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
-import { purgeAskedWords } from './Trash.js';
+import { mayBringBack, purgeAskedWords } from './Trash.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -111,7 +111,7 @@ export function HomeScreen() {
           <span className="muted">Owners must. It takes a minute, in Settings.</span>
         </Link>
       )}
-      <RemovalNotice items={data?.removals ?? []} />
+      <RemovalNotice items={data?.removals ?? []} memberId={data?.me.member_id} />
       <AttentionStrip items={data?.attention ?? []} />
       <MissingStrip items={data?.suggestions ?? []} />
 
@@ -266,8 +266,15 @@ function AttentionStrip({
  * said here, where you will see it, as well as by email — the Trash is
  * where you bring one back to keep it, for a day from when you were told.
  */
-function RemovalNotice({ items }: { items: DocumentView[] }) {
+function RemovalNotice({
+  items,
+  memberId,
+}: {
+  items: DocumentView[];
+  memberId: string | undefined;
+}) {
   if (items.length === 0) return null;
+  const role = storedRole();
   return (
     <div className="attention removal-notice" role="status">
       <strong>
@@ -279,11 +286,13 @@ function RemovalNotice({ items }: { items: DocumentView[] }) {
         {items.slice(0, 3).map((d) => (
           <li key={d.id}>
             <span className="doc-title">“{d.title ?? 'Needs a name'}”</span>
-            <span>{purgeAskedWords(d)}</span>
+            <span>{purgeAskedWords(d, mayBringBack(role, memberId, d))}</span>
           </li>
         ))}
       </ul>
-      <Link to="/settings/trash">Open the Trash</Link>
+      <Link to="/settings/trash" className="quiet-link">
+        Open the Trash
+      </Link>
     </div>
   );
 }

@@ -1,18 +1,26 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
+  can,
   PREVIEW_MAX_PAGES,
   PURGE_NOTICE_HOURS,
   shareEndWords,
   type DocumentView,
 } from '@fdv/shared';
-import { StorageError } from '@fdv/storage';
+import { StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
 import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
-import { dropDeletedType, seenDocument, type DocRow, type DocumentService } from './service.js';
+import { removableAtOnce, signsInHere } from './purge-rule.js';
+import {
+  dropDeletedType,
+  seenDocument,
+  type DocRow,
+  type DocumentService,
+  type Enqueue,
+} from './service.js';
 
 /**
  * Removing a document for good (5.24, D1).
@@ -38,17 +46,23 @@ import { dropDeletedType, seenDocument, type DocRow, type DocumentService } from
  *     So a removal racing a download through a link, the share-pages
  *     worker, an upload of a new version, Bring it back or a collection's
  *     addition waits for it, or is waited for; it never deadlocks with it.
- *  2. Every object it owns deleted from storage: each version's file, its
- *     thumbnail, its page previews, the pages any link to view drew of it,
- *     and the file of an upload to it that never finished. A missing one is
- *     fine; one that cannot be reached undoes the whole removal, to be
- *     tried again.
+ *  2. Every object it owns written down to be deleted (purge_leftover):
+ *     each version's file, its thumbnail, its page previews, the pages any
+ *     link to view drew of it, and the file of an upload to it that never
+ *     finished.
  *  3. Its tombstone (0045) — who could see it — then the row, every
  *     foreign key to it cascading.
  *  4. The line in the activity log, with no title.
  *
- * A crash before the commit leaves the row, to be removed again; the files
- * it had are gone or go then. Never files that nothing names.
+ * Then the objects are deleted, each row going with its object, a missing
+ * one being fine. Storage out of reach, or a crash, leaves rows for the
+ * worker to finish (purge.leftovers), never a document that can be brought
+ * back with half its files (the 5.24 review, M524-2). Their file keys went
+ * with the document: what is left meanwhile cannot be read.
+ *
+ * And a version a restore marked removed for good is looked for first: one
+ * whose file is there after all is unmarked, and the removal refused, so
+ * nobody removes a file they were told was already gone (D524-02).
  */
 
 export type PurgeOutcome =
@@ -75,13 +89,18 @@ const notInTrash = () =>
     'Only a document in the Trash can be removed for good. Move it to the Trash first.',
   );
 
-const storageUnreachable = (detail: string) =>
+const fileFound = () =>
   new ApiError(
-    503,
-    'storage_unreachable',
-    "We can't reach where your files are kept, so nothing was removed. Try again.",
-    { detail, retriable: true, retryAfter: 30 },
+    409,
+    'file_found',
+    'Its file was found where your files are kept after all, so it can be opened again and was not removed. Look at it before you remove it for good.',
   );
+
+/** The worker's job that finishes a removal's deletions (its JOBS.purgeLeftovers). */
+export const PURGE_LEFTOVERS_JOB = 'purge.leftovers';
+
+/** Rows written in one statement: well within what one may carry. */
+const LEFTOVER_ROWS = 2000;
 
 /** What a document is, as far as removing it goes. */
 type Held = DocRow & { household_id: string; type_key: string | null };
@@ -96,6 +115,8 @@ export class PurgeService {
     private readonly docs: DocumentService,
     /** How whoever filed it, and the other owners, are told (alert.send). */
     private readonly alert: Alert = async () => undefined,
+    /** How the worker is asked to finish deletions a removal could not. */
+    private readonly enqueue: Enqueue = async () => undefined,
   ) {}
 
   /**
@@ -114,6 +135,7 @@ export class PurgeService {
 
   async purge(p: Principal, id: string, meta: RequestMeta): Promise<PurgeOutcome> {
     requireCapability(p, 'document.purge');
+    await this.lookAgain(p, id);
     const done = await withPrincipal(this.db, p, async (trx) => {
       await this.holdAround(trx, id);
       const doc = await this.find(trx, p, id, true);
@@ -123,11 +145,109 @@ export class PurgeService {
       await this.remove(trx, p, doc, meta);
       return null;
     });
-    if (!done) return { removed: true };
+    if (!done) {
+      await this.sweep(p, id);
+      return { removed: true };
+    }
     // Told once the request is kept, and never in a way that undoes it: the
     // Trash says so whether or not a message gets through.
     for (const message of done.tell) await this.alert(message).catch(() => undefined);
     return { removed: false, document: done.document };
+  }
+
+  // ------------------------------------------------- before, and after
+
+  /**
+   * Its versions a restore marked removed for good, looked for again: one
+   * whose file is where it is kept after all is unmarked, and the removal
+   * refused (409 file_found), so nobody removes a file they were told was
+   * gone. A place that cannot be reached is no answer, and the marks stand.
+   */
+  private async lookAgain(p: Principal, id: string): Promise<void> {
+    const marked = await withPrincipal(this.db, p, async (trx) => {
+      const versions = await trx
+        .selectFrom('document_version as v')
+        .innerJoin('document as d', 'd.id', 'v.document_id')
+        .select(['v.id', 'v.storage_key', 'v.vault_id'])
+        .where('v.document_id', '=', id)
+        .where('v.file_removed_at', 'is not', null)
+        .where('d.deleted_at', 'is not', null)
+        .where(seenDocument(p))
+        .execute();
+      const adapters = new Map<string, StorageAdapter>();
+      for (const v of versions) {
+        if (!adapters.has(v.vault_id)) {
+          adapters.set(v.vault_id, await this.vaults.adapterById(trx, v.vault_id));
+        }
+      }
+      return { versions, adapters };
+    });
+    const found: string[] = [];
+    for (const v of marked.versions) {
+      const adapter = marked.adapters.get(v.vault_id);
+      const there = await adapter?.stat(v.storage_key).then(
+        () => true,
+        () => false,
+      );
+      if (there) found.push(v.id);
+    }
+    if (found.length === 0) return;
+    await withPrincipal(this.db, p, (trx) =>
+      trx
+        .updateTable('document_version')
+        .set({ file_removed_at: null })
+        .where('id', 'in', found)
+        .execute(),
+    );
+    throw fileFound();
+  }
+
+  /**
+   * The objects a removal wrote down, deleted, each row going with its
+   * object; a missing one is fine. Whatever cannot be deleted now — storage
+   * out of reach — is left for the worker, which is asked to finish it.
+   */
+  private async sweep(p: Principal, id: string): Promise<void> {
+    const rows = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('purge_leftover')
+        .select(['id', 'vault_id', 'object_key'])
+        .where('removed_document', '=', id)
+        .orderBy('id')
+        .execute(),
+    );
+    const done: string[] = [];
+    let left = false;
+    const byVault = new Map<string, typeof rows>();
+    for (const r of rows) byVault.set(r.vault_id, [...(byVault.get(r.vault_id) ?? []), r]);
+    for (const [vaultId, held] of byVault) {
+      const adapter = await withPrincipal(this.db, p, (trx) =>
+        this.vaults.adapterById(trx, vaultId),
+      ).catch(() => null);
+      if (!adapter) {
+        left = true;
+        continue;
+      }
+      for (const r of held) {
+        try {
+          await adapter.delete(r.object_key);
+          done.push(r.id);
+        } catch (err) {
+          if (err instanceof StorageError && err.code === 'not_found') done.push(r.id);
+          else left = true;
+        }
+      }
+    }
+    if (done.length) {
+      await withPrincipal(this.db, p, (trx) =>
+        trx.deleteFrom('purge_leftover').where('id', 'in', done).execute(),
+      );
+    }
+    if (left) {
+      await this.enqueue(PURGE_LEFTOVERS_JOB, { household_id: p.householdId }).catch(
+        () => undefined,
+      );
+    }
   }
 
   // ------------------------------------------------------------ deciding
@@ -151,15 +271,15 @@ export class PurgeService {
   }
 
   /**
-   * Remove now, ask, or wait. One the caller filed, or that is theirs, is
-   * removed at once. Anybody else's is asked about first, and removed once
+   * Remove now, ask, or wait. One the caller filed — or that is theirs, when
+   * nobody filed it or whoever did has left — is removed at once
+   * (removableAtOnce). Anybody else's is asked about first, and removed once
    * `PURGE_NOTICE_HOURS` have passed since — counted by the database's clock.
    */
   private async decide(trx: Db, p: Principal, doc: Held): Promise<Decision> {
-    const theirs =
-      (doc.created_by !== null && doc.created_by === p.accountId) ||
-      (doc.owner_member_id !== null && doc.owner_member_id === p.memberId);
-    if (theirs) return { kind: 'remove' };
+    if (removableAtOnce(p, doc, await signsInHere(trx, doc.created_by))) {
+      return { kind: 'remove' };
+    }
     if (!doc.purge_requested_at) return { kind: 'ask' };
     const r = await sql<{ due: boolean; allowed_from: Date }>`
       select purge_requested_at + make_interval(hours => ${PURGE_NOTICE_HOURS}) <= now() as due,
@@ -239,15 +359,23 @@ export class PurgeService {
         ? people.find((x) => x.account_id === doc.created_by)
         : undefined;
     if (filer) {
+      // Told how to keep it as they can: bring it back, when they may (the
+      // Trash's own rule: who may change documents, a teen only their own);
+      // otherwise ask somebody who may.
+      const mayKeep =
+        can(filer.role, 'document.edit') &&
+        (filer.role !== 'teen' || doc.owner_member_id === filer.member_id);
       tell.push({
         householdId: p.householdId,
         accountIds: [filer.account_id],
         subject: 'An owner asked to remove one of your documents for good',
         body:
           `${asker} asked to remove one of the documents you added for good on ` +
-          `${shareEndWords(at, household.timezone, { weekday: false })}. Bring it back to keep it: ` +
-          'it is in Settings → Trash. Otherwise it can be removed for good from ' +
-          `${shareEndWords(from, household.timezone)}.`,
+          `${shareEndWords(at, household.timezone, { weekday: false })}. ` +
+          (mayKeep
+            ? 'Bring it back to keep it: it is in Settings → Trash. '
+            : 'To keep it, ask an owner or another adult to bring it back from Settings → Trash. ') +
+          `Otherwise it can be removed for good from ${shareEndWords(from, household.timezone)}.`,
       });
     }
     // And the other owners: any of them may remove it once the day is over.
@@ -263,9 +391,9 @@ export class PurgeService {
         accountIds: owners,
         subject: 'An owner asked to remove a document for good',
         body:
-          `${asker} asked to remove a document in the Trash for good. Whoever added it has been ` +
-          `told, and can bring it back from Settings → Trash within ${PURGE_NOTICE_HOURS} hours. ` +
-          'The activity log says which.',
+          `${asker} asked to remove a document in the Trash for good. Whoever added it is told ` +
+          'too, if they still sign in here. Bringing it back from Settings → Trash within ' +
+          `${PURGE_NOTICE_HOURS} hours keeps it. The activity log says which.`,
       });
     }
     return { document: document as DocumentView, tell };
@@ -345,19 +473,23 @@ export class PurgeService {
       .execute();
     for (const u of unfinished) add(u.temp_vault_id, u.temp_key);
 
-    // Objects first, a missing one being fine (a provider that answers a
-    // delete of nothing with "not found" included). Anything else stops the
-    // removal, row and all, to be tried again.
-    for (const [vaultId, keys] of byVault) {
-      const adapter = await this.vaults.adapterById(trx, vaultId);
-      for (const key of keys) {
-        try {
-          await adapter.delete(key);
-        } catch (err) {
-          if (err instanceof StorageError && err.code === 'not_found') continue;
-          throw storageUnreachable((err as Error).message);
-        }
-      }
+    // Written down, to be deleted once the rows are gone (purge_leftover,
+    // 0045): a removal that stops part-way leaves these to finish, never a
+    // document that could be brought back with half its files.
+    const leftovers = [...byVault].flatMap(([vaultId, keys]) =>
+      [...keys].map((key) => ({
+        household_id: p.householdId,
+        vault_id: vaultId,
+        object_key: key,
+        removed_document: doc.id,
+      })),
+    );
+    for (let at = 0; at < leftovers.length; at += LEFTOVER_ROWS) {
+      await trx
+        .insertInto('purge_leftover')
+        .values(leftovers.slice(at, at + LEFTOVER_ROWS))
+        .onConflict((oc) => oc.columns(['vault_id', 'object_key']).doNothing())
+        .execute();
     }
 
     // Who could see it, and the collections' links that named it, for the

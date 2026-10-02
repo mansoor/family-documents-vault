@@ -1,5 +1,13 @@
 import { avatarColour, can, graphemesOf, statusTone, type Status } from '@fdv/shared';
-import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+  type RefObject,
+} from 'react';
 import { NavLink } from 'react-router';
 import { storedRole } from './session.js';
 
@@ -211,7 +219,10 @@ export function Select(props: {
   );
 }
 
-export function Button(props: {
+export function Button({
+  ref,
+  ...props
+}: {
   children: ReactNode;
   kind?: 'primary' | 'quiet' | 'link';
   type?: 'submit' | 'button';
@@ -222,9 +233,12 @@ export function Button(props: {
   describedBy?: string;
   /** A quiet button for something that cannot be undone, in the danger colour (5.24). */
   danger?: boolean;
+  /** The button itself, for a dialog it opens to give focus back to (Safari focuses none). */
+  ref?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
       type={props.type ?? 'button'}
       className={`btn btn-${props.kind ?? 'primary'}${props.danger ? ' btn-danger-quiet' : ''}`}
       disabled={props.disabled}

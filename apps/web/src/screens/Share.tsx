@@ -1,6 +1,7 @@
 import {
   can,
   canShareToView,
+  COLLECTION_SHARE_FILE_REMOVED,
   defaultShareEnd,
   isShareAddress,
   latestShareEnd,
@@ -88,6 +89,9 @@ export function SharePanel(props: {
   const listed = (data?.shares ?? []).filter((s) => s.state === 'active' || s.state === 'used_up');
   const timezone = data?.timezone ?? 'UTC';
   const viewable = !data?.newest || canShareToView(data.newest.mime);
+  // A restore found its file removed for good (5.24): no new link, which
+  // would open on nothing; a link already made can still be taken back.
+  const removed = data?.newest?.file_removed === true;
   const long =
     data?.newest?.page_count && data.newest.page_count > PREVIEW_MAX_PAGES
       ? data.newest.page_count
@@ -186,7 +190,9 @@ export function SharePanel(props: {
         </ul>
       )}
 
-      {open ? (
+      {removed ? (
+        <p className="muted">{COLLECTION_SHARE_FILE_REMOVED}</p>
+      ) : open ? (
         <div className="stack">
           <LinkOptions
             options={options}

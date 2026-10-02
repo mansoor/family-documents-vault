@@ -7,8 +7,8 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
-import { adapterFromRow, StorageError, type StorageAdapter, type VaultRowLike } from '@fdv/storage';
 import { libpqConnection, withDatabase } from './libpq.js';
+import { markRemovedFiles, type FileStorage, type RemovedFiles } from './removed-files.js';
 import { sealPrivateValues } from './seal.js';
 
 // For a backup made before the master key was rotated.
@@ -49,7 +49,8 @@ import { backupKeyFor, onCurrentKey, type MasterKeys, type RekeyReport } from '.
  * where the files are kept (`storage`), the restore looks for every
  * version's file, marks each one not there as removed (file_removed_at) —
  * its document then says "The file was removed for good" instead of
- * failing — and the report lists them.
+ * failing — and the report lists them. A place that holds none of the files
+ * it should is left alone, and said (removed-files.ts).
  */
 
 export interface RestoreTarget {
@@ -97,6 +98,13 @@ export interface RestoreReport {
    * takes them and their uploads away. Ready photos come back as they were.
    */
   photosUnfinished: number;
+  /**
+   * Owners' requests to remove a document for good (5.24), ended: a filer's
+   * Bring it back made since the backup would otherwise be undone, its 24
+   * hours perhaps already past. An owner asks again, and the filer is told
+   * again.
+   */
+  purgeRequestsCleared: number;
   openInvitations: number;
   /**
    * Versions whose file was not where it is kept (5.24): removed for good
@@ -104,8 +112,13 @@ export interface RestoreReport {
    * Empty when the restore was not told where the files are.
    */
   filesRemoved: Array<{ household_id: string; document_id: string; version_id: string }>;
-  /** Versions whose file could not be looked for: where it is kept could not be reached. */
+  /**
+   * Versions whose file could not be looked for — where it is kept could not
+   * be reached, or held none of the files it should — and so not marked.
+   */
   filesUnchecked: number;
+  /** Why, a sentence a place. */
+  filesUncheckedWhy: string[];
 }
 
 /**
@@ -113,10 +126,7 @@ export interface RestoreReport {
  * (5.24): the key that opens a vault's bucket credentials, and the folder a
  * local vault's files are in — the worker's own.
  */
-export interface RestoreStorage {
-  credentialsKey: Buffer;
-  localRoot: string;
-}
+export type RestoreStorage = FileStorage;
 
 export type Log = (level: string, msg: string, extra?: Record<string, unknown>) => void;
 
@@ -148,7 +158,7 @@ export async function restoreBackup(
     const rekeyed = target.master ? await onCurrentKey(target.adminUrl, target.master, log) : null;
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
-    let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0 };
+    let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0, filesUncheckedWhy: [] };
     try {
       // What the vault's own start does: bring an older backup up to date,
       // then give the application role its privileges.
@@ -201,96 +211,11 @@ interface Undone {
   linksPaused: number;
   requestsPaused: number;
   photosUnfinished: number;
+  purgeRequestsCleared: number;
 }
 
 interface StillOpen {
   openInvitations: number;
-}
-
-type RemovedFiles = Pick<RestoreReport, 'filesRemoved' | 'filesUnchecked'>;
-
-/**
- * Each version's file, looked for where it is kept (5.24). One that is not
- * there was removed for good after the backup was made: marked, so that its
- * document says so rather than failing, and listed. One whose place cannot
- * be reached is counted and left as it is. As the owner, past the
- * households' walls, as the rest of a restore's own work is.
- */
-async function markRemovedFiles(
-  admin: ReturnType<typeof createPool>,
-  storage: RestoreStorage,
-  log: Log,
-): Promise<RemovedFiles> {
-  const { rows: versions } = await admin.query<{
-    id: string;
-    household_id: string;
-    document_id: string;
-    storage_key: string;
-    vault_id: string;
-  }>(
-    `select id, household_id, document_id, storage_key, vault_id
-       from document_version
-      where file_removed_at is null
-      order by household_id, document_id, version_no`,
-  );
-  const { rows: vaults } = await admin.query<VaultRowLike>(
-    'select id, kind, label, endpoint, bucket, region, path_style, credentials_encrypted from vault',
-  );
-  const adapters = new Map<string, StorageAdapter | null>();
-  const adapterOf = (vaultId: string): StorageAdapter | null => {
-    if (!adapters.has(vaultId)) {
-      const row = vaults.find((v) => v.id === vaultId);
-      let adapter: StorageAdapter | null = null;
-      try {
-        adapter = row ? adapterFromRow(row, storage.credentialsKey, storage.localRoot) : null;
-      } catch (err) {
-        log('warn', 'a place files are kept could not be opened', {
-          vault: vaultId,
-          err: (err as Error).message,
-        });
-      }
-      adapters.set(vaultId, adapter);
-    }
-    return adapters.get(vaultId) ?? null;
-  };
-  const removed: RemovedFiles['filesRemoved'] = [];
-  let unchecked = 0;
-  for (const v of versions) {
-    const adapter = adapterOf(v.vault_id);
-    if (!adapter) {
-      unchecked += 1;
-      continue;
-    }
-    try {
-      await adapter.stat(v.storage_key);
-    } catch (err) {
-      if (err instanceof StorageError && err.code === 'not_found') {
-        removed.push({
-          household_id: v.household_id,
-          document_id: v.document_id,
-          version_id: v.id,
-        });
-      } else {
-        unchecked += 1;
-      }
-    }
-  }
-  if (removed.length) {
-    await admin.query(
-      'update document_version set file_removed_at = now() where id = any($1::uuid[])',
-      [removed.map((r) => r.version_id)],
-    );
-    log('info', 'files removed for good since the backup was made', {
-      versions: removed.length,
-      documents: new Set(removed.map((r) => r.document_id)).size,
-    });
-  }
-  if (unchecked) {
-    log('warn', 'files that could not be looked for: where they are kept could not be reached', {
-      versions: unchecked,
-    });
-  }
-  return { filesRemoved: removed, filesUnchecked: unchecked };
 }
 
 /** Every live share link, paused for an owner to turn back on (A55). UNDO says it too. */
@@ -492,6 +417,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     linksPaused: counted('links_paused'),
     requestsPaused: counted('requests_paused'),
     photosUnfinished: counted('photos_unfinished'),
+    purgeRequestsCleared: counted('purge_requests'),
   };
 }
 
@@ -512,7 +438,10 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * photos come back as they were that night. Every live request to send
  * documents is paused for an owner to turn back on, since one taken back
  * or closed since would open again, and no sender's session or emailed
- * code survives (5.21). Guarded for older schemas.
+ * code survives (5.21). And an owner's request to remove a document for
+ * good is ended (5.24): a filer's Bring it back made since would otherwise
+ * be undone with its 24 hours perhaps already past; an owner asks again,
+ * and the filer is told again. Guarded for older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 do $undo$
@@ -579,6 +508,13 @@ begin
     update public.member_photo set state = 'failed' where state = 'processing';
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('photos_unfinished', n);
+  end if;
+  if exists (select 1 from pg_attribute where attrelid = to_regclass('public.document')
+              and attname = 'purge_requested_at' and not attisdropped) then
+    update public.document set purge_requested_at = null, purge_requested_by = null
+     where purge_requested_at is not null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('purge_requests', n);
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
@@ -708,8 +644,10 @@ const ACTOR_GUARDED = [
   'upload_session',
   'upload_code',
   'incoming_file',
-  // What a document removed for good leaves behind: who could see it (0045).
+  // What a document removed for good leaves behind: who could see it, and
+  // the files still to be deleted (0045).
   'document_tombstone',
+  'purge_leftover',
 ];
 
 /**

@@ -178,10 +178,17 @@ describe('the fake vault, for somebody who is not an owner', () => {
       password: 'a long enough password',
     });
     const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
-    const made = await api.createDocument(token, { title: 'Their letter' });
+    // Filed by somebody else, though it is the owner's own now: asked about
+    // first all the same (the 5.24 review, M524-1).
+    const made = await api.createDocument(token, {
+      title: 'Their letter',
+      owner_member_id: 'fake-member',
+    });
     const kept = vault.state.documents.find((d) => d.id === made.id);
     if (kept) kept.filedBySomeoneElse = true;
     await api.deleteDocument(token, made.id);
+    const offered = (await api.documents(token, { deleted: 'true' })).items;
+    expect(offered.map((d) => [d.id, d.purge_at_once])).toEqual([[made.id, false]]);
 
     // Asked about, not removed: and from when it may be.
     const asked = await api.purgeDocument(token, made.id);

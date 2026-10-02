@@ -746,9 +746,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       });
     }
     /** A document as the real vault answers it, with its status in words (0.5.7). */
-    const viewOf = (doc: FakeDocument) => documentView(doc, state.types);
+    const viewOf = (doc: FakeDocument) => documentView(doc, state.types, { role: state.role });
     /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
-    const listedOf = (doc: FakeDocument) => documentView(doc, state.types, { listed: true });
+    const listedOf = (doc: FakeDocument) =>
+      documentView(doc, state.types, { listed: true, role: state.role });
     /**
      * The details sent for a document, checked as the real vault checks
      * them (0.5.7): against the type it will have, merged into what it
@@ -862,7 +863,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           'Only a document in the Trash can be removed for good. Move it to the Trash first.',
         );
       }
-      const theirs = doc.filedBySomeoneElse !== true || doc.owner_member_id === 'fake-member';
+      // At once only what they filed: one filed by somebody else, still here,
+      // is asked about first even when it is theirs (the 5.24 review, M524-1).
+      const theirs = doc.filedBySomeoneElse !== true;
       if (!theirs && !doc.purge_requested_at) {
         doc.purge_requested_at = new Date().toISOString();
         return ok(listedOf(doc), 202);
@@ -2057,7 +2060,7 @@ function answer(made: FakeUpload) {
 function documentView(
   doc: FakeDocument,
   types: ReadonlyArray<DocumentTypeView>,
-  opts: { listed?: boolean } = {},
+  opts: { listed?: boolean; role?: string } = {},
 ): DocumentView {
   const type = types.find((t) => t.key === doc.type_key);
   const expires = doc.expires ?? null;
@@ -2086,6 +2089,9 @@ function documentView(
     purge_allowed_from: doc.purge_requested_at
       ? new Date(Date.parse(doc.purge_requested_at) + PURGE_NOTICE_HOURS * 3_600_000).toISOString()
       : null,
+    // Whether an owner may remove it at once: one they filed (5.24).
+    purge_at_once:
+      Boolean(doc.deleted_at) && opts.role === 'owner' && doc.filedBySomeoneElse !== true,
     file_removed: false,
     etag: etagOf(doc),
     status: deriveStatus(

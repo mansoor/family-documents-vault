@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendAudit, createPool, verifyAuditChain, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
@@ -287,8 +287,15 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     expect(removed.statusCode, removed.body).toBe(204);
 
     // Nothing in storage: the files, thumbnails, previews and the link's
-    // pages, the one no row named included.
+    // pages, the one no row named included; and nothing left to delete.
     expect(await filesUnder(folder)).toEqual([]);
+    expect(
+      await withAdmin(
+        async (c) =>
+          (await c.query('select 1 from purge_leftover where removed_document = $1', [id]))
+            .rowCount,
+      ),
+    ).toBe(0);
     // Nothing in the database names it.
     const left = await leftOf(id);
     expect(Object.entries(left).filter(([, n]) => n !== 0)).toEqual([]);
@@ -800,8 +807,47 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     expect(used).toBe(0);
     // No download is written down that could not happen.
     expect((await activity('owner')).length).toBe(linesBefore);
-    // Any other document is as it was.
+    // And no new link is made to it, alone or in a collection: it would
+    // open on nothing (the review, W524-7).
+    const refusedLink = await call('owner', 'POST', `/api/v1/documents/${id}/share`, {});
+    expect(refusedLink.statusCode, refusedLink.body).toBe(422);
+    expect(code(refusedLink)).toBe('file_removed');
     const other = await make('owner', 'Still has its file');
+    const box = json<{ id: string }>(
+      await call('owner', 'POST', '/api/v1/collections', {
+        name: 'For the solicitor',
+        audience: 'everyone',
+      }),
+    ).id;
+    expect(
+      (
+        await call('owner', 'POST', `/api/v1/collections/${box}/items`, {
+          document_ids: [id, other],
+        })
+      ).statusCode,
+    ).toBe(200);
+    const offered = json<{
+      items: { document_id: string; ticked: boolean; lock: string | null; reason: string | null }[];
+    }>(await call('owner', 'GET', `/api/v1/collections/${box}/share-preview`)).items;
+    expect(offered.find((i) => i.document_id === id)).toMatchObject({
+      ticked: false,
+      lock: 'no_file',
+      reason: 'The file was removed for good, so there is nothing to send.',
+    });
+    expect(offered.find((i) => i.document_id === other)).toMatchObject({
+      ticked: true,
+      lock: null,
+    });
+    const boxed = await call('owner', 'POST', `/api/v1/collections/${box}/shares`, {
+      document_ids: [id, other],
+    });
+    expect(boxed.statusCode, boxed.body).toBe(422);
+    expect(code(boxed)).toBe('file_removed');
+    expect(
+      (await call('owner', 'POST', `/api/v1/collections/${box}/shares`, { document_ids: [other] }))
+        .statusCode,
+    ).toBe(201);
+    // Any other document is as it was.
     expect(
       json<DocumentView>(await call('owner', 'GET', `/api/v1/documents/${other}`)).file_removed,
     ).toBe(false);
@@ -1142,5 +1188,191 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     await trash('owner', id);
     expect((await purge('owner', id)).statusCode).toBe(204);
     expect(await filesUnder(`${t.owner.household_id}/${id}`)).toEqual([]);
+  });
+
+  /** The objects a removal wrote down and has not deleted yet (purge_leftover). */
+  const leftoversOf = (id: string) =>
+    withAdmin(async (c) =>
+      (
+        await c.query<{ object_key: string }>(
+          'select object_key from purge_leftover where removed_document = $1 order by object_key',
+          [id],
+        )
+      ).rows.map((r) => r.object_key),
+    );
+
+  it('handed to an owner, an adult’s filing is still asked about and its filer told; theirs, its filer gone or unknown, goes at once (the review, M524-1)', async () => {
+    await fresh('owner', true);
+    const child = json<{ id: string }>(
+      await call('owner', 'POST', '/api/v1/members', { display_name: 'Kit' }),
+    ).id;
+    // Filed by Alex: one of the household's, and one of the child's, who
+    // signs in nowhere — both of which an owner may hand to themselves.
+    const filed = async (title: string, owner: string | null) => {
+      const r = await call('adult', 'POST', '/api/v1/documents', {
+        title,
+        type_key: 'utility_bill',
+        visibility: 'household',
+        owner_member_id: owner,
+      });
+      expect(r.statusCode, r.body).toBe(201);
+      return json<DocumentView>(r).id;
+    };
+    for (const id of [await filed('Council tax', null), await filed('Kit passport', child)]) {
+      const now = json<DocumentView>(await call('owner', 'GET', `/api/v1/documents/${id}`));
+      const handed = await h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/documents/${id}`,
+        headers: { ...h.as(t.owner), 'if-match': now.etag },
+        payload: { owner_member_id: t.owner.member_id },
+      });
+      expect(handed.statusCode, handed.body).toBe(200);
+      expect(json<DocumentView>(handed).owner_member_id).toBe(t.owner.member_id);
+      await trash('owner', id);
+      expect((await trashOf('owner')).find((d) => d.id === id)?.purge_at_once).toBe(false);
+      const told = alertsTo(accounts.adult).length;
+      const asked = await purge('owner', id);
+      expect(asked.statusCode, asked.body).toBe(202);
+      expect(alertsTo(accounts.adult)).toHaveLength(told + 1);
+      expect((await leftOf(id)).document).toBe(1);
+    }
+
+    // The owner's own, filed by somebody whose sign-in has since been
+    // removed: nobody is left to tell, and it goes at once.
+    const lee = await h.join(t.owner, { name: 'Lee', email: 'lee@example.test', role: 'adult' });
+    const left = await call('owner', 'POST', '/api/v1/documents', {
+      title: 'Filed by Lee',
+      type_key: 'utility_bill',
+      visibility: 'household',
+      owner_member_id: t.owner.member_id,
+    });
+    const leftId = json<DocumentView>(left).id;
+    const leeAccount = json<{ account_id: string }>(
+      await h.app.inject({ url: '/api/v1/me', headers: h.as(lee) }),
+    ).account_id;
+    await withAdmin((c) =>
+      c.query('update document set created_by = $2 where id = $1', [leftId, leeAccount]),
+    );
+    await trash('owner', leftId);
+    expect((await trashOf('owner')).find((d) => d.id === leftId)?.purge_at_once).toBe(false);
+    const gone = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${lee.member_id}/sign-in`,
+      headers: h.as(t.owner),
+    });
+    expect(gone.statusCode, gone.body).toBe(204);
+    expect((await trashOf('owner')).find((d) => d.id === leftId)?.purge_at_once).toBe(true);
+    expect((await purge('owner', leftId)).statusCode).toBe(204);
+
+    // And the owner's own that nobody is named as filing: at once.
+    const unknown = await make('owner', 'Filed by nobody', { file: false });
+    await withAdmin((c) =>
+      c.query('update document set created_by = null where id = $1', [unknown]),
+    );
+    await trash('owner', unknown);
+    expect((await trashOf('owner')).find((d) => d.id === unknown)?.purge_at_once).toBe(true);
+    expect((await purge('owner', unknown)).statusCode).toBe(204);
+    // What they filed themselves, as before: at once; and it says so.
+    const mine = await make('owner', 'Filed by me', { file: false });
+    await trash('owner', mine);
+    expect((await trashOf('owner')).find((d) => d.id === mine)?.purge_at_once).toBe(true);
+    // An adult's Trash never offers it.
+    expect((await trashOf('adult')).every((d) => d.purge_at_once === false)).toBe(true);
+  });
+
+  it('a filer who cannot bring it back is told who can (the review, W524-3)', async () => {
+    await fresh('owner', true);
+    // A teen's own: theirs to bring back.
+    const own = await make('teen', 'Tia own');
+    await trash('teen', own);
+    let told = alertsTo(accounts.teen).length;
+    expect((await purge('owner', own)).statusCode).toBe(202);
+    const toOwn = alertsTo(accounts.teen).slice(told);
+    expect(toOwn).toHaveLength(1);
+    expect(toOwn[0]?.body).toMatch(/Bring it back to keep it: it is in Settings → Trash\./);
+    // A teen's filing that is the household's now: not theirs to bring back.
+    const filed = await make('teen', 'Tia filed', { file: false });
+    await withAdmin((c) =>
+      c.query('update document set owner_member_id = null where id = $1', [filed]),
+    );
+    await trash('owner', filed);
+    told = alertsTo(accounts.teen).length;
+    expect((await purge('owner', filed)).statusCode).toBe(202);
+    const toTeen = alertsTo(accounts.teen).slice(told);
+    expect(toTeen).toHaveLength(1);
+    expect(toTeen[0]?.body).toMatch(
+      /To keep it, ask an owner or another adult to bring it back from Settings → Trash\./,
+    );
+    expect(toTeen[0]?.body).not.toMatch(/Bring it back to keep it/);
+    // And the other owners are told what is so: whoever added it is told
+    // if they still sign in here.
+    const toOwners = alertsTo(accounts.second).at(-1);
+    expect(toOwners?.body).toMatch(/Whoever added it is told too, if they still sign in here\./);
+  });
+
+  it('storage failing part-way leaves no document to bring back: what was not deleted is written down, and the worker asked to finish it (the review, M524-2)', async () => {
+    await fresh('owner', true);
+    const id = await make('owner', 'Storage failing part-way');
+    const key = (await versionsOf(id))[0]?.storage_key as string;
+    await putFile(`${key}.p1.enc`);
+    // Where its thumbnail would be, something that cannot be deleted as a
+    // file is: the place holding it fails, part-way through.
+    await putFile(`${key}.thumb.enc/held`);
+    await trash('owner', id);
+    const jobsBefore = h.jobs.length;
+
+    const removed = await purge('owner', id);
+    expect(removed.statusCode, removed.body).toBe(204);
+    // The document is gone, every row of it: nothing half there to bring back.
+    expect(Object.entries(await leftOf(id)).filter(([, n]) => n !== 0)).toEqual([]);
+    expect(code(await restore('owner', id))).toBe('not_found');
+    expect((await call('owner', 'GET', `/api/v1/documents/${id}`)).statusCode).toBe(404);
+    // Its file and its pages deleted; the one that failed written down, and
+    // the worker asked to finish it.
+    expect(await filesUnder(`${t.owner.household_id}/${id}`)).toEqual([
+      `${key.split('/').slice(2).join('/')}.thumb.enc/held`,
+    ]);
+    expect(await leftoversOf(id)).toEqual([`${key}.thumb.enc`]);
+    expect(h.jobs.slice(jobsBefore).filter((j) => j.name === 'purge.leftovers')).toEqual([
+      { name: 'purge.leftovers', data: { household_id: t.owner.household_id } },
+    ]);
+    // A removal that met no trouble leaves nothing written down.
+    const clean = await make('owner', 'Nothing in the way');
+    await trash('owner', clean);
+    expect((await purge('owner', clean)).statusCode).toBe(204);
+    expect(await leftoversOf(clean)).toEqual([]);
+  });
+
+  it('a file a restore marked removed for good, found there after all, is unmarked and never removed with it (the review, D524-02)', async () => {
+    await fresh('owner', true);
+    const id = await make('owner', 'Found after all');
+    const key = (await versionsOf(id))[0]?.storage_key as string;
+    const folder = `${t.owner.household_id}/${id}`;
+    await withAdmin((c) =>
+      c.query('update document_version set file_removed_at = now() where document_id = $1', [id]),
+    );
+    await trash('owner', id);
+    const found = await purge('owner', id);
+    expect(found.statusCode, found.body).toBe(409);
+    expect(code(found)).toBe('file_found');
+    // Kept, the file and the document, and no longer said to be removed.
+    expect(await filesUnder(folder)).toEqual([key.split('/').slice(2).join('/')]);
+    expect((await leftOf(id)).document).toBe(1);
+    expect((await trashOf('owner')).find((d) => d.id === id)?.file_removed).toBe(false);
+    // Asked again, now that the owner has seen it: removed.
+    expect((await purge('owner', id)).statusCode).toBe(204);
+    expect(await filesUnder(folder)).toEqual([]);
+
+    // One whose file truly is gone stays marked, and is removed.
+    const gone = await make('owner', 'Truly gone');
+    await withAdmin((c) =>
+      c.query('update document_version set file_removed_at = now() where document_id = $1', [gone]),
+    );
+    await rm(path.join(h.vaultDir, `${t.owner.household_id}/${gone}`), {
+      recursive: true,
+      force: true,
+    });
+    await trash('owner', gone);
+    expect((await purge('owner', gone)).statusCode).toBe(204);
   });
 });

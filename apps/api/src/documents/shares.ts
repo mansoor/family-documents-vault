@@ -42,6 +42,7 @@ import {
   canSeeCollection,
   canShareToView,
   collectionShareItem,
+  COLLECTION_SHARE_FILE_REMOVED,
   COLLECTION_SHARE_REASONS,
   FILE_REMOVED,
   FOLLOW_MAX_DAYS,
@@ -885,7 +886,7 @@ export class ShareService {
       }
       const newest = await trx
         .selectFrom('document_version')
-        .select(['id', 'mime'])
+        .select(['id', 'mime', 'file_removed_at'])
         .where('document_id', '=', documentId)
         .orderBy('version_no', 'desc')
         .executeTakeFirst();
@@ -895,6 +896,11 @@ export class ShareService {
           'nothing_to_share',
           'There is no file on this document yet, so there is nothing to send.',
         );
+      }
+      // A restore found its file removed for good (5.24): a link to it would
+      // open on nothing (the review, W524-7).
+      if (newest.file_removed_at) {
+        throw new ApiError(422, 'file_removed', COLLECTION_SHARE_FILE_REMOVED);
       }
       // To view is to see the pages the vault draws, and it draws PDFs and
       // photos; a Word or an Excel file can only go as itself (A22).
@@ -996,9 +1002,11 @@ export class ShareService {
         collection_name: c.name,
         audience: c.audience,
         items: rows.map((r) => {
+          // A file removed for good is no file to send (5.24, W524-7).
+          const removed = r.mime !== null && r.file_removed === true;
           const offer = collectionShareItem(c.audience, {
             visibility: r.visibility,
-            has_file: r.mime !== null,
+            has_file: r.mime !== null && !removed,
           });
           return {
             document_id: r.id,
@@ -1006,7 +1014,11 @@ export class ShareService {
             type_label: r.type_label,
             ticked: offer.ticked,
             lock: offer.lock,
-            reason: offer.lock ? COLLECTION_SHARE_REASONS[offer.lock] : null,
+            reason: removed
+              ? COLLECTION_SHARE_FILE_REMOVED
+              : offer.lock
+                ? COLLECTION_SHARE_REASONS[offer.lock]
+                : null,
             viewable: canShareToView(r.mime),
           };
         }),
@@ -1040,6 +1052,16 @@ export class ShareService {
           .orderBy('v.version_no', 'desc')
           .limit(1)
           .as('mime'),
+      )
+      // And whether a restore found that file removed for good (5.24).
+      .select((eb) =>
+        eb
+          .selectFrom('document_version as v')
+          .select(sql<boolean>`v.file_removed_at is not null`.as('removed'))
+          .whereRef('v.document_id', '=', 'd.id')
+          .orderBy('v.version_no', 'desc')
+          .limit(1)
+          .as('file_removed'),
       )
       .where('i.collection_id', '=', collectionId)
       .where('d.deleted_at', 'is', null)
@@ -1112,6 +1134,14 @@ export class ShareService {
       const found = asked.length ? await this.collectionDocuments(trx, p, c.id, asked) : [];
       // One the sharer cannot see is answered as one that is not in it.
       if (found.length !== asked.length) throw notInCollection();
+      const gone = found.find((d) => d.file_removed === true);
+      if (gone) {
+        throw new ApiError(
+          422,
+          'file_removed',
+          `The file on “${gone.title ?? 'a document'}” was removed for good, so there is nothing to send. Untick it.`,
+        );
+      }
       const empty = found.find((d) => d.mime === null);
       if (empty) {
         throw new ApiError(

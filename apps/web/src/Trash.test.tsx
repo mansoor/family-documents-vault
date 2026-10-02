@@ -32,8 +32,8 @@ async function expectAccessible() {
 }
 
 const BINNED = '2026-09-26T10:04:00Z';
-/** The owner's own, in the Trash. */
-const MINE = { ...PASSPORT, deleted_at: BINNED };
+/** The owner's own, filed by them, in the Trash: the vault says it may go at once. */
+const MINE = { ...PASSPORT, deleted_at: BINNED, purge_at_once: true };
 /** Filed by somebody else, Alex, and theirs: in the Trash. */
 const THEIRS = {
   ...PASSPORT,
@@ -79,6 +79,11 @@ describe('removing a document for good, on the web (5.24)', () => {
     expect(dialog).toHaveTextContent(
       'A backup made before now can bring back its details, never its file.',
     );
+    // What it does not reach, said as it is (the review, W524-5).
+    expect(dialog).toHaveTextContent(
+      'Copies made elsewhere are not reached: an export made before now keeps its copy until it expires',
+    );
+    expect(dialog).not.toHaveTextContent('every copy');
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
@@ -87,6 +92,9 @@ describe('removing a document for good, on the web (5.24)', () => {
     await screen.findByRole('alertdialog', { name: 'Remove for good?' });
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    // Focus back where it was, though the browser remembered none (the
+    // review, W524-4).
+    expect(remove).toHaveFocus();
     expect(state.calls.some((c) => c.url.endsWith('/purge'))).toBe(false);
 
     // Confirmed: it asks who is asking, then carries on by itself.
@@ -119,17 +127,31 @@ describe('removing a document for good, on the web (5.24)', () => {
     expect(
       within(row).queryByRole('button', { name: /^Remove for good: / }),
     ).not.toBeInTheDocument();
-    fireEvent.click(
-      within(row).getByRole('button', { name: 'Ask to remove for good: Alex payslip' }),
-    );
+    const askButton = within(row).getByRole('button', {
+      name: 'Ask to remove for good: Alex payslip',
+    });
+    // Escape gives focus back to the button that asked (the review, W524-4).
+    fireEvent.click(askButton);
+    await screen.findByRole('alertdialog', { name: 'Ask to remove for good?' });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(askButton).toHaveFocus();
+    fireEvent.click(askButton);
     const dialog = await screen.findByRole('alertdialog', { name: 'Ask to remove for good?' });
-    expect(dialog).toHaveTextContent('Somebody else added “Alex payslip”. They are told now');
+    expect(dialog).toHaveTextContent(
+      'Somebody else added “Alex payslip”. Whoever added it is told now, if they still sign in here, and so are the other owners.',
+    );
     expect(dialog).toHaveTextContent('you can remove it for good 24 hours from now');
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Ask to remove for good' }));
 
-    const news = await screen.findByText(/Whoever added it has been told/);
-    expect(news).toHaveTextContent(`You can remove it for good from ${whenExactly(from)}.`);
+    const news = await screen.findByRole('status');
+    // One whole sentence, and only what is so (the review, W524-5).
+    await waitFor(() =>
+      expect(news.textContent).toBe(
+        `You asked to remove “Alex payslip” for good. Whoever added it, if they still sign in here, and the other owners have been told. You can remove it from ${whenExactly(from)}.`,
+      ),
+    );
     const after = await rowOf('Alex payslip');
     await within(after).findByText(`An owner asked to remove this for good on ${whenExactly(at)}.`);
     // Not theirs to keep: no "Bring it back to keep it" for the owner.
@@ -179,10 +201,10 @@ describe('removing a document for good, on the web (5.24)', () => {
     ).closest('[role="status"]') as HTMLElement;
     expect(notice).toHaveTextContent('“My payslip”');
     expect(notice).toHaveTextContent(words);
-    expect(within(notice).getByRole('link', { name: 'Open the Trash' })).toHaveAttribute(
-      'href',
-      '/settings/trash',
-    );
+    const open = within(notice).getByRole('link', { name: 'Open the Trash' });
+    expect(open).toHaveAttribute('href', '/settings/trash');
+    // Seen as a link, underlined (the review, W524-6).
+    expect(open).toHaveClass('quiet-link');
     await expectAccessible();
     home.unmount();
 
@@ -192,6 +214,65 @@ describe('removing a document for good, on the web (5.24)', () => {
     expect(within(row).getByText(words)).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Bring it back: My payslip' })).toBeEnabled();
     expect(within(row).queryByRole('button', { name: /for good/ })).not.toBeInTheDocument();
+  });
+
+  it('a filer who cannot bring it back is told who can (the review, W524-3)', async () => {
+    const at = '2026-10-02T09:00:00Z';
+    const asked = (owner: string) => ({
+      ...MINE,
+      title: 'My payslip',
+      owner_member_id: owner,
+      purge_requested_at: at,
+      purge_allowed_from: '2026-10-03T09:00:00Z',
+    });
+    const askedOn = `An owner asked to remove this for good on ${whenExactly(at)}.`;
+    const askSomebody = `${askedOn} To keep it, ask an owner or another adult to bring it back.`;
+    // Made a viewer since they filed it, or a teen whose filing is now
+    // somebody else's: told who can, on Home and in the Trash.
+    for (const [role, owner] of [
+      ['viewer', 'me'],
+      ['teen', 'm-alex'],
+    ] as const) {
+      installFakeApi(fresh({ documents: [asked(owner)] }));
+      signedIn(role);
+      window.history.replaceState({}, '', '/');
+      const home = render(<App />);
+      const notice = (
+        await screen.findByText('An owner wants to remove one of your documents for good')
+      ).closest('[role="status"]') as HTMLElement;
+      expect(notice, role).toHaveTextContent(askSomebody);
+      home.unmount();
+      const trash = await openTrash(fresh({ documents: [asked(owner)] }), role);
+      const row = await rowOf('My payslip');
+      expect(within(row).getByText(askSomebody), role).toBeInTheDocument();
+      expect(within(row).queryByRole('button', { name: /Bring it back/ }), role).toBeNull();
+      trash.unmount();
+    }
+    // A teen's own: theirs to bring back.
+    await openTrash(fresh({ documents: [asked('me')] }), 'teen');
+    const own = await rowOf('My payslip');
+    expect(within(own).getByText(`${askedOn} Bring it back to keep it.`)).toBeInTheDocument();
+  });
+
+  it('an owner’s own document that somebody else filed is asked about, not removed at once (the review, M524-1)', async () => {
+    await openTrash(
+      fresh({
+        documents: [
+          {
+            ...THEIRS,
+            owner_member_id: 'me',
+            purge_at_once: false,
+            purge_requested_at: null,
+            purge_allowed_from: null,
+          },
+        ],
+      }),
+    );
+    const row = await rowOf('Alex payslip');
+    expect(
+      within(row).getByRole('button', { name: 'Ask to remove for good: Alex payslip' }),
+    ).toBeEnabled();
+    expect(within(row).queryByRole('button', { name: /^Remove for good/ })).toBeNull();
   });
 
   it('nobody but an owner is offered removing anything for good', async () => {
