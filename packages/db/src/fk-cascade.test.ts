@@ -8,7 +8,15 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from './testing.j
  * document without cascading would make that delete fail, or leave a row
  * pointing at nothing — so each is held to it here, from the catalogue
  * itself, as the database has them.
+ *
+ * One names a document and outlives it on purpose: a file sent through a
+ * request to send documents (0044, 5.21) keeps its place in the request's
+ * history, and only forgets where it went (`on delete set null`).
  */
+
+/** Keys that forget a removed document rather than going with it: table, and why. */
+const SET_NULL = { incoming_file: 'a sent file is the request’s history, not the document’s' };
+
 describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
   let tdb: TestDatabase;
   let admin: pg.Pool;
@@ -37,9 +45,10 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
 
   it('every foreign key to document cascades', async () => {
     const keys = await keysTo('document');
-    // The tables of 0006 to 0042 that name a document, at the least.
+    // The tables of 0006 to 0044 that name a document, at the least.
     expect(new Set(keys.map((k) => k.from_table))).toEqual(
       new Set([
+        ...Object.keys(SET_NULL),
         'document_version',
         'upload_idempotency',
         'document_link',
@@ -55,14 +64,16 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
         'share_page_failure',
       ]),
     );
-    // 'c': on delete cascade.
-    expect(keys.filter((k) => k.on_delete !== 'c')).toEqual([]);
+    // 'c': on delete cascade; 'n': set null, only where said above.
+    expect(keys.filter((k) => k.on_delete !== 'c' && !(k.from_table in SET_NULL))).toEqual([]);
+    expect(keys.filter((k) => k.from_table in SET_NULL).map((k) => k.on_delete)).toEqual(['n']);
   });
 
   it("every foreign key to a document's version cascades", async () => {
     const keys = await keysTo('document_version');
     expect(keys.length).toBeGreaterThan(0);
-    expect(keys.filter((k) => k.on_delete !== 'c')).toEqual([]);
+    expect(keys.filter((k) => k.on_delete !== 'c' && !(k.from_table in SET_NULL))).toEqual([]);
+    expect(keys.filter((k) => k.from_table in SET_NULL).map((k) => k.on_delete)).toEqual(['n']);
   });
 
   it('every table that names a document by its id has a foreign key to it that cascades; only the tombstone outlives it', async () => {
@@ -83,7 +94,7 @@ describe.skipIf(!testAdminUrl())('foreign keys to a document', () => {
                and a.attnum = any(k.conkey))
         order by 1`,
     );
-    expect(rows.map((r) => r.table_name)).toEqual([]);
+    expect(rows.map((r) => r.table_name)).toEqual(Object.keys(SET_NULL));
     // The tombstone names its document by its own id, and no key: it is
     // what is left once the document is not.
     const tombstone = await admin.query(

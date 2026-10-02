@@ -107,12 +107,14 @@ create policy document_tombstone_tenant on document_tombstone
 
 -- Read by the family, as the document's own rows are (0030): the activity
 -- log and the list of links decide, line by line, whom it allows. The vault
--- itself reads it. A share link, an upload link, a signed-out page and a
--- caller who says nothing read none of it.
+-- itself reads it. A share link, an upload link (A74, as 0044 keeps it out
+-- of the household's other tables), a signed-out page and a caller who
+-- says nothing read none of it.
 create policy document_tombstone_actor on document_tombstone as restrictive
   using (case app_actor()
            when 'account' then true
            when 'system' then true
+           when 'upload' then false
            else false
          end);
 
@@ -136,6 +138,7 @@ create policy document_tombstone_actor_insert on document_tombstone as restricti
                          where t.document_id = document_tombstone.id
                            and t.kind in ('ticked', 'followed'))
                 when 'system' then true
+                when 'upload' then false
                 else false
               end);
 
@@ -171,11 +174,13 @@ create policy purge_leftover_tenant on purge_leftover
   using (household_id = app_household()) with check (household_id = app_household());
 
 -- An owner removing a document writes down, and clears, its own; the vault
--- itself finishes the rest. Nobody else reads or writes a row of it.
+-- itself finishes the rest. Nobody else reads or writes a row of it: not a
+-- share link, not an upload link (A74), not a signed-out page.
 create policy purge_leftover_actor on purge_leftover as restrictive
   using (case app_actor()
            when 'account' then app_role() = 'owner'
            when 'system' then true
+           when 'upload' then false
            else false
          end);
 

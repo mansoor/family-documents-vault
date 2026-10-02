@@ -195,6 +195,39 @@ describe.skipIf(!testAdminUrl())('migration 0045: removing a document for good',
     );
   });
 
+  it('what is still to be deleted is an owner’s and the vault’s: an adult, a link, an upload link and a signed-out page read and write none of it', async () => {
+    const vault = (
+      await admin.query<{ id: string }>(
+        "insert into vault (household_id, kind, label) values ($1, 'local', 'Here') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const row = () => ({
+      household_id: hh,
+      vault_id: vault,
+      object_key: `${hh}/${randomUUID()}/1/x.enc`,
+      removed_document: randomUUID(),
+    });
+    const read = (trx: Db) => trx.selectFrom('purge_leftover').select('id').execute();
+    const write = (trx: Db) => trx.insertInto('purge_leftover').values(row()).execute();
+    await withPrincipal(db, as('owner'), write);
+    await withSystem(db, hh, write);
+    expect(await withPrincipal(db, as('owner'), read)).toHaveLength(2);
+    expect(await withSystem(db, hh, read)).toHaveLength(2);
+    expect(await withPrincipal(db, as('adult'), read)).toEqual([]);
+    await expect(withPrincipal(db, as('adult'), write)).rejects.toThrow(/row-level security/);
+    for (const actor of [
+      { kind: 'link' as const, shareId },
+      { kind: 'upload' as const, requestId: randomUUID() },
+      { kind: 'anonymous' as const },
+    ]) {
+      expect(await withScope(db, { householdId: hh, actor }, read), actor.kind).toEqual([]);
+      await expect(withScope(db, { householdId: hh, actor }, write), actor.kind).rejects.toThrow(
+        /row-level security/,
+      );
+    }
+  });
+
   it('only an owner asks to remove a document, in their own name and now, and only of one in the Trash', async () => {
     const ask = (who: 'owner' | 'adult', id: string, by: string, at = 'now()') =>
       withPrincipal(db, as(who), async (trx) => {
