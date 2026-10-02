@@ -15,5 +15,6 @@ export * from './roles.js';
 export * from './shares.js';
 export * from './suggestions.js';
 export * from './text-search.js';
+export * from './upload-requests.js';
 export * from './wire.js';
 export * from './tokens.js';

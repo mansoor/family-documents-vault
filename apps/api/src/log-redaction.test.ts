@@ -91,6 +91,20 @@ describe('what the log may say about a request (0.5.0)', () => {
     expect(errorForLog(deep).stack).toBe(deep.stack);
   });
 
+  it("keeps the names of a sender's routes, and cuts anything else there (5.21)", () => {
+    for (const name of ['preview', 'code', 'unlock', 'session', 'files', 'finish']) {
+      expect(loggableUrl(`/api/v1/drop/${name}`)).toBe(`/api/v1/drop/${name}`);
+    }
+    // A file's id is not a secret: the session is the cookie.
+    expect(loggableUrl('/api/v1/drop/files/7f1c')).toBe('/api/v1/drop/files/7f1c');
+    // A token in a path, by mistake or by an older page, is cut.
+    expect(loggableUrl('/api/v1/drop/Abc123-_xyz')).toBe('/api/v1/drop/[redacted]');
+    expect(loggableUrl('/api/v1/drop/previewAbc123')).toBe('/api/v1/drop/[redacted]');
+    expect(loggableUrl('/drop/Abc123-_xyz')).toBe('/drop/[redacted]');
+    expect(loggableUrl('/drop')).toBe('/drop');
+    expect(loggableUrl('/api/v1/upload-requests')).toBe('/api/v1/upload-requests');
+  });
+
   it('leaves everything else as it was', () => {
     expect(loggableUrl('/api/v1/documents/7f1c')).toBe('/api/v1/documents/7f1c');
     expect(loggableUrl('/api/v1/shares')).toBe('/api/v1/shares');

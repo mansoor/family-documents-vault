@@ -1987,6 +1987,194 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       `password` and `code`. `@fdv/client`: `sendLinkCode`, and
       `unlockLink(token, secret?, code?)`. The fake says
       `share_second_factor: true, share_email_code: false`.
+  - Ask someone to send documents: the server (5.21). An owner or an
+    adult asks somebody outside the family — the accountant, the solicitor
+    — to send documents in, through a write-only link. What comes in waits,
+    encrypted and apart from the documents, for review (5.23 files it; the
+    web's pages are 5.22's). `features.upload_requests` arrives with 5.23;
+    until then these routes are for the web and tests.
+    - **Added:** `POST /api/v1/upload-requests` (owners and adults) with
+      `title` (1–120), `message` (up to 2,000), `items` (up to 10 named
+      things to send, each up to 80: "W-2", "1099"), `recipient_label`,
+      `recipient_email`, `expires_at` (ISO 8601 with an offset; at least 5
+      minutes ahead and at most `FDV_SHARE_MAX_DAYS`, 90 unless shortened:
+      `422 expiry_out_of_range` "A request can last 90 days at most."; there
+      is no "no end"), `with_password` (the vault makes one up, shown once)
+      or `password` (8 to 64 characters), `email_code`, `this_device_only`,
+      `max_visits` (1–1000, or null), `max_files` (1–10, 10 unless said),
+      `max_total_bytes` (up to 200 MB, 200 MB unless said), `accept_types`
+      (`standard`: PDFs and photos; `office`: Word and Excel too),
+      `review_by` (`me`, the default, or `adults`), `suggested_member_id`
+      and `suggested_type_key` (hints for the reviewer, never shown to the
+      sender) and `close_after_submit`. `201` `CreatedUploadRequest`:
+      `{ request, link_token, link_url, password? }`; `link_url` is
+      `{FDV_PUBLIC_URL}/drop#{link_token}` when the vault has a public-only
+      site, else null. `email_code` without operator mail (`FDV_SMTP_URL`)
+      is `422 email_code_unavailable`; without `recipient_email`, `422`.
+    - **Added:** `GET /api/v1/upload-requests` answers
+      `{ items, email_code_available }`, each item an `UploadRequestView`:
+      the requests the reader reviews — their own, and those any adult
+      reviews. Another adult's review-by-me request is not listed, not even
+      to an owner.
+      `DELETE /api/v1/upload-requests/{id}` → `204`: taken back, its link
+      opens nothing, its sessions and codes end, and its address is
+      cleared; files already sent stay for review.
+      `POST /api/v1/upload-requests/{id}/resume` → the request, turned back
+      on after a restore: owners only (`403 forbidden` for an adult).
+    - A teen or a viewer is answered `404 not_found` on every one of these,
+      as if there were no such thing; the role matrix's
+      `upload_request.create` (owners and adults) is new.
+    - **Changed:** `GET /api/v1/after-restore` gains `upload_requests`: the
+      paused requests the reader may decide about. An adult's review-by-me
+      request is theirs alone, so it stays paused until they take it back.
+    - **Added**, the sender's routes (no sign-in; on the public-only site):
+      - `POST /api/v1/drop/preview` `{ token }` → `DropPreview`: the
+        household's name, who asked, what Open asks for (`protection`:
+        `password`, `email_code`, `this_device`) and the end. Never the
+        title, the message, the items or the hints. Nothing is counted.
+      - `POST /api/v1/drop/code` `{ token }` → `{ sent_to, expires_at }`: a
+        6-digit code to the address the requester gave, masked
+        (`j•••@e•••.com`), by operator mail only (5.20's `mail.to_address`);
+        10 minutes, 5 tries, once, and only the newest works: sending one
+        ends the ones before it. 3 a quarter of an hour and 10 a day
+        (`429 too_many_codes`). Kept as an HMAC under a server key; the
+        email has no link and no title. A request that ends as the code is
+        asked for sends none (`404 link_not_valid`); one that cannot be
+        queued is `503 code_not_sent`, and nothing of it is kept. A
+        this-device-only request already bound to a browser sends a code
+        only for that browser (its device cookie); any other is
+        `403 other_device`, before anything is sent or counted. A code
+        asked for while the request is being opened waits for the Open.
+      - `POST /api/v1/drop/unlock` `{ token, password?, code? }` →
+        `DropSession` (with its `request_id`), and a session cookie named
+        for the request, `fdv_drop_s_<request id without dashes>`
+        (httpOnly, Secure, SameSite=Strict, path `/api/v1/drop`; 30 minutes
+        idle — a file still arriving is use of it — 4 hours at most, never
+        past the request's end), so a browser
+        can have two requests open. Opens pressed at once wait for each
+        other. A wrong password or code, in either, is `401 secret_wrong`,
+        the same answer, and uses up one of the request's ten tries for its
+        life; the tenth locks it (the requester is told). The code a
+        request was just opened with, pressed again, is `409 code_used` and
+        uses up no try. Past `max_visits`, `410 request_used_up`, however
+        many press Open at once. This device only (5.20's device cookies):
+        one `fdv_drop_device_<key id>` cookie per browser, made by the vault
+        alone — one it did not make, planted before the first Open, is
+        replaced, never bound — and set again with its full 90 days by every
+        Open that uses it; each request is bound to it by the first Open
+        that works, and every other Open, at once or later, from another
+        browser is `403 other_device`. A binding made under a master key
+        since turned still opens, with its own cookie, which is kept. A
+        first Open whose request ends as it binds is `404 link_not_valid`.
+      - Inside an opened request, a call says which request it is about
+        with `X-FDV-Drop-Request: <request_id>`; with only one session
+        cookie in the browser it need not. With two and no header, it is
+        `401 drop_session_ended`.
+      - `GET /api/v1/drop/session` → `DropSession`: the household, who
+        asked, the title, the message, the items, what it takes
+        (`accept_types`, `accepted`), `files_left`, `bytes_left`,
+        `max_file_bytes` and the files this browser has sent. Never another
+        session's, and never the hints.
+      - `POST /api/v1/drop/files`, multipart: an optional `item_id` field,
+        then `file`, and nothing else; 20 a minute per address. `201`
+        `DropFile`. Its room is reserved before a byte is read: its
+        `Content-Length`, or the most it could be, within the file's own
+        limit (`max_upload_bytes`), what is left of the request's bytes and
+        files, and the household's room for files waiting for review
+        (2 GB), each counting the files still arriving as well as those in.
+        No room: `413 too_large` (or `409 files_used_up`) at once, before
+        its body has arrived. Refused, and nothing of it kept:
+        `415 unsupported_type` for anything but a PDF or a photo by its bytes —
+        stopped as soon as its first bytes say so — and, with `office`, a
+        Word or Excel file only as its package's own main part declares it
+        (read as XML: character references decoded, comments ignored, a
+        document type refused), a package of more than 500 parts not at
+        all; `415 macros_refused` for a Word or Excel file with anything
+        that runs or reaches outside — a VBA project by its content type,
+        relationship or name, a macro-enabled document or template main
+        part (.docm, .dotm, .xlsm, .xltm), a macro sheet, ActiveX, an
+        embedded OLE object, or a template, frame or object fetched from
+        elsewhere. A plain template (.dotx, .xltx), or any package whose
+        main part is not exactly a Word document or an Excel workbook, is
+        `415 unsupported_type`. `413 too_large` when more arrives than the
+        room reserved, and at the commit when the household's room is
+        taken meanwhile (a reservation stops counting once its file has
+        been arriving for 15 minutes, or its session has ended).
+      - `DELETE /api/v1/drop/files/{id}` → `204`: a file this session sent,
+        before Finish. `POST /api/v1/drop/finish` `{ note? }` (up to 1,000
+        characters) → `{ files, closed }`; `422 nothing_to_send` with no
+        file. With `close_after_submit`, the request closes.
+      - The preview, a code and Open answer a request that has been taken
+        back, closed, paused, locked, run out of time, or whose requester
+        is no longer an owner or an adult as `404 link_not_valid`, and one
+        opened as many times as it allows as `410 request_used_up`. The
+        routes inside a session answer `401 drop_session_ended` once the
+        request has stopped, because its sessions end with it; they answer
+        `404 link_not_valid` only for a session that outlives a stop the
+        database alone knows of (a requester's role changed by hand). A
+        used-up request's sessions keep working to their own end. A request
+        taken back while one of its sessions is in use does not wait for it:
+        that call is answered `404 link_not_valid`, all it did undone, and
+        its session ends. 20 a
+        minute per address for the preview, a code, Open and a file; 120
+        for the rest inside a session. Every answer carries the public
+        pages' headers (no referrer, nosniff, noindex, a strict sandboxing
+        policy).
+    - **Changed:** a requester made a teen or a viewer, or whose sign-in is
+      taken away, loses their requests: each is closed, its sessions and
+      codes end, and its address is cleared (A39).
+    - A file is encrypted from its first byte under the key of whoever
+      reviews it — the requester's own member key, or the adults key — and
+      is never a document, never searched, listed, reminded or counted,
+      until it is reviewed (5.23). Nothing of the vault is ever given to a
+      sender, and nothing a sender sends is decoded: 5.23 draws review
+      previews under the existing ImageMagick limits.
+    - The activity log says "Sam asked Jane, accountant to send documents",
+      "Upload link (Jane, accountant) opened a request to send documents",
+      "Upload link (Jane, accountant) sent 2 files", and a request's code
+      sent, lock, taking back, closing and turning back on — to whoever
+      reviews the request only. Never its title or a file's name, which the
+      log does not keep.
+    - The request log keeps no token, password, code, file name or cookie:
+      `/api/v1/drop/*` paths other than the routes' own names, and anything
+      after `/drop/`, are cut, and the headers @fastify/multipart logs at
+      trace level are redacted (they carried a bearer token too).
+    - After a restore, every live request is paused for an owner to turn
+      back on (A55), and no sender's session or code survives.
+    - A request's address is cleared by whatever ends it: the tenth wrong
+      try, its last visit, taking it back, closing it; one that runs out of
+      time, by the nightly prune.
+    - **Added:** `503 busy` (retriable, `Retry-After: 1`), on any route,
+      for two requests that got in each other's way in the database (a
+      deadlock or a serialization failure): nothing was done.
+    - The worker: the nightly `uploads.prune` also takes away files whose sending died,
+      with their objects, ended senders' sessions and codes, and the
+      address of a request that has ended.
+    - `@fdv/shared`: capability `upload_request.create`;
+      `UPLOAD_REQUEST_MAX_FILES`, `UPLOAD_REQUEST_MAX_BYTES`,
+      `INCOMING_HOUSEHOLD_MAX_BYTES`, `SENDER_NOTE_MAX`,
+      `UPLOAD_PASSWORD_MIN`, `uploadRequestTypes`,
+      `uploadRequestTypesWords`, and the types
+      `UploadRequestInput`, `UploadRequestView`, `CreatedUploadRequest`,
+      `DropPreview`, `DropCodeSent`, `DropSession`, `DropFile`,
+      `DropFinished`. `@fdv/client`: `createUploadRequest`,
+      `uploadRequests`, `revokeUploadRequest`, `resumeUploadRequest`,
+      `dropPreview`, `dropCode`, `dropUnlock`, `dropSession(requestId)`,
+      `dropFilesUrl`, `dropRemoveFile(requestId, id)`,
+      `dropFinish(requestId, note?)`, `dropHeaders(requestId)`; the fake
+      keeps requests (`state.uploadRequests`).
+    - The database: 0044 adds `upload_request`, `upload_request_item`,
+      `upload_session`, `upload_code` and `incoming_file`, each with a rule
+      for every kind of caller: an upload link reaches its own request
+      while it can be used and its own session's files alone; a
+      review-by-me request and its files are its requester's alone. And,
+      as 0042 does for a share link (A74), each of the household's other
+      tables and the sign-ins gets a rule of its own for an upload link: it
+      reads its household, its requester's member row, the one key its
+      files are encrypted under and the vaults they are kept in, and
+      nothing else; writes none of them; and of the activity log reads
+      nothing and writes only its own lines, under its own name, about its
+      own request, on the log's head, hashed as every line is.
 
 ## Deprecations in effect
 

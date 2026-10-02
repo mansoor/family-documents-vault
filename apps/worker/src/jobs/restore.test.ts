@@ -325,6 +325,33 @@ async function seed(url: string): Promise<string> {
         );
       }
     }
+    // Requests to send documents, where the schema has them (0044): one
+    // live, open in a sender's browser with a code on its way, and one
+    // taken back.
+    const requests = await c.query<{ has: boolean }>(
+      "select to_regclass('public.upload_request') is not null as has",
+    );
+    if (requests.rows[0]?.has) {
+      await c.query(
+        `insert into upload_request
+           (household_id, created_by, requester_member_id, title, token_hash, expires_at, revoked_at)
+         values ($1, $2, $3, 'Tax papers', $4, now() + interval '30 days', null),
+                ($1, $2, $3, 'Taken back', $5, now() + interval '30 days', now() - interval '1 day')`,
+        [hh, account, m.rows[0]?.id, randomBytes(32), randomBytes(32)],
+      );
+      await c.query(
+        `insert into upload_session (household_id, request_id, cookie_hash, expires_at)
+         select $1, id, $2, now() + interval '1 hour' from upload_request
+          where household_id = $1 and revoked_at is null`,
+        [hh, randomBytes(32)],
+      );
+      await c.query(
+        `insert into upload_code (household_id, request_id, code_hash, expires_at)
+         select $1, id, $2, now() + interval '5 minutes' from upload_request
+          where household_id = $1 and revoked_at is null`,
+        [hh, randomBytes(32)],
+      );
+    }
   });
   return hh;
 }
@@ -963,6 +990,111 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices an upload link let into the household's other tables, or its lines unguarded (0044, A74)", async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    // The rule that keeps an upload link to its requester's own row, gone:
+    // the share link's, beside it, does not count for it.
+    const members = await ruleOf('member_upload');
+    await sql(vault.adminUrl, 'drop policy member_upload on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps an upload link out of member/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_upload on public.member as restrictive using (${members})`,
+      );
+    }
+    // Still asking, but letting an upload link through to every sign-in.
+    const sessions = await ruleOf('session_upload');
+    await sql(
+      vault.adminUrl,
+      `alter policy session_upload on public.session using ((${sessions}) or app_actor() = 'upload')`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /an upload link it never made is given session/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy session_upload on public.session using (${sessions})`,
+      );
+    }
+    // And its lines in the activity log, unguarded.
+    await sql(
+      vault.adminUrl,
+      'alter table public.audit_event disable trigger audit_event_upload_line',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.audit_event enable trigger audit_event_upload_line',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
+  it('notices a request for one person to review open to others, or upload tables that lost their rule (0044)', async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    const request = await ruleOf('upload_request_actor');
+    await sql(
+      vault.adminUrl,
+      `alter policy upload_request_actor on public.upload_request
+         using ((${request}) or (app_actor() = 'account' and app_member() is null))`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a request for one person to review is open to somebody signed in who is not given it/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy upload_request_actor on public.upload_request using (${request})`,
+      );
+    }
+    const session = await ruleOf('upload_session_actor');
+    await sql(vault.adminUrl, 'drop policy upload_session_actor on public.upload_session');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on upload_session/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy upload_session_actor on public.upload_session as restrictive using (${session})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      'alter table public.incoming_file disable trigger incoming_file_upload_writes',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.incoming_file enable trigger incoming_file_upload_writes',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -1254,6 +1386,56 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // file, and a collection's link gives none without one — nor, since the
     // 5.19 review, the line of one it does not give.)
     expect(await reach(theCollections)).toBe(2);
+  }, 60_000);
+
+  it('after a restore every request is paused', async () => {
+    // The backup has a sender's session open, and a code on its way (0044).
+    const before = await sql(
+      vault.adminUrl,
+      `select (select count(*)::int from upload_session) as sessions,
+              (select count(*)::int from upload_code) as codes`,
+    );
+    expect(before.rows[0]).toEqual({ sessions: 1, codes: 1 });
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    // The live request, and only that: one taken back stays as it was.
+    expect(report.requestsPaused).toBe(1);
+    const { rows } = await sql(
+      t.adminUrl,
+      `select (select count(*)::int from upload_request
+                where paused_at is null and revoked_at is null and closed_at is null
+                  and expires_at > now()) as live,
+              (select count(*)::int from upload_request where paused_reason = 'restored') as paused,
+              (select count(*)::int from upload_request
+                where paused_at is not null and revoked_at is not null) as dead_paused,
+              (select count(*)::int from upload_session) as sessions,
+              (select count(*)::int from upload_code) as codes`,
+    );
+    expect(rows[0]).toEqual({ live: 0, paused: 1, dead_paused: 0, sessions: 0, codes: 0 });
+    // Its token finds nothing, and its link, asking as itself, reaches nothing.
+    const [req] = (
+      await sql(
+        t.adminUrl,
+        'select id, household_id, token_hash from upload_request where paused_at is not null',
+      )
+    ).rows as Array<{ id: string; household_id: string; token_hash: Buffer }>;
+    const reached = await withClient(t.appUrl, async (c) => {
+      const found = await c.query('select * from upload_request_find($1)', [req?.token_hash]);
+      await c.query('begin');
+      await c.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'upload', true),
+                set_config('app.upload_request_id', $2, true)`,
+        [req?.household_id, req?.id],
+      );
+      const { rows: r } = await c.query<{ n: number }>(
+        `select (select count(*)::int from upload_request)
+              + (select count(*)::int from upload_request_item)
+              + (select count(*)::int from document) as n`,
+      );
+      await c.query('commit');
+      return { found: found.rows.length, n: r[0]?.n };
+    });
+    expect(reached).toEqual({ found: 0, n: 0 });
   }, 60_000);
 
   it("a household's collections come back, and an Only me collection is still its maker's alone (0036)", async () => {

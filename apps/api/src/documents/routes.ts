@@ -11,6 +11,7 @@ import type { SealedSearchService } from './sealed-search.js';
 import type { StepUpService } from '../auth/step-up.js';
 import type { DocumentService } from './service.js';
 import type { VisibilityService } from './visibility.js';
+import type { UploadRequestService } from '../uploads/requests.js';
 import {
   codeBody,
   collectionShareBody,
@@ -156,6 +157,7 @@ export function registerDocuments(
   sealed: SealedSearchService,
   stepUp?: StepUpService,
   shares?: ShareService,
+  uploads?: UploadRequestService,
 ) {
   const auth = { preHandler: app.requireAuth };
   const principal = (req: FastifyRequest) => req.principal as Principal;
@@ -607,10 +609,12 @@ export function registerDocuments(
   /**
    * After a restore (5.16): what it paused that the caller may decide
    * about — an owner turns back on, anybody else only takes back their
-   * own. Links today; 5.21 adds upload requests and 5.28 sign-ins.
+   * own. Links, and since 5.21 requests to send documents; 5.28 adds
+   * sign-ins.
    */
   app.get('/api/v1/after-restore', auth, async (req) => ({
     links: await shares.paused(principal(req)),
+    upload_requests: uploads ? await uploads.paused(principal(req)) : [],
   }));
 
   app.post<{ Params: { id: string } }>('/api/v1/shares/:id/resume', auth, async (req) => {

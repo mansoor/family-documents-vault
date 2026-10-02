@@ -2,9 +2,9 @@
 # are given, and nothing else of the vault.
 #
 # It serves the pages a link opens — a share link's (/s), an older link's
-# (/shared/…) and, later, an upload request's (/drop) — the files
-# those pages load, and the API routes they call: /api/v1/shared/* and
-# /api/v1/drop/*. Every other address answers 404: the front page, the
+# (/shared/…) and a request to send documents' (/drop, 5.21; its page is
+# 5.22's) — the files those pages load, and the API routes they call:
+# /api/v1/shared/* and /api/v1/drop/*. Every other address answers 404: the front page, the
 # sign-in, /api/v1/auth/*, /api/v1/documents and the rest of the API. The
 # family keeps using the internal site (Caddyfile.internal, over Tailscale
 # or the home network), which nobody outside can reach.
@@ -19,12 +19,14 @@
 # (8443 and 8081 unless you say otherwise). See "Links for people outside
 # the family" in the README.
 #
-# Its rate limits are the vault's own, per address: opening a link is 20
-# tries a minute (preview and Open), an opened link 120 requests a minute,
-# everything else 300. Caddy passes the caller's address on and never
-# trusts one the caller wrote itself (no trusted_proxies), so each address
-# is counted as itself. Here, requests to the link routes are kept small
-# and slow callers are cut off.
+# Its rate limits are the vault's own, per address: opening a link or a
+# request is 20 tries a minute (preview, a code, Open), an opened one 120
+# requests a minute, everything else 300. Caddy passes the caller's address
+# on and never trusts one the caller wrote itself (no trusted_proxies), so
+# each address is counted as itself. Here, requests to the link routes, and
+# a sender's calls but for a file, are kept small, and slow callers are cut
+# off: a request's headers within 10 seconds, and all of it — a file sent
+# over a slow home connection included — within 5 minutes.
 
 {
 	email {$FDV_TLS_EMAIL}
@@ -32,7 +34,7 @@
 	servers {
 		timeouts {
 			read_header 10s
-			read_body 30s
+			read_body 5m
 			idle 60s
 		}
 	}
@@ -47,6 +49,14 @@
 	# A link's calls carry a token, a PIN or nothing: a few kilobytes at most.
 	@link_api path /api/v1/shared/*
 	request_body @link_api {
+		max_size 16KB
+	}
+
+	# A sender's calls carry a token, a password, a code or a note: a few
+	# kilobytes too. A file (/api/v1/drop/files) is the vault's to limit: it
+	# counts each against the request's caps as it arrives, and cuts it off.
+	@drop_api path /api/v1/drop/preview /api/v1/drop/code /api/v1/drop/unlock /api/v1/drop/session /api/v1/drop/finish
+	request_body @drop_api {
 		max_size 16KB
 	}
 

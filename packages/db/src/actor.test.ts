@@ -30,6 +30,7 @@ const SETTINGS = [
   'app.role',
   'app.share_id',
   'app.upload_request_id',
+  'app.upload_session_id',
 ] as const;
 type Settings = Record<(typeof SETTINGS)[number], string | null>;
 
@@ -41,7 +42,8 @@ async function settings(executor: Db): Promise<Settings> {
     current_setting('app.member_id', true) as "app.member_id",
     current_setting('app.role', true) as "app.role",
     current_setting('app.share_id', true) as "app.share_id",
-    current_setting('app.upload_request_id', true) as "app.upload_request_id"`.execute(executor);
+    current_setting('app.upload_request_id', true) as "app.upload_request_id",
+    current_setting('app.upload_session_id', true) as "app.upload_session_id"`.execute(executor);
   return r.rows[0] as Settings;
 }
 
@@ -96,6 +98,15 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
     [
       { kind: 'upload', requestId },
       { 'app.actor': 'upload', 'app.upload_request_id': requestId },
+    ],
+    // An upload link with the session an Open gave it (0044).
+    [
+      { kind: 'upload', requestId, sessionId: shareId },
+      {
+        'app.actor': 'upload',
+        'app.upload_request_id': requestId,
+        'app.upload_session_id': shareId,
+      },
     ],
     [ANONYMOUS, { 'app.actor': 'anonymous' }],
   ];

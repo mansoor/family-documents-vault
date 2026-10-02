@@ -243,6 +243,14 @@ function summary(file: string, r: RestoreReport): string {
       '    Settings → After a restore.',
     );
   }
+  if (r.requestsPaused > 0) {
+    lines.push(
+      `  - ${plural(r.requestsPaused, 'request')} to send documents ` +
+        `${r.requestsPaused === 1 ? 'is' : 'are'} paused, so one taken back since the backup`,
+      '    does not work again. An owner turns back on the ones still wanted, in',
+      '    Settings → After a restore.',
+    );
+  }
   if (r.photosUnfinished > 0) {
     lines.push(
       `  - ${plural(r.photosUnfinished, 'photo')} still being made when the backup was taken ` +

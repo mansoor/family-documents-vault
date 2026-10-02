@@ -54,7 +54,12 @@ function expectStrict(csp: string | null, what: string) {
 describe('the pages a link opens', () => {
   it('every public page is sent no referrer, no sniffing, no framing and a strict policy', async () => {
     const conf = await readFile(root('docker/nginx.conf'), 'utf8');
-    for (const opening of ['location ~ ^/s/?$ {', 'location ^~ /shared/ {']) {
+    for (const opening of [
+      'location ~ ^/s/?$ {',
+      'location ^~ /shared/ {',
+      // A request to send documents' page (5.21; the page itself is 5.22's).
+      'location ~ ^/drop/?$ {',
+    ]) {
       const block = nginxBlock(conf, opening);
       expect(added(block, 'Referrer-Policy'), opening).toBe('no-referrer');
       expect(added(block, 'X-Content-Type-Options'), opening).toBe('nosniff');
@@ -128,10 +133,33 @@ describe('the public-only site', () => {
       '/api/v1/shared/items/7f1c/content',
       '/api/v1/shared/abcdef0123456789/open',
       '/drop',
-      '/api/v1/drop/x',
+      '/drop/',
+      '/api/v1/drop/preview',
+      '/api/v1/drop/code',
+      '/api/v1/drop/unlock',
+      '/api/v1/drop/session',
+      '/api/v1/drop/files',
+      '/api/v1/drop/files/7f1c',
+      '/api/v1/drop/finish',
     ]) {
       expect(caddyMatches(publicPaths, shown), shown).toBe(true);
     }
+    // And the family's side of a request is not there (5.21).
+    for (const hidden of ['/api/v1/upload-requests', '/api/v1/upload-requests/7f1c/resume']) {
+      expect(caddyMatches(publicPaths, hidden), hidden).toBe(false);
+    }
+  });
+
+  it("keeps a sender's calls small, but for a file, and gives a file time to arrive (5.21)", () => {
+    const m = /@drop_api path (.+)$/m.exec(caddy);
+    const small = (m?.[1] ?? '').trim().split(/\s+/);
+    expect(small.sort()).toEqual(
+      ['preview', 'code', 'unlock', 'session', 'finish'].map((n) => `/api/v1/drop/${n}`).sort(),
+    );
+    expect(caddy).toMatch(/request_body @drop_api \{\s*max_size 16KB\s*\}/);
+    // Headers still within 10 seconds; the whole of a file within minutes.
+    expect(caddy).toMatch(/read_header 10s/);
+    expect(caddy).toMatch(/read_body 5m/);
   });
 
   it('sends every answer the headers a page facing strangers needs', () => {

@@ -126,7 +126,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
       localRoot: root,
       now: () => now,
     });
-    expect(r).toEqual({ done: 1, abandoned: 1, photos: 0 });
+    expect(r).toEqual({ done: 1, abandoned: 1, photos: 0, incoming: 0 });
     const left = await admin.query<{ idempotency_key: string }>(
       'select idempotency_key from upload_idempotency where household_id = $1 order by idempotency_key',
       [hh],
@@ -182,7 +182,7 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
         localRoot: root,
         now: () => now,
       });
-    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 1 });
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 1, incoming: 0 });
     expect(await exists(upload('stale'))).toBe(false);
     const left = async () =>
       (
@@ -195,8 +195,87 @@ describe.skipIf(!testAdminUrl())('pruning upload keys', () => {
 
     // One still on its way, sent an hour ago, keeps its bytes.
     await photo('processing', ago(1 / 24), upload('recent'));
-    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 0 });
+    expect(await prune()).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 0 });
     expect(await exists(upload('recent'))).toBe(true);
     expect((await left()).map((r) => r.state)).toEqual(['processing', 'ready']);
+  });
+
+  it("a file sent through a request whose try died goes after a day, with its object; an ended request's address is cleared (5.21)", async () => {
+    const member = (
+      await admin.query<{ id: string }>(
+        "insert into member (household_id, display_name) values ($1, 'Asker') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const account = (
+      await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+        `asker-${hh}@example.test`,
+      ])
+    ).rows[0]?.id as string;
+    const scope = (
+      await admin.query<{ id: string }>(
+        "select id from scope_key where household_id = $1 and kind = 'household'",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const request = async (revoked: boolean) =>
+      (
+        await admin.query<{ id: string }>(
+          `insert into upload_request
+             (household_id, created_by, requester_member_id, title, token_hash, expires_at,
+              recipient_email, revoked_at)
+           values ($1, $2, $3, 'Tax', $4, now() + interval '1 day', 'jane@example.test', $5)
+           returning id`,
+          [hh, account, member, Buffer.from(randomUUID()), revoked ? now : null],
+        )
+      ).rows[0]?.id as string;
+    const live = await request(false);
+    const takenBack = await request(true);
+    // Used up with its address still there, as a backup from before its last
+    // visit cleared it would bring it back: an insert, which no trigger sees.
+    const usedUp = (
+      await admin.query<{ id: string }>(
+        `insert into upload_request
+           (household_id, created_by, requester_member_id, title, token_hash, expires_at,
+            recipient_email, max_visits, visits_used)
+         values ($1, $2, $3, 'Tax', $4, now() + interval '1 day', 'jane@example.test', 1, 1)
+         returning id`,
+        [hh, account, member, Buffer.from(randomUUID())],
+      )
+    ).rows[0]?.id as string;
+    const file = async (name: string, created: Date) => {
+      const key = `${hh}/incoming/${live}/${name}.enc`;
+      await mkdir(path.dirname(path.join(root, key)), { recursive: true });
+      await writeFile(path.join(root, key), 'half a file, sealed');
+      await admin.query(
+        `insert into incoming_file
+           (household_id, request_id, review_by, requester_member_id, original_name, storage_key,
+            vault_id, file_key_wrapped, wrapped_by_scope, scope, created_at)
+         values ($1, $2, 'me', $3, 'w2.pdf', $4, $5, '\\x00', $6, 'member', $7)`,
+        [hh, live, member, key, vault, scope, created],
+      );
+      return key;
+    };
+    const dead = await file('dead', ago(2));
+    const running = await file('running', ago(0.1));
+    const r = await pruneUploads({
+      admin,
+      app: db,
+      credentialsKey: Buffer.alloc(32),
+      localRoot: root,
+      now: () => now,
+    });
+    expect(r).toEqual({ done: 0, abandoned: 0, photos: 0, incoming: 1 });
+    expect(await exists(dead)).toBe(false);
+    expect(await exists(running)).toBe(true);
+    const emails = await admin.query<{ id: string; recipient_email: string | null }>(
+      'select id, recipient_email from upload_request where household_id = $1',
+      [hh],
+    );
+    expect(Object.fromEntries(emails.rows.map((e) => [e.id, e.recipient_email]))).toEqual({
+      [live]: 'jane@example.test',
+      [takenBack]: null,
+      [usedUp]: null,
+    });
   });
 });

@@ -20,6 +20,12 @@ import type { FastifyRequest } from 'fastify';
  * code in an email, the address in the vault, and none in the log. No
  * request's headers are logged, so no cookie is either (the session's, or
  * a link's device cookie).
+ *
+ * So do 5.21's, a sender's (/api/v1/drop/preview, /code, /unlock,
+ * /session, /files and /finish): the token, the password and the code in a
+ * body, the session in a cookie, a file's name inside the upload. Anything
+ * else under /api/v1/drop/, and anything after /drop/ (a token pasted into
+ * the path by mistake), is cut the same way.
  */
 const kept = (names: string) => `(?!(?:${names})(?:[/?#]|$))`;
 
@@ -29,9 +35,11 @@ const SECRET_SEGMENT = new RegExp(
       `/api/v1/shared/${kept('preview|unlock|items|code')}`,
       `/api/v1/password-resets/${kept('lookup|complete')}`,
       `/api/v1/invitations/${kept('lookup|accept')}`,
+      `/api/v1/drop/${kept('preview|code|unlock|session|files|finish')}`,
       // The pages a browser opens from links made before 0.5.14 (a share's)
-      // and 0.5.17 (a reset's, an invitation's).
-      `/(?:shared|reset|join)/`,
+      // and 0.5.17 (a reset's, an invitation's); and a request's page with
+      // something after it that it never has (5.21).
+      `/(?:shared|reset|join|drop)/`,
     ].join('|') +
     ')[^/?#]+',
 );
@@ -42,6 +50,20 @@ export function loggableUrl(url: string): string {
   const cut = path.replace(SECRET_SEGMENT, '$1[redacted]');
   return q === -1 ? cut : `${cut}?[redacted]`;
 }
+
+/**
+ * What is cut from any log line that carries it, whatever wrote it: the
+ * headers @fastify/multipart writes at trace level before it parses an
+ * upload (a bearer token, a sender's or a link's session cookie, 5.21), and
+ * a request's own headers wherever a line includes them.
+ */
+export const LOG_REDACTED_PATHS = [
+  'busboyOptions.headers',
+  'headers.authorization',
+  'headers.cookie',
+  'req.headers.authorization',
+  'req.headers.cookie',
+];
 
 /** Fastify's own request serializer, with the URL made safe to keep. */
 export function requestForLog(req: FastifyRequest) {

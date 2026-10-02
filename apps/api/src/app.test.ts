@@ -15,8 +15,10 @@ const config = loadConfig({
 });
 
 // Health and capabilities need no database; the auth service is stubbed.
+// A test may make its first call fail as the database would.
+let setupComplete: () => Promise<boolean> = async () => true;
 const authStub = {
-  setupComplete: async () => true,
+  setupComplete: () => setupComplete(),
   displayName: async () => null,
 } as unknown as AuthService;
 const vaultsStub = {} as unknown as VaultService;
@@ -51,6 +53,7 @@ async function make(
       invitations: anyStub,
       coOwners: anyStub,
       shares: anyStub,
+      uploads: anyStub,
       audit: anyStub,
       passwords: anyStub,
       offline: anyStub,
@@ -131,13 +134,15 @@ describe('the log (0.5.0)', () => {
     await app.inject('/api/v1/invitations/invitesecret123');
     await app.inject('/api/v1/documents?q=divorce');
     // What the lines say, without the log's own numbers: a PIN of 4242 is
-    // in a timestamp like 1790424273535 by chance, not by leaking.
+    // in a timestamp like 1790424273535, or a random request id like
+    // …-344b62cf4242, by chance, not by leaking.
     const log = lines
       .map((l) => {
         const said = JSON.parse(l) as Record<string, unknown>;
         delete said.time;
         delete said.pid;
         delete said.responseTime;
+        delete said.reqId;
         return JSON.stringify(said);
       })
       .join(' ');
@@ -176,6 +181,26 @@ describe('error envelope', () => {
     expect(body.error.code).toBe('not_found');
     expect(typeof body.error.message).toBe('string');
     expect(body.error.retriable).toBe(false);
+  });
+
+  it('two requests that got in each other’s way in the database are 503 busy, retriable, with Retry-After', async () => {
+    const server = await make();
+    try {
+      for (const code of ['40P01', '40001']) {
+        setupComplete = async () => {
+          throw Object.assign(new Error('deadlock detected'), { code });
+        };
+        const res = await server.inject('/api/v1/capabilities');
+        expect(res.statusCode, code).toBe(503);
+        expect(res.headers['retry-after'], code).toBe('1');
+        expect(
+          res.json<{ error: { code: string; retriable: boolean } }>().error,
+          code,
+        ).toMatchObject({ code: 'busy', retriable: true });
+      }
+    } finally {
+      setupComplete = async () => true;
+    }
   });
 
   it('honours a caller-supplied request id', async () => {
