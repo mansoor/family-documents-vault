@@ -23,6 +23,14 @@ import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/remind
 import { sealPrivateValues } from './jobs/seal.js';
 import { regenerateTypeReminders, type RegenerateTypeJob } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
+import {
+  moveIncoming,
+  scanIncoming,
+  sweepIncoming,
+  type IncomingDeps,
+  type IncomingMoveJob,
+  type IncomingScanJob,
+} from './jobs/incoming.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
@@ -382,6 +390,37 @@ async function main(): Promise<void> {
     );
   });
   await boss.schedule(JOBS.uploadsPrune, '25 4 * * *');
+
+  // What came in through a request (5.23): got ready to be looked at, moved
+  // to the owners when its reviewer can no longer review it, and swept.
+  const incomingDeps: IncomingDeps = {
+    admin: dbs.admin,
+    db: dbs.app,
+    keys: processDeps.keys,
+    credentialsKey: processDeps.credentialsKey,
+    localRoot: processDeps.localRoot,
+    log,
+    tell: {
+      vapid,
+      smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+      baseUrl: config.FDV_BASE_URL,
+      agent: pushAgent,
+      allowPrivate,
+    },
+  };
+  await boss.createQueue(JOBS.incomingScan, { retryLimit: 2, retryDelay: 60 });
+  await boss.work<IncomingScanJob>(JOBS.incomingScan, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) await scanIncoming(incomingDeps, job.data);
+  });
+  await boss.createQueue(JOBS.incomingMove, { retryLimit: 3, retryDelay: 60 });
+  await boss.work<IncomingMoveJob>(JOBS.incomingMove, { batchSize: 1 }, async (jobs) => {
+    for (const job of jobs) await moveIncoming(incomingDeps, job.data);
+  });
+  await boss.createQueue(JOBS.incomingSweep, { retryLimit: 3, retryDelay: 300 });
+  await boss.work(JOBS.incomingSweep, async () => {
+    log('info', 'files sent in swept', { ...(await sweepIncoming(incomingDeps)) });
+  });
+  await boss.schedule(JOBS.incomingSweep, '50 4 * * *');
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);

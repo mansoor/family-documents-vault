@@ -77,6 +77,9 @@ describe('buildCapabilities', () => {
       remove_for_good: true,
       // 5.25: a person's details changed; the owner's view of a sign-in (A54).
       member_edit: true,
+      // 5.21 and 5.23: asking somebody outside to send documents, and
+      // looking at what they sent before it is filed.
+      upload_requests: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

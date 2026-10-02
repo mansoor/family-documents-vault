@@ -93,6 +93,9 @@ export const api = {
   /** One page as the vault drew it (0.4.12). */
   page: (token: string, versionId: string, n: number) => blobOf(client.page(token, versionId, n)),
   exportContent: (token: string, id: string) => blobOf(client.exportContent(token, id)),
+  /** A page the vault drew of a file sent in (5.23), and a copy of the file itself. */
+  incomingPage: (token: string, id: string, n: number) => blobOf(client.incomingPage(token, id, n)),
+  incomingContent: (token: string, id: string) => blobOf(client.incomingContent(token, id)),
   /** A person's photo (0.5.19): the square the vault made, as a Blob. */
   memberPhoto: (token: string, memberId: string, photoId: string) =>
     blobOf(client.memberPhoto(token, memberId, photoId)),

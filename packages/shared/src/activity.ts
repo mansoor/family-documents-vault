@@ -342,6 +342,29 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
         'A request to send documents was closed: whoever asked can no longer ask for documents',
       );
 
+    // --------------------------------------- what came in, looked at (5.23)
+    // Shown to whoever reviews the request only, as its own lines are;
+    // whom it was from in the family's words, never a file's name.
+    case 'incoming.accepted':
+      return line(`${who} filed a document ${sentBy(detail)}`, true);
+    case 'incoming.rejected':
+      return line(`${who} refused a file ${sentBy(detail)}`);
+    case 'incoming.downloaded':
+      return line(`${who} saved a copy of a file ${sentBy(detail)}, to look at it`);
+    case 'incoming.purged': {
+      const n = typeof detail.files === 'number' ? detail.files : 0;
+      return line(
+        `${n === 1 ? 'A file' : `${n || 'Some'} files`} ${sentBy(detail)} ${n === 1 ? 'was' : 'were'} removed: nobody filed ${n === 1 ? 'it' : 'them'} within 30 days`,
+      );
+    }
+    case 'incoming.moved': {
+      const n = typeof detail.files === 'number' ? detail.files : 0;
+      return line(
+        `${n === 1 ? 'A file' : `${n || 'Some'} files`} ${sentBy(detail)} ${n === 1 ? 'was' : 'were'} given to the owners to look at: whoever asked for ${n === 1 ? 'it' : 'them'} can no longer`,
+        true,
+      );
+    }
+
     // ------------------------------------------------------- the vault
     case 'household.created':
       return line(`${who} set up the vault`);
@@ -445,6 +468,12 @@ function text(v: unknown): string {
 function nameOf(detail: Record<string, unknown>, key: string): string {
   const v = detail[key];
   return typeof v === 'string' && v.length > 0 ? v : 'somebody';
+}
+
+/** Whom a file sent in came from (5.23), as the request named them: "sent by Jane, accountant". */
+function sentBy(detail: Record<string, unknown>): string {
+  const from = text(detail.from).trim();
+  return from ? `sent by ${from}` : 'sent through a request';
 }
 
 /** Who a new document of a kind is shown to, after "visible to" (0.5.10). */

@@ -286,6 +286,13 @@ function summary(file: string, r: RestoreReport): string {
       '    Settings → After a restore.',
     );
   }
+  if (r.incomingDropped > 0) {
+    lines.push(
+      `  - ${plural(r.incomingDropped, 'file')} sent through a request and waiting when the backup ` +
+        `was taken ${r.incomingDropped === 1 ? 'is' : 'are'} gone:`,
+      '    filed, refused or removed since. Nothing of them is left to look at.',
+    );
+  }
   if (r.photosUnfinished > 0) {
     lines.push(
       `  - ${plural(r.photosUnfinished, 'photo')} still being made when the backup was taken ` +

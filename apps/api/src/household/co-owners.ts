@@ -2,6 +2,8 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { can, DECEASED_NO_SIGN_IN, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
+import type { Enqueue } from '../documents/service.js';
+import { INCOMING_MOVE_JOB } from '../uploads/incoming.js';
 import { closeLostRequests } from '../uploads/requests.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
@@ -62,7 +64,20 @@ export class CoOwnerService {
     private readonly alert: (input: AlertRequest) => Promise<void> = async () => undefined,
     /** Pushes the worker sends (4.13): "you were signed out" to a removed sign-in's phones. */
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
+    /** The worker's queue: files sent for somebody who can no longer review them (5.23). */
+    private readonly enqueue: Enqueue = async () => undefined,
   ) {}
+
+  /**
+   * Somebody can no longer review what was sent to them alone (5.23): once
+   * the change has committed, the worker moves their waiting files to the
+   * owners (`incoming.move`). Queued after, never inside: run before the
+   * change is there to see, it would find them still able to. Its daily
+   * sweep does the same, for a job that is lost.
+   */
+  private async filesMove(householdId: string): Promise<void> {
+    await this.enqueue(INCOMING_MOVE_JOB, { household_id: householdId }).catch(() => undefined);
+  }
 
   // ------------------------------------------------------------- changing
 
@@ -73,7 +88,8 @@ export class CoOwnerService {
     meta: RequestMeta,
   ): Promise<RoleChangeResult> {
     requireCapability(p, 'role.change');
-    return withPrincipal(this.db, p, async (trx) => {
+    const after = { move: false };
+    const result = await withPrincipal(this.db, p, async (trx) => {
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
         // Changing your own role is either meaningless or a way round the
@@ -110,9 +126,11 @@ export class CoOwnerService {
         .where('household_id', '=', p.householdId)
         .execute();
       if (!can(to, 'document.see_adults')) await expireExportsOf(trx, target.account_id);
-      // Made a teen or a viewer: their requests to send documents close (A39).
+      // Made a teen or a viewer: their requests to send documents close (A39),
+      // and what was sent for them alone to review goes to the owners (5.23).
       if (!can(to, 'upload_request.create')) {
         await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
+        after.move = true;
       }
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -142,6 +160,8 @@ export class CoOwnerService {
         message: `${target.display_name} is now ${article(to)}.`,
       };
     });
+    if (after.move) await this.filesMove(p.householdId);
+    return result;
   }
 
   /** Giving up the owner role yourself, which needs no notice at all. */
@@ -152,7 +172,7 @@ export class CoOwnerService {
     if (to === 'owner') {
       throw new ApiError(422, 'validation_failed', 'Choose what you want to become instead.');
     }
-    return withPrincipal(this.db, p, async (trx) => {
+    const result = await withPrincipal(this.db, p, async (trx) => {
       await trx
         .updateTable('account_household')
         .set({ role: to })
@@ -190,6 +210,8 @@ export class CoOwnerService {
         message: `You are ${article(to)} now. Another owner can give the role back.`,
       };
     });
+    if (!can(to, 'upload_request.create')) await this.filesMove(p.householdId);
+    return result;
   }
 
   /** Takes a person's sign-in away. The person and their documents stay. */
@@ -248,6 +270,7 @@ export class CoOwnerService {
         ip: meta.ip,
       });
     });
+    await this.filesMove(p.householdId);
     if (removedPhones.length > 0) {
       await this.push({
         householdId: p.householdId,

@@ -1,4 +1,5 @@
 import {
+  can,
   canChangeDetails,
   canSee,
   canSeeCollection,
@@ -247,6 +248,13 @@ export interface FakeState {
     name: string | null;
     items: Array<{ id: string; title: string; filename: string }>;
   };
+  /**
+   * Files sent through a request, waiting to be looked at (5.23), as GET
+   * /incoming gives them (IncomingFileView). Given, the vault says it has
+   * upload requests (`features.upload_requests`); filing one makes a
+   * document here, refusing one takes it away.
+   */
+  incoming?: Array<Record<string, unknown>>;
   /**
    * GET /documents/{id}/issuer-suggestions, by document id: who its pages
    * say issued it. A document not here answers 'unavailable'.
@@ -561,6 +569,7 @@ export function installFakeApi(state: FakeState) {
           share_second_factor: state.shareSecondFactor ?? true,
           share_email_code: state.operatorMail === true,
           member_edit: true,
+          ...(state.incoming ? { upload_requests: true } : {}),
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -1060,6 +1069,69 @@ export function installFakeApi(state: FakeState) {
         },
         201,
       );
+    }
+    // What came in through a request, looked at before it is filed (5.23).
+    // A teen or a viewer is told there is nothing here, as the vault tells them.
+    const incomingAt =
+      /^\/api\/v1\/incoming(?:\/([^/]+)\/(pages\/\d+|content|accept|reject))?$/.exec(path);
+    if (incomingAt && state.incoming) {
+      if (!can(storedRole() as Role, 'upload_request.create')) {
+        return refuse(404, 'not_found', 'That file is not waiting for you.');
+      }
+      const [, id, what] = incomingAt;
+      if (!id) return json({ items: state.incoming });
+      const at = state.incoming.findIndex((f) => f.id === id);
+      const file = state.incoming[at];
+      if (!file) return refuse(404, 'not_found', 'That file is not waiting for you.');
+      if (what?.startsWith('pages/')) {
+        return Promise.resolve(
+          new Response(`${what} of ${String(file.name)}`, {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' },
+          }),
+        );
+      }
+      if (what === 'content') {
+        return Promise.resolve(
+          new Response('%PDF-1.4', {
+            status: 200,
+            headers: {
+              'content-type': String(file.content_type),
+              'content-disposition': 'attachment',
+              'x-content-type-options': 'nosniff',
+              'x-fdv-scan': 'unscanned',
+            },
+          }),
+        );
+      }
+      if (what === 'reject' && method === 'POST') {
+        state.incoming.splice(at, 1);
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (what === 'accept' && method === 'POST') {
+        const b = body as Record<string, unknown>;
+        state.incoming.splice(at, 1);
+        const into = typeof b.into_document_id === 'string' ? b.into_document_id : null;
+        if (into) return json({ document_id: into, version_id: 'v-incoming' }, 201);
+        const made = {
+          ...PASSPORT,
+          id: `doc-incoming-${state.documents.length + 1}`,
+          title: (b.title as string | null) ?? null,
+          type_key: (b.type_key as string | null) ?? null,
+          owner_member_id: (b.owner_member_id as string | null) ?? null,
+          visibility: b.visibility ?? 'household',
+          is_essential: false,
+          tags: [],
+          latest_version_id: 'v-incoming',
+          sent_through:
+            typeof file.recipient_label === 'string'
+              ? `Sent through a request link (${file.recipient_label})`
+              : 'Sent through a request link',
+          etag: '"incoming"',
+        };
+        state.documents.push(made);
+        return json({ document_id: made.id, version_id: 'v-incoming' }, 201);
+      }
     }
     // After a restore, and turning a link back on (5.16): an owner decides
     // every link; anybody else is shown the ones they made, only to take
@@ -1801,6 +1873,8 @@ export function installFakeApi(state: FakeState) {
             ocr_status: 'done',
             uploaded_at: '2026-09-20T09:14:00Z',
             uploaded_by_name: 'Mansoor Seikh',
+            // Sent through a request (5.23), as its reviewers are told.
+            sent_through: (doc?.sent_through as string | undefined) ?? null,
             preview_pages:
               state.pagesDrawn === 'unsupported'
                 ? 0

@@ -60,6 +60,16 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {caps?.features.upload_requests && can(storedRole(), 'upload_request.create') && (
+          <li>
+            <Link to="/incoming" className="rowbtn">
+              <span className="doc-title">Files sent to you</span>
+              <span className="muted">
+                What came in through a request, to look at before it is filed
+              </span>
+            </Link>
+          </li>
+        )}
         {mayShare && (
           <li>
             <Link to="/settings/sharing" className="rowbtn">

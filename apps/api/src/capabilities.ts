@@ -96,6 +96,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.25: a person's details changed, made to the version seen; the
       // owner's view of a sign-in, for an owner with two-step sign-in (A54).
       member_edit: true,
+      // 5.21 and 5.23: asking somebody outside to send documents, and
+      // looking at what they sent before it is filed.
+      upload_requests: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

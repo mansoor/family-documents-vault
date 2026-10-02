@@ -134,6 +134,14 @@ export interface VersionView {
    * file_removed`. Absent from older vaults.
    */
   file_removed?: boolean;
+  /**
+   * Where this version came from when somebody outside the family sent it
+   * through a request (5.23), as its history line says it: "Sent through a
+   * request link (Jane, accountant)". Only to whoever may review that
+   * request — to anybody else, as to an older vault's reader, it is null and
+   * `uploaded_by_name` names whoever filed it.
+   */
+  sent_through?: string | null;
 }
 
 /** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */

@@ -88,6 +88,24 @@ export const JOBS = {
    * gone, so the job carries what sending needs).
    */
   pushSend: 'push.send',
+  /**
+   * Files a sender has just sent through a request (5.23), got ready to be
+   * looked at: scanned (by nothing, A42: `unscanned`), their review pages
+   * drawn, and their reviewers told how many are waiting. Sent by the API
+   * when the sender presses Finish; the name matches its INCOMING_SCAN_JOB.
+   */
+  incomingScan: 'incoming.scan',
+  /**
+   * What was sent for somebody alone to review, moved to the owners once
+   * they can no longer review it (5.23). Sent by the API after a role is
+   * changed or a sign-in taken away; the name matches its INCOMING_MOVE_JOB.
+   */
+  incomingMove: 'incoming.move',
+  /**
+   * Daily (5.23): files not filed within 30 days removed, requests past
+   * their end with nothing waiting removed, and what a lost job missed.
+   */
+  incomingSweep: 'incoming.sweep',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

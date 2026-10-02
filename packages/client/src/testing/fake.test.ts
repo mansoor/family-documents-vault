@@ -17,6 +17,34 @@ describe('the fake vault keeps the contract', () => {
       if (!type) throw new Error(`the fake has no type ${key}`);
       type.hidden = true;
     },
+    // Files sent in (0.5.23), as a sender would send them and the worker
+    // would get them ready: kept as sent, with one page drawn.
+    sendFiles: async (made, files) => {
+      for (const f of files) {
+        const now = new Date();
+        vault.state.incoming.push({
+          id: `incoming-${vault.state.incoming.length + 1}`,
+          request_id: made.request.id,
+          request_title: made.request.title,
+          recipient_label: made.request.recipient_label,
+          item_label: null,
+          name: f.name,
+          content_type: f.contentType,
+          byte_size: f.bytes.length,
+          sender_note: null,
+          sent_at: now.toISOString(),
+          removed_at: new Date(now.getTime() + 30 * 864e5).toISOString(),
+          scan_state: 'unscanned',
+          preview_state: 'ready',
+          preview_pages: 1,
+          suggested_member_id: made.request.suggested_member_id,
+          suggested_type_key: made.request.suggested_type_key,
+          review_by: made.request.review_by,
+          moved_to_owners: false,
+          bytes: f.bytes,
+        });
+      }
+    },
   };
   for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
 });

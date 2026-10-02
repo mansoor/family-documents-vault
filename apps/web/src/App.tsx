@@ -9,6 +9,7 @@ import { ActivityScreen } from './screens/Activity.js';
 import { AfterRestoreScreen } from './screens/AfterRestore.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
+import { IncomingFileScreen, IncomingScreen } from './screens/Incoming.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
@@ -284,6 +285,23 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <KindScreen />
+              </Gate>
+            }
+          />
+          {/* What was sent through a request, looked at before it is filed (5.23). */}
+          <Route
+            path="/incoming"
+            element={
+              <Gate need="signed-in">
+                <IncomingScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/incoming/:id"
+            element={
+              <Gate need="signed-in">
+                <IncomingFileScreen />
               </Gate>
             }
           />

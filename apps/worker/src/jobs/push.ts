@@ -3,6 +3,7 @@ import https from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
 import { appendAudit, withSystem, type Db } from '@fdv/db';
 import {
+  incomingWords,
   isLoopbackName,
   isPrivateAddress,
   PUSH_TTL_SECONDS,
@@ -310,7 +311,7 @@ export function isPushJob(v: unknown): v is PushJob {
 /** A web browser gets a notification it can show; a phone, only the word. */
 export function payloadFor(kind: 'web_push' | 'unified_push', m: PushMessage): string {
   if (kind === 'unified_push') return unifiedPayload(m);
-  const words: Record<PushMessage['type'], string> = {
+  const words: Record<Exclude<PushMessage['type'], 'incoming'>, string> = {
     digest: 'You have reminders today.',
     new_device: 'Your account was used on a new device.',
     owner_change: 'Something changed about who owns your family vault.',
@@ -319,7 +320,8 @@ export function payloadFor(kind: 'web_push' | 'unified_push', m: PushMessage): s
   };
   return JSON.stringify({
     title: 'Family Document Vault',
-    body: words[m.type],
+    // 5.23: files to look at, how many and nothing else.
+    body: m.type === 'incoming' ? incomingWords(m.count) : words[m.type],
     tag: pushTopic(m.type),
   });
 }

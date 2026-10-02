@@ -440,6 +440,11 @@ export interface Schema {
     revoked_by: string | null;
     closed_at: Timestamp | null;
     closed_reason: 'submitted' | 'requester_lost_right' | null;
+    /**
+     * When its files were moved to the owners from a requester who can no
+     * longer review (0047): from then on the owners' alone.
+     */
+    moved_to_owners_at: Timestamp | null;
   };
 
   /** What a request asks for, by name (0044): "W-2", "1099". */
@@ -516,6 +521,15 @@ export interface Schema {
     decided_at: Timestamp | null;
     document_id: string | null;
     version_id: string | null;
+    /** Its review previews (0047): drawn by the worker once it is no longer pending a scan. */
+    preview_state: Generated<'none' | 'drawing' | 'ready' | 'unsupported' | 'failed'>;
+    /** When its drawing began: one job at a time, and one that died is taken over after an hour. */
+    preview_requested_at: Timestamp | null;
+    preview_pages: number | null;
+    /** A decided file's object, and its previews, gone (0047). */
+    object_removed_at: Timestamp | null;
+    /** Moved to the owners from a requester who can no longer review (0047). */
+    owners_only: Generated<boolean>;
   };
 
   owner_change_request: {
