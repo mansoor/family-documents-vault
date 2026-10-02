@@ -194,7 +194,7 @@ describe('sharing a collection (5.19)', () => {
     fireEvent.change(within(sheet).getByLabelText('Their email address'), {
       target: { value: 'jane.smith@example.com' },
     });
-    fireEvent.click(within(protect).getByLabelText('This device only'));
+    fireEvent.click(within(protect).getByLabelText('This browser only'));
     expect(within(sheet).getByText(SHARE_CODE_TRUTH)).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(within(sheet).getByRole('button', { name: 'Make the link' }));

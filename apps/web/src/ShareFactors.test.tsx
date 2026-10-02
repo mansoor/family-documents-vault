@@ -74,7 +74,7 @@ describe('the protection choices (5.20)', () => {
     fireEvent.change(screen.getByLabelText('Their email address'), {
       target: { value: ' jane.smith@example.com ' },
     });
-    fireEvent.click(within(protect).getByLabelText('This device only'));
+    fireEvent.click(within(protect).getByLabelText('This browser only'));
     expect(screen.getByText(/will not open on their computer/)).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
@@ -110,7 +110,7 @@ describe('the protection choices (5.20)', () => {
     expect(screen.getByTestId('share-code-unavailable')).toHaveTextContent(SHARE_CODE_UNAVAILABLE);
     // A password and this device only are there all the same.
     expect(within(protect).getByLabelText(/ask for a password/)).toBeInTheDocument();
-    expect(within(protect).getByLabelText('This device only')).toBeInTheDocument();
+    expect(within(protect).getByLabelText('This browser only')).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
     await screen.findByText(/\/s#share-secret-0123456789abcdef$/);
@@ -187,7 +187,7 @@ describe('the protection choices (5.20)', () => {
     const protect = screen.getByRole('group', { name: 'Protect it' });
     expect(within(protect).getByLabelText(/four-digit PIN/)).toBeInTheDocument();
     expect(within(protect).queryByLabelText(/password/)).not.toBeInTheDocument();
-    expect(within(protect).queryByLabelText('This device only')).not.toBeInTheDocument();
+    expect(within(protect).queryByLabelText('This browser only')).not.toBeInTheDocument();
     expect(screen.queryByTestId('share-code-unavailable')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
     await screen.findByText(/\/s#share-secret-0123456789abcdef$/);

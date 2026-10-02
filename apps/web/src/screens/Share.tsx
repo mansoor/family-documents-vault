@@ -712,7 +712,7 @@ function Protection(props: {
             'share-device-only',
             value.thisDeviceOnly,
             (on) => options.set({ thisDeviceOnly: on }),
-            'This device only',
+            'This browser only',
             'share-device-note',
           )}
           <span id="share-device-note" className="muted share-indent">

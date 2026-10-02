@@ -185,7 +185,7 @@ A link can say more than who it is for:
     without it the option is not offered, and the share sheet says why. The code is kept
     only as a keyed hash (from the master key), and the address is forgotten when the link
     ends.
-  - **this device only**: the first browser that opens it is the only one it opens in — one
+  - **this browser only**: the first browser that opens it is the only one it opens in — one
     browser, not the whole device, so tell them to open it in the one they usually use, not
     a private window or their email app's own browser.
 
@@ -479,7 +479,7 @@ document:
 
 - it stops working after seven days, or whatever you set;
 - it can carry a four-digit PIN or a password, which you give them some other way, ask
-  for a code emailed to them, and open on one device only;
+  for a code emailed to them, and open in one browser only;
 - you can take it back at any moment;
 - every time it is opened you see it, next to the link;
 - and it reaches nothing else in the vault. There is no account at the other
