@@ -33,6 +33,7 @@ import { seenCollection } from '../collections/service.js';
 import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
+import { madeWith } from './made-with.js';
 import { endSessions } from './share-sessions.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
@@ -42,6 +43,7 @@ import {
   canShareToView,
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
+  FILE_REMOVED,
   FOLLOW_MAX_DAYS,
   isShareAddress,
   maskEmail,
@@ -624,6 +626,9 @@ const codeUnavailable = (status: 422 | 503) =>
 const expiryRefused = (message: string) => new ApiError(422, 'expiry_out_of_range', message);
 
 const noCollection = () => new ApiError(404, 'not_found', 'That collection does not exist.');
+
+/** A record a restore brought back whose file had been removed for good (5.24). */
+const fileRemoved = () => new ApiError(410, 'file_removed', FILE_REMOVED);
 const notInCollection = () =>
   new ApiError(404, 'not_found', 'That document is not in this collection.');
 
@@ -1195,16 +1200,20 @@ export class ShareService {
         // addition holds them in (FOR UPDATE) — before each row names one
         // (the third review): named in the collection's order instead, the
         // two could each wait on what the other held.
-        await sql`select id from document
+        const held = await sql<{ id: string }>`select id from document
                    where id = any(${snapshot.map((s) => s.document_id)}::uuid[])
                    order by id
                    for key share`.execute(trx);
+        // One removed for good as this waited for it (5.24) is not there to
+        // name: it goes with nothing, as anything the link no longer gives.
+        const there = new Set(held.rows.map((r) => r.id));
+        const kept = snapshot.filter((s) => there.has(s.document_id));
         // A few thousand at a time, within what one statement may carry.
-        for (let at = 0; at < snapshot.length; at += SNAPSHOT_ROWS) {
+        for (let at = 0; at < kept.length; at += SNAPSHOT_ROWS) {
           await trx
             .insertInto('share_link_item')
             .values(
-              snapshot.slice(at, at + SNAPSHOT_ROWS).map((s) => ({
+              kept.slice(at, at + SNAPSHOT_ROWS).map((s) => ({
                 share_id: row.id,
                 household_id: p.householdId,
                 collection_id: c.id,
@@ -1401,13 +1410,8 @@ export class ShareService {
       const collectionLinks = rows.filter((r) => r.collection_id !== null).map((r) => r.id);
       const unseen = new Set<string>();
       if (collectionLinks.length) {
-        const items = await trx
-          .selectFrom('share_link_item')
-          .innerJoin('document', 'document.id', 'share_link_item.document_id')
-          .select(['share_link_item.share_id', 'document.visibility', 'document.owner_member_id'])
-          .where('share_link_item.share_id', 'in', collectionLinks)
-          .where('share_link_item.kind', 'in', ['ticked', 'followed'])
-          .execute();
+        // Removed for good since, as its tombstone says, too (5.24).
+        const items = await madeWith(trx, collectionLinks);
         for (const i of items) if (!canSee(reader, i)) unseen.add(i.share_id);
       }
       // A link names its document, so the list shows only links to what the
@@ -1589,13 +1593,8 @@ export class ShareService {
           throw notFound('That link');
         }
         if (target.created_by !== p.accountId && p.role !== 'owner') {
-          const items = await trx
-            .selectFrom('share_link_item')
-            .innerJoin('document', 'document.id', 'share_link_item.document_id')
-            .select(['document.visibility', 'document.owner_member_id'])
-            .where('share_link_item.share_id', '=', id)
-            .where('share_link_item.kind', 'in', ['ticked', 'followed'])
-            .execute();
+          // Removed for good since, as its tombstone says, too (5.24).
+          const items = await madeWith(trx, [id]);
           if (items.some((i) => !canSee(reader, i))) throw notFound('That link');
         }
       }
@@ -2104,6 +2103,9 @@ export class ShareService {
           'This link is for viewing only: the file itself was not shared.',
         );
       }
+      // Its record came back with a restore, its file did not (5.24): said
+      // so, before a download is counted or written down that cannot happen.
+      if ((await this.newestVersion(trx, documentId)).file_removed_at) throw fileRemoved();
       const first = await this.used(trx, link, session.id, documentId, 'downloaded');
       if (first) {
         // Within the link's downloads, however many ask at once: one
@@ -2173,6 +2175,8 @@ export class ShareService {
         );
       }
       const v = await this.newestVersion(trx, documentId);
+      // Its record came back with a restore, its file did not (5.24).
+      if (v.file_removed_at) throw fileRemoved();
       const page = await trx
         .selectFrom('share_page')
         .select('storage_key')
@@ -2521,6 +2525,8 @@ export class ShareService {
       const tried = await this.tryPin(trx, householdId, link, input.pin, meta);
       if (tried !== 'no pin' && !isRight(tried)) return { refused: tried, link } as const;
       const v = await this.newestVersion(trx, documentOf(link));
+      // Its record came back with a restore, its file did not (5.24).
+      if (v.file_removed_at) throw fileRemoved();
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);

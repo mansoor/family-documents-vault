@@ -220,11 +220,13 @@ export function Button(props: {
   ariaLabel?: string;
   /** The id of what a screen reader should hear with it: what pressing it does. */
   describedBy?: string;
+  /** A quiet button for something that cannot be undone, in the danger colour (5.24). */
+  danger?: boolean;
 }) {
   return (
     <button
       type={props.type ?? 'button'}
-      className={`btn btn-${props.kind ?? 'primary'}`}
+      className={`btn btn-${props.kind ?? 'primary'}${props.danger ? ' btn-danger-quiet' : ''}`}
       disabled={props.disabled}
       onClick={props.onClick}
       aria-label={props.ariaLabel}

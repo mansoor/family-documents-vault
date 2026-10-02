@@ -122,6 +122,13 @@ export interface CapabilityFeatures {
    * saying why (`SHARE_CODE_UNAVAILABLE`). Absent from older vaults.
    */
   share_email_code?: boolean;
+  /**
+   * An owner can remove a document in the Trash for good (5.24): POST
+   * /documents/{id}/purge, always with step-up — at once for one they filed
+   * or that is theirs, anybody else's 24 hours after asking. Absent from
+   * older vaults, where nothing is ever removed.
+   */
+  remove_for_good?: boolean;
 }
 
 export interface CapabilityLimits {

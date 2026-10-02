@@ -23,6 +23,7 @@ import type { PhotoService } from './household/photos.js';
 import type { InvitationService } from './household/invitations.js';
 import type { CoOwnerService } from './household/co-owners.js';
 import type { DocumentService } from './documents/service.js';
+import type { PurgeService } from './documents/purge.js';
 import { registerTypes } from './documents/type-routes.js';
 import type { TypeService } from './documents/types.js';
 import { registerCollections } from './collections/routes.js';
@@ -57,6 +58,8 @@ export interface AppDeps {
   auth: AuthService;
   vaults: VaultService;
   documents: DocumentService;
+  /** Removing a document for good (5.24). */
+  purge: PurgeService;
   /** Kinds of document, managed (5.11). */
   types: TypeService;
   /** Collections of documents (5.14). */
@@ -314,6 +317,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.stepUp,
     deps.shares,
     deps.uploads,
+    deps.purge,
   );
   registerUploads(app, deps.uploads);
 

@@ -1,4 +1,5 @@
 import {
+  FILE_REMOVED,
   formatDate,
   issuedByLabel,
   whenExactly,
@@ -57,7 +58,8 @@ export function DocumentScreen() {
   const latest = data?.versions[0];
   useEffect(() => {
     let url: string | null = null;
-    if (!latest) return;
+    // Nothing to draw a thumbnail from: its file was removed for good (5.24).
+    if (!latest || latest.file_removed) return;
     void withToken((t) => api.thumbnail(t, latest.id))
       .then((blob) => {
         if (blob) {
@@ -215,7 +217,12 @@ export function DocumentScreen() {
           </Link>
         }
       />
-      {latest ? (
+      {latest?.file_removed ? (
+        // Its record came back with a restore, its file did not (5.24).
+        <div className="preview preview-removed" role="note" aria-label="Preview">
+          <span className="muted">{FILE_REMOVED}</span>
+        </div>
+      ) : latest ? (
         <Link
           to={`/documents/${doc.id}/read`}
           className="preview preview-link"
@@ -245,7 +252,9 @@ export function DocumentScreen() {
         onChanged={reload}
       />
       <ErrorNote message={actionError} />
-      {latest && <Button onClick={() => void download(latest)}>Download</Button>}
+      {latest && !latest.file_removed && (
+        <Button onClick={() => void download(latest)}>Download</Button>
+      )}
 
       <dl className="facts" ref={facts} tabIndex={-1}>
         <dt>Type</dt>
@@ -370,8 +379,9 @@ export function DocumentScreen() {
                   {whenExactly(v.uploaded_at)}
                   {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
                 </span>
+                {v.file_removed && <span className="muted">{FILE_REMOVED}</span>}
               </span>
-              {i > 0 && (
+              {i > 0 && !v.file_removed && (
                 <Button kind="quiet" onClick={() => void download(v)}>
                   Download
                 </Button>

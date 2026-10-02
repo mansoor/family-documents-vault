@@ -1603,3 +1603,46 @@ a.btn {
   border-radius: var(--radius-s);
   background: var(--surface);
 }
+
+/* 5.24: a Trash row's ways out — back, or for good — beside it, or under
+   it on a phone; and an owner's request to remove it, said in the row. */
+.list li.trash-row {
+  flex-wrap: wrap;
+}
+
+.list li.trash-row > span:first-child {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.trash-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.trash-asked {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* Home: something you filed that an owner wants to remove for good. */
+.removal-notice {
+  border-left-color: var(--warn);
+}
+
+.removal-notice li {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.btn-danger-quiet {
+  color: var(--danger);
+}
+
+/* A document whose record came back with a restore, and whose file did not. */
+.preview-removed {
+  text-align: center;
+  padding: 0 16px;
+}

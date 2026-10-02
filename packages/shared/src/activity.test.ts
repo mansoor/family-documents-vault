@@ -182,6 +182,35 @@ describe('the activity log, in sentences', () => {
     expect(said).not.toMatch(/doc-|2|two/);
   });
 
+  it('says an owner asked to remove a document for good, removed one, and that bringing it back kept it (5.24)', () => {
+    const asked = describeEvent(ev({ action: 'document.purge_requested' }));
+    expect(asked).toMatchObject({
+      text: 'Sarah asked to remove “Home insurance policy” for good',
+      notable: true,
+      document_id: 'doc-1',
+    });
+    // Removed: no title (its row has gone, and the line carries none), and
+    // nowhere to go.
+    const removed = describeEvent(
+      ev({ action: 'document.purged', object_title: null, detail: { versions: 2 } }),
+    );
+    expect(removed).toMatchObject({
+      text: 'Sarah removed a document for good',
+      notable: true,
+      document_id: null,
+    });
+    expect(
+      describeEvent(ev({ action: 'document.restored', detail: { cancelled_purge: true } })),
+    ).toMatchObject({
+      text: 'Sarah took “Home insurance policy” out of the Trash, so it will not be removed for good',
+      notable: true,
+    });
+    expect(describeEvent(ev({ action: 'document.restored' }))).toMatchObject({
+      text: 'Sarah took “Home insurance policy” out of the Trash',
+      notable: false,
+    });
+  });
+
   it('never prints an id when it has no name', () => {
     const line = describeEvent(ev({ actor: null, actor_label: null, object_title: null }));
     expect(line?.text).toBe('Somebody downloaded a document');

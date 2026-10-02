@@ -36,6 +36,7 @@ import {
   UPLOAD_DEVICE_KEY_PURPOSE,
   UploadRequestService,
 } from './uploads/requests.js';
+import { PurgeService } from './documents/purge.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -170,6 +171,7 @@ async function main(): Promise<void> {
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
     documents,
+    purge: new PurgeService(db, vaults, documents, alert),
     types: new TypeService(db, enqueue, stepUpService),
     collections: new CollectionService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),

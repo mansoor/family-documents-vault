@@ -17,6 +17,7 @@ import { DocActions, type RowCollection } from '../DocActions.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import { BottomNav, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
+import { purgeAskedWords } from './Trash.js';
 
 /**
  * Home is the whole product in one view: the needs-attention strip (the
@@ -28,16 +29,20 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const { data, error, reload } = useLoad(
     async (t) => {
-      const [members, counts, recent, docs, me, due, suggestions, types] = await Promise.all([
-        api.members(t),
-        api.counts(t),
-        api.documents(t, { limit: 5, sort: 'recent' }),
-        api.documents(t, { limit: 50, sort: 'expiring' }),
-        api.me(t),
-        api.reminders(t, 'due'),
-        api.suggestions(t),
-        api.documentTypes(t),
-      ]);
+      const [members, counts, recent, docs, me, due, suggestions, types, asked] = await Promise.all(
+        [
+          api.members(t),
+          api.counts(t),
+          api.documents(t, { limit: 5, sort: 'recent' }),
+          api.documents(t, { limit: 50, sort: 'expiring' }),
+          api.me(t),
+          api.reminders(t, 'due'),
+          api.suggestions(t),
+          api.documentTypes(t),
+          // An owner asked to remove something you filed for good (5.24).
+          api.documents(t, { deleted: 'true', purge_requested: 'true', limit: 50 }),
+        ],
+      );
       const reminded = new Set(due.items.map((r) => r.document_id));
       const attention = [
         ...due.items.map((r) => ({
@@ -65,6 +70,8 @@ export function HomeScreen() {
         attention,
         suggestions: suggestions.items,
         types: types.items,
+        // Yours, that an owner has asked to remove for good: you may keep it.
+        removals: asked.items.filter((d) => d.filed_by_me === true && d.purge_requested_at),
       };
     },
     [authVersion],
@@ -104,6 +111,7 @@ export function HomeScreen() {
           <span className="muted">Owners must. It takes a minute, in Settings.</span>
         </Link>
       )}
+      <RemovalNotice items={data?.removals ?? []} />
       <AttentionStrip items={data?.attention ?? []} />
       <MissingStrip items={data?.suggestions ?? []} />
 
@@ -250,6 +258,33 @@ function AttentionStrip({
         ))}
       </ul>
     </Link>
+  );
+}
+
+/**
+ * Documents you filed that an owner has asked to remove for good (5.24):
+ * said here, where you will see it, as well as by email — the Trash is
+ * where you bring one back to keep it, for a day from when you were told.
+ */
+function RemovalNotice({ items }: { items: DocumentView[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="attention removal-notice" role="status">
+      <strong>
+        {items.length === 1
+          ? 'An owner wants to remove one of your documents for good'
+          : `An owner wants to remove ${items.length} of your documents for good`}
+      </strong>
+      <ul>
+        {items.slice(0, 3).map((d) => (
+          <li key={d.id}>
+            <span className="doc-title">“{d.title ?? 'Needs a name'}”</span>
+            <span>{purgeAskedWords(d)}</span>
+          </li>
+        ))}
+      </ul>
+      <Link to="/settings/trash">Open the Trash</Link>
+    </div>
   );
 }
 

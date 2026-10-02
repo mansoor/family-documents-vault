@@ -336,6 +336,25 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         }),
     },
     {
+      capability: 'document.purge',
+      what: 'remove a document in the Trash for good',
+      // The owner's own disposable document, in the Trash: the owner removes
+      // it (204); anybody else is refused first, whosever it is.
+      call: async (t) => {
+        const id = await disposable();
+        await h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/documents/${id}`,
+          headers: h.as(people.owner),
+        });
+        return h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/purge`,
+          headers: h.as(t),
+        });
+      },
+    },
+    {
       capability: 'collection.manage',
       what: 'make a collection of documents',
       call: (t) =>

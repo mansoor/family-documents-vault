@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -1112,6 +1112,37 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
 
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it("notices a removed document's tombstone left open, or a request to remove left to anybody (0045)", async () => {
+    // Who could see it, changeable: the activity log would follow the change.
+    await sql(vault.adminUrl, 'grant update on public.document_tombstone to fdv_app');
+    await expect(checkRestored(target())).rejects.toThrow(/tombstone can be changed or removed/);
+    await sql(vault.adminUrl, 'revoke update on public.document_tombstone from fdv_app');
+    // Its rule for each kind of caller gone.
+    await sql(
+      vault.adminUrl,
+      'alter policy document_tombstone_actor on document_tombstone using (true)',
+    );
+    await expect(checkRestored(target())).rejects.toThrow(
+      /no rule for each kind of caller on document_tombstone/,
+    );
+    await sql(
+      vault.adminUrl,
+      `alter policy document_tombstone_actor on document_tombstone
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    // Asking to remove a document for good, left to anybody.
+    await sql(
+      vault.adminUrl,
+      'alter table public.document disable trigger document_purge_request_owner',
+    );
+    await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    await sql(
+      vault.adminUrl,
+      'alter table public.document enable trigger document_purge_request_owner',
+    );
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {
@@ -1508,6 +1539,110 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     });
     expect(seen).toBe(1);
   }, 60_000);
+
+  it('a restore from before a removal reports the missing files, and the document says so', async () => {
+    // A vault with two documents and their files; backed up; then one of
+    // them removed for good (5.24): its files deleted, then its rows.
+    const before = await createTestDatabase();
+    made.push(before);
+    const root = await mkdtemp(path.join(tmpdir(), 'fdv-restore-files-'));
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-removal-'));
+    try {
+      const hh = await seed(before.adminUrl);
+      const ids = (
+        await sql(
+          before.adminUrl,
+          `with v as (insert into vault (household_id, kind, label) values ('${hh}', 'local', 'v')
+                      returning id),
+                k as (insert into scope_key (household_id, kind, key_wrapped)
+                      values ('${hh}', 'household', '\\x00') returning id),
+                d as (select id, row_number() over (order by id) as n from document
+                       where household_id = '${hh}' order by id limit 2)
+           insert into document_version
+             (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+              cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+           select '${hh}', d.id, g.no, 'scan.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00',
+                  '${hh}/' || d.id || '/' || g.no || '/file.pdf.enc', v.id, '\\x00', k.id
+             from d, v, k, generate_series(1, d.n::int) as g(no)
+           returning id, document_id, storage_key`,
+        )
+      ).rows as Array<{ id: string; document_id: string; storage_key: string }>;
+      // The first document has one version; the second, two.
+      expect(ids).toHaveLength(3);
+      for (const v of ids) {
+        await mkdir(path.dirname(path.join(root, v.storage_key)), { recursive: true });
+        await writeFile(path.join(root, v.storage_key), 'ciphertext');
+      }
+      const file = (
+        await backupDatabase({
+          adminUrl: before.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+      const counts = new Map<string, number>();
+      for (const v of ids) counts.set(v.document_id, (counts.get(v.document_id) ?? 0) + 1);
+      const removed = [...counts].find(([, n]) => n === 2)?.[0] as string;
+      const kept = [...counts].find(([, n]) => n === 1)?.[0] as string;
+      // Removed for good after the backup was made: its files are gone.
+      for (const v of ids.filter((x) => x.document_id === removed)) {
+        await rm(path.join(root, v.storage_key));
+      }
+
+      const t = await empty();
+      const report = await restoreBackup(file, KEY, into(t), quiet, KEYS, {
+        credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+        localRoot: root,
+      });
+      // The report lists each version whose file is gone, by its document.
+      const byId = (a: { version_id: string }, b: { version_id: string }) =>
+        a.version_id < b.version_id ? -1 : 1;
+      expect([...report.filesRemoved].sort(byId)).toEqual(
+        ids
+          .filter((v) => v.document_id === removed)
+          .map((v) => ({ household_id: hh, document_id: removed, version_id: v.id }))
+          .sort(byId),
+      );
+      expect(report.filesUnchecked).toBe(0);
+      expect(report.documents).toBe(3);
+
+      // And the document says so, as the vault reads it: its versions are
+      // marked removed for good; the other's file is there, and unmarked.
+      const seen = await withClient(t.appUrl, async (c) => {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true)`,
+          [hh],
+        );
+        const { rows } = await c.query<{ document_id: string; removed: boolean }>(
+          `select document_id, file_removed_at is not null as removed from document_version
+            order by document_id, version_no`,
+        );
+        await c.query('commit');
+        return rows;
+      });
+      expect(seen.filter((r) => r.document_id === removed).map((r) => r.removed)).toEqual([
+        true,
+        true,
+      ]);
+      expect(seen.filter((r) => r.document_id === kept).map((r) => r.removed)).toEqual([false]);
+
+      // Told nothing of where the files are, a restore marks nothing.
+      const blind = await empty();
+      const unmarked = await restoreBackup(file, KEY, into(blind), quiet, KEYS);
+      expect(unmarked).toMatchObject({ filesRemoved: [], filesUnchecked: 0 });
+      const none = await sql(
+        blind.adminUrl,
+        'select count(*)::int as n from document_version where file_removed_at is not null',
+      );
+      expect(none.rows[0]?.n).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('refuses a database that is not empty, and leaves it as it was', async () => {
     await expect(restoreBackup(file, KEY, into(vault), quiet, KEYS)).rejects.toBeInstanceOf(

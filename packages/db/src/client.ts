@@ -701,6 +701,31 @@ export interface Schema {
     updated_at: GeneratedTimestamp;
     updated_by: string | null;
     deleted_at: Timestamp | null;
+    /**
+     * An owner asked to remove it for good, and when (0045): whoever filed
+     * it, and the other owners, were told then. Only in the Trash; Bring it
+     * back clears both. Somebody else's is removed 24 hours after.
+     */
+    purge_requested_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
+    purge_requested_by: ColumnType<string | null, string | null | undefined, string | null>;
+  };
+
+  /**
+   * What a document removed for good leaves behind (0045): who could see it,
+   * and the collections' links whose snapshot named it, so the activity log
+   * shows its lines to them and nobody else. Never changed or removed.
+   */
+  document_tombstone: {
+    id: string;
+    household_id: string;
+    visibility: Visibility;
+    owner_member_id: string | null;
+    link_ids: ColumnType<string[], string[] | undefined, never>;
+    removed_at: GeneratedTimestamp;
   };
 
   document_version: {
@@ -729,6 +754,15 @@ export interface Schema {
     process_error: string | null;
     uploaded_by: string | null;
     uploaded_at: GeneratedTimestamp;
+    /**
+     * Its file was not where it is kept when a restore looked (0045): removed
+     * for good after the backup was made. Its record is back; its file is not.
+     */
+    file_removed_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
   };
 
   document_text: {

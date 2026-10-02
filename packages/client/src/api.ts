@@ -83,6 +83,12 @@ import { captureUpload, photoUpload, type CaptureBody, type PhotoBody } from './
 
 export type Params = Record<string, string | number | boolean | undefined | null>;
 
+/**
+ * What asking to remove a document for good came to (5.24): removed, or —
+ * somebody else's — asked about, with the document as it now is.
+ */
+export type PurgeResult = { removed: true } | { removed: false; document: DocumentView };
+
 /** WebAuthn option JSON, passed through untouched to the platform's authenticator. */
 export type PasskeyOptions = Record<string, unknown>;
 
@@ -407,9 +413,25 @@ export function createApi(http: Http) {
       }),
     deleteDocument: (token: string, id: string) =>
       request<void>(`/api/v1/documents/${id}`, { method: 'DELETE', token }),
-    /** Out of the Trash again (5.1). */
+    /** Out of the Trash again (5.1); an owner's request to remove it for good goes with it (5.24). */
     restoreDocument: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}/restore`, { method: 'POST', token }),
+    /**
+     * Removes a document in the Trash for good (5.24, `features.remove_for_good`).
+     * Owners only, and it always asks to confirm it's you first (`403
+     * step_up_required`, action `remove_for_good`). One the caller filed, or
+     * that is theirs, is removed at once. Anybody else's is asked about
+     * instead — whoever filed it, and the other owners, are told — and the
+     * document comes back with `purge_allowed_from`: a call from then
+     * removes it, and one before is `409 purge_not_yet`.
+     */
+    purgeDocument: async (token: string, id: string): Promise<PurgeResult> => {
+      const asked = await request<DocumentView | undefined>(`/api/v1/documents/${id}/purge`, {
+        method: 'POST',
+        token,
+      });
+      return asked ? { removed: false, document: asked } : { removed: true };
+    },
     setVisibility: (token: string, documentId: string, visibility: Visibility) =>
       request<{ notice: { title: string; body: string } | null }>(
         `/api/v1/documents/${documentId}/visibility`,

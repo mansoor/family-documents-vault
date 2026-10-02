@@ -32,7 +32,8 @@ export type StepUpAction =
   | 'change_password'
   | 'change_sign_in'
   | 'widen_type_visibility'
-  | 'share_collection';
+  | 'share_collection'
+  | 'remove_for_good';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -57,6 +58,9 @@ const WHY: Record<StepUpAction, string> = {
   // will, the tax returns and the medical file out in one link. Turning a
   // shared collection back on after a restore asks the same.
   share_collection: 'to share a collection outside the family',
+  // Removing a document for good (5.24), or asking to: a session picked up
+  // from an unlocked device could otherwise empty the Trash for ever.
+  remove_for_good: 'to remove a document for good',
 };
 
 export class StepUpService {

@@ -162,13 +162,23 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
     }
 
     update.process_error = errors.length ? errors.join('; ') : null;
-    await withSystem(deps.db, hh, (trx) =>
+    const recorded = await withSystem(deps.db, hh, (trx) =>
       trx
         .updateTable('document_version')
         .set({ ...update, processed_at: new Date() })
         .where('id', '=', version.id)
-        .execute(),
+        .executeTakeFirst(),
     );
+    // Removed for good while it was processed (5.24): the removal held the
+    // version until it was gone, and deleted what it found. A thumbnail
+    // written after it looked is deleted here, so nothing names nothing.
+    if (Number(recorded.numUpdatedRows) === 0) {
+      if (update.thumbnail_key) await adapter.delete(update.thumbnail_key).catch(() => undefined);
+      deps.log('info', 'a version was removed for good while it was processed', {
+        version_id: version.id,
+      });
+      return;
+    }
     if (doc.is_essential && drawable(version.mime) && deps.sendPreviews) {
       // Only one not yet asked for: the queue holds one job per version anyway.
       const marked = await withSystem(deps.db, hh, (trx) =>

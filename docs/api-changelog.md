@@ -2175,6 +2175,88 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       nothing else; writes none of them; and of the activity log reads
       nothing and writes only its own lines, under its own name, about its
       own request, on the log's head, hashed as every line is.
+  - Removing a document for good (5.24, `features.remove_for_good`). Nothing
+    empties the Trash by itself; an owner may remove a document in it for
+    good — at once one they filed or that is theirs, anybody else's only
+    `PURGE_NOTICE_HOURS` (24) after whoever filed it was told.
+    - **Added:** `features.remove_for_good` in the capability document,
+      `true` from this release and absent before it.
+    - **Added:** `POST /api/v1/documents/{id}/purge` (bearer, owners only).
+      **Every call asks to confirm it's you**: `403 step_up_required` with
+      `action: "remove_for_good"` ("…to remove a document for good"), asked
+      after who may and after the document is found, so a refusal is never
+      a question first. A document the caller filed (`created_by`) or that
+      is theirs (`owner_member_id`) is removed at once: `204`. Anybody
+      else's is asked about instead: `202` with the document, now carrying
+      `purge_requested_at` and `purge_allowed_from`; whoever filed it, while
+      they are in the household, and the other owners are told by
+      `alert.send` (email, and web push) — who asked, and when it may go,
+      never which document. A call from `purge_allowed_from` on removes it
+      (`204`); before then `409 purge_not_yet` ("Whoever filed it has been
+      told, and can bring it back until then: it can be removed for good
+      from Saturday 3 October at 14:05.", the household's clock; `detail`
+      is `purge_allowed_from`). The day counts from the asking, on the
+      database's clock — never from the Trash, so a document trashed before
+      this release cannot be removed by another owner the moment it lands.
+      Refusals: `403 forbidden` for anybody but an owner ("Only an owner
+      can remove a document for good."); `404 not_found` for a document the
+      caller cannot see (another member's Only me document, too) or that is
+      not there; `409 not_in_trash` out of the Trash; `503
+storage_unreachable` (retriable) when a file could not be deleted, and
+      then nothing is removed.
+    - What goes: every version's file, its thumbnail, its page previews,
+      the pages any link to view drew of it, the file of an upload to it
+      that never finished — from storage first, a missing one being fine —
+      then the document, every row that names it going with it (its
+      versions, text, reminders, links and their sessions, collection
+      items, collection links' snapshot rows), then the line in the log. A
+      kind deleted while it still used it goes with it if it was the last.
+      An export made before the removal keeps its copy until it expires
+      (seven days).
+    - **Changed:** `POST /api/v1/documents/{id}/restore` (Bring it back)
+      clears an owner's request; asked again, the day starts again. A
+      document removed for good meanwhile is `404`, never a fault.
+    - **Added:** `DocumentView.purge_requested_at` and `purge_allowed_from`
+      (null when nobody has asked; in the Trash only), and `file_removed`;
+      `VersionView.file_removed`. All absent from older vaults. `GET
+/api/v1/documents` takes `purge_requested=true|false`.
+    - **Added (restore):** a backup holds only the database, so restoring
+      one made before a removal brings back the record, not the file. Given
+      where the files are kept (`restore-backup` does), the restore looks
+      for every version's file; each one missing is marked, listed in the
+      report (`filesRemoved`, by document; `filesUnchecked` for files whose
+      place could not be reached), and answers `410 file_removed` ("The file
+      was removed for good.") from `GET /versions/{id}/content`, `/pages/{n}`
+      and `/thumbnail`, and through a link, with no download written down.
+      Its `file_removed` says so, and it leaves a phone's offline set.
+    - The activity log: **new** `document.purge_requested` ("Sam asked to
+      remove “Payslip” for good", notable) and `document.purged` ("Sam
+      removed a document for good", notable, no title, nowhere to go), each
+      a line about the document. `document.restored` of one an owner had
+      asked about says "…out of the Trash, so it will not be removed for
+      good". Once a document is removed, its lines — old and new — are
+      shown to whoever could see it, by its tombstone, and to nobody else;
+      a line about a document with neither a row nor a tombstone is shown
+      to nobody. A collection's link made with a document since removed
+      stays unknown to a reader who could not see that document — in `GET
+/shares`, a collection's `shared_outside`, taking it back, and the
+      log.
+    - `@fdv/shared`: `PURGE_NOTICE_HOURS`, `FILE_REMOVED`,
+      `CapabilityFeatures.remove_for_good`, capability `document.purge`
+      (owners). `@fdv/client`: `purgeDocument(token, id)` → `{ removed:
+true }` or `{ removed: false, document }`, and `PurgeResult`. The fake
+      keeps a Trash (`DELETE`, `restore`, `?deleted=true`), removes for good
+      as the vault does, and a document a test marks `filedBySomeoneElse`
+      is asked about first.
+    - The database: 0045 adds `document.purge_requested_at` and
+      `purge_requested_by` (only in the Trash; both or neither; set only by
+      an owner, as themselves, at the database's now —
+      `document_purge_request_owner`), `document_version.file_removed_at`,
+      and `document_tombstone (id, household_id, visibility,
+owner_member_id, link_ids, removed_at)`: read by the family and the
+      vault, written only by an owner of a document in the Trash saying
+      what its row says, never changed or removed. The restore check knows
+      both.
 
 ## Deprecations in effect
 

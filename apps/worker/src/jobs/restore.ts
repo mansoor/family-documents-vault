@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
+import { adapterFromRow, StorageError, type StorageAdapter, type VaultRowLike } from '@fdv/storage';
 import { libpqConnection, withDatabase } from './libpq.js';
 import { sealPrivateValues } from './seal.js';
 
@@ -42,6 +43,13 @@ import { backupKeyFor, onCurrentKey, type MasterKeys, type RekeyReport } from '.
  * session opened with one survives; so is every live request to send
  * documents, with its sessions and codes (5.21). What only the family can
  * decide (passkeys, invitations) is reported.
+ *
+ * A backup holds only the database (backup.ts). A document removed for good
+ * after it was made (5.24) comes back as a record whose file is gone: told
+ * where the files are kept (`storage`), the restore looks for every
+ * version's file, marks each one not there as removed (file_removed_at) —
+ * its document then says "The file was removed for good" instead of
+ * failing — and the report lists them.
  */
 
 export interface RestoreTarget {
@@ -90,6 +98,24 @@ export interface RestoreReport {
    */
   photosUnfinished: number;
   openInvitations: number;
+  /**
+   * Versions whose file was not where it is kept (5.24): removed for good
+   * after the backup was made. Each is marked, and its document says so.
+   * Empty when the restore was not told where the files are.
+   */
+  filesRemoved: Array<{ household_id: string; document_id: string; version_id: string }>;
+  /** Versions whose file could not be looked for: where it is kept could not be reached. */
+  filesUnchecked: number;
+}
+
+/**
+ * Where the files are kept, for a restore to look for each version's file
+ * (5.24): the key that opens a vault's bucket credentials, and the folder a
+ * local vault's files are in — the worker's own.
+ */
+export interface RestoreStorage {
+  credentialsKey: Buffer;
+  localRoot: string;
 }
 
 export type Log = (level: string, msg: string, extra?: Record<string, unknown>) => void;
@@ -107,6 +133,8 @@ export async function restoreBackup(
   log: Log,
   /** The vault's scope keys, under its master key: what private.seal seals with. */
   keys: ScopeKeys,
+  /** Where the files are kept: each version's is looked for (5.24). */
+  storage?: RestoreStorage,
 ): Promise<RestoreReport> {
   await assertEmpty(target.adminUrl);
   const known = (await listMigrations()).reduce((max, m) => Math.max(max, m.version), 0);
@@ -120,6 +148,7 @@ export async function restoreBackup(
     const rekeyed = target.master ? await onCurrentKey(target.adminUrl, target.master, log) : null;
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
+    let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0 };
     try {
       // What the vault's own start does: bring an older backup up to date,
       // then give the application role its privileges.
@@ -133,10 +162,11 @@ export async function restoreBackup(
       // the migrations have run: its links are paused now.
       undone.linksPaused += await pauseLinks(admin);
       open = await stillOpen(admin);
+      if (storage) files = await markRemovedFiles(admin, storage, log);
     } finally {
       await admin.end();
     }
-    return { ...(await checkRestored(target)), ...undone, ...open, rekeyed };
+    return { ...(await checkRestored(target)), ...undone, ...open, ...files, rekeyed };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
   }
@@ -175,6 +205,92 @@ interface Undone {
 
 interface StillOpen {
   openInvitations: number;
+}
+
+type RemovedFiles = Pick<RestoreReport, 'filesRemoved' | 'filesUnchecked'>;
+
+/**
+ * Each version's file, looked for where it is kept (5.24). One that is not
+ * there was removed for good after the backup was made: marked, so that its
+ * document says so rather than failing, and listed. One whose place cannot
+ * be reached is counted and left as it is. As the owner, past the
+ * households' walls, as the rest of a restore's own work is.
+ */
+async function markRemovedFiles(
+  admin: ReturnType<typeof createPool>,
+  storage: RestoreStorage,
+  log: Log,
+): Promise<RemovedFiles> {
+  const { rows: versions } = await admin.query<{
+    id: string;
+    household_id: string;
+    document_id: string;
+    storage_key: string;
+    vault_id: string;
+  }>(
+    `select id, household_id, document_id, storage_key, vault_id
+       from document_version
+      where file_removed_at is null
+      order by household_id, document_id, version_no`,
+  );
+  const { rows: vaults } = await admin.query<VaultRowLike>(
+    'select id, kind, label, endpoint, bucket, region, path_style, credentials_encrypted from vault',
+  );
+  const adapters = new Map<string, StorageAdapter | null>();
+  const adapterOf = (vaultId: string): StorageAdapter | null => {
+    if (!adapters.has(vaultId)) {
+      const row = vaults.find((v) => v.id === vaultId);
+      let adapter: StorageAdapter | null = null;
+      try {
+        adapter = row ? adapterFromRow(row, storage.credentialsKey, storage.localRoot) : null;
+      } catch (err) {
+        log('warn', 'a place files are kept could not be opened', {
+          vault: vaultId,
+          err: (err as Error).message,
+        });
+      }
+      adapters.set(vaultId, adapter);
+    }
+    return adapters.get(vaultId) ?? null;
+  };
+  const removed: RemovedFiles['filesRemoved'] = [];
+  let unchecked = 0;
+  for (const v of versions) {
+    const adapter = adapterOf(v.vault_id);
+    if (!adapter) {
+      unchecked += 1;
+      continue;
+    }
+    try {
+      await adapter.stat(v.storage_key);
+    } catch (err) {
+      if (err instanceof StorageError && err.code === 'not_found') {
+        removed.push({
+          household_id: v.household_id,
+          document_id: v.document_id,
+          version_id: v.id,
+        });
+      } else {
+        unchecked += 1;
+      }
+    }
+  }
+  if (removed.length) {
+    await admin.query(
+      'update document_version set file_removed_at = now() where id = any($1::uuid[])',
+      [removed.map((r) => r.version_id)],
+    );
+    log('info', 'files removed for good since the backup was made', {
+      versions: removed.length,
+      documents: new Set(removed.map((r) => r.document_id)).size,
+    });
+  }
+  if (unchecked) {
+    log('warn', 'files that could not be looked for: where they are kept could not be reached', {
+      versions: unchecked,
+    });
+  }
+  return { filesRemoved: removed, filesUnchecked: unchecked };
 }
 
 /** Every live share link, paused for an owner to turn back on (A55). UNDO says it too. */
@@ -497,6 +613,12 @@ const GUARDS = [
   },
   // A link keeps the flow it was made with: a new one never opens on an old route (0037).
   { name: 'share_link_flow_fixed', table: 'share_link', fn: 'share_link_flow_fixed' },
+  // Only an owner asks, as themselves and now, to remove a document for good (0045).
+  {
+    name: 'document_purge_request_owner',
+    table: 'document',
+    fn: 'document_purge_request_owner',
+  },
   // And what it was made for: a document, or a collection as ticked, and
   // whether it keeps up with the collection (0042).
   { name: 'share_link_target_fixed', table: 'share_link', fn: 'share_link_target_fixed' },
@@ -586,6 +708,8 @@ const ACTOR_GUARDED = [
   'upload_session',
   'upload_code',
   'incoming_file',
+  // What a document removed for good leaves behind: who could see it (0045).
+  'document_tombstone',
 ];
 
 /**
@@ -665,7 +789,7 @@ const HOUSEHOLD_ROWS: Record<string, string> = {
  */
 export async function checkRestored(
   target: RestoreTarget,
-): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | 'rekeyed'>> {
+): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | keyof RemovedFiles | 'rekeyed'>> {
   const admin = createPool(target.adminUrl, 1);
   const app = createPool(target.appUrl, 1);
   try {
@@ -802,6 +926,7 @@ export async function checkRestored(
       privileged: boolean;
       queue: boolean;
       audit_mutable: boolean;
+      tombstones_mutable: boolean;
       tenant_tables: string[];
     }>(
       `with ours as (
@@ -815,6 +940,10 @@ export async function checkRestored(
               has_schema_privilege('pgboss', 'usage') as queue,
               has_table_privilege('public.audit_event', 'update')
                 or has_table_privilege('public.audit_event', 'delete') as audit_mutable,
+              -- What a document removed for good leaves behind (0045).
+              has_table_privilege('public.document_tombstone', 'update')
+                or has_table_privilege('public.document_tombstone', 'delete')
+                as tombstones_mutable,
               array(select c.oid::regclass::text from pg_class c
                      join pg_namespace n on n.oid = c.relnamespace
                     where n.nspname = 'public' and c.relkind in ('r', 'p')
@@ -835,6 +964,9 @@ export async function checkRestored(
     if (r.privileged) throw new Error('the application role can bypass row-level security');
     if (!r.queue) throw new Error('the application role cannot use the job queue');
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
+    if (r.tombstones_mutable) {
+      throw new Error("a removed document's tombstone can be changed or removed");
+    }
 
     // Outside withScope, so it says for itself what withSystem would: this
     // household, asked by the vault itself. Since 0030 a transaction that

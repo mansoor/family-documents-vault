@@ -54,6 +54,8 @@ describe('the role matrix', () => {
       'notifications.manage',
       'member.invite_adult',
       'types.widen_visibility',
+      // 5.24: removing a document for good (D1).
+      'document.purge',
     ] as Capability[]) {
       expect(rolesWith(c), c).toEqual(['owner']);
     }

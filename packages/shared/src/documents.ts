@@ -66,8 +66,35 @@ export interface DocumentView {
    * Everyone. Only ever about the caller. Absent from older vaults.
    */
   filed_by_me?: boolean;
+  /**
+   * When an owner asked to remove it for good (5.24): in the Trash only.
+   * Whoever filed it, and the other owners, were told then; bringing it
+   * back clears it. Null when nobody has asked; absent from older vaults.
+   */
+  purge_requested_at?: string | null;
+  /**
+   * From when an owner may remove it for good, having asked:
+   * `PURGE_NOTICE_HOURS` after `purge_requested_at`. Null when nobody has
+   * asked — one an owner filed, or that is theirs, they remove at once.
+   */
+  purge_allowed_from?: string | null;
+  /**
+   * Its newest version's file was removed for good after the backup the
+   * vault was restored from was made (5.24): the record is back, the file
+   * is not. Absent from older vaults.
+   */
+  file_removed?: boolean;
   etag: string;
 }
+
+/**
+ * How long somebody else's document waits, once an owner has asked to
+ * remove it for good, for whoever filed it to bring it back (5.24, D1).
+ */
+export const PURGE_NOTICE_HOURS = 24;
+
+/** What a document whose file was removed for good says in place of it (5.24). */
+export const FILE_REMOVED = 'The file was removed for good.';
 
 export interface VersionView {
   id: string;
@@ -94,6 +121,12 @@ export interface VersionView {
    * when that person has left the household, or on an older vault.
    */
   uploaded_by_name?: string | null;
+  /**
+   * Its file was removed for good after the backup the vault was restored
+   * from was made (5.24): its content, pages and thumbnail answer `410
+   * file_removed`. Absent from older vaults.
+   */
+  file_removed?: boolean;
 }
 
 /** The vault draws a version's first 30 pages; the rest are opened by saving a copy. */

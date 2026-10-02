@@ -42,6 +42,7 @@ import {
   UPLOAD_DEVICE_KEY_PURPOSE,
   UploadRequestService,
 } from './uploads/requests.js';
+import { PurgeService } from './documents/purge.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -250,6 +251,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     visibility: new VisibilityService(db, keys),
     vaults,
     documents,
+    purge: new PurgeService(db, vaults, documents, alert),
     types: new TypeService(db, enqueue, stepUp),
     collections: new CollectionService(db, documents),
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),

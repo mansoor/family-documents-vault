@@ -67,7 +67,7 @@ import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { allows, requireCapability } from '../authz.js';
-import { canSee, PREVIEW_MAX_PAGES } from '@fdv/shared';
+import { canSee, FILE_REMOVED, PREVIEW_MAX_PAGES, PURGE_NOTICE_HOURS } from '@fdv/shared';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -111,6 +111,8 @@ export interface ListQuery {
   essential?: boolean | undefined;
   status?: string | undefined;
   deleted?: boolean | undefined;
+  /** Only those an owner has asked to remove for good, or none of them (5.24). */
+  purge_requested?: boolean | undefined;
   updated_since?: string | undefined;
   sort?: 'recent' | 'expiring' | 'alpha' | undefined;
   limit?: number | undefined;
@@ -185,6 +187,8 @@ export type DocRow = {
   created_at: Date;
   updated_at: Date;
   deleted_at: Date | null;
+  /** An owner asked to remove it for good, then (5.24): in the Trash only. */
+  purge_requested_at: Date | null;
 };
 
 const isoDate = (d: string | null): string | null => (d === null ? null : d.slice(0, 10));
@@ -652,7 +656,7 @@ export class DocumentService {
     const type = row.type_key ? await typeOf(row.type_key) : null;
     const versions = await trx
       .selectFrom('document_version')
-      .select(['id', 'version_no'])
+      .select(['id', 'version_no', 'file_removed_at'])
       .where('document_id', '=', row.id)
       .orderBy('version_no', 'desc')
       .execute();
@@ -699,6 +703,14 @@ export class DocumentService {
       // Whether the caller filed it: a teen changes who sees only the ones
       // they filed (A72). Their own fact, never who else did.
       filed_by_me: row.created_by !== null && row.created_by === p.accountId,
+      // An owner's request to remove it for good, and from when it may be
+      // (5.24): said to everybody who sees it in the Trash.
+      purge_requested_at: row.purge_requested_at?.toISOString() ?? null,
+      purge_allowed_from: row.purge_requested_at
+        ? new Date(row.purge_requested_at.getTime() + PURGE_NOTICE_HOURS * 3_600_000).toISOString()
+        : null,
+      // A restore from before its removal brought the record back, not the file.
+      file_removed: versions[0]?.file_removed_at != null,
       etag: etagOf(row.id, row.updated_at),
     };
   }
@@ -973,17 +985,36 @@ export class DocumentService {
   async restore(p: Principal, id: string, meta: RequestMeta): Promise<DocumentView> {
     this.canWrite(p);
     return withPrincipal(this.db, p, async (trx) => {
-      const row = await this.fetch(trx, p, id, true);
+      // Held while it is decided (5.24): an owner asking to remove it for
+      // good meanwhile is either cancelled here and said so, or waits; one
+      // removing it is waited for, and it is then not there.
+      const row = await this.fetch(trx, p, id, true, true);
       this.mustOwnIfTeen(p, row);
       if (!row.deleted_at) {
         return this.view(trx, p, row, typeLookup(trx), await this.opened(trx, p, row));
       }
+      // Out of the Trash, and any owner's request to remove it for good
+      // with it (5.24): that is how whoever filed it keeps it. Only while it
+      // is still in the Trash, as the row is when this has it: removed for
+      // good meanwhile, it is not there; brought back by somebody else, it
+      // is answered as it is.
       const restored = await trx
         .updateTable('document')
-        .set({ deleted_at: null, updated_at: new Date(), updated_by: p.accountId })
+        .set({
+          deleted_at: null,
+          purge_requested_at: null,
+          purge_requested_by: null,
+          updated_at: new Date(),
+          updated_by: p.accountId,
+        })
         .where('id', '=', id)
+        .where('deleted_at', 'is not', null)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!restored) {
+        const now = await this.fetch(trx, p, id, true);
+        return this.view(trx, p, now, typeLookup(trx), await this.opened(trx, p, now));
+      }
       // In the Trash it had no reminders, and types.regenerate passes it by:
       // they are made here, in its owner's own request, from what their
       // key opens (0.5.15, A62).
@@ -997,6 +1028,7 @@ export class DocumentService {
         action: 'document.restored',
         objectType: 'document',
         objectId: id,
+        ...(row.purge_requested_at ? { detail: { cancelled_purge: true } } : {}),
         ip: meta.ip,
       });
       return this.view(trx, p, restored, typeLookup(trx), opened);
@@ -1021,6 +1053,9 @@ export class DocumentService {
       if (q.type_key) query = query.where('type_key', '=', q.type_key);
       if (q.visibility) query = query.where('visibility', '=', q.visibility);
       if (q.essential !== undefined) query = query.where('is_essential', '=', q.essential);
+      if (q.purge_requested !== undefined) {
+        query = query.where('purge_requested_at', q.purge_requested ? 'is not' : 'is', null);
+      }
       if (q.tag) query = query.where(sql<boolean>`${sql.ref('tags')} @> array[${q.tag}]::text[]`);
       if (q.issued_by) {
         query = query.where(sql<boolean>`lower(issued_by) = lower(${q.issued_by.trim()})`);
@@ -2071,6 +2106,7 @@ export class DocumentService {
       if (!v) throw notFound();
       // Visibility first: a document this person may not see is a 404.
       await this.fetch(trx, p, v.document_id, true);
+      if (v.file_removed_at) throw fileRemoved();
       if (!v.thumbnail_key) return null;
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       return {
@@ -2126,11 +2162,15 @@ export class DocumentService {
       for (const row of kept) {
         const v = await trx
           .selectFrom('document_version')
-          .select(['id', 'mime', 'page_count', 'preview_pages', 'preview_state'])
+          .select(['id', 'mime', 'page_count', 'preview_pages', 'preview_state', 'file_removed_at'])
           .where('document_id', '=', row.id)
           .orderBy('version_no', 'desc')
           .limit(1)
           .executeTakeFirstOrThrow();
+        // Its file was removed for good, and only its record came back with a
+        // restore (5.24): nothing to keep, so a phone removes its copy, as it
+        // does an Essential removed for good (the 4.10 rule).
+        if (v.file_removed_at) continue;
         items.push({
           document: await this.view(trx, p, row),
           version: {
@@ -2173,13 +2213,14 @@ export class DocumentService {
       const doc = await this.fetch(trx, p, v.document_id); // visibility, and not in the bin
       const latest = await trx
         .selectFrom('document_version')
-        .select('id')
+        .select(['id', 'file_removed_at'])
         .where('document_id', '=', doc.id)
         .orderBy('version_no', 'desc')
         .limit(1)
         .executeTakeFirstOrThrow();
       const inSet =
         p.role !== 'viewer' &&
+        latest.file_removed_at === null &&
         doc.is_essential &&
         (p.role !== 'teen' || doc.owner_member_id === p.memberId) &&
         (doc.visibility !== 'private' || includePrivate);
@@ -2215,6 +2256,8 @@ export class DocumentService {
         .executeTakeFirst();
       if (!v) throw notFound();
       await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      // Its record came back with a restore, its file did not (5.24).
+      if (v.file_removed_at) throw fileRemoved();
       if (v.preview_state === 'unsupported') return { kind: 'none', why: 'kind' } as const;
       if (v.preview_state === 'failed') return { kind: 'none', why: 'failed' } as const;
       const known = v.preview_state === 'ready' ? v.preview_pages : v.page_count;
@@ -2324,6 +2367,9 @@ export class DocumentService {
         .executeTakeFirst();
       if (!v) throw notFound();
       await this.fetch(trx, p, v.document_id, true); // applies the visibility rule
+      // Its record came back with a restore, its file did not (5.24): said
+      // so, and no download is written down that could not happen.
+      if (v.file_removed_at) throw fileRemoved();
       const scopeKey = await this.keys.unwrapById(trx, v.wrapped_by_scope);
       const fileKey = unwrapKey(v.file_key_wrapped, scopeKey, `version:${v.document_id}`);
       const adapter = await this.vaults.adapterById(trx, v.vault_id);
@@ -2534,13 +2580,12 @@ async function looseDetails(
 
 /**
  * A kind deleted while documents still used it (0035), gone for good once
- * none does: when the last of them is filed under another kind — the only
- * way one stops using it, since nothing purges a document from the Trash
- * yet. Quietly: its delete was said in the log when it was made. The row
- * is held first, so two documents leaving it at once cannot each see the
- * other still there.
+ * none does: when the last of them is filed under another kind, or removed
+ * for good (5.24). Quietly: its delete was said in the log when it was
+ * made. The row is held first, so two documents leaving it at once cannot
+ * each see the other still there.
  */
-async function dropDeletedType(trx: Db, key: string): Promise<void> {
+export async function dropDeletedType(trx: Db, key: string): Promise<void> {
   const deleted = await trx
     .selectFrom('document_type')
     .select('key')
@@ -2588,6 +2633,7 @@ function versionView(v: {
   uploaded_at: Date;
   preview_state: string;
   preview_pages: number | null;
+  file_removed_at: Date | null;
 }): VersionView {
   return {
     id: v.id,
@@ -2607,8 +2653,13 @@ function versionView(v: {
       v.preview_state === 'failed'
         ? (v.preview_pages ?? 0)
         : null,
+    // A restore from before its removal brought the record back, not the file (5.24).
+    file_removed: v.file_removed_at !== null,
   };
 }
+
+/** Its record came back with a restore; its file had been removed for good (5.24). */
+const fileRemoved = () => new ApiError(410, 'file_removed', FILE_REMOVED);
 
 /** The step-up opening a document asks for: "only me" first, then Essentials. */
 export type SensitiveAction = 'open_private_document' | 'open_essential';

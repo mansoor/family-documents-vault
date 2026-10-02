@@ -24,6 +24,7 @@ import {
   PREVIEW_MAX_PAGES,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
+  PURGE_NOTICE_HOURS,
   refusalFor,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
@@ -154,10 +155,20 @@ export interface FakeVaultState {
   offline: boolean;
 }
 
-type FakeDocument = { id: string; title: string | null; revision?: number } & Omit<
-  CaptureMetadata,
-  'title'
->;
+type FakeDocument = {
+  id: string;
+  title: string | null;
+  revision?: number;
+  /** In the Trash since (5.1): out of every list but the Trash's. */
+  deleted_at?: string | null;
+  /** An owner asked to remove it for good, then (5.24). */
+  purge_requested_at?: string | null;
+  /**
+   * Filed by somebody other than the one person the fake signs in as: a test
+   * sets it, to have an owner ask before removing it for good (5.24).
+   */
+  filedBySomeoneElse?: boolean;
+} & Omit<CaptureMetadata, 'title'>;
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
 export interface FakeCollection {
@@ -810,10 +821,63 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       // As the real vault: ?issued_by= filters, whatever the case.
       const by = param(url, 'issued_by');
-      const items = by
-        ? state.documents.filter((d) => d.issued_by?.toLowerCase() === by.trim().toLowerCase())
-        : state.documents;
+      // The Trash is its own list (5.1), and an owner's requests to remove
+      // for good are asked for by themselves (5.24).
+      const inTrash = param(url, 'deleted') === 'true';
+      const asked = param(url, 'purge_requested');
+      const items = state.documents
+        .filter((d) => Boolean(d.deleted_at) === inTrash)
+        .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
+        .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase());
       return ok({ items: items.map(listedOf), next_cursor: null, has_more: false });
+    }
+    // Into the Trash, out of it, and out of the vault for good (5.1, 5.24),
+    // as the real vault keeps them.
+    const trashAt = /^\/api\/v1\/documents\/([^/]+)(\/restore|\/purge)?$/.exec(path);
+    if (
+      trashAt &&
+      ((trashAt[2] === undefined && init.method === 'DELETE') ||
+        (trashAt[2] !== undefined && init.method === 'POST'))
+    ) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const doc = state.documents.find((d) => d.id === decodeURIComponent(trashAt[1] as string));
+      if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
+      if (trashAt[2] === undefined) {
+        doc.deleted_at ??= new Date().toISOString();
+        return empty();
+      }
+      if (trashAt[2] === '/restore') {
+        doc.deleted_at = null;
+        doc.purge_requested_at = null;
+        return ok(viewOf(doc));
+      }
+      if (!can(state.role, 'document.purge')) {
+        return fail(403, 'forbidden', refusalFor('document.purge'));
+      }
+      if (!doc.deleted_at) {
+        return fail(
+          409,
+          'not_in_trash',
+          'Only a document in the Trash can be removed for good. Move it to the Trash first.',
+        );
+      }
+      const theirs = doc.filedBySomeoneElse !== true || doc.owner_member_id === 'fake-member';
+      if (!theirs && !doc.purge_requested_at) {
+        doc.purge_requested_at = new Date().toISOString();
+        return ok(listedOf(doc), 202);
+      }
+      const from = Date.parse(doc.purge_requested_at ?? '') + PURGE_NOTICE_HOURS * 3_600_000;
+      if (!theirs && Date.now() < from) {
+        return fail(
+          409,
+          'purge_not_yet',
+          'Whoever filed it has been told, and can bring it back until then.',
+          new Date(from).toISOString(),
+        );
+      }
+      state.documents = state.documents.filter((d) => d !== doc);
+      return empty();
     }
     // One document, and an edit to it: the details merged, as the real
     // vault merges them (0.5.7), so a client never wipes what it did not show.
@@ -821,7 +885,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (one && (init.method === 'GET' || init.method === 'PATCH')) {
       const s = session();
       if (!('id' in s)) return s;
-      const doc = state.documents.find((d) => d.id === decodeURIComponent(one[1] as string));
+      // One in the Trash is not there for this, as in the real vault (5.1).
+      const doc = state.documents.find(
+        (d) => d.id === decodeURIComponent(one[1] as string) && !d.deleted_at,
+      );
       if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
       if (init.method === 'GET') return ok(viewOf(doc));
       // As the real vault: an edit made to a version somebody has since
@@ -2010,8 +2077,16 @@ function documentView(
     notes: sealed ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,
     extra: sealed ? {} : (doc.extra ?? {}),
-    // The fake's one signed-in person files every document it holds.
-    filed_by_me: true,
+    // The fake's one signed-in person files every document it holds, unless
+    // a test says somebody else did (5.24).
+    filed_by_me: doc.filedBySomeoneElse !== true,
+    deleted_at: doc.deleted_at ?? null,
+    // As the real vault (5.24): an owner's request, and from when it may go.
+    purge_requested_at: doc.purge_requested_at ?? null,
+    purge_allowed_from: doc.purge_requested_at
+      ? new Date(Date.parse(doc.purge_requested_at) + PURGE_NOTICE_HOURS * 3_600_000).toISOString()
+      : null,
+    file_removed: false,
     etag: etagOf(doc),
     status: deriveStatus(
       {

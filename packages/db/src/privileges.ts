@@ -115,6 +115,11 @@ begin
     grant execute on function public.app_upload_audit_actions() to fdv_app;
     grant execute on function public.app_upload_line_keys(text) to fdv_app;
   end if;
+  -- What a document removed for good leaves behind (0045) is written once,
+  -- by the owner removing it, and never changed or removed after.
+  if to_regclass('public.document_tombstone') is not null then
+    revoke update, delete on public.document_tombstone from fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

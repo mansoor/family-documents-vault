@@ -122,6 +122,11 @@ async function main() {
         { adminUrl: config.DATABASE_ADMIN_URL, appUrl: config.DATABASE_URL, master },
         log,
         keys,
+        // Where the files are, to look for each version's (5.24).
+        {
+          credentialsKey: deriveKey(masterSecret, 'vault-credentials'),
+          localRoot: config.FDV_LOCAL_VAULT_DIR,
+        },
       );
       console.log(summary(file, report));
     } catch (err) {
@@ -256,6 +261,21 @@ function summary(file: string, r: RestoreReport): string {
       `  - ${plural(r.photosUnfinished, 'photo')} still being made when the backup was taken ` +
         `${r.photosUnfinished === 1 ? 'was' : 'were'} not finished;`,
       '    choose it again on the person’s profile.',
+    );
+  }
+  if (r.filesRemoved.length > 0) {
+    const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
+    lines.push(
+      `  - ${plural(documents.length, 'document')} had ${documents.length === 1 ? 'its file' : 'their files'} ` +
+        'removed for good after the backup was made. The record is back, the',
+      '    file is not: each says "The file was removed for good" when it is opened.',
+      ...documents.map((d) => `      ${d}`),
+    );
+  }
+  if (r.filesUnchecked > 0) {
+    lines.push(
+      `  - ${plural(r.filesUnchecked, 'file')} could not be looked for: where ${r.filesUnchecked === 1 ? 'it is' : 'they are'} kept`,
+      '    could not be reached. Check Settings → Where your files are kept once the vault runs.',
     );
   }
   if (r.openInvitations > 0) {

@@ -106,7 +106,19 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
     case 'document.deleted':
       return line(`${who} moved ${doc} to the Trash`);
     case 'document.restored':
-      return line(`${who} took ${doc} out of the Trash`);
+      // 5.24: bringing it back is how whoever filed it keeps it.
+      return detail.cancelled_purge === true
+        ? line(`${who} took ${doc} out of the Trash, so it will not be removed for good`, true)
+        : line(`${who} took ${doc} out of the Trash`);
+    // 5.24: an owner asked to remove somebody else's document for good; who
+    // filed it may bring it back for 24 hours.
+    case 'document.purge_requested':
+      return line(`${who} asked to remove ${doc} for good`, true);
+    // 5.24: removed for good. The line carries no title, and the document
+    // has no row to name it by: only whoever could see it is shown it (its
+    // tombstone says who), and there is nowhere for it to go.
+    case 'document.purged':
+      return { ...line(`${who} removed a document for good`, true), document_id: null };
     case 'document.visibility_changed': {
       const to = text(detail.to);
       const words =
