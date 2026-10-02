@@ -529,7 +529,10 @@ function AccountCard(props: { member: Member; name: string }) {
           <p className="muted">
             The address {props.name} signs in with, how, and where they are signed in. Only owners
             can see it, after confirming it’s them with a passkey or a code from their authenticator
-            app. Each look is noted in the activity log, for the owners and {props.name}.
+            app. {/* A viewer reads no activity log: they are not told. */}
+            {props.member.role === 'viewer'
+              ? 'Each look is noted in the activity log, for the owners.'
+              : `Each look is noted in the activity log, for the owners and ${props.name}.`}
           </p>
           <ErrorNote message={error} />
           <Button kind="quiet" disabled={busy} onClick={() => void show()}>

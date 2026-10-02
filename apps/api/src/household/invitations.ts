@@ -263,10 +263,28 @@ export class InvitationService {
       .select(['account_id'])
       .where('member_id', '=', memberId)
       .executeTakeFirst();
-    if (held) {
-      throw new ApiError(409, 'already_signed_in', 'That person already has a sign-in.');
-    }
+    if (held) throw alreadySignedIn();
     await this.mustNeverHaveSignedIn(trx, memberId, member.display_name);
+    // Held before any invitation is, as accepting one and recording a
+    // passing hold the person first (the 5.25 review): one order everywhere,
+    // the person, then their invitations, then the log. Read again once
+    // held, so a passing or a sign-in made meanwhile is seen. The database's
+    // rule for changing a person gives no row to a hold it would refuse —
+    // an adult's, once the person has a sign-in.
+    const now = await trx
+      .selectFrom('member')
+      .select(['is_deceased'])
+      .where('id', '=', member.id)
+      .forKeyShare()
+      .executeTakeFirst();
+    if (!now) throw alreadySignedIn();
+    if (now.is_deceased) throw passedAway(member.display_name);
+    const signedIn = await trx
+      .selectFrom('account_household')
+      .select(['account_id'])
+      .where('member_id', '=', member.id)
+      .executeTakeFirst();
+    if (signedIn) throw alreadySignedIn();
     return member.id;
   }
 
@@ -621,6 +639,9 @@ function stateOf(r: {
   if (r.expires_at.getTime() < Date.now()) return 'expired';
   return 'pending';
 }
+
+const alreadySignedIn = () =>
+  new ApiError(409, 'already_signed_in', 'That person already has a sign-in.');
 
 /** Somebody recorded as passed away is not given a sign-in (5.25). */
 const passedAway = (name: string) => new ApiError(409, 'passed_away', DECEASED_NO_SIGN_IN(name));

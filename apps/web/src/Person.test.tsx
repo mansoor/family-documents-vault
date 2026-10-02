@@ -945,6 +945,24 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     await expectAccessible();
   });
 
+  it('the Account card says who is told of each look: a viewer reads no log, so is not said to be', async () => {
+    const vee = { ...TESS, id: 'm-5', display_name: 'Vee', role: 'viewer' };
+    const said = async (id: string) => {
+      installFakeApi(fresh({ members: [ME, TESS, vee] }));
+      signedIn();
+      at(`/people/${id}`);
+      const { unmount } = render(<App />);
+      const card = await screen.findByRole('region', { name: 'Account' });
+      const text = (await within(card).findByText(/Each look is noted/)).textContent;
+      unmount();
+      return text;
+    };
+    expect(await said('m-5')).toMatch(/Each look is noted in the activity log, for the owners\.$/);
+    expect(await said('m-1')).toMatch(
+      /Each look is noted in the activity log, for the owners and Tess\.$/,
+    );
+  });
+
   it('an owner without two-step sign-in is told to turn it on, with the way to', async () => {
     const state = fresh({ members: [ME, TESS], twoStep: false, accounts: { 'm-1': TESS_ACCOUNT } });
     installFakeApi(state);

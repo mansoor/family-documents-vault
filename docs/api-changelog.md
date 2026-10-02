@@ -2337,7 +2337,10 @@ signed_in` ("… Take their sign-in away first, then record that they
       accepting an invitation for them (`POST /invitations/accept` and the
       path form), and `POST /members/{id}/sign-in` answer `409 passed_away`
       ("Grandad is recorded as having passed away, so they can't be given a
-      sign-in."), and nothing is made.
+      sign-in."), and nothing is made. An invitation made or accepted, a
+      sign-in given back and a passing recorded each hold the person first:
+      one sent again at the moment a passing is recorded is refused, or
+      taken back with it, and never left waiting.
     - **Changed:** `POST /api/v1/members` checks `date_of_birth` as the
       PATCH does: a real day, not after tomorrow; otherwise `422
 validation_failed`. It took any `YYYY-MM-DD` before.

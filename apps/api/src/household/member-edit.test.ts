@@ -1,4 +1,4 @@
-import { withSystem } from '@fdv/db';
+import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   DECEASED_REFUSAL,
@@ -569,6 +569,114 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
       );
       await expect(passing).rejects.toMatchObject({ code: '23514' });
       expect((await person(owner, teen.member_id)).is_deceased).toBe(false);
+    });
+
+    /**
+     * Sending an invitation again holds the person before their invitation,
+     * as accepting one and recording a passing do (the 5.25 review, round
+     * two): the other way round, the two deadlocked. Each race is made to
+     * happen, not hoped for: the person is held from outside while the two
+     * requests queue for them, the one that must go first queued first.
+     */
+    describe('an invitation sent again, at the same moment as', () => {
+      const deadlocks = async (admin: ReturnType<typeof createPool>) =>
+        (
+          await admin.query<{ n: number }>(
+            'select deadlocks::int as n from pg_stat_database where datname = $1',
+            [new URL(h.adminUrl).pathname.slice(1)],
+          )
+        ).rows[0]?.n as number;
+      const waiting = async (admin: ReturnType<typeof createPool>, n: number) => {
+        for (let i = 0; i < 200; i += 1) {
+          const r = await admin.query<{ n: number }>(
+            `select count(*)::int as n from pg_stat_activity
+              where datname = $1 and wait_event_type = 'Lock'`,
+            [new URL(h.adminUrl).pathname.slice(1)],
+          );
+          if ((r.rows[0]?.n ?? 0) >= n) return;
+          await new Promise((res) => setTimeout(res, 50));
+        }
+        throw new Error(`fewer than ${n} statements waiting on a lock`);
+      };
+      /** Runs `first`, then `second`, both queued behind the person held from outside. */
+      const race = async <A, B>(
+        person: string,
+        first: () => Promise<A>,
+        second: () => Promise<B>,
+      ) => {
+        const admin = createPool(h.adminUrl, 3);
+        const holder = await admin.connect();
+        const before = await deadlocks(admin);
+        try {
+          await holder.query('begin');
+          await holder.query('select id from member where id = $1 for update', [person]);
+          const a = first();
+          await waiting(admin, 1);
+          const b = second();
+          await waiting(admin, 2);
+          await holder.query('rollback');
+          const both = await Promise.all([a, b]);
+          // The statistics reach pg_stat_database a moment later.
+          await new Promise((res) => setTimeout(res, 1500));
+          expect(await deadlocks(admin)).toBe(before);
+          return both;
+        } finally {
+          await holder.query('rollback').catch(() => undefined);
+          holder.release();
+          await admin.end();
+        }
+      };
+      const pending = async (id: string) =>
+        json<{ items: Array<{ member_id: string; state: string }> }>(
+          await h.app.inject({ url: '/api/v1/invitations', headers: h.as(owner) }),
+        ).items.filter((i) => i.member_id === id && i.state === 'pending');
+
+      it('its acceptance: the invitee is signed in, the one sent again is refused, nothing fails', async () => {
+        expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+        const cousin = await add('Cousin Ali');
+        const link = json<{ link_token: string; code: string }>(
+          await invite(owner, cousin, 'ali-525@example.test'),
+        );
+        const [accepted, again] = await race(
+          cousin,
+          () => accept(link),
+          () => invite(owner, cousin, 'ali-again-525@example.test'),
+        );
+        expect(accepted.statusCode, accepted.body).toBe(201);
+        expect(again.statusCode, again.body).toBe(409);
+        expect(code(again).code).toBe('already_signed_in');
+        expect(await memberships(cousin)).toHaveLength(1);
+        expect(await pending(cousin)).toEqual([]);
+      });
+
+      it('a passing recorded first: no invitation is left waiting, and the one sent again is refused', async () => {
+        expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+        const greatUncle = await add('Great-uncle');
+        expect((await invite(owner, greatUncle, 'uncle-525@example.test')).statusCode).toBe(201);
+        const [passed, again] = await race(
+          greatUncle,
+          () => edit(owner, greatUncle, { is_deceased: true }),
+          () => invite(owner, greatUncle, 'uncle-again-525@example.test'),
+        );
+        expect(passed.statusCode, passed.body).toBe(200);
+        expect(again.statusCode, again.body).toBe(409);
+        expect(code(again).code).toBe('passed_away');
+        expect(await pending(greatUncle)).toEqual([]);
+      });
+
+      it('a passing recorded second: the one sent again goes first, and is taken back with the passing', async () => {
+        expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+        const greatAunt = await add('Great-aunt Zee');
+        expect((await invite(owner, greatAunt, 'zee-525@example.test')).statusCode).toBe(201);
+        const [again, passed] = await race(
+          greatAunt,
+          () => invite(owner, greatAunt, 'zee-again-525@example.test'),
+          () => edit(owner, greatAunt, { is_deceased: true }),
+        );
+        expect(again.statusCode, again.body).toBe(201);
+        expect(passed.statusCode, passed.body).toBe(200);
+        expect(await pending(greatAunt)).toEqual([]);
+      });
     });
   });
 
