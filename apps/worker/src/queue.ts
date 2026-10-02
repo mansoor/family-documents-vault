@@ -82,12 +82,6 @@ export const JOBS = {
    * gone, so the job carries what sending needs).
    */
   pushSend: 'push.send',
-  /**
-   * An emailed code for a request to send documents (5.21): by the
-   * operator's mail server alone, to the address the requester typed. The
-   * API's UPLOAD_CODE_JOB is this name.
-   */
-  uploadCode: 'upload.code',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

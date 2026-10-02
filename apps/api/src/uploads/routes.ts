@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
+import { presentedDeviceCookies } from '../public/device-cookie.js';
 import {
   createBody,
   DROP_COOKIE_PATH,
@@ -111,7 +112,7 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   app.post('/api/v1/drop/unlock', tight, async (req, reply) => {
     const opened = await uploads.unlock(
       parse(dropUnlockBody, req.body ?? {}),
-      req.cookies[DROP_DEVICE_COOKIE],
+      presentedDeviceCookies(req.cookies, DROP_DEVICE_COOKIE),
       metaOf(req),
     );
     void reply.setCookie(opened.cookieName, opened.cookie, cookieOptions(opened.maxAge));
@@ -120,8 +121,8 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
     // Open that uses it, so it outlives each request bound to it.
     if (opened.device) {
       void reply.setCookie(
-        DROP_DEVICE_COOKIE,
-        opened.device.cookie,
+        opened.device.name,
+        opened.device.value,
         cookieOptions(opened.device.maxAge),
       );
     }

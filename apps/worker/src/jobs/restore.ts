@@ -520,6 +520,9 @@ const GUARDS = [
     table: 'incoming_file',
     fn: 'incoming_file_upload_writes',
   },
+  // An upload link's lines in the activity log: on its head, hashed as
+  // every line is (0044, A74).
+  { name: 'audit_event_upload_line', table: 'audit_event', fn: 'audit_event_upload_line' },
   // A request's address is cleared by whatever ends it (0044).
   {
     name: 'upload_request_ended_forgets',
@@ -615,6 +618,15 @@ const LINK_NARROWED = [
   'password_reset',
   'webauthn_challenge',
 ];
+
+/**
+ * The same tables, each with a rule of its own that takes rows away from an
+ * upload link (0044, A74): it reads its household, its requester's member
+ * row, its one key and its vaults, and nothing here but that. A rule that
+ * names the upload link must be there, beside the share link's; and an
+ * upload link that asks for no request is given none of them.
+ */
+const UPLOAD_NARROWED = LINK_NARROWED;
 
 /**
  * The tables where a member's own is theirs alone, by a rule that asks who
@@ -734,17 +746,37 @@ export async function checkRestored(
     // And the rule that keeps a share link to what its page needs (0042),
     // on the household's other tables and the sign-ins: one that governs
     // what is read, and asks who is asking.
+    // (It must name the share link: since 0044 the same tables carry an
+    // upload link's rule too, which asks who is asking as well.)
     const { rows: unnarrowed } = await admin.query<{ name: string }>(
       `select t as name from unnest($1::text[]) as t
         where not exists (select 1 from pg_policy p
                            where p.polrelid = to_regclass('public.' || t)
                              and p.polcmd in ('*', 'r')
-                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%')`,
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%''link''%')`,
       [LINK_NARROWED],
     );
     if (unnarrowed.length) {
       throw new Error(
         `no rule keeps a share link out of ${unnarrowed.map((u) => u.name).join(', ')}`,
+      );
+    }
+    // And the rule that keeps an upload link to what its page needs (0044,
+    // A74): its own, beside the share link's, naming it.
+    const { rows: unnarrowedUploads } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%''upload''%')`,
+      [UPLOAD_NARROWED],
+    );
+    if (unnarrowedUploads.length) {
+      throw new Error(
+        `no rule keeps an upload link out of ${unnarrowedUploads.map((u) => u.name).join(', ')}`,
       );
     }
     // And the rule that keeps a member's own theirs (0036): one that
@@ -893,6 +925,21 @@ export async function checkRestored(
       if (reached.length) {
         throw new Error(
           `household ${h.id}: a share link it never made is given ${reached.join(', ')}`,
+        );
+      }
+      // Nor an upload link (0044, A74): one that asks for no request of the
+      // household's is given none of them.
+      const uploaded = await asHousehold<{ t: string; n: number }>(
+        h.id,
+        UPLOAD_NARROWED.map((t) => `select '${t}' as t, count(*)::int as n from ${t}`).join(
+          ' union all ',
+        ),
+        'upload',
+      );
+      const reachedByUpload = uploaded.filter((g) => g.n > 0).map((g) => g.t);
+      if (reachedByUpload.length) {
+        throw new Error(
+          `household ${h.id}: an upload link it never made is given ${reachedByUpload.join(', ')}`,
         );
       }
       // Somebody signed in who is no member of it — so the maker of none,

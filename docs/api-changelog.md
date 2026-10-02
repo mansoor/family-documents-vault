@@ -2034,9 +2034,13 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         title, the message, the items or the hints. Nothing is counted.
       - `POST /api/v1/drop/code` `{ token }` → `{ sent_to, expires_at }`: a
         6-digit code to the address the requester gave, masked
-        (`j•••@e•••.com`), by operator mail only; 10 minutes, 5 tries, once;
-        3 a quarter of an hour and 10 a day (`429 too_many_codes`). Kept as
-        an HMAC under a server key; the email has no link and no title.
+        (`j•••@e•••.com`), by operator mail only (5.20's `mail.to_address`);
+        10 minutes, 5 tries, once, and only the newest works: sending one
+        ends the ones before it. 3 a quarter of an hour and 10 a day
+        (`429 too_many_codes`). Kept as an HMAC under a server key; the
+        email has no link and no title. A request that ends as the code is
+        asked for sends none (`404 link_not_valid`); one that cannot be
+        queued is `503 code_not_sent`, and nothing of it is kept.
       - `POST /api/v1/drop/unlock` `{ token, password?, code? }` →
         `DropSession` (with its `request_id`), and a session cookie named
         for the request, `fdv_drop_s_<request id without dashes>`
@@ -2048,12 +2052,15 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         life; the tenth locks it (the requester is told). The code a
         request was just opened with, pressed again, is `409 code_used` and
         uses up no try. Past `max_visits`, `410 request_used_up`, however
-        many press Open at once. This device only: one `fdv_drop_device`
-        cookie per browser, made by the first Open that needs one and never
-        replaced, and set again with its full 90 days by every Open that
-        uses it; each request is bound to it by the first Open that works,
-        and every other Open, at once or later, from another browser is
-        `403 other_device`.
+        many press Open at once. This device only (5.20's device cookies):
+        one `fdv_drop_device_<key id>` cookie per browser, made by the vault
+        alone — one it did not make, planted before the first Open, is
+        replaced, never bound — and set again with its full 90 days by every
+        Open that uses it; each request is bound to it by the first Open
+        that works, and every other Open, at once or later, from another
+        browser is `403 other_device`. A binding made under a master key
+        since turned still opens, with its own cookie, which is kept. A
+        first Open whose request ends as it binds is `404 link_not_valid`.
       - Inside an opened request, a call says which request it is about
         with `X-FDV-Drop-Request: <request_id>`; with only one session
         cookie in the browser it need not. With two and no header, it is
@@ -2100,7 +2107,10 @@ no_code_needed` for a link that asks for none; `403 other_device` from
         request has stopped, because its sessions end with it; they answer
         `404 link_not_valid` only for a session that outlives a stop the
         database alone knows of (a requester's role changed by hand). A
-        used-up request's sessions keep working to their own end. 20 a
+        used-up request's sessions keep working to their own end. A request
+        taken back while one of its sessions is in use does not wait for it:
+        that call is answered `404 link_not_valid`, all it did undone, and
+        its session ends. 20 a
         minute per address for the preview, a code, Open and a file; 120
         for the rest inside a session. Every answer carries the public
         pages' headers (no referrer, nosniff, noindex, a strict sandboxing
@@ -2132,15 +2142,14 @@ no_code_needed` for a link that asks for none; `403 other_device` from
     - **Added:** `503 busy` (retriable, `Retry-After: 1`), on any route,
       for two requests that got in each other's way in the database (a
       deadlock or a serialization failure): nothing was done.
-    - The worker: `upload.code` sends an emailed code by operator mail; the
-      nightly `uploads.prune` also takes away files whose sending died,
+    - The worker: the nightly `uploads.prune` also takes away files whose sending died,
       with their objects, ended senders' sessions and codes, and the
       address of a request that has ended.
     - `@fdv/shared`: capability `upload_request.create`;
       `UPLOAD_REQUEST_MAX_FILES`, `UPLOAD_REQUEST_MAX_BYTES`,
       `INCOMING_HOUSEHOLD_MAX_BYTES`, `SENDER_NOTE_MAX`,
       `UPLOAD_PASSWORD_MIN`, `uploadRequestTypes`,
-      `uploadRequestTypesWords`, `maskEmail`, and the types
+      `uploadRequestTypesWords`, and the types
       `UploadRequestInput`, `UploadRequestView`, `CreatedUploadRequest`,
       `DropPreview`, `DropCodeSent`, `DropSession`, `DropFile`,
       `DropFinished`. `@fdv/client`: `createUploadRequest`,
@@ -2153,7 +2162,14 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       `upload_session`, `upload_code` and `incoming_file`, each with a rule
       for every kind of caller: an upload link reaches its own request
       while it can be used and its own session's files alone; a
-      review-by-me request and its files are its requester's alone.
+      review-by-me request and its files are its requester's alone. And,
+      as 0042 does for a share link (A74), each of the household's other
+      tables and the sign-ins gets a rule of its own for an upload link: it
+      reads its household, its requester's member row, the one key its
+      files are encrypted under and the vaults they are kept in, and
+      nothing else; writes none of them; and of the activity log reads
+      nothing and writes only its own lines, under its own name, about its
+      own request, on the log's head, hashed as every line is.
 
 ## Deprecations in effect
 

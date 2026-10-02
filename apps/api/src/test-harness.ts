@@ -37,7 +37,11 @@ import {
 } from './documents/shares.js';
 import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
-import { UploadRequestService } from './uploads/requests.js';
+import {
+  UPLOAD_CODE_KEY_PURPOSE,
+  UPLOAD_DEVICE_KEY_PURPOSE,
+  UploadRequestService,
+} from './uploads/requests.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -261,9 +265,9 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       maxDays: config.FDV_SHARE_MAX_DAYS,
       maxFileBytes: 5 * 1024 * 1024,
       publicUrl: opts.publicUrl ?? null,
-      operatorMail: opts.operatorMail ?? true,
-      codeKey: deriveKey(TEST_MASTER, 'upload-code-hmac'),
-      codeJobKey: deriveKey(TEST_MASTER, 'upload-code-job'),
+      codeKey: deriveKey(TEST_MASTER, UPLOAD_CODE_KEY_PURPOSE),
+      mail: config.FDV_SMTP_URL ? (opts.mail ?? operatorMail) : null,
+      deviceKey: deviceCookieKey(TEST_MASTER, UPLOAD_DEVICE_KEY_PURPOSE),
       enqueue,
       alert,
       ...(opts.incomingMaxBytes ? { householdMaxBytes: opts.incomingMaxBytes } : {}),

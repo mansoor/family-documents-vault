@@ -9,5 +9,9 @@ export default defineConfig({
     // A hook makes a database from the template; on a busy machine that
     // takes longer than the default 10 s (the API's and worker's too).
     hookTimeout: 30_000,
+    // Its migration tests build a database a migration at a time, which
+    // took longer than the default 5 s when other test runs shared the
+    // server (5.21); the other packages' ceiling. A passing test is no slower.
+    testTimeout: 15_000,
   },
 });

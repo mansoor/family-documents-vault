@@ -13,7 +13,6 @@ import {
   decryptRange,
   EncryptStream,
   newKey,
-  sealBytes,
   wrapKey,
   type ScopeKeys,
 } from '@fdv/crypto';
@@ -65,6 +64,8 @@ import { truncatedIp } from '../documents/shares.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
+import type { MailRequest } from '../mail-job.js';
+import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
 import { inspectOffice } from './office.js';
 
 /**
@@ -131,8 +132,14 @@ export const dropCookieName = (requestId: string) =>
 export const DROP_SESSION_IDLE_MS = 30 * 60_000;
 export const DROP_SESSION_MAX_MS = 4 * 3_600_000;
 
-/** The worker's job that emails a code (operator mail only, A21); its JOBS.uploadCode. */
-export const UPLOAD_CODE_JOB = 'upload.code';
+/**
+ * The master-derived keys a request's flow uses, each for this alone: a
+ * code's HMAC (kept as long as the code, ten minutes: nothing to move when
+ * the master key turns), and the device cookie's MAC (public/device-cookie.ts:
+ * a binding made under an older key still opens, ROT-C-03).
+ */
+export const UPLOAD_CODE_KEY_PURPOSE = 'upload-code-hmac';
+export const UPLOAD_DEVICE_KEY_PURPOSE = 'drop-device';
 /** At most this many codes a quarter of an hour, and a day, for one request. */
 const CODES_PER_15_MIN = 3;
 const CODES_PER_DAY = 10;
@@ -188,12 +195,20 @@ export interface UploadRequestOptions {
   maxFileBytes: number;
   /** FDV_PUBLIC_URL: the public-only site the link starts with, when there is one. */
   publicUrl?: string | null;
-  /** Whether whoever runs the server has given it a mail server (FDV_SMTP_URL, A21). */
-  operatorMail?: boolean;
-  /** The server's key for a code's HMAC: a dump alone cannot check a code. */
+  /** The server's key for a code's HMAC (UPLOAD_CODE_KEY_PURPOSE): a dump alone cannot check a code. */
   codeKey: Buffer;
-  /** The key a code is sealed under on its way to the worker. */
-  codeJobKey: Buffer;
+  /**
+   * How a code is sent: 5.20's `mail.to_address`, by the operator's mail
+   * server (FDV_SMTP_URL) alone, never the household's (A21). Null, or left
+   * out, when the operator has given the vault none: no request offers a code.
+   */
+  mail?: ((m: MailRequest) => Promise<void>) | null;
+  /**
+   * The key "this device only" cookies are made and checked with
+   * (UPLOAD_DEVICE_KEY_PURPOSE). Without one, a key made up for this
+   * process: its cookies stop working when it stops.
+   */
+  deviceKey?: Buffer;
   enqueue?: Enqueue;
   /** How a requester is told their request was locked. */
   alert?: (input: AlertRequest) => Promise<void>;
@@ -217,6 +232,40 @@ export interface DropUpload {
 
 type RequestRow = Selectable<Schema['upload_request']>;
 
+/**
+ * What the sender's side reads of its own request: what its checks and its
+ * page need, never its token's hash or the hints for the reviewer.
+ */
+const SENDER_COLUMNS = [
+  'id',
+  'household_id',
+  'created_by',
+  'requester_member_id',
+  'title',
+  'message',
+  'recipient_label',
+  'recipient_email',
+  'secret_hash',
+  'email_code',
+  'this_device_only',
+  'device_hash',
+  'expires_at',
+  'max_visits',
+  'visits_used',
+  'max_files',
+  'files_used',
+  'max_total_bytes',
+  'bytes_used',
+  'accept_types',
+  'close_after_submit',
+  'attempts',
+  'review_by',
+  'paused_at',
+  'revoked_at',
+  'closed_at',
+] as const;
+type SenderRow = Pick<RequestRow, (typeof SENDER_COLUMNS)[number]>;
+
 /** Why Open did not open. */
 type Refusal = 'used up' | 'other device' | 'gone' | 'locked' | 'wrong' | 'code used';
 
@@ -230,10 +279,12 @@ export interface DropUnlocked {
   /** Seconds until the session ends at the latest: the cookie's Max-Age. */
   maxAge: number;
   /**
-   * "This device only": the browser's device cookie, made now if it had
-   * none, and sent back with its full life on every Open that uses it.
+   * "This device only": the browser's device cookie this Open used — the
+   * one its binding names, or the one a new binding was made with (made by
+   * the vault, under the key in use now) — under its own name, sent back
+   * with its full life every time, so it outlives each request bound to it.
    */
-  device?: { cookie: string; maxAge: number };
+  device?: { name: string; value: string; maxAge: number };
   session: DropSession;
 }
 
@@ -378,6 +429,8 @@ export class UploadRequestService {
   private readonly enqueue: Enqueue;
   private readonly alert: (input: AlertRequest) => Promise<void>;
   private readonly householdMax: number;
+  private readonly mail: ((m: MailRequest) => Promise<void>) | null;
+  private readonly deviceKey: Buffer;
 
   constructor(
     private readonly db: Db,
@@ -389,6 +442,8 @@ export class UploadRequestService {
     this.enqueue = opts.enqueue ?? (async () => undefined);
     this.alert = opts.alert ?? (async () => undefined);
     this.householdMax = opts.householdMaxBytes ?? INCOMING_HOUSEHOLD_MAX_BYTES;
+    this.mail = opts.mail ?? null;
+    this.deviceKey = opts.deviceKey ?? randomBytes(32);
   }
 
   /** The largest one file may be, before what is left of a request. */
@@ -398,7 +453,7 @@ export class UploadRequestService {
 
   /** Whether an emailed code can be offered: only with operator mail (A21). */
   get emailCodeAvailable(): boolean {
-    return this.opts.operatorMail === true;
+    return this.mail !== null;
   }
 
   // ============================================================ the family
@@ -644,7 +699,7 @@ export class UploadRequestService {
         .returning('id')
         .executeTakeFirst();
       if (!row) throw new ApiError(404, 'not_found', 'That request does not exist.');
-      await trx.deleteFrom('upload_session').where('request_id', '=', id).execute();
+      await endUploadSessions(trx, [id]);
       await trx.deleteFrom('upload_code').where('request_id', '=', id).execute();
       await appendAudit(trx, {
         householdId: p.householdId,
@@ -719,33 +774,45 @@ export class UploadRequestService {
    * The request, if it may be used now: not taken back, closed, paused, past
    * its end or locked, and its requester still an owner or an adult of the
    * household (A39; locked from 5.28 joins them). The database gives an
-   * upload link no row otherwise; this asks again, in words.
+   * upload link its row only then (app_live_upload_request(), 0044), and
+   * an upload link reads nothing of who signs in (A74): the requester's
+   * right is the database's to ask, and this asks the rest again, in words.
    */
   private async live(
     trx: Db,
     requestId: string,
     opts: { lock?: boolean } = {},
-  ): Promise<RequestRow> {
-    const query = trx.selectFrom('upload_request').selectAll().where('id', '=', requestId);
+  ): Promise<SenderRow> {
+    const query = trx
+      .selectFrom('upload_request')
+      .select([...SENDER_COLUMNS])
+      .where('id', '=', requestId);
     const row = await (opts.lock ? query.forUpdate() : query).executeTakeFirst();
     if (!row) throw gone();
     if (row.revoked_at || row.closed_at || row.paused_at) throw gone();
     if (row.expires_at.getTime() <= Date.now()) throw gone();
     if (row.attempts >= MAX_ATTEMPTS) throw gone();
-    const asker = await trx
-      .selectFrom('account_household')
-      .select(['role', 'member_id'])
-      .where('account_id', '=', row.created_by)
-      .executeTakeFirst();
-    if (!asker || asker.member_id !== row.requester_member_id) throw gone();
-    if (!can(asker.role, 'upload_request.create')) throw gone();
     // 5.28: a requester whose sign-in is locked asks for nothing either;
-    // that state arrives with 5.28, and its check goes here.
+    // that state arrives with 5.28, and its check goes in the database's
+    // app_live_upload_request(), beside the role's.
     return row;
   }
 
+  /**
+   * Whether the asking upload link's request still works, asked afresh: the
+   * database gives it its own row only while it may be used (0044).
+   */
+  private async stillLive(trx: Db, requestId: string): Promise<boolean> {
+    const row = await trx
+      .selectFrom('upload_request')
+      .select('id')
+      .where('id', '=', requestId)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
   /** Whose vault, and who asked. */
-  private async names(trx: Db, r: RequestRow) {
+  private async names(trx: Db, r: SenderRow) {
     const household = await trx.selectFrom('household').select('name').executeTakeFirstOrThrow();
     const asker = await trx
       .selectFrom('member')
@@ -778,16 +845,18 @@ export class UploadRequestService {
   /**
    * An emailed code (A21, as 5.20's for a link): six digits, to the address
    * the requester typed and nowhere else — the sender never types one — by
-   * the operator's mail server alone. At most 3 a quarter of an hour and
-   * 10 a day. Kept as an HMAC under the server's key; the worker is handed
-   * it sealed, and the email carries no link and no title.
+   * the operator's mail server alone (5.20's `mail.to_address`). At most 3 a
+   * quarter of an hour and 10 a day, and only the newest works: sending one
+   * ends the ones before it. Kept as an HMAC under the server's key; the
+   * email carries no link and no title.
    */
   async sendCode(token: string, meta: RequestMeta): Promise<DropCodeSent> {
     const scope = await this.scopeOf(token);
     const { householdId } = scope;
+    const mail = this.mail;
     const out = await withScope(this.db, scope, async (trx) => {
       const r = await this.live(trx, scope.actor.requestId);
-      if (!r.email_code || !r.recipient_email || !this.emailCodeAvailable) {
+      if (!r.email_code || !r.recipient_email || !mail) {
         throw new ApiError(422, 'no_email_code', 'This link does not use an emailed code.');
       }
       if (r.max_visits !== null && r.visits_used >= r.max_visits) throw usedUp();
@@ -811,9 +880,17 @@ export class UploadRequestService {
           { retriable: true, retryAfter: 15 * 60 },
         );
       }
+      // Only the newest code works: the ones before it end now.
+      await trx
+        .updateTable('upload_code')
+        .set({ expires_at: new Date(now) })
+        .where('request_id', '=', r.id)
+        .where('used_at', 'is', null)
+        .where('expires_at', '>', new Date(now))
+        .execute();
       const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
       const expiresAt = new Date(now + UPLOAD_CODE_MINUTES * 60_000);
-      const row = await trx
+      await trx
         .insertInto('upload_code')
         .values({
           household_id: householdId,
@@ -822,8 +899,7 @@ export class UploadRequestService {
           sent_at: new Date(now),
           expires_at: expiresAt,
         })
-        .returning('id')
-        .executeTakeFirstOrThrow();
+        .execute();
       const sentTo = maskEmail(r.recipient_email);
       await appendAudit(trx, {
         householdId,
@@ -834,17 +910,39 @@ export class UploadRequestService {
         detail: { sent_to: sentTo },
         ip: truncatedIp(meta.ip),
       });
-      return { codeId: row.id, code, sentTo, expiresAt, requestId: r.id };
-    });
-    await this.enqueue(UPLOAD_CODE_JOB, {
-      household_id: householdId,
-      request_id: out.requestId,
-      code_id: out.codeId,
-      sealed: sealBytes(
-        this.opts.codeJobKey,
-        Buffer.from(out.code, 'utf8'),
-        `upload-code:${out.codeId}`,
-      ).toString('base64'),
+      // Asked again now the household's log is held (appendAudit takes its
+      // lock): the request may have ended since live() looked — taken back,
+      // closed, locked, its requester demoted — and whatever ended it either
+      // committed before this, and is seen here, or writes its line after
+      // this one. Ended, nothing is sent to an address the ending has just
+      // cleared, and nothing of this is kept (5.20's N520R-01).
+      if (!(await this.stillLive(trx, r.id))) throw gone();
+      // Queued before any of it is kept: if the email cannot be queued, the
+      // code, its line, its place in the count and the end of the code
+      // before it are all undone with the transaction.
+      await mail({
+        householdId,
+        to: r.recipient_email,
+        subject: 'Your code to send documents',
+        text:
+          `Your code is ${code.slice(0, 3)} ${code.slice(3)}.\n\n` +
+          `Type it on the page where you opened the link you were sent. It works once, ` +
+          `for the next ${UPLOAD_CODE_MINUTES} minutes, and only the newest code you were ` +
+          'sent works.\n\n' +
+          'If you did not ask for a code, somebody else may have the link. You can ignore ' +
+          'this email; it opens nothing by itself.\n',
+      }).catch((err: unknown) => {
+        throw Object.assign(
+          new ApiError(
+            503,
+            'code_not_sent',
+            'The code could not be sent just now. Try again in a minute.',
+            { retriable: true, retryAfter: 60 },
+          ),
+          { cause: err },
+        );
+      });
+      return { sentTo, expiresAt };
     });
     return { sent_to: out.sentTo, expires_at: out.expiresAt.toISOString() };
   }
@@ -864,7 +962,7 @@ export class UploadRequestService {
    */
   async unlock(
     input: z.infer<typeof dropUnlockBody>,
-    deviceCookie: string | undefined,
+    devices: readonly DeviceCookie[],
     meta: RequestMeta,
   ): Promise<DropUnlocked> {
     const scope = await this.scopeOf(input.token);
@@ -873,22 +971,24 @@ export class UploadRequestService {
       const r = await this.live(trx, scope.actor.requestId, { lock: true });
       const refused = (why: Refusal, left = 0) => ({ refused: why, left, requester: r.created_by });
       if (r.max_visits !== null && r.visits_used >= r.max_visits) return refused('used up');
-      const browser = deviceCookie && deviceCookie.length <= 128 ? deviceCookie : null;
+      // This device only (5.20's cookies, public/device-cookie.ts). Bound
+      // already: the browser must bring the cookie its binding names, under
+      // any key's name — kept as it is, even one made under a master key
+      // since turned (N520F-01, ROT-C-03). Not bound yet: the first Open
+      // that works binds the cookie the browser brought under the key in use
+      // now, if the vault made it, or a new one — never one it did not make
+      // (N521D-1: a cookie planted before the first Open is replaced). The
+      // cookie used is sent back with its full life every time (N521D-2).
       let binding: Buffer | null = null;
-      // The browser's device cookie, sent back with every Open that uses it
-      // (made now if it has none), so it lasts its full 90 days from the
-      // latest: a request bound to it never outlives it in its own browser.
-      let minted: string | undefined;
+      let device: DeviceCookie | undefined;
       if (r.this_device_only) {
         if (r.device_hash) {
-          if (!browser || !timingSafeEqual(deviceBinding(browser, r.id), r.device_hash)) {
-            return refused('other device');
-          }
-          minted = browser;
+          const bound = r.device_hash;
+          device = devices.find((c) => timingSafeEqual(deviceBinding(c.value, r.id), bound));
+          if (!device) return refused('other device');
         } else {
-          // One device cookie per browser: made now only if it has none.
-          minted = browser ?? randomBytes(32).toString('base64url');
-          binding = deviceBinding(minted, r.id);
+          device = cookieForNewBinding(this.deviceKey, DROP_DEVICE_COOKIE, devices);
+          binding = deviceBinding(device.value, r.id);
         }
       }
       const tried = await this.trySecrets(trx, r, input, meta);
@@ -914,7 +1014,13 @@ export class UploadRequestService {
           .where('device_hash', 'is', null)
           .returning('id')
           .executeTakeFirst();
-        if (!bound) throw otherDevice();
+        if (!bound) {
+          // Not bound because the request ended as it was opened — its
+          // requester demoted while the password was checked — and the
+          // database no longer gives it its own row: gone, not another
+          // browser (5.20's N520R-02). Undone either way.
+          throw (await this.stillLive(trx, r.id)) ? otherDevice() : gone();
+        }
       }
 
       const cookie = randomBytes(32).toString('base64url');
@@ -955,7 +1061,7 @@ export class UploadRequestService {
       });
       const fresh = { ...r, visits_used: counted.visits_used };
       const session = await this.sessionView(trx, fresh, made.id, expiresAt);
-      return { cookie, requestId: r.id, expiresAt, minted, session } as const;
+      return { cookie, requestId: r.id, expiresAt, device, session } as const;
     });
     if ('refused' in outcome) {
       switch (outcome.refused) {
@@ -986,9 +1092,7 @@ export class UploadRequestService {
       cookie: outcome.cookie,
       cookieName: dropCookieName(outcome.requestId),
       maxAge: Math.max(1, Math.floor((outcome.expiresAt.getTime() - Date.now()) / 1000)),
-      ...(outcome.minted
-        ? { device: { cookie: outcome.minted, maxAge: DROP_DEVICE_MAX_AGE } }
-        : {}),
+      ...(outcome.device ? { device: { ...outcome.device, maxAge: DROP_DEVICE_MAX_AGE } } : {}),
       session: outcome.session,
     };
   }
@@ -1005,7 +1109,7 @@ export class UploadRequestService {
    */
   private async trySecrets(
     trx: Db,
-    r: RequestRow,
+    r: SenderRow,
     input: z.infer<typeof dropUnlockBody>,
     meta: RequestMeta,
   ): Promise<'right' | 'gone' | 'locked' | 'code used' | { wrong: number }> {
@@ -1074,7 +1178,7 @@ export class UploadRequestService {
     if (counted.attempts < MAX_ATTEMPTS) return { wrong: MAX_ATTEMPTS - counted.attempts };
     // The tenth, once in the request's life: failed tries are counters,
     // never audit rows; the lock is one row.
-    await trx.deleteFrom('upload_session').where('request_id', '=', r.id).execute();
+    await endUploadSessions(trx, [r.id]);
     await trx.deleteFrom('upload_code').where('request_id', '=', r.id).execute();
     await appendAudit(trx, {
       householdId: r.household_id,
@@ -1106,10 +1210,11 @@ export class UploadRequestService {
     cookie: string | undefined,
     fn: (
       trx: Db,
-      r: RequestRow,
+      r: SenderRow,
       session: { id: string; expires_at: Date },
       scope: UploadScope,
     ) => Promise<T>,
+    opts: { mayEnd?: boolean } = {},
   ): Promise<T> {
     if (!cookie || cookie.length > 128) throw sessionEnded();
     const cookieHash = hash(cookie);
@@ -1142,19 +1247,49 @@ export class UploadRequestService {
       ) {
         return end('session');
       }
-      let r: RequestRow;
+      let r: SenderRow;
       try {
         r = await this.live(trx, found.request_id);
       } catch (err) {
         if (err instanceof ApiError && err.code === 'link_not_valid') return end('request');
         throw err;
       }
-      await trx
+      const touched = await trx
         .updateTable('upload_session')
         .set({ last_seen_at: new Date(now) })
         .where('id', '=', session.id)
-        .execute();
-      return { value: await fn(trx, r, session, scope) } as const;
+        .executeTakeFirst();
+      // Ended as this waited for it — its request taken back, locked or
+      // closed, which removes the sessions not in use (endUploadSessions):
+      // refused as that, not left to fail further on.
+      if (touched.numUpdatedRows === 0n) {
+        return {
+          ended: (await this.stillLive(trx, found.request_id)) ? 'session' : 'request',
+        } as const;
+      }
+      // Its request may end while this is answered: whatever ends it passes
+      // over a session in use and does not wait for it (as 5.19's
+      // endSessions), and from then on the database gives this request
+      // nothing of the request's. So what is asked is asked inside a
+      // savepoint, and the request asked after again: ended, all of it is
+      // undone and the answer is the request's, gone, with its session
+      // removed. Finish, which may end it itself (close after sending),
+      // keeps what it did.
+      await sql`savepoint fdv_drop_session`.execute(trx);
+      let value: T;
+      try {
+        value = await fn(trx, r, session, scope);
+      } catch (err) {
+        await sql`rollback to savepoint fdv_drop_session`.execute(trx);
+        if (!(await this.stillLive(trx, found.request_id))) return end('request');
+        throw err;
+      }
+      if (!opts.mayEnd && !(await this.stillLive(trx, found.request_id))) {
+        await sql`rollback to savepoint fdv_drop_session`.execute(trx);
+        return end('request');
+      }
+      await sql`release savepoint fdv_drop_session`.execute(trx);
+      return { value } as const;
     });
     if ('ended' in outcome) throw outcome.ended === 'session' ? sessionEnded() : gone();
     return outcome.value;
@@ -1167,7 +1302,7 @@ export class UploadRequestService {
    */
   private async sessionView(
     trx: Db,
-    r: RequestRow,
+    r: SenderRow,
     sessionId: string,
     sessionEnds: Date,
   ): Promise<DropSession> {
@@ -1540,43 +1675,47 @@ export class UploadRequestService {
     input: z.infer<typeof dropFinishBody>,
     meta: RequestMeta,
   ): Promise<DropFinished> {
-    return this.inSession(cookie, async (trx, r, session, scope) => {
-      const note = input.note?.replace(/\r\n?/g, '\n').trim() || null;
-      const sent = await trx
-        .updateTable('incoming_file')
-        .set({ submitted_at: new Date(), sender_note: note })
-        .where('session_id', '=', session.id)
-        .where('state', '=', 'received')
-        .where('submitted_at', 'is', null)
-        .returning('id')
-        .execute();
-      if (sent.length === 0) {
-        throw new ApiError(422, 'nothing_to_send', 'Add a file first, then press Finish.');
-      }
-      let closed = false;
-      if (r.close_after_submit) {
-        await trx
-          .updateTable('upload_request')
-          .set({ closed_at: new Date(), closed_reason: 'submitted', recipient_email: null })
-          .where('id', '=', r.id)
-          .where('closed_at', 'is', null)
+    return this.inSession(
+      cookie,
+      async (trx, r, session, scope) => {
+        const note = input.note?.replace(/\r\n?/g, '\n').trim() || null;
+        const sent = await trx
+          .updateTable('incoming_file')
+          .set({ submitted_at: new Date(), sender_note: note })
+          .where('session_id', '=', session.id)
+          .where('state', '=', 'received')
+          .where('submitted_at', 'is', null)
+          .returning('id')
           .execute();
-        await trx.deleteFrom('upload_code').where('request_id', '=', r.id).execute();
-        await trx.deleteFrom('upload_session').where('request_id', '=', r.id).execute();
-        closed = true;
-      }
-      // How many, never what they are called.
-      await appendAudit(trx, {
-        householdId: scope.householdId,
-        actorLabel: this.actorLabel(r),
-        action: 'upload_request.submitted',
-        objectType: 'upload_request',
-        objectId: r.id,
-        detail: { files: sent.length, closed },
-        ip: truncatedIp(meta.ip),
-      });
-      return { files: sent.length, closed };
-    });
+        if (sent.length === 0) {
+          throw new ApiError(422, 'nothing_to_send', 'Add a file first, then press Finish.');
+        }
+        let closed = false;
+        if (r.close_after_submit) {
+          await trx
+            .updateTable('upload_request')
+            .set({ closed_at: new Date(), closed_reason: 'submitted', recipient_email: null })
+            .where('id', '=', r.id)
+            .where('closed_at', 'is', null)
+            .execute();
+          await trx.deleteFrom('upload_code').where('request_id', '=', r.id).execute();
+          await endUploadSessions(trx, [r.id]);
+          closed = true;
+        }
+        // How many, never what they are called.
+        await appendAudit(trx, {
+          householdId: scope.householdId,
+          actorLabel: this.actorLabel(r),
+          action: 'upload_request.submitted',
+          objectType: 'upload_request',
+          objectId: r.id,
+          detail: { files: sent.length, closed },
+          ip: truncatedIp(meta.ip),
+        });
+        return { files: sent.length, closed };
+      },
+      { mayEnd: true },
+    );
   }
 }
 
@@ -1602,6 +1741,23 @@ const filesUsedUp = (max: number) =>
     'files_used_up',
     `This request takes ${max} ${max === 1 ? 'file' : 'files'}, and that many have been sent.`,
   );
+
+/**
+ * Ends the sessions of requests that have just ended — taken back, locked,
+ * closed — every one not in use at this moment, as 5.19's endSessions does
+ * for a link's: a request in a session holds its session row from its first
+ * write, and may go on to wait on the request's row, which whatever ends it
+ * already holds; waiting here would be a deadlock. A session in use is
+ * passed over: its request in flight finds the request ended as it
+ * finishes (inSession), all it did undone, and its session removed.
+ */
+async function endUploadSessions(trx: Db, requestIds: readonly string[]): Promise<void> {
+  if (requestIds.length === 0) return;
+  await sql`delete from upload_session
+             where id in (select id from upload_session
+                           where request_id = any(${[...requestIds]}::uuid[])
+                           for update skip locked)`.execute(trx);
+}
 
 /** A zip's first bytes: a local file header. */
 const isZip = (head: Buffer) => head.length >= 4 && head.readUInt32LE(0) === 0x04034b50;

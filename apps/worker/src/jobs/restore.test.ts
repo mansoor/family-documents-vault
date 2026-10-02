@@ -990,6 +990,60 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices an upload link let into the household's other tables, or its lines unguarded (0044, A74)", async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    // The rule that keeps an upload link to its requester's own row, gone:
+    // the share link's, beside it, does not count for it.
+    const members = await ruleOf('member_upload');
+    await sql(vault.adminUrl, 'drop policy member_upload on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps an upload link out of member/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_upload on public.member as restrictive using (${members})`,
+      );
+    }
+    // Still asking, but letting an upload link through to every sign-in.
+    const sessions = await ruleOf('session_upload');
+    await sql(
+      vault.adminUrl,
+      `alter policy session_upload on public.session using ((${sessions}) or app_actor() = 'upload')`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /an upload link it never made is given session/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy session_upload on public.session using (${sessions})`,
+      );
+    }
+    // And its lines in the activity log, unguarded.
+    await sql(
+      vault.adminUrl,
+      'alter table public.audit_event disable trigger audit_event_upload_line',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.audit_event enable trigger audit_event_upload_line',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices a request for one person to review open to others, or upload tables that lost their rule (0044)', async () => {
     const ruleOf = async (name: string) =>
       (

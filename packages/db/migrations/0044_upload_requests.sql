@@ -551,7 +551,282 @@ create function upload_requests_close_lost() returns setof uuid
                              and a.member_id = r.requester_member_id
                              and a.role in ('owner', 'adult'))
        returning r.id),
-     sessions as (delete from upload_session where request_id in (select id from lost)),
+     -- A session in use this moment is passed over, never waited on (as
+     -- 5.19's endSessions): its request finds the request ended as it
+     -- finishes (requests.ts inSession), and its next is refused.
+     sessions as (delete from upload_session
+                   where id in (select s.id from upload_session s
+                                 where s.request_id in (select id from lost)
+                                 for update skip locked)),
      codes as (delete from upload_code where request_id in (select id from lost))
      select id from lost $$;
 grant execute on function upload_requests_close_lost() to fdv_app;
+
+-- -------------------------- the household's other tables, for an upload link
+--
+-- (A74, the 5.21 review R521-1.) The rules above give an upload link its
+-- request and what hangs off it. The household's other tables answered it
+-- through the tenant rule alone: whoever held a link could read who signs
+-- in, the household's keys and mail settings, and write to them. Here each
+-- gets a rule that takes rows away from an upload link and from nobody
+-- else (`case app_actor() when 'upload' then … else true end`: every other
+-- caller, a share link included, keeps exactly what 0042 left it). An
+-- upload link reads its household (the page names it), its requester's
+-- member row (the page names them), the one key its request's files are
+-- encrypted under and the places they are kept, and nothing else; it writes
+-- none of them; and of the activity log it writes only its own lines, held
+-- as a share link's are (0042), and reads none.
+
+-- Who asked, while the request can be used (app_live_upload_request()).
+create function app_upload_requester() returns uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select r.requester_member_id
+       from upload_request r
+      where r.id = app_live_upload_request() $$;
+grant execute on function app_upload_requester() to fdv_app;
+
+-- The one key its request's files are encrypted under: its requester's own
+-- for review-by-me, the adults' otherwise (A43).
+create function app_upload_scope_key() returns uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select k.id
+       from upload_request r
+       join scope_key k on k.household_id = r.household_id
+      where r.id = app_live_upload_request()
+        and case r.review_by
+              when 'me' then k.kind = 'member' and k.member_id = r.requester_member_id
+              when 'adults' then k.kind = 'adults' and k.member_id is null
+              else false
+            end $$;
+grant execute on function app_upload_scope_key() to fdv_app;
+
+-- Where its files go and are: the household's active vault, and the vault
+-- of each file that came in through its request.
+create function app_upload_vaults() returns setof uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select h.active_vault_id
+       from household h
+      where h.id = app_household()
+        and h.active_vault_id is not null
+        and app_live_upload_request() is not null
+     union
+     select f.vault_id
+       from incoming_file f
+      where f.request_id = app_live_upload_request() $$;
+grant execute on function app_upload_vaults() to fdv_app;
+
+-- The name an upload link writes its lines in the activity log under:
+-- 'upload link', or 'upload link (<whom it is for>)' (requests.ts
+-- actorLabel). Asked whether or not the request can still be used: its
+-- lock is written as it stops.
+create function app_upload_label() returns text
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select case when nullif(r.recipient_label, '') is null then 'upload link'
+                 else 'upload link (' || r.recipient_label || ')' end
+       from upload_request r
+      where r.id = app_upload_request() and r.household_id = app_household() $$;
+grant execute on function app_upload_label() to fdv_app;
+
+-- Whether the asking link's request has locked (its tenth wrong try), which
+-- is what its line saying so must be true of.
+create function app_upload_locked() returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select coalesce((select r.attempts >= 10
+                        from upload_request r
+                       where r.id = app_upload_request()
+                         and r.household_id = app_household()), false) $$;
+grant execute on function app_upload_locked() to fdv_app;
+
+-- What an upload link may say in the activity log, each in one place, as
+-- app_link_audit_actions() is for a share link (0042): the actions, and
+-- for each the keys its detail may carry. Stable: a later release
+-- redefines them.
+create function app_upload_audit_actions() returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select array['upload_request.opened', 'upload_request.code_sent',
+                  'upload_request.locked', 'upload_request.submitted']::text[] $$;
+grant execute on function app_upload_audit_actions() to fdv_app;
+
+create function app_upload_line_keys(p_action text) returns text[]
+  language sql stable parallel safe
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select case p_action
+              when 'upload_request.opened' then array['user_agent']::text[]
+              when 'upload_request.code_sent' then array['sent_to']::text[]
+              when 'upload_request.submitted' then array['files', 'closed']::text[]
+              else array[]::text[]
+            end $$;
+grant execute on function app_upload_line_keys(text) to fdv_app;
+
+-- What the page names: the household (its tenant rule gives only its own),
+-- and whoever asked. Read, never written.
+create policy household_upload_insert on household as restrictive for insert
+  with check (case app_actor() when 'upload' then false else true end);
+create policy household_upload_update on household as restrictive for update
+  using (case app_actor() when 'upload' then false else true end);
+create policy household_upload_delete on household as restrictive for delete
+  using (case app_actor() when 'upload' then false else true end);
+
+create policy member_upload on member as restrictive
+  using (case app_actor()
+           when 'upload' then id = (select app_upload_requester())
+           else true
+         end);
+create policy member_upload_insert on member as restrictive for insert
+  with check (case app_actor() when 'upload' then false else true end);
+create policy member_upload_update on member as restrictive for update
+  using (case app_actor() when 'upload' then false else true end);
+create policy member_upload_delete on member as restrictive for delete
+  using (case app_actor() when 'upload' then false else true end);
+
+-- What its files are encrypted under, and where they are kept. Read, never
+-- written.
+create policy scope_key_upload on scope_key as restrictive
+  using (case app_actor()
+           when 'upload' then id = (select app_upload_scope_key())
+           else true
+         end);
+create policy scope_key_upload_insert on scope_key as restrictive for insert
+  with check (case app_actor() when 'upload' then false else true end);
+create policy scope_key_upload_update on scope_key as restrictive for update
+  using (case app_actor() when 'upload' then false else true end);
+create policy scope_key_upload_delete on scope_key as restrictive for delete
+  using (case app_actor() when 'upload' then false else true end);
+
+create policy vault_upload on vault as restrictive
+  using (case app_actor()
+           when 'upload' then id in (select app_upload_vaults())
+           else true
+         end);
+create policy vault_upload_insert on vault as restrictive for insert
+  with check (case app_actor() when 'upload' then false else true end);
+create policy vault_upload_update on vault as restrictive for update
+  using (case app_actor() when 'upload' then false else true end);
+create policy vault_upload_delete on vault as restrictive for delete
+  using (case app_actor() when 'upload' then false else true end);
+
+-- The activity log: an upload link reads none of it, and writes only its
+-- own lines — opened, a code sent, locked, files sent — each about its own
+-- request and nobody signed in, under its own name, chained to the log's
+-- head and dated by the database's clock, as a share link's are (0042).
+-- That it locked, only once it has.
+create policy audit_event_upload on audit_event as restrictive for select
+  using (case app_actor() when 'upload' then false else true end);
+create policy audit_event_upload_insert on audit_event as restrictive for insert
+  with check (case app_actor()
+                when 'upload' then actor_account_id is null
+                                   and action = any(app_upload_audit_actions())
+                                   and case when action = 'upload_request.locked'
+                                            then app_upload_locked() else true end
+                                   and actor_label is not distinct from app_upload_label()
+                                   and object_type = 'upload_request'
+                                   and object_id = app_upload_request()
+                                   and prev_hash is not distinct from audit_chain_head(household_id)
+                                   and at between clock_timestamp() - interval '15 minutes'
+                                              and clock_timestamp() + interval '1 minute'
+                else true
+              end);
+
+-- And each of its lines as it goes in, one row at a time: on the head of
+-- the log as it is then (a line written earlier by the same statement
+-- included), saying only what a line of its action may (its keys, each a
+-- string, a number, true or false, or null), and hashed exactly as
+-- appendAudit hashes, and verifyAuditChain checks, every line
+-- (packages/db/src/audit.ts). Its own function, beside the share link's
+-- (audit_event_link_line, 0042), which it does not change.
+create function audit_event_upload_line() returns trigger
+  language plpgsql volatile security definer
+  set search_path = pg_catalog, public, pg_temp as
+$$
+declare
+  head bytea;
+  canon text;
+begin
+  if app_actor() is distinct from 'upload' then
+    return new;
+  end if;
+  perform pg_advisory_xact_lock(hashtext('audit:' || new.household_id::text));
+  select e.hash into head
+    from audit_event e
+   where e.household_id = new.household_id
+   order by e.id desc
+   limit 1;
+  if new.prev_hash is distinct from head then
+    raise exception 'an upload link''s line goes on the head of the activity log'
+      using errcode = 'check_violation';
+  end if;
+  if jsonb_typeof(new.detail) is distinct from 'object'
+     or exists (select 1 from jsonb_each(new.detail) e
+                 where not (e.key = any(app_upload_line_keys(new.action)))
+                    or jsonb_typeof(e.value) not in ('string', 'number', 'boolean', 'null')) then
+    raise exception 'an upload link''s line says only what a line of its kind may say'
+      using errcode = 'check_violation';
+  end if;
+  select coalesce('{' || string_agg(to_json(k)::text || ':' || (new.detail -> k)::text, ','
+                                    order by k collate "C") || '}', '{}')
+    into canon
+    from jsonb_object_keys(new.detail) k;
+  if new.hash is distinct from sha256(
+       coalesce(new.prev_hash, ''::bytea)
+       || convert_to('|' || new.household_id::text
+                     || '|' || coalesce(new.actor_account_id::text, new.actor_label, '')
+                     || '|' || new.action
+                     || '|' || coalesce(new.object_type, '')
+                     || '|' || coalesce(new.object_id::text, '')
+                     || '|' || canon
+                     || '|' || to_char(new.at at time zone 'UTC',
+                                       'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                     'UTF8')) then
+    raise exception 'an upload link''s line is hashed as every line of the activity log is'
+      using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+
+create trigger audit_event_upload_line before insert on audit_event
+  for each row execute function audit_event_upload_line();
+
+-- None of the rest is an upload link's, to read or to write: who signs in
+-- and how, the family's answers, invitations, devices, mail settings.
+create policy account_household_upload on account_household as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy session_upload on session as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy household_profile_upload on household_profile as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy invitation_upload on invitation as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy owner_change_request_upload on owner_change_request as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy known_device_upload on known_device as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy notification_digest_upload on notification_digest as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy device_upload on device as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy smtp_settings_upload on smtp_settings as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy notification_preference_upload on notification_preference as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy suggestion_dismissal_upload on suggestion_dismissal as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy client_event_receipt_upload on client_event_receipt as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+
+-- And the sign-ins, which belong to no household (0042 gave them their
+-- walls): none of them is an upload link's either.
+create policy account_not_an_upload on account as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy credential_not_an_upload on credential as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy password_reset_not_an_upload on password_reset as restrictive
+  using (case app_actor() when 'upload' then false else true end);
+create policy webauthn_challenge_not_an_upload on webauthn_challenge as restrictive
+  using (case app_actor() when 'upload' then false else true end);

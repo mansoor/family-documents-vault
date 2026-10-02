@@ -31,7 +31,11 @@ import {
 } from './documents/shares.js';
 import { deviceCookieKey } from './public/device-cookie.js';
 import { MAIL_JOB, mailJob, type MailRequest } from './mail-job.js';
-import { UploadRequestService } from './uploads/requests.js';
+import {
+  UPLOAD_CODE_KEY_PURPOSE,
+  UPLOAD_DEVICE_KEY_PURPOSE,
+  UploadRequestService,
+} from './uploads/requests.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -195,9 +199,10 @@ async function main(): Promise<void> {
       maxDays: config.FDV_SHARE_MAX_DAYS,
       maxFileBytes: config.FDV_MAX_UPLOAD_BYTES,
       publicUrl: config.FDV_PUBLIC_URL ?? null,
-      operatorMail: Boolean(config.FDV_SMTP_URL),
-      codeKey: deriveKey(masterSecret, 'upload-code-hmac'),
-      codeJobKey: deriveKey(masterSecret, 'upload-code-job'),
+      // 5.20's code by the operator's mail server alone, and its device cookies.
+      codeKey: deriveKey(masterSecret, UPLOAD_CODE_KEY_PURPOSE),
+      mail: config.FDV_SMTP_URL ? operatorMail : null,
+      deviceKey: deviceCookieKey(masterSecret, UPLOAD_DEVICE_KEY_PURPOSE),
       enqueue,
       alert,
     }),

@@ -104,6 +104,16 @@ begin
     grant execute on function public.incoming_room(uuid) to fdv_app;
     -- Requests whose requester can no longer ask, closed by whoever changed them (A39).
     grant execute on function public.upload_requests_close_lost() to fdv_app;
+    -- What an upload link reaches of the household's other tables (A74):
+    -- who asked, the one key, the vaults; and what its own lines in the
+    -- activity log may say.
+    grant execute on function public.app_upload_requester() to fdv_app;
+    grant execute on function public.app_upload_scope_key() to fdv_app;
+    grant execute on function public.app_upload_vaults() to fdv_app;
+    grant execute on function public.app_upload_label() to fdv_app;
+    grant execute on function public.app_upload_locked() to fdv_app;
+    grant execute on function public.app_upload_audit_actions() to fdv_app;
+    grant execute on function public.app_upload_line_keys(text) to fdv_app;
   end if;
 end $$;
 

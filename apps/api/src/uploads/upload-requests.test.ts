@@ -1,10 +1,10 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { crc32 } from 'node:zlib';
-import { deriveKey, openBytes } from '@fdv/crypto';
-import { createPool, withPrincipal } from '@fdv/db';
+import { deriveKey } from '@fdv/crypto';
+import { computeHash, createPool, withPrincipal, withScope, type Db } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
 import {
@@ -20,13 +20,17 @@ import {
 import FormData from 'form-data';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { createHarness, mailSent, TEST_MASTER, type Harness } from '../test-harness.js';
+import { deviceCookieKey, deviceCookieName, mintDeviceCookie } from '../public/device-cookie.js';
 import { EXCEL_MIME, WORD_MIME } from './office.js';
 
 /**
  * Asking somebody outside the family to send documents (5.21): making a
  * request, and what whoever holds its link can and cannot do.
  */
+
+/** The device cookie's name under the harness's master key (5.20's device-cookie.ts). */
+const DEVICE = deviceCookieName('fdv_drop_device', deviceCookieKey(TEST_MASTER, 'drop-device'));
 
 const PDF = (size = 2048) =>
   Buffer.concat([
@@ -216,6 +220,15 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
         () => [] as string[],
       )
     ).length;
+
+  /** The newest code emailed to an address (5.20's mail.to_address, as the harness caught it). */
+  const codeSentTo = (to: string) => {
+    const mail = mailSent(h)
+      .filter((m) => m.to === to)
+      .at(-1);
+    const digits = /Your code is (\d{3}) (\d{3})\./.exec(mail?.text ?? '');
+    return digits ? `${digits[1]}${digits[2]}` : '';
+  };
 
   const accountOf = async (t: Tokens) =>
     (await h.app.inject({ url: '/api/v1/me', headers: h.as(t) })).json<{ account_id: string }>()
@@ -719,24 +732,21 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     });
     expect(coded.statusCode, coded.body).toBe(200);
     expect(coded.json<{ sent_to: string }>().sent_to).toBe('j•••@e•••.test');
-    // The code, as the worker is handed it: sealed, and bound to its row.
-    const job = h.jobs.filter((j) => j.name === 'upload.code').at(-1)?.data as {
-      code_id: string;
-      sealed: string;
-    };
-    expect(JSON.stringify(job)).not.toContain('jane.secret');
-    const code = openBytes(
-      deriveKey(TEST_MASTER, 'upload-code-job'),
-      Buffer.from(job.sealed, 'base64'),
-      `upload-code:${job.code_id}`,
-    ).toString('utf8');
+    // The code, as 5.20's mail.to_address carries it: sealed on the queue,
+    // to the address the requester gave, with no link and no title.
+    const queued = h.jobs.filter((j) => j.name === 'mail.to_address').at(-1)?.data;
+    expect(JSON.stringify(queued)).not.toContain('jane.secret');
+    const email = mailSent(h).at(-1);
+    expect(email?.to).toBe('jane.secret@example.test');
+    expect(email?.text).not.toMatch(/https?:|\/drop|Your tax papers/);
+    const code = codeSentTo('jane.secret@example.test');
     expect(code).toMatch(/^\d{6}$/);
     // The stored code cannot be checked without the server's key: it is its
     // HMAC under that key, not a hash anybody with a dump could try codes
     // against, nor one under another key.
     const [stored] = await admin<{ code_hash: Buffer }>(
-      'select code_hash from upload_code where id = $1',
-      [job.code_id],
+      'select code_hash from upload_code where request_id = $1 order by sent_at desc limit 1',
+      [made.request.id],
     );
     const text = `${made.request.id}:${code}`;
     const under = (key: Buffer) => createHmac('sha256', key).update(text).digest();
@@ -1303,14 +1313,13 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     );
     expect(row).toEqual({ sessions: 1, visits_used: 1 });
     // The browser that bound it opens it again; another browser is refused.
-    const device = all
-      .find((r) => r.statusCode === 200)
-      ?.cookies.find((c) => c.name === 'fdv_drop_device')?.value as string;
+    const device = all.find((r) => r.statusCode === 200)?.cookies.find((c) => c.name === DEVICE)
+      ?.value as string;
     const again = await h.app.inject({
       method: 'POST',
       url: '/api/v1/drop/unlock',
       payload: { token: made.link_token },
-      cookies: { fdv_drop_device: device },
+      cookies: { [DEVICE]: device },
       remoteAddress: addr(),
     });
     expect(again.statusCode).toBe(200);
@@ -1328,15 +1337,7 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       remoteAddress: addr(),
     });
     expect(sent.statusCode).toBe(200);
-    const job = h.jobs.filter((j) => j.name === 'upload.code').at(-1)?.data as {
-      code_id: string;
-      sealed: string;
-    };
-    const code = openBytes(
-      deriveKey(TEST_MASTER, 'upload-code-job'),
-      Buffer.from(job.sealed, 'base64'),
-      `upload-code:${job.code_id}`,
-    ).toString('utf8');
+    const code = codeSentTo('jane@example.test');
     const all = await Promise.all([1, 2, 3, 4].map(() => unlock(made.link_token, { code })));
     expect(all.map((r) => r.statusCode).sort()).toEqual([200, 409, 409, 409]);
     for (const r of all.filter((x) => x.statusCode === 409)) {
@@ -1383,16 +1384,16 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       return res;
     };
     expect((await open(first.link_token)).statusCode).toBe(200);
-    const device = jar.fdv_drop_device;
+    const device = jar[DEVICE];
     const b = await open(second.link_token);
     expect(b.statusCode).toBe(200);
     // One device cookie for the browser, made once, and sent back with its
     // full life by every Open that uses it (N521D-2): the second request,
     // bound to it later, never outlives it.
-    const renewed = b.cookies.find((c) => c.name === 'fdv_drop_device');
+    const renewed = b.cookies.find((c) => c.name === DEVICE);
     expect(renewed?.value).toBe(device);
     expect(renewed?.maxAge).toBe(90 * 86_400);
-    expect(jar.fdv_drop_device).toBe(device);
+    expect(jar[DEVICE]).toBe(device);
     // The first opens again in it.
     expect((await open(first.link_token)).statusCode).toBe(200);
     // And each session is its own request's, asked for by its id.
@@ -1515,6 +1516,432 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     expect(await paused(owner)).toEqual(
       expect.arrayContaining([mine.request.id, theirs.request.id]),
     );
+  });
+
+  // ---------------------------------------------- step 2: after 5.19 and 5.20
+
+  /** As an upload link of a request, in its session, asks: what the database gives it. */
+  const asUpload = <T>(
+    requestId: string,
+    sessionId: string | undefined,
+    fn: (trx: Db) => Promise<T>,
+  ) =>
+    withScope(
+      h.db,
+      {
+        householdId: household,
+        actor: { kind: 'upload', requestId, ...(sessionId ? { sessionId } : {}) },
+      },
+      fn,
+    );
+
+  it("an upload scope sees 0 rows in every household table but its own request's and what its page names, and writes none (R521-1, A74)", async () => {
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      // What used to be read and written: the household's mail settings, an
+      // invitation, somebody signed in.
+      await pool.query(
+        `insert into smtp_settings (household_id, host, from_email) values ($1, 'mail.example', 'v@example.test')
+         on conflict do nothing`,
+        [household],
+      );
+      const { rows } = await pool.query<{ name: string }>(
+        `select c.relname as name
+           from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind = 'r'
+            and (c.relname in ('household', 'account', 'credential', 'password_reset',
+                               'webauthn_challenge')
+                 or exists (select 1 from pg_attribute a where a.attrelid = c.oid
+                             and a.attname = 'household_id' and not a.attisdropped))
+          order by 1`,
+      );
+      const tables = rows.map((r) => r.name);
+      expect(tables).toEqual(
+        expect.arrayContaining([
+          'audit_event',
+          'member',
+          'account_household',
+          'session',
+          'account',
+        ]),
+      );
+      const made = await make(adult, { items: ['W-2', '1099'] });
+      const { cookie } = await opened(made.link_token);
+      expect((await send(cookie, { name: 'w2.pdf', bytes: PDF() })).statusCode).toBe(201);
+      const [session] = (
+        await pool.query<{ id: string }>('select id from upload_session where request_id = $1', [
+          made.request.id,
+        ])
+      ).rows;
+      const counted = (sessionId?: string) =>
+        asUpload(made.request.id, sessionId, async (trx) => {
+          const got: Record<string, number> = {};
+          for (const name of tables) {
+            // The built-in kinds of document and fields are everybody's (0031).
+            const where =
+              name === 'document_type' || name === 'document_attribute'
+                ? ' where household_id is not null'
+                : '';
+            const n = await sql<{ n: number }>`select count(*)::int as n from ${sql.table(
+              name,
+            )}${sql.raw(where)}`.execute(trx);
+            got[name] = n.rows[0]?.n ?? -1;
+          }
+          return got;
+        });
+      const nothing = Object.fromEntries(tables.map((name) => [name, 0]));
+      expect(await counted(session?.id)).toEqual({
+        ...nothing,
+        upload_request: 1,
+        upload_request_item: 2,
+        upload_session: 1,
+        incoming_file: 1,
+        household: 1,
+        member: 1,
+        scope_key: 1,
+        vault: 1,
+      });
+      // The member it names is the one who asked, and the key the one its
+      // files are under: the requester's own (review by me).
+      const named = await asUpload(made.request.id, session?.id, async (trx) => ({
+        member: await trx.selectFrom('member').select('id').execute(),
+        key: await trx.selectFrom('scope_key').select(['kind', 'member_id']).execute(),
+      }));
+      expect(named).toEqual({
+        member: [{ id: adult.member_id }],
+        key: [{ kind: 'member', member_id: adult.member_id }],
+      });
+      // Taken back, it reaches nothing of the family but its household.
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/upload-requests/${made.request.id}`,
+        headers: h.as(adult),
+      });
+      expect(await counted(session?.id)).toEqual({ ...nothing, household: 1 });
+
+      // And it writes none of them: what the review's probe changed.
+      const live = await make(adult);
+      await opened(live.link_token);
+      const writes: Array<[string, (trx: Db) => Promise<unknown>]> = [
+        [
+          'a viewer made an owner',
+          (trx) => trx.updateTable('account_household').set({ role: 'owner' }).executeTakeFirst(),
+        ],
+        [
+          'the household renamed',
+          (trx) => trx.updateTable('household').set({ name: 'x' }).executeTakeFirst(),
+        ],
+        [
+          'a member renamed',
+          (trx) => trx.updateTable('member').set({ display_name: 'x' }).executeTakeFirst(),
+        ],
+        ['every sign-in ended', (trx) => trx.deleteFrom('session').executeTakeFirst()],
+        [
+          'mail sent elsewhere',
+          (trx) =>
+            trx.updateTable('smtp_settings').set({ host: 'evil.example' }).executeTakeFirst(),
+        ],
+        [
+          'files kept elsewhere',
+          (trx) =>
+            trx.updateTable('vault').set({ endpoint: 'https://evil.example' }).executeTakeFirst(),
+        ],
+        [
+          'a key changed',
+          (trx) => trx.updateTable('scope_key').set({ rotated_at: new Date() }).executeTakeFirst(),
+        ],
+      ];
+      for (const [what, write] of writes) {
+        const done = await asUpload(live.request.id, undefined, write);
+        const n = done as { numUpdatedRows?: bigint; numDeletedRows?: bigint };
+        expect(n.numUpdatedRows ?? n.numDeletedRows, what).toBe(0n);
+      }
+      await expect(
+        asUpload(live.request.id, undefined, (trx) =>
+          trx.insertInto('member').values({ household_id: household, display_name: 'x' }).execute(),
+        ),
+      ).rejects.toThrow(/row-level security/);
+      // Nothing changed, read as the vault itself.
+      const after = await pool.query<{ smtp: string; name: string; renamed: number }>(
+        `select (select host from smtp_settings where household_id = $1) as smtp,
+                (select name from household where id = $1) as name,
+                (select count(*)::int from member
+                  where household_id = $1 and display_name = 'x') as renamed`,
+        [household],
+      );
+      expect(after.rows[0]).toEqual({ smtp: 'mail.example', name: 'The Test family', renamed: 0 });
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('an upload link writes only its own lines in the activity log, as its own, and reads none', async () => {
+    const made = await make(adult, { recipient_label: 'Jane, accountant' });
+    await opened(made.link_token);
+    const other = await make(adult);
+    const head = async (trx: Db) =>
+      (
+        await sql<{ h: Buffer | null }>`select audit_chain_head(${household}::uuid) as h`.execute(
+          trx,
+        )
+      ).rows[0]?.h ?? null;
+    /** A line as appendAudit would write it, with what a test changes. */
+    const line = async (trx: Db, change: Record<string, unknown>) => {
+      const prev = await head(trx);
+      const at = new Date();
+      const row = {
+        household_id: household,
+        actor_account_id: null,
+        actor_label: 'upload link (Jane, accountant)',
+        action: 'upload_request.opened',
+        object_type: 'upload_request',
+        object_id: made.request.id,
+        detail: { user_agent: 'x' },
+        prev_hash: prev,
+        at,
+        ...change,
+      } as {
+        household_id: string;
+        actor_account_id: string | null;
+        actor_label: string;
+        action: string;
+        object_type: string;
+        object_id: string;
+        detail: Record<string, unknown>;
+        prev_hash: Buffer | null;
+        at: Date;
+      };
+      return trx
+        .insertInto('audit_event')
+        .values({
+          ...row,
+          detail: JSON.stringify(row.detail),
+          hash: computeHash(row),
+        })
+        .execute();
+    };
+    // Its own line, as it is, goes in.
+    await expect(
+      asUpload(made.request.id, undefined, (trx) => line(trx, {})),
+    ).resolves.toBeDefined();
+    // Anything else does not: another request's, another name, another
+    // kind of line, a key it may not say, a lock it has not had.
+    for (const [what, change] of [
+      ['another request', { object_id: other.request.id }],
+      ['another name', { actor_label: 'Owner' }],
+      ['somebody signed in', { actor_account_id: adult.member_id }],
+      ['another kind of line', { action: 'document.deleted' }],
+      ['a key its line may not carry', { detail: { user_agent: 'x', title: 'W-2' } }],
+      ['a lock it has not had', { action: 'upload_request.locked', detail: {} }],
+    ] as const) {
+      await expect(
+        asUpload(made.request.id, undefined, (trx) => line(trx, change)),
+        what,
+      ).rejects.toThrow(/row-level security|says only what|violates foreign key/);
+    }
+    // Off the head of the log, or hashed otherwise: refused too.
+    await expect(
+      asUpload(made.request.id, undefined, (trx) => line(trx, { prev_hash: randomBytes(32) })),
+    ).rejects.toThrow(/row-level security|head of the activity log/);
+    // And it reads none of the log.
+    expect(
+      await asUpload(made.request.id, undefined, (trx) =>
+        trx.selectFrom('audit_event').select('id').execute(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a device cookie the vault did not make is never bound: a planted one is replaced (N521D-1)', async () => {
+    const made = await make(adult, { this_device_only: true });
+    const planted = { [DEVICE]: 'attacker-knows-this-value', fdv_drop_device: 'and-this-one' };
+    const first = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token },
+      cookies: planted,
+      remoteAddress: addr(),
+    });
+    expect(first.statusCode).toBe(200);
+    // A cookie of the vault's own is set in its place, and bound.
+    const given = first.cookies.find((c) => c.name === DEVICE)?.value;
+    expect(given).toBeTruthy();
+    expect(given).not.toBe('attacker-knows-this-value');
+    // The planted value opens nothing anywhere else.
+    const elsewhere = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token },
+      cookies: planted,
+      remoteAddress: addr(),
+    });
+    expect(elsewhere.statusCode).toBe(403);
+    // The one the vault gave does.
+    const again = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token },
+      cookies: { [DEVICE]: given as string },
+      remoteAddress: addr(),
+    });
+    expect(again.statusCode).toBe(200);
+  });
+
+  it('a request bound before the master key turned still opens with its cookie, which is kept (N520F-01, ROT-C-03)', async () => {
+    const made = await make(adult, { this_device_only: true });
+    // A cookie made under an earlier key, under that key's own name, and a
+    // binding made with it then.
+    const earlier = deriveKey('an-earlier-master-key-long-enough-0123456789', 'drop-device');
+    const old = {
+      name: deviceCookieName('fdv_drop_device', earlier),
+      value: mintDeviceCookie(earlier),
+    };
+    await admin('update upload_request set device_hash = $2 where id = $1', [
+      made.request.id,
+      createHash('sha256').update(`${old.value}:${made.request.id}`, 'utf8').digest(),
+    ]);
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/unlock',
+      payload: { token: made.link_token },
+      cookies: { [old.name]: old.value },
+      remoteAddress: addr(),
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    // Kept as it is, under its own name, with its life renewed: never a new
+    // one, which would lock this browser out of every request bound to it.
+    const set = res.cookies.filter((c) => c.name.startsWith('fdv_drop_device'));
+    expect(set).toEqual([expect.objectContaining({ name: old.name, value: old.value })]);
+  });
+
+  it('only the newest code works', async () => {
+    const made = await make(adult, { recipient_email: 'newest@example.test', email_code: true });
+    const ask = () =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/code',
+        payload: { token: made.link_token },
+        remoteAddress: addr(),
+      });
+    expect((await ask()).statusCode).toBe(200);
+    const first = codeSentTo('newest@example.test');
+    expect((await ask()).statusCode).toBe(200);
+    const second = codeSentTo('newest@example.test');
+    if (first === second) return; // one in a million: the same six digits twice
+    expect((await unlock(made.link_token, { code: first })).statusCode).toBe(401);
+    expect((await unlock(made.link_token, { code: second })).statusCode).toBe(200);
+  });
+
+  it('a code asked for as its request ends is not sent (N520R-01)', async () => {
+    const made = await make(adult, { recipient_email: 'ending@example.test', email_code: true });
+    const pool = createPool(h.adminUrl, 1);
+    // Whatever ends the request ends it just as the code's line goes in: a
+    // trigger takes it back there, in the same transaction.
+    await pool.query(`create or replace function b521_end_on_code() returns trigger
+      language plpgsql security definer as $$
+      begin
+        if new.action = 'upload_request.code_sent' then
+          -- As the family taking it back would: not as the upload link.
+          perform set_config('app.actor', 'system', true);
+          update upload_request set revoked_at = now() where id = new.object_id;
+          perform set_config('app.actor', 'upload', true);
+        end if;
+        return new;
+      end $$`);
+    await pool.query(`create trigger b521_end_on_code after insert on audit_event
+      for each row execute function b521_end_on_code()`);
+    try {
+      const sent = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/code',
+        payload: { token: made.link_token },
+        remoteAddress: addr(),
+      });
+      expect(sent.statusCode).toBe(404);
+      expect(mailSent(h).filter((m) => m.to === 'ending@example.test')).toEqual([]);
+    } finally {
+      await pool.query('drop trigger b521_end_on_code on audit_event');
+      await pool.query('drop function b521_end_on_code()');
+      await pool.end();
+    }
+  });
+
+  it('a first Open whose request ends as it binds is gone, not another device (N520R-02)', async () => {
+    const spare = await h.join(owner, {
+      name: 'Binder',
+      email: `binder-${randomUUID()}@example.test`,
+      role: 'adult',
+    });
+    const made = await make(spare, { this_device_only: true });
+    const pool = createPool(h.adminUrl, 1);
+    // Its requester demoted just as the visit is counted, before the device
+    // is bound: the database no longer gives the request its row.
+    await pool.query(`create or replace function b521_demote_on_visit() returns trigger
+      language plpgsql security definer as $$
+      begin
+        if new.visits_used > old.visits_used then
+          update account_household set role = 'teen' where member_id = new.requester_member_id;
+        end if;
+        return new;
+      end $$`);
+    await pool.query(`create trigger b521_demote_on_visit after update on upload_request
+      for each row execute function b521_demote_on_visit()`);
+    try {
+      const res = await unlock(made.link_token);
+      expect(res.statusCode).toBe(404);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('link_not_valid');
+    } finally {
+      await pool.query('drop trigger b521_demote_on_visit on upload_request');
+      await pool.query('drop function b521_demote_on_visit()');
+      await pool.end();
+    }
+  });
+
+  it('a request taken back while a session is in use: neither waits on the other, and the session ends as gone', async () => {
+    const made = await make(adult);
+    const { cookie } = await opened(made.link_token);
+    const sent = (await send(cookie, { name: 'w2.pdf', bytes: PDF() })).json<DropFile>();
+    const pool = createPool(h.adminUrl, 1);
+    // A sender's request that holds its session row a second before it goes
+    // on to the request's own row: the window a taking back falls into.
+    await pool.query(`create or replace function b521_hold_session() returns trigger
+      language plpgsql as $$
+      begin
+        perform pg_sleep(1);
+        return new;
+      end $$`);
+    await pool.query(`create trigger b521_hold_session after update on upload_session
+      for each row when (current_setting('app.actor', true) = 'upload')
+      execute function b521_hold_session()`);
+    try {
+      const removing = h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/drop/files/${sent.id}`,
+        cookies: cookie,
+        remoteAddress: addr(),
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const revoked = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/upload-requests/${made.request.id}`,
+        headers: h.as(adult),
+      });
+      const removed = await removing;
+      expect(revoked.statusCode).toBe(204);
+      expect(removed.statusCode, removed.body).toBe(404);
+      expect(removed.json<{ error: { code: string } }>().error.code).toBe('link_not_valid');
+      // Nothing it did is kept: the file is still there, for review.
+      const [file] = (
+        await pool.query<{ n: number }>(
+          'select count(*)::int as n from incoming_file where id = $1',
+          [sent.id],
+        )
+      ).rows;
+      expect(file?.n).toBe(1);
+    } finally {
+      await pool.query('drop trigger b521_hold_session on upload_session');
+      await pool.query('drop function b521_hold_session()');
+      await pool.end();
+    }
   });
 
   it("the database's copy of who may ask is the matrix's", async () => {

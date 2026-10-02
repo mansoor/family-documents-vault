@@ -22,7 +22,6 @@ import { deliver, logNotifier, refreshStatus, tick, weekly } from './jobs/remind
 import { sealPrivateValues } from './jobs/seal.js';
 import { regenerateTypeReminders, type RegenerateTypeJob } from './jobs/types.js';
 import { pruneUploads } from './jobs/uploads.js';
-import { isUploadCodeJob, sendUploadCode } from './jobs/upload-code.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
@@ -326,28 +325,6 @@ async function main(): Promise<void> {
       }
       const sent = await sendToAddress(mailDeps, job.data);
       log('info', 'email to one address', { household: job.data.household_id, sent });
-    }
-  });
-
-  // An emailed code for a request to send documents (5.21): operator mail
-  // only. The log says whether it went, never the code, whom or which.
-  await boss.createQueue(JOBS.uploadCode, { retryLimit: 2, retryDelay: 20 });
-  await boss.work(JOBS.uploadCode, async (jobs) => {
-    for (const job of jobs) {
-      if (!isUploadCodeJob(job.data)) {
-        log('warn', 'upload code job had the wrong shape', { id: job.id });
-        continue;
-      }
-      const sent = await sendUploadCode(
-        {
-          app: dbs.app,
-          codeJobKey: deriveKey(masterSecret, 'upload-code-job'),
-          operatorMail: alertDeps.operatorMail,
-          log,
-        },
-        job.data,
-      );
-      log('info', 'upload code', { sent });
     }
   });
 
