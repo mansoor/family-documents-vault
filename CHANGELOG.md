@@ -6,6 +6,21 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.24] - 2026-10-02 — iteration 5.21
+
+Ask someone to send documents: the server. The pages for it come in the next releases.
+
+### Added
+
+- **Upload requests, on the server.** An owner or an adult can ask somebody outside the family — the accountant, the solicitor — to send documents in, through a write-only link. A request can say what to send (up to ten things) and carry a message, and is protected the way a share link is: a password, a code emailed to the sender (with operator mail), this browser only, a number of visits, and an end of at most 90 days. It takes PDFs and photos, and Word and Excel files if asked; a file with macros is always refused. Up to 10 files and 200 MB a request, and 2 GB waiting across the household.
+- What comes in waits, encrypted and apart from the family's documents, until somebody reviews it and files it. A request marked "review by me" is seen only by whoever made it.
+- For now this is the API only (see `docs/api-changelog.md`); the web's pages for making a request, for the sender and for reviewing what came in follow.
+
+### Security
+
+- The sender's link reaches only its own request, its sessions and the files it sends, in every table of the database, and its lines in the activity log are checked as they are written, as a share link's are.
+- Files are judged by their bytes, never their names. Word and Excel files are looked inside with limits, so a crafted file cannot tie up the vault.
+
 ## [0.5.23] - 2026-10-02 — iteration 5.20
 
 A second factor for someone with no account.
