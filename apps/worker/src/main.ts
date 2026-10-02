@@ -24,12 +24,18 @@ import { pruneUploads } from './jobs/uploads.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
+import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 
 const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ level, msg, time: new Date().toISOString(), ...extra }));
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
+  if (!(await masterKeyOpensVault(adminUrl, await resolveMasterSecret(config), log))) {
+    process.exitCode = 1;
+    return;
+  }
 
   // A database a newer release has upgraded is refused before any job
   // touches it: this release's jobs would see no documents on it.
@@ -219,6 +225,7 @@ async function main(): Promise<void> {
     dir: config.FDV_BACKUP_DIR,
     retainDays: config.FDV_BACKUP_RETAIN_DAYS,
     log,
+    masterSecret,
   };
   await boss.createQueue(JOBS.backupDatabase, { retryLimit: 3, retryDelay: 300 });
   await boss.work(JOBS.backupDatabase, async () => {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { EncryptStream } from '@fdv/crypto';
 import { libpqConnection } from './libpq.js';
+import { masterKeyOpensVault } from '../master-key-check.js';
 
 /**
  * Nightly encrypted database dump (NFR-07). `pg_dump` streams through the
@@ -23,9 +24,27 @@ export interface BackupDeps {
   dir: string;
   retainDays: number;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+  /**
+   * The master key the backup key comes from. Given, the backup is made
+   * only if it opens everything in the database, so that a backup's file
+   * and what is in it are under the same key, and a worker left on the old
+   * key after a rotation fails here, loudly, every night.
+   */
+  masterSecret?: string;
 }
 
+/** The master key does not open the vault: no backup was made. */
+export class BackupRefused extends Error {}
+
 export async function backupDatabase(deps: BackupDeps): Promise<{ file: string; bytes: number }> {
+  if (
+    deps.masterSecret !== undefined &&
+    !(await masterKeyOpensVault(deps.adminUrl, deps.masterSecret, deps.log))
+  ) {
+    throw new BackupRefused(
+      'no backup was made: the master key does not open this vault (see the log above)',
+    );
+  }
   await mkdir(deps.dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const file = path.join(deps.dir, `fdv-${stamp}.sql.enc`);

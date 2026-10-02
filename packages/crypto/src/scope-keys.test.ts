@@ -4,7 +4,8 @@ import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/tes
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { EnvKeyProvider } from './master.js';
-import { rotateMasterKey, ScopeKeys } from './scope-keys.js';
+import { rotateMasterKey } from './master-rotation.js';
+import { ScopeKeys } from './scope-keys.js';
 import { newKey, unwrapKey, wrapKey } from './wrap.js';
 
 const OLD = 'old-master-secret-with-at-least-32-bytes!!';
@@ -151,7 +152,7 @@ describe.skipIf(!testAdminUrl())('scope keys', () => {
     const fileKey = newKey();
     const fileWrapped = wrapKey(fileKey, before.household, 'version:1');
 
-    const result = await rotateMasterKey(admin, new EnvKeyProvider(OLD), new EnvKeyProvider(NEW));
+    const result = await rotateMasterKey(admin, OLD, NEW);
     expect(result.rewrapped).toBe(4);
 
     const rotated = new ScopeKeys(new EnvKeyProvider(NEW));
