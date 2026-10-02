@@ -178,3 +178,46 @@ create policy purge_leftover_actor on purge_leftover as restrictive
            when 'system' then true
            else false
          end);
+
+-- --------------------------------- what a collection's link gives now
+
+-- 0042's app_link_documents(), as it was, but for one thing: a document of
+-- a collection's link has a file to give only when its newest version's
+-- file is there — not one a restore found removed for good (the 5.24
+-- check, N524S-01). The API's liveItems decides the same. Once
+-- recheck-files finds the file back, it is given again.
+create or replace function app_link_documents() returns setof uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select s.document_id
+       from share_link s
+      where s.id = app_live_share()
+        and s.document_id is not null
+     union
+     select d.id
+       from share_link s
+       join doc_collection c on c.id = s.collection_id and c.household_id = s.household_id
+       join account_household maker
+         on maker.account_id = s.created_by and maker.household_id = s.household_id
+       join share_link_item t on t.share_id = s.id and t.kind in ('ticked', 'followed')
+       join doc_collection_item i on i.collection_id = c.id and i.document_id = t.document_id
+       join document d on d.id = t.document_id and d.household_id = s.household_id
+      where s.id = app_live_share()
+        and d.deleted_at is null
+        and case d.visibility
+              when 'household' then true
+              when 'adults' then maker.role in ('owner', 'adult')
+              when 'private' then coalesce(d.owner_member_id = maker.member_id, false)
+              else false
+            end
+        and coalesce((select v.file_removed_at is null
+                         from document_version v
+                        where v.document_id = d.id
+                        order by v.version_no desc
+                        limit 1), false)
+        -- What followed was decided as it was put in; now it may only be
+        -- taken away: it must still be for the whole of the audience the
+        -- link was made for, and of the collection's now.
+        and (t.kind = 'ticked'
+             or (collection_audience_sees(c.audience, d.visibility::text)
+                 and collection_audience_sees(s.follow_audience, d.visibility::text))) $$;

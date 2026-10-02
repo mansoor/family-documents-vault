@@ -2217,8 +2217,10 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       sessions, collection items, collection links' snapshot rows), then the
       line in the log. The objects are deleted after it, a missing one being
       fine; one storage could not delete is left for the worker's new
-      `purge.leftovers` job (queued then, and every night), never a
-      document half removed. A kind deleted while it still used it goes with
+      `purge.leftovers` job (queued then, one a household, and every night),
+      never a document half removed. A place that fails once is not tried
+      again for the rest, there or in the job's run, so the owner is answered
+      in the time one try takes. A kind deleted while it still used it goes with
       it if it was the last. An export made before the removal keeps its
       copy until it expires (seven days); a phone keeping it offline drops
       its copy when it next connects.
@@ -2252,7 +2254,14 @@ no_code_needed` for a link that asks for none; `403 other_device` from
       ("The file was removed for good, so there is nothing to send."). A
       collection's `GET /share-preview` leaves it unticked with `lock:
 "no_file"` and that reason, and `POST /collections/{id}/shares` naming
-      it is `422 file_removed`.
+      it is `422 file_removed`. A collection's link gives it no longer — not
+      listed by `GET /shared/items`, not opened — until `recheck-files`
+      finds its file back (0045 redefines 0042's `app_link_documents()` to
+      say so too).
+    - **Changed (storage):** an S3-compatible place gives up connecting
+      after 10 seconds, and a stat or a delete after 20, retries and all, as
+      out of reach (`unreachable`); reading and writing a file are not cut
+      short.
     - **Changed (exports):** `index.csv` gains a last column, `file_note`,
       and `index.html` the same note: a version whose file was removed for
       good, or was not where it is kept, is listed there without its file,

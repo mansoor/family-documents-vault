@@ -184,7 +184,13 @@ async function main(): Promise<void> {
     }
   });
   await boss.schedule(JOBS.sharePagesPrune, '35 4 * * *');
-  await boss.createQueue(JOBS.purgeLeftovers, { retryLimit: 3, retryDelay: 300 });
+  // One queued and one running a household (the API's singletonKey): each
+  // run finishes all the household has, so more would only repeat it.
+  await boss.createQueue(JOBS.purgeLeftovers, {
+    policy: 'stately',
+    retryLimit: 3,
+    retryDelay: 300,
+  });
   await boss.work<PurgeLeftoversJob>(JOBS.purgeLeftovers, async (jobs) => {
     for (const job of jobs) {
       const hh = job.data?.household_id;

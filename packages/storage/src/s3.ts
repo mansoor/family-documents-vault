@@ -35,7 +35,23 @@ export interface S3Config {
   pathStyle?: boolean;
   /** Human label for `description`, e.g. "Backblaze B2". */
   providerName?: string;
+  /**
+   * How long a stat or a delete may take, retries and all, before the place
+   * counts as out of reach (QUICK_TIMEOUT_MS when not said). Never applied
+   * to reading or writing a file, which may take as long as its size needs.
+   */
+  quickTimeoutMs?: number;
 }
+
+/**
+ * Connecting gives up after this: an address that answers nothing (a NAS
+ * switched off, a blackholed route) would otherwise hold each try for
+ * minutes. Only the connecting: a large upload, once connected, is not cut.
+ */
+export const CONNECT_TIMEOUT_MS = 10_000;
+
+/** A stat or a delete gives up after this, retries and all (the 5.24 check, N524R-3). */
+export const QUICK_TIMEOUT_MS = 20_000;
 
 /** Presets fill the endpoint for the common providers (design, Storage). */
 export const PROVIDER_PRESETS: Record<
@@ -88,9 +104,11 @@ export class S3Adapter implements StorageAdapter {
   readonly description: string;
   private readonly client: S3Client;
   private readonly bucket: string;
+  private readonly quickMs: number;
 
   constructor(private readonly config: S3Config) {
     this.bucket = config.bucket;
+    this.quickMs = config.quickTimeoutMs ?? QUICK_TIMEOUT_MS;
     const where =
       config.providerName ?? (config.endpoint ? new URL(config.endpoint).host : 'Amazon S3');
     this.description = `the bucket ${config.bucket} at ${where}`;
@@ -103,7 +121,13 @@ export class S3Adapter implements StorageAdapter {
       // add its own checksum trailer, which some providers reject.
       requestChecksumCalculation: 'WHEN_REQUIRED',
       responseChecksumValidation: 'WHEN_REQUIRED',
+      requestHandler: { connectionTimeout: CONNECT_TIMEOUT_MS },
     });
+  }
+
+  /** A stat's or a delete's own end: out of reach, rather than waiting on. */
+  private quick() {
+    return { abortSignal: AbortSignal.timeout(this.quickMs) };
   }
 
   async put(key: string, body: Readable, meta: PutMeta = {}): Promise<PutResult> {
@@ -159,7 +183,10 @@ export class S3Adapter implements StorageAdapter {
 
   async stat(key: string): Promise<{ bytes: number }> {
     try {
-      const head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      const head = await this.client.send(
+        new HeadObjectCommand({ Bucket: this.bucket, Key: key }),
+        this.quick(),
+      );
       return { bytes: head.ContentLength ?? 0 };
     } catch (err) {
       throw wrap(err);
@@ -168,7 +195,10 @@ export class S3Adapter implements StorageAdapter {
 
   async delete(key: string): Promise<void> {
     try {
-      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+      await this.client.send(
+        new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+        this.quick(),
+      );
     } catch (err) {
       throw wrap(err);
     }
@@ -228,10 +258,18 @@ function wrap(err: unknown): StorageError {
   else if (name === 'NoSuchKey' || name === 'NotFound' || status === 404) code = 'not_found';
   else if (name === 'AccessDenied' || status === 403) code = 'permission_denied';
   else if (
-    ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(
-      e.cause?.code ?? e.code ?? name,
-    ) ||
-    name === 'TimeoutError'
+    [
+      'ECONNREFUSED',
+      'ENOTFOUND',
+      'ETIMEDOUT',
+      'ECONNRESET',
+      'EAI_AGAIN',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+    ].includes(e.cause?.code ?? e.code ?? name) ||
+    name === 'TimeoutError' ||
+    // A stat or a delete that ran out its time (quick()).
+    name === 'AbortError'
   )
     code = 'unreachable';
   // "not found" on a HEAD of the bucket root is how a missing bucket surfaces on some providers

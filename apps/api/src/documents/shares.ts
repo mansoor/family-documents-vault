@@ -2911,14 +2911,16 @@ export class ShareService {
       .selectFrom('doc_collection_item as i')
       .innerJoin('document as d', 'd.id', 'i.document_id')
       .select(['d.id', 'd.visibility', 'd.owner_member_id', 'd.deleted_at'])
+      // A file to give: its newest version, unless a restore found that
+      // file removed for good (5.24; the check's N524S-01). It is given again
+      // once recheck-files finds it back.
       .select((eb) =>
         eb
-          .exists(
-            eb
-              .selectFrom('document_version as v')
-              .select('v.id')
-              .whereRef('v.document_id', '=', 'd.id'),
-          )
+          .selectFrom('document_version as v')
+          .select(sql<boolean>`v.file_removed_at is null`.as('has'))
+          .whereRef('v.document_id', '=', 'd.id')
+          .orderBy('v.version_no', 'desc')
+          .limit(1)
           .as('has_file'),
       )
       .where('i.collection_id', '=', collection.id)

@@ -205,7 +205,9 @@ export class PurgeService {
   /**
    * The objects a removal wrote down, deleted, each row going with its
    * object; a missing one is fine. Whatever cannot be deleted now — storage
-   * out of reach — is left for the worker, which is asked to finish it.
+   * out of reach — is left for the worker, which is asked to finish it: a
+   * place that fails once is not tried again here, so the owner is answered
+   * in the time one try takes, not one per object.
    */
   private async sweep(p: Principal, id: string): Promise<void> {
     const rows = await withPrincipal(this.db, p, (trx) =>
@@ -233,8 +235,14 @@ export class PurgeService {
           await adapter.delete(r.object_key);
           done.push(r.id);
         } catch (err) {
-          if (err instanceof StorageError && err.code === 'not_found') done.push(r.id);
-          else left = true;
+          if (err instanceof StorageError && err.code === 'not_found') {
+            done.push(r.id);
+            continue;
+          }
+          // Out of reach once is out of reach for the rest: they wait for the
+          // worker, and the owner is answered now (the 5.24 check, N524R-3).
+          left = true;
+          break;
         }
       }
     }
@@ -244,9 +252,12 @@ export class PurgeService {
       );
     }
     if (left) {
-      await this.enqueue(PURGE_LEFTOVERS_JOB, { household_id: p.householdId }).catch(
-        () => undefined,
-      );
+      // One queued at a time a household: each finishes all it has.
+      await this.enqueue(
+        PURGE_LEFTOVERS_JOB,
+        { household_id: p.householdId },
+        { singletonKey: `purge.leftovers:${p.householdId}` },
+      ).catch(() => undefined);
     }
   }
 

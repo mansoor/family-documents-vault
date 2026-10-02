@@ -5,8 +5,9 @@ import path from 'node:path';
 import { deriveKey } from '@fdv/crypto';
 import { createDb, createPool, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
+import { LocalAdapter, StorageError } from '@fdv/storage';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { removeLeftovers } from './purge-leftovers.js';
 
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -75,18 +76,52 @@ describe.skipIf(!testAdminUrl())('the files a removal could not delete', () => {
       );
     }
 
+    // The two before the one that fails are deleted; it, and what comes
+    // after it in the same place, wait for the next run.
     const first = await removeLeftovers(deps(), { household_id: hh });
-    expect(first).toEqual({ removed: 3, left: 1 });
+    expect(first).toEqual({ removed: 2, left: 2 });
+    const why = (await rows())[0]?.last_error;
+    expect(why).toEqual(expect.any(String));
     expect(await rows()).toEqual([
-      { object_key: keys[2], tries: 1, last_error: expect.any(String) as unknown },
+      { object_key: keys[2], tries: 1, last_error: why },
+      { object_key: keys[3], tries: 1, last_error: why },
     ]);
     expect(await readdir(path.join(root, hh, doc, '1'))).toEqual(['a.pdf.enc.thumb.enc']);
 
-    // Out of the way: the nightly run, over every household, finishes it.
+    // Out of the way: the nightly run, over every household, finishes them.
     await rm(path.join(root, keys[2] as string), { recursive: true, force: true });
-    expect(await removeLeftovers(deps())).toEqual({ removed: 1, left: 0 });
+    expect(await removeLeftovers(deps())).toEqual({ removed: 2, left: 0 });
     expect(await rows()).toEqual([]);
     expect(await readdir(path.join(root, hh, doc, '1'))).toEqual([]);
+  });
+
+  it('a place out of reach is tried once a run, not once a file; its rows are all counted as tried (the 5.24 check, N524R-3)', async () => {
+    const doc = randomUUID();
+    const keys = [1, 2, 3, 4].map((n) => `${hh}/${doc}/1/c${n}.enc`);
+    for (const key of keys) {
+      await admin.query(
+        `insert into purge_leftover (household_id, vault_id, object_key, removed_document)
+         values ($1, $2, $3, $4)`,
+        [hh, vault, key, doc],
+      );
+    }
+    const deletes = vi
+      .spyOn(LocalAdapter.prototype, 'delete')
+      .mockRejectedValue(
+        new StorageError('unreachable', "We can't reach where your files are kept."),
+      );
+    try {
+      expect(await removeLeftovers(deps(), { household_id: hh })).toEqual({ removed: 0, left: 4 });
+      expect(deletes).toHaveBeenCalledTimes(1);
+    } finally {
+      deletes.mockRestore();
+    }
+    expect((await rows()).map((r) => [r.object_key, r.tries, r.last_error])).toEqual(
+      keys.map((k) => [k, 1, "We can't reach where your files are kept."]),
+    );
+    // Back in reach: the next run finishes them.
+    expect(await removeLeftovers(deps(), { household_id: hh })).toEqual({ removed: 4, left: 0 });
+    expect(await rows()).toEqual([]);
   });
 
   it('a place that cannot be opened keeps its rows', async () => {

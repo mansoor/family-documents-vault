@@ -3,10 +3,17 @@ import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { appendAudit, createPool, verifyAuditChain, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import type { ActivityLine, DocumentView, OfflineSet, VersionView } from '@fdv/shared';
+import {
+  PREVIEW_MAX_PAGES,
+  type ActivityLine,
+  type DocumentView,
+  type OfflineSet,
+  type VersionView,
+} from '@fdv/shared';
+import { LocalAdapter, StorageError } from '@fdv/storage';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
 import type { CreatedShare, ShareView } from './shares.js';
@@ -1327,20 +1334,55 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     expect(Object.entries(await leftOf(id)).filter(([, n]) => n !== 0)).toEqual([]);
     expect(code(await restore('owner', id))).toBe('not_found');
     expect((await call('owner', 'GET', `/api/v1/documents/${id}`)).statusCode).toBe(404);
-    // Its file and its pages deleted; the one that failed written down, and
-    // the worker asked to finish it.
+    // Its file deleted; the one that failed, and all after it, written down
+    // for the worker, which is asked to finish them — one job a household.
+    const rel = key.split('/').slice(2).join('/');
     expect(await filesUnder(`${t.owner.household_id}/${id}`)).toEqual([
-      `${key.split('/').slice(2).join('/')}.thumb.enc/held`,
+      `${rel}.p1.enc`,
+      `${rel}.thumb.enc/held`,
     ]);
-    expect(await leftoversOf(id)).toEqual([`${key}.thumb.enc`]);
+    const left = await leftoversOf(id);
+    expect(left).toContain(`${key}.thumb.enc`);
+    expect(left).toContain(`${key}.p1.enc`);
+    expect(left).not.toContain(key);
+    expect(left).toHaveLength(1 + PREVIEW_MAX_PAGES);
     expect(h.jobs.slice(jobsBefore).filter((j) => j.name === 'purge.leftovers')).toEqual([
-      { name: 'purge.leftovers', data: { household_id: t.owner.household_id } },
+      {
+        name: 'purge.leftovers',
+        data: { household_id: t.owner.household_id },
+        options: { singletonKey: `purge.leftovers:${t.owner.household_id}` },
+      },
     ]);
     // A removal that met no trouble leaves nothing written down.
     const clean = await make('owner', 'Nothing in the way');
     await trash('owner', clean);
     expect((await purge('owner', clean)).statusCode).toBe(204);
     expect(await leftoversOf(clean)).toEqual([]);
+  });
+
+  it('storage out of reach is tried once, not once a file, and the owner is answered at once (the 5.24 check, N524R-3)', async () => {
+    await fresh('owner', true);
+    const id = await make('owner', 'Kept somewhere switched off');
+    await upload('owner', id, 'second copy');
+    await trash('owner', id);
+    // Every delete fails as a place out of reach does, after a while.
+    const deletes = vi.spyOn(LocalAdapter.prototype, 'delete').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      throw new StorageError('unreachable', "We can't reach where your files are kept.");
+    });
+    try {
+      const started = Date.now();
+      const removed = await purge('owner', id);
+      expect(removed.statusCode, removed.body).toBe(204);
+      // One try for the one place, though it held two files, their
+      // thumbnails and their pages; not one a file.
+      expect(deletes).toHaveBeenCalledTimes(1);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      // Every one of them is the worker's now.
+      expect(await leftoversOf(id)).toHaveLength(2 * (2 + PREVIEW_MAX_PAGES));
+    } finally {
+      deletes.mockRestore();
+    }
   });
 
   it('a file a restore marked removed for good, found there after all, is unmarked and never removed with it (the review, D524-02)', async () => {

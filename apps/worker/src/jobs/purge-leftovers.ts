@@ -41,6 +41,9 @@ export async function removeLeftovers(
   let left = 0;
   for (const hh of households) {
     const adapters = new Map<string, StorageAdapter | null>();
+    // A place that failed once this run, and why: the rest of its rows are
+    // counted as tried, not tried one by one (the 5.24 check, N524R-3).
+    const down = new Map<string, string>();
     let after = '0';
     for (;;) {
       const rows = await withSystem(deps.app, hh, (trx) =>
@@ -55,7 +58,9 @@ export async function removeLeftovers(
       if (!rows.length) break;
       after = rows[rows.length - 1]?.id ?? after;
       const done: string[] = [];
-      const failed = new Map<string, string>();
+      // Why, and the rows it is the reason for.
+      const failed = new Map<string, string[]>();
+      const fail = (id: string, why: string) => failed.set(why, [...(failed.get(why) ?? []), id]);
       for (const r of rows) {
         if (!adapters.has(r.vault_id)) {
           const vault = await withSystem(deps.app, hh, (trx) =>
@@ -71,29 +76,39 @@ export async function removeLeftovers(
         }
         const adapter = adapters.get(r.vault_id);
         if (!adapter) {
-          failed.set(r.id, 'the place its files are kept could not be opened');
+          fail(r.id, 'the place its files are kept could not be opened');
+          continue;
+        }
+        const wasDown = down.get(r.vault_id);
+        if (wasDown !== undefined) {
+          fail(r.id, wasDown);
           continue;
         }
         try {
           await adapter.delete(r.object_key);
           done.push(r.id);
         } catch (err) {
-          if (err instanceof StorageError && err.code === 'not_found') done.push(r.id);
-          else failed.set(r.id, err instanceof Error ? err.message : String(err));
+          if (err instanceof StorageError && err.code === 'not_found') {
+            done.push(r.id);
+          } else {
+            const why = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+            down.set(r.vault_id, why);
+            fail(r.id, why);
+          }
         }
       }
       await withSystem(deps.app, hh, async (trx) => {
         if (done.length) await trx.deleteFrom('purge_leftover').where('id', 'in', done).execute();
-        for (const [id, why] of failed) {
+        for (const [why, ids] of failed) {
           await trx
             .updateTable('purge_leftover')
-            .set((eb) => ({ tries: eb('tries', '+', 1), last_error: why.slice(0, 500) }))
-            .where('id', '=', id)
+            .set((eb) => ({ tries: eb('tries', '+', 1), last_error: why }))
+            .where('id', 'in', ids)
             .execute();
         }
       });
       removed += done.length;
-      left += failed.size;
+      for (const ids of failed.values()) left += ids.length;
     }
   }
   if (removed || left) {
