@@ -229,6 +229,46 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           : `${who} looked at ${possessive(personOf(e))} sign-in`,
         true,
       );
+    // A person's identity details (5.26): never a value, and never which
+    // fields to anybody but the owners, the person and whoever did it.
+    case 'identity.viewed':
+      return line(
+        isOwn(e)
+          ? `${who} looked at their own identity details`
+          : `${who} looked at ${possessive(personOf(e))} identity details`,
+      );
+    case 'identity.revealed': {
+      const n = Array.isArray(detail.keys) ? detail.keys.length : 0;
+      const what = n === 1 ? 'one' : n > 1 ? String(n) : 'some';
+      // A38: the person sees each time somebody else shows their numbers.
+      return isOwn(e)
+        ? line(`${who} showed ${what} of their own identity numbers`)
+        : line(`${who} showed ${what} of ${possessive(personOf(e))} identity numbers`, true);
+    }
+    case 'identity.updated': {
+      const onlyMe = detail.part === 'only_me' ? ' Only me' : '';
+      return line(
+        isOwn(e)
+          ? `${who} changed their own${onlyMe} identity details`
+          : `${who} changed ${possessive(personOf(e))} identity details`,
+      );
+    }
+    // Who sees other people's identity details (A34): wider only after
+    // notice, and the line says from when.
+    case 'identity.audience_changed': {
+      const to = audienceWords(detail.to);
+      const until = text(detail.notice_until);
+      if (until && to) {
+        return line(`${who} asked to let ${to} see identity details from ${dayWords(until)}`, true);
+      }
+      const withdrawn = audienceWords(detail.withdrawn);
+      if (detail.to === detail.from && withdrawn) {
+        return line(`${who} withdrew letting ${withdrawn} see identity details`, true);
+      }
+      return to
+        ? line(`${who} made identity details visible to ${to} only`, true)
+        : line(`${who} changed who can see identity details`, true);
+    }
     case 'member.deceased':
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)
@@ -503,6 +543,28 @@ function detailWords(fields: unknown): string {
   if (said.length === 0) return 'details';
   if (said.length === 1) return said[0] as string;
   return `${said.slice(0, -1).join(', ')} and ${said[said.length - 1] as string}`;
+}
+
+/** Who an identity audience is, after "visible to" (5.26); '' for one never heard of. */
+function audienceWords(audience: unknown): string {
+  switch (audience) {
+    case 'owners_and_self':
+      return 'the owners and each person';
+    case 'adults':
+      return 'all adults';
+    case 'family':
+      return 'everyone in the family';
+    default:
+      return '';
+  }
+}
+
+/** "5 October": a day, as the vault's clock has it. */
+function dayWords(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime())
+    ? 'later'
+    : at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' });
 }
 
 function roleWords(role: unknown): string {

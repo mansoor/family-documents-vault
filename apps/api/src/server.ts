@@ -21,6 +21,7 @@ import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
 import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
+import { IdentityService } from './household/identity.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
@@ -186,6 +187,8 @@ async function main(): Promise<void> {
     ),
     household: new HouseholdService(db, keys, stepUpService),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
+    // 5.26: a wider audience is told by the operator's mail server alone.
+    identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {

@@ -80,6 +80,8 @@ describe('buildCapabilities', () => {
       // 5.21 and 5.23: asking somebody outside to send documents, and
       // looking at what they sent before it is filed.
       upload_requests: true,
+      // 5.26: people's identity details, sealed, and who sees them (A34).
+      member_identity: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

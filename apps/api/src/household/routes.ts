@@ -24,6 +24,12 @@ import type { Capability } from '@fdv/shared';
 import type { MultipartFile } from '@fastify/multipart';
 import { needs } from '../authz.js';
 import { noPhoto, orderRefusal, parseCrop, photoOrder, type PhotoService } from './photos.js';
+import {
+  identityAudienceBody,
+  identityRevealBody,
+  identityWriteBody,
+  type IdentityService,
+} from './identity.js';
 
 /**
  * A person's photo (5.17c). No step-up — a photo decides nobody's access —
@@ -134,6 +140,64 @@ function registerPhotos(app: FastifyInstance, household: HouseholdService, photo
       reply.header('cache-control', 'private, no-store');
       reply.header('x-content-type-options', 'nosniff');
       return reply.send(got);
+    },
+  );
+}
+
+/**
+ * People's identity details (5.26). Who is not given a record is told there
+ * is none (404). Showing a masked value asks who is asking: an owner showing
+ * another person's, with a passkey or a code and never the password (A54),
+ * and an owner with neither is refused it; anybody else, with any
+ * credential. Changing who sees them is an owner's, asked the same way.
+ */
+export function registerIdentity(
+  app: FastifyInstance,
+  identity: IdentityService,
+  stepUp: StepUpService,
+): void {
+  const auth = { preHandler: app.requireAuth };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+
+  app.get('/api/v1/members/:id/identity', auth, async (req) =>
+    identity.get(principal(req), parse(idParam, req.params).id, metaOf(req)),
+  );
+
+  app.put('/api/v1/members/:id/identity', auth, async (req) =>
+    identity.put(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(identityWriteBody, req.body ?? {}),
+      metaOf(req),
+    ),
+  );
+
+  app.post('/api/v1/members/:id/identity/reveal', auth, async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    const body = parse(identityRevealBody, req.body ?? {});
+    const part = body.part ?? 'shared';
+    // Whose they are first: what is not there for the caller is 404 before
+    // anybody is asked to confirm who they are.
+    const { self } = await identity.mayReveal(p, id, part);
+    if (p.role === 'owner' && !self) await stepUp.requireOwnerPower(p, 'open_identity');
+    else await stepUp.require(p, 'reveal_identity');
+    return identity.reveal(p, id, part, body.keys, metaOf(req));
+  });
+
+  app.get('/api/v1/household/identity-audience', auth, async (req) =>
+    identity.audience(principal(req)),
+  );
+
+  app.put(
+    '/api/v1/household/identity-audience',
+    { preHandler: [app.requireAuth, needs('identity.audience')] },
+    async (req) => {
+      const p = principal(req);
+      const body = parse(identityAudienceBody, req.body ?? {});
+      await stepUp.requireOwnerPower(p, 'identity_audience');
+      return identity.setAudience(p, body.audience, metaOf(req));
     },
   );
 }

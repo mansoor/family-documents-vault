@@ -307,6 +307,20 @@ function summary(file: string, r: RestoreReport): string {
       '    keeps it: an owner asks again if it still stands, and they are told afresh.',
     );
   }
+  if (r.noticesWithdrawn > 0) {
+    lines.push(
+      `  - ${plural(r.noticesWithdrawn, 'notice')} still waiting ${r.noticesWithdrawn === 1 ? 'was' : 'were'} ` +
+        'withdrawn, so a wider audience for identity',
+      '    details does not come back: an owner asks again, and everybody is told afresh.',
+    );
+  }
+  for (const a of r.identityAudiences) {
+    const was = { adults: 'all adults', family: 'everyone in the family' }[a.was] ?? a.was;
+    lines.push(
+      `  - Identity details in household ${a.household_id} were visible to ${was};`,
+      '    they are back to the owners and each person. Widening it again waits 72 hours.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(

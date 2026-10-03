@@ -62,6 +62,10 @@ export interface Line {
    * review-by-me request, and its files, from everybody but its requester.
    */
   request_visible?: boolean | null;
+  /** Who did it, by account: a line about somebody's identity details is theirs too (5.26). */
+  actor_account_id?: string | null;
+  /** What the line says, for a rule that reads it: which part of a record (5.26). */
+  detail?: unknown;
   /**
    * A collection's link the line is about (5.19 review). Null when it must
    * be about one and there is none to be found; undefined for a line about
@@ -160,6 +164,27 @@ const ownersAndThePerson: Audience = (reader, line) =>
   reader.role === 'owner' ||
   (line.object_type === 'member' && line.object_id != null && line.object_id === reader.memberId);
 
+/**
+ * A line about somebody's identity details (5.26): who looked at them, showed
+ * their numbers, changed them, or changed who sees them. For the owners, the
+ * person it is about — who sees a line whenever somebody else shows their
+ * numbers, with no values (A38) — and whoever did it; nobody else, not
+ * another adult, not a teen (a viewer reads no log). A line about an Only me
+ * part, or a part this does not know, is the person's alone: an owner is
+ * told nothing of it, not even that it moved.
+ */
+const identityLine: Audience = (reader, line) => {
+  const self =
+    line.object_type === 'member' && line.object_id != null && line.object_id === reader.memberId;
+  const part = (line.detail as { part?: unknown } | null | undefined)?.part;
+  if (part !== undefined && part !== 'shared') return self;
+  return (
+    reader.role === 'owner' ||
+    self ||
+    (line.actor_account_id != null && line.actor_account_id === reader.accountId)
+  );
+};
+
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
 
@@ -234,6 +259,13 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.deceased', BY_TYPE],
   // 5.25: an owner looked at somebody's sign-in — never what it said.
   ['member.account_viewed', ownersAndThePerson],
+  // 5.26: somebody's identity details looked at (once a sitting), their
+  // numbers shown, changed — which fields, never a value — and who sees
+  // them changed: for the owners, the person and whoever did it.
+  ['identity.viewed', identityLine],
+  ['identity.revealed', identityLine],
+  ['identity.updated', identityLine],
+  ['identity.audience_changed', identityLine],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { EnvKeyProvider, ScopeKeys, sealIdentity } from '@fdv/crypto';
 import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import {
   can,
   canChangeDetails,
+  canEditIdentity,
   canSee,
   canSeeCollection,
+  canSeeIdentity,
+  IDENTITY_AUDIENCES,
+  IDENTITY_PARTS,
+  identityAudienceSees,
   mayKeepOffline,
   ROLES,
   rolesWith,
@@ -17,7 +23,7 @@ import {
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
-import { createHarness, type Harness } from './test-harness.js';
+import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
  * One rule, several copies.
@@ -548,5 +554,96 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     expect(await version()).toEqual(once);
     await change({ version: 99, display_name: 'Unsigned Cousin' });
     expect((await version()).version).toBe(3);
+  });
+
+  it("member_identity's rules admit exactly canSeeIdentity and canEditIdentity, for every role and audience (0050)", async () => {
+    const hh = people.owner.household_id;
+    // The two copies of the audience, asked of every audience and of roles
+    // and audiences never heard of.
+    const pool = createPool(h.appUrl, 1);
+    const admin = createPool(h.adminUrl, 1);
+    try {
+      for (const aud of [...IDENTITY_AUDIENCES, 'everyone', '', 'ADULTS']) {
+        for (const role of [...ROLES, 'guest', '', 'OWNER']) {
+          const { rows } = await pool.query<{ sees: boolean }>(
+            'select identity_audience_sees($1, $2) as sees',
+            [aud, role],
+          );
+          expect(rows[0]?.sees, `${aud} / ${role}`).toBe(identityAudienceSees(aud, role as Role));
+        }
+      }
+      // A shared and an Only me part for each of them, sealed as the API seals.
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      await withSystem(h.db, hh, async (trx) => {
+        const identity = await keys.identityKey(trx, hh);
+        for (const role of ROLES) {
+          const memberId = people[role].member_id;
+          const own = await keys.unwrap(trx, { householdId: hh, kind: 'member', memberId });
+          for (const [part, key] of [
+            ['shared', identity],
+            ['only_me', own],
+          ] as const) {
+            const sealed = sealIdentity(key.key, { householdId: hh, memberId, part }, {});
+            await trx
+              .insertInto('member_identity')
+              .values({
+                household_id: hh,
+                member_id: memberId,
+                part,
+                ...sealed,
+                wrapped_by_scope: key.id,
+              })
+              .onConflict((oc) => oc.columns(['member_id', 'part']).doNothing())
+              .execute();
+          }
+        }
+      });
+      const ask = async (role: Role, text: string): Promise<Set<string>> => {
+        const c = await pool.connect();
+        try {
+          await c.query('begin');
+          await c.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.member_id', $2, true), set_config('app.role', $3, true)`,
+            [hh, people[role].member_id, role],
+          );
+          const r = await c.query<{ member_id: string; part: string }>(text);
+          return new Set(r.rows.map((x) => `${x.member_id}:${x.part}`));
+        } finally {
+          await c.query('rollback').catch(() => undefined);
+          c.release();
+        }
+      };
+      for (const aud of IDENTITY_AUDIENCES) {
+        await admin.query('update household set identity_audience = $1 where id = $2', [aud, hh]);
+        for (const role of ROLES) {
+          const me = { role, memberId: people[role].member_id };
+          const seen = await ask(role, 'select member_id, part from member_identity');
+          const written = await ask(
+            role,
+            'update member_identity set filled = filled returning member_id, part',
+          );
+          for (const subject of ROLES) {
+            for (const part of IDENTITY_PARTS) {
+              const row = `${people[subject].member_id}:${part}`;
+              const id = { id: people[subject].member_id };
+              expect(seen.has(row), `${aud}: ${role} reads ${subject}'s ${part}`).toBe(
+                canSeeIdentity(me, id, aud, part),
+              );
+              expect(written.has(row), `${aud}: ${role} writes ${subject}'s ${part}`).toBe(
+                canEditIdentity(me, id, part),
+              );
+            }
+          }
+        }
+      }
+    } finally {
+      await admin.query(
+        "update household set identity_audience = 'owners_and_self' where id = $1",
+        [hh],
+      );
+      await admin.end();
+      await pool.end();
+    }
   });
 });

@@ -31,6 +31,12 @@ import type {
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
+  IdentityAudience,
+  IdentityAudienceView,
+  IdentityPart,
+  IdentityReveal,
+  IdentityView,
+  IdentityWrite,
   Invitation,
   InvitationPreview,
   Me,
@@ -311,6 +317,59 @@ export function createApi(http: Http) {
      */
     memberAccount: (token: string, memberId: string) =>
       request<MemberAccount>(`/api/v1/members/${enc(memberId)}/account`, { token }),
+    /**
+     * A person's identity details (5.26, when `features.member_identity`): the
+     * shared part, and the Only me part for the person alone, ID numbers and
+     * hidden custom fields masked (`masked` names them). Anybody not given
+     * the record: `404`, whoever's it is.
+     */
+    identity: (token: string, memberId: string) =>
+      request<IdentityView>(`/api/v1/members/${enc(memberId)}/identity`, { token }),
+    /**
+     * A whole part, made from the `version` it was read at (0 for one never
+     * written): a part moved on since is `409 conflict`. Leave out a masked
+     * value to keep it; null clears it. Another person's Only me part is
+     * `404`; who may not change this part, `403`.
+     */
+    updateIdentity: (token: string, memberId: string, body: IdentityWrite) =>
+      request<IdentityView>(`/api/v1/members/${enc(memberId)}/identity`, {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /**
+     * Masked values, by key (`ids.<id>`, `custom.<id>`), of the shared part
+     * unless `part` says. Asks who is asking: `403 step_up_required` with
+     * `reveal_identity` (any credential), or for an owner showing somebody
+     * else's, `open_identity` (a passkey or a code; an owner with neither is
+     * `403 totp_required_for_owner`). Audited by key, never by value.
+     */
+    revealIdentity: (
+      token: string,
+      memberId: string,
+      body: { part?: IdentityPart; keys: string[] },
+    ) =>
+      request<IdentityReveal>(`/api/v1/members/${enc(memberId)}/identity/reveal`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** Who reads other people's shared identity details now, and a wider audience waiting (A34). */
+    identityAudience: (token: string) =>
+      request<IdentityAudienceView>('/api/v1/household/identity-audience', { token }),
+    /**
+     * An owner's (A54: `403 totp_required_for_owner` without two-step
+     * sign-in or a passkey; `step_up_required`, `identity_audience`, never by
+     * password). Narrower at once; wider after 72 hours' notice (`pending`),
+     * refused while an adult cannot sign in to be told (`409
+     * adult_cannot_be_told`).
+     */
+    setIdentityAudience: (token: string, audience: IdentityAudience) =>
+      request<IdentityAudienceView>('/api/v1/household/identity-audience', {
+        method: 'PUT',
+        body: { audience },
+        token,
+      }),
     ownerChanges: (token: string) =>
       request<{ items: OwnerChange[] }>('/api/v1/owner-changes', { token }),
     refuseOwnerChange: (token: string, id: string) =>

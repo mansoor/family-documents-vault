@@ -11,6 +11,7 @@ import {
   EnvKeyProvider,
   newKey,
   ScopeKeys,
+  sealIdentity,
   sealPrivate,
   unwrapKey,
   wrapKey,
@@ -600,5 +601,48 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
       keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: otherMember }),
     );
     expect(() => unwrapKey(wrapped, hers.key, `export:${mine.exportId}`)).toThrow(/cannot unwrap/);
+  }, 60_000);
+
+  it('a household with identity details and its identity key exports as before, and none of them yet (5.26)', async () => {
+    // The identity scope key, minted as the API mints it, and a shared and
+    // an Only me part sealed under their keys.
+    await withSystem(db, hh, async (trx) => {
+      const identity = await keys.identityKey(trx, hh);
+      const own = await keys.unwrap(trx, {
+        householdId: hh,
+        kind: 'member',
+        memberId: ownerMember,
+      });
+      for (const [part, key, number] of [
+        ['shared', identity, 'EXPORT-ID-SHARED-1'],
+        ['only_me', own, 'EXPORT-ID-ONLYME-2'],
+      ] as const) {
+        const sealed = sealIdentity(
+          key.key,
+          { householdId: hh, memberId: ownerMember, part },
+          { ids: [{ id: 'p1', kind: 'passport', number }] },
+        );
+        await trx
+          .insertInto('member_identity')
+          .values({
+            household_id: hh,
+            member_id: ownerMember,
+            part,
+            ...sealed,
+            wrapped_by_scope: key.id,
+          })
+          .execute();
+      }
+    });
+    const kinds = await withSystem(db, hh, (trx) =>
+      trx.selectFrom('scope_key').select('kind').execute(),
+    );
+    expect(kinds.map((k) => k.kind)).toContain('identity');
+    // Built, under the requester's own key, with the documents as before:
+    // identity details join the export in 5.27.
+    const mine = await exported(ownerAccount);
+    expect(mine.index.documents.map((d) => d.title)).toContain('My private note');
+    expect(mine.all.includes(Buffer.from('EXPORT-ID-SHARED-1'))).toBe(false);
+    expect(mine.all.includes(Buffer.from('EXPORT-ID-ONLYME-2'))).toBe(false);
   }, 60_000);
 });

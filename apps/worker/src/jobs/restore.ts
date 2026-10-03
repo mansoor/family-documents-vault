@@ -106,6 +106,18 @@ export interface RestoreReport {
    * again.
    */
   purgeRequestsCleared: number;
+  /**
+   * Notices still waiting, withdrawn (5.26): a wider audience for identity
+   * details withdrawn since the backup was made would otherwise come back.
+   * An owner asks again, and everybody is told again.
+   */
+  noticesWithdrawn: number;
+  /**
+   * Households whose audience for identity details was wider than the
+   * narrowest, and what it was (A34): each is back to the owners and each
+   * person, and widening it again goes through the notice.
+   */
+  identityAudiences: Array<{ household_id: string; was: string }>;
   openInvitations: number;
   /**
    * Versions whose file was not where it is kept (5.24): removed for good
@@ -229,6 +241,8 @@ interface Undone {
   requestsPaused: number;
   photosUnfinished: number;
   purgeRequestsCleared: number;
+  noticesWithdrawn: number;
+  identityAudiences: Array<{ household_id: string; was: string }>;
 }
 
 interface StillOpen {
@@ -548,6 +562,10 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     requestsPaused: counted('requests_paused'),
     photosUnfinished: counted('photos_unfinished'),
     purgeRequestsCleared: counted('purge_requests'),
+    noticesWithdrawn: counted('notices_withdrawn'),
+    identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
+      (m) => ({ household_id: m[1] as string, was: m[2] as string }),
+    ),
   };
 }
 
@@ -571,9 +589,15 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * code survives (5.21). And an owner's request to remove a document for
  * good is ended (5.24): a filer's Bring it back made since would otherwise
  * be undone with its 24 hours perhaps already past; an owner asks again,
- * and the filer is told again. Guarded for older schemas.
+ * and the filer is told again. Every notice still waiting is withdrawn
+ * (5.26): a wider audience for identity details withdrawn since would
+ * otherwise come back; and every household's audience for them goes back to
+ * the narrowest, the owners and each person, what it was in effect said in
+ * the report. Widening it again goes through the notice. Guarded for older
+ * schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
+create temporary table fdv_restore_audience (household_id uuid, was text) on commit drop;
 do $undo$
 declare n int;
 begin
@@ -646,8 +670,27 @@ begin
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('purge_requests', n);
   end if;
+  if to_regclass('public.notice_request') is not null then
+    -- What each household's audience was in effect: a widening whose notice
+    -- had run out counts, as identity_audience_now() counts it.
+    insert into pg_temp.fdv_restore_audience
+      select h.id, coalesce((select r.subject from public.notice_request r
+                              where r.household_id = h.id and r.kind = 'identity_audience'
+                                and r.completed_at is null and r.withdrawn_at is null
+                                and r.notice_until <= now()),
+                            h.identity_audience)
+        from public.household h;
+    update public.notice_request set withdrawn_at = now()
+     where completed_at is null and withdrawn_at is null;
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('notices_withdrawn', n);
+    update public.household set identity_audience = 'owners_and_self'
+     where identity_audience <> 'owners_and_self';
+  end if;
 end $undo$;
-select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;`;
+select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;
+select 'fdv-restore-audience:' || household_id || '=' || was from pg_temp.fdv_restore_audience
+ where was <> 'owners_and_self' order by household_id;`;
 
 /** Refuses, inside the load's transaction, a backup this release cannot run. */
 function versionGuard(known: number): string {
@@ -740,6 +783,21 @@ const GUARDS = [
     table: 'incoming_file',
     fn: 'incoming_file_leaves_bytes',
   },
+  // A notice says what it said, asked now, and ends once (0050).
+  { name: 'notice_request_fixed', table: 'notice_request', fn: 'notice_request_fixed' },
+  // Nobody widens who sees identity details before its notice runs out (0050).
+  {
+    name: 'household_identity_audience_guard',
+    table: 'household',
+    fn: 'household_identity_audience_guard',
+  },
+  // An identity part's version, and the key of its part: an Only me part
+  // under its person's own key (0050).
+  {
+    name: 'member_identity_versioned',
+    table: 'member_identity',
+    fn: 'member_identity_versioned',
+  },
 ];
 
 /**
@@ -815,6 +873,10 @@ const ACTOR_GUARDED = [
   // the files still to be deleted (0045).
   'document_tombstone',
   'purge_leftover',
+  // People's identity details, and the notices that come before a wider
+  // audience for them (0050).
+  'member_identity',
+  'notice_request',
 ];
 
 /**
@@ -846,6 +908,10 @@ const LINK_NARROWED = [
   'credential',
   'password_reset',
   'webauthn_challenge',
+  // People's identity details and the notices (0050): no link, of either
+  // kind, is given a row of them.
+  'member_identity',
+  'notice_request',
 ];
 
 /**
@@ -880,6 +946,12 @@ const MAKER_ONLY = [
     where: "review_by = 'me'",
     what: 'a file sent for one person to review',
   },
+  // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
+  {
+    table: 'member_identity',
+    where: "part = 'only_me'",
+    what: "a person's Only me identity details",
+  },
 ];
 
 /**
@@ -888,7 +960,11 @@ const MAKER_ONLY = [
  * adult (their own, and those of anybody with no sign-in) or a teen (their
  * own), and by nobody else (A66, 0046).
  */
-const CHANGED_BY_ROLE = [{ table: 'member', what: "a person's details" }];
+const CHANGED_BY_ROLE = [
+  { table: 'member', what: "a person's details" },
+  // The person both parts of their own; an owner anybody's shared part (0050).
+  { table: 'member_identity', what: "a person's identity details" },
+];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
 const HOUSEHOLD_ROWS: Record<string, string> = {

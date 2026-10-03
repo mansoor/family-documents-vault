@@ -35,7 +35,10 @@ export type StepUpAction =
   | 'widen_type_visibility'
   | 'share_collection'
   | 'remove_for_good'
-  | 'manage_sign_ins';
+  | 'manage_sign_ins'
+  | 'open_identity'
+  | 'reveal_identity'
+  | 'identity_audience';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -67,6 +70,16 @@ const WHY: Record<StepUpAction, string> = {
   // with a passkey or a code from an authenticator app, never the password
   // (`FACTOR_STEP_UPS`).
   manage_sign_ins: "to manage other people's sign-ins",
+  // An owner showing another person's identity numbers (5.26, A54): a
+  // passkey or a code, never the password — one phished owner password must
+  // not open everybody's passport number.
+  open_identity: "to see another person's identity numbers",
+  // Anybody else showing identity numbers they may read — their own, or
+  // others' where the household's audience gives them those (5.26): any
+  // credential, as opening an Only me document asks.
+  reveal_identity: 'to see identity numbers',
+  // Who reads other people's identity details (5.26, A34, A54).
+  identity_audience: 'to change who can see identity details',
 };
 
 /** Said to an owner with neither two-step sign-in nor a passkey, for the powers of A54. */
