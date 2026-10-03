@@ -1,10 +1,8 @@
-import { effectiveVisibility, visibilityChoices } from '@fdv/shared';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { clearPhotos, photosHeld } from './photos.js';
-import { ID_NUMBERS_NOTE } from './screens/Person.js';
 import { AISHA, fresh, installFakeApi, ME, PASSPORT, signedIn } from './test-api.js';
 
 /**
@@ -233,65 +231,31 @@ describe("a person's profile (5.17c)", () => {
     expect(screen.getByText('You · Viewer')).toBeInTheDocument();
   });
 
-  it('every sentence of the ID-numbers note is what the vault does', () => {
-    // The 5.17c review: it said teens and viewers could not open these, and
-    // a teen's was for Everyone, viewers included. A teen's own is now their
-    // Only me (the owner's decision), and the note says so.
-    const nationalId = { default_visibility: 'adults' as const };
-    expect(ID_NUMBERS_NOTE).toContain('One an owner or adult files is Adults only by default');
-    expect(effectiveVisibility({}, nationalId, 'owner')).toBe('adults');
-    expect(effectiveVisibility({}, nationalId, 'adult')).toBe('adults');
-    expect(ID_NUMBERS_NOTE).toContain('One a teen files is their Only me by default');
-    expect(effectiveVisibility({}, nationalId, 'teen')).toBe('private');
-    // Only they can open it, or make it Everyone (A72): nobody else may
-    // change a document of somebody else's that is Only me.
-    expect(ID_NUMBERS_NOTE).toContain('only they can open it, or make it Everyone');
-    const who = (role: 'owner' | 'adult' | 'teen' | 'viewer', mine: boolean, filedByMe = mine) => ({
-      role,
-      mine,
-      filedByMe,
-    });
-    expect(visibilityChoices(who('teen', true), 'private')).toEqual(['household', 'private']);
-    for (const role of ['owner', 'adult', 'viewer'] as const) {
-      expect(visibilityChoices(who(role, false), 'private'), role).toEqual([]);
-    }
-    expect(ID_NUMBERS_NOTE).toContain(
-      'Owners and adults can change who sees the documents they can open, and make their own Only me',
-    );
-    expect(visibilityChoices(who('adult', false), 'household')).toEqual(['household', 'adults']);
-    expect(visibilityChoices(who('adult', true), 'adults')).toEqual([
-      'household',
-      'adults',
-      'private',
-    ]);
-    expect(ID_NUMBERS_NOTE).toContain(
-      'teens can switch their own documents that they filed between Only me and Everyone',
-    );
-    expect(visibilityChoices(who('teen', true), 'household')).toEqual(['household', 'private']);
-    // One an owner filed for them is not theirs to hide (the 5.17c review).
-    expect(visibilityChoices(who('teen', true, false), 'household')).toEqual([]);
-    expect(visibilityChoices(who('teen', false), 'household')).toEqual([]);
-    expect(visibilityChoices(who('viewer', true), 'household')).toEqual([]);
-    expect(ID_NUMBERS_NOTE).not.toMatch(/Whoever a document belongs to/);
-  });
-
-  it('only owners see the ID-numbers note', async () => {
-    installFakeApi(fresh({ members: [ME, AISHA_KHAN] }));
-    signedIn();
-    at('/people/m-0');
-    const { unmount } = render(<App />);
-    expect(await screen.findByText(ID_NUMBERS_NOTE)).toBeInTheDocument();
-    expect(ID_NUMBERS_NOTE).toBe(
-      "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own documents that they filed between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.",
-    );
-    unmount();
-    for (const role of ['adult', 'teen', 'viewer'] as const) {
-      installFakeApi(fresh({ members: [{ ...ME, role }, AISHA_KHAN] }));
+  it("the Identity card takes the place of the owners' note about ID numbers (5.27)", async () => {
+    // Until identity records (A69), owners were told ID numbers lived in
+    // documents; now each person's are on their profile, where the reader
+    // is given them, and the note is gone for everybody.
+    for (const role of ['owner', 'adult', 'teen', 'viewer'] as const) {
+      const state = fresh({
+        members: [{ ...ME, role }, AISHA_KHAN],
+        identities: { 'm-0': { shared: { fields: { given_name: 'Aisha' }, version: 1 } } },
+      });
+      installFakeApi(state);
       signedIn(role);
       at('/people/m-0');
       const r = render(<App />);
       await screen.findByRole('heading', { name: 'Aisha Khan' });
-      expect(screen.queryByText(ID_NUMBERS_NOTE), role).not.toBeInTheDocument();
+      if (role === 'owner') {
+        expect(await screen.findByRole('region', { name: 'Identity details' })).toBeInTheDocument();
+      } else {
+        // Not given Aisha's record (the narrowest audience): no card at all.
+        await waitFor(() =>
+          expect(state.calls.some((c) => c.url === '/api/v1/members/m-0/identity')).toBe(true),
+        );
+        expect(screen.queryByRole('region', { name: 'Identity details' })).not.toBeInTheDocument();
+      }
+      expect(screen.queryByText(/SSN and other ID numbers/), role).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'ID numbers' })).not.toBeInTheDocument();
       r.unmount();
     }
   });

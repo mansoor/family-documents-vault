@@ -27,6 +27,7 @@ import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { IdentityCard } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
@@ -50,6 +51,8 @@ import { RoleControls } from './Roles.js';
 /** Where the screen came from, if the link that opened it said. */
 interface Came {
   from?: string;
+  /** "Add their details now" (5.27): the profile opens with their identity details' form. */
+  editIdentity?: boolean;
 }
 
 /**
@@ -85,15 +88,6 @@ export function roleLine(m: Member): string {
   return 'No sign-in';
 }
 
-/**
- * The owners' note about ID numbers, until identity records land (A69,
- * 5.26/5.27). Every sentence is what the vault does (the 5.17c review):
- * AddConfirm's startingVisibility, effectiveVisibility and the API's
- * ownVisibility, and visibilityRefusal (A72) for who changes it.
- */
-export const ID_NUMBERS_NOTE =
-  "SSN and other ID numbers get their own sealed place here in a later release. Until then they are kept in 'Social security / national ID' documents. One an owner or adult files is Adults only by default: owners and adults can open it, teens and viewers can't. One a teen files is their Only me by default: only they can open it, or make it Everyone. Owners and adults can change who sees the documents they can open, and make their own Only me; teens can switch their own documents that they filed between Only me and Everyone. In Kinds of document an owner can make Only me the default for the ones people file for themselves.";
-
 /** How long a new photo is waited for, and how often it is asked about. */
 export const PHOTO_POLL_MS = 2000;
 export const PHOTO_WAIT_MS = 60_000;
@@ -107,6 +101,8 @@ export function ProfileScreen() {
   const { id } = useParams<{ id: string }>();
   const { authVersion, session } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
+  const came = location.state as Came | null;
   const { data, error, reload } = useLoad(
     async (t) => {
       const [members, docs, types] = await Promise.all([
@@ -126,6 +122,13 @@ export function ProfileScreen() {
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const myRole: Role = session.info?.role ?? storedRole();
+  // Linked to from the notice of a wider audience (5.27): their details.
+  const loaded = member !== null;
+  useEffect(() => {
+    if (loaded && location.hash === '#identity') {
+      document.getElementById('identity')?.scrollIntoView?.();
+    }
+  }, [loaded, location.hash]);
 
   if (data && !member) {
     return (
@@ -173,14 +176,14 @@ export function ProfileScreen() {
             onChanged={reload}
           />
 
-          {myRole === 'owner' && (
-            <section className="card stack" aria-labelledby="ids-h">
-              <h2 id="ids-h" style={{ fontSize: 18 }}>
-                ID numbers
-              </h2>
-              <p className="muted">{ID_NUMBERS_NOTE}</p>
-            </section>
-          )}
+          {/* Their identity details (5.27), where the reader is given them;
+              the owners' note about ID numbers (A69) was until then. */}
+          <IdentityCard
+            member={member}
+            name={name}
+            types={data?.types}
+            startEditing={came?.editIdentity === true}
+          />
 
           <section aria-labelledby="their-docs-h">
             <h2 id="their-docs-h" className="section-h">

@@ -360,7 +360,10 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
     expect((await edit(owner, '00000000-0000-4000-8000-000000000000', {})).statusCode).toBe(404);
     expect((await edit(owner, 'not-an-id', {})).statusCode).toBe(422);
     expect((await person(owner, child)).relationship).not.toBe('Ours now');
-  });
+    // A second vault, its database made and migrated and dropped again:
+    // 1.7 s alone, past the 15 s ceiling with the whole gate on one shared
+    // server (5.27).
+  }, 60_000);
 
   it('a viewer is told no more than before: nobody else’s version, and none of the log', async () => {
     const seen = await members(viewer);

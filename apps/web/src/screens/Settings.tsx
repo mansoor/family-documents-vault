@@ -82,6 +82,15 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {/* Who sees the identity details on each profile (5.27, A34): an owner's. */}
+        {caps?.features.member_identity && can(storedRole(), 'identity.audience') && (
+          <li>
+            <Link to="/settings/family" className="rowbtn">
+              <span className="doc-title">Family</span>
+              <span className="muted">Who can see identity details</span>
+            </Link>
+          </li>
+        )}
         {mayShare && (
           <li>
             <Link to="/settings/sharing" className="rowbtn">

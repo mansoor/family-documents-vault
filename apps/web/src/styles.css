@@ -1814,3 +1814,124 @@ fieldset.ask-items {
 .request-state {
   font-size: 14px;
 }
+
+/* 5.27: a person's identity details. Words only a screen reader needs: a
+   masked number's name, read with the number once it is shown. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.identity-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+fieldset.identity-section {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.identity-h3 {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  margin: 0;
+  padding: 0;
+}
+
+.identity-h4 {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.identity-only-me {
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.identity-more {
+  display: flex;
+  flex-direction: column;
+}
+
+.identity-secret {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.identity-secret-value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+
+.identity-secret-value:focus {
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.btn-small {
+  min-height: var(--tap);
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.identity-form fieldset.identity-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  padding: 12px;
+  margin: 0;
+  min-width: 0;
+}
+
+.identity-entry legend {
+  font-weight: 700;
+  padding: 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.identity-only-me-switch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.identity-add,
+.identity-fill > .btn {
+  align-self: flex-start;
+}
+
+.identity-suggestions li {
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.identity-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

@@ -320,7 +320,7 @@ describe('the page a link opens, with a second factor (5.20)', () => {
     fireEvent.click(within(box).getByRole('button', { name: 'Email me a code' }));
     await waitFor(() => expect(status).toHaveTextContent('We sent a code to j•••@e•••.com.'));
     expect(within(box).getByRole('status')).toBe(status);
-    expect(document.activeElement).toBe(screen.getByLabelText('The code from the email'));
+    await waitFor(() => expect(screen.getByLabelText('The code from the email')).toHaveFocus());
     // Sent again: said again, differently.
     const first = status.textContent;
     fireEvent.click(within(box).getByRole('button', { name: 'Send another code' }));
@@ -328,7 +328,7 @@ describe('the page a link opens, with a second factor (5.20)', () => {
     expect(status).toHaveTextContent(
       'We sent a new code to j•••@e•••.com (2 so far). The one before it no longer works.',
     );
-    expect(document.activeElement).toBe(screen.getByLabelText('The code from the email'));
+    await waitFor(() => expect(screen.getByLabelText('The code from the email')).toHaveFocus());
     await expectAccessible();
   });
 

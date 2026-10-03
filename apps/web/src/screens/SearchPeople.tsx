@@ -2,6 +2,7 @@ import {
   aboutDate,
   addDays,
   can,
+  canEditIdentity,
   initialsFor,
   localToday,
   roleLabel,
@@ -26,6 +27,7 @@ import {
   BottomNav,
   Button,
   categoryLabel,
+  Check,
   CollapsibleSection,
   ErrorNote,
   Field,
@@ -522,7 +524,7 @@ export function sanitiseSnippet(s: string): string {
 }
 
 export function PeopleScreen() {
-  const { authVersion, guarded, session } = useApp();
+  const { authVersion, caps, guarded, session } = useApp();
   const myRole: Role = session.info?.role ?? 'viewer';
   const { data, error, reload } = useLoad(
     async (t) => {
@@ -543,6 +545,12 @@ export function PeopleScreen() {
   const [name, setName] = useState('');
   const [dob, setDob] = useState('');
   const [relationship, setRelationship] = useState('');
+  // Their identity details next (5.27): only an owner changes somebody
+  // else's (canEditIdentity), so only an owner is offered it.
+  const detailsOffered =
+    caps?.features.member_identity === true &&
+    canEditIdentity({ role: myRole, memberId: null }, { id: '' }, 'shared');
+  const [detailsNow, setDetailsNow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const letters = initialsFor(data?.members ?? []);
@@ -553,16 +561,22 @@ export function PeopleScreen() {
     setBusy(true);
     setAddError(null);
     try {
-      await guarded((t) =>
+      const added = await guarded((t) =>
         api.addMember(t, {
           display_name: name,
           date_of_birth: dob || null,
           relationship: relationship.trim() || null,
         }),
       );
+      if (added && detailsOffered && detailsNow) {
+        // Straight to their profile, its Identity details' form open.
+        void navigate(`/people/${added.id}`, { state: { editIdentity: true } });
+        return;
+      }
       setName('');
       setDob('');
       setRelationship('');
+      setDetailsNow(false);
       setAdding(false);
       await reload();
     } catch (err) {
@@ -625,6 +639,15 @@ export function PeopleScreen() {
             maxLength={60}
             hint="For example: Mum, Son, Grandad"
           />
+          {detailsOffered && (
+            <Check
+              id="member-details-now"
+              checked={detailsNow}
+              onChange={setDetailsNow}
+              label="Add their details now"
+              note="Their name as on documents, ID numbers, addresses: their profile opens at them."
+            />
+          )}
           <div className="row">
             <Button type="submit" disabled={busy}>
               {busy ? 'Adding…' : 'Add'}
