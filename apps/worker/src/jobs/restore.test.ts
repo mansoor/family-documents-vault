@@ -1459,7 +1459,9 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       }
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+    // Sixteen checks of the whole vault: more than the default 15 s in a
+    // container on CI (it timed out so, 5.26 review round).
+  }, 60_000);
 
   it("notices a person's details open to anybody to change, or their version unguarded (0046)", async () => {
     const rule = (
