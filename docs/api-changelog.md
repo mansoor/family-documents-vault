@@ -2297,6 +2297,114 @@ owner_member_id, link_ids, removed_at)`: read by the family and the
 (household_id, vault_id, object_key, removed_document, tries,
 last_error)`, the objects still to be deleted, read and written only by
       an owner and the vault. The restore check knows each.
+  - Change a person's details; the owner's view of a sign-in (5.25,
+    `features.member_edit`).
+    - **Added:** `features.member_edit` in the capability document, `true`.
+      Absent from older vaults, which change nobody's details.
+    - **Added:** `Member.version` — moved on by one with every change to the
+      person's name, date of birth, relationship or passing (never by a
+      photo); null to whoever is not given their details (a viewer, but for
+      their own). `Member.can_edit` — whether the caller may change their
+      name, date of birth and relationship. Both absent from older vaults.
+    - **Added:** `PATCH /api/v1/members/{id}` with `{ display_name?,
+date_of_birth?, relationship?, is_deceased? }`, strict: what is sent is
+      changed, and nothing else; a blank relationship is none; a date of
+      birth is a real day, not after tomorrow. Send `If-Match: "<version>"`
+      (also `W/"<version>"`, a bare number, or `*`), as with the other
+      PATCHes: an older version is `409 conflict`, with the person as they
+      are now (as `GET /members` gives them to the caller) in `detail`, and
+      nothing is changed. `200` with the person and `ETag: "<version>"`.
+      Nothing different sent: no new version, nothing logged. Who may
+      change whom is A66, as with photos: an owner, anybody; an adult,
+      themselves and anybody with no sign-in; a teen, themselves; a viewer,
+      nobody, not even themselves. Refused, in this order: a person the
+      caller cannot see, `404`; a viewer, `403 forbidden` in the matrix's
+      words (`member.edit`: "Viewers can open and download documents, but
+      not change anybody's details."); anybody else not allowed, `403
+forbidden` ("Only an owner or the person themselves can change these
+      details. For someone without a sign-in, any adult can."); `is_deceased`
+      changed by anybody but an owner, `403 forbidden` ("Only an owner can
+      record that someone has passed away."); a stale If-Match, `409
+conflict`; `is_deceased: true` for somebody who can still sign in, `409
+signed_in` ("… Take their sign-in away first, then record that they
+      have passed away."); and a change to `is_deceased`, either way, asks
+      for a step-up, `403 step_up_required` with `action: "change_people"`
+      (any credential, as `change_people` always has). Recording a passing
+      takes back, in the same change, every invitation still waiting for
+      them (an `invitation.revoked` line each, as one taken back by hand).
+    - **Changed:** nobody recorded as passed away is given a sign-in. `POST
+/members/{id}/invite` (and `POST /invitations` with their `member_id`),
+      accepting an invitation for them (`POST /invitations/accept` and the
+      path form), and `POST /members/{id}/sign-in` answer `409 passed_away`
+      ("Grandad is recorded as having passed away, so they can't be given a
+      sign-in."), and nothing is made. An invitation made or accepted, a
+      sign-in given back and a passing recorded each hold the person first:
+      one sent again at the moment a passing is recorded is refused, or
+      taken back with it, and never left waiting.
+    - **Changed:** `POST /api/v1/members` checks `date_of_birth` as the
+      PATCH does: a real day, not after tomorrow; otherwise `422
+validation_failed`. It took any `YYYY-MM-DD` before.
+    - **Added:** `GET /api/v1/members/{id}/account` — an owner's view of
+      somebody's sign-in, read-only: `{ member_id, role, email, two_step,
+passkeys, last_signed_in_at, devices: [{ label, client, last_used_at,
+offline }] }` — `two_step` is two-step sign-in with an authenticator app,
+      `passkeys` how many, `last_signed_in_at` their most recent sign-in
+      here (null for never), and `devices` where they are signed in now (not
+      signed out, not expired), most recently used first, each in words
+      ("Safari on a Mac", "the app on a Google Pixel 8a"), `app`, `browser`
+      or `other`, and whether it keeps Essentials offline. No address a
+      device signed in from, no user agent, no session, credential or
+      account id, and nothing secret. Anybody but an owner: `404 not_found`
+      ("That page does not exist."), whoever's card they ask for, their own
+      included. A person with no sign-in: `404 not_found` ("They have no
+      sign-in to show."). Each card given is a line in the activity log
+      (below); a refusal writes none.
+    - **Changed (A54): new owner powers refuse an owner without two-step
+      sign-in.** A power added from this release on — today only `GET
+/api/v1/members/{id}/account`; later the locks, owner-started resets and
+      signing out everywhere of 5.28–5.30, the restrictions of 5.33, guest
+      invitations (5.34) and identity (5.26) — answers an owner who has
+      neither two-step sign-in nor a passkey `403 totp_required_for_owner`
+      ("Turn on two-step sign-in to manage other people's sign-ins."), and
+      asks any other for a step-up whose credential is a passkey or a code
+      from an authenticator app, never the password: `403
+step_up_required` with **new** `action: "manage_sign_ins"` ("Please
+      confirm it is you to manage other people's sign-ins."). `POST
+/auth/step-up` with a password still answers `200`, and still opens
+      everything it opened before, but not these; one with a `passkey` or a
+      `code` opens them for five minutes. A sign-in with a passkey, or with
+      a password and a code, is fresh for them at once; one with a password
+      alone is not. Every power from before this release is as it was: the
+      password still confirms each, and a password-only owner keeps them.
+    - The activity log: **new** `member.updated` ("Mansoor changed Aisha's
+      date of birth and relationship"; "Sara changed their name") with
+      `detail.fields` — which details, never what they were or are — and
+      `member.deceased` ("Mansoor recorded that Grandad has passed away",
+      or "took back the record that…"), notable, with `detail.deceased`.
+      Both are the family's, as a member's lines are: owners, adults and
+      teens. And `member.account_viewed` ("Mansoor looked at Sara's
+      sign-in"), notable, with no detail at all, for the owners and for the
+      person looked at, nobody else (a viewer reads no log).
+    - The database: 0046 adds `member.version`, `updated_at` and
+      `updated_by` (an account; null for the vault itself), which the
+      trigger `member_versioned` keeps — nobody sets them — and which
+      refuses anybody signed in but an owner who would change
+      `is_deceased`; `member_change_actor`, a restrictive rule for updates
+      that holds A66 for every kind of caller (the vault itself; an owner;
+      an adult, themselves and anybody with no sign-in; a teen, themselves;
+      nobody else); and `session.factor_verified_at`, when the session last
+      saw a passkey or a code. `member_versioned` also refuses to record the
+      passing of somebody who has a sign-in, and the trigger
+      `account_household_not_deceased` refuses a sign-in to somebody
+      recorded as passed away, whoever asks, holding the person's row while
+      it looks. The restore check knows both triggers and the rule.
+    - `@fdv/shared`: `MemberEdit`, `MemberAccount`, `MemberAccountDevice`,
+      `FACTOR_STEP_UPS`, `canChangeDetails`, `DETAILS_REFUSAL`,
+      `DECEASED_REFUSAL`, `DECEASED_SIGNED_IN`, and the capability
+      `member.edit` (owners, adults, teens). `@fdv/client`: `updateMember`
+      (the version as If-Match) and `memberAccount`; the fake keeps each
+      person's version and answers the account card only for an owner with
+      `ownerTwoStep`.
 
 ## Deprecations in effect
 

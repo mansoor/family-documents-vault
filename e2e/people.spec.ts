@@ -138,3 +138,36 @@ test('Home to documents, People to a profile; add a photo and see it on Home', a
   await page.getByRole('link', { name: 'Home' }).click();
   await expect(chip.locator('img.avatar-photo')).toBeVisible();
 });
+
+test('Edit details changes her relationship; a change saved meanwhile is said, and shown', async () => {
+  // Her profile, from People.
+  await page.getByRole('link', { name: 'People' }).click();
+  await page.getByRole('button', { name: new RegExp(NAME) }).click();
+  await expect(page.getByRole('heading', { name: NAME, level: 1 })).toBeVisible();
+  const about = page.getByRole('region', { name: 'About' });
+  await about.getByRole('button', { name: 'Edit details' }).click();
+  const form = about.getByRole('form', { name: `${FIRST}’s details` });
+  await form.getByLabel('Relationship (optional)').fill('Cousin');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(about.getByText('Details saved.')).toBeVisible();
+  await expect(about.getByText('Cousin')).toBeVisible();
+
+  // Opened again; meanwhile somebody else saves her as a niece.
+  await about.getByRole('button', { name: 'Edit details' }).click();
+  const meanwhile = await page.request.patch(`/api/v1/members/${personId}`, {
+    headers: { authorization: `Bearer ${token}` },
+    data: { relationship: 'Niece' },
+  });
+  expect(meanwhile.ok()).toBe(true);
+  await form.getByLabel('Relationship (optional)').fill('Second cousin');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(about.getByRole('alert')).toContainText(
+    `Someone else changed ${FIRST}’s details while you were editing.`,
+  );
+  await expect(form.getByLabel('Relationship (optional)')).toHaveValue('Niece');
+  // Made again, on top of theirs.
+  await form.getByLabel('Relationship (optional)').fill('Second cousin');
+  await form.getByRole('button', { name: 'Save' }).click();
+  await expect(about.getByText('Details saved.')).toBeVisible();
+  await expect(about.getByText('Second cousin')).toBeVisible();
+});

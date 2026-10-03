@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import QRCode from 'qrcode';
-import { Link, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -241,6 +241,11 @@ function Passkeys() {
 /** SEC-03: two-step sign-in, mandatory for owners. */
 function TwoStep() {
   const { guarded, authVersion } = useApp();
+  // Linked to from where it is needed (5.25: an owner's Account card).
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (hash === '#two-step') document.getElementById('two-step')?.scrollIntoView?.();
+  }, [hash]);
   const { data: me, reload } = useLoad(async (t) => api.me(t), [authVersion]);
   const [enrol, setEnrol] = useState<{ secret: string; otpauth_url: string; qr: string } | null>(
     null,
@@ -277,7 +282,7 @@ function TwoStep() {
   };
 
   return (
-    <section aria-labelledby="twostep-h" className="card stack">
+    <section id="two-step" aria-labelledby="twostep-h" className="card stack">
       <h2 id="twostep-h" style={{ fontSize: 18 }}>
         Two-step sign-in
       </h2>

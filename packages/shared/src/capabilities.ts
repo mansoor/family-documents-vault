@@ -129,6 +129,15 @@ export interface CapabilityFeatures {
    * older vaults, where nothing is ever removed.
    */
   remove_for_good?: boolean;
+  /**
+   * A person's details can be changed (5.25): PATCH /members/{id} with
+   * If-Match on `version` (`409 conflict` when it moved on), `version` and
+   * `can_edit` on members; and an owner's read-only view of somebody's
+   * sign-in, GET /members/{id}/account, which asks an owner for two-step
+   * sign-in or a passkey (A54). Absent from older vaults, which change
+   * nobody's details.
+   */
+  member_edit?: boolean;
 }
 
 export interface CapabilityLimits {

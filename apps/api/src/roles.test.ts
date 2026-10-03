@@ -383,6 +383,18 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
         });
       },
     },
+    {
+      capability: 'member.edit',
+      // Whose, beyond the matrix, is household/member-edit.test.ts (A66).
+      what: 'change their own details',
+      call: (t) =>
+        h.app.inject({
+          method: 'PATCH',
+          url: `/api/v1/members/${t.member_id}`,
+          headers: h.as(t),
+          payload: { relationship: 'Themselves' },
+        }),
+    },
   ];
 
   for (const probe of probes) {

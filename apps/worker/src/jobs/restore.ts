@@ -587,6 +587,15 @@ const GUARDS = [
     table: 'upload_request',
     fn: 'upload_request_forgets_address',
   },
+  // A person's version moves on with every change to their details, and an
+  // owner alone says somebody has passed away (0046).
+  { name: 'member_versioned', table: 'member', fn: 'member_versioned' },
+  // And nobody recorded as passed away is given a sign-in (0046).
+  {
+    name: 'account_household_not_deceased',
+    table: 'account_household',
+    fn: 'account_household_not_deceased',
+  },
 ];
 
 /**
@@ -714,6 +723,14 @@ const MAKER_ONLY = [
     what: 'a file sent for one person to review',
   },
 ];
+
+/**
+ * The tables whose rows only some of the family may change, by a rule that
+ * asks the caller's role: a person's details are changed by an owner, an
+ * adult (their own, and those of anybody with no sign-in) or a teen (their
+ * own), and by nobody else (A66, 0046).
+ */
+const CHANGED_BY_ROLE = [{ table: 'member', what: "a person's details" }];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
 const HOUSEHOLD_ROWS: Record<string, string> = {
@@ -856,6 +873,21 @@ export async function checkRestored(
       throw new Error(
         `no rule keeps a member's own to them on ${unkept.map((u) => u.name).join(', ')}`,
       );
+    }
+    // And who may change a person (0046): a rule that governs what is
+    // changed, and asks the caller's role.
+    const { rows: unruled } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'w')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_role()%')`,
+      [CHANGED_BY_ROLE.map((c) => c.table)],
+    );
+    if (unruled.length) {
+      const what = CHANGED_BY_ROLE.filter((c) => unruled.some((u) => u.name === c.table));
+      throw new Error(`no rule says who may change ${what.map((c) => c.what).join(', ')}`);
     }
 
     const { rows: rights } = await app.query<{

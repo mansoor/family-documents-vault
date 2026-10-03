@@ -84,6 +84,12 @@ export type Capability =
    */
   | 'upload_request.create'
   /**
+   * Change a person's name, date of birth or relationship (5.25). Whose, as
+   * a photo's, is `canChangePerson` (A66); that somebody has passed away is
+   * an owner's alone to say.
+   */
+  | 'member.edit'
+  /**
    * Turn back on what a restore paused (A55): every link to a document the
    * owner can see (5.16). Without it, nothing — not even a link you made
    * to your own Only me document, which no owner can see: that one stays
@@ -221,6 +227,13 @@ const MATRIX: Record<Capability, Rule> = {
     // app_live_upload_request() and the request's rule (0044).
     roles: ['owner', 'adult'],
     refusal: 'Only an adult can ask someone outside the family to send documents.',
+  },
+  'member.edit': {
+    // The family's own details, kept by the family, as its photos are:
+    // whose is canChangePerson. A viewer is given documents, not the family
+    // (A65), and changes nobody's details — not even their own.
+    roles: ['owner', 'adult', 'teen'],
+    refusal: "Viewers can open and download documents, but not change anybody's details.",
   },
   'restore.review': {
     // A backup brings back links taken back since it was made, so after a
@@ -410,6 +423,40 @@ export function canChangePerson(
     default:
       return false;
   }
+}
+
+/** Said to whoever may not change somebody's details, who may (A66, 5.25). */
+export const DETAILS_REFUSAL =
+  'Only an owner or the person themselves can change these details. For someone without a sign-in, any adult can.';
+
+/** Said to anybody but an owner who would record that somebody has passed away (5.25). */
+export const DECEASED_REFUSAL = 'Only an owner can record that someone has passed away.';
+
+/**
+ * Said to an owner who would record that somebody still signing in has
+ * passed away (5.25): their sign-in goes first, so that nobody signs in as
+ * them afterwards.
+ */
+export const DECEASED_SIGNED_IN = (name: string) =>
+  `${name} can still sign in. Take their sign-in away first, then record that they have passed away.`;
+
+/**
+ * Said to whoever would give a sign-in to somebody recorded as passed away
+ * (5.25): an invitation made or accepted, a sign-in given back.
+ */
+export const DECEASED_NO_SIGN_IN = (name: string) =>
+  `${name} is recorded as having passed away, so they can't be given a sign-in.`;
+
+/**
+ * Whether someone may change a person's details (5.25): their name, date of
+ * birth and relationship. Whose, as a photo's, is `canChangePerson` (A66);
+ * that somebody has passed away, an owner's alone (`DECEASED_REFUSAL`).
+ */
+export function canChangeDetails(
+  viewer: { role: Role; memberId: string | null },
+  person: { id: string; role: Role | null },
+): boolean {
+  return can(viewer.role, 'member.edit') && canChangePerson(viewer, person);
 }
 
 /**

@@ -1,4 +1,5 @@
 import {
+  canChangeDetails,
   canSee,
   canSeeCollection,
   collectionItemHint,
@@ -9,6 +10,7 @@ import {
   nextReminder,
   reminderOf,
   type DocumentTypeView,
+  type MemberAccount,
   type ReminderProblem,
   type Role,
 } from '@fdv/shared';
@@ -169,6 +171,17 @@ export interface FakeState {
   stepUpNeeded: boolean;
   /** When an owner's request to remove for good is said to be made (5.24); left out, now. */
   purgeAskedAt?: string;
+  /**
+   * The owner's view of a sign-in (5.25): whether the signed-in owner has
+   * two-step sign-in (left out: they do; false: a password alone, refused
+   * the card, A54), each person's card by member id, and whether the card
+   * asks for a passkey or a code first (a password does not do).
+   */
+  twoStep?: boolean;
+  accounts?: Record<string, MemberAccount>;
+  accountStepUp?: boolean;
+  /** Every PATCH /members/{id} that arrived: whose, what, and the If-Match. */
+  memberEdits?: Array<{ id: string; body: unknown; ifMatch: string | null }>;
   /**
    * The passport's pages as the vault drew them (0.4.12): how many, or a
    * kind it cannot draw; and how many more times a page is still "being
@@ -447,6 +460,23 @@ export function fresh(over: Partial<FakeState> = {}): FakeState {
   };
 }
 
+/** A person as GET /members answers one since 5.25: their version, and whether the reader may change them. */
+function withDetails(m: Record<string, unknown>) {
+  return {
+    ...m,
+    version: (m.version as number | undefined) ?? 1,
+    can_edit:
+      (m.can_edit as boolean | undefined) ??
+      canChangeDetails(
+        { role: storedRole() as Role, memberId: 'me' },
+        {
+          id: String(m.id),
+          role: (m.role as 'owner' | 'adult' | 'teen' | 'viewer' | null) ?? null,
+        },
+      ),
+  };
+}
+
 export function installFakeApi(state: FakeState) {
   const json = (body: unknown, status = 200) => Promise.resolve(Response.json(body, { status }));
   const refuse = (status: number, code: string, message: string, more: object = {}) =>
@@ -530,6 +560,7 @@ export function installFakeApi(state: FakeState) {
           share_options: true,
           share_second_factor: state.shareSecondFactor ?? true,
           share_email_code: state.operatorMail === true,
+          member_edit: true,
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -576,8 +607,8 @@ export function installFakeApi(state: FakeState) {
         household_id: 'hh',
         member_id: 'me',
         role: storedRole(),
-        totp_enabled: true,
-        totp_required: false,
+        totp_enabled: state.twoStep !== false,
+        totp_required: state.twoStep === false && storedRole() === 'owner',
       });
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
     if (path === '/api/v1/auth/passkeys' && method === 'GET')
@@ -607,7 +638,26 @@ export function installFakeApi(state: FakeState) {
       return json({ id: 'ex-1', state: 'queued' }, 202);
     }
     if (path === '/api/v1/auth/step-up' && method === 'POST') {
-      const b = body as { password?: string };
+      const b = body as { password?: string; code?: string };
+      // A code from the authenticator app (5.25): what the owner's powers ask.
+      if (b?.code !== undefined) {
+        if (b.code !== '123456') {
+          return json(
+            {
+              error: {
+                code: 'invalid_credentials',
+                message: "That didn't match.",
+                retriable: false,
+                request_id: 'r',
+              },
+            },
+            401,
+          );
+        }
+        state.stepUpNeeded = false;
+        state.accountStepUp = false;
+        return json({ verified_at: new Date().toISOString(), expires_in: 300 });
+      }
       if (b?.password !== 'correct horse battery') {
         return json(
           {
@@ -701,7 +751,63 @@ export function installFakeApi(state: FakeState) {
           Object.assign(m, { photo: { id: `p-${String(m.id)}-${asked}` }, photo_status: null });
         }
       }
-      return json({ items: state.members });
+      return json({ items: state.members.map(withDetails) });
+    }
+    // A person's details (5.25), made to the version seen; the owner's view
+    // of a sign-in, asked with a passkey or a code (A54).
+    const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
+    if (memberAt && memberAt[2] && method === 'GET') {
+      if (storedRole() !== 'owner') return refuse(404, 'not_found', 'That page does not exist.');
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to manage other people's sign-ins.",
+        );
+      }
+      if (state.accountStepUp) {
+        return refuse(
+          403,
+          'step_up_required',
+          "Please confirm it is you to manage other people's sign-ins.",
+          { action: 'manage_sign_ins' },
+        );
+      }
+      const card = state.accounts?.[memberAt[1] as string];
+      return card ? json(card) : refuse(404, 'not_found', 'They have no sign-in to show.');
+    }
+    if (memberAt && !memberAt[2] && method === 'PATCH') {
+      const m = state.members.find((x) => x.id === memberAt[1]);
+      if (!m) return refuse(404, 'not_found', 'That person is not in the family.');
+      const b = body as Record<string, unknown>;
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const ifMatch = headers['if-match'] ?? null;
+      state.memberEdits = [...(state.memberEdits ?? []), { id: String(m.id), body: b, ifMatch }];
+      const version = (m.version as number | undefined) ?? 1;
+      if (ifMatch !== null && ifMatch !== `"${version}"`) {
+        return refuse(
+          409,
+          'conflict',
+          'Someone else changed these details. Reload and try again.',
+          {
+            detail: JSON.stringify(withDetails(m)),
+          },
+        );
+      }
+      if (b.is_deceased !== undefined && b.is_deceased !== m.is_deceased) {
+        if (state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to change who is in the family.',
+            {
+              action: 'change_people',
+            },
+          );
+        }
+      }
+      Object.assign(m, b, { version: version + 1 });
+      return json(withDetails(m));
     }
     if (path === '/api/v1/members' && method === 'POST') {
       const b = body as {

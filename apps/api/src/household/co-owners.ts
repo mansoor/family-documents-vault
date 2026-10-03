@@ -1,5 +1,5 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
-import { can, roleLabel, ROLES, type Role } from '@fdv/shared';
+import { can, DECEASED_NO_SIGN_IN, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { closeLostRequests } from '../uploads/requests.js';
@@ -284,6 +284,17 @@ export class CoOwnerService {
         .where('member.id', '=', memberId)
         .executeTakeFirst();
       if (!member) throw notFound('That person');
+      // Held, and read as they are once held: nobody signs in as somebody
+      // recorded as passed away (5.25), however close together the two are.
+      const person = await trx
+        .selectFrom('member')
+        .select(['is_deceased'])
+        .where('id', '=', member.id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      if (person.is_deceased) {
+        throw new ApiError(409, 'passed_away', DECEASED_NO_SIGN_IN(member.display_name));
+      }
       const held = await trx
         .selectFrom('account_household')
         .select(['account_id'])

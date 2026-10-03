@@ -1143,6 +1143,60 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     );
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it("notices a person's details open to anybody to change, or their version unguarded (0046)", async () => {
+    const rule = (
+      await sql(
+        vault.adminUrl,
+        "select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'member_change_actor'",
+      )
+    ).rows[0]?.rule as string;
+    // The rule gone: anybody signed in changes anybody.
+    await sql(vault.adminUrl, 'drop policy member_change_actor on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule says who may change a person's details/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_change_actor on public.member as restrictive for update using (${rule})`,
+      );
+    }
+    // Still there, but asking nobody's role.
+    await sql(vault.adminUrl, 'alter policy member_change_actor on public.member using (true)');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule says who may change a person's details/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy member_change_actor on public.member using (${rule})`,
+      );
+    }
+    // The version, free to stay where it was.
+    await sql(vault.adminUrl, 'alter table public.member disable trigger member_versioned');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(vault.adminUrl, 'alter table public.member enable trigger member_versioned');
+    }
+    // A sign-in, free to be given to somebody recorded as passed away.
+    await sql(
+      vault.adminUrl,
+      'alter table public.account_household disable trigger account_household_not_deceased',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.account_household enable trigger account_household_not_deceased',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {

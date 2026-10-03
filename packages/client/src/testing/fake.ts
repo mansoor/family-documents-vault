@@ -12,6 +12,8 @@ import {
   COLLECTION_NAME_MAX,
   collectionItemHint,
   CORE_FIELDS,
+  DECEASED_REFUSAL,
+  DECEASED_SIGNED_IN,
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
@@ -44,6 +46,7 @@ import {
   type DocumentView,
   type UploadRequestView,
   type IssuerSuggestions,
+  type MemberAccount,
   type OfflineGrant,
   type OfflineItem,
   type ReminderView,
@@ -109,7 +112,21 @@ export interface FakeVaultState {
     /** A photo on its way: the next GET /members answers it made, as the vault's worker would. */
     photo_status?: 'processing' | 'failed' | null;
     can_change_photo?: boolean;
+    /** Their details (5.25): changed by PATCH /members/{id}, each change a new version. */
+    date_of_birth?: string | null;
+    relationship?: string | null;
+    is_deceased?: boolean;
+    version?: number;
+    can_edit?: boolean;
   }>;
+  /**
+   * The owner's view of each person's sign-in (5.25), by member id: what
+   * GET /members/{id}/account answers an owner with two-step sign-in. The
+   * fake's owner has none unless a test says (`ownerTwoStep`), and is
+   * refused it, as the real vault refuses an owner with only a password.
+   */
+  memberAccounts: Map<string, MemberAccount>;
+  ownerTwoStep: boolean;
   /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
   photosOnTheirWay: Map<string, string>;
   /**
@@ -424,6 +441,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
     photosOnTheirWay: new Map(),
+    memberAccounts: new Map(),
+    ownerTwoStep: false,
     role: 'owner',
     collections: [],
     uploadRequests: [],
@@ -654,6 +673,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           // with the operator's mail server, which a fake has none of.
           share_second_factor: true,
           share_email_code: false,
+          // A person's details, and the owner's view of a sign-in (5.25).
+          member_edit: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1975,6 +1996,66 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       m.photo_status = 'processing';
       return ok(memberAnswer(m), 202);
     }
+    // A person's details (5.25), changed as the caller saw them: If-Match on
+    // their version, and an older one is a conflict, with them as they are.
+    const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
+    if (memberAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const m = state.members.find((x) => x.id === decodeURIComponent(memberAt[1] as string));
+      if (memberAt[2] !== undefined) {
+        if (init.method !== 'GET' || state.role !== 'owner') {
+          return fail(404, 'not_found', 'That page does not exist.');
+        }
+        if (!state.ownerTwoStep) {
+          return fail(
+            403,
+            'totp_required_for_owner',
+            "Turn on two-step sign-in to manage other people's sign-ins.",
+          );
+        }
+        const card = m ? state.memberAccounts.get(m.id) : undefined;
+        return card ? ok(card) : fail(404, 'not_found', 'They have no sign-in to show.');
+      }
+      if (init.method !== 'PATCH') return fail(404, 'not_found', 'Not here.');
+      if (!m) return fail(404, 'not_found', 'That person is not in the family.');
+      if (state.role === 'viewer') return fail(403, 'forbidden', refusalFor('member.edit'));
+      const b = body as {
+        display_name?: string;
+        date_of_birth?: string | null;
+        relationship?: string | null;
+        is_deceased?: boolean;
+      };
+      const passing = b.is_deceased !== undefined && b.is_deceased !== (m.is_deceased ?? false);
+      if (passing && state.role !== 'owner') return fail(403, 'forbidden', DECEASED_REFUSAL);
+      const version = m.version ?? 1;
+      const ifMatch = init.headers['if-match'];
+      if (ifMatch !== undefined && ifMatch !== `"${version}"`) {
+        return fail(
+          409,
+          'conflict',
+          'Someone else changed these details. Reload and try again.',
+          JSON.stringify(memberAnswer(m)),
+        );
+      }
+      if (passing && b.is_deceased === true && m.role) {
+        return fail(409, 'signed_in', DECEASED_SIGNED_IN(m.display_name));
+      }
+      const next = {
+        display_name: b.display_name?.trim() ?? m.display_name,
+        date_of_birth: b.date_of_birth !== undefined ? b.date_of_birth : (m.date_of_birth ?? null),
+        relationship:
+          b.relationship !== undefined ? b.relationship?.trim() || null : (m.relationship ?? null),
+        is_deceased: b.is_deceased ?? m.is_deceased ?? false,
+      };
+      const moved =
+        next.display_name !== m.display_name ||
+        next.date_of_birth !== (m.date_of_birth ?? null) ||
+        next.relationship !== (m.relationship ?? null) ||
+        next.is_deceased !== (m.is_deceased ?? false);
+      if (moved) Object.assign(m, next, { version: version + 1 });
+      return respond(200, memberAnswer(m), { etag: `"${m.version ?? 1}"` });
+    }
     if (path === '/api/v1/reminders' && init.method === 'GET') {
       const s = session();
       if (!('id' in s)) return s;
@@ -2110,9 +2191,15 @@ function documentView(
 function memberAnswer(m: FakeVaultState['members'][number]) {
   return {
     ...m,
+    date_of_birth: m.date_of_birth ?? null,
+    relationship: m.relationship ?? null,
+    is_deceased: m.is_deceased ?? false,
     photo: m.photo ?? null,
     photo_status: m.photo_status ?? null,
     can_change_photo: m.can_change_photo ?? m.role !== 'viewer',
+    // Their details (5.25): a version, and whether they may be changed.
+    version: m.version ?? 1,
+    can_edit: m.can_edit ?? m.role !== 'viewer',
   };
 }
 

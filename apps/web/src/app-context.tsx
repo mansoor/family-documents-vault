@@ -171,7 +171,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={value}>
       {children}
-      {asking && <StepUpPrompt message={asking.message} onSettled={asking.settle} />}
+      {asking && (
+        <StepUpPrompt action={asking.action} message={asking.message} onSettled={asking.settle} />
+      )}
     </Ctx.Provider>
   );
 }

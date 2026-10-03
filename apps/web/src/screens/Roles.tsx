@@ -94,6 +94,8 @@ export function RoleControls(props: { member: Member; onChanged: () => Promise<v
 
   const isMe = props.member.id === session.info?.member_id;
   if (!props.member.has_account && props.member.sign_in_removed && can(myRole, 'member.remove')) {
+    // Never to somebody who has passed away (5.25): the vault refuses it.
+    if (props.member.is_deceased) return null;
     return <GiveSignInBack member={props.member} onChanged={props.onChanged} />;
   }
   if (!can(myRole, 'role.change') || !props.member.has_account || isMe) return null;

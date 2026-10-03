@@ -870,6 +870,17 @@ h3 {
 .facts dd {
   margin: 0;
   font-weight: 500;
+  /* An address that is one long word still fits a 320-pixel screen (5.25). */
+  overflow-wrap: anywhere;
+}
+
+/* 5.25: a card's heading, with what can be done about it beside it. */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .status-neutral {

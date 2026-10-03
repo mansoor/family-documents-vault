@@ -50,6 +50,8 @@ export interface Reader {
 export interface Line {
   action: string;
   object_type: string | null;
+  /** What it is about, by id: whom, for a line about a person (5.25). */
+  object_id?: string | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
   collection_audience?: string | null;
@@ -149,6 +151,15 @@ const seesTheDocumentFollowTheLink: Audience = (reader, line) =>
 const reviewsTheRequest: Audience = (reader, line) =>
   line.request_visible === true && can(reader.role, 'upload_request.create');
 
+/**
+ * An owner's look at somebody's sign-in (5.25): for the owners, who answer
+ * to each other for it, and for the person it was about. Nobody else — not
+ * another adult, not a teen. (A viewer reads no log at all.)
+ */
+const ownersAndThePerson: Audience = (reader, line) =>
+  reader.role === 'owner' ||
+  (line.object_type === 'member' && line.object_id != null && line.object_id === reader.memberId);
+
 /** "The audience of what it is about": the row's object type decides. */
 const BY_TYPE = 'by type';
 
@@ -216,6 +227,13 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // a crop or a file's name.
   ['member.photo_changed', BY_TYPE],
   ['member.photo_removed', BY_TYPE],
+  // 5.25: a person's details changed — which of them, never their values —
+  // and that somebody has passed away, or not after all: the family's, as a
+  // member's lines are. A viewer reads none of the log.
+  ['member.updated', BY_TYPE],
+  ['member.deceased', BY_TYPE],
+  // 5.25: an owner looked at somebody's sign-in — never what it said.
+  ['member.account_viewed', ownersAndThePerson],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
