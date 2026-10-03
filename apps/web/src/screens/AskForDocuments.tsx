@@ -213,7 +213,11 @@ export function AskForDocumentsScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tried, setTried] = useState(false);
+  /** Each press of Make the link with something to put right: the focus goes to it. */
+  const [refused, setRefused] = useState(0);
+  const form = useRef<HTMLFormElement>(null);
   const itemsBox = useRef<HTMLFieldSetElement>(null);
+  const addItem = useRef<HTMLButtonElement>(null);
   const [focusItem, setFocusItem] = useState<number | null>(null);
 
   const { data, error: loadError } = useLoad(
@@ -235,12 +239,25 @@ export function AskForDocumentsScreen() {
 
   // A thing to send added, or one taken away: the focus goes to the field
   // that is there now, not to the page's start.
+  // The last one taken away: the button that names another (the 5.22 review).
   useEffect(() => {
     if (focusItem === null) return;
-    itemsBox.current?.querySelectorAll<HTMLInputElement>('input')[focusItem]?.focus();
+    const fields = itemsBox.current?.querySelectorAll<HTMLInputElement>('input') ?? [];
+    const to = fields[focusItem] ?? fields[fields.length - 1] ?? addItem.current;
+    to?.focus();
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setFocusItem(null);
   }, [focusItem]);
+
+  // Make the link pressed with something to put right: the focus goes to
+  // the first thing marked, where what is wrong is said (WCAG 3.3.1).
+  useEffect(() => {
+    if (refused === 0) return;
+    const first =
+      form.current?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+      form.current?.querySelector<HTMLElement>('#ask-date');
+    first?.focus();
+  }, [refused]);
 
   if (!mayAsk) {
     return (
@@ -263,7 +280,10 @@ export function AskForDocumentsScreen() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setTried(true);
-    if (!read.body) return;
+    if (!read.body) {
+      setRefused((n) => n + 1);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -305,7 +325,7 @@ export function AskForDocumentsScreen() {
         looked at.
       </p>
       <ErrorNote message={loadError} />
-      <form className="stack ask-form" onSubmit={(e) => void submit(e)} noValidate>
+      <form className="stack ask-form" ref={form} onSubmit={(e) => void submit(e)} noValidate>
         <section className="card stack" aria-labelledby="ask-what-h">
           <h2 id="ask-what-h" style={{ fontSize: 18 }}>
             What you are asking for
@@ -320,9 +340,11 @@ export function AskForDocumentsScreen() {
             invalid={tried && read.titleProblem !== null}
             onChange={(title) => set({ title })}
             note={
-              tried && read.titleProblem
-                ? read.titleProblem
-                : 'They see it once they open the link.'
+              tried && read.titleProblem ? (
+                <span className="field-error">{read.titleProblem}</span>
+              ) : (
+                'They see it once they open the link.'
+              )
             }
           />
           <TextArea
@@ -365,6 +387,7 @@ export function AskForDocumentsScreen() {
               </div>
             ))}
             <Button
+              ref={addItem}
               kind="quiet"
               disabled={items.length >= UPLOAD_REQUEST_ITEMS_MAX}
               onClick={() => {
@@ -440,7 +463,8 @@ export function AskForDocumentsScreen() {
                 onMode={(passwordMode) => set({ passwordMode })}
                 onPassword={(password) => set({ password })}
                 typedNote={`At least ${UPLOAD_PASSWORD_MIN} characters, checked exactly as typed. The vault keeps only a scrambled copy, so write it down before you send the link.`}
-                madeNote="Three short groups of letters and numbers. You see it once, with the link. They type it with its dashes."
+                madeNote="Three short groups of letters and numbers, easy to read out. You see it once, with the link. Capitals, spaces and dashes do not matter when they type it."
+                showProblem={tried}
               />
             )}
             <Check
@@ -470,15 +494,15 @@ export function AskForDocumentsScreen() {
                     maxLength={254}
                     value={value.email}
                     onChange={(e) => set({ email: e.target.value, emailRefused: null })}
-                    aria-invalid={read.codeProblem && value.email ? true : undefined}
+                    aria-invalid={read.codeProblem && (value.email || tried) ? true : undefined}
                     aria-describedby="ask-email-note"
                   />
                   <span
                     id="ask-email-note"
-                    className={read.codeProblem && value.email ? 'field-error' : 'muted'}
-                    role={read.codeProblem && value.email ? 'alert' : undefined}
+                    className={read.codeProblem && (value.email || tried) ? 'field-error' : 'muted'}
+                    role={read.codeProblem && (value.email || tried) ? 'alert' : undefined}
                   >
-                    {read.codeProblem && value.email
+                    {read.codeProblem && (value.email || tried)
                       ? read.codeProblem
                       : 'The code goes only to this address, from the vault’s own mail server. They never type an address; they see it with most of it hidden.'}
                   </span>
@@ -688,10 +712,16 @@ export function RequestHandOver(props: {
   }, []);
   return (
     <section className="card stack" aria-labelledby="handover-h" data-testid="request-handover">
-      <h2 id="handover-h" style={{ fontSize: 20 }} tabIndex={-1} ref={heading}>
+      <h2
+        id="handover-h"
+        className="handover-title"
+        style={{ fontSize: 20 }}
+        tabIndex={-1}
+        ref={heading}
+      >
         {r.recipient_label ? `The link for ${r.recipient_label}` : 'The link to send them'}
       </h2>
-      <p className="muted">“{r.title}”</p>
+      <p className="muted handover-title">“{r.title}”</p>
       <code style={{ wordBreak: 'break-all' }}>{link}</code>
       {insecureLink(link) && (
         <p className="status status-warn" role="alert">
@@ -718,9 +748,9 @@ export function RequestHandOver(props: {
             {props.created.password}
           </code>
           <span className="muted">
-            Tell them this some other way — a phone call, not the same message. They type it as it
-            is here, dashes and all. It is shown only now: the vault keeps a scrambled copy it
-            cannot show again.
+            Tell them this some other way — a phone call, not the same message. Capitals, spaces and
+            dashes do not matter when they type it. It is shown only now: the vault keeps a
+            scrambled copy it cannot show again.
           </span>
         </div>
       )}

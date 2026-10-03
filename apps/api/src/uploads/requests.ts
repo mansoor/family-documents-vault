@@ -60,7 +60,7 @@ import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
-import { truncatedIp } from '../documents/shares.js';
+import { canonicalMadeUp, truncatedIp } from '../documents/shares.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -249,6 +249,7 @@ const SENDER_COLUMNS = [
   'recipient_label',
   'recipient_email',
   'secret_hash',
+  'secret_kind',
   'email_code',
   'this_device_only',
   'device_hash',
@@ -515,8 +516,18 @@ export class UploadRequestService {
       }
     }
     const token = randomBytes(32).toString('base64url');
-    const password = input.with_password ? madePassword() : (input.password ?? null);
-    const secretHash = password ? await argon2.hash(password, ARGON2) : null;
+    // A password the vault makes up is read out and typed unseen, so it is
+    // hashed, and checked, in its canonical form (0048, as a share link's
+    // is): "ABCD EFGH JKMN" opens "abcd-efgh-jkmn". One the requester typed
+    // is theirs, and is checked exactly as typed.
+    const made = input.with_password ? madePassword() : null;
+    const typed = made ? null : (input.password ?? null);
+    const secretKind = made ? 'generated' : typed !== null ? 'password' : null;
+    const secretHash = made
+      ? await argon2.hash(canonicalMadeUp(made), ARGON2)
+      : typed !== null
+        ? await argon2.hash(typed, ARGON2)
+        : null;
     const items = input.items ?? [];
 
     const id = await withPrincipal(this.db, p, async (trx) => {
@@ -559,6 +570,7 @@ export class UploadRequestService {
           recipient_email: email,
           token_hash: hash(token),
           secret_hash: secretHash,
+          secret_kind: secretKind,
           email_code: input.email_code ?? false,
           this_device_only: input.this_device_only ?? false,
           expires_at: expiresAt,
@@ -613,8 +625,8 @@ export class UploadRequestService {
     const link_url = this.opts.publicUrl
       ? `${this.opts.publicUrl.replace(/\/+$/, '')}/drop#${token}`
       : null;
-    return password && input.with_password
-      ? { request, link_token: token, link_url, password }
+    return made
+      ? { request, link_token: token, link_url, password: made }
       : { request, link_token: token, link_url };
   }
 
@@ -836,15 +848,26 @@ export class UploadRequestService {
    * is counted or written down: a link scanner fetching the page is not
    * somebody opening it.
    */
-  async preview(token: string): Promise<DropPreview> {
+  async preview(token: string, devices: readonly DeviceCookie[] = []): Promise<DropPreview> {
     const scope = await this.scopeOf(token);
     return withScope(this.db, scope, async (trx) => {
       const r = await this.live(trx, scope.actor.requestId);
       if (r.max_visits !== null && r.visits_used >= r.max_visits) throw usedUp();
+      // A request for one browser, bound to another (5.22, as 5.20's link
+      // preview): said before Open is pressed, which would be refused, and
+      // where its code goes is not said here, where none is sent.
+      const elsewhere =
+        r.this_device_only && r.device_hash !== null && !boundDevice(r.device_hash, r.id, devices);
       return {
         ...(await this.names(trx, r)),
         protection: protectionOf(r),
         expires_at: r.expires_at.toISOString(),
+        // Which request it is: a page with a session for it in this browser
+        // already carries on in that, rather than opening another (5.22).
+        request_id: r.id,
+        code_to:
+          r.email_code && r.recipient_email && !elsewhere ? maskEmail(r.recipient_email) : null,
+        other_device: elsewhere,
       };
     });
   }
@@ -1139,9 +1162,12 @@ export class UploadRequestService {
     if (r.attempts >= MAX_ATTEMPTS) return 'gone';
     let right = true;
     if (r.secret_hash) {
-      right = input.password
-        ? await argon2.verify(r.secret_hash, input.password).catch(() => false)
-        : false;
+      // A made-up password in its canonical form; a typed one as typed (0048).
+      const given =
+        input.password && r.secret_kind === 'generated'
+          ? canonicalMadeUp(input.password)
+          : input.password;
+      right = given ? await argon2.verify(r.secret_hash, given).catch(() => false) : false;
     }
     // The code only after the password (A23): a wrong password never uses
     // up a code's own tries.
@@ -1339,6 +1365,9 @@ export class UploadRequestService {
       .select(['id', 'original_name', 'mime', 'byte_size', 'item_id'])
       .where('session_id', '=', sessionId)
       .where('state', '=', 'received')
+      // Sent with Finish, they are the reviewer's: never listed here again
+      // (the 5.22 review), where Remove could not reach them anyway.
+      .where('submitted_at', 'is', null)
       .orderBy('created_at')
       .execute();
     const bytesLeft = Math.max(0, Number(r.max_total_bytes) - Number(r.bytes_used));

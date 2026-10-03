@@ -417,6 +417,13 @@ export interface Schema {
     token_hash: Buffer;
     /** The password, as Argon2id. */
     secret_hash: string | null;
+    /**
+     * What the password is (0048): `generated`, made up by the vault and
+     * hashed and checked in its canonical form (lower case, no dashes or
+     * spaces); `password`, typed, checked exactly; null, none, or one made
+     * before 0048, checked as typed.
+     */
+    secret_kind: 'password' | 'generated' | null;
     email_code: Generated<boolean>;
     this_device_only: Generated<boolean>;
     device_hash: Buffer | null;

@@ -153,7 +153,7 @@ describe('asking for documents', () => {
     const shown = await screen.findByTestId('request-password');
     expect(shown).toHaveTextContent('k7mq-p2xa-9htw');
     expect(shown).toHaveTextContent(/shown only now/);
-    expect(shown).toHaveTextContent(/dashes and all/);
+    expect(shown).toHaveTextContent(/Capitals, spaces and dashes do not matter/);
     expect(madeBody(state)).toMatchObject({ with_password: true });
     expect(madeBody(state)).not.toHaveProperty('password');
 
@@ -271,32 +271,93 @@ describe('asking for documents', () => {
     await screen.findByRole('link', { name: 'Ask someone for Aisha’s documents' });
   });
 
-  it('a teen or a viewer is never offered it, and never asks', async () => {
-    for (const role of ['teen', 'viewer'] as const) {
-      const state = fresh({ members: [{ ...ME, role }, AISHA] });
-      installFakeApi(state);
-      signedIn(role);
-      window.history.replaceState({}, '', '/people/m-0');
-      const { unmount } = render(<App />);
+  it.each([
+    ['teen', '/people/m-0'],
+    ['viewer', '/people/m-0'],
+    ['teen', '/settings/sharing/ask'],
+    ['viewer', '/settings/sharing/ask'],
+    ['teen', '/settings/sharing'],
+    ['viewer', '/settings/sharing'],
+  ] as const)('a %s is never offered it at %s, and never asks', async (role, at) => {
+    const state = fresh({ members: [{ ...ME, role }, AISHA] });
+    installFakeApi(state);
+    signedIn(role);
+    window.history.replaceState({}, '', at);
+    render(<App />);
+    if (at === '/people/m-0') {
       await screen.findByRole('heading', { name: 'Aisha' });
+      // Her page has loaded what it shows: nothing more is coming.
+      await screen.findByRole('heading', { name: 'Aisha’s documents' });
       expect(screen.queryByRole('link', { name: /Ask someone for/ })).not.toBeInTheDocument();
-      unmount();
-      window.history.replaceState({}, '', '/settings/sharing/ask');
-      const again = render(<App />);
+    } else if (at === '/settings/sharing/ask') {
       expect(
         await screen.findByText('Only an owner or an adult can ask someone to send documents.'),
       ).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Make the link' })).not.toBeInTheDocument();
-      again.unmount();
-      window.history.replaceState({}, '', '/settings/sharing');
-      const sharing = render(<App />);
+    } else {
       await screen.findByRole('heading', { name: 'Sharing' });
       expect(
         screen.queryByRole('heading', { name: 'Asking for documents' }),
       ).not.toBeInTheDocument();
-      sharing.unmount();
-      expect(state.calls.some((c) => c.url.startsWith('/api/v1/upload-requests'))).toBe(false);
     }
+    expect(state.calls.some((c) => c.url.startsWith('/api/v1/upload-requests'))).toBe(false);
+  });
+
+  it('the hand-over gives the public-only site’s link when the vault has one', async () => {
+    const outside = `https://drop.example.org/drop#${TOKEN}`;
+    const state = await openForm({ dropLinkUrl: outside });
+    const copied = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const handover = await screen.findByTestId('request-handover');
+    // Not the family's own address, which whoever it is for may not reach.
+    expect(within(handover).getByText(outside)).toBeInTheDocument();
+    expect(handover).not.toHaveTextContent(window.location.origin);
+    fireEvent.click(within(handover).getByRole('button', { name: 'Copy the link' }));
+    await within(handover).findByRole('button', { name: 'Copied' });
+    expect(copied).toHaveBeenCalledWith(outside);
+    expect(madeBody(state)).toMatchObject({ title: 'Tax papers' });
+  });
+
+  it('an empty typed password or code address is marked where it is, and the focus goes to the first', async () => {
+    const state = await openForm({ operatorMail: true });
+    fireEvent.change(screen.getByLabelText(/^Title/), { target: { value: 'Tax papers' } });
+    fireEvent.click(screen.getByLabelText(/ask for a password/));
+    fireEvent.click(screen.getByRole('button', { name: 'I’ll type one' }));
+    fireEvent.click(screen.getByLabelText(/email them a code/));
+    // Nothing typed yet: nothing is called wrong before Make the link.
+    expect(screen.getByLabelText('The password')).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByLabelText('Their email address')).not.toHaveAttribute('aria-invalid');
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const password = screen.getByLabelText('The password');
+    await waitFor(() => expect(password).toHaveFocus());
+    expect(password).toHaveAttribute('aria-invalid', 'true');
+    expect(password).toHaveAccessibleDescription(/At least 8 characters/);
+    const address = screen.getByLabelText('Their email address');
+    expect(address).toHaveAttribute('aria-invalid', 'true');
+    expect(address).toHaveAccessibleDescription(/name@example.com/);
+    expect(madeBody(state)).toBeUndefined();
+  });
+
+  it('a missing title is said under it, in red, and the focus goes there', async () => {
+    await openForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Make the link' }));
+    const title = screen.getByLabelText(/^Title/);
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(screen.getByText('Say what you are asking for.')).toHaveClass('field-error');
+    expect(title).toHaveAccessibleDescription('Say what you are asking for.');
+  });
+
+  it('removing the last thing to send puts the focus on the button that names another', async () => {
+    await openForm();
+    const items = screen.getByRole('group', { name: 'Things to send' });
+    fireEvent.click(within(items).getByRole('button', { name: 'Remove thing to send 1' }));
+    const add = within(items).getByRole('button', { name: 'Name a thing to send' });
+    await waitFor(() => expect(add).toHaveFocus());
+    // And named again, the new field takes it.
+    fireEvent.click(add);
+    await waitFor(() => expect(within(items).getByLabelText('Thing to send 1')).toHaveFocus());
   });
 });
 
@@ -331,14 +392,16 @@ describe('Sharing lists requests (5.22)', () => {
       request({ id: 'req-c', title: 'Old request', state: 'revoked', files_received: 1 }),
     ]);
     const live = await screen.findByRole('list', { name: 'Requests that work now' });
-    const [first, second] = within(live).getAllByRole('listitem');
+    const rows = await within(live).findAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    const [first, second] = rows;
     expect(first).toHaveTextContent('“Tax papers for 2025”');
     expect(first).toHaveTextContent('For Jane, accountant');
     expect(first).toHaveTextContent('2 files received · 1 of 3 visits used');
     expect(first).toHaveTextContent(/Working until/);
     expect(second).toHaveTextContent('Asked by Sam · Any adult looks at what comes in');
     expect(second).toHaveTextContent('No files yet · Not opened yet');
-    const ended = screen.getByRole('list', { name: 'Requests that have ended' });
+    const ended = await screen.findByRole('list', { name: 'Requests that have ended' });
     expect(within(ended).getByText('Taken back')).toBeInTheDocument();
     expect(within(ended).queryByRole('button')).not.toBeInTheDocument();
     await expectAccessible();
@@ -347,7 +410,7 @@ describe('Sharing lists requests (5.22)', () => {
   it('a request is taken back after asking, and the focus comes back to the page', async () => {
     const state = await openSharing([request()]);
     const live = await screen.findByRole('list', { name: 'Requests that work now' });
-    const takeBack = within(live).getByRole('button', {
+    const takeBack = await within(live).findByRole('button', {
       name: 'Take back the request “Tax papers for 2025” to Jane, accountant',
     });
     fireEvent.click(takeBack);
@@ -380,7 +443,7 @@ describe('Sharing lists requests (5.22)', () => {
     const paused = request({ state: 'paused', paused_reason: 'restored' });
     const state = await openSharing([paused]);
     const live = await screen.findByRole('list', { name: 'Requests that work now' });
-    expect(within(live).getByText('Paused after a restore')).toBeInTheDocument();
+    expect(await within(live).findByText('Paused after a restore')).toBeInTheDocument();
     fireEvent.click(within(live).getByRole('button', { name: 'Turn back on' }));
     const said = await screen.findByText(/works again\./);
     await waitFor(() => expect(said).toHaveFocus());
@@ -388,12 +451,31 @@ describe('Sharing lists requests (5.22)', () => {
     await waitFor(() => expect(within(live).getByText(/Working until/)).toBeInTheDocument());
   });
 
-  it('to an adult a paused request offers only Take it back', async () => {
-    await openSharing([request({ state: 'paused', paused_reason: 'restored' })], 'adult');
+  it('to an adult a paused request offers only Take it back, and says who can turn it back on', async () => {
+    await openSharing(
+      [
+        request({ state: 'paused', paused_reason: 'restored' }),
+        request({
+          id: 'req-b',
+          title: 'Lease papers',
+          state: 'paused',
+          paused_reason: 'restored',
+          review_by: 'adults',
+        }),
+      ],
+      'adult',
+    );
     const live = await screen.findByRole('list', { name: 'Requests that work now' });
-    expect(within(live).getByText('Paused after a restore')).toBeInTheDocument();
+    const rows = await within(live).findAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    const [onlyMe, anyAdult] = rows as [HTMLElement, HTMLElement];
+    // Their own review-by-me request: no owner can see it, so nobody can turn it back on.
+    expect(onlyMe).toHaveTextContent(
+      'Paused after a restore. Only you can see it, so nobody can turn it back on: take it back and ask again.',
+    );
+    expect(anyAdult).toHaveTextContent('Paused after a restore, until an owner turns it back on.');
     expect(within(live).queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
-    expect(within(live).getByRole('button', { name: /Take back/ })).toBeInTheDocument();
+    expect(within(onlyMe).getByRole('button', { name: /Take back/ })).toBeInTheDocument();
   });
 });
 
@@ -414,5 +496,81 @@ describe('the share sheet’s protections, at 320 px (5.22 polish)', () => {
     expect(note).toHaveAttribute('id', 'share-device-note');
     expect(box).toHaveAccessibleDescription(/only one it will open in/);
     await expectAccessible();
+  });
+});
+
+describe('After a restore lists paused requests too (the 5.22 review)', () => {
+  const paused = (over: Record<string, unknown> = {}) =>
+    request({ state: 'paused', paused_reason: 'restored', ...over });
+
+  it('Settings counts them, and an owner turns one back on from After a restore', async () => {
+    const state = fresh({ uploadRequests: [paused(), paused({ id: 'req-b', title: 'Lease' })] });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('link', {
+        name: /After a restore.*2 requests are paused until you turn them back on/,
+      }),
+    );
+    const list = await screen.findByRole('list', { name: 'Paused requests' });
+    const rows = await within(list).findAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Requests waiting for you' })).toBeInTheDocument();
+    expect(screen.getByText('No link is waiting.')).toBeInTheDocument();
+    fireEvent.click(within(rows[0] as HTMLElement).getByRole('button', { name: 'Turn back on' }));
+    const said = await screen.findByText(
+      'The request “Tax papers for 2025” to Jane, accountant works again.',
+    );
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(state.calls.some((c) => c.url === '/api/v1/upload-requests/req-a/resume')).toBe(true);
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1));
+    await expectAccessible();
+  });
+
+  it('links and requests are counted together', async () => {
+    const state = fresh({
+      uploadRequests: [paused()],
+      shares: [
+        {
+          id: 'share-1',
+          state: 'paused',
+          document_title: 'Lease',
+          created_by_name: ME.display_name,
+          expires_at: new Date(Date.now() + 864e5).toISOString(),
+        },
+      ],
+    });
+    installFakeApi(state);
+    signedIn('owner');
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    expect(
+      await screen.findByRole('link', {
+        name: /After a restore.*1 link and 1 request are paused until you turn them back on/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it('an adult sees their own, to take back after asking, and is told an only-me one cannot come back', async () => {
+    const state = fresh({ uploadRequests: [paused()] });
+    installFakeApi(state);
+    signedIn('adult');
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('link', { name: /After a restore.*1 request you made is paused/ }),
+    );
+    const list = await screen.findByRole('list', { name: 'Paused requests' });
+    const row = await within(list).findByRole('listitem');
+    expect(row).toHaveTextContent('Only you can see it, so nobody can turn it back on');
+    expect(within(row).queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
+    const takeBack = within(row).getByRole('button', { name: /Take back the request/ });
+    fireEvent.click(takeBack);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Take this request back?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Take it back' }));
+    await screen.findByText(/is taken back\. What was sent already stays\./);
+    expect(state.calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/req-a'))).toBe(true);
   });
 });

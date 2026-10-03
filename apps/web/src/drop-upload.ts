@@ -13,7 +13,12 @@ import { api } from './api.js';
  */
 export interface DropSending {
   done: Promise<DropFile>;
-  /** Stops sending it: `done` then rejects with an AbortError, and nothing of it is kept. */
+  /**
+   * Stops sending it: `done` then rejects with an AbortError. Before every
+   * byte has gone the vault keeps nothing of it. After (`onSent`), the vault
+   * may already have it, and goes on to keep it: the page asks the session
+   * what arrived (the 5.22 review).
+   */
   stop: () => void;
 }
 
@@ -21,7 +26,11 @@ export function sendDropFile(
   requestId: string,
   file: File,
   itemId: string | null,
-  onProgress: (sent: number, total: number) => void,
+  on: {
+    progress: (sent: number, total: number) => void;
+    /** Every byte has gone: the vault is checking it, and stopping it now may be too late. */
+    sent?: () => void;
+  },
 ): DropSending {
   const xhr = new XMLHttpRequest();
   const done = new Promise<DropFile>((resolve, reject) => {
@@ -31,8 +40,9 @@ export function sendDropFile(
       xhr.setRequestHeader(name, value);
     }
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(e.loaded, e.total);
+      if (e.lengthComputable) on.progress(e.loaded, e.total);
     };
+    xhr.upload.onload = () => on.sent?.();
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {

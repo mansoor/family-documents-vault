@@ -249,15 +249,22 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     expect(res.statusCode).toBe(200);
     const shown = res.json<Record<string, unknown>>();
     expect(Object.keys(shown).sort()).toEqual([
+      'code_to',
       'expires_at',
       'household_name',
+      'other_device',
       'protection',
+      'request_id',
       'requested_by',
     ]);
     expect(shown).toMatchObject({
       household_name: 'The Test family',
       requested_by: 'Adult',
       protection: ['password'],
+      // Which request it is (5.22): what a page has open already is found by it.
+      request_id: made.request.id,
+      code_to: null,
+      other_device: false,
     });
     for (const secret of ['W-2', 'tax return', '1099', 'Jane', 'accountant', 'jane@']) {
       expect(res.body, secret).not.toContain(secret);
@@ -2088,6 +2095,134 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       vi.useRealTimers();
     }
     expect(await stored(made.request.id)).toBe(1);
+  });
+
+  it('a made-up password opens however its capitals, spaces and dashes are typed; a typed one only as typed (0048)', async () => {
+    const made = await make(adult, { with_password: true });
+    const password = made.password as string;
+    expect(password).toMatch(/^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$/);
+    const shapes = [
+      password,
+      password.toUpperCase(),
+      password.replace(/-/g, ' '),
+      password.replace(/-/g, ''),
+      ` ${password.toUpperCase().replace(/-/g, ' - ')} `,
+    ];
+    for (const typed of shapes) {
+      const res = await unlock(made.link_token, { password: typed });
+      expect(res.statusCode, typed).toBe(200);
+    }
+    // Wrong is still wrong, and counted.
+    const wrong = await unlock(made.link_token, { password: password.replace(/^./, '_') });
+    expect(wrong.statusCode).toBe(401);
+    const [mine] = await admin<{ secret_kind: string; attempts: number }>(
+      'select secret_kind, attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(mine).toEqual({ secret_kind: 'generated', attempts: 1 });
+
+    // A password the requester typed is theirs: exactly as typed.
+    const typed = await make(adult, { password: 'River-Otter 7' });
+    for (const near of ['river-otter 7', 'RIVER-OTTER 7', 'RiverOtter7', 'River Otter 7']) {
+      const res = await unlock(typed.link_token, { password: near });
+      expect(res.statusCode, near).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('secret_wrong');
+    }
+    expect((await unlock(typed.link_token, { password: 'River-Otter 7' })).statusCode).toBe(200);
+    const [theirs] = await admin<{ secret_kind: string }>(
+      'select secret_kind from upload_request where id = $1',
+      [typed.request.id],
+    );
+    expect(theirs?.secret_kind).toBe('password');
+
+    // One made before 0048 has no kind, and is checked as it was hashed: as typed.
+    const older = await make(adult);
+    await admin('update upload_request set secret_hash = $2, secret_kind = null where id = $1', [
+      older.request.id,
+      await argon2.hash('abcd-efgh-jkmn'),
+    ]);
+    expect((await unlock(older.link_token, { password: 'ABCD EFGH JKMN' })).statusCode).toBe(401);
+    expect((await unlock(older.link_token, { password: 'abcd-efgh-jkmn' })).statusCode).toBe(200);
+    // And a kind is only ever a password's.
+    await expect(
+      admin('update upload_request set secret_kind = $2 where id = $1', [
+        (await make(adult)).request.id,
+        'generated',
+      ]),
+    ).rejects.toThrow(/upload_request_secret_kind_hashed/);
+  });
+
+  it('files sent with Finish are not listed in the session again (the 5.22 review)', async () => {
+    const made = await make(adult);
+    const { cookie } = await opened(made.link_token);
+    const session = () =>
+      h.app.inject({ url: '/api/v1/drop/session', cookies: cookie, remoteAddress: addr() });
+    expect((await send(cookie, { name: 'first.pdf', bytes: PDF() })).statusCode).toBe(201);
+    expect((await session()).json<DropSession>().files.map((f) => f.name)).toEqual(['first.pdf']);
+    const finished = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/finish',
+      cookies: cookie,
+      payload: {},
+      remoteAddress: addr(),
+    });
+    expect(finished.json()).toEqual({ files: 1, closed: false });
+    // Gone from this page: the reviewer's now, and nothing here could take it back.
+    const after = (await session()).json<DropSession>();
+    expect(after.files).toEqual([]);
+    expect(after.files_left).toBe(9);
+    // What is sent next is listed, alone, and Finish sends it alone.
+    expect((await send(cookie, { name: 'second.pdf', bytes: PDF() })).statusCode).toBe(201);
+    expect((await session()).json<DropSession>().files.map((f) => f.name)).toEqual(['second.pdf']);
+  });
+
+  it('the preview says which request it is, where its code goes, masked, and when this is another browser (5.22)', async () => {
+    const made = await make(adult, {
+      recipient_email: 'jane.smith@example.test',
+      email_code: true,
+      this_device_only: true,
+    });
+    const first = (await preview(made.link_token)).json<Record<string, unknown>>();
+    expect(first).toMatchObject({
+      request_id: made.request.id,
+      protection: ['email_code', 'this_device'],
+      code_to: 'j•••@e•••.test',
+      other_device: false,
+    });
+    // Opened, with a code, in one browser: bound to it.
+    const sent = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/code',
+      payload: { token: made.link_token },
+      remoteAddress: addr(),
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const res = await unlock(made.link_token, { code: codeSentTo('jane.smith@example.test') });
+    expect(res.statusCode, res.body).toBe(200);
+    const device = res.cookies.find((c) => c.name === DEVICE)?.value as string;
+    const previewIn = (cookies: Record<string, string>) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/preview',
+        payload: { token: made.link_token },
+        cookies,
+        remoteAddress: addr(),
+      });
+    // That browser is told what it was.
+    expect((await previewIn({ [DEVICE]: device })).json()).toMatchObject({
+      other_device: false,
+      code_to: 'j•••@e•••.test',
+    });
+    // Another is told before it presses Open, and not where a code would go.
+    const elsewhere = (await previewIn({})).json<Record<string, unknown>>();
+    expect(elsewhere).toMatchObject({ other_device: true, code_to: null });
+    expect(JSON.stringify(elsewhere)).not.toContain('j•••');
+    // And nothing was counted by looking.
+    const [row] = await admin<{ visits_used: number; attempts: number }>(
+      'select visits_used, attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row).toEqual({ visits_used: 1, attempts: 0 });
   });
 
   it("the database's copy of who may ask is the matrix's", async () => {

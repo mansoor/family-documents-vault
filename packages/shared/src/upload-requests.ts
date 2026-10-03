@@ -171,6 +171,27 @@ export interface DropPreview {
   /** What Open asks for; empty when the link alone opens it. */
   protection: UploadProtection[];
   expires_at: string;
+  /**
+   * Which request it is (5.22): a page that has it open in this browser
+   * already — another tab, a link followed again — carries on in that
+   * session (`GET /drop/session`) rather than pressing Open, which would
+   * start another and leave the first one's files behind. Absent from older
+   * vaults.
+   */
+  request_id?: string;
+  /**
+   * Where an emailed code goes, masked (`j•••@e•••.com`), when Open asks for
+   * one (5.22), as a share link's preview says (5.20). The sender never
+   * types an address. Null in another browser than a this-device-only
+   * request's, and absent from older vaults.
+   */
+  code_to?: string | null;
+  /**
+   * It has been opened in another browser already, and opens only there
+   * (5.22): Open would be refused, and no code is sent here. Absent from
+   * older vaults.
+   */
+  other_device?: boolean;
 }
 
 /** `POST /api/v1/drop/code`: where the code went, masked, and until when it works. */

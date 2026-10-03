@@ -412,7 +412,7 @@ function madeUpPassword(): string {
  * `k7mqp2xa9htw` are the same password and use up none of the link's ten.
  * A password the sharer typed is theirs, and is checked as typed.
  */
-const canonicalMadeUp = (password: string) => password.toLowerCase().replace(/[\s-]/g, '');
+export const canonicalMadeUp = (password: string) => password.toLowerCase().replace(/[\s-]/g, '');
 
 /**
  * What a link's secret is (0043): a PIN, a password the sharer typed, or a

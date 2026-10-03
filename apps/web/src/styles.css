@@ -1743,6 +1743,17 @@ fieldset.ask-items {
   margin: 0;
 }
 
+/* A title or a thing to send is typed by the family for somebody's phone:
+   one long word ("Lohnsteuerbescheinigung", a pasted address) breaks
+   rather than pushing the page sideways at 320 px (the 5.22 review). The
+   family's own lists of requests, and the hand-over, the same. */
+.drop-page h1,
+.drop-page h2,
+.request-row .place-title,
+.handover-title {
+  overflow-wrap: anywhere;
+}
+
 .drop-message {
   margin: 0;
 }

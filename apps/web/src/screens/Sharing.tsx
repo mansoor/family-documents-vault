@@ -58,8 +58,16 @@ export function requestTally(r: UploadRequestView): string {
   return `${files} · ${visits}`;
 }
 
-/** Where a request stands, in words, never colour alone (NFR-09). */
-export function requestState(r: UploadRequestView): {
+/**
+ * Where a request stands, in words, never colour alone (NFR-09). A paused
+ * one says who can turn it back on: an owner (who is reading, or who is
+ * not), or — for an adult's own review-by-me request, which no owner can
+ * see — nobody, so it is taken back and asked again (the 5.22 review).
+ */
+export function requestState(
+  r: UploadRequestView,
+  owner: boolean,
+): {
   words: string;
   tone: 'ok' | 'warn' | 'danger' | null;
 } {
@@ -71,7 +79,14 @@ export function requestState(r: UploadRequestView): {
     case 'active':
       return { words: `Working until ${at}`, tone: 'ok' };
     case 'paused':
-      return { words: 'Paused after a restore', tone: 'warn' };
+      return {
+        words: owner
+          ? 'Paused after a restore'
+          : r.mine && r.review_by === 'me'
+            ? 'Paused after a restore. Only you can see it, so nobody can turn it back on: take it back and ask again.'
+            : 'Paused after a restore, until an owner turns it back on.',
+        tone: 'warn',
+      };
     case 'used_up':
       return { words: 'Opened as many times as it allows', tone: 'warn' };
     case 'expired':
@@ -96,7 +111,7 @@ export function requestState(r: UploadRequestView): {
 }
 
 /** Whom a request is for, in a sentence: "the request to Jane, accountant". */
-const requestTarget = (r: UploadRequestView) =>
+export const requestTarget = (r: UploadRequestView) =>
   `the request “${r.title}”${r.recipient_label ? ` to ${r.recipient_label}` : ''}`;
 
 export function SharingScreen() {
@@ -344,22 +359,25 @@ function LinkRow(props: {
 
 const capital = (words: string) => words.charAt(0).toUpperCase() + words.slice(1);
 
-function RequestRow(props: {
+/** A request in a list (5.22): Sharing's, and After a restore's. */
+export function RequestRow(props: {
   request: UploadRequestView;
   busy: boolean;
   owner: boolean;
-  onTakeBack?: (button: HTMLButtonElement) => void;
+  /** Take it back, after asking: the button is where focus goes back to. */
+  onTakeBack?: (button: HTMLButtonElement | null) => void;
   onResume?: () => void;
 }) {
   const r = props.request;
-  const state = requestState(r);
+  const state = requestState(r, props.owner);
+  const takeBack = useRef<HTMLButtonElement>(null);
   const who = [
     r.recipient_label ? `For ${r.recipient_label}` : null,
     !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
     r.review_by === 'adults' ? 'Any adult looks at what comes in' : null,
   ].filter(Boolean);
   return (
-    <li className="place">
+    <li className="place request-row">
       <div className="place-title">“{r.title}”</div>
       {who.length > 0 && <div className="muted">{who.join(' · ')}</div>}
       <div className="muted">{requestTally(r)}</div>
@@ -374,15 +392,15 @@ function RequestRow(props: {
             </Button>
           )}
           {props.onTakeBack && (
-            <button
-              type="button"
-              className="btn btn-quiet"
+            <Button
+              ref={takeBack}
+              kind="quiet"
               disabled={props.busy}
-              aria-label={`Take back ${requestTarget(r)}`}
-              onClick={(e) => props.onTakeBack?.(e.currentTarget)}
+              ariaLabel={`Take back ${requestTarget(r)}`}
+              onClick={() => props.onTakeBack?.(takeBack.current)}
             >
               Take it back
-            </button>
+            </Button>
           )}
         </div>
       )}

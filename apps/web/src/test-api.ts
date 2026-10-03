@@ -68,18 +68,35 @@ export interface FakeDrop {
   /** The vault's limit for one file. */
   maxFileBytes?: number;
   expiresAt?: string;
-  /** This browser has it open. */
+  /** This browser has it open: its cookie names a session that is live. */
   session: boolean;
+  /**
+   * Which session the browser's cookie names. Each Open makes another under
+   * the same cookie name (5.21), so a second Open in one browser leaves the
+   * first one's files where nothing can reach them.
+   */
+  sessionNo?: number;
   opens: number;
+  /**
+   * Every file in, of every session (all count against the request's room);
+   * a session lists, removes and sends only its own, until Finish sends them.
+   * A file with no session is the current one's.
+   */
   files: Array<{
     id: string;
     name: string;
     content_type: string;
     byte_size: number;
     item_id: string | null;
+    session?: number;
+    submitted?: boolean;
   }>;
   /** Answer the next this-many calls with 503 busy. */
   busy?: number;
+  /** The next this-many GET /drop/session never answer: the connection drops. */
+  sessionDrops?: number;
+  /** And the next this-many answer 503 busy. */
+  sessionBusy?: number;
   /** What Finish sent. */
   finished?: { note: string | null; files: number };
   closeAfter?: boolean;
@@ -205,6 +222,14 @@ export interface FakeState {
    * at once.
    */
   hold?: (method: string, path: string) => Promise<void> | undefined;
+  /**
+   * A file sent on the page at /drop (5.22): its answer held until this
+   * settles — after every byte has gone, or, with `dropCommitFirst`, with
+   * the vault holding the file already while the browser still shows it
+   * going (the 5.22 review's Stop pressed too late).
+   */
+  holdAnswer?: () => Promise<void> | undefined;
+  dropCommitFirst?: boolean;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
   types: Array<Record<string, unknown>>;
@@ -1213,6 +1238,11 @@ export function installFakeApi(state: FakeState) {
       const mine = (x: Record<string, unknown>) => x.created_by_name === ME.display_name;
       return json({
         links: state.shares.filter((x) => x.state === 'paused' && (owner || mine(x))),
+        // 5.21: the paused requests the reader may decide about — an owner,
+        // all they review; anybody else, their own.
+        upload_requests: (state.uploadRequests ?? []).filter(
+          (r) => r.state === 'paused' && (owner || r.mine === true),
+        ),
       });
     }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {
@@ -1351,6 +1381,11 @@ export function installFakeApi(state: FakeState) {
       const accept = d.accept ?? 'standard';
       const maxBytes = d.maxBytes ?? 200 * 1024 * 1024;
       const used = d.files.reduce((n, f) => n + f.byte_size, 0);
+      // The browser's session's own files, not yet sent with Finish.
+      const mine = () =>
+        d.files.filter(
+          (f) => !f.submitted && (f.session === undefined || f.session === (d.sessionNo ?? 1)),
+        );
       const view = () => ({
         request_id: DROP_REQUEST_ID,
         household_name: 'The Seikh family',
@@ -1366,7 +1401,13 @@ export function installFakeApi(state: FakeState) {
         max_file_bytes: Math.min(d.maxFileBytes ?? 100 * 1024 * 1024, maxBytes - used),
         expires_at: d.expiresAt ?? new Date(Date.now() + 14 * 864e5).toISOString(),
         session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
-        files: d.files,
+        files: mine().map((f) => ({
+          id: f.id,
+          name: f.name,
+          content_type: f.content_type,
+          byte_size: f.byte_size,
+          item_id: f.item_id,
+        })),
       });
       const protection = [
         ...(d.password ? ['password'] : []),
@@ -1393,6 +1434,10 @@ export function installFakeApi(state: FakeState) {
           requested_by: 'Mansoor Seikh',
           protection,
           expires_at: d.expiresAt ?? new Date(Date.now() + 14 * 864e5).toISOString(),
+          request_id: DROP_REQUEST_ID,
+          code_to:
+            d.code && !d.otherDevice ? maskEmail(d.codeTo ?? 'jane.smith@example.com') : null,
+          other_device: Boolean(d.otherDevice),
         });
       }
       if (path === '/api/v1/drop/code' && method === 'POST') {
@@ -1425,11 +1470,21 @@ export function installFakeApi(state: FakeState) {
           );
         }
         d.opens += 1;
+        // A session of its own, under the same cookie name as any before.
+        d.sessionNo = (d.session ? (d.sessionNo ?? 1) : 0) + 1;
         d.session = true;
         return json(view());
       }
       // Inside a session: it must say which request it is about.
       const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (path === '/api/v1/drop/session' && (d.sessionDrops ?? 0) > 0) {
+        d.sessionDrops = (d.sessionDrops ?? 0) - 1;
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      if (path === '/api/v1/drop/session' && (d.sessionBusy ?? 0) > 0) {
+        d.sessionBusy = (d.sessionBusy ?? 0) - 1;
+        return refuse(503, 'busy', 'The vault was busy just then. Try again.', { retriable: true });
+      }
       if (!d.session || headers['x-fdv-drop-request'] !== DROP_REQUEST_ID) return ended();
       if (!d.valid) return dropGone();
       if (path === '/api/v1/drop/session' && method === 'GET') return json(view());
@@ -1470,26 +1525,28 @@ export function installFakeApi(state: FakeState) {
           byte_size: file.size,
           item_id: itemId,
         };
-        d.files.push(sent);
+        d.files.push({ ...sent, session: d.sessionNo ?? 1 });
         return json(sent, 201);
       }
       const fileAt = /^\/api\/v1\/drop\/files\/([^/]+)$/.exec(path);
       if (fileAt && method === 'DELETE') {
         const id = decodeURIComponent(fileAt[1] as string);
-        if (!d.files.some((f) => f.id === id)) {
+        if (!mine().some((f) => f.id === id)) {
           return refuse(404, 'not_found', 'That file is not here.');
         }
         d.files = d.files.filter((f) => f.id !== id);
         return Promise.resolve(new Response(null, { status: 204 }));
       }
       if (path === '/api/v1/drop/finish' && method === 'POST') {
-        if (d.files.length === 0) {
+        const sending = mine();
+        if (sending.length === 0) {
           return refuse(422, 'nothing_to_send', 'Add a file first, then press Finish.');
         }
         const note = (body as { note?: string } | undefined)?.note ?? null;
-        d.finished = { note, files: d.files.length };
+        for (const f of sending) f.submitted = true;
+        d.finished = { note, files: sending.length };
         if (d.closeAfter) d.valid = false;
-        return json({ files: d.files.length, closed: Boolean(d.closeAfter) });
+        return json({ files: sending.length, closed: Boolean(d.closeAfter) });
       }
     }
     // The page at /s (5.16): the token in a body, Open counted, a session after.
@@ -2342,7 +2399,10 @@ export function installFakeApi(state: FakeState) {
   class FakeXhr {
     status = 0;
     responseText = '';
-    upload: { onprogress: ((e: ProgressEventInit) => void) | null } = { onprogress: null };
+    upload: {
+      onprogress: ((e: ProgressEventInit) => void) | null;
+      onload: (() => void) | null;
+    } = { onprogress: null, onload: null };
     onload: (() => void) | null = null;
     onerror: (() => void) | null = null;
     onabort: (() => void) | null = null;
@@ -2384,12 +2444,22 @@ export function installFakeApi(state: FakeState) {
         this.upload.onprogress?.({ lengthComputable: true, loaded: Math.floor(total / 2), total });
         await state.hold?.(this.method, path);
         if (this.stopped) return;
+        const answer = () =>
+          respond(this.url, this.method, path, new URLSearchParams(), undefined, {
+            method: this.method,
+            body: form,
+            headers: this.headers,
+          });
+        // The vault may keep the file before the browser has said that every
+        // byte went: a Stop pressed then is too late (the 5.22 review).
+        let res = state.dropCommitFirst ? await answer() : undefined;
+        if (state.dropCommitFirst) await state.holdAnswer?.();
+        if (this.stopped) return;
         this.upload.onprogress?.({ lengthComputable: true, loaded: total, total });
-        const res = await respond(this.url, this.method, path, new URLSearchParams(), undefined, {
-          method: this.method,
-          body: form,
-          headers: this.headers,
-        });
+        this.upload.onload?.();
+        if (!state.dropCommitFirst) await state.holdAnswer?.();
+        if (this.stopped) return;
+        res ??= await answer();
         if (this.stopped) return;
         this.status = res.status;
         this.responseText = res.status === 204 ? '' : await res.text();

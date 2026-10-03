@@ -603,8 +603,14 @@ export function PasswordChoice(props: {
   /** What is said under the typed one: the rule, and what to do with it. */
   typedNote: string;
   madeNote: string;
+  /**
+   * Say what is wrong even with nothing typed: a form that lets its button
+   * be pressed, once it has been (5.22's ask form; the share sheet's button
+   * waits instead).
+   */
+  showProblem?: boolean;
 }) {
-  const wrong = props.problem && props.password ? props.problem : null;
+  const wrong = props.problem && (props.password || props.showProblem) ? props.problem : null;
   return (
     <div className="stack share-indent" style={{ gap: 8 }}>
       <div className="pills" role="group" aria-label="Which password">

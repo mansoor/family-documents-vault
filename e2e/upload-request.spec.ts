@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { devices, expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 /**
@@ -9,8 +10,15 @@ import { devices, expect, test, type APIRequestContext, type Page } from '@playw
  * takes two files, one for each thing asked for; Finish sends them. Sharing
  * then says what the request has had, and it is taken back.
  *
- * The emailed code is not exercised: CI's stack has no operator mail
- * (FDV_SMTP_URL), so the form offers none. This runs after
+ * The sender's page is opened at 320 px, with a long unbroken word in its
+ * title and a slot, and must not scroll sideways. The made-up password is
+ * typed in capitals with spaces, as somebody told it over the phone would
+ * type it (0048).
+ *
+ * The emailed code: CI's stack has no operator mail (FDV_SMTP_URL), so the
+ * form offers it disabled, with why. On a stack with operator mail it is
+ * offered; with FDV_E2E_MAILPIT naming Mailpit's address, the request asks
+ * for it too, and the code is read from the email. This runs after
  * first-run.spec.ts, on the vault it made.
  *
  * FDV_E2E_SHOTS names a folder to keep screenshots of the pages in.
@@ -21,6 +29,8 @@ const PASSWORD = 'correct horse battery staple';
 const SHOTS = process.env.FDV_E2E_SHOTS;
 /** Where the vault is, as playwright.config.ts says: the second browser starts there too. */
 const BASE_URL = process.env.FDV_E2E_URL ?? 'http://localhost:8080';
+
+const MAILPIT = process.env.FDV_E2E_MAILPIT;
 
 const pdf = (words: string) =>
   Buffer.from(
@@ -63,7 +73,15 @@ test('ask for documents, open the link in another browser, send two files, finis
   request,
 }) => {
   const run = Date.now().toString(36);
-  const title = `Tax papers ${run}`;
+  // One long word, as a German title or a pasted address has (the 5.22 review).
+  const title = `Lohnsteuerbescheinigungsunterlagen ${run}`;
+  const slot = 'Kontoauszugsbestätigungsschreiben';
+  const caps = (await (await request.get('/api/v1/capabilities')).json()) as {
+    features: { share_email_code?: boolean };
+  };
+  const withMail = caps.features.share_email_code === true;
+  const withCode = withMail && Boolean(MAILPIT);
+  const to = `u522-e2e-${randomUUID()}@example.test`;
   const page = await browser.newPage();
   await signIn(page, request);
 
@@ -75,11 +93,23 @@ test('ask for documents, open the link in another browser, send two files, finis
   await page.getByLabel('A message for them').fill('Everything for the 2025 return, please.');
   await page.getByLabel('Thing to send 1', { exact: true }).fill('W-2');
   await page.getByRole('button', { name: 'Add another' }).click();
-  await page.getByLabel('Thing to send 2', { exact: true }).fill('1099');
+  await page.getByLabel('Thing to send 2', { exact: true }).fill(slot);
   await page.getByLabel('Who is it for?').fill('Jane, accountant');
   await page.getByLabel(/ask for a password/).check();
-  // No operator mail here: the code is offered disabled, with why.
-  await expect(page.getByLabel(/email them a code/)).toBeDisabled();
+  const code = page.getByLabel(/email them a code/);
+  if (!withMail) {
+    // No operator mail: the code is offered disabled, with why.
+    await expect(code).toBeDisabled();
+    await expect(page.getByTestId('ask-code-unavailable')).toBeVisible();
+  } else {
+    // Operator mail: offered, and left as it is unless the code can be read.
+    await expect(code).toBeEnabled();
+    await expect(code).not.toBeChecked();
+    if (withCode) {
+      await code.check();
+      await page.getByLabel('Their email address').fill(to);
+    }
+  }
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/e2e-1-ask.png`, fullPage: true });
   await page.getByRole('button', { name: 'Make the link' }).click();
 
@@ -103,12 +133,22 @@ test('ask for documents, open the link in another browser, send two files, finis
   // link may start with the public-only site's address; the page is the
   // same wherever it is served, so it is opened here with its fragment.
   const fragment = new URL(link).hash;
-  const stranger = await browser.newContext({ ...devices['Pixel 7'], baseURL: BASE_URL });
+  const stranger = await browser.newContext({
+    ...devices['Pixel 7'],
+    viewport: { width: 320, height: 740 },
+    baseURL: BASE_URL,
+  });
   const drop = await stranger.newPage();
+  /** Nothing pushes the page sideways at 320 px. */
+  const fits = async () =>
+    expect(await drop.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(
+      320,
+    );
   await drop.goto(`/drop${fragment}`);
   await expect(
     drop.getByRole('heading', { name: 'Send documents to The E2E family' }),
   ).toBeVisible();
+  await fits();
   // The token is gone from the address bar before anything else happens.
   expect(drop.url()).not.toContain(fragment.slice(1));
   expect(new URL(drop.url()).pathname).toBe('/drop');
@@ -116,26 +156,59 @@ test('ask for documents, open the link in another browser, send two files, finis
   await expect(drop.getByText(title)).toHaveCount(0);
   if (SHOTS) await drop.screenshot({ path: `${SHOTS}/e2e-3-drop-preview.png`, fullPage: true });
 
-  await drop.getByLabel('The password they gave you').fill(password);
+  if (withCode) {
+    // Where it goes, masked, before any is sent; then the code from the email.
+    await expect(drop.getByText('u•••@e•••.test').first()).toBeVisible();
+    await drop.getByRole('button', { name: 'Email me a code' }).click();
+    let text = '';
+    await expect
+      .poll(
+        async () => {
+          const found = (await (
+            await request.get(`${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${to}`)}`)
+          ).json()) as { messages?: Array<{ ID: string }> };
+          const id = found.messages?.[0]?.ID;
+          if (!id) return '';
+          const full = (await (await request.get(`${MAILPIT}/api/v1/message/${id}`)).json()) as {
+            Text: string;
+          };
+          text = full.Text;
+          return text;
+        },
+        { timeout: 60_000 },
+      )
+      .toMatch(/\d{3} \d{3}/);
+    expect(text).not.toMatch(/https?:|\/drop#/);
+    expect(text).not.toContain(title);
+    await drop
+      .getByLabel('The code from the email')
+      .fill(/(\d{3}) (\d{3})/.exec(text)?.slice(1).join('') ?? '');
+  }
+  // Told over the phone and typed so: capitals and spaces, no dashes (0048).
+  await drop
+    .getByLabel('The password they gave you')
+    .fill(password.toUpperCase().replace(/-/g, ' '));
   await drop.getByRole('button', { name: 'Open' }).click();
   await expect(drop.getByRole('heading', { name: title })).toBeVisible();
   await expect(drop.getByText('Everything for the 2025 return, please.')).toBeVisible();
+  await fits();
 
-  // One file for each thing asked for.
-  await drop.getByLabel('Choose files for W-2').setInputFiles({
+  // One file for each thing asked for, by the button that names its slot.
+  await expect(drop.getByRole('button', { name: `Choose files for ${slot}` })).toBeVisible();
+  await drop.getByLabel('File chooser for W-2', { exact: true }).setInputFiles({
     name: 'w2-2025.pdf',
     mimeType: 'application/pdf',
     buffer: pdf('W-2 2025'),
   });
   await expect(drop.getByRole('button', { name: 'Remove w2-2025.pdf' })).toBeVisible();
-  await drop.getByLabel('Choose files for 1099').setInputFiles({
+  await drop.getByLabel(`File chooser for ${slot}`, { exact: true }).setInputFiles({
     name: '1099-int.pdf',
     mimeType: 'application/pdf',
     buffer: pdf('1099-INT 2025'),
   });
   await expect(drop.getByRole('button', { name: 'Remove 1099-int.pdf' })).toBeVisible();
   // A file the request does not take is refused, in plain words, and kept nowhere.
-  await drop.getByLabel('Choose files for Anything else').setInputFiles({
+  await drop.getByLabel('File chooser for Anything else', { exact: true }).setInputFiles({
     name: 'notes.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('just some text'),
@@ -144,6 +217,7 @@ test('ask for documents, open the link in another browser, send two files, finis
     'That kind of file cannot be sent here. PDFs and photos are fine.',
   );
   await drop.getByRole('button', { name: 'Dismiss notes.txt' }).click();
+  await fits();
   if (SHOTS) await drop.screenshot({ path: `${SHOTS}/e2e-4-drop-files.png`, fullPage: true });
 
   await drop.getByLabel(/A note for Mansoor/).fill('The 1099-DIV comes next week.');

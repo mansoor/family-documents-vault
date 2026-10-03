@@ -94,7 +94,10 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   const inSession = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
 
   app.post('/api/v1/drop/preview', tight, async (req) =>
-    uploads.preview(parse(dropTokenBody, req.body ?? {}).token),
+    uploads.preview(
+      parse(dropTokenBody, req.body ?? {}).token,
+      presentedDeviceCookies(req.cookies, DROP_DEVICE_COOKIE),
+    ),
   );
 
   app.post('/api/v1/drop/code', tight, async (req) =>

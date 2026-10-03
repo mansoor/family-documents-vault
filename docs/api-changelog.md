@@ -2560,6 +2560,40 @@ already_decided` once decided.
       never changed afterwards, and a sender's session is let go of only by
       the database as it ends. The restore check holds both triggers and
       the owners' rules to being there.
+  - Making a request, and the sender's page (5.22). The web's pages for
+    5.21's requests, and three changes to the sender's routes that they
+    needed.
+    - **Changed:** a password the vault makes up for a request
+      (`with_password`) is checked as a share link's is (5.20): without
+      regard to capitals, dashes or spaces, since it is read out and typed
+      unseen — `ABCD EFGH JKMN` opens `abcd-efgh-jkmn`. A password the
+      requester typed (`password`) is still checked exactly as typed, and
+      so is one a request was made with before this release.
+    - **Changed:** `GET /api/v1/drop/session` no longer lists the files
+      Finish has sent (`DropSession.files`): they are the reviewer's, and
+      Remove could not reach them. A session's next file is listed, and
+      sent, on its own.
+    - **Added:** `DropPreview` gains `request_id` (which request it is: a
+      page with a session for it in this browser already — another tab, or
+      the link followed again — carries on in that one with `GET
+/drop/session` rather than pressing Open, which would start another
+      session under the same cookie name and leave the first one's files
+      where nothing can send them), `code_to` (where an emailed code goes,
+      masked as `j•••@e•••.com`, as 5.20's link preview says it; null when
+      the request asks for none, and in another browser) and
+      `other_device` (a this-device-only request already opened in another
+      browser: Open would be refused, so the page says so first). The
+      preview reads the browser's `fdv_drop_device*` cookies for it, and
+      still counts and writes down nothing. All three are absent from
+      older vaults.
+    - The database: 0048 adds `upload_request.secret_kind` (`generated`,
+      made up by the vault, hashed and checked lower case without dashes
+      or spaces; `password`, typed, checked as typed; null for no password,
+      or one from before 0048, checked as typed), only where there is a
+      password (`upload_request_secret_kind_hashed`). 0044's rules stand as
+      they are: an upload link can change no column but its counters.
+    - `@fdv/shared`: `DropPreview.request_id`, `code_to` and
+      `other_device`. `@fdv/client` is unchanged.
 
 ## Deprecations in effect
 

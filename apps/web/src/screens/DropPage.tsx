@@ -40,7 +40,11 @@ import { Button, ErrorNote, Field, Logo, TextArea } from '../ui.js';
  * a browser can have two open; every call after it names its request
  * (`X-FDV-Drop-Request`, 5.21). Which request this tab opened is kept for
  * the tab (sessionStorage) — the id, never the token — so a reload finds
- * what it had open.
+ * what it had open. And because the cookie is named for the request, a
+ * second Open of the same request in this browser would replace the first
+ * one's session and strand its files: a page whose request is open in this
+ * browser already — another tab, or the link followed again — carries on in
+ * that session instead (the 5.22 review).
  *
  * Each phase replaces the last, so its heading takes the focus as it
  * arrives, and a screen reader says where it now is.
@@ -49,9 +53,11 @@ import { Button, ErrorNote, Field, Logo, TextArea } from '../ui.js';
 type Phase =
   | { kind: 'loading' }
   | { kind: 'preview'; preview: DropPreview }
-  | { kind: 'open'; session: DropSession }
+  | { kind: 'open'; session: DropSession; carriedOn: boolean }
   | { kind: 'finished'; finished: DropFinished; session: DropSession }
-  | { kind: 'dead'; message: string };
+  | { kind: 'dead'; message: string }
+  /** The vault could not be asked just now: nothing is forgotten, and it can be asked again. */
+  | { kind: 'unreachable'; message: string };
 
 const NO_LINK =
   'This page opens a link somebody sent you to send them documents. Open the link from their message again — the whole of it.';
@@ -101,8 +107,25 @@ const locked = (name: string | null) =>
 const expired = (end: string, name: string | null) =>
   `This request has ended: it worked until ${when(end)}. Ask ${asker(name)} for a new link if you still need to send something.`;
 
-/** What a session's answers mean is over, not only refused. */
+/**
+ * The answers that mean what this page had is over — the session, or the
+ * request — and nothing else does (the 5.22 review): a dropped connection,
+ * the vault busy for a moment, too many tries at once or a fault of its own
+ * leave everything as it was, to be asked again.
+ */
 const OVER = new Set(['drop_session_ended', 'link_not_valid', 'request_used_up', 'other_device']);
+const isOver = (err: unknown): err is ApiRequestError =>
+  err instanceof ApiRequestError && OVER.has(err.code);
+
+/** Why the vault could not be asked just now, in words for the person sending. */
+function notReached(err: unknown): string {
+  if (err instanceof ApiRequestError && err.code === 'busy') {
+    return 'The vault was busy for a moment. Nothing was lost: try again.';
+  }
+  if (err instanceof ApiRequestError && err.status === 429) return err.message;
+  if (err instanceof ApiRequestError && err.status < 500) return err.message;
+  return 'The vault could not be reached just now. Nothing was lost: check your connection, and try again.';
+}
 
 /**
  * A file the vault would not take, or could not, in words for the person
@@ -135,18 +158,39 @@ export function fileProblem(err: unknown): { message: string; again: boolean } {
   }
 }
 
+/**
+ * The session this browser has open for a request already, if any: another
+ * tab's, or this one's from before. Null when there is none; anything that
+ * is not an answer is thrown.
+ */
+async function openAlready(requestId: string | undefined): Promise<DropSession | null> {
+  if (!requestId) return null;
+  try {
+    return await api.dropSession(requestId);
+  } catch (err) {
+    if (isOver(err)) return null;
+    throw err;
+  }
+}
+
 export function DropPage({ token }: { token: string | null }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
+  const [attempt, setAttempt] = useState(0);
   const heading = useRef<HTMLHeadingElement>(null);
 
   // What was there is gone, and the focus with it: the new heading takes it.
   useEffect(() => {
     if (phase.kind !== 'loading') heading.current?.focus();
-  }, [phase.kind]);
+  }, [phase.kind, attempt]);
 
   const onOver = useCallback((message: string) => {
     rememberOpened(null);
     setPhase({ kind: 'dead', message });
+  }, []);
+
+  const onOpened = useCallback((session: DropSession, carriedOn: boolean) => {
+    rememberOpened(session.request_id);
+    setPhase({ kind: 'open', session, carriedOn });
   }, []);
 
   useEffect(() => {
@@ -154,8 +198,20 @@ export function DropPage({ token }: { token: string | null }) {
     void (async () => {
       try {
         if (token) {
+          // A page opened with a link is about that link: whatever this tab
+          // had open before is not what a reload should bring back now.
+          rememberOpened(null);
           const preview = await api.dropPreview(token);
-          if (live) setPhase({ kind: 'preview', preview });
+          if (!live) return;
+          if (preview.other_device) {
+            setPhase({ kind: 'dead', message: otherBrowser(preview.requested_by) });
+            return;
+          }
+          // Open in this browser already: carried on, not opened again.
+          const already = await openAlready(preview.request_id);
+          if (!live) return;
+          if (already) onOpened(already, true);
+          else setPhase({ kind: 'preview', preview });
           return;
         }
         // No token: the page was reloaded after Open, or opened without its
@@ -166,18 +222,26 @@ export function DropPage({ token }: { token: string | null }) {
           return;
         }
         const session = await api.dropSession(id);
-        if (live) setPhase({ kind: 'open', session });
+        if (live) setPhase({ kind: 'open', session, carriedOn: false });
       } catch (err) {
         if (!live) return;
-        rememberOpened(null);
-        const ended = err instanceof ApiRequestError && err.code === 'drop_session_ended';
-        setPhase({ kind: 'dead', message: !token && ended ? NO_LINK : describeError(err) });
+        if (isOver(err)) {
+          // Over: forgotten, and said so.
+          rememberOpened(null);
+          setPhase({
+            kind: 'dead',
+            message: !token && err.code === 'drop_session_ended' ? NO_LINK : err.message,
+          });
+          return;
+        }
+        // Not reached: nothing is forgotten, so asking again finds it.
+        setPhase({ kind: 'unreachable', message: notReached(err) });
       }
     })();
     return () => {
       live = false;
     };
-  }, [token]);
+  }, [token, attempt, onOpened]);
 
   return (
     <main className="page drop-page">
@@ -199,15 +263,31 @@ export function DropPage({ token }: { token: string | null }) {
         </section>
       )}
 
+      {phase.kind === 'unreachable' && (
+        <section className="card stack" aria-labelledby="drop-h">
+          <h1 id="drop-h" style={{ fontSize: 22 }} tabIndex={-1} ref={heading}>
+            Not reached just now
+          </h1>
+          <p className="muted" role="alert">
+            {phase.message}
+          </p>
+          <Button
+            onClick={() => {
+              setPhase({ kind: 'loading' });
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </Button>
+        </section>
+      )}
+
       {phase.kind === 'preview' && token && (
         <Preview
           token={token}
           preview={phase.preview}
           heading={heading}
-          onOpened={(session) => {
-            rememberOpened(session.request_id);
-            setPhase({ kind: 'open', session });
-          }}
+          onOpened={onOpened}
           onOver={onOver}
         />
       )}
@@ -215,6 +295,7 @@ export function DropPage({ token }: { token: string | null }) {
       {phase.kind === 'open' && (
         <Opened
           session={phase.session}
+          carriedOn={phase.carriedOn}
           heading={heading}
           onFinished={(finished, session) => {
             rememberOpened(null);
@@ -251,7 +332,7 @@ function Preview({
   token: string;
   preview: DropPreview;
   heading: RefObject<HTMLHeadingElement | null>;
-  onOpened: (session: DropSession) => void;
+  onOpened: (session: DropSession, carriedOn: boolean) => void;
   onOver: (message: string) => void;
 }) {
   const needsPassword = preview.protection.includes('password');
@@ -261,6 +342,8 @@ function Preview({
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Each refusal of Open, so the focus goes back to what to put right every time. */
+  const [refusals, setRefusals] = useState(0);
   const [sent, setSent] = useState<DropCodeSent | null>(null);
   // How many codes this page has sent: what it says changes with each, so
   // a screen reader hears a second send as well as the first (W520-2).
@@ -297,6 +380,14 @@ function Preview({
   useEffect(() => {
     if (sends > 0) document.getElementById('drop-code-input')?.focus();
   }, [sends]);
+  // Refused: the focus goes to what to put right — the password, else the
+  // code — not left on a button that was turned off while it was asked.
+  useEffect(() => {
+    if (refusals === 0) return;
+    const field =
+      document.getElementById('drop-password') ?? document.getElementById('drop-code-input');
+    field?.focus();
+  }, [refusals]);
 
   const open = async (e: FormEvent) => {
     e.preventDefault();
@@ -304,13 +395,20 @@ function Preview({
     setBusy(true);
     setError(null);
     try {
+      // Opened in another tab of this browser while this one waited: carried
+      // on there rather than opened again, which would strand its files.
+      const already = await openAlready(preview.request_id);
+      if (already) {
+        onOpened(already, true);
+        return;
+      }
       const session = await api.dropUnlock(token, {
         ...(needsPassword && password ? { password } : {}),
         ...(needsCode ? { code: readShareCode(code) ?? code.trim() } : {}),
       });
       setPassword('');
       setCode('');
-      onOpened(session);
+      onOpened(session, false);
     } catch (err) {
       const over = overFor(err);
       if (over) {
@@ -335,6 +433,7 @@ function Preview({
           ? 'The vault was busy for a moment, and nothing was counted. Press Open again.'
           : describeError(err),
       );
+      setRefusals((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -381,14 +480,15 @@ function Preview({
             autoCapitalize="none"
             autoCorrect="off"
             maxLength={64}
-            hint="It came separately from the link. Type it as you were given it, dashes and all."
+            hint="It came separately from the link."
           />
         )}
         {needsCode && (
           <div className="stack" style={{ gap: 8 }} data-testid="drop-code">
             <p className="share-code-sent">
-              We email a code to the address {asker(name)} gave for you. {SHARE_NEWEST_CODE_ONLY},
-              once, for 10 minutes.
+              We email a code to{' '}
+              {preview.code_to ? <strong>{preview.code_to}</strong> : 'the address'}, the address{' '}
+              {asker(name)} gave for you. {SHARE_NEWEST_CODE_ONLY}, once, for 10 minutes.
             </p>
             {/* Always here (5.20's W520-1): a code already in the inbox — from
                 before a reload, or from the email app — is typed without
@@ -454,7 +554,11 @@ interface Sending {
   itemId: string | null;
   file: File;
   sent: number;
-  state: 'waiting' | 'sending' | 'failed';
+  /**
+   * Waiting its turn; sending; arriving — every byte gone, the vault
+   * checking it, and too late to stop; or not sent, and why.
+   */
+  state: 'waiting' | 'sending' | 'arriving' | 'failed';
   problem?: string;
   again?: boolean;
   stop?: () => void;
@@ -482,13 +586,41 @@ export function sizeOf(bytes: number): string {
 
 const files = (n: number) => (n === 1 ? '1 file' : `${n} files`);
 
+/** How many files the page holds now, said after each change so each change is heard. */
+const readyWords = (n: number) =>
+  n === 0
+    ? 'Nothing is ready to send.'
+    : n === 1
+      ? '1 file is ready to send.'
+      : `${n} files are ready to send.`;
+
+/** The vault's own words for a request whose files are all in (5.21's files_used_up). */
+const fullWords = (max: number) =>
+  `This request takes ${max} ${max === 1 ? 'file' : 'files'}, and that many have been sent.`;
+
+/** A file added to what the session lists, and the room it takes. */
+function withFile(s: DropSession, f: DropFile): DropSession {
+  if (s.files.some((x) => x.id === f.id)) return s;
+  const bytesLeft = Math.max(0, s.bytes_left - f.byte_size);
+  return {
+    ...s,
+    files: [...s.files, f],
+    files_left: Math.max(0, s.files_left - 1),
+    bytes_left: bytesLeft,
+    max_file_bytes: Math.min(s.max_file_bytes, bytesLeft),
+  };
+}
+
 function Opened({
   session: first,
+  carriedOn,
   heading,
   onFinished,
   onOver,
 }: {
   session: DropSession;
+  /** Open in this browser already — another tab, or the link followed again: carried on. */
+  carriedOn: boolean;
   heading: RefObject<HTMLHeadingElement | null>;
   onFinished: (finished: DropFinished, session: DropSession) => void;
   onOver: (message: string) => void;
@@ -500,35 +632,68 @@ function Opened({
   const [removing, setRemoving] = useState<string | null>(null);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The vault could not be asked what has arrived: the list may be behind. */
+  const [stale, setStale] = useState(false);
   const status = useRef<HTMLParagraphElement>(null);
   const nextKey = useRef(1);
   /** The files started already: an effect run twice never sends one twice. */
   const started = useRef(new Set<number>());
+  /** The session as it is now, for what runs after an answer arrives. */
+  const latest = useRef(session);
+  useEffect(() => {
+    latest.current = session;
+  }, [session]);
   const name = session.requested_by;
+
+  /** Says something in the page's one status line, and puts the focus there. */
+  const say = useCallback((words: string, focus = false) => {
+    setSaid(words);
+    if (focus) window.setTimeout(() => status.current?.focus(), 0);
+  }, []);
 
   /** The session, or the request, is over: said in words for why. */
   const over = useCallback(
     (err: unknown): boolean => {
-      if (!(err instanceof ApiRequestError) || !OVER.has(err.code)) return false;
-      if (Date.parse(session.expires_at) <= Date.now()) onOver(expired(session.expires_at, name));
-      else if (err.code === 'other_device') onOver(otherBrowser(name));
+      if (!isOver(err)) return false;
+      if (Date.parse(latest.current.expires_at) <= Date.now()) {
+        onOver(expired(latest.current.expires_at, name));
+      } else if (err.code === 'other_device') onOver(otherBrowser(name));
       else onOver(err.message);
       return true;
     },
-    [session.expires_at, name, onOver],
+    [name, onOver],
   );
 
-  const refresh = useCallback(async () => {
+  /**
+   * What the vault has for this session now. On an answer that is not one —
+   * the connection, the vault busy — what the page has stays, and it says
+   * the list may be behind, with a way to ask again.
+   */
+  const refresh = useCallback(async (): Promise<DropSession | null> => {
     try {
-      setSession(await api.dropSession(session.request_id));
+      const fresh = await api.dropSession(latest.current.request_id);
+      setSession(fresh);
+      setStale(false);
+      return fresh;
     } catch (err) {
-      over(err);
+      if (!over(err)) setStale(true);
+      return null;
     }
-  }, [session.request_id, over]);
+  }, [over]);
+
+  // Another tab of this browser may add to the same session: what the vault
+  // has is asked again whenever this tab is looked at again.
+  useEffect(() => {
+    const onShow = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, [refresh]);
 
   // One file at a time, in the order chosen: each is counted against the
   // request's room as it goes, and the address's limit of 20 a minute.
-  const current = sending.find((s) => s.state === 'sending');
+  const current = sending.find((s) => s.state === 'sending' || s.state === 'arriving');
   const waiting = sending.find((s) => s.state === 'waiting');
   useEffect(() => {
     if (current || !waiting || started.current.has(waiting.key)) return;
@@ -536,20 +701,56 @@ function Opened({
     started.current.add(key);
     const update = (change: Partial<Sending>) =>
       setSending((all) => all.map((s) => (s.key === key ? { ...s, ...change } : s)));
-    const going = sendDropFile(session.request_id, waiting.file, waiting.itemId, (sent) =>
-      update({ sent }),
-    );
+    // The room left, as the vault last said it and with what has arrived
+    // since: a file it cannot take is not sent at all.
+    const room = latest.current;
+    const tooBig = waiting.file.size > room.max_file_bytes && waiting.file.size <= room.bytes_left;
+    const noRoom =
+      room.files_left <= 0
+        ? fullWords(room.max_files)
+        : waiting.file.size > room.bytes_left
+          ? `That file would take this request past what it can take: ${sizeOf(room.bytes_left)} is left.`
+          : tooBig
+            ? `That file is too big: one file can be ${sizeOf(room.max_file_bytes)} at most.`
+            : null;
+    if (noRoom) {
+      // Room another file's removal can make: worth trying again then.
+      update({ state: 'failed', problem: noRoom, again: !tooBig });
+      return;
+    }
+    const before = new Set(room.files.map((f) => f.id));
+    const going = sendDropFile(session.request_id, waiting.file, waiting.itemId, {
+      progress: (sent) => update({ sent }),
+      // Every byte gone: too late to stop it, so Stop goes.
+      sent: () => update({ state: 'arriving', sent: waiting.file.size }),
+    });
     update({ state: 'sending', stop: going.stop });
     going.done.then(
       async (file: DropFile) => {
+        const next = withFile(latest.current, file);
+        latest.current = next;
+        setSession(next);
         setSending((all) => all.filter((s) => s.key !== key));
-        setSaid(`Sent “${file.name}”.`);
+        say(`Sent “${file.name}”. ${readyWords(next.files.length)}`);
         await refresh();
       },
-      (err: unknown) => {
+      async (err: unknown) => {
         if (err instanceof DOMException && err.name === 'AbortError') {
           setSending((all) => all.filter((s) => s.key !== key));
-          setSaid(`Stopped sending “${waiting.file.name}”.`);
+          // Stopped as its last bytes went, the vault may have kept it
+          // anyway: asked, and said whichever it was.
+          const fresh = await refresh();
+          const arrived = fresh?.files.find(
+            (f) => !before.has(f.id) && f.name === waiting.file.name,
+          );
+          say(
+            arrived
+              ? `“${waiting.file.name}” had already arrived, so it is listed: remove it if you do not want it sent.`
+              : fresh
+                ? `Stopped sending “${waiting.file.name}”. Nothing of it was kept.`
+                : `Stopped sending “${waiting.file.name}”. If it had already arrived, it will be listed once the vault answers.`,
+            true,
+          );
           return;
         }
         if (over(err)) return;
@@ -559,20 +760,31 @@ function Opened({
         update({ state: 'failed', problem: problem.message, again: problem.again, sent: 0 });
       },
     );
-  }, [current, waiting, session.request_id, refresh, over]);
+  }, [current, waiting, session.request_id, refresh, over, say]);
 
   const choose = (itemId: string | null, chosen: FileList | null) => {
     if (!chosen || chosen.length === 0) return;
+    // What the request can still take, less what is already waiting to go.
+    const queued = sending.filter((s) => s.state !== 'failed');
+    let filesLeft = session.files_left - queued.length;
+    let bytesLeft = session.bytes_left - queued.reduce((n, s) => n + s.file.size, 0);
     const add: Sending[] = [...chosen].map((file) => {
       const key = nextKey.current++;
-      // Too big for what is left: said at once, before any of it is sent.
-      if (file.size > session.max_file_bytes) {
-        const message =
-          file.size > session.bytes_left
-            ? `That file would take this request past what it can take: ${sizeOf(session.bytes_left)} is left.`
-            : `That file is too big: one file can be ${sizeOf(session.max_file_bytes)} at most.`;
-        return { key, itemId, file, sent: 0, state: 'failed', problem: message, again: false };
+      // Said at once, before any of it is sent: too big for any file here,
+      // or no room left for it — which removing another file can make.
+      const tooBig = file.size > session.max_file_bytes && file.size <= session.bytes_left;
+      const refused = tooBig
+        ? `That file is too big: one file can be ${sizeOf(session.max_file_bytes)} at most.`
+        : filesLeft <= 0
+          ? fullWords(session.max_files)
+          : file.size > bytesLeft
+            ? `That file would take this request past what it can take: ${sizeOf(Math.max(0, bytesLeft))} is left.`
+            : null;
+      if (refused) {
+        return { key, itemId, file, sent: 0, state: 'failed', problem: refused, again: !tooBig };
       }
+      filesLeft -= 1;
+      bytesLeft -= file.size;
       return { key, itemId, file, sent: 0, state: 'waiting' };
     });
     setSending((all) => [...all, ...add]);
@@ -583,9 +795,17 @@ function Opened({
     setError(null);
     try {
       await api.dropRemoveFile(session.request_id, file.id);
-      setSaid(`Removed “${file.name}”. It will not be sent.`);
+      const left = latest.current.files.filter((f) => f.id !== file.id);
+      const next = {
+        ...latest.current,
+        files: left,
+        files_left: latest.current.files_left + 1,
+        bytes_left: latest.current.bytes_left + file.byte_size,
+      };
+      latest.current = next;
+      setSession(next);
+      say(`Removed “${file.name}”. It will not be sent. ${readyWords(left.length)}`, true);
       await refresh();
-      status.current?.focus();
     } catch (err) {
       if (!over(err)) setError(describeError(err));
     } finally {
@@ -597,14 +817,30 @@ function Opened({
     setFinishing(true);
     setError(null);
     try {
+      // What the vault has, read now: Finish sends what it has, so the
+      // page says it first if that is not what the page shows.
+      const fresh = await api.dropSession(session.request_id);
+      const shown = new Set(latest.current.files.map((f) => f.id));
+      const same = fresh.files.length === shown.size && fresh.files.every((f) => shown.has(f.id));
+      latest.current = fresh;
+      setSession(fresh);
+      setStale(false);
+      if (!same) {
+        setError(
+          `The vault has ${files(fresh.files.length)} from this page, listed now. Look at the list, then press Finish again.`,
+        );
+        return;
+      }
       const done = await api.dropFinish(session.request_id, note.trim() || undefined);
-      onFinished(done, session);
+      onFinished(done, fresh);
     } catch (err) {
       if (over(err)) return;
       setError(
         err instanceof ApiRequestError && err.code === 'busy'
           ? 'The vault was busy for a moment, and nothing was sent. Press Finish again.'
-          : describeError(err),
+          : err instanceof NetworkError
+            ? 'The vault could not be reached, and nothing was sent. Press Finish again.'
+            : describeError(err),
       );
     } finally {
       setFinishing(false);
@@ -624,6 +860,12 @@ function Opened({
         {session.title}
       </h1>
       <section className="card stack" aria-labelledby="drop-h">
+        {carriedOn && (
+          <p className="notice" role="note">
+            This link is open in this browser already — in another tab, or from before — so you are
+            carrying on there. What you add in either is sent together.
+          </p>
+        )}
         <p>
           {name ? <strong>{name}</strong> : 'Somebody'} asked you to send these to{' '}
           {session.household_name}.
@@ -640,6 +882,16 @@ function Opened({
             : `You can send ${session.files_left === 1 ? '1 more file' : `${session.files_left} more files`}, ${sizeOf(session.bytes_left)} in all, each up to ${sizeOf(session.max_file_bytes)}. ${uploadRequestTypesWords(session.accept_types)}.`}{' '}
           Until you press Finish, you can remove what you add.
         </p>
+        {stale && (
+          <div className="stack" style={{ gap: 8 }}>
+            <p className="status status-warn" role="alert">
+              The vault could not be asked just now what has arrived, so this list may be behind.
+            </p>
+            <Button kind="quiet" onClick={() => void refresh()}>
+              Check again
+            </Button>
+          </div>
+        )}
       </section>
 
       {slots.map((slot) => (
@@ -655,8 +907,12 @@ function Opened({
           onRemove={(f) => void remove(f)}
           onStop={(s) => {
             // On its way: stopped, and said so when it has. Not yet: taken off the list.
-            if (s.stop) s.stop();
-            else setSending((all) => all.filter((x) => x.key !== s.key));
+            if (s.stop) {
+              s.stop();
+              return;
+            }
+            setSending((all) => all.filter((x) => x.key !== s.key));
+            say(`Took “${s.file.name}” off the list: it was not sent.`, true);
           }}
           onAgain={(s) => {
             // Again, as a new file in the queue: the one that failed is not started twice.
@@ -668,8 +924,12 @@ function Opened({
                   : x,
               ),
             );
+            say(`Sending “${s.file.name}” again.`, true);
           }}
-          onDismiss={(s) => setSending((all) => all.filter((x) => x.key !== s.key))}
+          onDismiss={(s) => {
+            setSending((all) => all.filter((x) => x.key !== s.key));
+            say(`Took “${s.file.name}” off the list: it was not sent.`, true);
+          }}
         />
       ))}
 
@@ -729,6 +989,7 @@ function Slot(props: {
   const { slot } = props;
   const input = useRef<HTMLInputElement>(null);
   const hId = `drop-slot-${slot.id ?? 'other'}`;
+  const more = props.sent.length + props.sending.length > 0;
   const rows: ReactNode[] = [
     ...props.sent.map((f) => (
       <li key={f.id} className="drop-file">
@@ -754,7 +1015,11 @@ function Slot(props: {
             </span>
             <div className="row">
               {s.again && (
-                <Button kind="quiet" onClick={() => props.onAgain(s)}>
+                <Button
+                  kind="quiet"
+                  ariaLabel={`Try ${s.file.name} again`}
+                  onClick={() => props.onAgain(s)}
+                >
                   Try again
                 </Button>
               )}
@@ -772,21 +1037,27 @@ function Slot(props: {
             <progress
               className="drop-progress"
               max={s.file.size || 1}
-              value={s.state === 'sending' ? s.sent : 0}
+              value={s.state === 'waiting' ? 0 : s.sent}
               aria-label={`Sending ${s.file.name}`}
             />
             <span className="muted">
               {s.state === 'waiting'
                 ? `Waiting · ${sizeOf(s.file.size)}`
-                : `${Math.min(100, Math.round((s.sent / (s.file.size || 1)) * 100))}% of ${sizeOf(s.file.size)}`}
+                : s.state === 'arriving'
+                  ? `Arriving… the vault is checking it · ${sizeOf(s.file.size)}`
+                  : `${Math.min(99, Math.round((s.sent / (s.file.size || 1)) * 100))}% of ${sizeOf(s.file.size)}`}
             </span>
-            <Button
-              kind="quiet"
-              ariaLabel={`Stop sending ${s.file.name}`}
-              onClick={() => props.onStop(s)}
-            >
-              Stop
-            </Button>
+            {/* Every byte gone, it is the vault's: too late to stop, and
+                removable once it has arrived (the 5.22 review). */}
+            {s.state !== 'arriving' && (
+              <Button
+                kind="quiet"
+                ariaLabel={`Stop sending ${s.file.name}`}
+                onClick={() => props.onStop(s)}
+              >
+                Stop
+              </Button>
+            )}
           </>
         )}
       </li>
@@ -802,12 +1073,14 @@ function Slot(props: {
           {rows}
         </ul>
       )}
+      {/* Not in the accessibility tree (display: none): the button below
+          is what is pressed, and says which slot it is for. */}
       <input
         ref={input}
         type="file"
         multiple
         accept={props.accept}
-        aria-label={`Choose files for ${slot.label}`}
+        aria-label={`File chooser for ${slot.label}`}
         style={{ display: 'none' }}
         onChange={(e) => {
           props.onChoose(e.target.files);
@@ -815,8 +1088,13 @@ function Slot(props: {
           e.target.value = '';
         }}
       />
-      <Button kind="quiet" disabled={props.full} onClick={() => input.current?.click()}>
-        {props.sent.length + props.sending.length > 0 ? 'Add more files' : 'Choose files'}
+      <Button
+        kind="quiet"
+        disabled={props.full}
+        ariaLabel={`${more ? 'Add more files' : 'Choose files'} for ${slot.label}`}
+        onClick={() => input.current?.click()}
+      >
+        {more ? 'Add more files' : 'Choose files'}
       </Button>
     </section>
   );

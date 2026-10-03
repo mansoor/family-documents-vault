@@ -9,6 +9,21 @@ import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
 import { ChangePassword } from './Password.js';
 
+/** "1 link is paused until you turn it back on", "2 links and 1 request you made are paused". */
+export function pausedWords(waiting: { links: number; requests: number }, owner: boolean): string {
+  const parts = [
+    waiting.links > 0 ? `${waiting.links} ${waiting.links === 1 ? 'link' : 'links'}` : null,
+    waiting.requests > 0
+      ? `${waiting.requests} ${waiting.requests === 1 ? 'request' : 'requests'}`
+      : null,
+  ].filter((p): p is string => p !== null);
+  const many = waiting.links + waiting.requests > 1;
+  const what = parts.join(' and ');
+  return owner
+    ? `${what} ${many ? 'are' : 'is'} paused until you turn ${many ? 'them' : 'it'} back on`
+    : `${what} you made ${many ? 'are' : 'is'} paused`;
+}
+
 export function SettingsScreen() {
   const { caps, session, markAuthChanged, authVersion } = useApp();
   const navigate = useNavigate();
@@ -22,8 +37,13 @@ export function SettingsScreen() {
   // made, which only an owner turns back on.
   const mayShare = can(storedRole(), 'document.share');
   const owner = can(storedRole(), 'restore.review');
-  const { data: paused } = useLoad(
-    async (t) => (mayShare ? (await api.afterRestore(t)).links : []),
+  // Requests to send documents a restore paused count too (5.22).
+  const { data: waiting } = useLoad(
+    async (t) => {
+      if (!mayShare) return { links: 0, requests: 0 };
+      const paused = await api.afterRestore(t);
+      return { links: paused.links.length, requests: (paused.upload_requests ?? []).length };
+    },
     [authVersion, mayShare],
   );
 
@@ -44,19 +64,11 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
-        {(paused?.length ?? 0) > 0 && (
+        {waiting && waiting.links + waiting.requests > 0 && (
           <li>
             <Link to="/settings/after-restore" className="rowbtn">
               <span className="doc-title">After a restore</span>
-              <span className="muted">
-                {owner
-                  ? paused?.length === 1
-                    ? '1 link is paused until you turn it back on'
-                    : `${paused?.length} links are paused until you turn them back on`
-                  : paused?.length === 1
-                    ? '1 link you made is paused'
-                    : `${paused?.length} links you made are paused`}
-              </span>
+              <span className="muted">{pausedWords(waiting, owner)}</span>
             </Link>
           </li>
         )}
