@@ -719,6 +719,170 @@ describe("a person's identity details (5.27)", () => {
     expect(scrolled).toHaveBeenCalled();
   });
 
+  it('an email, a phone or an address emptied is removed, as Remove removes it (N527W-01)', async () => {
+    const record = myRecord();
+    if (record.shared) {
+      record.shared.fields.phones = [{ id: 'ph1', label: 'Mobile', value: '+44 7700 900123' }];
+      record.shared.fields.addresses = [{ id: 'a1', label: 'Home', line1: '12 Orchard Lane' }];
+      record.shared.fields.emails = [{ id: 'e1', label: 'Home', value: 'm@example.test' }];
+    }
+    const state = fresh({ members: [ME], identities: { me: record } });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.change(within(form).getByLabelText('Phone number'), { target: { value: '' } });
+    fireEvent.change(within(form).getByLabelText('Address line 1'), { target: { value: ' ' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    // Sent without them, as the vault takes it: no contact without its value.
+    const sent = puts(state)[0]?.fields;
+    expect(sent?.phones).toBeUndefined();
+    expect(sent?.addresses).toBeUndefined();
+    expect(sent?.emails).toEqual([{ id: 'e1', label: 'Home', value: 'm@example.test' }]);
+    expect(state.identities?.me?.shared?.fields.phones).toBeUndefined();
+  });
+
+  it('after a 409, closing the form leaves the card showing what was saved, and the next edit starts from it (N527W-02)', async () => {
+    const state = fresh({ members: [ME], identities: { me: myRecord() } });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    let form = await screen.findByRole('form', { name: 'Your identity details' });
+    const shared = state.identities?.me?.shared;
+    if (shared) {
+      shared.version = 2;
+      shared.fields = { ...shared.fields, given_name: 'Mansur' };
+    }
+    fireEvent.change(within(form).getByLabelText('Job title'), { target: { value: 'Engineer' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(form).findByRole('alert');
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    // The card shows what the other save made.
+    expect(await within(region).findByText('Mansur')).toBeInTheDocument();
+    expect(within(region).queryByText('Mansoor')).toBeNull();
+    // And the next edit is made from it: no second 409.
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.change(within(form).getByLabelText('Notes'), { target: { value: 'Kept here' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    expect(puts(state).map((b) => b.version)).toEqual([1, 2]);
+    expect(state.identities?.me?.shared?.fields).toMatchObject({
+      given_name: 'Mansur',
+      notes: 'Kept here',
+    });
+  });
+
+  it('an entry a partial save left in both parts, moved back, takes the place of the one there (N527W-04)', async () => {
+    const state = fresh({
+      members: [ME],
+      identities: {
+        me: {
+          shared: {
+            version: 4,
+            fields: { ids: [{ id: 'pp1', kind: 'passport', number: 'PASS-111' }] },
+          },
+          only_me: {
+            version: 6,
+            fields: { ids: [{ id: 'pp1', kind: 'passport', number: 'PASS-111' }] },
+          },
+        },
+      },
+      stepUpNeeded: true,
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    const twin = within(form).getByRole('switch', { name: 'Only me: Passport 2' });
+    expect(twin).toBeChecked();
+    fireEvent.click(twin);
+    const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.change(within(prompt).getByLabelText(/password/i), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() =>
+      expect(within(form).getByRole('switch', { name: 'Only me: Passport 2' })).not.toBeChecked(),
+    );
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    expect(puts(state).map((b) => [b.part, b.fields.ids?.map((i) => i.id) ?? []])).toEqual([
+      ['shared', ['pp1']],
+      ['only_me', []],
+    ]);
+    expect(state.identities?.me?.shared?.fields.ids).toEqual([
+      { id: 'pp1', kind: 'passport', number: 'PASS-111' },
+    ]);
+    expect(state.identities?.me?.only_me?.fields.ids).toBeUndefined();
+  });
+
+  it('Fill from documents offers a saved ID’s scan as its link, never its number twice (N527W-06)', async () => {
+    const scan = {
+      ...PASSPORT,
+      id: 'doc-scan',
+      title: 'My passport (copy)',
+      owner_member_id: 'me',
+      identifier: 'PASS-111',
+      issued_by: 'United Kingdom',
+    };
+    const state = fresh({
+      members: [ME],
+      documents: [scan],
+      identities: {
+        me: {
+          shared: {
+            version: 1,
+            // Typed in, never linked: it comes back masked.
+            fields: { ids: [{ id: 'pp1', kind: 'passport', number: 'PASS-111' }] },
+          },
+        },
+      },
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    const words =
+      'Passport from “My passport (copy)”: link it to the passport here, its number hidden, expires March 2031';
+    expect(await within(form).findByText(words)).toBeInTheDocument();
+    expect(form).not.toHaveTextContent('number PASS-111');
+    fireEvent.click(within(form).getByRole('button', { name: `Use this: ${words}` }));
+    expect(
+      await within(form).findByText(
+        'Linked “My passport (copy)” to the passport here. Save to keep it.',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    // One passport, its number as it was, linked to the scan.
+    expect(state.identities?.me?.shared?.fields.ids).toEqual([
+      {
+        id: 'pp1',
+        kind: 'passport',
+        number: 'PASS-111',
+        issuer: 'United Kingdom',
+        issued_on: '2021-03-14',
+        expires_on: '2031-03-31',
+        document_id: 'doc-scan',
+      },
+    ]);
+  });
+
   it('a hidden field unhidden is shown first, and sent with its value', async () => {
     const state = fresh({ members: [ME], identities: { me: myRecord() }, stepUpNeeded: true });
     installFakeApi(state);

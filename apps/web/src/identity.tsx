@@ -479,6 +479,7 @@ export function IdentityCard(props: {
             });
             editButton.current?.focus();
           }}
+          onStale={(fresh) => setData(fresh)}
           onCancel={(wrote) => {
             flushSync(closeForm);
             editButton.current?.focus();
@@ -878,12 +879,16 @@ function entryOut(e: DraftEntry, part: IdentityPart): Record<string, unknown> | 
   else if (e.documentId === null && typeof e.linkedBefore === 'string' && !moved) {
     out.document_id = null;
   }
-  // A row added here and left blank is left out. One read from the vault
-  // stays unless Remove takes it away, whatever this editor can see of it
-  // (the 5.27 review: a link to a document they may not see is all it had).
+  // A row added here and left blank is left out. An email, a phone or an
+  // address emptied is removed, as Remove removes it: nothing of one is ever
+  // masked or kept from the editor, so empty is all there is (the 5.27
+  // review). An ID or a field of the family's own read from the vault stays
+  // unless Remove takes it away, whatever this editor can see of it: a link
+  // to a document they may not see may be all it has.
   const skip = e.list === 'ids' ? ['id', 'kind', 'label'] : ['id', 'label', 'hidden'];
-  const keeps =
-    e.from !== null || Object.entries(out).some(([k, v]) => !skip.includes(k) && v !== null);
+  const holds = Object.entries(out).some(([k, v]) => !skip.includes(k) && v !== null);
+  const contact = e.list === 'emails' || e.list === 'phones' || e.list === 'addresses';
+  const keeps = holds || (!contact && e.from !== null);
   if (!keeps) return null;
   if (e.list === 'ids' && !out.kind) out.kind = 'other';
   if (e.list === 'custom' && !out.label) out.label = 'Detail';
@@ -921,8 +926,17 @@ export function buildPart(d: Draft, part: IdentityPart): IdentityFields {
     else out[t.key] = t.value.trim();
   }
   for (const list of IDENTITY_LISTS) {
-    const items = d.entries
-      .filter((e) => e.list === list && here(e.onlyMe))
+    const entries = d.entries.filter((e) => e.list === list && here(e.onlyMe));
+    // One id twice — an entry a partial save left in both parts, moved back
+    // (the 5.27 review): the one moved in takes the place of the one there,
+    // with what was shown or typed of it. The vault keeps one id once a list.
+    const chosen = new Map<string, DraftEntry>();
+    for (const e of entries) {
+      const there = chosen.get(e.id);
+      if (!there || (there.from === part && e.from !== part)) chosen.set(e.id, e);
+    }
+    const items = entries
+      .filter((e) => chosen.get(e.id) === e)
       .map((e) => entryOut(e, part))
       .filter((e): e is Record<string, unknown> => e !== null);
     if (items.length > 0) out[list] = items;
@@ -957,6 +971,13 @@ export interface Suggestion {
   goesTo: IdentityPart;
   /** Said when the document is seen by fewer people than where it goes; null otherwise. */
   note: string | null;
+  /**
+   * An ID of the same kind here already, saved, its number hidden and no
+   * document linked (the 5.27 review): the document is offered as its link,
+   * filling only what it lacks, never a second copy of the number — which
+   * cannot be compared without showing it.
+   */
+  into: { uid: string; name: string } | null;
 }
 
 /** What an entry's masked value is called, in a sentence: "passport number", "Locker code". */
@@ -1017,6 +1038,34 @@ export function suggestionsFrom(
     if (draft.entries.some((e) => e.list === 'ids' && e.documentId === d.id)) continue;
     // Already here, by a number the form can read.
     if (number !== null && draft.entries.some((e) => hasNumber(e, number))) continue;
+    // A saved one of the same kind, its number hidden, linked to nothing:
+    // most likely this one, typed in before the scan was filed.
+    const hidden = draft.entries.find(
+      (e) =>
+        e.list === 'ids' &&
+        (e.f.kind ?? 'other') === kind &&
+        e.masked &&
+        e.known === null &&
+        typeof e.documentId !== 'string' &&
+        typeof e.linkedBefore !== 'string',
+    );
+    if (hidden) {
+      out.push({
+        ...base,
+        number: null,
+        expires: (hidden.f.expires_on ?? '').trim() ? null : expires,
+        expiresWords: (hidden.f.expires_on ?? '').trim() ? null : base.expiresWords,
+        issued: (hidden.f.issued_on ?? '').trim() ? null : base.issued,
+        issuer: (hidden.f.issuer ?? '').trim() ? null : base.issuer,
+        goesTo: partOf(hidden),
+        note: null,
+        into: {
+          uid: hidden.uid,
+          name: idNumberLabel({ kind, label: hidden.f.label ?? null }).replace(/ number$/, ''),
+        },
+      });
+      continue;
+    }
     const goesTo: IdentityPart = d.visibility === 'private' && where.onlyMe ? 'only_me' : 'shared';
     const note =
       d.visibility === 'private'
@@ -1026,7 +1075,7 @@ export function suggestionsFrom(
         : d.visibility === 'adults' && where.audience === 'family'
           ? 'From an Adults only document: in the shared details, teens can see it too.'
           : null;
-    out.push({ ...base, number, expires, goesTo, note });
+    out.push({ ...base, number, expires, goesTo, note, into: null });
   }
   return out;
 }
@@ -1035,9 +1084,14 @@ export function suggestionsFrom(
 const hasNumber = (e: DraftEntry, number: string) =>
   e.list === 'ids' && [e.f.number, e.known].some((v) => (v ?? '').trim() === number);
 
-/** "Passport from “Mansoor’s passport”: number 563914782, expires March 2031". */
+/**
+ * "Passport from “Mansoor’s passport”: number 563914782, expires March
+ * 2031"; or, for an ID here already, "…: link it to the passport here, its
+ * number hidden".
+ */
 export function suggestionWords(s: Suggestion): string {
   const what = [
+    s.into ? `link it to the ${s.into.name} here, its number hidden` : null,
     s.number ? `number ${s.number}` : null,
     s.expiresWords ? `expires ${s.expiresWords}` : null,
   ]
@@ -1078,6 +1132,8 @@ function IdentityForm(props: {
   types?: DocumentTypeView[] | undefined;
   reveal: (part: IdentityPart, keys: string[]) => Promise<Record<string, string> | null>;
   onSaved: (view: IdentityView) => void;
+  /** Somebody else saved first: the record as it is now, for the card. */
+  onStale: (view: IdentityView) => void;
   /** Closed unsaved: `wrote` when a part was saved on the way, so the card reads it again. */
   onCancel: (wrote: boolean) => void;
 }) {
@@ -1238,6 +1294,26 @@ function IdentityForm(props: {
   };
 
   const accept = (s: Suggestion) => {
+    if (s.into) {
+      // Linked to the ID here, filling only what it lacks: no number.
+      const into = s.into;
+      if (draft.entries.some((e) => e.uid === into.uid && typeof e.documentId === 'string')) {
+        settle(s, `The ${into.name} here is linked already. “${s.title}” left out.`);
+        return;
+      }
+      setEntry(into.uid, (x) => ({
+        ...x,
+        documentId: s.documentId,
+        f: {
+          ...x.f,
+          ...(s.expires ? { expires_on: s.expires } : {}),
+          ...(s.issued ? { issued_on: s.issued } : {}),
+          ...(s.issuer ? { issuer: s.issuer } : {}),
+        },
+      }));
+      settle(s, `Linked “${s.title}” to the ${into.name} here. Save to keep it.`);
+      return;
+    }
     // Two documents with one number: the first used, the second is here.
     if (s.number !== null && draft.entries.some((e) => hasNumber(e, s.number as string))) {
       settle(s, `That number is here already. “${s.title}” left out.`);
@@ -1357,8 +1433,13 @@ function IdentityForm(props: {
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'conflict') {
         // Somebody else's change, kept: read again, and shown, for these
-        // changes to be made again on top of it (as 5.25's Edit details).
+        // changes to be made again on top of it (as 5.25's Edit details) —
+        // and handed to the card, so that closing the form shows it too and
+        // the next edit starts from it (the 5.27 review). Not read: the card
+        // reads it again when the form closes.
         const fresh = await withToken((t) => api.identity(t, props.member.id)).catch(() => null);
+        if (fresh) props.onStale(fresh);
+        else setWrote(true);
         if (fresh) {
           const again = draftFrom(fresh);
           setBase(fresh);

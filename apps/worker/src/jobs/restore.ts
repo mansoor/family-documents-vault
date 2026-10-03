@@ -702,7 +702,7 @@ begin
   end if;
   if to_regclass('public.export') is not null then
     update public.export set expires_at = now()
-     where expires_at is null or expires_at > now();
+     where state = 'done' and (expires_at is null or expires_at > now());
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('exports_expired', n);
   end if;

@@ -173,10 +173,11 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
-    // An export, made and still to be downloaded (5.27: a restore ends it).
+    // An export, made and still to be downloaded (5.27: a restore ends it);
+    // and one that failed, which never could be (and is not counted).
     await c.query(
       `insert into export (household_id, requested_by, state, expires_at)
-       values ($1, $2, 'done', now() + interval '7 days')`,
+       values ($1, $2, 'done', now() + interval '7 days'), ($1, $2, 'failed', null)`,
       [hh, account],
     );
     // Collections of documents, where the schema has them (0036): one for
@@ -1817,7 +1818,8 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     // Expired, as the vault reads it: ExportService.content() answers 410.
     const { rows } = await sql(
       t.adminUrl,
-      `select count(*)::int as n from export where expires_at is null or expires_at > now()`,
+      `select count(*)::int as n from export
+        where state = 'done' and (expires_at is null or expires_at > now())`,
     );
     expect(rows[0]?.n).toBe(0);
     expect(restoreSummary(file, report).replace(/\s+/g, ' ')).toContain(

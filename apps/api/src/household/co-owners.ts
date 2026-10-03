@@ -98,6 +98,7 @@ export class CoOwnerService {
     requireCapability(p, 'role.change');
     const after = { move: false };
     const result = await withPrincipal(this.db, p, async (trx) => {
+      await holdHousehold(trx);
       const target = await this.membership(trx, memberId);
       if (target.account_id === p.accountId) {
         // Changing your own role is either meaningless or a way round the
@@ -183,6 +184,7 @@ export class CoOwnerService {
       throw new ApiError(422, 'validation_failed', 'Choose what you want to become instead.');
     }
     const result = await withPrincipal(this.db, p, async (trx) => {
+      await holdHousehold(trx);
       await trx
         .updateTable('account_household')
         .set({ role: to })
@@ -486,6 +488,7 @@ export class CoOwnerService {
   async complete(p: Principal, id: string, meta: RequestMeta): Promise<RoleChangeResult> {
     requireCapability(p, 'role.change');
     return withPrincipal(this.db, p, async (trx) => {
+      await holdHousehold(trx);
       const row = (await this.rows(trx)).find((r) => r.id === id);
       if (!row) throw notFound('That request');
       if (row.completed_at || row.refused_at || row.withdrawn_at) {
@@ -867,6 +870,20 @@ const article = (role: Role) =>
 /** "30 September", in the reader's own words rather than an ISO string. */
 function formatDay(iso: string): string {
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+}
+
+/**
+ * The household, held for as long as a role changes (the 5.27 review): a
+ * change of who sees identity details (IdentityService.setAudience) holds it
+ * FOR NO KEY UPDATE, so the two take turns, and each reads what the other
+ * made. Without it a step-down and a narrowing at the same moment each read
+ * the other's old state — the audience as it was, the role as it was — and
+ * neither ended the export the person may no longer have. FOR SHARE: two
+ * role changes do not wait for each other. Taken first, before any row, as
+ * setAudience takes it first; the activity log's lock comes last in both.
+ */
+async function holdHousehold(trx: Db): Promise<void> {
+  await sql`select 1 from household where id = app_household() for share`.execute(trx);
 }
 
 /**

@@ -1060,6 +1060,23 @@ export function installFakeApi(state: FakeState) {
           },
         );
       }
+      // As the vault checks a part (identity.ts): one id once a list, and a
+      // contact with its value.
+      for (const list of ['emails', 'phones', 'addresses', 'ids', 'custom'] as const) {
+        const ids = ((b.fields[list] ?? []) as Array<{ id: string }>).map((e) => e.id);
+        if (new Set(ids).size !== ids.length) {
+          return refuse(422, 'validation_failed', 'Each entry in a list has an id of its own.');
+        }
+      }
+      for (const c of [...(b.fields.emails ?? []), ...(b.fields.phones ?? [])]) {
+        if (typeof c.value !== 'string' || c.value.trim() === '') {
+          return refuse(
+            422,
+            'validation_failed',
+            'Invalid input: expected string, received undefined',
+          );
+        }
+      }
       if (state.identityTooLong === true || state.identityTooLong === b.part) {
         return refuse(422, 'validation_failed', IDENTITY_TOO_LONG);
       }

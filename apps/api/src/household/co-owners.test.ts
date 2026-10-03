@@ -1,9 +1,11 @@
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
-import type { OwnerChangeView, RoleChangeResult } from './co-owners.js';
+import type { Principal, Tokens } from '../auth/service.js';
+import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { CoOwnerService, type OwnerChangeView, type RoleChangeResult } from './co-owners.js';
+import { IdentityService } from './identity.js';
 import type { MemberView } from './service.js';
 
 /**
@@ -882,5 +884,69 @@ describe.skipIf(!testAdminUrl())('an owner who no longer sees identity details (
     expect(done.statusCode).toBe(200);
     expect(json<RoleChangeResult>(done).role).toBe('adult');
     expect(await live(his)).toBe(false);
+  });
+
+  it('a step-down at the same moment as a narrowing: they take turns, and the export ends (N527V-01)', async () => {
+    const dee = await h.join(owner, { name: 'Dee', email: 'dee-527@example.test', role: 'adult' });
+    members = json<{ items: MemberView[] }>(
+      await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
+    ).items;
+    expect((await setRole(owner, memberOf('Dee').id, 'owner')).statusCode).toBe(200);
+    const principal = async (t: Tokens): Promise<Principal> => ({
+      accountId: await accountId(t),
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      householdId: owner.household_id,
+      memberId: t.member_id,
+      role: 'owner',
+    });
+    const asOwner = await principal(owner);
+    const asDee = await principal(dee);
+    // All adults see identity details; Dee, an owner, made an export.
+    await audience('adults');
+    const hers = await exportOf(dee);
+    const identity = new IdentityService(
+      h.db,
+      new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
+      async () => undefined,
+      false,
+    );
+    const coOwners = new CoOwnerService(h.db);
+    const pool = createPool(h.adminUrl, 2);
+    const blocked = async (n: number) => {
+      for (let i = 0; i < 200; i += 1) {
+        const r = await pool.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where datname = $1 and wait_event_type = 'Lock'`,
+          [new URL(h.adminUrl).pathname.slice(1)],
+        );
+        if ((r.rows[0]?.n ?? 0) >= n) return;
+        await new Promise((res) => setTimeout(res, 50));
+      }
+      throw new Error(`fewer than ${n} statements waiting on a lock`);
+    };
+    const holder = await pool.connect();
+    try {
+      await holder.query('begin');
+      // The activity log, held from outside: whatever reaches it waits there.
+      await holder.query("select pg_advisory_xact_lock(hashtext('audit:' || $1::uuid::text))", [
+        owner.household_id,
+      ]);
+      // An owner narrows to the owners and each person...
+      const narrowed = identity.setAudience(asOwner, 'owners_and_self', { ip: null });
+      await blocked(1);
+      // ...and Dee steps down to adult in the same moment.
+      const stepped = coOwners.stepDown(asDee, 'adult', { ip: null });
+      await blocked(2);
+      await holder.query('rollback');
+      await Promise.all([narrowed, stepped]);
+    } finally {
+      await holder.query('rollback').catch(() => undefined);
+      holder.release();
+      await pool.end();
+      await audience('owners_and_self');
+    }
+    // Dee is an adult, who no longer sees anybody else's details: her
+    // export, holding them, ends, whichever went first.
+    expect(await live(hers)).toBe(false);
   });
 });
