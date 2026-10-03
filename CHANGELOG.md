@@ -6,6 +6,34 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.28] - 2026-10-03 — iteration 5.22
+
+Ask for documents, and the page that sends them.
+
+### Added
+
+- **Ask someone for documents**, from Sharing or from a person's page. Owners and adults choose:
+  - a title, a message, and up to ten named things to send (a W-2, a 1099);
+  - when the request ends;
+  - how it is protected: a password, an emailed code, or this browser only, and how many visits it allows;
+  - how many files, and how big;
+  - what kinds of file;
+  - who reviews what arrives.
+    The link and a made-up password are shown once, to hand over.
+- **The sender's page.** Whoever has the link opens it, chooses files for each thing asked for, and sees each one arrive. They can remove one or stop it before Finish, add a note, then Finish. Every problem is said in plain words: a file too large or of a kind not taken, the request full, ended or used up, or the vault busy.
+- Sharing lists the requests you review: files received, visits used, and where each stands. You can take one back. After a restore, paused requests are listed with the paused links, and owners can turn them back on.
+
+### Changed
+
+- A password the vault made up for a request is checked the way a share link's is: capitals, spaces and dashes don't matter. A typed password is still checked exactly.
+- A sender who loses their connection is never asked to send a file twice. The page checks with the vault what arrived, and if it can't tell yet, says so and checks again.
+- The share sheet's "This browser only" note sits right under its label on a phone, and the end's date and time stack on a narrow screen.
+
+### Security
+
+- Every call from the sender's page names its request, and the vault refuses one whose session belongs to another request.
+- A request whose visits are used up can still be found only by the browser already in it; everyone else is refused, and nothing is counted.
+
 ## [0.5.27] - 2026-10-03 — iteration 5.23
 
 Files sent to you: look before they are filed.
