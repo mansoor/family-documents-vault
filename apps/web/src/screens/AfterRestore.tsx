@@ -1,5 +1,6 @@
-import { can, type UploadRequestView } from '@fdv/shared';
+import { can, IDENTITY_AUDIENCE_LABELS, type UploadRequestView } from '@fdv/shared';
 import { useRef, useState } from 'react';
+import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -23,7 +24,12 @@ import { linkTarget, RequestRow, requestTarget } from './Sharing.js';
  * again. 5.28 adds the people whose sign-ins wait.
  */
 export function AfterRestoreScreen() {
-  const { guarded, withToken, authVersion } = useApp();
+  const { caps, guarded, withToken, authVersion } = useApp();
+  const identityKept = caps?.features.member_identity === true;
+  const { data: identity } = useLoad(
+    async (t) => (identityKept ? api.identityAudience(t) : null),
+    [authVersion, identityKept],
+  );
   const owner = can(storedRole(), 'restore.review');
   const {
     data: waiting,
@@ -113,6 +119,27 @@ export function AfterRestoreScreen() {
             on. If it is still needed, take it back and make a new link.
           </p>
         </>
+      )}
+      {/* Every restore narrows who sees identity details (5.26): the rule,
+          then how it is now, read from the vault — true however long ago the
+          restore was, and whatever was waiting then (the 5.27 review). */}
+      {caps?.features.member_identity && (
+        <p className="muted" data-testid="restore-identity">
+          A restore sets who can see identity details back to the owners and each person, and
+          withdraws any wider audience that was waiting.
+          {identity ? ` It is now: ${IDENTITY_AUDIENCE_LABELS[identity.audience]}.` : ''}{' '}
+          {owner ? (
+            <>
+              To let more people see them again, choose it in{' '}
+              <Link to="/settings/family" className="quiet-link">
+                Settings → Family
+              </Link>
+              : it waits 72 hours, while everyone is told.
+            </>
+          ) : (
+            'An owner can let more people see them again: it waits 72 hours, while everyone is told.'
+          )}
+        </p>
       )}
       <ErrorNote message={loadError ?? error} />
       <p className="notice" role="status" tabIndex={-1} ref={status} hidden={!said}>

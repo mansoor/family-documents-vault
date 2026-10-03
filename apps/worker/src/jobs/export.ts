@@ -6,7 +6,10 @@ import { pipeline } from 'node:stream/promises';
 import { ZipArchive } from 'archiver';
 import {
   EncryptStream,
+  memberPhotoBinding,
   newKey,
+  openBytes,
+  openIdentity,
   openPrivate,
   unwrapKey,
   wrapKey,
@@ -15,10 +18,20 @@ import {
 } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import {
+  can,
+  canSeeIdentity,
   FILE_REMOVED,
   formatDate,
+  IDENTITY_FIELDS,
+  IDENTITY_ID_LABELS,
+  IDENTITY_LISTS,
+  identityFilled,
+  maskIdentity,
   wellFormedDate,
   type DateValue,
+  type IdentityFields,
+  type IdentityList,
+  type IdentityPart,
   type TypeField,
 } from '@fdv/shared';
 import { adapterFromRow, StorageError } from '@fdv/storage';
@@ -37,6 +50,20 @@ import { sql } from 'kysely';
  * future escrow of the household's documents would open, is not the key to
  * somebody's Only me ones. It is served decrypted, to them alone, like any
  * version, and expires after a week.
+ *
+ * Since 5.27 it holds people too: `people/<name>.jpg`, each photo the
+ * requester may see (A68: the roles of family.details, or their own), and
+ * `identity/<name>.json`, each identity record they may read now
+ * (canSeeIdentity, under the audience in effect — identity_audience_now()),
+ * with a section of index.html for each. The requester's own record comes
+ * whole, both parts, every number in it: it is theirs, as an Only me
+ * document is. Anybody else's is their shared part as the app shows it —
+ * every ID number and hidden field left out, and named in `masked` — since
+ * the app shows those only to somebody who confirms it is them with a
+ * passkey or a code (A54), each a line the person sees (A38), and an export
+ * is asked for with any credential. Nobody else's Only me part is in any
+ * export. A narrower audience expires the exports of whoever loses sight
+ * (5.26).
  */
 
 export interface ExportJob {
@@ -50,6 +77,32 @@ export interface ExportDeps {
   credentialsKey: Buffer;
   localRoot: string;
   log: (level: string, msg: string, extra?: Record<string, unknown>) => void;
+}
+
+/** A person, in index.json (5.27): their photo and their identity details, where the export has them. */
+interface PersonEntry {
+  id: string;
+  name: string;
+  /** `people/<name>.jpg`: their photo, where the requester may see it (A68). */
+  photo: string | null;
+  /** `identity/<name>.json`: their identity details, where the requester may read them. */
+  identity: string | null;
+}
+
+/** One part of a person's identity details, as an export holds it. */
+interface IdentityPartOut {
+  fields: IdentityFields;
+  /** What was left out of somebody else's: `ids.<id>`, `custom.<id>`. Never in one's own. */
+  masked?: string[];
+}
+
+/** `identity/<name>.json` (5.27). */
+interface IdentityRecordOut {
+  person: string;
+  member_id: string;
+  shared: IdentityPartOut | null;
+  /** The requester's own Only me part: in their own export, and no one else's. */
+  only_me?: IdentityPartOut;
 }
 
 interface Entry {
@@ -138,7 +191,12 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .orderBy('category')
         .orderBy('title')
         .execute();
-      const members = await trx.selectFrom('member').select(['id', 'display_name']).execute();
+      const members = await trx
+        .selectFrom('member')
+        .select(['id', 'display_name'])
+        .orderBy('display_name')
+        .orderBy('id')
+        .execute();
       // What each detail is called: by its type as the household has it,
       // hidden ones too, or else by the attribute library (0.5.7).
       const types = await trx
@@ -172,6 +230,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .select('active_vault_id')
         .where('id', '=', hh)
         .executeTakeFirstOrThrow();
+      const people = await peopleFor(deps, trx, hh, requester, members);
       return {
         docs,
         members,
@@ -183,6 +242,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         requesterMember: requester.member_id,
         activeVaultId: active.active_vault_id,
         exp,
+        ...people,
       };
     });
     // Each document's notes and details: an Only me one's opened for the
@@ -281,6 +341,35 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       });
     }
 
+    // People (5.27): each photo and identity record the requester may have,
+    // named as the person is, two the same told apart — and apart from the
+    // identity documents' own files, which are in identity/ too.
+    const exported = new Map(entries.filter((e) => e.file).map((e) => [e.document_id, e.file]));
+    const seen = new Set(ctx.docs.map((d) => d.id));
+    const people: PersonEntry[] = [];
+    const records: Array<{ record: IdentityRecordOut; own: boolean }> = [];
+    const unused = (folder: string, base: string, ext: string) => {
+      let name = `${folder}/${base}${ext}`;
+      for (let i = 2; used.has(name); i++) name = `${folder}/${base} (${i})${ext}`;
+      used.add(name);
+      return name;
+    };
+    for (const m of ctx.members) {
+      const base = safe(m.display_name);
+      const jpeg = ctx.photos.get(m.id);
+      const photo = jpeg ? unused('people', base, '.jpg') : null;
+      if (jpeg && photo) archive.append(jpeg, { name: photo });
+      const record = identityRecord(m, ctx.identities.get(m.id), ctx.requesterMember, (id) =>
+        seen.has(id),
+      );
+      const identity = record ? unused('identity', base, '.json') : null;
+      if (record && identity) {
+        archive.append(`${JSON.stringify(record, null, 2)}\n`, { name: identity });
+        records.push({ record, own: m.id === ctx.requesterMember });
+      }
+      people.push({ id: m.id, name: m.display_name, photo, identity });
+    }
+
     archive.append(
       JSON.stringify(
         {
@@ -288,6 +377,9 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
           // What each key in a document's `extra` is called.
           details: columns.map(({ key, label }) => ({ key, label })),
           documents: entries,
+          // Each person, with their photo and identity details where the
+          // requester may have them (5.27, A68).
+          people,
         },
         null,
         2,
@@ -295,7 +387,7 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
       { name: 'index.json' },
     );
     archive.append(csv(entries, columns), { name: 'index.csv' });
-    archive.append(html(entries, columns), { name: 'index.html' });
+    archive.append(html(entries, columns, people, records, exported), { name: 'index.html' });
     archive.append(README, { name: 'README.txt' });
     await archive.finalize();
     await done;
@@ -429,7 +521,13 @@ export function csvCell(v: string | number | string[] | null): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function html(entries: Entry[], details: DetailColumn[]): string {
+function html(
+  entries: Entry[],
+  details: DetailColumn[],
+  people: PersonEntry[] = [],
+  records: Array<{ record: IdentityRecordOut; own: boolean }> = [],
+  exported: Map<string, string | null> = new Map(),
+): string {
   const esc = (s: string | number | null) =>
     String(s ?? '').replace(
       /[&<>"]/g,
@@ -447,12 +545,253 @@ function html(entries: Entry[], details: DetailColumn[]): string {
         `<tr><td>${e.file ? `<a href="${esc(e.file)}">${esc(e.title)}</a>` : esc(e.title)}${e.file_note ? `<br><small>${esc(e.file_note)}</small>` : ''}</td><td>${esc(e.category)}</td><td>${esc(e.person)}</td><td>${esc(e.expires)}</td><td>${esc(e.identifier)}</td><td>${detailsOf(e)}</td><td>${esc(e.physical_location)}</td></tr>`,
     )
     .join('\n');
+  // People (5.27): their photos, where there are any.
+  const withPhotos = people.filter((p) => p.photo);
+  const photos = withPhotos.length
+    ? `<h2>People</h2><ul class="people">${withPhotos
+        .map(
+          (p) =>
+            `<li><img src="${esc(p.photo)}" alt="" width="96" height="96"><span>${esc(p.name)}</span></li>`,
+        )
+        .join('')}</ul>\n`
+    : '';
+  // Each identity record the export holds, a section each.
+  const identity = records.length
+    ? `<h2>Identity details</h2>${
+        records.some((r) => !r.own)
+          ? '<p>ID numbers and hidden details of other people are not in this export: open the vault to see them, which asks you to confirm it’s you.</p>'
+          : ''
+      }\n${records
+        .map(({ record, own }) => {
+          const rows = [
+            ...identityLines(record.shared, false, exported),
+            ...identityLines(record.only_me ?? null, true, exported),
+          ];
+          return `<section><h3>${esc(record.person)}${own ? ' (you)' : ''}</h3><table><tbody>${rows
+            .map(
+              (r) =>
+                `<tr><th scope="row">${esc(r.label)}${r.onlyMe ? ' <small>(Only me)</small>' : ''}</th><td>${r.html}</td></tr>`,
+            )
+            .join('')}</tbody></table></section>`;
+        })
+        .join('\n')}\n`
+    : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Family Document Vault export</title>
-<style>body{font-family:system-ui,sans-serif;margin:24px;color:#1c1a17;background:#faf8f4}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:8px 10px;border-bottom:1px solid #e6e0d6}th{font-size:13px;color:#5e574e}h1{font-weight:600}</style></head>
+<style>body{font-family:system-ui,sans-serif;margin:24px;color:#1c1a17;background:#faf8f4}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:8px 10px;border-bottom:1px solid #e6e0d6}th{font-size:13px;color:#5e574e}h1,h2,h3{font-weight:600}tbody th{width:30%}.people{list-style:none;padding:0;display:flex;flex-wrap:wrap;gap:16px}.people li{display:flex;flex-direction:column;align-items:center;gap:4px}.people img{border-radius:50%}</style></head>
 <body><h1>Family Document Vault export</h1><p>${entries.length} document${entries.length === 1 ? '' : 's'}. Files are in folders by category; this page and index.csv list what each one is.</p>
 <table><thead><tr><th>Document</th><th>Category</th><th>Person</th><th>Expires</th><th>Number</th><th>Details</th><th>Original is kept</th></tr></thead><tbody>
 ${rows}
-</tbody></table></body></html>\n`;
+</tbody></table>
+${photos}${identity}</body></html>\n`;
+}
+
+const escHtml = (s: string) =>
+  s.replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string,
+  );
+
+/** "Home email", "Work phone", "Address": as the app names them. */
+function contactLabel(label: string, noun: 'email' | 'phone' | 'address'): string {
+  if (!label) return noun.charAt(0).toUpperCase() + noun.slice(1);
+  return label.toLowerCase().includes(noun) ? label : `${label} ${noun}`;
+}
+
+/** "United Kingdom" for GB, where Node knows it; the code where it does not. */
+function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(['en-GB'], { type: 'region' }).of(code.toUpperCase()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+const day = (d: unknown) =>
+  typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+    ? formatDate({ date: d, precision: 'day' })
+    : null;
+
+/**
+ * One part of somebody's identity details, as lines of index.html: each
+ * field the part has, in the catalogue's order, by its name.
+ */
+function identityLines(
+  part: IdentityPartOut | null,
+  onlyMe: boolean,
+  exported: Map<string, string | null>,
+): Array<{ label: string; html: string; onlyMe: boolean }> {
+  if (!part) return [];
+  const f = part.fields;
+  const masked = new Set(part.masked ?? []);
+  const out: Array<{ label: string; html: string; onlyMe: boolean }> = [];
+  const add = (label: string, value: string) =>
+    out.push({ label, html: escHtml(value).replace(/\n/g, '<br>'), onlyMe });
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  for (const field of IDENTITY_FIELDS) {
+    const key = field.key;
+    if (key === 'nationalities') {
+      if (f.nationalities?.length) add(field.label, f.nationalities.map(countryName).join(', '));
+      continue;
+    }
+    if ((IDENTITY_LISTS as readonly string[]).includes(key)) {
+      for (const e of (f[key as IdentityList] ?? []) as unknown as Array<Record<string, unknown>>) {
+        const hidden = masked.has(`${key}.${String(e.id)}`);
+        if (key === 'emails' || key === 'phones') {
+          if (text(e.value)) {
+            add(contactLabel(text(e.label), key === 'emails' ? 'email' : 'phone'), text(e.value));
+          }
+        } else if (key === 'addresses') {
+          const lines = [
+            text(e.line1),
+            text(e.line2),
+            text(e.line3),
+            [text(e.city), text(e.region), text(e.postal_code)].filter(Boolean).join(', '),
+            text(e.country) ? countryName(text(e.country)) : '',
+          ].filter(Boolean);
+          if (lines.length) add(contactLabel(text(e.label), 'address'), lines.join('\n'));
+        } else if (key === 'ids') {
+          const kind = IDENTITY_ID_LABELS[e.kind as keyof typeof IDENTITY_ID_LABELS] ?? 'ID';
+          const label = text(e.label) ? `${kind}: ${text(e.label)}` : kind;
+          const parts = [
+            hidden ? 'Number not in this export' : text(e.number) || null,
+            text(e.issuer) ? `Issued by ${text(e.issuer)}` : null,
+            day(e.issued_on) ? `Issued ${day(e.issued_on)}` : null,
+            day(e.expires_on) ? `Expires ${day(e.expires_on)}` : null,
+          ].filter((x): x is string => x !== null);
+          const file = typeof e.document_id === 'string' ? exported.get(e.document_id) : null;
+          out.push({
+            label,
+            html:
+              parts.map(escHtml).join('<br>') +
+              (file
+                ? `${parts.length ? '<br>' : ''}<a href="${escHtml(file)}">The document</a>`
+                : ''),
+            onlyMe,
+          });
+        } else if (key === 'custom') {
+          if (hidden) add(text(e.label) || 'Detail', 'Not in this export');
+          else if (text(e.value)) add(text(e.label) || 'Detail', text(e.value));
+        }
+      }
+      continue;
+    }
+    const v = text(f[key as keyof IdentityFields]);
+    if (!v) continue;
+    add(field.label, key === 'country_of_birth' ? countryName(v) : v);
+  }
+  return out;
+}
+
+/**
+ * What the requester may have of the people (5.27), read as the vault
+ * itself: whose identity details they may read now — canSeeIdentity, under
+ * the audience in effect, the database's own identity_audience_now() — each
+ * part opened; and whose photo they may see (A68: the roles of
+ * family.details, or their own).
+ */
+async function peopleFor(
+  deps: ExportDeps,
+  trx: Db,
+  hh: string,
+  requester: { member_id: string; role: Parameters<typeof can>[0] },
+  members: ReadonlyArray<{ id: string }>,
+): Promise<{
+  identities: Map<string, Partial<Record<IdentityPart, IdentityFields>>>;
+  photos: Map<string, Buffer>;
+}> {
+  const viewer = { role: requester.role, memberId: requester.member_id };
+  const audience =
+    (await sql<{ a: string | null }>`select identity_audience_now() as a`.execute(trx)).rows[0]
+      ?.a ?? 'owners_and_self';
+  const readable = members.filter((m) => canSeeIdentity(viewer, m, audience)).map((m) => m.id);
+  const rows = readable.length
+    ? await trx
+        .selectFrom('member_identity')
+        .selectAll()
+        .where('member_id', 'in', readable)
+        .execute()
+    : [];
+  const identities = new Map<string, Partial<Record<IdentityPart, IdentityFields>>>();
+  for (const r of rows) {
+    // Another person's Only me part is in nobody's export but theirs.
+    if (!canSeeIdentity(viewer, { id: r.member_id }, audience, r.part)) continue;
+    const key = await deps.keys.unwrapById(trx, r.wrapped_by_scope);
+    const fields = openIdentity(key, { householdId: hh, memberId: r.member_id, part: r.part }, r);
+    identities.set(r.member_id, {
+      ...identities.get(r.member_id),
+      [r.part]: fields as IdentityFields,
+    });
+  }
+  const photos = new Map<string, Buffer>();
+  const family = can(requester.role, 'family.details');
+  const ready = await trx
+    .selectFrom('member_photo')
+    .select(['id', 'member_id', 'sealed'])
+    .where('state', '=', 'ready')
+    .execute();
+  const mayHave = ready.filter(
+    (p) => p.sealed !== null && (family || p.member_id === requester.member_id),
+  );
+  if (mayHave.length > 0) {
+    const scope = await deps.keys.unwrap(trx, { householdId: hh, kind: 'household' });
+    for (const p of mayHave) {
+      try {
+        photos.set(
+          p.member_id,
+          openBytes(scope.key, p.sealed as Buffer, memberPhotoBinding(hh, p.member_id, p.id)),
+        );
+      } catch {
+        // A seal that does not open is that photo's, not the export's: the
+        // person is listed without it, as the app shows their initials.
+        deps.log('warn', 'photo_unreadable', { member_id: p.member_id });
+      }
+    }
+  }
+  return { identities, photos };
+}
+
+/**
+ * A person's identity details as their export file has them (5.27): the
+ * requester's own whole, both parts; anybody else's shared part as the app
+ * shows it, masked. A document an ID is on stays named only where the
+ * requester may see that document. Null when there is nothing to say.
+ */
+export function identityRecord(
+  person: { id: string; display_name: string },
+  parts: Partial<Record<IdentityPart, IdentityFields>> | undefined,
+  requesterMember: string,
+  maySeeDocument: (id: string) => boolean,
+): IdentityRecordOut | null {
+  if (!parts) return null;
+  const own = person.id === requesterMember;
+  const shown = (fields: IdentityFields | undefined): IdentityPartOut | null => {
+    if (!fields || identityFilled(fields).length === 0) return null;
+    const linked: IdentityFields = fields.ids
+      ? {
+          ...fields,
+          ids: fields.ids.map((i) => {
+            if (!i.document_id || maySeeDocument(i.document_id)) return i;
+            const unlinked = { ...i };
+            delete unlinked.document_id;
+            return unlinked;
+          }),
+        }
+      : fields;
+    if (own) return { fields: linked };
+    const masked = maskIdentity(linked);
+    return masked.masked.length
+      ? { fields: masked.fields, masked: masked.masked }
+      : { fields: masked.fields };
+  };
+  const shared = shown(parts.shared);
+  const onlyMe = own ? shown(parts.only_me) : null;
+  if (!shared && !onlyMe) return null;
+  return {
+    person: person.display_name,
+    member_id: person.id,
+    shared,
+    ...(onlyMe ? { only_me: onlyMe } : {}),
+  };
 }
 
 const README = `This folder is a complete export from Family Document Vault.
@@ -461,5 +800,9 @@ const README = `This folder is a complete export from Family Document Vault.
 - index.html opens in any browser and lists every document with its details.
 - index.csv is the same list for a spreadsheet; index.json is the same list for software.
 - A document listed with no file says why (file_note): its file was removed for good.
+- people/ holds each person's photo you can see; identity/ holds the identity details
+  you can see, a file for each person. Yours are all there, Only me included; other
+  people's ID numbers and hidden details are not: the vault shows those only when you
+  confirm it's you.
 - Nothing here depends on the vault software. Keep it somewhere safe.
 `;

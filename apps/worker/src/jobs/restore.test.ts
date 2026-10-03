@@ -43,6 +43,7 @@ import { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { backupDatabase } from './backup.js';
 import { libpqConnection } from './libpq.js';
+import { restoreSummary } from '../restore-summary.js';
 import {
   backupBefore,
   checkRestored,
@@ -172,6 +173,13 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
+    // An export, made and still to be downloaded (5.27: a restore ends it);
+    // and one that failed, which never could be (and is not counted).
+    await c.query(
+      `insert into export (household_id, requested_by, state, expires_at)
+       values ($1, $2, 'done', now() + interval '7 days'), ($1, $2, 'failed', null)`,
+      [hh, account],
+    );
     // Collections of documents, where the schema has them (0036): one for
     // everyone and the first member's Only me, each with all three in it.
     // A schema from before 0039 has them by their old names, as a backup
@@ -1620,8 +1628,9 @@ describe.skipIf(!testAdminUrl())('a restore without psql', () => {
       await rm(dir, { recursive: true, force: true });
     }
     // Three databases made and dropped while the rest of the suite runs:
-    // more than the default 5 s under load (it timed out so in a container).
-  }, 30_000);
+    // more than the default 5 s under load (it timed out so in a container),
+    // and more than 30 s with the whole gate on one shared server (5.27).
+  }, 60_000);
 });
 
 // pg_dump and psql are in the worker image and on CI; not on every desk.
@@ -1769,6 +1778,53 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     };
     expect(await seen(person)).toEqual(['only_me', 'shared']);
     expect(await seen(other)).toEqual(['shared']);
+  }, 60_000);
+
+  it('identity returns; the report mentions the audience (5.27)', async () => {
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    // Each part comes back, and opens with the vault's own keys as it was.
+    const db = createDb(createPool(t.adminUrl, 1));
+    try {
+      const parts = await db.selectFrom('member_identity').selectAll().orderBy('part').execute();
+      expect(parts.map((r) => r.part)).toEqual(['only_me', 'shared']);
+      for (const r of parts) {
+        const key = await KEYS.unwrapById(db, r.wrapped_by_scope);
+        const ref = { householdId: seeded, memberId: r.member_id, part: r.part };
+        expect(openIdentity(key, ref, r)).toEqual(IDENTITY_SEED[r.part]);
+      }
+    } finally {
+      await db.destroy();
+    }
+    // What restore-backup prints says who can see them now, and what it was.
+    const words = restoreSummary(file, report).replace(/\s+/g, ' ');
+    expect(words).toContain(
+      `Who can see identity details in household ${seeded} went back to the owners and each person (it was all adults).`,
+    );
+    expect(words).toContain('1 notice still waiting was withdrawn');
+    expect(words).toContain('Settings → Family; that waits 72 hours, while everybody is told.');
+  }, 60_000);
+
+  it('an export built under a wider audience cannot be downloaded after a restore (5.27)', async () => {
+    // The backup's export was made while all adults saw identity details.
+    const before = await sql(
+      vault.adminUrl,
+      'select count(*)::int as n from export where expires_at > now()',
+    );
+    expect(before.rows[0]?.n).toBe(1);
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    expect(report.exportsExpired).toBe(1);
+    // Expired, as the vault reads it: ExportService.content() answers 410.
+    const { rows } = await sql(
+      t.adminUrl,
+      `select count(*)::int as n from export
+        where state = 'done' and (expires_at is null or expires_at > now())`,
+    );
+    expect(rows[0]?.n).toBe(0);
+    expect(restoreSummary(file, report).replace(/\s+/g, ' ')).toContain(
+      '1 export that could still be downloaded was ended: each held what its maker could see then.',
+    );
   }, 60_000);
 
   it('after a restore every link is paused and no session survives', async () => {

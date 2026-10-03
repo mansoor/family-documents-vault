@@ -118,6 +118,13 @@ export interface RestoreReport {
    * person, and widening it again goes through the notice.
    */
   identityAudiences: Array<{ household_id: string; was: string }>;
+  /**
+   * Exports that could still be downloaded, expired (5.27): each was built
+   * from what its requester could see then, identity details included, and
+   * a restore narrows who sees those, and can bring back an export a
+   * narrowing since the backup had ended. Whoever needs one makes it again.
+   */
+  exportsExpired: number;
   openInvitations: number;
   /**
    * Versions whose file was not where it is kept (5.24): removed for good
@@ -243,6 +250,7 @@ interface Undone {
   purgeRequestsCleared: number;
   noticesWithdrawn: number;
   identityAudiences: Array<{ household_id: string; was: string }>;
+  exportsExpired: number;
 }
 
 interface StillOpen {
@@ -563,6 +571,7 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
     photosUnfinished: counted('photos_unfinished'),
     purgeRequestsCleared: counted('purge_requests'),
     noticesWithdrawn: counted('notices_withdrawn'),
+    exportsExpired: counted('exports_expired'),
     identityAudiences: [...stdout.matchAll(/fdv-restore-audience:([0-9a-f-]{36})=([a-z_]+)/g)].map(
       (m) => ({ household_id: m[1] as string, was: m[2] as string }),
     ),
@@ -593,8 +602,12 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * (5.26): a wider audience for identity details withdrawn since would
  * otherwise come back; and every household's audience for them goes back to
  * the narrowest, the owners and each person, what it was in effect said in
- * the report. Widening it again goes through the notice. Guarded for older
- * schemas.
+ * the report. Widening it again goes through the notice. And every export
+ * still to be downloaded is expired (5.27), as every session is ended: each
+ * holds what its requester could see when it was made, identity details
+ * included, which the narrowing above may take from them, and one a
+ * narrowing since the backup had ended would be served again. Guarded for
+ * older schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 create temporary table fdv_restore_audience (household_id uuid, was text) on commit drop;
@@ -686,6 +699,12 @@ begin
     insert into pg_temp.fdv_restore_undone values ('notices_withdrawn', n);
     update public.household set identity_audience = 'owners_and_self'
      where identity_audience <> 'owners_and_self';
+  end if;
+  if to_regclass('public.export') is not null then
+    update public.export set expires_at = now()
+     where state = 'done' and (expires_at is null or expires_at > now());
+    get diagnostics n = row_count;
+    insert into pg_temp.fdv_restore_undone values ('exports_expired', n);
   end if;
 end $undo$;
 select 'fdv-restore:' || what || '=' || n from pg_temp.fdv_restore_undone;

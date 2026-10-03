@@ -2799,6 +2799,41 @@ notice_until, completed_at, withdrawn_at)`, a primitive for anything done
       `updateIdentity`, `revealIdentity`, `identityAudience` and
       `setIdentityAudience`; the fake keeps each part and its version, and
       the audience with its 72 hours.
+  - Identity on the web, and in the export (5.27). No route changes; the
+    export's contents do.
+    - The export holds the people the requester may have (A68):
+      `people/<name>.jpg`, each photo they may see (owners, adults and
+      teens everybody's; a viewer their own), and `identity/<name>.json`,
+      each identity record they may read when it is built — the person's
+      own, and others' as `canSeeIdentity` gives them under the audience in
+      effect then. `index.json` gains `people`, `{ id, name, photo,
+identity }` for everybody, the paths null where the export has none,
+      and `index.html` a section for each. A record is `{ person,
+member_id, shared, only_me? }`, each part `{ fields, masked? }`.
+    - The requester's own record is whole: both parts, every number.
+      Anybody else's is their shared part as `GET …/identity` shows it, with
+      every ID number and hidden field left out and named in `masked` — the
+      vault shows those only to whoever confirms it is them with a passkey
+      or a code (A54), each a line the person sees (A38), and an export is
+      asked for with any credential. Another person's Only me part is in no
+      export. An ID's `document_id` is kept only where the requester may see
+      that document.
+    - The command line's restore summary says who can see identity details
+      went back to the owners and each person, and what it was.
+    - **Changed:** a person who takes a field out of their own shared part
+      — into Only me, or away — ends every export anybody else asked for
+      (`expires_at` now), as making a document Only me does: those were
+      built while they could read it. An owner's change to somebody else's
+      shared part ends none.
+    - **Changed:** a role change that takes away sight of other people's
+      identity details under the audience in effect ends that person's
+      exports, beside the rule for the adults' documents: an owner who steps
+      down to adult, or is made an adult by an owner change carried out,
+      while the audience is the owners and each person.
+    - **Changed:** a restore ends every export still to be downloaded, as it
+      ends every session: one made under a wider audience would otherwise be
+      served again. The report counts them (`exportsExpired`), and the
+      command line says so.
 
 ## Deprecations in effect
 

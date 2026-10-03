@@ -1172,4 +1172,70 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
       ).toEqual([]);
     }
   });
+
+  it('a field the person takes out of their shared part ends everybody else’s exports, as a document made Only me does (5.27)', async () => {
+    const pool = admin();
+    try {
+      const make = async (who: Tokens) =>
+        (
+          await pool.query<{ id: string }>(
+            `insert into export (household_id, requested_by, state, expires_at)
+             values ($1, $2, 'done', now() + interval '7 days') returning id`,
+            [owner.household_id, await accountOf(who)],
+          )
+        ).rows[0]?.id as string;
+      const live = async (id: string) =>
+        (
+          await pool.query<{ live: boolean }>(
+            'select expires_at > now() as live from export where id = $1',
+            [id],
+          )
+        ).rows[0]?.live;
+      const shared = async (who: Tokens) => {
+        const v = json<IdentityView>(await get(who, sara.member_id));
+        return { version: v.versions.shared, fields: v.shared.fields };
+      };
+      const owners = await make(owner);
+      const saras = await make(sara);
+      // Something added: nothing ends.
+      let now = await shared(sara);
+      expect(
+        (
+          await put(sara, sara.member_id, {
+            part: 'shared',
+            version: now.version,
+            fields: { ...now.fields, job_title: 'Surveyor' },
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(await live(owners)).toBe(true);
+      // Taken out by an owner: the person's choice it is not, and nothing ends.
+      now = await shared(owner);
+      const withoutJob = { ...now.fields };
+      delete withoutJob.job_title;
+      expect(
+        (
+          await put(owner, sara.member_id, {
+            part: 'shared',
+            version: now.version,
+            fields: withoutJob,
+          })
+        ).statusCode,
+      ).toBe(200);
+      expect(await live(owners)).toBe(true);
+      // Taken out by the person themselves: every export but their own ends.
+      now = await shared(sara);
+      const kept = { ...now.fields };
+      delete kept.family_name;
+      expect(now.fields.family_name).toBeTruthy();
+      expect(
+        (await put(sara, sara.member_id, { part: 'shared', version: now.version, fields: kept }))
+          .statusCode,
+      ).toBe(200);
+      expect(await live(owners)).toBe(false);
+      expect(await live(saras)).toBe(true);
+    } finally {
+      await pool.end();
+    }
+  });
 });

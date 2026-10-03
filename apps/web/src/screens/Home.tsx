@@ -14,6 +14,7 @@ import { api, type Member } from '../api.js';
 import { useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
 import { DocActions, type RowCollection } from '../DocActions.js';
+import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import { BottomNav, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
@@ -111,6 +112,8 @@ export function HomeScreen() {
           <span className="muted">Owners must. It takes a minute, in Settings.</span>
         </Link>
       )}
+      {/* A wider audience for identity details, waiting its 72 hours (5.27). */}
+      <IdentityNotice memberId={data?.me.member_id} />
       <RemovalNotice items={data?.removals ?? []} memberId={data?.me.member_id} />
       <AttentionStrip items={data?.attention ?? []} />
       <MissingStrip items={data?.suggestions ?? []} />

@@ -566,6 +566,21 @@ export class IdentityService {
       // The database's rule refused it (0050): nothing changed, and nothing
       // is said to have.
       if (written !== 1n) throw new ApiError(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
+      // Taken out of the shared part by the person themselves — into Only
+      // me, or away (5.27): it leaves every export somebody else asked for,
+      // as a document made Only me does (visibility.ts). Those were built
+      // while they could read it.
+      if (subject.self && body.part === 'shared') {
+        const kept = new Set(values.filled);
+        if ((current?.filled ?? []).some((key) => !kept.has(key))) {
+          await trx
+            .updateTable('export')
+            .set({ expires_at: new Date() })
+            .where('requested_by', '!=', p.accountId)
+            .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
+            .execute();
+        }
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

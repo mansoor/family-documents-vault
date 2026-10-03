@@ -9,19 +9,22 @@ import {
   deriveKey,
   EncryptStream,
   EnvKeyProvider,
+  memberPhotoBinding,
   newKey,
   ScopeKeys,
+  sealBytes,
   sealIdentity,
   sealPrivate,
   unwrapKey,
   wrapKey,
 } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
+import type { IdentityFields } from '@fdv/shared';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildExport, csvCell } from './export.js';
+import { buildExport, csvCell, identityRecord } from './export.js';
 import { decryptToBuffer } from './process-version.js';
 
 const MASTER = 'worker-test-master-key-with-32-bytes-or-more';
@@ -46,6 +49,53 @@ function zipEntries(zip: Buffer): Map<string, Buffer> {
   }
   return out;
 }
+
+describe("a person's identity details in an export (5.27)", () => {
+  const parts = {
+    shared: {
+      given_name: 'Sara',
+      ids: [{ id: 'p1', kind: 'passport' as const, number: 'P-1', document_id: 'doc-seen' }],
+      custom: [{ id: 'c1', label: 'PIN', value: '1234', hidden: true }],
+    },
+    only_me: { notes: 'hers alone' },
+  };
+  const seen = (id: string) => id === 'doc-seen';
+
+  it("somebody else's: the shared part as the app shows it, and never their Only me part", () => {
+    expect(identityRecord({ id: 'sara', display_name: 'Sara' }, parts, 'me', seen)).toEqual({
+      person: 'Sara',
+      member_id: 'sara',
+      shared: {
+        fields: {
+          given_name: 'Sara',
+          ids: [{ id: 'p1', kind: 'passport', document_id: 'doc-seen' }],
+          custom: [{ id: 'c1', label: 'PIN', hidden: true }],
+        },
+        masked: ['ids.p1', 'custom.c1'],
+      },
+    });
+  });
+
+  it("one's own: both parts, every value; a document the requester may not see is not named", () => {
+    expect(
+      identityRecord({ id: 'sara', display_name: 'Sara' }, parts, 'sara', () => false),
+    ).toEqual({
+      person: 'Sara',
+      member_id: 'sara',
+      shared: {
+        fields: {
+          given_name: 'Sara',
+          ids: [{ id: 'p1', kind: 'passport', number: 'P-1' }],
+          custom: [{ id: 'c1', label: 'PIN', value: '1234', hidden: true }],
+        },
+      },
+      only_me: { fields: { notes: 'hers alone' } },
+    });
+    // Nothing to say: no record.
+    expect(identityRecord({ id: 'x', display_name: 'X' }, { shared: {} }, 'me', seen)).toBeNull();
+    expect(identityRecord({ id: 'x', display_name: 'X' }, undefined, 'me', seen)).toBeNull();
+  });
+});
 
 describe('index.csv', () => {
   it('a cell a spreadsheet would run as a formula is written as text', () => {
@@ -603,46 +653,369 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     expect(() => unwrapKey(wrapped, hers.key, `export:${mine.exportId}`)).toThrow(/cannot unwrap/);
   }, 60_000);
 
-  it('a household with identity details and its identity key exports as before, and none of them yet (5.26)', async () => {
+  it("a household's identity key and both parts of a record: the requester's own comes whole (5.26, 5.27)", async () => {
     // The identity scope key, minted as the API mints it, and a shared and
     // an Only me part sealed under their keys.
-    await withSystem(db, hh, async (trx) => {
-      const identity = await keys.identityKey(trx, hh);
-      const own = await keys.unwrap(trx, {
-        householdId: hh,
-        kind: 'member',
-        memberId: ownerMember,
-      });
-      for (const [part, key, number] of [
-        ['shared', identity, 'EXPORT-ID-SHARED-1'],
-        ['only_me', own, 'EXPORT-ID-ONLYME-2'],
-      ] as const) {
-        const sealed = sealIdentity(
-          key.key,
-          { householdId: hh, memberId: ownerMember, part },
-          { ids: [{ id: 'p1', kind: 'passport', number }] },
-        );
-        await trx
-          .insertInto('member_identity')
-          .values({
-            household_id: hh,
-            member_id: ownerMember,
-            part,
-            ...sealed,
-            wrapped_by_scope: key.id,
-          })
-          .execute();
-      }
+    await putIdentity(ownerMember, {
+      shared: { ids: [{ id: 'p1', kind: 'passport', number: 'EXPORT-ID-SHARED-1' }] },
+      only_me: { ids: [{ id: 'p2', kind: 'passport', number: 'EXPORT-ID-ONLYME-2' }] },
     });
     const kinds = await withSystem(db, hh, (trx) =>
       trx.selectFrom('scope_key').select('kind').execute(),
     );
     expect(kinds.map((k) => k.kind)).toContain('identity');
-    // Built, under the requester's own key, with the documents as before:
-    // identity details join the export in 5.27.
+    // Built, under the requester's own key, with the documents as before,
+    // and their own record, both parts, every number in it.
     const mine = await exported(ownerAccount);
     expect(mine.index.documents.map((d) => d.title)).toContain('My private note');
-    expect(mine.all.includes(Buffer.from('EXPORT-ID-SHARED-1'))).toBe(false);
-    expect(mine.all.includes(Buffer.from('EXPORT-ID-ONLYME-2'))).toBe(false);
+    expect(mine.all.includes(Buffer.from('EXPORT-ID-SHARED-1'))).toBe(true);
+    expect(mine.all.includes(Buffer.from('EXPORT-ID-ONLYME-2'))).toBe(true);
+    const record = JSON.parse(mine.entries.get('identity/Mansoor.json')?.toString() ?? '{}') as {
+      shared: { fields: IdentityFields; masked?: string[] };
+      only_me: { fields: IdentityFields };
+    };
+    expect(record.shared).toEqual({
+      fields: { ids: [{ id: 'p1', kind: 'passport', number: 'EXPORT-ID-SHARED-1' }] },
+    });
+    expect(record.only_me.fields.ids?.[0]?.number).toBe('EXPORT-ID-ONLYME-2');
+    // And a section of index.html, each field by its name, Only me said so.
+    await putIdentity(ownerMember, {
+      shared: {
+        emails: [{ id: 'e1', label: 'Home', value: 'm@x.test' }],
+        addresses: [{ id: 'a1', line1: '12 Orchard Lane', city: 'Reading', country: 'GB' }],
+        ids: [{ id: 'p1', kind: 'passport', number: 'EXPORT-ID-SHARED-1', issuer: 'UK' }],
+      },
+      only_me: { notes: 'Mine & <only> mine' },
+    });
+    const page = (await exported(ownerAccount)).entries.get('index.html')?.toString() ?? '';
+    expect(page).toContain('<h2>Identity details</h2>');
+    expect(page).toContain('<h3>Mansoor (you)</h3>');
+    expect(page).toContain('<th scope="row">Home email</th><td>m@x.test</td>');
+    expect(page).toContain(
+      '<th scope="row">Address</th><td>12 Orchard Lane<br>Reading<br>United Kingdom</td>',
+    );
+    expect(page).toContain(
+      '<th scope="row">Passport</th><td>EXPORT-ID-SHARED-1<br>Issued by UK</td>',
+    );
+    expect(page).toContain(
+      '<th scope="row">Notes <small>(Only me)</small></th><td>Mine &amp; &lt;only&gt; mine</td>',
+    );
+    // Nobody else's record here: nothing said about what is left out of them.
+    expect(page).not.toContain('are not in this export');
   }, 60_000);
+
+  /** Somebody new, with a sign-in of this role when given one, and their own member key. */
+  async function person(name: string, role: 'owner' | 'adult' | 'teen' | 'viewer' | null) {
+    const id = (
+      await admin.query<{ id: string }>(
+        'insert into member (household_id, display_name) values ($1, $2) returning id',
+        [hh, name],
+      )
+    ).rows[0]?.id as string;
+    await withSystem(db, hh, (trx) => keys.mintMemberKey(trx, hh, id, null));
+    if (!role) return { id, account: null };
+    const account = (
+      await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+        `${randomUUID()}@x.test`,
+      ])
+    ).rows[0]?.id as string;
+    await admin.query(
+      'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+      [account, hh, id, role],
+    );
+    return { id, account };
+  }
+
+  /** A person's identity details, sealed as the API seals them; what was there goes. */
+  async function putIdentity(
+    member: string,
+    parts: Partial<Record<'shared' | 'only_me', IdentityFields>>,
+  ) {
+    await admin.query('delete from member_identity where member_id = $1', [member]);
+    await withSystem(db, hh, async (trx) => {
+      for (const [part, fields] of Object.entries(parts) as Array<
+        ['shared' | 'only_me', IdentityFields]
+      >) {
+        const key =
+          part === 'shared'
+            ? await keys.identityKey(trx, hh)
+            : await keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: member });
+        await trx
+          .insertInto('member_identity')
+          .values({
+            household_id: hh,
+            member_id: member,
+            part,
+            ...sealIdentity(key.key, { householdId: hh, memberId: member, part }, fields),
+            wrapped_by_scope: key.id,
+          })
+          .execute();
+      }
+    });
+  }
+
+  /** A person's photo, made and sealed as the worker makes it (5.17c). */
+  async function putPhoto(member: string, jpeg: Buffer) {
+    const id = randomUUID();
+    await withSystem(db, hh, async (trx) => {
+      const scope = await keys.unwrap(trx, { householdId: hh, kind: 'household' });
+      await trx
+        .insertInto('member_photo')
+        .values({
+          id,
+          household_id: hh,
+          member_id: member,
+          state: 'ready',
+          sealed: sealBytes(scope.key, jpeg, memberPhotoBinding(hh, member, id)),
+          ready_at: new Date(),
+        })
+        .execute();
+    });
+  }
+
+  type Index = {
+    people: Array<{ id: string; name: string; photo: string | null; identity: string | null }>;
+  };
+  const identityFiles = (x: Awaited<ReturnType<typeof exported>>) =>
+    [...x.entries.keys()].filter((n) => n.startsWith('identity/') && n.endsWith('.json')).sort();
+
+  it('only the records the requester may read: each role, each audience, and Only me only in the person’s own', async () => {
+    await admin.query('delete from member_identity');
+    const owner = { id: ownerMember, account: ownerAccount };
+    const adult = await person('Tariq', 'adult');
+    const teen = await person('Tess', 'teen');
+    const viewer = await person('Vik', 'viewer');
+    const kid = await person('Kid', null);
+    await putIdentity(owner.id, {
+      shared: {
+        given_name: 'Mansoor',
+        ids: [{ id: 'o1', kind: 'passport', number: 'OWNER-PASS-1', document_id: randomUUID() }],
+      },
+      only_me: { notes: 'OWNER-ONLY-ME' },
+    });
+    await putIdentity(adult.id, {
+      shared: {
+        given_name: 'Tariq',
+        custom: [{ id: 'c1', label: 'Gym PIN', value: 'ADULT-HIDDEN-7', hidden: true }],
+      },
+      only_me: { ids: [{ id: 't1', kind: 'tax_id', number: 'ADULT-ONLY-ME-TAX' }] },
+    });
+    await putIdentity(teen.id, { shared: { given_name: 'Tess', place_of_birth: 'TEEN-PLACE' } });
+    await putIdentity(viewer.id, { shared: { given_name: 'Vik', job_title: 'VIEWER-JOB' } });
+    await putIdentity(kid.id, {
+      shared: { given_name: 'Kid', ids: [{ id: 'k1', kind: 'passport', number: 'KID-PASS-3' }] },
+    });
+    const everyone = ['Kid', 'Mansoor', 'Tariq', 'Tess', 'Vik'];
+    const file = (name: string) => `identity/${name}.json`;
+    // Whose records each reads (canSeeIdentity): their own, always; the
+    // owners, everybody's; adults from `adults`; teens from `family`;
+    // viewers never anybody else's.
+    const expected: Record<string, Record<string, string[]>> = {
+      owners_and_self: {
+        owner: everyone,
+        adult: ['Tariq'],
+        teen: ['Tess'],
+        viewer: ['Vik'],
+      },
+      adults: { owner: everyone, adult: everyone, teen: ['Tess'], viewer: ['Vik'] },
+      family: { owner: everyone, adult: everyone, teen: everyone, viewer: ['Vik'] },
+    };
+    const accounts = { owner, adult, teen, viewer };
+    // Each person's own secrets: in their export, and in nobody else's.
+    const secrets: Record<string, string[]> = {
+      owner: ['OWNER-ONLY-ME', 'OWNER-PASS-1'],
+      adult: ['ADULT-ONLY-ME-TAX', 'ADULT-HIDDEN-7'],
+      teen: [],
+      viewer: [],
+    };
+    try {
+      for (const audience of ['owners_and_self', 'adults', 'family'] as const) {
+        // The operator's own connection, which the audience's guard does not ask.
+        await admin.query('update household set identity_audience = $1 where id = $2', [
+          audience,
+          hh,
+        ]);
+        for (const role of ['owner', 'adult', 'teen', 'viewer'] as const) {
+          const x = await exported(accounts[role].account as string);
+          const want = expected[audience]?.[role] ?? [];
+          expect(identityFiles(x), `${audience}/${role}`).toEqual(want.map(file).sort());
+          const index = x.index as unknown as Index;
+          expect(
+            index.people.filter((p) => p.identity).map((p) => p.name),
+            `${audience}/${role}`,
+          ).toEqual(want);
+          for (const [whose, words] of Object.entries(secrets)) {
+            for (const w of words) {
+              expect(x.all.includes(Buffer.from(w)), `${audience}/${role}: ${w}`).toBe(
+                whose === role,
+              );
+            }
+          }
+          // A child with no sign-in is nobody's own: their number is masked
+          // in every export that has their record.
+          expect(x.all.includes(Buffer.from('KID-PASS-3')), `${audience}/${role}`).toBe(false);
+          if (want.includes('Kid')) {
+            const kids = JSON.parse(x.entries.get(file('Kid'))?.toString() ?? '{}') as {
+              shared: { fields: IdentityFields; masked: string[] };
+              only_me?: unknown;
+            };
+            expect(kids.shared).toEqual({
+              fields: { given_name: 'Kid', ids: [{ id: 'k1', kind: 'passport' }] },
+              masked: ['ids.k1'],
+            });
+            expect(kids.only_me).toBeUndefined();
+            expect(x.entries.get('index.html')?.toString()).toContain(
+              'ID numbers and hidden details of other people are not in this export',
+            );
+          }
+          if (want.includes('Tess') && role !== 'teen') {
+            expect(x.entries.get(file('Tess'))?.toString()).toContain('TEEN-PLACE');
+          }
+          // One's own, both parts, with a section of index.html.
+          const own = { owner: 'Mansoor', adult: 'Tariq', teen: 'Tess', viewer: 'Vik' }[role];
+          const mine = JSON.parse(x.entries.get(file(own))?.toString() ?? '{}') as {
+            shared: { masked?: string[] };
+            only_me?: unknown;
+          };
+          expect(mine.shared.masked, `${audience}/${role}`).toBeUndefined();
+          expect(Boolean(mine.only_me), `${audience}/${role}`).toBe(
+            role === 'owner' || role === 'adult',
+          );
+          expect(x.entries.get('index.html')?.toString()).toContain(`<h3>${own} (you)</h3>`);
+          // A document an ID is on that the requester may not see is not named.
+          if (role === 'owner') {
+            const ownRecord = JSON.parse(x.entries.get(file('Mansoor'))?.toString() ?? '{}') as {
+              shared: { fields: IdentityFields };
+            };
+            expect(ownRecord.shared.fields.ids?.[0]).toEqual({
+              id: 'o1',
+              kind: 'passport',
+              number: 'OWNER-PASS-1',
+            });
+          }
+        }
+      }
+      // A widening whose notice has run out is in effect (identity_audience_now()).
+      await admin.query('update household set identity_audience = $1 where id = $2', [
+        'owners_and_self',
+        hh,
+      ]);
+      await admin.query(
+        `insert into notice_request (household_id, kind, subject, requested_by, requested_at, notice_until)
+         values ($1, 'identity_audience', 'adults', $2, now() - interval '4 days', now() - interval '1 day')`,
+        [hh, ownerAccount],
+      );
+      const due = await exported(adult.account as string);
+      expect(identityFiles(due)).toEqual(everyone.map(file).sort());
+      // One still waiting is not.
+      await admin.query(
+        "update notice_request set notice_until = now() + interval '1 day' where household_id = $1",
+        [hh],
+      );
+      const waiting = await exported(adult.account as string);
+      expect(identityFiles(waiting)).toEqual([file('Tariq')]);
+    } finally {
+      await admin.query('delete from notice_request where household_id = $1', [hh]);
+      await admin.query('update household set identity_audience = $1 where id = $2', [
+        'owners_and_self',
+        hh,
+      ]);
+    }
+  }, 180_000);
+
+  it("nobody else's Only me part is even opened: one that will not open fails no other export", async () => {
+    await admin.query('delete from member_identity');
+    const tess = await person('Tess Sealed', 'teen');
+    await putIdentity(tess.id, { shared: { given_name: 'Tess' } });
+    // Her Only me part, sealed for somebody else: it does not open as hers.
+    await withSystem(db, hh, async (trx) => {
+      const key = await keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: tess.id });
+      await trx
+        .insertInto('member_identity')
+        .values({
+          household_id: hh,
+          member_id: tess.id,
+          part: 'only_me',
+          ...sealIdentity(
+            key.key,
+            { householdId: hh, memberId: ownerMember, part: 'only_me' },
+            { notes: 'x' },
+          ),
+          wrapped_by_scope: key.id,
+        })
+        .execute();
+    });
+    const mine = await exported(ownerAccount);
+    expect(identityFiles(mine)).toEqual(['identity/Tess Sealed.json']);
+    // Hers is opened, for her, and does not open.
+    const exportId = await withSystem(db, hh, (trx) =>
+      trx
+        .insertInto('export')
+        .values({ household_id: hh, requested_by: tess.account as string })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    ).then((r) => r.id);
+    await buildExport(
+      {
+        db,
+        keys,
+        credentialsKey: deriveKey(MASTER, 'vault-credentials'),
+        localRoot: vaultDir,
+        log: () => undefined,
+      },
+      { household_id: hh, export_id: exportId },
+    );
+    const row = await withSystem(db, hh, (trx) =>
+      trx.selectFrom('export').selectAll().where('id', '=', exportId).executeTakeFirstOrThrow(),
+    );
+    expect(row.state).toBe('failed');
+    await admin.query('delete from member_identity where member_id = $1', [tess.id]);
+  }, 60_000);
+
+  it('the export holds only the photos and records the requester may read', async () => {
+    await admin.query('delete from member_identity');
+    const teen = await person('Teen Photo', 'teen');
+    const viewer = await person('Viewer Photo', 'viewer');
+    const child = await person('Child Photo', null);
+    const jpeg = (who: string) =>
+      Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from(`PHOTO-OF-${who}`)]);
+    await putPhoto(ownerMember, jpeg('OWNER'));
+    await putPhoto(teen.id, jpeg('TEEN'));
+    await putPhoto(viewer.id, jpeg('VIEWER'));
+    await putPhoto(child.id, jpeg('CHILD'));
+    await putIdentity(child.id, { shared: { given_name: 'Child' } });
+    await putIdentity(viewer.id, { shared: { given_name: 'Viewer' } });
+    const photos = (x: Awaited<ReturnType<typeof exported>>) =>
+      [...x.entries.keys()].filter((n) => n.startsWith('people/')).sort();
+
+    // An owner, and a teen (family.details): every photo; each the person's own.
+    for (const account of [ownerAccount, teen.account as string]) {
+      const x = await exported(account);
+      expect(photos(x)).toEqual(
+        ['Child Photo', 'Mansoor', 'Teen Photo', 'Viewer Photo'].map((n) => `people/${n}.jpg`),
+      );
+      expect(x.entries.get('people/Child Photo.jpg')).toEqual(jpeg('CHILD'));
+      const index = x.index as unknown as Index;
+      expect(index.people.find((p) => p.id === teen.id)?.photo).toBe('people/Teen Photo.jpg');
+      expect(x.entries.get('index.html')?.toString()).toContain(
+        '<img src="people/Child Photo.jpg" alt="" width="96" height="96"><span>Child Photo</span>',
+      );
+    }
+    // The teen reads no record but their own (none) under the narrowest audience.
+    expect(identityFiles(await exported(teen.account as string))).toEqual([]);
+
+    // A viewer: their own photo and record, and nobody else's.
+    const v = await exported(viewer.account as string);
+    expect(photos(v)).toEqual(['people/Viewer Photo.jpg']);
+    expect(identityFiles(v)).toEqual(['identity/Viewer Photo.json']);
+    for (const other of ['OWNER', 'TEEN', 'CHILD']) {
+      expect(v.all.includes(Buffer.from(`PHOTO-OF-${other}`)), other).toBe(false);
+    }
+    const index = v.index as unknown as Index;
+    // Everybody is named, as the app names them to a viewer; only their own has more.
+    expect(index.people.filter((p) => p.photo || p.identity).map((p) => p.name)).toEqual([
+      'Viewer Photo',
+    ]);
+    expect(index.people.map((p) => p.name)).toContain('Child Photo');
+  }, 120_000);
 });

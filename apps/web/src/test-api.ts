@@ -1,7 +1,23 @@
 import {
   can,
   canChangeDetails,
+  canEditIdentity,
   canSee,
+  canSeeIdentity,
+  IDENTITY_EDIT_REFUSAL,
+  IDENTITY_TOO_LONG,
+  identityAudienceRank,
+  identityChanges,
+  identityFilled,
+  maskIdentity,
+  mergeIdentityWrite,
+  revealIdentity,
+  type IdentityAudience,
+  type IdentityAudienceView,
+  type IdentityFields,
+  type IdentityPart,
+  type IdentityPartView,
+  type Visibility,
   canSeeCollection,
   collectionItemHint,
   collectionShareItem,
@@ -375,6 +391,27 @@ export interface FakeState {
       items: Array<{ value: string; source: 'known' | 'page' }>;
     }
   >;
+  /**
+   * People's identity details (5.27, over 5.26's API), by member id: each
+   * part's fields, as the vault keeps them sealed, and its version. Given,
+   * the vault says it keeps them (`features.member_identity`). The one
+   * signed in is "me"; another person's Only me part is not there for them.
+   */
+  identities?: Record<
+    string,
+    Partial<Record<IdentityPart, { fields: IdentityFields; version: number }>>
+  >;
+  /** Who reads other people's shared identity details (A34); left out, the narrowest. */
+  identityAudience?: IdentityAudience;
+  /** A wider audience waiting its 72 hours. */
+  identityPending?: IdentityAudienceView['pending'];
+  /**
+   * A PUT is refused as too long (422), as the vault refuses a part over
+   * 128 KiB: every one, or only that part's.
+   */
+  identityTooLong?: boolean | IdentityPart;
+  /** People with a sign-in who cannot sign in to be told of a wider audience: 409. */
+  cannotBeTold?: string[];
 }
 
 export const TOKENS = {
@@ -679,6 +716,7 @@ export function installFakeApi(state: FakeState) {
           share_email_code: state.operatorMail === true,
           member_edit: true,
           ...(state.incoming ? { upload_requests: true } : {}),
+          ...(state.identities ? { member_identity: true } : {}),
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -870,6 +908,183 @@ export function installFakeApi(state: FakeState) {
         }
       }
       return json({ items: state.members.map(withDetails) });
+    }
+    // People's identity details (5.26's API, for 5.27): masked as the
+    // vault masks them; a reveal asks who is asking — somebody else's with a
+    // passkey or a code, refused outright without two-step sign-in.
+    const me = { role: storedRole() as Role, memberId: 'me' };
+    const audienceNow = (): IdentityAudience => {
+      const waiting = state.identityPending;
+      if (waiting && Date.parse(waiting.notice_until) <= Date.now()) {
+        state.identityAudience = waiting.to;
+        state.identityPending = null;
+      }
+      return state.identityAudience ?? 'owners_and_self';
+    };
+    if (state.identities && path === '/api/v1/household/identity-audience') {
+      const view = (): IdentityAudienceView => ({
+        audience: audienceNow(),
+        pending: state.identityPending ?? null,
+        can_change: can(me.role, 'identity.audience'),
+      });
+      if (method === 'GET') return json(view());
+      if (!can(me.role, 'identity.audience')) {
+        return refuse(403, 'forbidden', 'Only an owner can change who sees identity details.');
+      }
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to change who can see identity details.',
+        );
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change who can see identity details.',
+          { action: 'identity_audience' },
+        );
+      }
+      const to = (body as { audience: IdentityAudience }).audience;
+      const now = audienceNow();
+      if (identityAudienceRank(to) <= identityAudienceRank(now)) {
+        state.identityAudience = to;
+        state.identityPending = null;
+      } else if (state.identityPending?.to !== to) {
+        if ((state.cannotBeTold ?? []).length > 0) {
+          return refuse(
+            409,
+            'member_cannot_be_told',
+            `${(state.cannotBeTold ?? []).join(', ')} cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once everybody can sign in.`,
+          );
+        }
+        state.identityPending = {
+          to,
+          requested_at: new Date().toISOString(),
+          notice_until: new Date(Date.now() + 72 * 3_600_000).toISOString(),
+        };
+      }
+      return json(view());
+    }
+    const identityAt = /^\/api\/v1\/members\/([^/]+)\/identity(\/reveal)?$/.exec(path);
+    if (state.identities && identityAt) {
+      const id = identityAt[1] as string;
+      const self = id === me.memberId;
+      const nobody = () => refuse(404, 'not_found', 'That page does not exist.');
+      if (!state.members.some((m) => m.id === id)) return nobody();
+      const audience = audienceNow();
+      if (!canSeeIdentity(me, { id }, audience)) return nobody();
+      const record = (state.identities[id] ??= {});
+      const visible = (docId: string) => {
+        const doc = state.documents.find((d) => d.id === docId);
+        return doc
+          ? canSee(me, doc as { visibility: Visibility; owner_member_id: string | null })
+          : false;
+      };
+      const partView = (part: IdentityPart): IdentityPartView => {
+        const fields = record[part]?.fields ?? {};
+        // A government ID's document, only to a reader who may see it.
+        const linked: IdentityFields = fields.ids
+          ? {
+              ...fields,
+              ids: fields.ids.map((i) => {
+                if (!i.document_id || visible(i.document_id)) return i;
+                const unlinked = { ...i };
+                delete unlinked.document_id;
+                return unlinked;
+              }),
+            }
+          : fields;
+        const masked = maskIdentity(linked);
+        return {
+          fields: masked.fields,
+          masked: masked.masked,
+          filled: identityFilled(fields),
+          version: record[part]?.version ?? 0,
+          updated_at: record[part] ? '2026-10-01T09:00:00Z' : null,
+        };
+      };
+      const view = () => ({
+        member_id: id,
+        audience,
+        can_edit: {
+          shared: canEditIdentity(me, { id }, 'shared'),
+          only_me: canEditIdentity(me, { id }, 'only_me'),
+        },
+        versions: {
+          shared: record.shared?.version ?? 0,
+          only_me: self ? (record.only_me?.version ?? 0) : null,
+        },
+        shared: partView('shared'),
+        only_me: self ? partView('only_me') : null,
+      });
+      if (identityAt[2]) {
+        const b = body as { part?: IdentityPart; keys: string[] };
+        const part = b.part ?? 'shared';
+        if (part === 'only_me' && !self) return nobody();
+        if (!self && state.twoStep === false) {
+          return refuse(
+            403,
+            me.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
+            'Turn on two-step sign-in to see another person’s identity numbers.',
+          );
+        }
+        if (state.stepUpNeeded) {
+          return refuse(
+            403,
+            'step_up_required',
+            self
+              ? 'Please confirm it is you to see your identity numbers.'
+              : 'Please confirm it is you to see another person’s identity numbers.',
+            { action: self ? 'reveal_identity' : 'open_identity' },
+          );
+        }
+        return json({ part, values: revealIdentity(record[part]?.fields ?? {}, b.keys) });
+      }
+      if (method === 'GET') return json(view());
+      const b = body as { part: IdentityPart; version: number; fields: IdentityFields };
+      if (b.part === 'only_me' && !self) return nobody();
+      if (!canEditIdentity(me, { id }, b.part)) {
+        return refuse(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
+      }
+      const kept = record[b.part];
+      const version = kept?.version ?? 0;
+      if (b.version !== version) {
+        return refuse(
+          409,
+          'conflict',
+          'Someone else changed these details. Reload and try again.',
+          {
+            detail: JSON.stringify({ part: b.part, version }),
+          },
+        );
+      }
+      // As the vault checks a part (identity.ts): one id once a list, and a
+      // contact with its value.
+      for (const list of ['emails', 'phones', 'addresses', 'ids', 'custom'] as const) {
+        const ids = ((b.fields[list] ?? []) as Array<{ id: string }>).map((e) => e.id);
+        if (new Set(ids).size !== ids.length) {
+          return refuse(422, 'validation_failed', 'Each entry in a list has an id of its own.');
+        }
+      }
+      for (const c of [...(b.fields.emails ?? []), ...(b.fields.phones ?? [])]) {
+        if (typeof c.value !== 'string' || c.value.trim() === '') {
+          return refuse(
+            422,
+            'validation_failed',
+            'Invalid input: expected string, received undefined',
+          );
+        }
+      }
+      if (state.identityTooLong === true || state.identityTooLong === b.part) {
+        return refuse(422, 'validation_failed', IDENTITY_TOO_LONG);
+      }
+      const next = mergeIdentityWrite(kept?.fields ?? {}, b.fields, visible);
+      if (identityChanges(kept?.fields ?? {}, next).length > 0) {
+        record[b.part] = { fields: next, version: version + 1 };
+      }
+      return json(view());
     }
     // A person's details (5.25), made to the version seen; the owner's view
     // of a sign-in, asked with a passkey or a code (A54).
