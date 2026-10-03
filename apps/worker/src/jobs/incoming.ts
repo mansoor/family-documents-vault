@@ -12,7 +12,7 @@ import {
   PREVIEW_MAX_PAGES,
   type PushMessage,
 } from '@fdv/shared';
-import { adapterFromRow, StorageError, type StorageAdapter } from '@fdv/storage';
+import { adapterFromRow, deleteAll, StorageError, type StorageAdapter } from '@fdv/storage';
 import nodemailer from 'nodemailer';
 import { sql, type ExpressionBuilder } from 'kysely';
 import type pg from 'pg';
@@ -92,12 +92,18 @@ export const incomingPreviewKey = (storageKey: string, n: number) => `${storageK
  * The objects a file has: itself, and every page there could be of it —
  * whatever its row says was drawn, since a drawing that stopped part-way
  * (its worker gone) wrote pages its row never counted (F523-3). A page not
- * there is nothing to remove.
+ * there is nothing to remove. The pages all at once — thirty in a row are
+ * seconds on S3, held inside purgeOld's lock (N523A-02) — and the object
+ * once they are gone; any that failed fails the whole, to be tried again.
  */
-async function removeObjects(adapter: StorageAdapter, f: { storage_key: string }): Promise<void> {
-  for (let n = 1; n <= PREVIEW_MAX_PAGES; n++) {
-    await adapter.delete(incomingPreviewKey(f.storage_key, n));
-  }
+export async function removeObjects(
+  adapter: StorageAdapter,
+  f: { storage_key: string },
+): Promise<void> {
+  await deleteAll(
+    adapter,
+    Array.from({ length: PREVIEW_MAX_PAGES }, (_, i) => incomingPreviewKey(f.storage_key, i + 1)),
+  );
   await adapter.delete(f.storage_key);
 }
 

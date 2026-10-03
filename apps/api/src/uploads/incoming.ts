@@ -12,7 +12,7 @@ import {
   type IncomingPreviewState,
   type IncomingScanState,
 } from '@fdv/shared';
-import { readAll, type StorageAdapter } from '@fdv/storage';
+import { deleteAll, readAll, type StorageAdapter } from '@fdv/storage';
 import { sql } from 'kysely';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
@@ -54,6 +54,10 @@ const VERSION_PROCESS_JOB = 'version.process';
 
 /** A page the worker drew, beside its file's object (0047), as a version's are (0027). */
 export const incomingPreviewKey = (storageKey: string, n: number) => `${storageKey}.p${n}.enc`;
+
+/** Every page there could be of a file: PREVIEW_MAX_PAGES of them, drawn or not. */
+const incomingPageKeys = (storageKey: string) =>
+  Array.from({ length: PREVIEW_MAX_PAGES }, (_, i) => incomingPreviewKey(storageKey, i + 1));
 
 export const acceptBody = z
   .object({
@@ -568,9 +572,9 @@ export class IncomingService {
       const adapter: StorageAdapter = await withPrincipal(this.db, p, (trx) =>
         this.vaults.adapterById(trx, f.vault_id),
       );
-      for (let n = 1; n <= PREVIEW_MAX_PAGES; n++) {
-        await adapter.delete(incomingPreviewKey(f.storage_key, n));
-      }
+      // Its pages all at once, not thirty round trips the reviewer waits for
+      // (N523A-02); its object once they are gone.
+      await deleteAll(adapter, incomingPageKeys(f.storage_key));
       await adapter.delete(f.storage_key);
       await withPrincipal(this.db, p, (trx) =>
         trx

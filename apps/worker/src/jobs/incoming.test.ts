@@ -16,15 +16,17 @@ import {
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { incomingWords } from '@fdv/shared';
-import { LocalAdapter, readAll } from '@fdv/storage';
+import { LocalAdapter, readAll, StorageError, type StorageAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   incomingEmail,
   moveIncoming,
+  removeObjects,
   scanIncoming,
   sweepIncoming,
   tellReviewers,
+  tellWaiting,
   type IncomingDeps,
 } from './incoming.js';
 import type { deliver } from './push.js';
@@ -856,6 +858,31 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     expect((await sweepIncoming(deps)).told).toBe(0);
     expect(await scanIncoming(deps, { household_id: hh, request_id: r })).toBe(0);
     expect(pushes).toHaveLength(0);
+
+    // Told only once its pages are there (N523A-03): one still being drawn,
+    // by a job begun a moment ago and still at it, is nobody's news yet.
+    const drawing = await file(r, { pages: 1 });
+    await admin.query(
+      `update incoming_file set preview_state = 'drawing', preview_pages = null,
+              preview_requested_at = now() where id = $1`,
+      [drawing.id],
+    );
+    expect(await tellWaiting(deps, hh, r)).toBe(0);
+    expect((await sweepIncoming(deps)).told).toBe(0);
+    expect(pushes).toHaveLength(0);
+    expect((await row(drawing.id))?.told_at).toBeNull();
+    // Drawn: told, once.
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 1 where id = $1",
+      [drawing.id],
+    );
+    expect(await tellWaiting(deps, hh, r)).toBe(1);
+    expect(pushes.map((p) => p.device).sort()).toEqual(adults);
+    expect((await row(drawing.id))?.told_at).not.toBeNull();
+    pushes.length = 0;
+    expect(await tellWaiting(deps, hh, r)).toBe(0);
+    expect((await sweepIncoming(deps)).told).toBe(0);
+    expect(pushes).toHaveLength(0);
   });
 
   it('every page of a decided or purged file is removed, whatever its row says was drawn (F523-3)', async () => {
@@ -949,5 +976,51 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     expect(await there(sent.storageKey)).toBe(false);
     expect(await there(`${sent.storageKey}.p1.enc`)).toBe(false);
     expect((await row(sent.id))?.object_removed_at).not.toBeNull();
+  });
+});
+
+/**
+ * A file's objects removed by the worker (the 5.23 review, N523A-02): its
+ * pages all at once, not thirty round trips in a row inside purgeOld's
+ * lock; its object once they are gone; and a page that cannot be removed
+ * fails the whole, so the row stays for the next sweep.
+ */
+describe('removing a file sent in', () => {
+  /** A bucket whose deletes each take a moment, counting how many are under way at once. */
+  const slow = (failing: string[] = []) => {
+    const state = { inFlight: 0, most: 0, done: [] as string[] };
+    const adapter = {
+      delete: async (key: string) => {
+        state.inFlight += 1;
+        state.most = Math.max(state.most, state.inFlight);
+        try {
+          await new Promise((r) => setTimeout(r, 15));
+          if (failing.includes(key))
+            throw new StorageError('unreachable', `could not delete ${key}`);
+          state.done.push(key);
+        } finally {
+          state.inFlight -= 1;
+        }
+      },
+    } as unknown as StorageAdapter;
+    return { adapter, state };
+  };
+
+  it('deletes its pages together, then its object', async () => {
+    const { adapter, state } = slow();
+    await removeObjects(adapter, { storage_key: 'hh/incoming/r/f.enc' });
+    expect(state.most).toBe(30);
+    expect(state.done).toHaveLength(31);
+    expect(state.done.at(-1)).toBe('hh/incoming/r/f.enc');
+  });
+
+  it('a page that cannot be deleted fails it, and its object is kept for the next try', async () => {
+    const { adapter, state } = slow(['hh/incoming/r/f.enc.p2.enc']);
+    await expect(removeObjects(adapter, { storage_key: 'hh/incoming/r/f.enc' })).rejects.toThrow(
+      'could not delete hh/incoming/r/f.enc.p2.enc',
+    );
+    // Every other page was tried and went; the object was not touched.
+    expect(state.done).toHaveLength(29);
+    expect(state.done).not.toContain('hh/incoming/r/f.enc');
   });
 });

@@ -135,3 +135,16 @@ export function memberPhotoUploadKey(p: {
 }): string {
   return `${p.householdId}/members/${p.memberId}/incoming/${p.photoId}.enc`;
 }
+
+/**
+ * Deletes these objects all at once rather than one after another (the 5.23
+ * review, N523A-02): on S3 each is a round trip, and thirty in a row are
+ * seconds somebody waits for. Every one is tried, whatever becomes of the
+ * others; then the first that could not be deleted is thrown, so the caller
+ * leaves its work to be done again. A key not there is nothing to delete.
+ */
+export async function deleteAll(adapter: StorageAdapter, keys: readonly string[]): Promise<void> {
+  const done = await Promise.allSettled(keys.map((key) => adapter.delete(key)));
+  const failed = done.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
+}

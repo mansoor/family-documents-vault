@@ -283,7 +283,11 @@ function IncomingFile(props: {
   const [visibility, setVisibility] = useState<Visibility>(() =>
     startVisibility(suggestedType, startOwner),
   );
-  const [into, setInto] = useState('');
+  // The document it is a new version of, as chosen: kept here, not in the
+  // picker, so switching "As" away and back shows what will be filed into
+  // (N523A-04).
+  const [chosen, setChosen] = useState<Choice | null>(null);
+  const into = chosen?.id ?? '';
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -509,8 +513,8 @@ function IncomingFile(props: {
             recent={props.documents}
             members={members}
             types={types}
-            value={into}
-            onChange={setInto}
+            value={chosen}
+            onChange={setChosen}
             withToken={withToken}
           />
         )}
@@ -564,22 +568,22 @@ type Choice = Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'type_key'
  * Which document a file is a new version of (W523-07): the most recent
  * first, and any other found by a word of its name — every document the
  * reviewer may see, not only the last hundred — each told apart by whose it
- * is and what kind: "Passport — Aisha, Passport".
+ * is and what kind: "Passport — Aisha, Passport". The one chosen is its
+ * caller's, and always among the choices, found by a search or not.
  */
 function VersionPicker(props: {
   recent: DocumentView[];
   members: Member[];
   types: DocumentTypeView[];
-  value: string;
-  onChange: (id: string) => void;
+  value: Choice | null;
+  onChange: (chosen: Choice | null) => void;
   withToken: ReturnType<typeof useApp>['withToken'];
 }) {
-  const { recent, members, types, value, onChange, withToken } = props;
+  const { recent, members, types, value: chosen, onChange, withToken } = props;
   const [query, setQuery] = useState('');
   // What the vault found, and for which words: shown only while they are
   // still the words in the box.
   const [found, setFound] = useState<{ q: string; items: Choice[] }>({ q: '', items: [] });
-  const [chosen, setChosen] = useState<Choice | null>(null);
   const q = query.trim();
   useEffect(() => {
     if (q.length < 2) return;
@@ -637,15 +641,12 @@ function VersionPicker(props: {
       <Select
         id="incoming-into"
         label="A new version of"
-        value={value}
+        value={chosen?.id ?? ''}
         options={[
           { value: '', label: options.length ? 'Choose a document' : 'Nothing with that name' },
           ...options.map((d) => ({ value: d.id, label: words(d) })),
         ]}
-        onChange={(id) => {
-          setChosen(options.find((d) => d.id === id) ?? null);
-          onChange(id);
-        }}
+        onChange={(id) => onChange(options.find((d) => d.id === id) ?? null)}
       />
     </>
   );

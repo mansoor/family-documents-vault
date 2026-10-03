@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { objectKey, StorageError, type StorageAdapter } from './adapter.js';
+import { deleteAll, objectKey, StorageError, type StorageAdapter } from './adapter.js';
 import { LocalAdapter, readAll } from './local.js';
 import { S3Adapter } from './s3.js';
 
@@ -221,5 +221,43 @@ describe.skipIf(!S3_ENDPOINT)('S3Adapter', () => {
     expect(down.ok).toBe(false);
     expect(down.code).toBe('unreachable');
     expect(down.message).toMatch(/can't reach/);
+  });
+});
+
+/**
+ * Many objects deleted at once (the 5.23 review, N523A-02): every delete
+ * sent together, each tried whatever becomes of the others, and the first
+ * failure said after all have settled.
+ */
+describe('deleteAll', () => {
+  const keys = Array.from({ length: 30 }, (_, i) => `page-${i + 1}`);
+  /** An adapter whose deletes each take a moment, counting how many are under way at once. */
+  const slow = (failing: string[] = []) => {
+    const state = { inFlight: 0, most: 0, tried: [] as string[] };
+    const adapter = {
+      delete: async (key: string) => {
+        state.tried.push(key);
+        state.inFlight += 1;
+        state.most = Math.max(state.most, state.inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        state.inFlight -= 1;
+        if (failing.includes(key)) throw new StorageError('unreachable', `could not delete ${key}`);
+      },
+    } as unknown as StorageAdapter;
+    return { adapter, state };
+  };
+
+  it('sends every delete at once', async () => {
+    const { adapter, state } = slow();
+    await deleteAll(adapter, keys);
+    expect([...state.tried].sort()).toEqual([...keys].sort());
+    expect(state.most).toBe(keys.length);
+  });
+
+  it('tries every one, then throws the first that failed', async () => {
+    const { adapter, state } = slow(['page-3', 'page-7']);
+    await expect(deleteAll(adapter, keys)).rejects.toThrow('could not delete page-3');
+    expect(state.tried).toHaveLength(keys.length);
+    expect(state.inFlight).toBe(0);
   });
 });

@@ -906,6 +906,57 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     }
   });
 
+  it("a decision removes a file's pages all at once; one that cannot be removed leaves the rest to the sweep (N523A-02)", async () => {
+    const { files } = await arrive(adult, { review_by: 'adults' }, [
+      { name: 'quick.pdf', bytes: PDF('quick') },
+      { name: 'stuck.pdf', bytes: PDF('stuck') },
+    ]);
+    const [quick, stuck] = files as [DropFile, DropFile];
+    await ready(quick.id, 2);
+    await ready(stuck.id, 2);
+    // Each delete takes a moment, as a bucket's round trip does; one page
+    // of the second file cannot be deleted at all.
+    const proto = LocalAdapter.prototype as unknown as { delete: (key: string) => Promise<void> };
+    const real = proto.delete;
+    const seen = { inFlight: 0, most: 0, after: [] as string[] };
+    let refuse = '';
+    proto.delete = async function (this: LocalAdapter, key: string) {
+      seen.inFlight += 1;
+      seen.most = Math.max(seen.most, seen.inFlight);
+      try {
+        await new Promise((r) => setTimeout(r, 15));
+        if (key === refuse) throw new Error('the bucket is not answering');
+        // What was deleted while no page delete was under way.
+        if (seen.inFlight === 1) seen.after.push(key);
+        return await real.call(this, key);
+      } finally {
+        seen.inFlight -= 1;
+      }
+    };
+    try {
+      expect((await reject(adult, quick.id)).statusCode).toBe(204);
+      // The pages went together: many deletes under way at once.
+      expect(seen.most).toBeGreaterThan(1);
+      const quickKey = (await fileRow(quick.id))?.storage_key as string;
+      // The object last, once every page had gone.
+      expect(seen.after.at(-1)).toBe(quickKey);
+      expect(await objectThere(quickKey)).toBe(false);
+      expect((await fileRow(quick.id))?.object_removed_at).not.toBeNull();
+
+      const stuckKey = (await fileRow(stuck.id))?.storage_key as string;
+      refuse = `${stuckKey}.p2.enc`;
+      expect((await reject(adult, stuck.id)).statusCode).toBe(204);
+      // Refused all the same; but not said to be gone, so the sweep tries
+      // again — its other page went, its object is still there.
+      expect((await fileRow(stuck.id))?.object_removed_at).toBeNull();
+      expect(await objectThere(`${stuckKey}.p1.enc`)).toBe(false);
+      expect(await objectThere(`${stuckKey}.p2.enc`)).toBe(true);
+      expect(await objectThere(stuckKey)).toBe(true);
+    } finally {
+      proto.delete = real;
+    }
+  });
+
   it('a filing whose answer is lost keeps the copy the version committed (F523-2)', async () => {
     const { files } = await arrive(owner, { review_by: 'adults' }, [
       { name: 'slow.pdf', bytes: PDF('slow') },

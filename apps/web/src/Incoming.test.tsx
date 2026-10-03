@@ -218,6 +218,47 @@ describe('incoming on the web (5.23)', () => {
     },
   );
 
+  it(
+    'a document found and chosen stays chosen, and shown, when "As" is switched away and back (N523A-04)',
+    { timeout: 15_000 },
+    async () => {
+      const older = {
+        ...PASSPORT,
+        id: 'doc-old',
+        title: 'Old passport',
+        owner_member_id: 'm-0',
+        created_at: '2020-01-01T00:00:00Z',
+      };
+      const state = at('/incoming/in-1', { documents: [PASSPORT, older], pageSize: 1 });
+      const main = await screenCalled('W-2 2025.pdf');
+      const form = await within(main).findByRole('form', { name: 'File it' });
+      const asVersion = () =>
+        fireEvent.click(within(form).getByRole('button', { name: 'A new version of one' }));
+      asVersion();
+      // Found only by the vault's search, and chosen.
+      fireEvent.change(within(form).getByLabelText('Find the document'), {
+        target: { value: 'Old' },
+      });
+      await within(form).findByRole('option', { name: 'Old passport — Aisha, Passport' });
+      fireEvent.change(within(form).getByLabelText('A new version of'), {
+        target: { value: 'doc-old' },
+      });
+      // Away, and back: what it will be filed into is what it shows.
+      fireEvent.click(within(form).getByRole('button', { name: 'A new document' }));
+      asVersion();
+      const picker = await within(form).findByLabelText('A new version of');
+      await waitFor(() => expect(picker).toHaveValue('doc-old'));
+      expect(
+        within(picker).getByRole('option', { name: 'Old passport — Aisha, Passport' }),
+      ).toBeInTheDocument();
+      fireEvent.click(within(form).getByRole('button', { name: 'File it' }));
+      await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-old'));
+      expect(state.calls.find((c) => c.url === '/api/v1/incoming/in-1/accept')?.body).toEqual({
+        into_document_id: 'doc-old',
+      });
+    },
+  );
+
   it('refusing asks first, and Cancel gives focus back', { timeout: 15_000 }, async () => {
     const state = at('/incoming/in-1');
     const main = await screenCalled('W-2 2025.pdf');
