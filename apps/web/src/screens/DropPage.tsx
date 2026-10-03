@@ -166,7 +166,10 @@ export function fileProblem(err: unknown): { message: string; again: boolean } {
 async function openAlready(requestId: string | undefined): Promise<DropSession | null> {
   if (!requestId) return null;
   try {
-    return await api.dropSession(requestId);
+    const session = await api.dropSession(requestId);
+    // This request's, and no other's: a session of another request under
+    // its name is not carried on in (the 5.22 review, N522S-2).
+    return session.request_id === requestId ? session : null;
   } catch (err) {
     if (isOver(err)) return null;
     throw err;
@@ -635,6 +638,9 @@ function Opened({
   /** The vault could not be asked what has arrived: the list may be behind. */
   const [stale, setStale] = useState(false);
   const status = useRef<HTMLParagraphElement>(null);
+  const finishButton = useRef<HTMLButtonElement>(null);
+  /** Each time Finish found the list behind: the focus goes back to Finish (N522W-4). */
+  const [askedAgain, setAskedAgain] = useState(0);
   const nextKey = useRef(1);
   /** The files started already: an effect run twice never sends one twice. */
   const started = useRef(new Set<number>());
@@ -719,10 +725,15 @@ function Opened({
       return;
     }
     const before = new Set(room.files.map((f) => f.id));
+    /** Every byte went: the vault may keep it whatever the answer says, or if none comes. */
+    let allSent = false;
     const going = sendDropFile(session.request_id, waiting.file, waiting.itemId, {
       progress: (sent) => update({ sent }),
       // Every byte gone: too late to stop it, so Stop goes.
-      sent: () => update({ state: 'arriving', sent: waiting.file.size }),
+      sent: () => {
+        allSent = true;
+        update({ state: 'arriving', sent: waiting.file.size });
+      },
     });
     update({ state: 'sending', stop: going.stop });
     going.done.then(
@@ -754,10 +765,39 @@ function Opened({
           return;
         }
         if (over(err)) return;
+        // No answer, or one that could not be read, after the vault may have
+        // had every byte: what arrived is asked before anything is said
+        // (N522W-1), so a file the vault kept is listed, not called lost.
+        const unanswered =
+          allSent ||
+          err instanceof NetworkError ||
+          (err instanceof ApiRequestError && (err.status >= 500 || err.status < 300));
+        if (unanswered) {
+          const fresh = await refresh();
+          const arrived = fresh?.files.find(
+            (f) => !before.has(f.id) && f.name === waiting.file.name,
+          );
+          if (arrived) {
+            setSending((all) => all.filter((s) => s.key !== key));
+            say(
+              `“${waiting.file.name}” arrived after all, so it is listed. ${readyWords(fresh?.files.length ?? 0)}`,
+              true,
+            );
+            return;
+          }
+        }
         const problem = fileProblem(err);
         // Said where the file is, as an alert: not again in the line that
         // says what went well.
         update({ state: 'failed', problem: problem.message, again: problem.again, sent: 0 });
+        // Refused for want of room: what the vault has now, so the list and
+        // the room line match it.
+        if (
+          err instanceof ApiRequestError &&
+          (err.code === 'files_used_up' || err.code === 'too_large')
+        ) {
+          await refresh();
+        }
       },
     );
   }, [current, waiting, session.request_id, refresh, over, say]);
@@ -795,12 +835,18 @@ function Opened({
     setError(null);
     try {
       await api.dropRemoveFile(session.request_id, file.id);
-      const left = latest.current.files.filter((f) => f.id !== file.id);
+      const was = latest.current;
+      const left = was.files.filter((f) => f.id !== file.id);
+      const bytesLeft = was.bytes_left + file.byte_size;
       const next = {
-        ...latest.current,
+        ...was,
         files: left,
-        files_left: latest.current.files_left + 1,
-        bytes_left: latest.current.bytes_left + file.byte_size,
+        files_left: was.files_left + 1,
+        bytes_left: bytesLeft,
+        // One file's limit was what was left, while that was less than the
+        // vault's own: it grows with what was given back (N522W-2), so a file
+        // that fits now is not refused as too big before the vault answers.
+        max_file_bytes: was.max_file_bytes >= was.bytes_left ? bytesLeft : was.max_file_bytes,
       };
       latest.current = next;
       setSession(next);
@@ -829,6 +875,7 @@ function Opened({
         setError(
           `The vault has ${files(fresh.files.length)} from this page, listed now. Look at the list, then press Finish again.`,
         );
+        setAskedAgain((n) => n + 1);
         return;
       }
       const done = await api.dropFinish(session.request_id, note.trim() || undefined);
@@ -846,6 +893,11 @@ function Opened({
       setFinishing(false);
     }
   };
+
+  // Finish asked again: back on Finish, turned on again, once it is drawn.
+  useEffect(() => {
+    if (askedAgain > 0) finishButton.current?.focus();
+  }, [askedAgain]);
 
   const slots: Array<{ id: string | null; label: string }> =
     session.items.length > 0
@@ -887,7 +939,15 @@ function Opened({
             <p className="status status-warn" role="alert">
               The vault could not be asked just now what has arrived, so this list may be behind.
             </p>
-            <Button kind="quiet" onClick={() => void refresh()}>
+            <Button
+              kind="quiet"
+              onClick={() => {
+                void refresh().then((fresh) => {
+                  // The button goes with the warning: the focus goes to what was said.
+                  if (fresh) say(`The list is up to date. ${readyWords(fresh.files.length)}`, true);
+                });
+              }}
+            >
               Check again
             </Button>
           </div>
@@ -950,6 +1010,7 @@ function Opened({
         />
         <ErrorNote message={error} />
         <Button
+          ref={finishButton}
           disabled={finishing || inFlight || session.files.length === 0}
           onClick={() => void finish()}
         >

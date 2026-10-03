@@ -1754,6 +1754,18 @@ fieldset.ask-items {
   overflow-wrap: anywhere;
 }
 
+/* And every line that repeats a name somebody typed or a phone made up —
+   "Sent “IMG_20250214_093512_W2_EmployerName.pdf”" has nowhere to break —
+   on the sender's page, the family's lists of requests, and what a link or
+   a request will do (the 5.22 review, N522W-3). */
+.status-line,
+.notice,
+.request-row,
+.share-terms li,
+.drop-page p {
+  overflow-wrap: anywhere;
+}
+
 .drop-message {
   margin: 0;
 }

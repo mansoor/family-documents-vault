@@ -129,6 +129,18 @@ export const DROP_DEVICE_MAX_AGE = SHARE_MAX_DAYS * 86_400;
 /** A session cookie's name, for its request. */
 export const dropCookieName = (requestId: string) =>
   `${DROP_COOKIE_PREFIX}${requestId.replace(/-/g, '').toLowerCase()}`;
+
+/**
+ * A sender's session as a call presents it: its cookie, and the request
+ * the call is about — what X-FDV-Drop-Request names, or the one request
+ * whose name the browser's only session cookie carries. A session is
+ * answered only for that request (the 5.22 review, N522S-2): a cookie under
+ * one request's name holding another's session opens neither.
+ */
+export interface DropCookie {
+  value: string | undefined;
+  requestId: string | null;
+}
 /** A session lasts 30 minutes from its last use, and 4 hours at most (A26, as a link's). */
 export const DROP_SESSION_IDLE_MS = 30 * 60_000;
 export const DROP_SESSION_MAX_MS = 4 * 3_600_000;
@@ -848,11 +860,26 @@ export class UploadRequestService {
    * is counted or written down: a link scanner fetching the page is not
    * somebody opening it.
    */
-  async preview(token: string, devices: readonly DeviceCookie[] = []): Promise<DropPreview> {
+  async preview(
+    token: string,
+    devices: readonly DeviceCookie[] = [],
+    /** The browser's session cookie for a request, by its id: the one this request's name gives. */
+    sessionCookie: (requestId: string) => string | undefined = () => undefined,
+  ): Promise<DropPreview> {
     const scope = await this.scopeOf(token);
     return withScope(this.db, scope, async (trx) => {
       const r = await this.live(trx, scope.actor.requestId);
-      if (r.max_visits !== null && r.visits_used >= r.max_visits) throw usedUp();
+      // Opened as often as it allows — but if the last visit is this
+      // browser's, and its session still live, the page can carry on in it
+      // (N522S-3): the preview says which request it is, as ever, rather than
+      // turning away the one browser whose files would otherwise be stranded.
+      if (
+        r.max_visits !== null &&
+        r.visits_used >= r.max_visits &&
+        !(await this.hasLiveSession(trx, r.id, sessionCookie(r.id)))
+      ) {
+        throw usedUp();
+      }
       // A request for one browser, bound to another (5.22, as 5.20's link
       // preview): said before Open is pressed, which would be refused, and
       // where its code goes is not said here, where none is sent.
@@ -1244,8 +1271,29 @@ export class UploadRequestService {
     return r.recipient_label ? `upload link (${r.recipient_label})` : 'upload link';
   }
 
+  /**
+   * Whether a cookie holds a session of this request that is still live —
+   * not past its end, and not idle for 30 minutes. Read as the request's
+   * own upload link, which may see its sessions and no others.
+   */
+  private async hasLiveSession(
+    trx: Db,
+    requestId: string,
+    cookie: string | undefined,
+  ): Promise<boolean> {
+    if (!cookie || cookie.length > 128) return false;
+    const row = await trx
+      .selectFrom('upload_session')
+      .select(['last_seen_at'])
+      .where('request_id', '=', requestId)
+      .where('cookie_hash', '=', hash(cookie))
+      .where('expires_at', '>', new Date())
+      .executeTakeFirst();
+    return row !== undefined && row.last_seen_at.getTime() + DROP_SESSION_IDLE_MS > Date.now();
+  }
+
   /** What is open in this browser's session. Free: nothing is counted. */
-  async session(cookie: string | undefined): Promise<DropSession> {
+  async session(cookie: DropCookie): Promise<DropSession> {
     return this.inSession(cookie, (trx, r, s) => this.sessionView(trx, r, s.id, s.expires_at));
   }
 
@@ -1255,7 +1303,7 @@ export class UploadRequestService {
    * its request as it is now. A session that fails is removed.
    */
   private async inSession<T>(
-    cookie: string | undefined,
+    presented: DropCookie,
     fn: (
       trx: Db,
       r: SenderRow,
@@ -1264,14 +1312,18 @@ export class UploadRequestService {
     ) => Promise<T>,
     opts: { mayEnd?: boolean } = {},
   ): Promise<T> {
-    if (!cookie || cookie.length > 128) throw sessionEnded();
+    const cookie = presented.value;
+    if (!cookie || cookie.length > 128 || !presented.requestId) throw sessionEnded();
     const cookieHash = hash(cookie);
     const found = (
       await sql<{ household_id: string; request_id: string; session_id: string }>`
         select household_id, request_id, session_id from upload_session_find(${cookieHash})
       `.execute(this.db)
     ).rows[0];
-    if (!found) throw sessionEnded();
+    // The session the cookie holds, for the request the call names, and no
+    // other: a cookie planted under one request's name that holds another
+    // request's session is not taken as either (N522S-2).
+    if (!found || found.request_id !== presented.requestId) throw sessionEnded();
     const scope: UploadScope = {
       householdId: found.household_id,
       actor: { kind: 'upload', requestId: found.request_id, sessionId: found.session_id },
@@ -1390,7 +1442,7 @@ export class UploadRequestService {
   }
 
   /** Before any byte is read: whether this session may send a file at all. */
-  async mayAdd(cookie: string | undefined): Promise<void> {
+  async mayAdd(cookie: DropCookie): Promise<void> {
     await this.inSession(cookie, async (_trx, r) => {
       if (r.files_used >= r.max_files) throw filesUsedUp(r.max_files);
     });
@@ -1417,7 +1469,7 @@ export class UploadRequestService {
    * upload link can no longer reach them: such a row holds no room
    * (incoming_room(), 0044) and the nightly prune removes it (N521F-02).
    */
-  async addFile(cookie: string | undefined, upload: DropUpload): Promise<DropFile> {
+  async addFile(cookie: DropCookie, upload: DropUpload): Promise<DropFile> {
     const ctx = await this.inSession(cookie, async (trx, r, session, scope) => {
       if (upload.itemId) {
         const item = await trx
@@ -1724,7 +1776,7 @@ export class UploadRequestService {
    * /drop/files/{id}). Only its own: another session's file, or one already
    * sent, is not there for it.
    */
-  async removeFile(cookie: string | undefined, fileId: string): Promise<void> {
+  async removeFile(cookie: DropCookie, fileId: string): Promise<void> {
     const removed = await this.inSession(cookie, async (trx, r, session, scope) => {
       const file = await trx
         .selectFrom('incoming_file')
@@ -1758,7 +1810,7 @@ export class UploadRequestService {
    * nothing more, its sessions and codes end and its address is cleared.
    */
   async finish(
-    cookie: string | undefined,
+    cookie: DropCookie,
     input: z.infer<typeof dropFinishBody>,
     meta: RequestMeta,
   ): Promise<DropFinished> {

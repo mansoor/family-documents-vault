@@ -2586,6 +2586,18 @@ already_decided` once decided.
       preview reads the browser's `fdv_drop_device*` cookies for it, and
       still counts and writes down nothing. All three are absent from
       older vaults.
+    - **Changed:** a call inside a session is answered only for the request
+      it names — `X-FDV-Drop-Request`, or, with no header and one session
+      cookie, the request that cookie's name carries. A cookie under one
+      request's name that holds another request's session is `401
+drop_session_ended` on every route under `/api/v1/drop` that works
+      inside a session, `files` included: neither request is opened by it.
+    - **Changed:** the preview of a request opened as many times as it
+      allows answers, with its `request_id`, to a browser that presents a
+      live session of that request (its own cookie, not past its end and
+      not idle for 30 minutes), so that browser can carry on in it: the
+      last visit used is its own. Every other browser is still `410
+request_used_up`, and nothing is counted.
     - The database: 0048 adds `upload_request.secret_kind` (`generated`,
       made up by the vault, hashed and checked lower case without dashes
       or spaces; `password`, typed, checked as typed; null for no password,

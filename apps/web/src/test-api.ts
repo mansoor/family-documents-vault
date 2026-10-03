@@ -97,6 +97,11 @@ export interface FakeDrop {
   sessionDrops?: number;
   /** And the next this-many answer 503 busy. */
   sessionBusy?: number;
+  /**
+   * The browser's cookie under this request's name holds another request's
+   * session: a vault before the 5.22 review's N522S-2 answered it as that one.
+   */
+  foreignSession?: boolean;
   /** What Finish sent. */
   finished?: { note: string | null; files: number };
   closeAfter?: boolean;
@@ -230,6 +235,10 @@ export interface FakeState {
    */
   holdAnswer?: () => Promise<void> | undefined;
   dropCommitFirst?: boolean;
+  /** The vault keeps the file, and its answer never reaches the browser (N522W-1). */
+  dropAnswerLost?: boolean;
+  /** The connection drops before the vault has the file. */
+  dropConnectionLost?: boolean;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
   types: Array<Record<string, unknown>>;
@@ -1428,7 +1437,8 @@ export function installFakeApi(state: FakeState) {
         );
       if (path === '/api/v1/drop/preview' && method === 'POST') {
         if (!d.valid) return dropGone();
-        if (d.usedUp) return usedUp();
+        // Used up — unless its last visit is this browser's live session (N522S-3).
+        if (d.usedUp && !d.session) return usedUp();
         return json({
           household_name: 'The Seikh family',
           requested_by: 'Mansoor Seikh',
@@ -1487,7 +1497,13 @@ export function installFakeApi(state: FakeState) {
       }
       if (!d.session || headers['x-fdv-drop-request'] !== DROP_REQUEST_ID) return ended();
       if (!d.valid) return dropGone();
-      if (path === '/api/v1/drop/session' && method === 'GET') return json(view());
+      if (path === '/api/v1/drop/session' && method === 'GET') {
+        return json(
+          d.foreignSession
+            ? { ...view(), request_id: 'another-request-0000', title: 'Somebody else’s request' }
+            : view(),
+        );
+      }
       if (path === '/api/v1/drop/files' && method === 'POST') {
         const form = init?.body as FormData;
         const file = form.get('file') as File;
@@ -2444,12 +2460,27 @@ export function installFakeApi(state: FakeState) {
         this.upload.onprogress?.({ lengthComputable: true, loaded: Math.floor(total / 2), total });
         await state.hold?.(this.method, path);
         if (this.stopped) return;
+        if (state.dropConnectionLost) {
+          this.onerror?.();
+          return;
+        }
         const answer = () =>
           respond(this.url, this.method, path, new URLSearchParams(), undefined, {
             method: this.method,
             body: form,
             headers: this.headers,
           });
+        // A request that takes no more files says so at once, before the
+        // body has gone (5.21: its room is reserved before a byte is read).
+        const d = state.drop;
+        if (d && d.files.length >= (d.maxFiles ?? 10)) {
+          const refused = await answer();
+          this.status = refused.status;
+          this.responseText = await refused.text();
+          this.answered = refused.headers;
+          this.onload?.();
+          return;
+        }
         // The vault may keep the file before the browser has said that every
         // byte went: a Stop pressed then is too late (the 5.22 review).
         let res = state.dropCommitFirst ? await answer() : undefined;
@@ -2461,6 +2492,11 @@ export function installFakeApi(state: FakeState) {
         if (this.stopped) return;
         res ??= await answer();
         if (this.stopped) return;
+        // Kept by the vault; the answer lost on its way back.
+        if (state.dropAnswerLost) {
+          this.onerror?.();
+          return;
+        }
         this.status = res.status;
         this.responseText = res.status === 204 ? '' : await res.text();
         this.answered = res.headers;

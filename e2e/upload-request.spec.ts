@@ -196,11 +196,17 @@ test('ask for documents, open the link in another browser, send two files, finis
   // One file for each thing asked for, by the button that names its slot.
   await expect(drop.getByRole('button', { name: `Choose files for ${slot}` })).toBeVisible();
   await drop.getByLabel('File chooser for W-2', { exact: true }).setInputFiles({
-    name: 'w2-2025.pdf',
+    // As a phone or a scanner app names it: nowhere for a line to break (N522W-3).
+    name: 'IMG_20250214_093512_W2_EmployerName.pdf',
     mimeType: 'application/pdf',
     buffer: pdf('W-2 2025'),
   });
-  await expect(drop.getByRole('button', { name: 'Remove w2-2025.pdf' })).toBeVisible();
+  await expect(
+    drop.getByRole('button', { name: 'Remove IMG_20250214_093512_W2_EmployerName.pdf' }),
+  ).toBeVisible();
+  // The status line names it too, and still fits at 320 px.
+  await expect(drop.getByRole('status').filter({ hasText: 'Sent “IMG_' })).toBeVisible();
+  await fits();
   await drop.getByLabel(`File chooser for ${slot}`, { exact: true }).setInputFiles({
     name: '1099-int.pdf',
     mimeType: 'application/pdf',

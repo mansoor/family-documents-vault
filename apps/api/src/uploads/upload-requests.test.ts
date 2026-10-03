@@ -2225,6 +2225,152 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     expect(row).toEqual({ visits_used: 1, attempts: 0 });
   });
 
+  it('the request a call names binds its session: a cookie under one request’s name holding another’s opens neither (N522S-2)', async () => {
+    const a = await make(adult, { title: 'Request A' });
+    const b = await make(adult, { title: 'Request B' });
+    const openA = await opened(a.link_token);
+    const openB = await opened(b.link_token);
+    const nameA = Object.keys(openA.cookie)[0] as string;
+    const valueB = Object.values(openB.cookie)[0] as string;
+    // B's session, planted under A's name, asked about as A: refused, everywhere.
+    const swapped = { [nameA]: valueB };
+    const asA = { 'x-fdv-drop-request': a.request.id };
+    const answers = [
+      await h.app.inject({
+        url: '/api/v1/drop/session',
+        headers: asA,
+        cookies: swapped,
+        remoteAddress: addr(),
+      }),
+      await (() => {
+        const form = new FormData();
+        form.append('file', PDF(), { filename: 'meant-for-a.pdf', contentType: 'application/pdf' });
+        return h.app.inject({
+          method: 'POST',
+          url: '/api/v1/drop/files',
+          headers: { ...form.getHeaders(), ...asA },
+          cookies: swapped,
+          payload: form.getBuffer(),
+          remoteAddress: addr(),
+        });
+      })(),
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/drop/files/${randomUUID()}`,
+        headers: asA,
+        cookies: swapped,
+        remoteAddress: addr(),
+      }),
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/finish',
+        headers: asA,
+        cookies: swapped,
+        payload: {},
+        remoteAddress: addr(),
+      }),
+      // And with no header, the cookie's own name says which request it is.
+      await h.app.inject({ url: '/api/v1/drop/session', cookies: swapped, remoteAddress: addr() }),
+    ];
+    for (const res of answers) {
+      expect(res.statusCode, res.body).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('drop_session_ended');
+    }
+    // Nothing reached B's session.
+    const bSession = (
+      await h.app.inject({
+        url: '/api/v1/drop/session',
+        cookies: openB.cookie,
+        remoteAddress: addr(),
+      })
+    ).json<DropSession>();
+    expect(bSession.files).toEqual([]);
+    expect(bSession.request_id).toBe(b.request.id);
+    // Each under its own name, as itself, is answered.
+    const own = await h.app.inject({
+      url: '/api/v1/drop/session',
+      headers: asA,
+      cookies: openA.cookie,
+      remoteAddress: addr(),
+    });
+    expect(own.statusCode).toBe(200);
+    expect(own.json<DropSession>().request_id).toBe(a.request.id);
+  });
+
+  it('a call inside a session with no session to find is answered 401, whatever is missing (N522S-2)', async () => {
+    const a = await make(adult);
+    const b = await make(adult);
+    const openA = await opened(a.link_token);
+    const openB = await opened(b.link_token);
+    const ask = (headers: Record<string, string>, cookies: Record<string, string>) =>
+      h.app.inject({ url: '/api/v1/drop/session', headers, cookies, remoteAddress: addr() });
+    const cases: Array<[string, Record<string, string>, Record<string, string>]> = [
+      ['a header and no cookie', { 'x-fdv-drop-request': a.request.id }, {}],
+      [
+        'a header and a cookie that is no session',
+        { 'x-fdv-drop-request': a.request.id },
+        { [Object.keys(openA.cookie)[0] as string]: 'not-a-session-at-all' },
+      ],
+      ['a header that is no request id', { 'x-fdv-drop-request': 'not-a-uuid' }, openA.cookie],
+      [
+        'a header naming one request, and only the other’s cookie',
+        { 'x-fdv-drop-request': a.request.id },
+        openB.cookie,
+      ],
+      ['two sessions and no header', {}, { ...openA.cookie, ...openB.cookie }],
+      ['no cookie and no header', {}, {}],
+    ];
+    for (const [what, headers, cookies] of cases) {
+      const res = await ask(headers, cookies);
+      expect(res.statusCode, what).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code, what).toBe('drop_session_ended');
+    }
+  });
+
+  it('its last visit in use in this browser: the preview still names the request, to that browser alone (N522S-3)', async () => {
+    const made = await make(adult, { max_visits: 1 });
+    const { cookie } = await opened(made.link_token);
+    expect((await send(cookie, { name: 'w2.pdf', bytes: PDF() })).statusCode).toBe(201);
+    const previewWith = (cookies: Record<string, string>) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/preview',
+        payload: { token: made.link_token },
+        cookies,
+        remoteAddress: addr(),
+      });
+    // The browser whose session used the last visit: told which request it is.
+    const mine = await previewWith(cookie);
+    expect(mine.statusCode, mine.body).toBe(200);
+    expect(mine.json()).toMatchObject({ request_id: made.request.id });
+    // And carries on in it: its file is still there to send.
+    const carried = await h.app.inject({
+      url: '/api/v1/drop/session',
+      headers: { 'x-fdv-drop-request': made.request.id },
+      cookies: cookie,
+      remoteAddress: addr(),
+    });
+    expect(carried.json<DropSession>().files.map((f) => f.name)).toEqual(['w2.pdf']);
+    // Any other browser, or a cookie that is no live session of it: used up.
+    for (const other of [{}, { [Object.keys(cookie)[0] as string]: 'not-a-session-at-all' }]) {
+      const res = await previewWith(other);
+      expect(res.statusCode).toBe(410);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('request_used_up');
+    }
+    // Its session idle past 30 minutes: used up for it too.
+    await admin(
+      "update upload_session set last_seen_at = now() - interval '31 minutes' where request_id = $1",
+      [made.request.id],
+    );
+    expect((await previewWith(cookie)).statusCode).toBe(410);
+    // Looking counted nothing.
+    const [row] = await admin<{ visits_used: number }>(
+      'select visits_used from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row?.visits_used).toBe(1);
+  });
+
   it("the database's copy of who may ask is the matrix's", async () => {
     expect(rolesWith('upload_request.create')).toEqual(['owner', 'adult']);
     const [fn] = await admin<{ src: string }>(

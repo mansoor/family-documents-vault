@@ -326,7 +326,10 @@ describe('the page a request opens (5.22)', () => {
     expect(
       screen.getByRole('button', { name: 'Remove from-the-other-tab.pdf' }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Finish and send 2 files' }));
+    // Back on Finish, turned on again, not left on the page's start (N522W-4).
+    const finish = screen.getByRole('button', { name: 'Finish and send 2 files' });
+    await waitFor(() => expect(finish).toHaveFocus());
+    fireEvent.click(finish);
     expect(await screen.findByText(/2 files went to Mansoor Seikh/)).toBeInTheDocument();
     expect(state.drop?.finished?.files).toBe(2);
   });
@@ -427,6 +430,9 @@ describe('the page a request opens (5.22)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await waitFor(() => expect(screen.queryByText(/this list may be behind/)).toBeNull());
     expect(within(w2).getByRole('button', { name: 'Remove w2-2025.pdf' })).toBeVisible();
+    // The button went with the warning: the focus goes to what was said (N522W-4).
+    await waitFor(() => expect(statusLine()).toHaveFocus());
+    expect(statusLine()).toHaveTextContent('The list is up to date. 1 file is ready to send.');
   });
 
   it('a second file of the same name is heard as well as the first', async () => {
@@ -611,17 +617,124 @@ describe('the page a request opens (5.22)', () => {
     expect(callsTo(state, '/api/v1/drop/unlock')).toEqual([]);
   });
 
+  it('a session under this request’s name that is another request’s is not carried on in (N522S-2)', async () => {
+    const state = await opened();
+    (state.drop as FakeDrop).foreignSession = true;
+    sessionStorage.clear();
+    render(<DropPage token={TOKEN} />);
+    // The preview, with Open: not somebody else's request's page.
+    await screen.findByRole('button', { name: 'Open' });
+    expect(screen.queryByText(/This link is open in this browser already/)).toBeNull();
+    expect(screen.queryByText('Somebody else’s request')).toBeNull();
+    expect(sessionStorage.getItem('fdv.drop.request')).toBeNull();
+  });
+
+  it('its last visit in use in this browser: a second tab still carries on (N522S-3)', async () => {
+    const state = await opened();
+    choose('W-2', pdf('w2-2025.pdf'));
+    await screen.findByRole('button', { name: 'Remove w2-2025.pdf' });
+    // That Open was the last the request allows.
+    (state.drop as FakeDrop).usedUp = true;
+    sessionStorage.clear();
+    render(<DropPage token={TOKEN} />);
+    await screen.findByText(/This link is open in this browser already/);
+    expect(screen.getAllByRole('button', { name: 'Remove w2-2025.pdf' })).toHaveLength(2);
+    expect(screen.queryByText(/opened as many times as it allows/)).toBeNull();
+    expect(callsTo(state, '/api/v1/drop/unlock')).toHaveLength(1);
+  });
+
+  it('a file the vault kept whose answer was lost is listed, not called lost (N522W-1)', async () => {
+    const state = await opened();
+    state.dropAnswerLost = true;
+    choose('W-2', pdf('w2-2025.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    await within(w2).findByRole('button', { name: 'Remove w2-2025.pdf' });
+    await waitFor(() =>
+      expect(statusLine()).toHaveTextContent(
+        '“w2-2025.pdf” arrived after all, so it is listed. 1 file is ready to send.',
+      ),
+    );
+    await waitFor(() => expect(statusLine()).toHaveFocus());
+    expect(within(w2).queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Finish and send 1 file' })).toBeEnabled();
+  });
+
+  it('a file the vault never had, whose answer was lost, is said to be lost, and can be sent again', async () => {
+    const state = await opened();
+    // The connection drops before the vault has it: nothing arrives.
+    state.dropConnectionLost = true;
+    choose('W-2', pdf('w2-2025.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    expect(await within(w2).findByRole('alert')).toHaveTextContent(
+      'It did not reach the vault: the connection dropped. Try again.',
+    );
+    expect(state.drop?.files).toEqual([]);
+  });
+
+  it('refused for want of room, the list and the room line catch up with the vault (N522W-1)', async () => {
+    const state = await opened({ maxFiles: 1 });
+    // Another tab of this browser sent the one file it takes, unseen here.
+    state.drop?.files.push({
+      id: 'file-other',
+      name: 'from-the-other-tab.pdf',
+      content_type: 'application/pdf',
+      byte_size: 100,
+      item_id: null,
+    });
+    choose('W-2', pdf('w2-2025.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    expect(await within(w2).findByRole('alert')).toHaveTextContent(
+      'This request takes 1 files, and that many have been sent.',
+    );
+    await screen.findByRole('button', { name: 'Remove from-the-other-tab.pdf' });
+    await waitFor(() =>
+      expect(screen.getByTestId('drop-room')).toHaveTextContent(/It takes no more files/),
+    );
+  });
+
+  it('after Remove, a file that fits is not refused as too big before the vault answers (N522W-2)', async () => {
+    const state = await opened({ maxBytes: 3072, maxFileBytes: 3072 });
+    choose('W-2', pdf('big1.pdf', 2048));
+    await screen.findByRole('button', { name: 'Remove big1.pdf' });
+    choose('1099', pdf('big2.pdf', 2048));
+    const other = screen.getByRole('region', { name: '1099' });
+    expect(await within(other).findByRole('alert')).toHaveTextContent(
+      'That file would take this request past what it can take: 1 KB is left.',
+    );
+    // Room made, and the vault not asked again in time.
+    (state.drop as FakeDrop).sessionDrops = 1;
+    fireEvent.click(screen.getByRole('button', { name: 'Remove big1.pdf' }));
+    await screen.findByText(/this list may be behind/);
+    fireEvent.click(within(other).getByRole('button', { name: 'Try big2.pdf again' }));
+    await within(other).findByRole('button', { name: 'Remove big2.pdf' });
+    expect(state.drop?.files.map((f) => f.name)).toEqual(['big2.pdf']);
+  });
+
   it('a long unbroken word in a title or a slot wraps rather than pushing the page sideways at 320 px', () => {
     // jsdom draws nothing, so the rule itself is what is checked; the e2e
     // spec measures the page at 320 px in Chromium.
+    // Every rule naming the selector, together: it may be named in more than one.
     const rule = (selector: string) =>
-      [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([, sel]) =>
-        (sel ?? '')
-          .split(',')
-          .map((x) => x.trim())
-          .includes(selector),
-      )?.[2] ?? '';
-    for (const selector of ['.drop-page h1', '.drop-page h2', '.drop-file-name']) {
+      [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, sel]) =>
+          (sel ?? '')
+            .split(',')
+            .map((x) => x.trim())
+            .includes(selector),
+        )
+        .map(([, , body]) => body)
+        .join(' ');
+    for (const selector of [
+      '.drop-page h1',
+      '.drop-page h2',
+      '.drop-file-name',
+      // The lines that repeat a file's name, or a title (N522W-3).
+      '.status-line',
+      '.notice',
+      '.drop-page p',
+      '.share-terms li',
+      '.request-row',
+    ]) {
       expect(rule(selector), selector).toMatch(/overflow-wrap:\s*anywhere/);
     }
   });
