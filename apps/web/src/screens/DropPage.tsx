@@ -681,6 +681,13 @@ function Opened({
   }, [session]);
   /** The files on their way as they are now, for what an answer settles. */
   const sendingNow = useRef(sending);
+  /**
+   * The files the page knows are another upload's: answered for (201), or
+   * already found as one whose answer was lost. Never taken for a file
+   * whose answer never came (the 5.22 review, N522R3-2): y.pdf arriving
+   * after x.pdf went unanswered is not x.pdf, however alike.
+   */
+  const known = useRef(new Set<string>());
   useEffect(() => {
     sendingNow.current = sending;
   }, [sending]);
@@ -716,10 +723,11 @@ function Opened({
    * be sent again (N522W2-1).
    */
   const settle = useCallback(
-    (fresh: DropSession) => {
+    /** Returns the names of the files it found not sent: Finish must not go on past them. */
+    (fresh: DropSession): string[] => {
       const unknown = sendingNow.current.filter((s) => s.state === 'unknown');
-      if (unknown.length === 0) return;
-      const taken = new Set<string>();
+      if (unknown.length === 0) return [];
+      const taken = new Set<string>(known.current);
       const arrived = new Set<number>();
       for (const s of unknown) {
         const kept = arrivedAs(
@@ -729,6 +737,7 @@ function Opened({
         );
         if (kept) {
           taken.add(kept.id);
+          known.current.add(kept.id);
           arrived.add(s.key);
         }
       }
@@ -753,6 +762,7 @@ function Opened({
           ? `${names} arrived after all, so ${unknown.length === 1 ? 'it is' : 'they are'} listed. ${readyWords(fresh.files.length)}`
           : `The vault has answered: ${names} ${unknown.length === 1 ? 'is' : 'are'} settled. ${readyWords(fresh.files.length)}`,
       );
+      return unknown.filter((s) => !arrived.has(s.key)).map((s) => s.file.name);
     },
     [say],
   );
@@ -822,6 +832,7 @@ function Opened({
     update({ state: 'sending', stop: going.stop });
     going.done.then(
       async (file: DropFile) => {
+        known.current.add(file.id);
         const next = withFile(latest.current, file);
         latest.current = next;
         setSession(next);
@@ -835,7 +846,8 @@ function Opened({
           // Stopped as its last bytes went, the vault may have kept it
           // anyway: asked, and said whichever it was.
           const fresh = await refresh();
-          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }) : null;
+          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }, known.current) : null;
+          if (arrived) known.current.add(arrived.id);
           say(
             arrived
               ? `“${waiting.file.name}” had already arrived, so it is listed: remove it if you do not want it sent.`
@@ -859,8 +871,9 @@ function Opened({
         const mayHaveIt = allSent || (err instanceof ApiRequestError && err.status < 300);
         if (unanswered) {
           const fresh = await refresh();
-          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }) : null;
+          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }, known.current) : null;
           if (arrived) {
+            known.current.add(arrived.id);
             setSending((all) => all.filter((s) => s.key !== key));
             say(
               `“${waiting.file.name}” arrived after all, so it is listed. ${readyWords(fresh?.files.length ?? 0)}`,
@@ -965,7 +978,16 @@ function Opened({
       latest.current = fresh;
       setSession(fresh);
       setStale(false);
-      settle(fresh);
+      // A file whose answer never came, found now not to have arrived:
+      // shown with Try again, and nothing sent past it unasked (N522R3-1).
+      const notSent = settle(fresh);
+      if (notSent.length > 0) {
+        setError(
+          `${notSent.map((n) => `“${n}”`).join(', ')} did not reach the vault. Send ${notSent.length === 1 ? 'it' : 'them'} again, or press Finish to send the rest.`,
+        );
+        setAskedAgain((n) => n + 1);
+        return;
+      }
       if (!same) {
         setError(
           `The vault has ${files(fresh.files.length)} from this page, listed now. Look at the list, then press Finish again.`,

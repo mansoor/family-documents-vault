@@ -794,6 +794,74 @@ describe('the page a request opens (5.22)', () => {
     ).toEqual(['one.pdf', 'two.pdf']);
   });
 
+  it('Finish that finds a file never arrived stops there, shows it with Try again, and sends the rest when pressed again (N522R3-1)', async () => {
+    const state = await opened();
+    choose('W-2', pdf('a.pdf'));
+    await screen.findByRole('button', { name: 'Remove a.pdf' });
+    // b.pdf: every byte went, the answer did not, nor could the vault be asked.
+    state.dropLostAfterBytes = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    choose('1099', pdf('b.pdf', 1000));
+    const other = screen.getByRole('region', { name: '1099' });
+    await within(other).findByText(/answer did not come back/);
+    delete state.dropLostAfterBytes;
+    const finish = screen.getByRole('button', { name: 'Finish and send 1 file' });
+    fireEvent.click(finish);
+    // Found not sent: said, shown with Try again, and nothing sent past it.
+    expect(await screen.findByText(/“b.pdf” did not reach the vault/)).toHaveTextContent(
+      '“b.pdf” did not reach the vault. Send it again, or press Finish to send the rest.',
+    );
+    expect(within(other).getByRole('button', { name: 'Try b.pdf again' })).toBeVisible();
+    expect(callsTo(state, '/api/v1/drop/finish')).toEqual([]);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Finish and send 1 file' })).toHaveFocus(),
+    );
+    // Pressed again: the rest goes.
+    fireEvent.click(screen.getByRole('button', { name: 'Finish and send 1 file' }));
+    expect(await screen.findByText(/1 file went to Mansoor Seikh/)).toBeInTheDocument();
+    expect(state.drop?.finished?.files).toBe(1);
+  });
+
+  it('a file that arrives after one whose answer was lost is not taken for it (N522R3-2)', async () => {
+    const state = await opened();
+    // x.pdf: every byte went, and nothing was kept, nor could the vault be asked.
+    state.dropLostAfterBytes = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    choose('W-2', pdf('x.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    await within(w2).findByText(/answer did not come back/);
+    delete state.dropLostAfterBytes;
+    // y.pdf: the same slot, the same size, answered as it should be.
+    choose('W-2', pdf('y.pdf'));
+    await within(w2).findByRole('button', { name: 'Remove y.pdf' });
+    // x is settled as not sent, not as y.
+    expect(await within(w2).findByRole('alert')).toHaveTextContent(
+      'It did not reach the vault. Try again.',
+    );
+    expect(within(w2).getByRole('button', { name: 'Try x.pdf again' })).toBeVisible();
+    expect(screen.getAllByRole('button', { name: 'Remove y.pdf' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Remove x.pdf' })).toBeNull();
+    expect(state.drop?.files.map((f) => f.name)).toEqual(['y.pdf']);
+  });
+
+  it('a file that arrived with its answer lost is still found, with another alike arriving after it (N522R3-2 control)', async () => {
+    const state = await opened();
+    // x.pdf: kept by the vault, its answer lost, and the vault not asked in time.
+    state.dropAnswerLost = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    choose('W-2', pdf('x.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    await within(w2).findByText(/answer did not come back/);
+    delete state.dropAnswerLost;
+    choose('W-2', pdf('y.pdf'));
+    await within(w2).findByRole('button', { name: 'Remove y.pdf' });
+    await within(w2).findByRole('button', { name: 'Remove x.pdf' });
+    expect(within(w2).queryByText(/answer did not come back/)).toBeNull();
+    expect(within(w2).queryByRole('alert')).toBeNull();
+    expect(screen.getAllByRole('button', { name: /^Remove [xy]\.pdf$/ })).toHaveLength(2);
+    expect(state.drop?.files.map((f) => f.name)).toEqual(['x.pdf', 'y.pdf']);
+  });
+
   it('a long unbroken word in a title or a slot wraps rather than pushing the page sideways at 320 px', () => {
     // jsdom draws nothing, so the rule itself is what is checked; the e2e
     // spec measures the page at 320 px in Chromium.
