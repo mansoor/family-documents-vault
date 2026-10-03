@@ -5,6 +5,7 @@ import {
   mayChangeVisibilityAtAll,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
+  sentThroughWords,
   visibilityRefusal,
   type IssuerCount,
   type IssuerSuggestions,
@@ -159,6 +160,33 @@ interface Claim {
    * gone with it.
    */
   details?: Record<string, unknown> | undefined;
+}
+
+/**
+ * What one commit files (commitFiling): a file already encrypted and
+ * stored, the document it goes in, and how its object is put where
+ * versions are kept.
+ */
+interface Filing {
+  documentId: string;
+  /** A new document's columns, made at the commit; null for a version of one already there. */
+  values: Record<string, never> | null;
+  /** An Only me document's details as sent, before they were sealed: its reminders come from them. */
+  details?: Record<string, unknown> | undefined;
+  /** Whom its file key is wrapped for: held to the document as it is at the commit. */
+  scope: ReturnType<typeof scopeFor>;
+  vaultId: string;
+  fileKeyWrapped: Buffer;
+  scopeKeyId: string;
+  filename: string;
+  mime: string;
+  ext: string;
+  bytes: number;
+  sha256: Buffer;
+  cipherBytes: number;
+  cipherSha256: Buffer;
+  /** Puts its object at `to`, where the version keeps it, and answers that key. */
+  place: (to: string) => Promise<string>;
 }
 
 export type DocRow = {
@@ -1300,14 +1328,25 @@ export class DocumentService {
             .onRef('former.former_account_id', '=', 'document_version.uploaded_by')
             .on('former.household_id', '=', p.householdId),
         )
+        // A version that came in through a request (5.23), as the reader is
+        // given the file it was and its request: the request's reviewers
+        // alone (0044, 0047). Anybody else is told who filed it.
+        .leftJoin('incoming_file', 'incoming_file.version_id', 'document_version.id')
+        .leftJoin('upload_request', 'upload_request.id', 'incoming_file.request_id')
         .selectAll('document_version')
-        .select(['member.display_name as uploaded_by_name', 'former.display_name as former_name'])
+        .select([
+          'member.display_name as uploaded_by_name',
+          'former.display_name as former_name',
+          'upload_request.id as request_id',
+          'upload_request.recipient_label as request_label',
+        ])
         .where('document_version.document_id', '=', documentId)
         .orderBy('document_version.version_no', 'desc')
         .execute();
       return rows.map((r) => ({
         ...versionView(r),
         uploaded_by_name: named ? (r.uploaded_by_name ?? r.former_name ?? null) : null,
+        sent_through: named && r.request_id ? sentThroughWords(r.request_label) : null,
       }));
     });
   }
@@ -1432,96 +1471,31 @@ export class DocumentService {
         // Another try took the key over while this one was slow: it wins.
         if (!still) throw uploadInProgress();
 
-        if (target.kind === 'version') {
-          // The document's row, locked before anything is read from it:
-          // version numbers, and who it is wrapped for, cannot change under
-          // this commit. Making it private takes the same lock (visibility.ts).
-          await trx
-            .selectFrom('document')
-            .select('id')
-            .where('id', '=', c.documentId)
-            .forUpdate()
-            .execute();
-        }
-
-        if (target.kind === 'capture') {
-          const row = await trx
-            .insertInto('document')
-            .values({
-              id: c.documentId,
-              household_id: p.householdId,
-              created_by: p.accountId,
-              updated_by: p.accountId,
-              ...c.values,
-            })
-            .returningAll()
-            .executeTakeFirstOrThrow();
-          await this.reminders?.regenerateDerived(trx, p.householdId, row.id, {
+        const row = await this.commitFiling(
+          trx,
+          p,
+          {
+            documentId: c.documentId,
+            values: target.kind === 'capture' ? c.values : null,
             details: c.details,
-          });
-          await this.toldPrivate(trx, p, row);
-          await appendAudit(trx, {
-            householdId: p.householdId,
-            actorAccountId: p.accountId,
-            action: 'document.created',
-            objectType: 'document',
-            objectId: row.id,
-            detail: { title: row.title, type_key: row.type_key },
-            ip: meta.ip,
-          });
-        } else {
-          // The file was encrypted for the document as it was when the
-          // upload began. If it has since been made private, or moved to
-          // somebody else, that key is the wrong one — and the uploader may
-          // no longer be allowed to see it at all. Ask again, under the lock.
-          const now = await this.fetch(trx, p, c.documentId);
-          this.mustOwnIfTeen(p, now);
-          const is = scopeFor(now, p.householdId);
-          if (c.scope.kind !== is.kind || c.scope.memberId !== is.memberId) {
-            throw new ApiError(
-              409,
-              'document_changed',
-              'Who can see this document changed while the file was uploading. Try again.',
-              { retriable: true },
-            );
-          }
-        }
-
-        const last = await trx
-          .selectFrom('document_version')
-          .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
-          .where('document_id', '=', c.documentId)
-          .executeTakeFirstOrThrow();
-        const versionNo = Number(last.n) + 1;
-        moved.to = objectKey({
-          householdId: p.householdId,
-          documentId: c.documentId,
-          versionNo,
-          name: randomBytes(8).toString('hex'),
-          ext,
-        });
-        const storageKey = await moveObject(c.adapter, c.tempKey, moved.to);
-
-        const row = await trx
-          .insertInto('document_version')
-          .values({
-            household_id: p.householdId,
-            document_id: c.documentId,
-            version_no: versionNo,
+            scope: c.scope,
+            vaultId: c.vaultId,
+            fileKeyWrapped: c.fileKeyWrapped,
+            scopeKeyId: c.scopeKeyId,
             filename: input.filename,
             mime,
-            byte_size: plainBytes,
+            ext,
+            bytes: plainBytes,
             sha256,
-            cipher_bytes: put.bytes,
-            cipher_sha256: Buffer.from(put.sha256, 'hex'),
-            storage_key: storageKey,
-            vault_id: c.vaultId,
-            file_key_wrapped: c.fileKeyWrapped,
-            wrapped_by_scope: c.scopeKeyId,
-            uploaded_by: p.accountId,
-          })
-          .returningAll()
-          .executeTakeFirstOrThrow();
+            cipherBytes: put.bytes,
+            cipherSha256: Buffer.from(put.sha256, 'hex'),
+            place: async (to) => {
+              moved.to = to;
+              return moveObject(c.adapter, c.tempKey, to);
+            },
+          },
+          meta,
+        );
         await trx
           .updateTable('upload_idempotency')
           .set({
@@ -1533,24 +1507,6 @@ export class DocumentService {
           })
           .where('idempotency_key', '=', c.key)
           .execute();
-        await trx
-          .updateTable('document')
-          .set({ updated_at: new Date(), updated_by: p.accountId })
-          .where('id', '=', c.documentId)
-          .execute();
-        // REM-08: the user renewed and scanned it; do not also ask them to
-        // dismiss a notification.
-        if (versionNo > 1)
-          await this.reminders?.resolveOpen(trx, p.householdId, c.documentId, p.accountId);
-        await appendAudit(trx, {
-          householdId: p.householdId,
-          actorAccountId: p.accountId,
-          action: 'document.version_added',
-          objectType: 'document',
-          objectId: c.documentId,
-          detail: { version_no: versionNo, mime, bytes: plainBytes },
-          ip: meta.ip,
-        });
         return versionView(row);
       });
     } catch (err) {
@@ -1565,6 +1521,239 @@ export class DocumentService {
       version_id: version.id,
     }).catch(() => undefined);
     return { version, replayed: false };
+  }
+
+  /**
+   * The commit every file goes through on its way in: an upload's (above)
+   * and, since 5.23, a file sent through a request and filed by its
+   * reviewer (`fileIncoming`). In the caller's transaction: the document is
+   * made (a capture's details, as checked) or, for a new version, locked
+   * and asked again — still there, still the caller's to see and change,
+   * still wrapped for the same people; then its version is numbered, its
+   * object put where versions are kept, and both written down. What may
+   * need saying about the object if the transaction fails is the caller's.
+   */
+  private async commitFiling(
+    trx: Db,
+    p: Principal,
+    f: Filing,
+    meta: RequestMeta,
+  ): Promise<Selectable<Schema['document_version']>> {
+    if (f.values === null) {
+      // The document's row, locked before anything is read from it:
+      // version numbers, and who it is wrapped for, cannot change under
+      // this commit. Making it private takes the same lock (visibility.ts).
+      await trx
+        .selectFrom('document')
+        .select('id')
+        .where('id', '=', f.documentId)
+        .forUpdate()
+        .execute();
+      // The file was encrypted for the document as it was when the
+      // upload began. If it has since been made private, or moved to
+      // somebody else, that key is the wrong one — and the uploader may
+      // no longer be allowed to see it at all. Ask again, under the lock.
+      const now = await this.fetch(trx, p, f.documentId);
+      this.mustOwnIfTeen(p, now);
+      const is = scopeFor(now, p.householdId);
+      if (f.scope.kind !== is.kind || f.scope.memberId !== is.memberId) {
+        throw new ApiError(
+          409,
+          'document_changed',
+          'Who can see this document changed while the file was uploading. Try again.',
+          { retriable: true },
+        );
+      }
+    } else {
+      const row = await trx
+        .insertInto('document')
+        .values({
+          id: f.documentId,
+          household_id: p.householdId,
+          // Whoever filed it, never null: 5.24's "removable at once" asks it.
+          created_by: p.accountId,
+          updated_by: p.accountId,
+          ...f.values,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await this.reminders?.regenerateDerived(trx, p.householdId, row.id, {
+        details: f.details,
+      });
+      await this.toldPrivate(trx, p, row);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'document.created',
+        objectType: 'document',
+        objectId: row.id,
+        detail: { title: row.title, type_key: row.type_key },
+        ip: meta.ip,
+      });
+    }
+
+    const last = await trx
+      .selectFrom('document_version')
+      .select(sql<number>`coalesce(max(version_no), 0)`.as('n'))
+      .where('document_id', '=', f.documentId)
+      .executeTakeFirstOrThrow();
+    const versionNo = Number(last.n) + 1;
+    const storageKey = await f.place(
+      objectKey({
+        householdId: p.householdId,
+        documentId: f.documentId,
+        versionNo,
+        name: randomBytes(8).toString('hex'),
+        ext: f.ext,
+      }),
+    );
+
+    const row = await trx
+      .insertInto('document_version')
+      .values({
+        household_id: p.householdId,
+        document_id: f.documentId,
+        version_no: versionNo,
+        filename: f.filename,
+        mime: f.mime,
+        byte_size: f.bytes,
+        sha256: f.sha256,
+        cipher_bytes: f.cipherBytes,
+        cipher_sha256: f.cipherSha256,
+        storage_key: storageKey,
+        vault_id: f.vaultId,
+        file_key_wrapped: f.fileKeyWrapped,
+        wrapped_by_scope: f.scopeKeyId,
+        uploaded_by: p.accountId,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await trx
+      .updateTable('document')
+      .set({ updated_at: new Date(), updated_by: p.accountId })
+      .where('id', '=', f.documentId)
+      .execute();
+    // REM-08: the user renewed and scanned it; do not also ask them to
+    // dismiss a notification.
+    if (versionNo > 1)
+      await this.reminders?.resolveOpen(trx, p.householdId, f.documentId, p.accountId);
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: 'document.version_added',
+      objectType: 'document',
+      objectId: f.documentId,
+      detail: { version_no: versionNo, mime: f.mime, bytes: f.bytes },
+      ip: meta.ip,
+    });
+    return row;
+  }
+
+  /**
+   * Files a file sent through a request (5.23), in the reviewer's own
+   * transaction, through the commit every upload goes through: as a new
+   * document, its details checked as a capture's are (the person, the kind,
+   * Only me for one's own only), or as a new version of a document the
+   * reviewer may see and change — as adding a version asks, a teen's own
+   * only. The file is never encrypted again: its key is unwrapped from the
+   * key it came in under and wrapped for the document, as a visibility
+   * change rewraps a version's (visibility.ts), and its object copied to
+   * where versions are kept, checked against what was stored. The copy is
+   * named in `placed`, for the caller to remove if its transaction fails.
+   * The version's OCR, page count and previews are the caller's to queue,
+   * once it has committed.
+   */
+  async fileIncoming(
+    trx: Db,
+    p: Principal,
+    input: {
+      target:
+        { kind: 'capture'; metadata: CaptureMetadata } | { kind: 'version'; documentId: string };
+      file: {
+        filename: string;
+        mime: string;
+        bytes: number;
+        sha256: Buffer;
+        cipherBytes: number;
+        cipherSha256: Buffer;
+        storageKey: string;
+        vaultId: string;
+        fileKey: Buffer;
+      };
+      placed: { key: string | null };
+    },
+    meta: RequestMeta,
+  ): Promise<Selectable<Schema['document_version']>> {
+    this.canWrite(p);
+    const { target, file } = input;
+    const ext = ACCEPTED[file.mime];
+    if (!ext)
+      throw new ApiError(415, 'unsupported_type', 'That kind of file cannot be filed here.');
+    let documentId: string;
+    let scope: ReturnType<typeof scopeFor>;
+    let values: Record<string, never> | null = null;
+    if (target.kind === 'version') {
+      // A document the caller cannot see is not there; one in the Trash
+      // takes no new version, as an upload's.
+      const doc = await this.fetch(trx, p, target.documentId);
+      this.mustOwnIfTeen(p, doc);
+      documentId = doc.id;
+      scope = scopeFor(doc, p.householdId);
+    } else {
+      documentId = randomUUID();
+      values = await this.captureColumns(trx, p, target.metadata);
+      scope = scopeFor(
+        {
+          visibility: (values.visibility as Visibility | undefined) ?? 'household',
+          owner_member_id: (values.owner_member_id as string | null | undefined) ?? null,
+        },
+        p.householdId,
+      );
+    }
+    const scopeKey = await this.keys.unwrap(trx, scope);
+    let details: Record<string, unknown> | undefined;
+    if (values && scope.kind === 'member') {
+      // Only me from its first moment, its notes and details too (0.5.8).
+      details = extraOf(values.extra);
+      values = {
+        ...values,
+        ...sealedColumns(scopeKey.key, documentId, {
+          notes: (values.notes as string | null | undefined) ?? null,
+          extra: details,
+        }),
+      } as Record<string, unknown> as Record<string, never>;
+    }
+    const adapter = await this.vaults.adapterById(trx, file.vaultId);
+    return this.commitFiling(
+      trx,
+      p,
+      {
+        documentId,
+        values,
+        details,
+        scope,
+        vaultId: file.vaultId,
+        fileKeyWrapped: wrapKey(file.fileKey, scopeKey.key, `version:${documentId}`),
+        scopeKeyId: scopeKey.id,
+        filename: file.filename,
+        mime: file.mime,
+        ext,
+        bytes: file.bytes,
+        sha256: file.sha256,
+        cipherBytes: file.cipherBytes,
+        cipherSha256: file.cipherSha256,
+        place: async (to) => {
+          input.placed.key = to;
+          const put = await adapter.put(to, await adapter.get(file.storageKey));
+          // The bytes kept are the bytes that came in, or nothing is filed.
+          if (put.sha256 !== file.cipherSha256.toString('hex')) {
+            throw storageUnreachable('the copy of a file sent in did not match what was stored');
+          }
+          return to;
+        },
+      },
+      meta,
+    );
   }
 
   /** Step 1 of accept(): the key is this try's, or it is answered or refused. */

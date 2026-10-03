@@ -351,6 +351,41 @@ async function seed(url: string): Promise<string> {
           where household_id = $1 and revoked_at is null`,
         [hh, randomBytes(32)],
       );
+      // And, where the schema looks after them (0047), files sent through
+      // the live request: two waiting — one whose bytes are kept, one whose
+      // bytes go after the backup is made (filed, refused, or removed after
+      // 30 days) — and one filed, its bytes not yet known to be gone.
+      const reviewed = await c.query<{ has: boolean }>(
+        `select exists (select 1 from pg_attribute
+                         where attrelid = to_regclass('public.incoming_file')
+                           and attname = 'object_removed_at' and not attisdropped) as has`,
+      );
+      if (reviewed.rows[0]?.has) {
+        const scope = await c.query<{ id: string }>(
+          "insert into scope_key (household_id, kind, key_wrapped) values ($1, 'adults', '\\x00') returning id",
+          [hh],
+        );
+        const kept = await c.query<{ id: string }>(
+          "insert into vault (household_id, kind, label) values ($1, 'local', 'Incoming') returning id",
+          [hh],
+        );
+        await c.query(
+          `insert into incoming_file
+             (household_id, request_id, review_by, requester_member_id, state, original_name,
+              mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
+              file_key_wrapped, wrapped_by_scope, scope, received_at, submitted_at, decided_at)
+           select $1, r.id, r.review_by, r.requester_member_id, f.state, 'x.pdf',
+                  'application/pdf', 1, '\\x00', 1, '\\x00',
+                  $4::text || '/incoming/' || f.name || '.enc',
+                  $2, '\\x00', $3, 'member', now(), now(),
+                  case when f.state = 'accepted' then now() end
+             from upload_request r,
+                  (values ('kept', 'received'), ('gone', 'received'), ('filed', 'accepted'))
+                    as f(name, state)
+            where r.household_id = $1 and r.revoked_at is null`,
+          [hh, kept.rows[0]?.id, scope.rows[0]?.id, hh],
+        );
+      }
     }
   });
   return hh;
@@ -1095,6 +1130,91 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
   });
 
+  it("notices what was moved to the owners open to an adult, or a reviewer's writes unguarded (0047)", async () => {
+    const ruleOf = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    // The live request's files, moved to the owners (as the worker moves them).
+    await sql(
+      vault.adminUrl,
+      `update upload_request set review_by = 'adults', moved_to_owners_at = now()
+        where revoked_at is null;
+       update incoming_file set owners_only = true`,
+    );
+    try {
+      expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+      const moved = await ruleOf('incoming_file_moved');
+      await sql(
+        vault.adminUrl,
+        `alter policy incoming_file_moved on public.incoming_file
+           using ((${moved}) or app_role() = 'adult')`,
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /what was moved to the owners \(incoming_file\) is open to an adult/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `alter policy incoming_file_moved on public.incoming_file using (${moved})`,
+        );
+      }
+      const request = await ruleOf('upload_request_moved');
+      await sql(vault.adminUrl, 'drop policy upload_request_moved on public.upload_request');
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /no rule keeps what was moved to the owners theirs on upload_request/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy upload_request_moved on public.upload_request as restrictive using (${request})`,
+        );
+      }
+      await sql(
+        vault.adminUrl,
+        'alter table public.incoming_file disable trigger incoming_file_account_writes',
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.incoming_file enable trigger incoming_file_account_writes',
+        );
+      }
+      // And a decided file's bytes left to be removed as its row goes.
+      await sql(
+        vault.adminUrl,
+        'alter table public.incoming_file disable trigger incoming_file_leaves_bytes',
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.incoming_file enable trigger incoming_file_leaves_bytes',
+        );
+      }
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `update incoming_file set owners_only = false;
+         update upload_request set review_by = 'me', moved_to_owners_at = null
+          where revoked_at is null`,
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
   it('notices an audit log that can be changed', async () => {
     await sql(vault.adminUrl, 'grant update on public.audit_event to fdv_app');
     await expect(checkRestored(target())).rejects.toThrow(/no longer append-only/);
@@ -1522,6 +1642,75 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     });
     expect(reached).toEqual({ found: 0, n: 0 });
   }, 60_000);
+
+  it('files purged since the backup are dropped and reported', async () => {
+    // The files as they are now: of the three in the backup, only the first
+    // is still kept — the others went after it was made.
+    const dir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-files-'));
+    try {
+      const keptKey = (
+        await sql(
+          vault.adminUrl,
+          "select storage_key from incoming_file where storage_key like '%/kept.enc'",
+        )
+      ).rows[0]?.storage_key as string;
+      await mkdir(path.dirname(path.join(dir, keptKey)), { recursive: true });
+      await writeFile(path.join(dir, keptKey), 'its bytes, encrypted');
+
+      // Restored without being told where the files are, nothing is asked or dropped.
+      const blind = await restoreBackup(file, KEY, into(await empty()), quiet, KEYS);
+      expect(blind.incomingDropped).toBe(0);
+
+      // Nor where the place looks empty — the folder there and none of the
+      // files in it, or the folder not there: not mounted yet, the files not
+      // copied back yet. Dropping is for good; nothing is (D524-02).
+      const bare = await mkdtemp(path.join(tmpdir(), 'fdv-restore-bare-'));
+      try {
+        for (const localRoot of [bare, path.join(bare, 'not-mounted')]) {
+          const u = await empty();
+          const looked = await restoreBackup(file, KEY, into(u), quiet, KEYS, {
+            credentialsKey: Buffer.alloc(32),
+            localRoot,
+          });
+          expect(looked.incomingDropped).toBe(0);
+          const { rows: all } = await sql(
+            u.adminUrl,
+            `select regexp_replace(storage_key, '^.*/', '') as name,
+                    object_removed_at is not null as removed
+               from incoming_file order by storage_key`,
+          );
+          expect(all).toEqual([
+            { name: 'filed.enc', removed: false },
+            { name: 'gone.enc', removed: false },
+            { name: 'kept.enc', removed: false },
+          ]);
+        }
+      } finally {
+        await rm(bare, { recursive: true, force: true });
+      }
+
+      const t = await empty();
+      const report = await restoreBackup(file, KEY, into(t), quiet, KEYS, {
+        credentialsKey: Buffer.alloc(32),
+        localRoot: dir,
+      });
+      // The waiting file with nothing left to look at is dropped, and counted.
+      expect(report.incomingDropped).toBe(1);
+      const { rows } = await sql(
+        t.adminUrl,
+        `select regexp_replace(storage_key, '^.*/', '') as name, state,
+                object_removed_at is not null as removed
+           from incoming_file order by storage_key`,
+      );
+      expect(rows).toEqual([
+        // Filed: its row stays (a document's history names it), its bytes known gone.
+        { name: 'filed.enc', state: 'accepted', removed: true },
+        { name: 'kept.enc', state: 'received', removed: false },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it("a household's collections come back, and an Only me collection is still its maker's alone (0036)", async () => {
     const t = await empty();

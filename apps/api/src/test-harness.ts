@@ -43,6 +43,7 @@ import {
   UploadRequestService,
 } from './uploads/requests.js';
 import { PurgeService } from './documents/purge.js';
+import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -138,6 +139,8 @@ export interface HarnessOptions {
   mail?: (m: MailRequest) => Promise<void>;
   /** The household's room for files waiting for review, in bytes (5.21). */
   incomingMaxBytes?: number;
+  /** A decision on a file sent in, held before it commits (5.23): for the races. */
+  incomingBeforeCommit?: IncomingOptions['beforeCommit'];
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -274,6 +277,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       alert,
       ...(opts.incomingMaxBytes ? { householdMaxBytes: opts.incomingMaxBytes } : {}),
     }),
+    incoming: new IncomingService(db, keys, vaults, documents, {
+      enqueue,
+      ...(opts.incomingBeforeCommit ? { beforeCommit: opts.incomingBeforeCommit } : {}),
+    }),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(
@@ -294,7 +301,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     household: new HouseholdService(db, keys, stepUp),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations,
-    coOwners: new CoOwnerService(db, alert, push),
+    coOwners: new CoOwnerService(db, alert, push, enqueue),
     suggestions: new SuggestionService(db),
     logger: opts.logger ?? false,
   });

@@ -208,6 +208,9 @@ function photoVault() {
     state.tdb = await createTestDatabase();
     state.db = createDb(createPool(state.tdb.appUrl, 3));
     state.admin = new pg.Pool({ connectionString: state.tdb.adminUrl, max: 1 });
+    // A connection the server ends as the database is dropped is said on
+    // the pool, not an unhandled error (the 5.23 review).
+    state.admin.on('error', () => undefined);
     state.vaultDir = await mkdtemp(path.join(tmpdir(), 'fdv-photo-vault-'));
     state.scratch = await mkdtemp(path.join(tmpdir(), 'fdv-photo-src-'));
     const { hh } = state;

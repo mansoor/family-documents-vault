@@ -274,6 +274,9 @@ describe.skipIf(!testAdminUrl())("a view-only link's pages", () => {
     tdb = await createTestDatabase();
     db = createDb(createPool(tdb.appUrl, 3));
     admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    // A connection the server ends as the database is dropped is said on
+    // the pool, not an unhandled error (the 5.23 review).
+    admin.on('error', () => undefined);
     vaultDir = await mkdtemp(path.join(tmpdir(), 'fdv-sp-vault-'));
     await admin.query(
       "insert into household (id, name, timezone) values ($1, 'P', 'Europe/London')",

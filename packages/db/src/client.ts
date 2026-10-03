@@ -440,6 +440,11 @@ export interface Schema {
     revoked_by: string | null;
     closed_at: Timestamp | null;
     closed_reason: 'submitted' | 'requester_lost_right' | null;
+    /**
+     * When its files were moved to the owners from a requester who can no
+     * longer review (0047): from then on the owners' alone.
+     */
+    moved_to_owners_at: Timestamp | null;
   };
 
   /** What a request asks for, by name (0044): "W-2", "1099". */
@@ -494,7 +499,8 @@ export interface Schema {
       'uploading' | 'received' | 'accepted' | 'rejected' | undefined,
       'uploading' | 'received' | 'accepted' | 'rejected'
     >;
-    original_name: string;
+    /** Its name as sent; null once it is refused (0047), which keeps no name. */
+    original_name: string | null;
     mime: string | null;
     byte_size: ColumnType<string | number | null, number | null | undefined, number | null>;
     /** The room it holds while it arrives, against the caps (incoming_room()). */
@@ -516,6 +522,17 @@ export interface Schema {
     decided_at: Timestamp | null;
     document_id: string | null;
     version_id: string | null;
+    /** Its review previews (0047): drawn by the worker once it is no longer pending a scan. */
+    preview_state: Generated<'none' | 'drawing' | 'ready' | 'unsupported' | 'failed'>;
+    /** When its drawing began: one job at a time, and one that died is taken over after an hour. */
+    preview_requested_at: Timestamp | null;
+    preview_pages: number | null;
+    /** A decided file's object, and its previews, gone (0047). */
+    object_removed_at: Timestamp | null;
+    /** Moved to the owners from a requester who can no longer review (0047). */
+    owners_only: Generated<boolean>;
+    /** When its reviewers were told it is waiting (0047): told once. */
+    told_at: Timestamp | null;
   };
 
   owner_change_request: {

@@ -37,6 +37,7 @@ import {
   UploadRequestService,
 } from './uploads/requests.js';
 import { PurgeService } from './documents/purge.js';
+import { IncomingService } from './uploads/incoming.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -186,7 +187,7 @@ async function main(): Promise<void> {
     household: new HouseholdService(db, keys, stepUpService),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     invitations: new InvitationService(db, keys, auth),
-    coOwners: new CoOwnerService(db, alert, push),
+    coOwners: new CoOwnerService(db, alert, push, enqueue),
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
       enqueue,
       maxDays: config.FDV_SHARE_MAX_DAYS,
@@ -208,6 +209,7 @@ async function main(): Promise<void> {
       enqueue,
       alert,
     }),
+    incoming: new IncomingService(db, keys, vaults, documents, { enqueue }),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,

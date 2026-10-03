@@ -66,6 +66,7 @@ import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { MailRequest } from '../mail-job.js';
 import { cookieForNewBinding, type DeviceCookie } from '../public/device-cookie.js';
+import { INCOMING_SCAN_JOB } from './incoming.js';
 import { inspectOffice } from './office.js';
 
 /**
@@ -1732,7 +1733,7 @@ export class UploadRequestService {
     input: z.infer<typeof dropFinishBody>,
     meta: RequestMeta,
   ): Promise<DropFinished> {
-    return this.inSession(
+    const done = await this.inSession(
       cookie,
       async (trx, r, session, scope) => {
         const note = input.note?.replace(/\r\n?/g, '\n').trim() || null;
@@ -1769,23 +1770,32 @@ export class UploadRequestService {
           detail: { files: sent.length, closed },
           ip: truncatedIp(meta.ip),
         });
-        return { files: sent.length, closed };
+        return { files: sent.length, closed, householdId: scope.householdId, requestId: r.id };
       },
       { mayEnd: true },
     );
+    // Once sent, the worker gets them ready to be looked at (5.23): the scan
+    // (none here, A42) and the review previews, then tells the reviewers.
+    // Its daily sweep finds any whose job was lost.
+    await this.enqueue(INCOMING_SCAN_JOB, {
+      household_id: done.householdId,
+      request_id: done.requestId,
+    }).catch(() => undefined);
+    return { files: done.files, closed: done.closed };
   }
 }
 
 function dropFile(f: {
   id: string;
-  original_name: string;
+  /** Only a file refused has none (0047), and a sender is not shown those. */
+  original_name: string | null;
   mime: string | null;
   byte_size: string | number | null;
   item_id: string | null;
 }): DropFile {
   return {
     id: f.id,
-    name: f.original_name,
+    name: f.original_name ?? 'file',
     content_type: f.mime ?? 'application/octet-stream',
     byte_size: Number(f.byte_size ?? 0),
     item_id: f.item_id,

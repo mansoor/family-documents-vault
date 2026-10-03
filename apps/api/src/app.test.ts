@@ -55,6 +55,7 @@ async function make(
       coOwners: anyStub,
       shares: anyStub,
       uploads: anyStub,
+      incoming: anyStub,
       audit: anyStub,
       passwords: anyStub,
       offline: anyStub,

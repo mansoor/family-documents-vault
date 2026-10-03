@@ -1657,3 +1657,16 @@ a.btn {
   text-align: center;
   padding: 0 16px;
 }
+
+/* 5.23: a file sent in, looked at before it is filed. Its page as large as
+   the window lets it be, and the sender's note as they wrote it. */
+.incoming-pages .preview img {
+  max-height: 75vh;
+}
+
+.incoming-note {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+  white-space: pre-wrap;
+}

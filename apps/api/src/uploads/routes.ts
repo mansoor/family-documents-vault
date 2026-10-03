@@ -1,10 +1,12 @@
 import type { MultipartFile } from '@fastify/multipart';
+import { NOT_SCANNED } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
+import { acceptBody, type IncomingService } from './incoming.js';
 import {
   createBody,
   DROP_COOKIE_PATH,
@@ -220,6 +222,78 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   app.post('/api/v1/drop/finish', inSession, async (req) =>
     uploads.finish(dropSessionCookie(req), parse(dropFinishBody, req.body ?? {}), metaOf(req)),
   );
+}
+
+/**
+ * Incoming (5.23): what came in through a request, looked at before it is
+ * filed. Owners and adults who review it; anybody else is answered as if
+ * there were nothing here (404).
+ */
+export function registerIncoming(app: FastifyInstance, incoming: IncomingService) {
+  const auth = { preHandler: app.requireAuth };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+  const pageParams = z.object({
+    id: z.string().uuid(),
+    n: z.coerce.number().int().min(1).max(9999),
+  });
+
+  app.get('/api/v1/incoming', auth, async (req) => ({
+    items: await incoming.list(principal(req)),
+  }));
+
+  /** A page the worker drew for review: a JPEG, never kept by the browser. */
+  app.get<{ Params: { id: string; n: string } }>(
+    '/api/v1/incoming/:id/pages/:n',
+    auth,
+    async (req, reply) => {
+      const { id, n } = parse(pageParams, req.params);
+      const bytes = await incoming.page(principal(req), id, n);
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, no-store');
+      reply.header('x-content-type-options', 'nosniff');
+      return reply.send(bytes);
+    },
+  );
+
+  /**
+   * A copy of the file: an attachment, never shown in the page; the type its
+   * bytes are, and no sniffing; under a name whose ending its bytes chose;
+   * and, when it has not been scanned for viruses (A42: never, here), a
+   * warning saying so.
+   */
+  app.get<{ Params: { id: string } }>('/api/v1/incoming/:id/content', auth, async (req, reply) => {
+    const file = await incoming.content(principal(req), parse(idParam, req.params).id, metaOf(req));
+    reply.header('content-type', file.contentType);
+    reply.header(
+      'content-disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+    );
+    reply.header('content-length', String(file.total));
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('content-security-policy', "default-src 'none'; sandbox");
+    reply.header('cache-control', 'private, no-store');
+    if (!file.scanned) {
+      reply.header('x-fdv-scan', 'unscanned');
+      reply.header('warning', `199 - "${NOT_SCANNED}"`);
+    }
+    return reply.send(file.stream);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/v1/incoming/:id/accept', auth, async (req, reply) => {
+    const done = await incoming.accept(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(acceptBody, req.body ?? {}),
+      metaOf(req),
+    );
+    return reply.status(201).send(done);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/v1/incoming/:id/reject', auth, async (req, reply) => {
+    await incoming.reject(principal(req), parse(idParam, req.params).id, metaOf(req));
+    return reply.status(204).send();
+  });
 }
 
 /** The parser's own limits (a second file, a second field) are the order's refusal. */

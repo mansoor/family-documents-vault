@@ -138,6 +138,14 @@ export interface CapabilityFeatures {
    * nobody's details.
    */
   member_edit?: boolean;
+  /**
+   * Somebody outside the family can be asked to send documents (5.21), and
+   * what they send is looked at before it is filed (5.23): /upload-requests,
+   * the sender's /drop routes, and /incoming — the files waiting, their
+   * previews, their content, filing one and refusing one. For owners and
+   * adults. Absent from older vaults.
+   */
+  upload_requests?: boolean;
 }
 
 export interface CapabilityLimits {

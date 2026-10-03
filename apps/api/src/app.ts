@@ -38,8 +38,9 @@ import { registerSuggestions } from './suggestions/routes.js';
 import type { SuggestionService } from './suggestions/service.js';
 import type { ReminderService } from './reminders/service.js';
 import type { ExportService } from './exports/service.js';
-import { registerUploads } from './uploads/routes.js';
+import { registerIncoming, registerUploads } from './uploads/routes.js';
 import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.js';
+import type { IncomingService } from './uploads/incoming.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
@@ -81,6 +82,8 @@ export interface AppDeps {
   shares: ShareService;
   /** Asking somebody outside the family to send documents (5.21). */
   uploads: UploadRequestService;
+  /** What they sent, looked at before it is filed (5.23). */
+  incoming: IncomingService;
   audit: AuditService;
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
@@ -320,6 +323,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.purge,
   );
   registerUploads(app, deps.uploads);
+  registerIncoming(app, deps.incoming);
 
   return app;
 }

@@ -198,12 +198,38 @@ async function newDatabase(
       const c = new pg.Client({ connectionString: adminUrl });
       await c.connect();
       try {
+        await settle(c, name);
         await c.query(`drop database if exists ${name} with (force)`);
       } finally {
         await c.end();
       }
     },
   };
+}
+
+/** How long a dropped test database's own connections are given to close. */
+export const DROP_SETTLE_MS = 5_000;
+
+/**
+ * Waits for the connections to a database to close before it is dropped
+ * with force. A pool's `end()` resolves once it has asked each connection
+ * to close, not once each has: one the server ends first, by `with
+ * (force)`, answers with 57P01 ("terminating connection due to
+ * administrator command") — an 'error' on a pool nobody listens to any
+ * more, and an unhandled error that fails a test file that passed (the
+ * 5.23 review, CI's image tests). Any still open after DROP_SETTLE_MS are
+ * a test's own leak, and are ended with the database.
+ */
+async function settle(c: pg.Client, name: string): Promise<void> {
+  const until = Date.now() + DROP_SETTLE_MS;
+  while (Date.now() < until) {
+    const { rows } = await c.query<{ n: number }>(
+      'select count(*)::int as n from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()',
+      [name],
+    );
+    if (!rows[0]?.n) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /**

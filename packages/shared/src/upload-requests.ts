@@ -1,3 +1,5 @@
+import type { Visibility } from './documents.js';
+
 /**
  * Asking somebody outside the family to send documents (5.21).
  *
@@ -221,4 +223,117 @@ export interface DropSession {
 export interface DropFinished {
   files: number;
   closed: boolean;
+}
+
+// ------------------------------------------------- incoming (5.23)
+
+/**
+ * A file sent in waits this many days, from when it arrived, for somebody
+ * to file it; then the vault removes it, its bytes and all.
+ */
+export const INCOMING_KEEP_DAYS = 30;
+
+/**
+ * What a reviewer is told of a file the vault has not scanned for viruses:
+ * this vault scans for nothing (A42), so it is every file it holds.
+ */
+export const NOT_SCANNED = 'Not scanned for viruses';
+
+/** Where a file sent in stands with the vault's scan (A42): never "clean" without a scanner. */
+export type IncomingScanState = 'pending' | 'unscanned' | 'clean';
+
+/**
+ * Its review previews: being got ready, drawn (`preview_pages` of them), a
+ * kind the vault does not draw (Word, Excel), or drawing failed.
+ */
+export type IncomingPreviewState = 'pending' | 'ready' | 'unsupported' | 'failed';
+
+/**
+ * `GET /api/v1/incoming`: a file sent through a request, waiting for its
+ * reviewer — the requester, for a request they review alone; otherwise the
+ * owners and adults, or the owners alone once moved to them. Never a
+ * teen's or a viewer's. Nothing here is a document until it is filed.
+ */
+export interface IncomingFileView {
+  id: string;
+  request_id: string;
+  /** The request it came through: its title, and whom it was for ("Jane, accountant"). */
+  request_title: string;
+  recipient_label: string | null;
+  /** Which of the things asked for the sender said it was ("W-2"), if they chose. */
+  item_label: string | null;
+  /** Its name as sent, made safe to show. Shown, and never trusted for anything else. */
+  name: string;
+  /** What its bytes are, never what it was called. */
+  content_type: string;
+  byte_size: number;
+  /** The sender's note, plain text, given with every file they sent at once. */
+  sender_note: string | null;
+  /** When its sender pressed Finish. */
+  sent_at: string;
+  /** When the vault removes it unless it is filed: INCOMING_KEEP_DAYS after it arrived. */
+  removed_at: string;
+  scan_state: IncomingScanState;
+  preview_state: IncomingPreviewState;
+  /** Pages drawn, served at /incoming/{id}/pages/{n}; null until known. */
+  preview_pages: number | null;
+  /** The requester's hints for whoever reviews: whose it probably is, and what kind. */
+  suggested_member_id: string | null;
+  suggested_type_key: string | null;
+  review_by: UploadReviewBy;
+  /** Moved to the owners from a requester who can no longer review it. */
+  moved_to_owners: boolean;
+}
+
+/**
+ * `POST /api/v1/incoming/{id}/accept`: filed as a new document, for the
+ * person and visibility chosen, its details checked as a capture's are; or
+ * as a new version of a document the reviewer may see and change
+ * (`into_document_id`), with nothing else beside it.
+ */
+export interface IncomingAcceptInput {
+  owner_member_id?: string | null;
+  type_key?: string | null;
+  title?: string | null;
+  visibility?: Visibility;
+  into_document_id?: string;
+}
+
+/** What filing a file made. */
+export interface IncomingAccepted {
+  document_id: string;
+  version_id: string;
+}
+
+/**
+ * A version's line in a document's history when it came in through a
+ * request (5.23): "Sent through a request link (Jane, accountant)".
+ */
+export function sentThroughWords(recipientLabel: string | null): string {
+  const label = recipientLabel?.trim();
+  return label ? `Sent through a request link (${label})` : 'Sent through a request link';
+}
+
+/** The ending each kind a request takes is saved with. */
+const INCOMING_EXTENSIONS: Readonly<Record<string, string>> = {
+  'application/pdf': 'pdf',
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/heic': 'heic',
+  'image/heif': 'heic',
+  'image/tiff': 'tiff',
+  'image/webp': 'webp',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+};
+
+/**
+ * The name a file sent in is saved under: its own name without whatever
+ * ending the sender gave it, and the ending its bytes say it has. A file
+ * sent as "invoice.html" that is a PDF is "invoice.pdf".
+ */
+export function incomingFileName(name: string, contentType: string): string {
+  const ext = INCOMING_EXTENSIONS[contentType] ?? 'bin';
+  const base = name.replace(/\.[^.]{1,10}$/, '').trim() || 'file';
+  return `${base}.${ext}`;
 }

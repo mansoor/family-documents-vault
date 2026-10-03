@@ -173,6 +173,7 @@ jobs:
           apps/worker/src/jobs/member-photo.test.ts
           apps/worker/src/jobs/previews.test.ts
           apps/worker/src/jobs/share-pages.test.ts
+          apps/worker/src/jobs/incoming.test.ts
 
   images:
     name: Build images

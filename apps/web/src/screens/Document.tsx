@@ -378,6 +378,8 @@ export function DocumentScreen() {
                   {v.filename} · {(v.byte_size / 1024).toFixed(0)} KB · added{' '}
                   {whenExactly(v.uploaded_at)}
                   {v.uploaded_by_name ? ` by ${v.uploaded_by_name}` : ''}
+                  {/* Where it came from, when somebody outside sent it (5.23). */}
+                  {v.sent_through ? ` · ${v.sent_through}` : ''}
                 </span>
                 {v.file_removed && <span className="muted">{FILE_REMOVED}</span>}
               </span>

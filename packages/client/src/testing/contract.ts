@@ -4,6 +4,7 @@ import {
   COLLECTION_HINT_TEENS,
   reminderOf,
   reminderSentence,
+  type CreatedUploadRequest,
   type DocumentTypeInput,
   type Tokens,
 } from '@fdv/shared';
@@ -41,6 +42,16 @@ export interface ContractContext {
    * makes them itself at the next GET /members, and needs nothing here.
    */
   makePhotos?: () => Promise<void>;
+  /**
+   * Sends files through a request, as somebody outside the family would
+   * (0.5.23), and gets them ready to be looked at, as the vault's worker
+   * does: the real API's run drives the sender's page and stands in for the
+   * worker (no scan, A42; one page drawn); the fake keeps them as sent.
+   */
+  sendFiles: (
+    made: CreatedUploadRequest,
+    files: Array<{ name: string; bytes: Uint8Array; contentType: string }>,
+  ) => Promise<void>;
 }
 
 export interface Scenario {
@@ -1201,6 +1212,88 @@ export const contractScenarios: Scenario[] = [
       // sign-in or a passkey (A54).
       const card = await refusal(api.memberAccount(token, me.member_id));
       expect(card).toMatchObject({ status: 403, code: 'totp_required_for_owner' });
+    },
+  },
+  {
+    name: 'files sent through a request wait to be looked at, then are filed or refused, once (0.5.23)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.upload_requests).toBe(true);
+      const made = await api.createUploadRequest(token, {
+        title: 'Contract tax papers',
+        recipient_label: 'Jane, accountant',
+        review_by: 'adults',
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      });
+      const w2 = new TextEncoder().encode('%PDF-1.4\n% the W-2\n%%EOF\n');
+      const spam = new TextEncoder().encode('%PDF-1.4\n% not asked for\n%%EOF\n');
+      await ctx.sendFiles(made, [
+        { name: 'W-2 2025.pdf', bytes: w2, contentType: 'application/pdf' },
+        { name: 'spam.pdf', bytes: spam, contentType: 'application/pdf' },
+      ]);
+      const waiting = (await api.incoming(token)).items;
+      const first = waiting.find((f) => f.name === 'W-2 2025.pdf');
+      const second = waiting.find((f) => f.name === 'spam.pdf');
+      expect(first).toMatchObject({
+        request_id: made.request.id,
+        request_title: 'Contract tax papers',
+        recipient_label: 'Jane, accountant',
+        content_type: 'application/pdf',
+        byte_size: w2.length,
+        scan_state: 'unscanned',
+        preview_state: 'ready',
+        preview_pages: 1,
+        review_by: 'adults',
+        moved_to_owners: false,
+      });
+      const id = (first as { id: string }).id;
+      const other = (second as { id: string }).id;
+
+      // A look: its page, and a copy under the name its bytes say, unscanned.
+      const page = await api.incomingPage(token, id, 1);
+      expect(page.status).toBe(200);
+      expect(page.headers.get('content-type')).toBe('image/jpeg');
+      const copy = await api.incomingContent(token, id);
+      expect(new Uint8Array(await copy.arrayBuffer())).toEqual(w2);
+      expect(copy.headers.get('content-disposition')).toBe(
+        "attachment; filename*=UTF-8''W-2%202025.pdf",
+      );
+      expect(copy.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(copy.headers.get('x-fdv-scan')).toBe('unscanned');
+
+      // Filed into a document that is not there: not there.
+      const missing = await refusal(
+        api.acceptIncoming(token, id, { into_document_id: NEVER_USED }),
+      );
+      expect(missing).toMatchObject({ status: 404, code: 'not_found' });
+      // As a kind the household does not have: refused, saying which detail
+      // (not filed with no kind, as a phone's queued capture is).
+      const kindless = await refusal(
+        api.acceptIncoming(token, id, { title: 'Contract W-2', type_key: 'no_such_kind' }),
+      );
+      expect(kindless).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'That kind of document is not on the list.',
+        detail: 'type_key',
+      });
+      expect((await api.incoming(token)).items.map((f) => f.id)).toContain(id);
+      // Filed as a new document; the other refused.
+      const filed = await api.acceptIncoming(token, id, { title: 'Contract W-2' });
+      expect((await api.document(token, filed.document_id)).title).toBe('Contract W-2');
+      const versions = (await api.versions(token, filed.document_id)).items;
+      expect(versions.map((v) => v.id)).toEqual([filed.version_id]);
+      await api.rejectIncoming(token, other);
+      const left = (await api.incoming(token)).items.map((f) => f.id);
+      expect(left).not.toContain(id);
+      expect(left).not.toContain(other);
+      // Decided is decided, whichever way.
+      for (const again of [
+        refusal(api.rejectIncoming(token, id)),
+        refusal(api.acceptIncoming(token, other, { title: 'Second thoughts' })),
+      ]) {
+        expect(await again).toMatchObject({ status: 409, code: 'already_decided' });
+      }
     },
   },
   {

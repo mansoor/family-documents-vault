@@ -143,6 +143,9 @@ describe.skipIf(!ready)('page previews', () => {
     tdb = await createTestDatabase();
     db = createDb(createPool(tdb.appUrl, 3));
     admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    // A connection the server ends as the database is dropped is said on
+    // the pool, not an unhandled error (the 5.23 review).
+    admin.on('error', () => undefined);
     vaultDir = await mkdtemp(path.join(tmpdir(), 'fdv-pv-vault-'));
     scratch = await mkdtemp(path.join(tmpdir(), 'fdv-pv-src-'));
     await admin.query('insert into household (id, name) values ($1, $2)', [hh, 'P']);

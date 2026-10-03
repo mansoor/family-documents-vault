@@ -13,7 +13,14 @@ export type PushMessage =
   | { v: 1; type: 'new_device' }
   | { v: 1; type: 'owner_change' }
   | { v: 1; type: 'session_ended' }
-  | { v: 1; type: 'test' };
+  | { v: 1; type: 'test' }
+  /**
+   * Files sent through a request are waiting for this person to look at
+   * them (5.23): how many, and nothing else — not who sent them, not what
+   * they are called. A phone older than 5.31 shows a type it does not know
+   * as nothing.
+   */
+  | { v: 1; type: 'incoming'; count: number };
 
 export type PushType = PushMessage['type'];
 
@@ -24,7 +31,15 @@ export const PUSH_TTL_SECONDS: Record<PushType, number> = {
   owner_change: 24 * 3600,
   session_ended: 7 * 24 * 3600,
   test: 24 * 3600,
+  incoming: 24 * 3600,
 };
+
+/** "Files to look at" (5.23), as a push and an email say it: a count, and nothing else. */
+export function incomingWords(count: number): string {
+  return count === 1
+    ? '1 file sent to your vault is waiting for you to look at.'
+    : `${count} files sent to your vault are waiting for you to look at.`;
+}
 
 /** One Topic per type: a newer digest replaces an older one still waiting. */
 export const pushTopic = (type: PushType): string => `fdv-${type.replace('_', '-')}`;

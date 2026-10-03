@@ -2405,6 +2405,161 @@ step_up_required` with **new** `action: "manage_sign_ins"` ("Please
       (the version as If-Match) and `memberAccount`; the fake keeps each
       person's version and answers the account card only for an owner with
       `ownerTwoStep`.
+  - Incoming: look before it is filed (5.23). What somebody outside the
+    family sends through a request waits for whoever reviews it to look at
+    it, then file it or refuse it. `features.upload_requests` is **on** from
+    here: the requests (5.21), the sender's routes, and these.
+    - **Added:** `GET /api/v1/incoming` → `{ items: IncomingFileView[] }`,
+      newest first: the files sent (Finish pressed) and waiting for the
+      reader — the requester alone for a request they review alone (A43),
+      the owners and adults for one any adult reviews, the owners alone
+      once moved to them (below). Each: `id`, `request_id`,
+      `request_title`, `recipient_label`, `item_label`, `name` (as sent,
+      made safe to show), `content_type` (what its bytes are), `byte_size`,
+      `sender_note`, `sent_at`, `removed_at` (30 days after it arrived),
+      `scan_state` (`pending` while it is being got ready, then `unscanned`:
+      this vault scans for nothing, A42 — never `clean` without a scanner),
+      `preview_state` (`pending`, `ready`, `unsupported`, `failed`),
+      `preview_pages`, the request's hints `suggested_member_id` and
+      `suggested_type_key`, `review_by`, and `moved_to_owners`.
+    - **Added:** `GET /api/v1/incoming/{id}/pages/{n}` → a JPEG the worker
+      drew for review (1600 px on its long edge, as a version's), `nosniff`,
+      never kept by the browser. `404 preview_pending` (retriable,
+      `Retry-After: 3`) while it is drawn; `404 no_preview` for a kind the
+      vault does not draw (Word, Excel) or a page past those drawn; `409
+already_decided` once somebody has filed or refused it.
+    - **Added:** `GET /api/v1/incoming/{id}/content` → the file, always
+      `Content-Disposition: attachment`, under its own name with the ending
+      its bytes say, never the sender's ("invoice.html" that is a PDF is
+      "invoice.pdf"); `X-Content-Type-Options: nosniff`, a sandboxing
+      `Content-Security-Policy`, `Cache-Control: private, no-store`; and,
+      when it was not scanned for viruses (every file, here),
+      `X-FDV-Scan: unscanned` and `Warning: 199 - "Not scanned for viruses"`.
+      Each copy is a line in the activity log. `409 incoming_not_ready`
+      (retriable) while it is still being got ready; `409 already_decided`
+      once somebody has filed or refused it.
+    - **Added:** `POST /api/v1/incoming/{id}/accept`
+      `{ owner_member_id?, type_key?, title?, visibility? }` → `201
+IncomingAccepted` `{ document_id, version_id }`: a new document, its
+      details checked as a capture's are (the person in the family, Only me
+      for one's own only), and a kind the household does not have refused,
+      `422 validation_failed` with `detail: "type_key"` — not filed with no
+      kind, as a phone's queued capture is: this is chosen now, from the
+      list as it is; or
+      `{ into_document_id }`, a new version of a document the reviewer may
+      see and change, as adding a version asks (the teen's rule included):
+      any other is `404 not_found`, and both at once is `422`. It goes
+      through the commit every upload goes through; the file is never
+      encrypted again — its key is rewrapped for the document, as a
+      visibility change rewraps a version's — and its bytes are copied to
+      where versions are kept, then its own object and every page of it
+      removed, whatever was drawn. A filing whose answer is lost (the
+      connection gone as it commits) keeps its copy unless the filing
+      certainly did not happen; the daily sweep then removes the file's own
+      object only once the version's copy is there — made again from it
+      when it is not. The new document's `created_by` is the reviewer,
+      never null. Its OCR, page count and previews are queued only now
+      (`version.process`).
+      `409 already_decided` once somebody has filed or refused it; `409
+incoming_not_ready` (retriable) while it is still being got ready.
+    - **Added:** `POST /api/v1/incoming/{id}/reject` → `204`: refused, its
+      bytes and every page removed, and with them its name, the sender's
+      note and its hash. What stays is its row, decided: that a file of that
+      kind and size came through the request, and who refused it when. `409
+already_decided` once decided.
+    - A file sent but not finished (its sender never pressed Finish) is not
+      waiting: not listed, and `404 not_found` on every one of these.
+    - A teen or a viewer is answered `404 not_found` on every one of these;
+      so is another adult, and an owner, for a file of a request somebody
+      reviews alone. A decision waits for the reviewer's own role being
+      changed, and the change for it: one demoted as they file is answered
+      `404` and files nothing. `503 busy` (retriable) for a role that
+      changed while the call was on its way.
+    - Nothing waiting is searched, listed, reminded or counted: it is not a
+      document until it is filed.
+    - Removing a document for good (5.24) takes the file it was filed from
+      in the same statement: its row, with the sender's name for it and
+      their note, and — if they are still there — its bytes and pages,
+      written down to be deleted with the rest (`purge_leftover`).
+    - **Changed:** `VersionView` gains `sent_through`: "Sent through a
+      request link (Jane, accountant)" on a version that came in through a
+      request — to whoever may review that request; to anybody else, as on
+      an older vault, `null`, and `uploaded_by_name` names whoever filed it.
+    - The activity log: "Sam filed a document sent by Jane, accountant",
+      "Sam refused a file sent by Jane, accountant", "Sam saved a copy of a
+      file sent by Jane, accountant, to look at it", "2 files sent by Jane,
+      accountant were removed: nobody filed them within 30 days", and "2
+      files sent by Jane, accountant were given to the owners to look at:
+      whoever asked for them can no longer" — to the request's reviewers
+      only, as its own lines are; never a file's name. The sender's own
+      lines read "Upload link (Jane, accountant) …", as since 5.21.
+    - The push: **new** `PushMessage` `{ v: 1, type: 'incoming', count }`
+      — how many files are waiting for this person, and nothing else; a
+      browser is told "3 files sent to your vault are waiting for you to
+      look at.", and a tap opens `/incoming` (the push's `url`, where the
+      email's link goes). Never a teen, a viewer, or anybody whose sign-in
+      was taken away. A phone older than 5.31 shows a push of a type it does not
+      know as nothing. The email, through the household's mail server, says
+      the same count and where to look, and nothing else.
+    - The worker: **new** `incoming.scan` (sent when a sender presses
+      Finish): `scan_state` `unscanned` (no `FDV_CLAMD_URL`: scanning is
+      built only if asked for, A42), the review pages drawn under the same
+      ImageMagick limits as a version's, encrypted under the file's own key
+      beside its object; then its reviewers told, once, of every file ready
+      and not yet told of (`told_at`) — so a job that stopped between the
+      two is made good by the next, or by the sweep. **New** `incoming.move`
+      (sent after a role change or a sign-in taken away): what was sent for
+      somebody alone to review, once they can no longer review it, is moved
+      to the owners — each waiting file's key rewrapped from their own key
+      to the adults key, the request's reviewers made `adults` and both
+      marked the owners' alone, the request closed — with a line in the
+      activity log, and the owners told. **New** daily `incoming.sweep`: a
+      file not filed within 30 days of arriving is removed, its bytes, every
+      page and its row; a decided file's bytes left behind are removed (a
+      filed one's only once its version's copy is there); a request
+      past its end with nothing waiting and nothing ever filed from it is
+      removed, with its items, sessions, codes and refused files' rows (one
+      something was filed from stays: a document's history says it came
+      through it); and what a lost job missed is done.
+    - Restore: a file waiting in the backup whose bytes have gone since
+      (filed, refused or removed after the backup was made) is dropped, and
+      the report says how many (`incomingDropped`); a decided file's bytes
+      found gone are written down as gone. Only where the files are kept
+      clearly holds files, as for versions (5.24): a folder not there, or a
+      place holding none of these files and none of its documents', drops
+      nothing, and the log says why.
+    - `@fdv/shared`: `IncomingFileView`, `IncomingAcceptInput`,
+      `IncomingAccepted`, `IncomingScanState`, `IncomingPreviewState`,
+      `INCOMING_KEEP_DAYS`, `NOT_SCANNED`, `incomingFileName`,
+      `sentThroughWords`, `incomingWords`; `PushMessage` gains `incoming`;
+      `CapabilityFeatures.upload_requests`. `@fdv/client`: `incoming`,
+      `incomingPage`, `incomingContent`, `acceptIncoming`,
+      `rejectIncoming`; the fake keeps files sent in (`state.incoming`) and
+      says `upload_requests: true`; the contract gains a scenario (and its
+      context `sendFiles`).
+    - The database: 0047 adds `incoming_file.preview_state` (`none`,
+      `drawing` — one job at a time, taken over after an hour — `ready`,
+      `unsupported`, `failed`), `preview_requested_at`, `preview_pages`,
+      `object_removed_at`, `owners_only` and `told_at`, a version filed from
+      at most one file (`incoming_file_version_key`), and `upload_request
+.moved_to_owners_at`. A refused file's `original_name` and `sha256`
+      may be null (`incoming_file_named`; `incoming_file_received_whole`
+      asks the hash of every other). `document_id` and `version_id` go with
+      what they name (`on delete cascade`, where 0044 let go of them), and
+      `incoming_file_leaves_bytes` writes a decided file's bytes and pages,
+      not yet known gone, into `purge_leftover` as its row goes. Rules of its
+      own beside 0044's, which it does not change: a moved request and its
+      files are the owners' alone (`upload_request_moved`,
+      `incoming_file_moved`); a reviewer never removes a file
+      (`incoming_file_account_delete`); and `incoming_file_account_writes`
+      lets somebody signed in only file a waiting file — once, as
+      themselves, as the version that very transaction made of it, which
+      they uploaded, in its own document — or refuse it, naming nothing and
+      letting go of its name, note and hash; say once that a decided file's
+      object is gone; and nothing else, ever: where a filed file went is
+      never changed afterwards, and a sender's session is let go of only by
+      the database as it ends. The restore check holds both triggers and
+      the owners' rules to being there.
 
 ## Deprecations in effect
 

@@ -18,6 +18,7 @@ import {
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
   inCollectionAudience,
+  incomingFileName,
   libraryHasName,
   missingFields,
   nextReminder,
@@ -44,6 +45,7 @@ import {
   type DocumentTypeView,
   type TypeField,
   type DocumentView,
+  type IncomingFileView,
   type UploadRequestView,
   type IssuerSuggestions,
   type MemberAccount,
@@ -166,11 +168,24 @@ export interface FakeVaultState {
    * incoming push).
    */
   uploadRequests: UploadRequestView[];
+  /**
+   * Files sent through a request and waiting to be looked at (0.5.23), as
+   * GET /incoming answers them, with their bytes: a test puts one here as a
+   * sender would send it, ready (its scan and pages done) unless it says.
+   */
+  incoming: FakeIncoming[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
   offline: boolean;
 }
+
+/** A file sent in, as the fake keeps one (0.5.23): its view, and what it is. */
+export type FakeIncoming = IncomingFileView & {
+  bytes: Uint8Array;
+  /** Filed or refused: no longer waiting, and answered `already_decided`. */
+  decided?: 'accepted' | 'rejected';
+};
 
 type FakeDocument = {
   id: string;
@@ -446,6 +461,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     role: 'owner',
     collections: [],
     uploadRequests: [],
+    incoming: [],
     calls: [],
     offline: false,
   };
@@ -675,6 +691,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           share_email_code: false,
           // A person's details, and the owner's view of a sign-in (5.25).
           member_edit: true,
+          // Asking somebody to send documents, and looking before filing (5.23).
+          upload_requests: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1856,6 +1874,134 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         }
       }
     }
+    // What came in through a request, looked at before it is filed (0.5.23):
+    // the reviewer's side. A teen or a viewer is told there is nothing here.
+    const incomingAt =
+      /^\/api\/v1\/incoming(?:\/([^/]+)\/(pages\/(\d+)|content|accept|reject))?$/.exec(path);
+    if (incomingAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const notHere = () => fail(404, 'not_found', 'That file is not waiting for you.');
+      if (!can(state.role, 'upload_request.create')) return notHere();
+      const [, id, what, n] = incomingAt;
+      if (!id && init.method === 'GET') {
+        return ok({
+          items: state.incoming
+            .filter((f) => !f.decided)
+            .map(({ bytes: _bytes, decided: _decided, ...view }) => view),
+        });
+      }
+      const f = state.incoming.find((x) => x.id === decodeURIComponent(id ?? ''));
+      if (!f) return notHere();
+      const decided = () =>
+        fail(409, 'already_decided', 'Somebody has filed or refused this file already.');
+      const notReady = () =>
+        respond(409, {
+          error: {
+            code: 'incoming_not_ready',
+            message: 'This file is still being got ready to look at. Try again in a minute.',
+            retriable: true,
+            request_id: 'fake',
+          },
+        });
+      if (what?.startsWith('pages/') && init.method === 'GET') {
+        if (f.decided) return decided();
+        if (f.preview_state === 'pending') {
+          return fail(404, 'preview_pending', 'The preview is being made. Try again in a moment.');
+        }
+        if (f.preview_state !== 'ready' || Number(n) > (f.preview_pages ?? 0)) {
+          return fail(404, 'no_preview', "There's no preview of this page.");
+        }
+        return picture(FAKE_PAGE);
+      }
+      if (what === 'content' && init.method === 'GET') {
+        if (f.decided) return decided();
+        if (f.scan_state === 'pending') return notReady();
+        return attachment(f.bytes, {
+          'content-type': f.content_type,
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(incomingFileName(f.name, f.content_type))}`,
+          'x-content-type-options': 'nosniff',
+          ...(f.scan_state === 'clean' ? {} : { 'x-fdv-scan': 'unscanned' }),
+        });
+      }
+      if (what === 'reject' && init.method === 'POST') {
+        if (f.decided) return decided();
+        f.decided = 'rejected';
+        return empty();
+      }
+      if (what === 'accept' && init.method === 'POST') {
+        if (f.decided) return decided();
+        const into = typeof body.into_document_id === 'string' ? body.into_document_id : null;
+        const fields = ['owner_member_id', 'type_key', 'title', 'visibility'];
+        if (into && fields.some((k) => body[k] !== undefined)) {
+          return fail(
+            422,
+            'validation_failed',
+            'Add it to a document, or make a new one with these details: not both.',
+          );
+        }
+        if (f.scan_state === 'pending') return notReady();
+        let documentId: string;
+        if (into) {
+          if (!state.documents.some((d) => d.id === into)) {
+            return fail(404, 'not_found', 'That document is not in the vault.');
+          }
+          documentId = into;
+        } else {
+          const metadata: CaptureMetadata = {
+            ...(body.owner_member_id !== undefined
+              ? { owner_member_id: body.owner_member_id as string | null }
+              : {}),
+            ...(body.type_key !== undefined ? { type_key: body.type_key as string | null } : {}),
+            ...(body.title !== undefined ? { title: (body.title as string | null) || null } : {}),
+            ...(body.visibility !== undefined ? { visibility: body.visibility as Visibility } : {}),
+          };
+          const problem = checkCaptureMetadata(metadata, {
+            me: { member_id: 'fake-member', role: state.role },
+            members: state.members,
+            types: state.types,
+          });
+          // Refused as the vault refuses it, naming the detail: a kind the
+          // household does not have included (not filed with no kind, as a
+          // phone's queued capture is: this is chosen now, from the list).
+          if (problem) {
+            return fail(
+              problem.status,
+              problem.status === 403 ? 'forbidden' : 'validation_failed',
+              problem.message,
+              problem.key ?? problem.field,
+            );
+          }
+          const doc: FakeDocument = {
+            id: next('document'),
+            title: metadata.title ?? null,
+            type_key: metadata.type_key ?? null,
+            owner_member_id: metadata.owner_member_id ?? null,
+            visibility: effectiveVisibility(
+              metadata,
+              state.types.find((t) => t.key === metadata.type_key),
+              state.role,
+            ),
+          };
+          state.documents.push(doc);
+          documentId = doc.id;
+        }
+        const made: FakeUpload = {
+          kind: into ? 'version' : 'capture',
+          document_id: documentId,
+          version_id: next('version'),
+          version_no: versionsOf(documentId).length + 1,
+          filename: incomingFileName(f.name, f.content_type),
+          mime: f.content_type,
+          byte_size: f.bytes.length,
+          uploaded_at: new Date().toISOString(),
+        };
+        // Kept as an upload is, under a key nobody will send.
+        state.captures.set(next('incoming-upload'), made);
+        f.decided = 'accepted';
+        return ok({ document_id: documentId, version_id: made.version_id }, 201);
+      }
+    }
     // Asking somebody to send documents (0.5.21): the family's side. A teen
     // or a viewer is told there is nothing here, as the vault tells them.
     const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume)?)?$/.exec(path);
@@ -2241,6 +2387,20 @@ function picture(bytes: Uint8Array): ResponseLike {
       throw new SyntaxError('A picture is not JSON.');
     },
     text: async () => String.fromCharCode(...bytes),
+    arrayBuffer: async () => bytes.slice().buffer,
+  };
+}
+/** A file as an attachment, with the headers given (0.5.23's copy of a file sent in). */
+function attachment(bytes: Uint8Array, headers: Record<string, string>): ResponseLike {
+  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (name) => lower[name.toLowerCase()] ?? null },
+    json: async () => {
+      throw new SyntaxError('A file is not JSON.');
+    },
+    text: async () => new TextDecoder().decode(bytes),
     arrayBuffer: async () => bytes.slice().buffer,
   };
 }

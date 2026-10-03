@@ -28,6 +28,9 @@ import type {
   DocumentTypeView,
   DocumentView,
   ExportRow,
+  IncomingAccepted,
+  IncomingAcceptInput,
+  IncomingFileView,
   Invitation,
   InvitationPreview,
   Me,
@@ -835,6 +838,42 @@ export function createApi(http: Http) {
         body: note ? { note } : {},
         headers: dropHeaders(requestId),
       }),
+
+    // ------------------------------- incoming: look before it is filed (5.23)
+    // When `features.upload_requests`. Owners and adults who review what
+    // came in; a teen or a viewer is answered 404, as if there were nothing.
+    /** The files waiting for the reader, newest first. Nothing here is a document yet. */
+    incoming: (token: string) =>
+      request<{ items: IncomingFileView[] }>('/api/v1/incoming', { token }),
+    /**
+     * A page the vault drew for review: a JPEG. While it is being drawn,
+     * `preview_pending` (retriable); a kind it does not draw, `no_preview`.
+     */
+    incomingPage: (token: string, id: string, n: number): Promise<ResponseLike> =>
+      raw(`/api/v1/incoming/${enc(id)}/pages/${n}`, { token }),
+    /**
+     * A copy of the file, to look at it: an attachment, under its own name
+     * with the ending its bytes say; `X-FDV-Scan: unscanned` (and a
+     * Warning) when it was not scanned for viruses. Written in the activity log.
+     */
+    incomingContent: (token: string, id: string): Promise<ResponseLike> =>
+      raw(`/api/v1/incoming/${enc(id)}/content`, { token }),
+    /**
+     * Files it: a new document with these details, checked as a capture's
+     * are, or a new version of `into_document_id` (and nothing else beside
+     * it). `404` for a document the reader cannot see or change; `409
+     * already_decided` once somebody has filed or refused it; `409
+     * incoming_not_ready` (retriable) while it is still being got ready.
+     */
+    acceptIncoming: (token: string, id: string, body: IncomingAcceptInput) =>
+      request<IncomingAccepted>(`/api/v1/incoming/${enc(id)}/accept`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** Refuses it: its bytes are removed. `409 already_decided` once decided. */
+    rejectIncoming: (token: string, id: string) =>
+      request<void>(`/api/v1/incoming/${enc(id)}/reject`, { method: 'POST', token }),
   };
 }
 

@@ -2,11 +2,12 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
 import { createDb, createPool, listMigrations, migrateUp } from '@fdv/db';
+import { adapterFromRow, StorageError, type StorageAdapter, type VaultRowLike } from '@fdv/storage';
 import { libpqConnection, withDatabase } from './libpq.js';
 import { markRemovedFiles, type FileStorage, type RemovedFiles } from './removed-files.js';
 import { sealPrivateValues } from './seal.js';
@@ -119,6 +120,12 @@ export interface RestoreReport {
   filesUnchecked: number;
   /** Why, a sentence a place. */
   filesUncheckedWhy: string[];
+  /**
+   * Files sent through a request that were waiting in the backup and whose
+   * bytes are gone since — filed, refused, or removed after 30 days (5.23):
+   * dropped, since there is nothing left to look at.
+   */
+  incomingDropped: number;
 }
 
 /**
@@ -159,6 +166,7 @@ export async function restoreBackup(
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
     let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0, filesUncheckedWhy: [] };
+    let incomingDropped = 0;
     try {
       // What the vault's own start does: bring an older backup up to date,
       // then give the application role its privileges.
@@ -171,12 +179,21 @@ export async function restoreBackup(
       // A backup older than 0.5.14 has nothing to pause links with until
       // the migrations have run: its links are paused now.
       undone.linksPaused += await pauseLinks(admin);
+      // A file waiting in the backup whose bytes have gone since (5.23).
+      incomingDropped = await dropPurgedIncoming(admin, storage, log);
       open = await stillOpen(admin);
       if (storage) files = await markRemovedFiles(admin, storage, log);
     } finally {
       await admin.end();
     }
-    return { ...(await checkRestored(target)), ...undone, ...open, ...files, rekeyed };
+    return {
+      ...(await checkRestored(target)),
+      ...undone,
+      ...open,
+      ...files,
+      rekeyed,
+      incomingDropped,
+    };
   } catch (err) {
     throw new RestoreIncomplete((err as Error).message, { cause: err });
   }
@@ -229,6 +246,119 @@ const PAUSE_LINKS = `update public.share_link set paused_at = now(), paused_reas
  */
 async function pauseLinks(admin: ReturnType<typeof createPool>): Promise<number> {
   return (await admin.query(PAUSE_LINKS)).rowCount ?? 0;
+}
+
+/**
+ * A backup is the past, and the files are the present (5.23): a file sent
+ * through a request that was waiting when the backup was made may have
+ * been filed, refused or removed after 30 days since, and its bytes with
+ * it. Such a row is dropped — there is nothing left to look at, and a
+ * reviewer shown it could only be told so — and counted for the report. A
+ * decided file's bytes found gone are written down as gone.
+ *
+ * Dropping is for good, so only where the files are kept clearly holds
+ * files, as markRemovedFiles asks (D524-02): a vault that cannot be opened
+ * or reached, a local folder that is not there, or a place in which not
+ * one of these files and not one of its versions' files is found — a
+ * volume not mounted yet, the files not copied back yet — keeps every file
+ * of it, and says so: their bytes may well be there.
+ */
+async function dropPurgedIncoming(
+  admin: ReturnType<typeof createPool>,
+  storage: RestoreStorage | undefined,
+  log: Log,
+): Promise<number> {
+  if (!storage) return 0;
+  const { rows: files } = await admin.query<{
+    id: string;
+    state: string;
+    storage_key: string;
+    vault_id: string;
+  }>(
+    `select id, state, storage_key, vault_id from incoming_file
+      where state in ('uploading', 'received')
+         or (state in ('accepted', 'rejected') and object_removed_at is null)
+      order by id`,
+  );
+  if (files.length === 0) return 0;
+  const { rows: vaults } = await admin.query<VaultRowLike & { id: string }>(
+    `select * from vault where id = any($1::uuid[])`,
+    [[...new Set(files.map((f) => f.vault_id))]],
+  );
+  const kept = (vault: string, why: string, extra: Record<string, unknown> = {}) =>
+    log('warn', `${why}: its files sent in are kept`, { vault, ...extra });
+  let dropped = 0;
+  for (const v of vaults) {
+    const held = files.filter((f) => f.vault_id === v.id);
+    if (v.kind === 'local' && !(await isFolder(storage.localRoot))) {
+      kept(v.id, `the folder ${storage.localRoot} is not there`);
+      continue;
+    }
+    let adapter: StorageAdapter;
+    try {
+      adapter = adapterFromRow(v, storage.credentialsKey, storage.localRoot);
+    } catch (err) {
+      kept(v.id, 'a place files are kept could not be opened', { err: (err as Error).message });
+      continue;
+    }
+    const gone: typeof held = [];
+    let found = 0;
+    for (const f of held) {
+      const there = await isThere(adapter, f.storage_key);
+      if (there === true) found++;
+      else if (there === false) gone.push(f);
+      else
+        log('warn', 'could not ask whether a file sent in is still kept: it is kept', {
+          file: f.id,
+        });
+    }
+    if (gone.length === 0) continue;
+    if (found === 0 && !(await holdsVersions(admin, adapter, v.id))) {
+      kept(v.id, `none of the ${gone.length} file(s) sent in, nor of its documents, is there`);
+      continue;
+    }
+    for (const f of gone) {
+      if (f.state === 'uploading' || f.state === 'received') {
+        dropped +=
+          (await admin.query('delete from incoming_file where id = $1', [f.id])).rowCount ?? 0;
+      } else {
+        await admin.query('update incoming_file set object_removed_at = now() where id = $1', [
+          f.id,
+        ]);
+      }
+    }
+  }
+  if (dropped)
+    log('info', 'files sent in whose bytes are gone since the backup, dropped', { dropped });
+  return dropped;
+}
+
+const isFolder = (dir: string) =>
+  stat(dir).then(
+    (s) => s.isDirectory(),
+    () => false,
+  );
+
+/** Whether an object is there: yes, no, or null for could not tell. */
+const isThere = (adapter: StorageAdapter, key: string) =>
+  adapter.stat(key).then(
+    () => true as const,
+    (err: unknown) => (err instanceof StorageError && err.code === 'not_found' ? false : null),
+  );
+
+/** Whether a place holds any of the files of its documents' versions: a few, looked for. */
+async function holdsVersions(
+  admin: ReturnType<typeof createPool>,
+  adapter: StorageAdapter,
+  vaultId: string,
+): Promise<boolean> {
+  const { rows } = await admin.query<{ storage_key: string }>(
+    `select storage_key from document_version
+      where vault_id = $1 and file_removed_at is null order by uploaded_at desc limit 20`,
+    [vaultId],
+  );
+  for (const r of rows) if ((await isThere(adapter, r.storage_key)) === true) return true;
+  return false;
 }
 
 /** What the family decides about, not the restore: counted for the report. */
@@ -596,6 +726,34 @@ const GUARDS = [
     table: 'account_household',
     fn: 'account_household_not_deceased',
   },
+  // A reviewer files or refuses a waiting file, as themselves, once, and
+  // changes nothing else of it: whose key, who reviews it, its bytes (0047).
+  {
+    name: 'incoming_file_account_writes',
+    table: 'incoming_file',
+    fn: 'incoming_file_account_writes',
+  },
+  // A decided file's row going before its bytes leaves them to be removed
+  // with the rest of a removal's leftovers (0047, with 0045).
+  {
+    name: 'incoming_file_leaves_bytes',
+    table: 'incoming_file',
+    fn: 'incoming_file_leaves_bytes',
+  },
+];
+
+/**
+ * What was moved to the owners from a requester who can no longer review
+ * it (0047): a request and its files, each kept from every other caller
+ * signed in by a rule of its own that names the column saying so.
+ */
+const OWNERS_ONLY = [
+  {
+    table: 'upload_request',
+    column: 'moved_to_owners_at',
+    where: 'moved_to_owners_at is not null',
+  },
+  { table: 'incoming_file', column: 'owners_only', where: 'owners_only' },
 ];
 
 /**
@@ -744,7 +902,12 @@ const HOUSEHOLD_ROWS: Record<string, string> = {
  */
 export async function checkRestored(
   target: RestoreTarget,
-): Promise<Omit<RestoreReport, keyof Undone | keyof StillOpen | keyof RemovedFiles | 'rekeyed'>> {
+): Promise<
+  Omit<
+    RestoreReport,
+    keyof Undone | keyof StillOpen | keyof RemovedFiles | 'rekeyed' | 'incomingDropped'
+  >
+> {
   const admin = createPool(target.adminUrl, 1);
   const app = createPool(target.appUrl, 1);
   try {
@@ -888,6 +1051,24 @@ export async function checkRestored(
     if (unruled.length) {
       const what = CHANGED_BY_ROLE.filter((c) => unruled.some((u) => u.name === c.table));
       throw new Error(`no rule says who may change ${what.map((c) => c.what).join(', ')}`);
+    }
+    // And the rule that keeps what was moved to the owners theirs (0047):
+    // one that governs what is read, asks who is asking, and names the
+    // column that says so.
+    const { rows: unowned } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[], $2::text[]) as o(t, col)
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || o.t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_actor()%'
+                             and pg_get_expr(p.polqual, p.polrelid) like '%' || o.col || '%')`,
+      [OWNERS_ONLY.map((o) => o.table), OWNERS_ONLY.map((o) => o.column)],
+    );
+    if (unowned.length) {
+      throw new Error(
+        `no rule keeps what was moved to the owners theirs on ${unowned.map((u) => u.name).join(', ')}`,
+      );
     }
 
     const { rows: rights } = await app.query<{
@@ -1057,6 +1238,29 @@ export async function checkRestored(
           throw new Error(
             `household ${h.id}: ${m.what} is open to somebody signed in who is not given it`,
           );
+        }
+      }
+      // An adult — no owner — is given nothing moved to the owners (0047).
+      for (const o of OWNERS_ONLY) {
+        const client = await app.connect();
+        try {
+          await client.query('begin');
+          await client.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                    set_config('app.role', 'adult', true)`,
+            [h.id],
+          );
+          const { rows: shown } = await client.query<{ n: number }>(
+            `select count(*)::int as n from ${o.table} where ${o.where}`,
+          );
+          await client.query('commit');
+          if ((shown[0]?.n ?? 0) > 0) {
+            throw new Error(
+              `household ${h.id}: what was moved to the owners (${o.table}) is open to an adult`,
+            );
+          }
+        } finally {
+          client.release();
         }
       }
     }

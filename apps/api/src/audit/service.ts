@@ -283,6 +283,15 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['upload_request.submitted', BY_TYPE],
   ['upload_request.resumed', BY_TYPE],
   ['upload_request.closed', BY_TYPE],
+  // what came in, looked at (5.23): a file's lines name its request in
+  // their detail, and go to the request's reviewers; what the vault did to
+  // a request's files, its purge and its move to the owners, is the
+  // request's line. Once moved, the owners' alone (0047).
+  ['incoming.accepted', BY_TYPE],
+  ['incoming.rejected', BY_TYPE],
+  ['incoming.downloaded', BY_TYPE],
+  ['incoming.purged', BY_TYPE],
+  ['incoming.moved', BY_TYPE],
 ]);
 
 /**
