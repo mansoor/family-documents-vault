@@ -1,4 +1,5 @@
 import {
+  dropFileName,
   readShareCode,
   SENDER_NOTE_MAX,
   SHARE_NEWEST_CODE_ONLY,
@@ -559,12 +560,41 @@ interface Sending {
   sent: number;
   /**
    * Waiting its turn; sending; arriving — every byte gone, the vault
-   * checking it, and too late to stop; or not sent, and why.
+   * checking it, and too late to stop; unknown — every byte gone and no
+   * answer, nor any way to ask yet whether it arrived (N522W2-1); or not
+   * sent, and why.
    */
-  state: 'waiting' | 'sending' | 'arriving' | 'failed';
+  state: 'waiting' | 'sending' | 'arriving' | 'unknown' | 'failed';
   problem?: string;
   again?: boolean;
   stop?: () => void;
+  /** The session's files before it was sent: what is new since is what it may have become. */
+  before?: readonly string[];
+}
+
+/**
+ * The file in a session that is the one this page sent, if the vault kept
+ * it (the 5.22 review, N522W2-2): new since it was sent, for the same thing
+ * asked for, and of the same size. Its name only tells two alike apart,
+ * compared as the vault keeps names (NFC, spaces run together, trimmed):
+ * "Résumé  2025.pdf" from a Mac is kept as "Résumé 2025.pdf".
+ */
+function arrivedAs(
+  fresh: DropSession,
+  sent: { before: Iterable<string>; itemId: string | null; file: File },
+  taken: ReadonlySet<string> = new Set(),
+): DropFile | null {
+  const before = new Set(sent.before);
+  const alike = fresh.files.filter(
+    (f) =>
+      !before.has(f.id) &&
+      !taken.has(f.id) &&
+      f.item_id === sent.itemId &&
+      f.byte_size === sent.file.size,
+  );
+  if (alike.length <= 1) return alike[0] ?? null;
+  const named = dropFileName(sent.file.name);
+  return alike.find((f) => f.name === named) ?? alike[0] ?? null;
 }
 
 /** The extensions a file chooser offers beside the kinds the request takes. */
@@ -610,7 +640,7 @@ function withFile(s: DropSession, f: DropFile): DropSession {
     files: [...s.files, f],
     files_left: Math.max(0, s.files_left - 1),
     bytes_left: bytesLeft,
-    max_file_bytes: Math.min(s.max_file_bytes, bytesLeft),
+    max_file_bytes: Math.min(s.file_limit_bytes, bytesLeft),
   };
 }
 
@@ -649,6 +679,11 @@ function Opened({
   useEffect(() => {
     latest.current = session;
   }, [session]);
+  /** The files on their way as they are now, for what an answer settles. */
+  const sendingNow = useRef(sending);
+  useEffect(() => {
+    sendingNow.current = sending;
+  }, [sending]);
   const name = session.requested_by;
 
   /** Says something in the page's one status line, and puts the focus there. */
@@ -675,17 +710,66 @@ function Opened({
    * the connection, the vault busy — what the page has stays, and it says
    * the list may be behind, with a way to ask again.
    */
+  /**
+   * Files whose answer never came (`unknown`), settled by what the vault has
+   * now: one it kept is listed and its row goes; one it does not have can
+   * be sent again (N522W2-1).
+   */
+  const settle = useCallback(
+    (fresh: DropSession) => {
+      const unknown = sendingNow.current.filter((s) => s.state === 'unknown');
+      if (unknown.length === 0) return;
+      const taken = new Set<string>();
+      const arrived = new Set<number>();
+      for (const s of unknown) {
+        const kept = arrivedAs(
+          fresh,
+          { before: s.before ?? [], itemId: s.itemId, file: s.file },
+          taken,
+        );
+        if (kept) {
+          taken.add(kept.id);
+          arrived.add(s.key);
+        }
+      }
+      const next = sendingNow.current.flatMap((s): Sending[] => {
+        if (s.state !== 'unknown') return [s];
+        if (arrived.has(s.key)) return [];
+        return [
+          {
+            ...s,
+            state: 'failed',
+            problem: 'It did not reach the vault. Try again.',
+            again: true,
+            sent: 0,
+          },
+        ];
+      });
+      sendingNow.current = next;
+      setSending(next);
+      const names = unknown.map((s) => `“${s.file.name}”`).join(', ');
+      say(
+        arrived.size === unknown.length
+          ? `${names} arrived after all, so ${unknown.length === 1 ? 'it is' : 'they are'} listed. ${readyWords(fresh.files.length)}`
+          : `The vault has answered: ${names} ${unknown.length === 1 ? 'is' : 'are'} settled. ${readyWords(fresh.files.length)}`,
+      );
+    },
+    [say],
+  );
+
   const refresh = useCallback(async (): Promise<DropSession | null> => {
     try {
       const fresh = await api.dropSession(latest.current.request_id);
+      latest.current = fresh;
       setSession(fresh);
       setStale(false);
+      settle(fresh);
       return fresh;
     } catch (err) {
       if (!over(err)) setStale(true);
       return null;
     }
-  }, [over]);
+  }, [over, settle]);
 
   // Another tab of this browser may add to the same session: what the vault
   // has is asked again whenever this tab is looked at again.
@@ -751,9 +835,7 @@ function Opened({
           // Stopped as its last bytes went, the vault may have kept it
           // anyway: asked, and said whichever it was.
           const fresh = await refresh();
-          const arrived = fresh?.files.find(
-            (f) => !before.has(f.id) && f.name === waiting.file.name,
-          );
+          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }) : null;
           say(
             arrived
               ? `“${waiting.file.name}” had already arrived, so it is listed: remove it if you do not want it sent.`
@@ -772,15 +854,27 @@ function Opened({
           allSent ||
           err instanceof NetworkError ||
           (err instanceof ApiRequestError && (err.status >= 500 || err.status < 300));
+        // Whether the vault may have it: every byte went, or it answered
+        // that it did and the answer could not be read.
+        const mayHaveIt = allSent || (err instanceof ApiRequestError && err.status < 300);
         if (unanswered) {
           const fresh = await refresh();
-          const arrived = fresh?.files.find(
-            (f) => !before.has(f.id) && f.name === waiting.file.name,
-          );
+          const arrived = fresh ? arrivedAs(fresh, { before, ...waiting }) : null;
           if (arrived) {
             setSending((all) => all.filter((s) => s.key !== key));
             say(
               `“${waiting.file.name}” arrived after all, so it is listed. ${readyWords(fresh?.files.length ?? 0)}`,
+              true,
+            );
+            return;
+          }
+          if (!fresh && mayHaveIt) {
+            // Neither the answer nor a way to ask: not called lost, and not
+            // offered again, which would send it twice. The next answer
+            // about the session settles it (N522W2-1).
+            update({ state: 'unknown', before: [...before] });
+            say(
+              `Every byte of “${waiting.file.name}” went, but the vault’s answer did not come back. It will be listed if it arrived.`,
               true,
             );
             return;
@@ -843,10 +937,10 @@ function Opened({
         files: left,
         files_left: was.files_left + 1,
         bytes_left: bytesLeft,
-        // One file's limit was what was left, while that was less than the
-        // vault's own: it grows with what was given back (N522W-2), so a file
-        // that fits now is not refused as too big before the vault answers.
-        max_file_bytes: was.max_file_bytes >= was.bytes_left ? bytesLeft : was.max_file_bytes,
+        // One file's limit grows with what was given back (N522W-2), as far
+        // as the vault's own and no further (N522W2-3): a file that fits now
+        // is not refused, and one too big for any file is not sent.
+        max_file_bytes: Math.min(bytesLeft, was.file_limit_bytes),
       };
       latest.current = next;
       setSession(next);
@@ -871,6 +965,7 @@ function Opened({
       latest.current = fresh;
       setSession(fresh);
       setStale(false);
+      settle(fresh);
       if (!same) {
         setError(
           `The vault has ${files(fresh.files.length)} from this page, listed now. Look at the list, then press Finish again.`,
@@ -904,7 +999,7 @@ function Opened({
       ? [...session.items, { id: null, label: 'Anything else' }]
       : [{ id: null, label: 'Your files' }];
   const accept = session.accepted.flatMap((t) => [t, EXTENSIONS[t] ?? '']).filter(Boolean);
-  const inFlight = sending.some((s) => s.state !== 'failed');
+  const inFlight = sending.some((s) => s.state !== 'failed' && s.state !== 'unknown');
   const full = session.files_left === 0;
   return (
     <>
@@ -942,9 +1037,15 @@ function Opened({
             <Button
               kind="quiet"
               onClick={() => {
+                // Files whose answer never came are settled by this answer,
+                // which says so itself; otherwise the list is said to be
+                // up to date. Either way the button goes with the warning,
+                // and the focus goes to what was said.
+                const settling = sendingNow.current.some((x) => x.state === 'unknown');
                 void refresh().then((fresh) => {
-                  // The button goes with the warning: the focus goes to what was said.
-                  if (fresh) say(`The list is up to date. ${readyWords(fresh.files.length)}`, true);
+                  if (!fresh) return;
+                  if (settling) window.setTimeout(() => status.current?.focus(), 0);
+                  else say(`The list is up to date. ${readyWords(fresh.files.length)}`, true);
                 });
               }}
             >
@@ -1069,7 +1170,12 @@ function Slot(props: {
     ...props.sending.map((s) => (
       <li key={`s${s.key}`} className="drop-file">
         <span className="drop-file-name">{s.file.name}</span>
-        {s.state === 'failed' ? (
+        {s.state === 'unknown' ? (
+          <span className="muted">
+            Every byte went, but the vault’s answer did not come back. It will be listed here if it
+            arrived.
+          </span>
+        ) : s.state === 'failed' ? (
           <>
             <span className="field-error" role="alert">
               {s.problem}

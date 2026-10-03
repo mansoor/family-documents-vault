@@ -710,6 +710,90 @@ describe('the page a request opens (5.22)', () => {
     expect(state.drop?.files.map((f) => f.name)).toEqual(['big2.pdf']);
   });
 
+  it('a lost answer and a failed re-read: not called lost, not offered again, and settled by the next answer (N522W2-1)', async () => {
+    const state = await opened();
+    state.dropAnswerLost = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    choose('W-2', pdf('w2-2025.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    expect(
+      await within(w2).findByText(/Every byte went, but the vault’s answer did not come back/),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(statusLine()).toHaveFocus());
+    expect(statusLine()).toHaveTextContent(
+      'Every byte of “w2-2025.pdf” went, but the vault’s answer did not come back. It will be listed if it arrived.',
+    );
+    // Not offered again, which would send it twice.
+    expect(within(w2).queryByRole('button', { name: /Try w2-2025.pdf again/ })).toBeNull();
+    expect(within(w2).queryByRole('alert')).toBeNull();
+    // The vault answers again: it was kept, so it is listed, once.
+    delete state.dropAnswerLost;
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await within(w2).findByRole('button', { name: 'Remove w2-2025.pdf' });
+    expect(within(w2).queryByText(/answer did not come back/)).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Remove w2-2025.pdf' })).toHaveLength(1);
+    expect(state.drop?.files).toHaveLength(1);
+    await waitFor(() =>
+      expect(statusLine()).toHaveTextContent(
+        '“w2-2025.pdf” arrived after all, so it is listed. 1 file is ready to send.',
+      ),
+    );
+  });
+
+  it('a lost answer for a file the vault never kept: settled as not sent, and then offered again (N522W2-1)', async () => {
+    const state = await opened();
+    state.dropLostAfterBytes = true;
+    (state.drop as FakeDrop).sessionDrops = 1;
+    choose('W-2', pdf('w2-2025.pdf'));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    await within(w2).findByText(/answer did not come back/);
+    expect(within(w2).queryByRole('button', { name: /Try w2-2025.pdf again/ })).toBeNull();
+    delete state.dropLostAfterBytes;
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(await within(w2).findByRole('alert')).toHaveTextContent(
+      'It did not reach the vault. Try again.',
+    );
+    fireEvent.click(within(w2).getByRole('button', { name: 'Try w2-2025.pdf again' }));
+    await within(w2).findByRole('button', { name: 'Remove w2-2025.pdf' });
+    expect(state.drop?.files).toHaveLength(1);
+  });
+
+  it('a file the vault kept under its tidied name is found after a lost answer: no duplicate (N522W2-2)', async () => {
+    const state = await opened();
+    state.dropAnswerLost = true;
+    // As a Mac names it: decomposed accents, and two spaces.
+    const mac = 'Re\u0301sume\u0301  2025.pdf';
+    choose('W-2', pdf(mac));
+    const w2 = screen.getByRole('region', { name: 'W-2' });
+    // The vault keeps "Résumé 2025.pdf": it is listed, and said to have arrived.
+    await within(w2).findByRole('button', { name: 'Remove Résumé 2025.pdf' });
+    await waitFor(() =>
+      expect(statusLine()).toHaveTextContent(/arrived after all, so it is listed/),
+    );
+    expect(within(w2).queryByRole('alert')).toBeNull();
+    expect(state.drop?.files.map((f) => f.name)).toEqual(['Résumé 2025.pdf']);
+  });
+
+  it('after Remove, one file’s limit grows no further than the vault’s own (N522W2-3)', async () => {
+    const state = await opened({ maxBytes: 10 * 1024, maxFileBytes: 4 * 1024 });
+    choose('W-2', pdf('one.pdf', 4 * 1024), pdf('two.pdf', 4 * 1024));
+    await screen.findByRole('button', { name: 'Remove two.pdf' });
+    // Room given back, and the vault not asked again in time.
+    (state.drop as FakeDrop).sessionDrops = 1;
+    fireEvent.click(screen.getByRole('button', { name: 'Remove one.pdf' }));
+    await screen.findByText(/this list may be behind/);
+    expect(screen.getByTestId('drop-room')).toHaveTextContent('6 KB in all, each up to 4 KB');
+    // Too big for any one file here: said at once, and never sent.
+    choose('1099', pdf('five.pdf', 5 * 1024));
+    const other = screen.getByRole('region', { name: '1099' });
+    expect(await within(other).findByRole('alert')).toHaveTextContent(
+      'That file is too big: one file can be 4 KB at most.',
+    );
+    expect(
+      callsTo(state, '/api/v1/drop/files').map((c) => (c.body as { file: string }).file),
+    ).toEqual(['one.pdf', 'two.pdf']);
+  });
+
   it('a long unbroken word in a title or a slot wraps rather than pushing the page sideways at 320 px', () => {
     // jsdom draws nothing, so the rule itself is what is checked; the e2e
     // spec measures the page at 320 px in Chromium.

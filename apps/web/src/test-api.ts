@@ -10,6 +10,7 @@ import {
   maskEmail,
   nextReminder,
   reminderOf,
+  dropFileName,
   uploadRequestTypes,
   type DocumentTypeView,
   type MemberAccount,
@@ -239,6 +240,8 @@ export interface FakeState {
   dropAnswerLost?: boolean;
   /** The connection drops before the vault has the file. */
   dropConnectionLost?: boolean;
+  /** Every byte goes, and then the connection, before the vault keeps it. */
+  dropLostAfterBytes?: boolean;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
   types: Array<Record<string, unknown>>;
@@ -1408,6 +1411,7 @@ export function installFakeApi(state: FakeState) {
         files_left: Math.max(0, (d.maxFiles ?? 10) - d.files.length),
         bytes_left: maxBytes - used,
         max_file_bytes: Math.min(d.maxFileBytes ?? 100 * 1024 * 1024, maxBytes - used),
+        file_limit_bytes: d.maxFileBytes ?? 100 * 1024 * 1024,
         expires_at: d.expiresAt ?? new Date(Date.now() + 14 * 864e5).toISOString(),
         session_expires_at: new Date(Date.now() + 4 * 3600e3).toISOString(),
         files: mine().map((f) => ({
@@ -1536,7 +1540,8 @@ export function installFakeApi(state: FakeState) {
         }
         const sent = {
           id: `file-${d.files.length + 1}-${file.name}`,
-          name: file.name,
+          // Kept as the vault keeps a name (NFC, spaces run together).
+          name: dropFileName(file.name),
           content_type: file.type,
           byte_size: file.size,
           item_id: itemId,
@@ -2488,6 +2493,10 @@ export function installFakeApi(state: FakeState) {
         if (this.stopped) return;
         this.upload.onprogress?.({ lengthComputable: true, loaded: total, total });
         this.upload.onload?.();
+        if (state.dropLostAfterBytes) {
+          this.onerror?.();
+          return;
+        }
         if (!state.dropCommitFirst) await state.holdAnswer?.();
         if (this.stopped) return;
         res ??= await answer();

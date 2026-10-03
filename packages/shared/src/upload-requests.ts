@@ -235,9 +235,33 @@ export interface DropSession {
   bytes_left: number;
   /** The largest one file may be now: the vault's limit, or what is left. */
   max_file_bytes: number;
+  /**
+   * The vault's own limit for one file (FDV_MAX_UPLOAD_BYTES), whatever is
+   * left: a page that gives room back on Remove caps one file by it too
+   * (the 5.22 review, N522W2-3).
+   */
+  file_limit_bytes: number;
   expires_at: string;
   session_expires_at: string;
   files: DropFile[];
+}
+
+/**
+ * A sent file's name as the vault keeps it, and shows it (`DropFile.name`):
+ * its last path part, in NFC, with no control or direction characters,
+ * runs of space as one, trimmed, and at most 200 characters; `file` when
+ * nothing is left. The API keeps names so, and a page that looks for a file
+ * it sent compares names so (the 5.22 review, N522W2-2).
+ */
+export function dropFileName(name: string): string {
+  const last = name.split(/[\\/]/).pop() ?? '';
+  const clean = last
+    .normalize('NFC')
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const cut = [...clean].slice(0, 200).join('');
+  return cut && cut !== '.' && cut !== '..' ? cut : 'file';
 }
 
 /** `POST /api/v1/drop/finish`: how many files went, and whether the request is closed now. */

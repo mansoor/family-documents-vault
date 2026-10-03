@@ -2174,6 +2174,16 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     // What is sent next is listed, alone, and Finish sends it alone.
     expect((await send(cookie, { name: 'second.pdf', bytes: PDF() })).statusCode).toBe(201);
     expect((await session()).json<DropSession>().files.map((f) => f.name)).toEqual(['second.pdf']);
+    // The vault's own limit for one file, whatever is left (N522W2-3): the
+    // harness gives its upload requests 5 MB.
+    const limit = 5 * 1024 * 1024;
+    expect(after.file_limit_bytes).toBe(limit);
+    await admin('update upload_request set bytes_used = max_total_bytes - 1000 where id = $1', [
+      made.request.id,
+    ]);
+    const nearlyFull = (await session()).json<DropSession>();
+    expect(nearlyFull.max_file_bytes).toBe(1000);
+    expect(nearlyFull.file_limit_bytes).toBe(limit);
   });
 
   it('the preview says which request it is, where its code goes, masked, and when this is another browser (5.22)', async () => {

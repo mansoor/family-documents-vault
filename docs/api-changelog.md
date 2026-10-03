@@ -2561,7 +2561,7 @@ already_decided` once decided.
       the database as it ends. The restore check holds both triggers and
       the owners' rules to being there.
   - Making a request, and the sender's page (5.22). The web's pages for
-    5.21's requests, and three changes to the sender's routes that they
+    5.21's requests, and the changes to the sender's routes that they
     needed.
     - **Changed:** a password the vault makes up for a request
       (`with_password`) is checked as a share link's is (5.20): without
@@ -2595,9 +2595,14 @@ drop_session_ended` on every route under `/api/v1/drop` that works
     - **Changed:** the preview of a request opened as many times as it
       allows answers, with its `request_id`, to a browser that presents a
       live session of that request (its own cookie, not past its end and
-      not idle for 30 minutes), so that browser can carry on in it: the
-      last visit used is its own. Every other browser is still `410
+      not idle for 30 minutes), so that browser can carry on in it: it
+      opened the request already. Every other browser is still `410
 request_used_up`, and nothing is counted.
+    - **Added:** `DropSession.file_limit_bytes`, the vault's own limit for
+      one file (`FDV_MAX_UPLOAD_BYTES`), beside `max_file_bytes` (that
+      limit, or what is left of the request if less), so a page that gives
+      room back when a file is removed caps one file by the vault's limit
+      too, and never offers more.
     - The database: 0048 adds `upload_request.secret_kind` (`generated`,
       made up by the vault, hashed and checked lower case without dashes
       or spaces; `password`, typed, checked as typed; null for no password,
@@ -2605,7 +2610,12 @@ request_used_up`, and nothing is counted.
       password (`upload_request_secret_kind_hashed`). 0044's rules stand as
       they are: an upload link can change no column but its counters.
     - `@fdv/shared`: `DropPreview.request_id`, `code_to` and
-      `other_device`. `@fdv/client` is unchanged.
+      `other_device`; `DropSession.file_limit_bytes`; and `dropFileName`,
+      the rule the vault keeps a sent file's name by (NFC, no control or
+      direction characters, runs of space as one, trimmed, 200 characters
+      at most), which the API now uses and a page compares names with.
+      `@fdv/client` is unchanged: its methods return the new fields as
+      they are.
 
 ## Deprecations in effect
 

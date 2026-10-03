@@ -28,6 +28,7 @@ import {
 import {
   can,
   maskEmail,
+  dropFileName,
   SENDER_NOTE_MAX,
   SHARE_END_GRACE_MINUTES,
   SHARE_MAX_DAYS,
@@ -393,17 +394,10 @@ const endRefused = (message: string) => new ApiError(422, 'expiry_out_of_range',
 /**
  * A file's name as sent, made safe to show a reviewer: its last path part,
  * no control or direction characters, at most 200 characters. Never logged.
+ * The rule is @fdv/shared's, so the sender's page finds a file it sent by
+ * the name the vault keeps (the 5.22 review).
  */
-export function safeName(name: string): string {
-  const last = name.split(/[\\/]/).pop() ?? '';
-  const clean = last
-    .normalize('NFC')
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const cut = [...clean].slice(0, 200).join('');
-  return cut && cut !== '.' && cut !== '..' ? cut : 'file';
-}
+export const safeName = dropFileName;
 
 /** A password the vault makes up: three groups of four, with no look-alike letters. */
 function madePassword(): string {
@@ -1435,6 +1429,7 @@ export class UploadRequestService {
       files_left: Math.max(0, r.max_files - r.files_used),
       bytes_left: bytesLeft,
       max_file_bytes: Math.min(this.opts.maxFileBytes, bytesLeft),
+      file_limit_bytes: this.opts.maxFileBytes,
       expires_at: r.expires_at.toISOString(),
       session_expires_at: sessionEnds.toISOString(),
       files: files.map(dropFile),
