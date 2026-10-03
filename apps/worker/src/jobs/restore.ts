@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { DecryptStream, type ScopeKeys } from '@fdv/crypto';
@@ -254,9 +254,14 @@ async function pauseLinks(admin: ReturnType<typeof createPool>): Promise<number>
  * been filed, refused or removed after 30 days since, and its bytes with
  * it. Such a row is dropped — there is nothing left to look at, and a
  * reviewer shown it could only be told so — and counted for the report. A
- * decided file's bytes found gone are written down as gone. A vault that
- * cannot be reached, or whose row cannot be opened, keeps every file of
- * it, and says so: its bytes may well be there.
+ * decided file's bytes found gone are written down as gone.
+ *
+ * Dropping is for good, so only where the files are kept clearly holds
+ * files, as markRemovedFiles asks (D524-02): a vault that cannot be opened
+ * or reached, a local folder that is not there, or a place in which not
+ * one of these files and not one of its versions' files is found — a
+ * volume not mounted yet, the files not copied back yet — keeps every file
+ * of it, and says so: their bytes may well be there.
  */
 async function dropPurgedIncoming(
   admin: ReturnType<typeof createPool>,
@@ -280,44 +285,80 @@ async function dropPurgedIncoming(
     `select * from vault where id = any($1::uuid[])`,
     [[...new Set(files.map((f) => f.vault_id))]],
   );
-  const adapters = new Map<string, StorageAdapter | null>();
-  for (const v of vaults) {
-    try {
-      adapters.set(v.id, adapterFromRow(v, storage.credentialsKey, storage.localRoot));
-    } catch (err) {
-      adapters.set(v.id, null);
-      log('warn', 'a place files are kept could not be opened: its files sent in are kept', {
-        vault: v.id,
-        err: (err as Error).message,
-      });
-    }
-  }
+  const kept = (vault: string, why: string, extra: Record<string, unknown> = {}) =>
+    log('warn', `${why}: its files sent in are kept`, { vault, ...extra });
   let dropped = 0;
-  for (const f of files) {
-    const adapter = adapters.get(f.vault_id);
-    if (!adapter) continue;
-    const gone = await adapter.stat(f.storage_key).then(
-      () => false,
-      (err: unknown) => {
-        if (err instanceof StorageError && err.code === 'not_found') return true;
+  for (const v of vaults) {
+    const held = files.filter((f) => f.vault_id === v.id);
+    if (v.kind === 'local' && !(await isFolder(storage.localRoot))) {
+      kept(v.id, `the folder ${storage.localRoot} is not there`);
+      continue;
+    }
+    let adapter: StorageAdapter;
+    try {
+      adapter = adapterFromRow(v, storage.credentialsKey, storage.localRoot);
+    } catch (err) {
+      kept(v.id, 'a place files are kept could not be opened', { err: (err as Error).message });
+      continue;
+    }
+    const gone: typeof held = [];
+    let found = 0;
+    for (const f of held) {
+      const there = await isThere(adapter, f.storage_key);
+      if (there === true) found++;
+      else if (there === false) gone.push(f);
+      else
         log('warn', 'could not ask whether a file sent in is still kept: it is kept', {
           file: f.id,
-          err: (err as Error).message,
         });
-        return false;
-      },
-    );
-    if (!gone) continue;
-    if (f.state === 'uploading' || f.state === 'received') {
-      dropped +=
-        (await admin.query('delete from incoming_file where id = $1', [f.id])).rowCount ?? 0;
-    } else {
-      await admin.query('update incoming_file set object_removed_at = now() where id = $1', [f.id]);
+    }
+    if (gone.length === 0) continue;
+    if (found === 0 && !(await holdsVersions(admin, adapter, v.id))) {
+      kept(v.id, `none of the ${gone.length} file(s) sent in, nor of its documents, is there`);
+      continue;
+    }
+    for (const f of gone) {
+      if (f.state === 'uploading' || f.state === 'received') {
+        dropped +=
+          (await admin.query('delete from incoming_file where id = $1', [f.id])).rowCount ?? 0;
+      } else {
+        await admin.query('update incoming_file set object_removed_at = now() where id = $1', [
+          f.id,
+        ]);
+      }
     }
   }
   if (dropped)
     log('info', 'files sent in whose bytes are gone since the backup, dropped', { dropped });
   return dropped;
+}
+
+const isFolder = (dir: string) =>
+  stat(dir).then(
+    (s) => s.isDirectory(),
+    () => false,
+  );
+
+/** Whether an object is there: yes, no, or null for could not tell. */
+const isThere = (adapter: StorageAdapter, key: string) =>
+  adapter.stat(key).then(
+    () => true as const,
+    (err: unknown) => (err instanceof StorageError && err.code === 'not_found' ? false : null),
+  );
+
+/** Whether a place holds any of the files of its documents' versions: a few, looked for. */
+async function holdsVersions(
+  admin: ReturnType<typeof createPool>,
+  adapter: StorageAdapter,
+  vaultId: string,
+): Promise<boolean> {
+  const { rows } = await admin.query<{ storage_key: string }>(
+    `select storage_key from document_version
+      where vault_id = $1 and file_removed_at is null order by uploaded_at desc limit 20`,
+    [vaultId],
+  );
+  for (const r of rows) if ((await isThere(adapter, r.storage_key)) === true) return true;
+  return false;
 }
 
 /** What the family decides about, not the restore: counted for the report. */
@@ -691,6 +732,13 @@ const GUARDS = [
     name: 'incoming_file_account_writes',
     table: 'incoming_file',
     fn: 'incoming_file_account_writes',
+  },
+  // A decided file's row going before its bytes leaves them to be removed
+  // with the rest of a removal's leftovers (0047, with 0045).
+  {
+    name: 'incoming_file_leaves_bytes',
+    table: 'incoming_file',
+    fn: 'incoming_file_leaves_bytes',
   },
 ];
 

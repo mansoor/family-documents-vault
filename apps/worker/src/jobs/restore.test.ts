@@ -1189,6 +1189,21 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
           'alter table public.incoming_file enable trigger incoming_file_account_writes',
         );
       }
+      // And a decided file's bytes left to be removed as its row goes.
+      await sql(
+        vault.adminUrl,
+        'alter table public.incoming_file disable trigger incoming_file_leaves_bytes',
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.incoming_file enable trigger incoming_file_leaves_bytes',
+        );
+      }
     } finally {
       await sql(
         vault.adminUrl,
@@ -1645,6 +1660,34 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       // Restored without being told where the files are, nothing is asked or dropped.
       const blind = await restoreBackup(file, KEY, into(await empty()), quiet, KEYS);
       expect(blind.incomingDropped).toBe(0);
+
+      // Nor where the place looks empty — the folder there and none of the
+      // files in it, or the folder not there: not mounted yet, the files not
+      // copied back yet. Dropping is for good; nothing is (D524-02).
+      const bare = await mkdtemp(path.join(tmpdir(), 'fdv-restore-bare-'));
+      try {
+        for (const localRoot of [bare, path.join(bare, 'not-mounted')]) {
+          const u = await empty();
+          const looked = await restoreBackup(file, KEY, into(u), quiet, KEYS, {
+            credentialsKey: Buffer.alloc(32),
+            localRoot,
+          });
+          expect(looked.incomingDropped).toBe(0);
+          const { rows: all } = await sql(
+            u.adminUrl,
+            `select regexp_replace(storage_key, '^.*/', '') as name,
+                    object_removed_at is not null as removed
+               from incoming_file order by storage_key`,
+          );
+          expect(all).toEqual([
+            { name: 'filed.enc', removed: false },
+            { name: 'gone.enc', removed: false },
+            { name: 'kept.enc', removed: false },
+          ]);
+        }
+      } finally {
+        await rm(bare, { recursive: true, force: true });
+      }
 
       const t = await empty();
       const report = await restoreBackup(file, KEY, into(t), quiet, KEYS, {

@@ -12,7 +12,7 @@ import {
   PREVIEW_MAX_PAGES,
   type PushMessage,
 } from '@fdv/shared';
-import { adapterFromRow, type StorageAdapter } from '@fdv/storage';
+import { adapterFromRow, StorageError, type StorageAdapter } from '@fdv/storage';
 import nodemailer from 'nodemailer';
 import { sql, type ExpressionBuilder } from 'kysely';
 import type pg from 'pg';
@@ -88,12 +88,14 @@ const DAY = 864e5;
 /** A page drawn for review, beside its file's object, as a version's are (0027). */
 export const incomingPreviewKey = (storageKey: string, n: number) => `${storageKey}.p${n}.enc`;
 
-/** The objects a file has: itself, and the pages drawn of it. */
-async function removeObjects(
-  adapter: StorageAdapter,
-  f: { storage_key: string; preview_pages: number | null },
-): Promise<void> {
-  for (let n = 1; n <= (f.preview_pages ?? 0); n++) {
+/**
+ * The objects a file has: itself, and every page there could be of it —
+ * whatever its row says was drawn, since a drawing that stopped part-way
+ * (its worker gone) wrote pages its row never counted (F523-3). A page not
+ * there is nothing to remove.
+ */
+async function removeObjects(adapter: StorageAdapter, f: { storage_key: string }): Promise<void> {
+  for (let n = 1; n <= PREVIEW_MAX_PAGES; n++) {
     await adapter.delete(incomingPreviewKey(f.storage_key, n));
   }
   await adapter.delete(f.storage_key);
@@ -148,9 +150,47 @@ export async function scanIncoming(deps: IncomingDeps, job: IncomingScanJob): Pr
     if (Number(marked.numUpdatedRows) === 1) ready.push(f.id);
     await drawIncoming(deps, hh, f);
   }
-  if (ready.length > 0) await tellReviewers(deps, hh, ready);
+  // Told once its pages are there: every file ready and not yet told — this
+  // job's, and any an earlier one marked and stopped before telling (W523-02).
+  await tellWaiting(deps, hh, job.request_id);
   deps.log('info', 'incoming files got ready', { household: hh, files: ready.length });
   return ready.length;
+}
+
+/**
+ * Tells the reviewers of the files that are ready to be looked at — the
+ * scan been, the pages drawn or known not to be — and that nobody has been
+ * told of yet: each file taken first (`told_at`), so two jobs never tell of
+ * one twice, and then told. A job that stops between the two leaves them
+ * taken and untold: a missed push and email, never two. Returns how many.
+ */
+export async function tellWaiting(
+  deps: IncomingDeps,
+  hh: string,
+  requestId?: string,
+): Promise<number> {
+  // Nobody to tell with: nothing is taken, so nothing is marked told.
+  if (!deps.tell) return 0;
+  const taken = await withSystem(deps.db, hh, (trx) => {
+    let q = trx
+      .updateTable('incoming_file')
+      .set({ told_at: new Date() })
+      .where('state', '=', 'received')
+      .where('submitted_at', 'is not', null)
+      .where('scan_state', 'in', ['unscanned', 'clean'])
+      .where('preview_state', 'in', ['ready', 'unsupported', 'failed'])
+      .where('told_at', 'is', null);
+    if (requestId) q = q.where('request_id', '=', requestId);
+    return q.returning('id').execute();
+  });
+  if (taken.length > 0) {
+    await tellReviewers(
+      deps,
+      hh,
+      taken.map((f) => f.id),
+    );
+  }
+  return taken.length;
 }
 
 /** Not drawn yet, or a drawing that died: begun an hour ago and never finished. */
@@ -565,16 +605,19 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
 export interface SweepReport {
   purged: number;
   objectsRemoved: number;
+  /** Filed versions whose own copy was missing, made again from the file sent in. */
+  versionsRepaired: number;
   requestsRemoved: number;
   moved: number;
   scanned: number;
+  told: number;
 }
 
 /**
- * Each night. Per household: what a lost job missed (a move, a scan); a
- * file not filed within INCOMING_KEEP_DAYS of arriving, removed — its
- * pages, its object, its row — with a line for each request it came
- * through; a decided file's object whose removal failed after the
+ * Each night. Per household: what a lost job missed (a move, a scan, the
+ * telling); a file not filed within INCOMING_KEEP_DAYS of arriving,
+ * removed — its pages, its object, its row — with a line for each request
+ * it came through; a decided file's object whose removal failed after the
  * decision, removed; and a request past its end with nothing waiting and
  * nothing ever filed from it, removed with its items, sessions, codes and
  * refused files. A request something was filed from stays: a document's
@@ -585,15 +628,19 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
   const report: SweepReport = {
     purged: 0,
     objectsRemoved: 0,
+    versionsRepaired: 0,
     requestsRemoved: 0,
     moved: 0,
     scanned: 0,
+    told: 0,
   };
   const { rows } = await deps.admin.query<{ id: string }>('select id from household');
   for (const { id: hh } of rows) {
     report.moved += await moveIncoming(deps, { household_id: hh });
     report.purged += await purgeOld(deps, hh, now);
-    report.objectsRemoved += await removeDecided(deps, hh, now);
+    const decided = await removeDecided(deps, hh, now);
+    report.objectsRemoved += decided.removed;
+    report.versionsRepaired += decided.repaired;
     report.requestsRemoved += await removeEnded(deps, hh, now);
     // A scan whose job was lost: anything sent more than ten minutes ago
     // and still not ready.
@@ -608,6 +655,9 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
         .execute(),
     );
     if (stale.length > 0) report.scanned += await scanIncoming(deps, { household_id: hh });
+    // A scan that got a file ready and stopped before telling anyone: told
+    // now (W523-02).
+    report.told += await tellWaiting(deps, hh);
   }
   return report;
 }
@@ -631,7 +681,7 @@ async function purgeOld(deps: IncomingDeps, hh: string, now: Date): Promise<numb
       // no longer waiting.
       const old = await trx
         .selectFrom('incoming_file')
-        .select(['id', 'storage_key', 'vault_id', 'preview_pages'])
+        .select(['id', 'storage_key', 'vault_id'])
         .where('request_id', '=', request_id)
         .where('state', '=', 'received')
         .where('received_at', '<', before)
@@ -673,26 +723,41 @@ async function purgeOld(deps: IncomingDeps, hh: string, now: Date): Promise<numb
   return purged;
 }
 
-/** A decided file's object and pages, whose removal after the decision failed: removed now. */
-async function removeDecided(deps: IncomingDeps, hh: string, now: Date): Promise<number> {
+/**
+ * A decided file's object and pages, whose removal after the decision
+ * failed: removed now. A filed one only once its version's own copy is
+ * there: a filing whose answer was lost, its copy taken back by a request
+ * that could not tell (F523-2), has the bytes only here — they are copied
+ * to the version first, and checked, or the file is kept for next time.
+ */
+async function removeDecided(
+  deps: IncomingDeps,
+  hh: string,
+  now: Date,
+): Promise<{ removed: number; repaired: number }> {
   const left = await withSystem(deps.db, hh, (trx) =>
     trx
       .selectFrom('incoming_file')
-      .select(['id', 'storage_key', 'vault_id', 'preview_pages'])
+      .select(['id', 'state', 'version_id', 'storage_key', 'vault_id'])
       .where('state', 'in', ['accepted', 'rejected'])
       .where('object_removed_at', 'is', null)
       .where('decided_at', '<', new Date(now.getTime() - 10 * 60_000))
       .execute(),
   );
   let removed = 0;
+  let repaired = 0;
   for (const f of left) {
     removed += await withSystem(deps.db, hh, async (trx) => {
-      const ok = await adapterOf(trx, deps, f.vault_id)
-        .then((a) => removeObjects(a, f))
-        .then(
-          () => true,
-          () => false,
-        );
+      const ok = await (async () => {
+        const adapter = await adapterOf(trx, deps, f.vault_id);
+        if (f.state === 'accepted' && f.version_id) {
+          const kept = await keepFiled(trx, deps, adapter, { ...f, version_id: f.version_id });
+          if (kept === 'wait') return false;
+          if (kept === 'repaired') repaired++;
+        }
+        await removeObjects(adapter, f);
+        return true;
+      })().catch(() => false);
       if (!ok) return 0;
       const r = await trx
         .updateTable('incoming_file')
@@ -703,7 +768,58 @@ async function removeDecided(deps: IncomingDeps, hh: string, now: Date): Promise
       return Number(r.numUpdatedRows);
     });
   }
-  return removed;
+  return { removed, repaired };
+}
+
+const notFound = (err: unknown) => err instanceof StorageError && err.code === 'not_found';
+
+/**
+ * Whether a filed file's version has its own copy: there already, or made
+ * now from the file sent in (the same encrypted bytes: filing never
+ * encrypts again), checked against what the version says it holds. Anything
+ * unsure waits for the next sweep, the file kept.
+ */
+async function keepFiled(
+  trx: Db,
+  deps: IncomingDeps,
+  from: StorageAdapter,
+  f: { id: string; version_id: string; storage_key: string },
+): Promise<'there' | 'repaired' | 'wait'> {
+  const v = await trx
+    .selectFrom('document_version')
+    .select(['storage_key', 'vault_id', 'cipher_sha256'])
+    .where('id', '=', f.version_id)
+    .executeTakeFirst();
+  // A version removed takes its file's row with it (0047): nothing to keep.
+  if (!v) return 'there';
+  const to = await adapterOf(trx, deps, v.vault_id);
+  const has = await to.stat(v.storage_key).then(
+    () => true as const,
+    (err: unknown) => (notFound(err) ? (false as const) : null),
+  );
+  if (has === null) return 'wait';
+  if (has) return 'there';
+  const source = await from.stat(f.storage_key).then(
+    () => true as const,
+    (err: unknown) => (notFound(err) ? (false as const) : null),
+  );
+  // Neither copy is there: nothing this can do, and nothing left to remove.
+  if (source === false) return 'there';
+  if (source === null) return 'wait';
+  const put = await to.put(v.storage_key, await from.get(f.storage_key));
+  if (put.sha256 !== v.cipher_sha256.toString('hex')) {
+    await to.delete(v.storage_key).catch(() => undefined);
+    deps.log('error', 'a filed version had no copy, and the file it came from is not it', {
+      file: f.id,
+      version: f.version_id,
+    });
+    return 'wait';
+  }
+  deps.log('warn', 'a filed version had no copy: made again from the file sent in', {
+    file: f.id,
+    version: f.version_id,
+  });
+  return 'repaired';
 }
 
 /**

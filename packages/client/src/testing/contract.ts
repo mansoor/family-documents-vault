@@ -1266,6 +1266,18 @@ export const contractScenarios: Scenario[] = [
         api.acceptIncoming(token, id, { into_document_id: NEVER_USED }),
       );
       expect(missing).toMatchObject({ status: 404, code: 'not_found' });
+      // As a kind the household does not have: refused, saying which detail
+      // (not filed with no kind, as a phone's queued capture is).
+      const kindless = await refusal(
+        api.acceptIncoming(token, id, { title: 'Contract W-2', type_key: 'no_such_kind' }),
+      );
+      expect(kindless).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'That kind of document is not on the list.',
+        detail: 'type_key',
+      });
+      expect((await api.incoming(token)).items.map((f) => f.id)).toContain(id);
       // Filed as a new document; the other refused.
       const filed = await api.acceptIncoming(token, id, { title: 'Contract W-2' });
       expect((await api.document(token, filed.document_id)).title).toBe('Contract W-2');

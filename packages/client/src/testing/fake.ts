@@ -1961,12 +1961,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             members: state.members,
             types: state.types,
           });
+          // Refused as the vault refuses it, naming the detail: a kind the
+          // household does not have included (not filed with no kind, as a
+          // phone's queued capture is: this is chosen now, from the list).
           if (problem) {
             return fail(
               problem.status,
               problem.status === 403 ? 'forbidden' : 'validation_failed',
               problem.message,
-              problem.key,
+              problem.key ?? problem.field,
             );
           }
           const doc: FakeDocument = {

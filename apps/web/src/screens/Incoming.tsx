@@ -399,6 +399,12 @@ function IncomingFile(props: {
         className="card stack"
         aria-labelledby="incoming-file-it"
         onSubmit={(e) => void fileIt(e)}
+        onKeyDown={(e) => {
+          // Enter in the box that finds a document finds it; it files nothing.
+          if (e.key === 'Enter' && (e.target as HTMLElement).id === 'incoming-find') {
+            e.preventDefault();
+          }
+        }}
       >
         <h2 id="incoming-file-it" className="section-h">
           File it
@@ -499,15 +505,13 @@ function IncomingFile(props: {
             </div>
           </>
         ) : (
-          <Select
-            id="incoming-into"
-            label="A new version of"
+          <VersionPicker
+            recent={props.documents}
+            members={members}
+            types={types}
             value={into}
-            options={[
-              { value: '', label: 'Choose a document' },
-              ...props.documents.map((d) => ({ value: d.id, label: d.title ?? 'Needs a name' })),
-            ]}
             onChange={setInto}
+            withToken={withToken}
           />
         )}
         <ErrorNote message={problem} />
@@ -539,11 +543,110 @@ function IncomingFile(props: {
           onCancel={() => setAsking(false)}
         >
           <p>
-            “{file.name}” is removed from the vault, and nothing of it is kept.{' '}
+            “{file.name}” is removed from the vault: the file, its pages, its name
+            {file.sender_note ? ', and the note that came with it' : ''}. All the vault keeps is a
+            record that a {sizeWords(file.byte_size)} file came through this request, and that you
+            refused it.
+          </p>
+          <p>
             {file.recipient_label ? `${file.recipient_label} is` : 'Whoever sent it is'} not told.
           </p>
         </ConfirmDialog>
       )}
+    </>
+  );
+}
+
+/** A document to add a file to, as the picker shows it. */
+type Choice = Pick<DocumentView, 'id' | 'title' | 'owner_member_id' | 'type_key'>;
+
+/**
+ * Which document a file is a new version of (W523-07): the most recent
+ * first, and any other found by a word of its name — every document the
+ * reviewer may see, not only the last hundred — each told apart by whose it
+ * is and what kind: "Passport — Aisha, Passport".
+ */
+function VersionPicker(props: {
+  recent: DocumentView[];
+  members: Member[];
+  types: DocumentTypeView[];
+  value: string;
+  onChange: (id: string) => void;
+  withToken: ReturnType<typeof useApp>['withToken'];
+}) {
+  const { recent, members, types, value, onChange, withToken } = props;
+  const [query, setQuery] = useState('');
+  // What the vault found, and for which words: shown only while they are
+  // still the words in the box.
+  const [found, setFound] = useState<{ q: string; items: Choice[] }>({ q: '', items: [] });
+  const [chosen, setChosen] = useState<Choice | null>(null);
+  const q = query.trim();
+  useEffect(() => {
+    if (q.length < 2) return;
+    let live = true;
+    const later = setTimeout(() => {
+      withToken((t) => api.search(t, q))
+        .then((r) => {
+          if (!live || !r) return;
+          setFound({
+            q,
+            items: r.items.map((h) => ({
+              id: h.document_id,
+              title: h.title,
+              owner_member_id: h.owner_member_id,
+              type_key: h.type_key,
+            })),
+          });
+        })
+        .catch(() => {
+          if (live) setFound({ q, items: [] });
+        });
+    }, 300);
+    return () => {
+      live = false;
+      clearTimeout(later);
+    };
+  }, [q, withToken]);
+  const words = (d: Choice) => {
+    const person = members.find((m) => m.id === d.owner_member_id)?.display_name;
+    const kind = types.find((t) => t.key === d.type_key)?.label;
+    return `${d.title ?? 'Needs a name'} — ${person ?? 'Nobody in particular'}, ${kind ?? 'no kind yet'}`;
+  };
+  const near = q
+    ? recent.filter((d) => (d.title ?? '').toLowerCase().includes(q.toLowerCase()))
+    : recent;
+  const options: Choice[] = [];
+  const seen = new Set<string>();
+  const hits = q.length >= 2 && found.q === q ? found.items : [];
+  for (const d of [...(chosen ? [chosen] : []), ...near, ...hits]) {
+    if (seen.has(d.id)) continue;
+    seen.add(d.id);
+    options.push(d);
+  }
+  return (
+    <>
+      <Field
+        id="incoming-find"
+        label="Find the document"
+        type="search"
+        value={query}
+        required={false}
+        onChange={setQuery}
+        note="Type a word of its name. The most recent are listed below already."
+      />
+      <Select
+        id="incoming-into"
+        label="A new version of"
+        value={value}
+        options={[
+          { value: '', label: options.length ? 'Choose a document' : 'Nothing with that name' },
+          ...options.map((d) => ({ value: d.id, label: words(d) })),
+        ]}
+        onChange={(id) => {
+          setChosen(options.find((d) => d.id === id) ?? null);
+          onChange(id);
+        }}
+      />
     </>
   );
 }

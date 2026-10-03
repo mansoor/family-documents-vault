@@ -1787,14 +1787,15 @@ export class UploadRequestService {
 
 function dropFile(f: {
   id: string;
-  original_name: string;
+  /** Only a file refused has none (0047), and a sender is not shown those. */
+  original_name: string | null;
   mime: string | null;
   byte_size: string | number | null;
   item_id: string | null;
 }): DropFile {
   return {
     id: f.id,
-    name: f.original_name,
+    name: f.original_name ?? 'file',
     content_type: f.mime ?? 'application/octet-stream',
     byte_size: Number(f.byte_size ?? 0),
     item_id: f.item_id,

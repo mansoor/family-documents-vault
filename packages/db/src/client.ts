@@ -499,7 +499,8 @@ export interface Schema {
       'uploading' | 'received' | 'accepted' | 'rejected' | undefined,
       'uploading' | 'received' | 'accepted' | 'rejected'
     >;
-    original_name: string;
+    /** Its name as sent; null once it is refused (0047), which keeps no name. */
+    original_name: string | null;
     mime: string | null;
     byte_size: ColumnType<string | number | null, number | null | undefined, number | null>;
     /** The room it holds while it arrives, against the caps (incoming_room()). */
@@ -530,6 +531,8 @@ export interface Schema {
     object_removed_at: Timestamp | null;
     /** Moved to the owners from a requester who can no longer review (0047). */
     owners_only: Generated<boolean>;
+    /** When its reviewers were told it is waiting (0047): told once. */
+    told_at: Timestamp | null;
   };
 
   owner_change_request: {

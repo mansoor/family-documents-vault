@@ -3,7 +3,15 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { AISHA, fresh, installFakeApi, ME, signedIn, type FakeState } from './test-api.js';
+import {
+  AISHA,
+  fresh,
+  installFakeApi,
+  ME,
+  PASSPORT,
+  signedIn,
+  type FakeState,
+} from './test-api.js';
 
 /**
  * Incoming on the web (5.23): the inbox of what came in through a request,
@@ -167,6 +175,49 @@ describe('incoming on the web (5.23)', () => {
     });
   });
 
+  it(
+    'a new version of: any document found by a word of its name, each told apart by whose it is and what kind (W523-07)',
+    { timeout: 15_000 },
+    async () => {
+      // Two passports, and only the most recent listed by the vault: the
+      // other is found.
+      const older = {
+        ...PASSPORT,
+        id: 'doc-old',
+        title: 'Old passport',
+        owner_member_id: 'm-0',
+        created_at: '2020-01-01T00:00:00Z',
+      };
+      const state = at('/incoming/in-1', { documents: [PASSPORT, older], pageSize: 1 });
+      const main = await screenCalled('W-2 2025.pdf');
+      const form = await within(main).findByRole('form', { name: 'File it' });
+      fireEvent.click(within(form).getByRole('button', { name: 'A new version of one' }));
+      const picker = await within(form).findByLabelText('A new version of');
+      expect(
+        within(picker).getByRole('option', {
+          name: "Mansoor's passport — Mansoor Seikh, Passport",
+        }),
+      ).toBeInTheDocument();
+      expect(within(picker).queryByRole('option', { name: /Old passport/ })).toBeNull();
+      // A word of its name: the vault is asked, and the older one is there,
+      // whose and what kind.
+      fireEvent.change(within(form).getByLabelText('Find the document'), {
+        target: { value: 'Old' },
+      });
+      expect(
+        await within(picker).findByRole('option', { name: 'Old passport — Aisha, Passport' }),
+      ).toBeInTheDocument();
+      expect(state.lastQuery).toBe('Old');
+      fireEvent.change(picker, { target: { value: 'doc-old' } });
+      fireEvent.click(within(form).getByRole('button', { name: 'File it' }));
+      await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-old'));
+      expect(state.calls.find((c) => c.url === '/api/v1/incoming/in-1/accept')?.body).toEqual({
+        into_document_id: 'doc-old',
+      });
+      await expectAccessible();
+    },
+  );
+
   it('refusing asks first, and Cancel gives focus back', { timeout: 15_000 }, async () => {
     const state = at('/incoming/in-1');
     const main = await screenCalled('W-2 2025.pdf');
@@ -174,11 +225,16 @@ describe('incoming on the web (5.23)', () => {
     refuse.focus();
     fireEvent.click(refuse);
     const dialog = await screen.findByRole('alertdialog', { name: 'Refuse this file?' });
+    // What goes, and exactly what stays (W523-08): never "nothing is kept".
     expect(
       within(dialog).getByText(
-        /“W-2 2025\.pdf” is removed from the vault.*Jane, accountant is not told/,
+        '“W-2 2025.pdf” is removed from the vault: the file, its pages, its name, and the note ' +
+          'that came with it. All the vault keeps is a record that a 120 KB file came through ' +
+          'this request, and that you refused it.',
       ),
     ).toBeInTheDocument();
+    expect(within(dialog).getByText('Jane, accountant is not told.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/nothing of it is kept/)).toBeNull();
     // Focus starts on Cancel, so Enter never refuses by accident.
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     await expectAccessible();

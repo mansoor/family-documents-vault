@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -88,10 +88,14 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
   const hh = randomUUID();
   const keys = new ScopeKeys(new EnvKeyProvider(MASTER));
   const stamp = `${Date.now()}-${randomBytes(3).toString('hex')}`;
-  const people: Record<
-    'owner' | 'adult' | 'other',
-    { account: string; member: string; email: string }
-  > = {} as never;
+  /**
+   * Who is in the household: three who review, and three who never do — a
+   * teen, a viewer, and an adult whose sign-in was taken away — each with
+   * a browser and a phone (W523-04).
+   */
+  type Who = 'owner' | 'adult' | 'other' | 'teen' | 'viewer' | 'disabled';
+  const people: Record<Who, { account: string; member: string; email: string }> = {} as never;
+  const NEVER_TOLD = ['teen', 'viewer', 'disabled'] as const;
   /** Every push the worker sent, as it left. */
   const pushes: Array<{ device: string; payload: string; type: string }> = [];
   const capture: typeof deliver = async (_deps, device, payload, type) => {
@@ -105,6 +109,9 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     tdb = await createTestDatabase();
     db = createDb(createPool(tdb.appUrl, 3));
     admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 2 });
+    // A connection the server ends as the database is dropped is said on
+    // the pool, not an unhandled error (the 5.23 review).
+    admin.on('error', () => undefined);
     root = await mkdtemp(path.join(tmpdir(), 'fdv-incoming-'));
     await admin.query("insert into household (id, name, timezone) values ($1, 'Incoming', 'UTC')", [
       hh,
@@ -113,6 +120,9 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
       ['owner', 'owner'],
       ['adult', 'adult'],
       ['other', 'adult'],
+      ['teen', 'teen'],
+      ['viewer', 'viewer'],
+      ['disabled', 'adult'],
     ] as const) {
       const member = (
         await admin.query<{ id: string }>(
@@ -138,6 +148,9 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
       );
       people[who] = { account, member, email };
     }
+    await admin.query('update account set disabled_at = now() where id = $1', [
+      people.disabled.account,
+    ]);
     await withSystem(db, hh, async (trx) => {
       await keys.mintHouseholdKeys(trx, hh);
       for (const p of Object.values(people)) await keys.mintMemberKey(trx, hh, p.member, null);
@@ -368,33 +381,80 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
   /** Somebody signed in, on a connection of their own, holding a file as a decision does. */
   const holding = async (who: 'owner' | 'adult' | 'other', role: string, fileId: string) => {
     const app = new pg.Client({ connectionString: tdb.appUrl });
+    app.on('error', () => undefined);
     await app.connect();
-    await app.query('begin');
-    await app.query(
-      `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
-              set_config('app.account_id', $2, true), set_config('app.member_id', $3, true),
-              set_config('app.role', $4, true)`,
-      [hh, people[who].account, people[who].member, role],
-    );
-    const { rows } = await app.query('select id from incoming_file where id = $1 for update', [
-      fileId,
-    ]);
-    expect(rows).toHaveLength(1);
+    try {
+      await app.query('begin');
+      await app.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                set_config('app.account_id', $2, true), set_config('app.member_id', $3, true),
+                set_config('app.role', $4, true)`,
+        [hh, people[who].account, people[who].member, role],
+      );
+      const { rows } = await app.query('select id from incoming_file where id = $1 for update', [
+        fileId,
+      ]);
+      expect(rows).toHaveLength(1);
+    } catch (err) {
+      await app.end();
+      throw err;
+    }
     return {
-      /** Filed, as the API files it: then committed. */
+      /**
+       * Filed, as the API files it — a document and its version made by
+       * them in this transaction, and the file pointed at it — then
+       * committed.
+       */
       file: async () => {
-        const as = await filedAs();
-        await app.query(
-          `update incoming_file set state = 'accepted', decided_by = $2, decided_at = now(),
-                  document_id = $3, version_id = $4
-            where id = $1`,
-          [fileId, people[who].account, as.doc, as.version],
-        );
-        await app.query('commit');
-        await app.end();
+        try {
+          const scope = (
+            await admin.query<{ id: string }>(
+              "select id from scope_key where household_id = $1 and kind = 'household'",
+              [hh],
+            )
+          ).rows[0]?.id as string;
+          const doc = (
+            await app.query<{ id: string }>(
+              `insert into document (household_id, title, created_by) values ($1, 'Filed', $2)
+               returning id`,
+              [hh, people[who].account],
+            )
+          ).rows[0]?.id as string;
+          const version = (
+            await app.query<{ id: string }>(
+              `insert into document_version
+                 (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+                  cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped,
+                  wrapped_by_scope, uploaded_by)
+               values ($1, $2, 1, 'a.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00', $3, $4,
+                       '\\x00', $5, $6)
+               returning id`,
+              [hh, doc, `${hh}/${doc}/1/${randomUUID()}.enc`, vault, scope, people[who].account],
+            )
+          ).rows[0]?.id as string;
+          await app.query(
+            `update incoming_file set state = 'accepted', decided_by = $2, decided_at = now(),
+                    document_id = $3, version_id = $4
+              where id = $1`,
+            [fileId, people[who].account, doc, version],
+          );
+          await app.query('commit');
+        } finally {
+          await app.end();
+        }
       },
     };
   };
+  const devicesOf = async (...who: Who[]) =>
+    (
+      await admin.query<{ id: string }>(
+        'select id from device where account_id = any($1::uuid[])',
+        [who.map((w) => people[w].account)],
+      )
+    ).rows
+      .map((d) => d.id)
+      .sort();
+  const pushedTo = () => [...new Set(pushes.map((p) => p.device))].sort();
   /** An answer within two seconds, or 'held'. */
   const soon = <T>(p: Promise<T>) =>
     Promise.race([p, new Promise<'held'>((r) => setTimeout(() => r('held'), 2000))]);
@@ -447,12 +507,13 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
       // Without the tools, it says it could not, and never that it did.
       expect(drawn).toMatchObject({ preview_state: 'failed', preview_pages: 0 });
     }
-    // The requester, who alone reviews it, is told: two files.
-    const theirs = pushes.filter((p) => p.device.length > 0);
-    expect(theirs.length).toBeGreaterThan(0);
+    // The requester, who alone reviews it, is told — on each of their
+    // devices, once, and nobody else on any: two files.
+    expect(pushes.map((p) => p.device).sort()).toEqual(await devicesOf('adult'));
     expect(
-      theirs.every((p) => p.payload.includes('"count":2') || p.payload.includes('2 files')),
+      pushes.every((p) => p.payload.includes('"count":2') || p.payload.includes('2 files')),
     ).toBe(true);
+    for (const id of [pdf.id, word.id]) expect((await row(id))?.told_at).not.toBeNull();
     // Ready already: asked again, nothing is done twice and nobody told twice.
     pushes.length = 0;
     expect(await scanIncoming(deps, { household_id: hh, request_id: r })).toBe(0);
@@ -465,6 +526,10 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     // Only the files that are ready count: one still pending elsewhere does not.
     const still = await request({ reviewBy: 'adults', requester: 'owner' });
     await file(still, { scan: 'pending' });
+    // And one waiting for another adult alone counts for them, and for
+    // nobody else — whichever test ran before.
+    const theirs = await request({ reviewBy: 'me', requester: 'other' });
+    await file(theirs);
     pushes.length = 0;
     await admin.query(
       "update incoming_file set scan_state = 'unscanned' where id = any($1::uuid[])",
@@ -475,14 +540,12 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
       hh,
       sent.map((f) => f.id),
     );
-    // Every reviewer — the owner and both adults — on both devices.
-    const devices = (
-      await admin.query<{ id: string; kind: string }>(
-        'select id, kind from device where household_id = $1',
-        [hh],
-      )
-    ).rows;
-    expect(told.pushed).toBe(devices.length);
+    // Every reviewer — the owner and both adults — on both devices, once;
+    // never a teen, a viewer, or an adult whose sign-in was taken away.
+    const reviewers = await devicesOf('owner', 'adult', 'other');
+    expect(pushes.map((p) => p.device).sort()).toEqual(reviewers);
+    expect(told.pushed).toBe(reviewers.length);
+    for (const d of await devicesOf(...NEVER_TOLD)) expect(pushedTo()).not.toContain(d);
     // Each reviewer's own count: every file waiting for them, the earlier
     // test's review-by-me files included for the adult who asked for them.
     const waitingFor = async (who: 'owner' | 'adult' | 'other') =>
@@ -514,11 +577,13 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
           // A phone is told the word and the number, and nothing else.
           expect(JSON.parse(p?.payload ?? '{}')).toStrictEqual({ v: 1, type: 'incoming', count });
         } else {
-          // A browser, a sentence with the number.
+          // A browser, a sentence with the number; a tap opens the files
+          // waiting, where the email's link goes (W523-01).
           expect(JSON.parse(p?.payload ?? '{}')).toStrictEqual({
             title: 'Family Document Vault',
             body: incomingWords(count),
             tag: 'fdv-incoming',
+            url: '/incoming',
           });
         }
       }
@@ -561,6 +626,15 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
       expect(found?.Text?.replace(/\r\n/g, '\n').trim()).toBe(
         incomingEmail(count, 'https://vault.incoming.test').text.trim(),
       );
+      // Nobody who does not review is written to.
+      for (const who of NEVER_TOLD) {
+        const list = (await (
+          await fetch(
+            `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${people[who].email}`)}&limit=1`,
+          )
+        ).json()) as { messages?: unknown[] };
+        expect(list.messages ?? []).toEqual([]);
+      }
     }
   });
 
@@ -757,5 +831,123 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     expect(await row(refusedFile.id)).toBeUndefined();
     // A document's history still says where its version came from.
     expect(await row(filedFile.id)).toMatchObject({ state: 'accepted', version_id: as.version });
+  });
+
+  it('a scan that stopped after getting files ready and before telling: the next scan, or the sweep, tells — once (W523-02)', async () => {
+    const r = await request({ reviewBy: 'me', requester: 'adult' });
+    // Marked not scanned and its pages drawn, then the job stopped: nobody told.
+    const first = await file(r, { pages: 1 });
+    expect((await row(first.id))?.told_at).toBeNull();
+    pushes.length = 0;
+    // The job again: nothing left to get ready, but somebody to tell.
+    expect(await scanIncoming(deps, { household_id: hh, request_id: r })).toBe(0);
+    expect(pushes.map((p) => p.device).sort()).toEqual(await devicesOf('adult'));
+    expect((await row(first.id))?.told_at).not.toBeNull();
+
+    // Another stopped the same way, and its job was lost: the sweep tells.
+    const second = await file(r, { pages: 1 });
+    pushes.length = 0;
+    await sweepIncoming(deps);
+    const adults = await devicesOf('adult');
+    expect(pushes.filter((p) => adults.includes(p.device))).toHaveLength(adults.length);
+    expect((await row(second.id))?.told_at).not.toBeNull();
+    // Told once: nobody is told of them again.
+    pushes.length = 0;
+    expect((await sweepIncoming(deps)).told).toBe(0);
+    expect(await scanIncoming(deps, { household_id: hh, request_id: r })).toBe(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it('every page of a decided or purged file is removed, whatever its row says was drawn (F523-3)', async () => {
+    const r = await request({ reviewBy: 'adults', requester: 'owner' });
+    const refused = await file(r, { pages: 3 });
+    const old = await file(r, { pages: 3, receivedAt: days(31) });
+    // Drawn part-way when the drawing stopped: three pages stored, the row
+    // still saying they are being drawn, and counting none.
+    await admin.query(
+      "update incoming_file set preview_state = 'drawing', preview_pages = null where id = any($1::uuid[])",
+      [[refused.id, old.id]],
+    );
+    await admin.query(
+      `update incoming_file set state = 'rejected', decided_by = $2,
+              decided_at = now() - interval '1 hour', original_name = null, sha256 = null
+        where id = $1`,
+      [refused.id, people.owner.account],
+    );
+    await sweepIncoming(deps);
+    for (const f of [refused, old]) {
+      for (const n of [1, 2, 3]) expect(await there(`${f.storageKey}.p${n}.enc`)).toBe(false);
+      expect(await there(f.storageKey)).toBe(false);
+    }
+    expect((await row(refused.id))?.object_removed_at).not.toBeNull();
+    expect(await row(old.id)).toBeUndefined();
+  });
+
+  it('a filed version whose own copy is missing is made again from the file sent in before that goes (F523-2)', async () => {
+    const r = await request({ reviewBy: 'adults', requester: 'owner' });
+    const sent = await file(r, { pages: 1 });
+    // Filed, its copy taken back by a request that never heard the filing
+    // commit: the version's object is not there; the file sent in still is.
+    const [f] = (
+      await admin.query<{ cipher_bytes: string; cipher_sha256: Buffer; file_key_wrapped: Buffer }>(
+        'select cipher_bytes, cipher_sha256, file_key_wrapped from incoming_file where id = $1',
+        [sent.id],
+      )
+    ).rows;
+    const scope = (
+      await admin.query<{ id: string }>(
+        "select id from scope_key where household_id = $1 and kind = 'household'",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const doc = (
+      await admin.query<{ id: string }>(
+        "insert into document (household_id, title) values ($1, 'Filed, no copy') returning id",
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const versionKey = `${hh}/${doc}/1/${randomUUID()}.enc`;
+    const version = (
+      await admin.query<{ id: string }>(
+        `insert into document_version
+           (household_id, document_id, version_no, filename, mime, byte_size, sha256,
+            cipher_bytes, cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+         values ($1, $2, 1, 'a.pdf', 'application/pdf', $3, '\\x00', $4, $5, $6, $7, $8, $9)
+         returning id`,
+        [
+          hh,
+          doc,
+          sent.bytes.length,
+          f?.cipher_bytes,
+          f?.cipher_sha256,
+          versionKey,
+          vault,
+          f?.file_key_wrapped,
+          scope,
+        ],
+      )
+    ).rows[0]?.id as string;
+    await admin.query(
+      `update incoming_file set state = 'accepted', decided_by = $2,
+              decided_at = now() - interval '1 hour', document_id = $3, version_id = $4
+        where id = $1`,
+      [sent.id, people.owner.account, doc, version],
+    );
+    expect(await there(versionKey)).toBe(false);
+
+    const report = await sweepIncoming(deps);
+    expect(report.versionsRepaired).toBeGreaterThanOrEqual(1);
+    // The version's bytes are there, the very bytes that came in...
+    const copied = await readAll(await adapter().get(versionKey));
+    expect(
+      createHash('sha256')
+        .update(copied)
+        .digest()
+        .equals(f?.cipher_sha256 as Buffer),
+    ).toBe(true);
+    // ...and only then the file sent in, and its pages, went.
+    expect(await there(sent.storageKey)).toBe(false);
+    expect(await there(`${sent.storageKey}.p1.enc`)).toBe(false);
+    expect((await row(sent.id))?.object_removed_at).not.toBeNull();
   });
 });

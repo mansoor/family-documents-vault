@@ -318,10 +318,20 @@ export function payloadFor(kind: 'web_push' | 'unified_push', m: PushMessage): s
     session_ended: 'You were signed out.',
     test: 'Notifications work on this device.',
   };
+  if (m.type === 'incoming') {
+    return JSON.stringify({
+      title: 'Family Document Vault',
+      // 5.23: files to look at, how many and nothing else; and a tap opens
+      // them, where the email's link goes (the browser opens Reminders for
+      // a push that names nowhere, sw.js).
+      body: incomingWords(m.count),
+      tag: pushTopic(m.type),
+      url: '/incoming',
+    });
+  }
   return JSON.stringify({
     title: 'Family Document Vault',
-    // 5.23: files to look at, how many and nothing else.
-    body: m.type === 'incoming' ? incomingWords(m.count) : words[m.type],
+    body: words[m.type],
     tag: pushTopic(m.type),
   });
 }

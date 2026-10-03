@@ -13,6 +13,7 @@ import {
   type IncomingScanState,
 } from '@fdv/shared';
 import { readAll, type StorageAdapter } from '@fdv/storage';
+import { sql } from 'kysely';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { DocumentService, Enqueue } from '../documents/service.js';
@@ -199,7 +200,7 @@ export class IncomingService {
           request_title: f.title,
           recipient_label: f.recipient_label,
           item_label: f.item_label,
-          name: f.original_name,
+          name: f.original_name ?? 'file',
           content_type: f.mime ?? 'application/octet-stream',
           byte_size: Number(f.byte_size ?? 0),
           sender_note: f.sender_note,
@@ -258,7 +259,8 @@ export class IncomingService {
     if (!f || f.submitted_at === null || f.scan_state === 'infected') throw notHere();
     if (f.state === 'accepted' || f.state === 'rejected') throw decidedAlready();
     if (f.state !== 'received') throw notHere();
-    return f;
+    // Waiting, it has its name (only a refused file has none, 0047).
+    return { ...f, original_name: f.original_name ?? 'file' };
   }
 
   /** The file's key, from the one it came in under (bound to it: `incoming:<id>`). */
@@ -403,6 +405,27 @@ export class IncomingService {
         await this.stillReviews(trx, p);
         const f = await this.waiting(trx, id, true);
         if (f.scan_state === 'pending') throw notReady();
+        // A kind the household does not have is refused, not filed with no
+        // kind as a phone's queued capture is: this is chosen now, from the
+        // list as it is.
+        if (!into && input.type_key) {
+          const kind = await trx
+            .selectFrom('effective_document_type')
+            .select('key')
+            .where('key', '=', input.type_key)
+            .where('deleted_at', 'is', null)
+            .executeTakeFirst();
+          if (!kind) {
+            throw new ApiError(
+              422,
+              'validation_failed',
+              'That kind of document is not on the list.',
+              {
+                detail: 'type_key',
+              },
+            );
+          }
+        }
         placed.vaultId = f.vault_id;
         const fileKey = await this.fileKeyOf(trx, f);
         const mime = f.mime ?? 'application/octet-stream';
@@ -475,7 +498,9 @@ export class IncomingService {
         return { file: f, documentId: version.document_id, versionId: version.id };
       });
     } catch (err) {
-      if (placed.key && placed.vaultId) await this.dropCopy(p, placed.vaultId, placed.key);
+      if (placed.key && placed.vaultId) {
+        await this.dropCopy(p, { fileId: id, vaultId: placed.vaultId, key: placed.key });
+      }
       throw err;
     }
     await this.removeObjects(p, out.file);
@@ -487,7 +512,12 @@ export class IncomingService {
     return { document_id: out.documentId, version_id: out.versionId };
   }
 
-  /** Refuses it (POST /incoming/{id}/reject): its row stays, decided, and its bytes go. */
+  /**
+   * Refuses it (POST /incoming/{id}/reject): its bytes and pages go, and so
+   * do its name, the sender's note and its hash. What stays is a record
+   * that a file of that kind and size came through the request, and who
+   * refused it when.
+   */
   async reject(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     this.mayReview(p);
     const f = await withPrincipal(this.db, p, async (trx) => {
@@ -495,7 +525,14 @@ export class IncomingService {
       const f = await this.waiting(trx, id, true);
       const decided = await trx
         .updateTable('incoming_file')
-        .set({ state: 'rejected', decided_by: p.accountId, decided_at: new Date() })
+        .set({
+          state: 'rejected',
+          decided_by: p.accountId,
+          decided_at: new Date(),
+          original_name: null,
+          sender_note: null,
+          sha256: null,
+        })
         .where('id', '=', f.id)
         .where('state', '=', 'received')
         .executeTakeFirst();
@@ -517,18 +554,21 @@ export class IncomingService {
 
   /**
    * A decided file's object and previews, removed once the decision has
-   * committed, and said so. A removal that fails is left for the worker's
-   * daily sweep, which removes what no row says is gone.
+   * committed, and said so. Every page there could be, whatever its row
+   * says was drawn: a drawing that stopped part-way (its worker gone) wrote
+   * pages its row never counted (F523-3), and a page not there is nothing to
+   * remove. A removal that fails is left for the worker's daily sweep, which
+   * removes what no row says is gone.
    */
   private async removeObjects(
     p: Principal,
-    f: { id: string; storage_key: string; vault_id: string; preview_pages: number | null },
+    f: { id: string; storage_key: string; vault_id: string },
   ): Promise<void> {
     try {
       const adapter: StorageAdapter = await withPrincipal(this.db, p, (trx) =>
         this.vaults.adapterById(trx, f.vault_id),
       );
-      for (let n = 1; n <= (f.preview_pages ?? 0); n++) {
+      for (let n = 1; n <= PREVIEW_MAX_PAGES; n++) {
         await adapter.delete(incomingPreviewKey(f.storage_key, n));
       }
       await adapter.delete(f.storage_key);
@@ -546,18 +586,40 @@ export class IncomingService {
   }
 
   /**
-   * A filed file's copy, when its transaction did not commit — unless a
-   * version points at it: a commit whose answer was lost keeps its file, as
-   * an upload's does (documents/service.ts release()).
+   * A filed file's copy, when filing it failed — only when it certainly did
+   * not happen (F523-2). A commit whose answer was lost may still be
+   * committing: so first the file's row is held, which that commit holds
+   * until it ends, and then read as it is. Filed with this copy, it is the
+   * version's file, and stays. Still waiting, or refused, or filed as
+   * another version, nothing points at this copy, made under a name of its
+   * own for this try, and it goes. Anything unsure — the row not given to
+   * the reviewer any more, the wait too long, the database not answering —
+   * keeps it: a stray copy is better than a version without its bytes.
    */
-  private async dropCopy(p: Principal, vaultId: string, key: string): Promise<void> {
+  private async dropCopy(
+    p: Principal,
+    at: { fileId: string; vaultId: string; key: string },
+  ): Promise<void> {
     await withPrincipal(this.db, p, async (trx) => {
-      const used = await trx
-        .selectFrom('document_version')
-        .select('id')
-        .where('storage_key', '=', key)
+      await sql`set local lock_timeout = '30s'`.execute(trx);
+      const f = await trx
+        .selectFrom('incoming_file')
+        .select(['state', 'version_id'])
+        .where('id', '=', at.fileId)
+        .forUpdate()
         .executeTakeFirst();
-      if (!used) await (await this.vaults.adapterById(trx, vaultId)).delete(key);
+      if (!f) return;
+      if (f.state === 'accepted') {
+        if (!f.version_id) return;
+        const filed = await trx
+          .selectFrom('document_version')
+          .select('storage_key')
+          .where('id', '=', f.version_id)
+          .executeTakeFirst();
+        // Filed as this copy, or as a version not to be seen: kept.
+        if (!filed || filed.storage_key === at.key) return;
+      }
+      await (await this.vaults.adapterById(trx, at.vaultId)).delete(at.key);
     }).catch(() => undefined);
   }
 }

@@ -92,11 +92,12 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
 
   const inAWeek = () => new Date(Date.now() + 7 * 864e5).toISOString();
 
-  /** A request made, opened by its sender, these files sent, and Finish pressed. */
+  /** A request made, opened by its sender, these files sent, and Finish pressed (unless not). */
   const arrive = async (
     as: Tokens,
     body: Partial<UploadRequestInput>,
     files: Array<{ name: string; bytes: Buffer; type?: string }>,
+    opts: { finish?: boolean } = {},
   ) => {
     const made = await h.app.inject({
       method: 'POST',
@@ -130,6 +131,7 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
       expect(res.statusCode, res.body).toBe(201);
       sent.push(res.json<DropFile>());
     }
+    if (opts.finish === false) return { request: request.request, files: sent };
     const finished = await h.app.inject({
       method: 'POST',
       url: '/api/v1/drop/finish',
@@ -558,6 +560,21 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
       version_id: null,
     });
     expect(row?.object_removed_at).not.toBeNull();
+    // And what the refuse dialog says stays is all that does (W523-08): no
+    // name, no note from the sender, no fingerprint of what was in it; its
+    // kind and size, and who refused it when.
+    const [kept] = await admin<Record<string, unknown>>(
+      `select original_name, sender_note, sha256, mime, byte_size::int as byte_size
+         from incoming_file where id = $1`,
+      [file.id],
+    );
+    expect(kept).toEqual({
+      original_name: null,
+      sender_note: null,
+      sha256: null,
+      mime: 'application/pdf',
+      byte_size: PDF('spam').length,
+    });
     expect((await inbox(adult)).some((f) => f.id === file.id)).toBe(false);
     // Decided is decided.
     for (const again of [await reject(adult, file.id), await accept(adult, file.id)]) {
@@ -739,6 +756,269 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     );
     expect(Number(removed.numDeletedRows)).toBe(0);
     expect((await fileRow(file.id))?.state).toBe('received');
+  });
+
+  it('where a filed file went is written once, at the decision, as what the decision made, and never changed (R523-1)', async () => {
+    const { files } = await arrive(owner, { review_by: 'adults' }, [
+      { name: 'filed.pdf', bytes: PDF('filed') },
+      { name: 'waiting.pdf', bytes: PDF('waiting') },
+    ]);
+    const [filed, waiting] = files as [DropFile, DropFile];
+    await ready(filed.id);
+    await ready(waiting.id);
+    expect((await accept(owner, filed.id, { title: 'Filed' })).statusCode).toBe(201);
+    const was = (await fileRow(filed.id)) as NonNullable<Awaited<ReturnType<typeof fileRow>>>;
+    const me = {
+      householdId: household,
+      actor: {
+        kind: 'account' as const,
+        accountId: await accountOf(owner),
+        memberId: owner.member_id,
+        role: 'owner' as const,
+      },
+    };
+    const tried = (id: string, change: Record<string, unknown>) =>
+      withScope(h.db, me, (trx) =>
+        trx.updateTable('incoming_file').set(change).where('id', '=', id).executeTakeFirst(),
+      ).then(
+        (r) => `changed ${Number(r.numUpdatedRows)}`,
+        (err: unknown) => (err as { code?: string }).code,
+      );
+    // Not let go of by hand: only a removal takes it, and the row with it.
+    expect(await tried(filed.id, { document_id: null, version_id: null })).toBe('42501');
+    // Another document's version, filed some other way.
+    const [elsewhere] = await admin<{ id: string }>(
+      "insert into document (household_id, title) values ($1, 'Elsewhere') returning id",
+      [household],
+    );
+    const [another] = await admin<{ id: string; document_id: string }>(
+      `insert into document_version
+         (household_id, document_id, version_no, filename, mime, byte_size, sha256, cipher_bytes,
+          cipher_sha256, storage_key, vault_id, file_key_wrapped, wrapped_by_scope)
+       select v.household_id, $2, 1, 'a.pdf', 'application/pdf', 1, '\\x00', 1, '\\x00', $3,
+              v.vault_id, '\\x00', v.wrapped_by_scope
+         from document_version v where v.id = $1
+       returning id, document_id`,
+      [was.version_id, elsewhere?.id, `${household}/${elsewhere?.id}/1/elsewhere.enc`],
+    );
+    expect(another).toBeDefined();
+    // Not pointed elsewhere afterwards.
+    expect(
+      await tried(filed.id, { document_id: another?.document_id, version_id: another?.id }),
+    ).toBe('42501');
+    // A file waiting is not filed as a version this decision did not make.
+    expect(
+      await tried(waiting.id, {
+        state: 'accepted',
+        decided_by: me.actor.accountId,
+        decided_at: new Date(),
+        document_id: another?.document_id,
+        version_id: another?.id,
+      }),
+    ).toBe('42501');
+    // A sender's session is let go of only as it ends, by the database.
+    const [held] = await admin<{ session_id: string | null }>(
+      'select session_id from incoming_file where id = $1',
+      [waiting.id],
+    );
+    expect(held?.session_id).not.toBeNull();
+    expect(await tried(waiting.id, { session_id: null })).toBe('42501');
+    expect(await fileRow(filed.id)).toMatchObject({
+      state: 'accepted',
+      document_id: was.document_id,
+      version_id: was.version_id,
+    });
+    expect((await fileRow(waiting.id))?.state).toBe('received');
+  });
+
+  it('a file sent but not finished is not waiting: not listed, and not there to anyone (W523-04)', async () => {
+    const { files } = await arrive(
+      adult,
+      { review_by: 'adults' },
+      [{ name: 'unfinished.pdf', bytes: PDF('unfinished') }],
+      { finish: false },
+    );
+    const file = files[0] as DropFile;
+    // Ready in every other way: only Finish is missing.
+    await ready(file.id);
+    expect((await fileRow(file.id))?.state).toBe('received');
+    for (const t of [adult, owner, other]) {
+      expect((await inbox(t)).some((f) => f.id === file.id)).toBe(false);
+      for (const res of [
+        await page(t, file.id),
+        await content(t, file.id),
+        await accept(t, file.id, { title: 'Too soon' }),
+        await reject(t, file.id),
+      ]) {
+        expect(res.statusCode, res.body).toBe(404);
+      }
+    }
+    expect((await fileRow(file.id))?.state).toBe('received');
+  });
+
+  it('a kind of document the household does not have is refused, and nothing is filed (W523-05)', async () => {
+    const { files } = await arrive(owner, { review_by: 'adults' }, [
+      { name: 'kind.pdf', bytes: PDF('kind') },
+    ]);
+    const file = files[0] as DropFile;
+    await ready(file.id);
+    const before = await admin<{ n: number }>(
+      'select count(*)::int as n from document where household_id = $1',
+      [household],
+    );
+    const res = await accept(owner, file.id, { title: 'Kindless', type_key: 'no_such_kind' });
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json()).toMatchObject({
+      error: { code: 'validation_failed', detail: 'type_key' },
+    });
+    const after = await admin<{ n: number }>(
+      'select count(*)::int as n from document where household_id = $1',
+      [household],
+    );
+    expect(after[0]?.n).toBe(before[0]?.n);
+    expect((await fileRow(file.id))?.state).toBe('received');
+    // A kind it has is filed as asked.
+    const filed = await accept(owner, file.id, { title: 'Passport', type_key: 'passport' });
+    expect(filed.statusCode, filed.body).toBe(201);
+  });
+
+  it('deciding a file whose pages were still being drawn removes every page of it (F523-3)', async () => {
+    const { files } = await arrive(adult, { review_by: 'adults' }, [
+      { name: 'drawn-a.pdf', bytes: PDF('drawn-a') },
+      { name: 'drawn-b.pdf', bytes: PDF('drawn-b') },
+    ]);
+    const [refused, filed] = files as [DropFile, DropFile];
+    for (const f of [refused, filed]) {
+      await ready(f.id, 3);
+      // The drawing stopped part-way (its worker gone): three pages stored,
+      // and its row still saying they are being drawn, counting none.
+      await admin(
+        "update incoming_file set preview_state = 'drawing', preview_pages = null where id = $1",
+        [f.id],
+      );
+    }
+    expect((await reject(adult, refused.id)).statusCode).toBe(204);
+    expect((await accept(adult, filed.id, { title: 'Drawn' })).statusCode).toBe(201);
+    for (const f of [refused, filed]) {
+      const key = (await fileRow(f.id))?.storage_key as string;
+      for (const n of [1, 2, 3]) expect(await objectThere(`${key}.p${n}.enc`)).toBe(false);
+      expect(await objectThere(key)).toBe(false);
+    }
+  });
+
+  it('a filing whose answer is lost keeps the copy the version committed (F523-2)', async () => {
+    const { files } = await arrive(owner, { review_by: 'adults' }, [
+      { name: 'slow.pdf', bytes: PDF('slow') },
+    ]);
+    const file = files[0] as DropFile;
+    await ready(file.id);
+    // Its commit takes two seconds — and its answer never comes back: the
+    // connection dies the moment COMMIT has gone out, so the reviewer is
+    // told it failed while the database is still making it so.
+    await admin(
+      `create function test_slow_commit() returns trigger language plpgsql as $$
+         begin perform pg_sleep(2); return null; end $$`,
+    );
+    await admin(
+      `create constraint trigger test_slow_commit after update on incoming_file
+         deferrable initially deferred for each row
+         when (new.id = '${file.id}' and new.state = 'accepted')
+         execute function test_slow_commit()`,
+    );
+    // The connections the vault's own pool makes: their query, patched.
+    type Query = (this: object, ...args: unknown[]) => Promise<unknown>;
+    const probe = createPool(h.adminUrl, 1);
+    const one = await probe.connect();
+    const proto = Object.getPrototypeOf(one) as { query: Query };
+    one.release();
+    await probe.end();
+    const real = proto.query;
+    const dead = new WeakSet<object>();
+    let lose = false;
+    proto.query = function (this: object, ...args: unknown[]) {
+      if (dead.has(this)) return Promise.reject(new Error('Connection terminated unexpectedly'));
+      const text = typeof args[0] === 'string' ? args[0] : '';
+      if (lose && /^\s*commit\b/i.test(text)) {
+        lose = false;
+        const sent = real.apply(this, args);
+        sent.catch(() => undefined);
+        // Never answered, and never used again: the pool lets it go.
+        dead.add(this);
+        (this as unknown as { _queryable: boolean })._queryable = false;
+        return Promise.reject(new Error('Connection terminated unexpectedly'));
+      }
+      return real.apply(this, args);
+    };
+    const res = await (async () => {
+      try {
+        hold = async (what, id) => {
+          if (what === 'accept' && id === file.id) lose = true;
+        };
+        return await accept(owner, file.id, { title: 'Slow' });
+      } finally {
+        hold = null;
+        proto.query = real;
+        await admin('drop trigger test_slow_commit on incoming_file');
+        await admin('drop function test_slow_commit()');
+      }
+    })();
+    // Told it failed...
+    expect(res.statusCode).toBeGreaterThanOrEqual(500);
+    // ...and filed all the same: the version's bytes are where it says.
+    const row = await fileRow(file.id);
+    expect(row?.state).toBe('accepted');
+    const [version] = await admin<{ storage_key: string }>(
+      'select storage_key from document_version where id = $1',
+      [row?.version_id],
+    );
+    expect(version).toBeDefined();
+    expect(await objectThere(version?.storage_key as string)).toBe(true);
+    // Its own copy stays for the sweep, which removes it only once the
+    // version's is there (apps/worker/src/jobs/incoming.ts).
+    expect(row?.object_removed_at).toBeNull();
+  });
+
+  it('a document removed for good takes the file it was filed from with it, and every byte of it (5.24)', async () => {
+    const { files } = await arrive(owner, { review_by: 'adults', recipient_label: 'Jane' }, [
+      { name: 'gone.pdf', bytes: PDF('gone') },
+    ]);
+    const file = files[0] as DropFile;
+    await ready(file.id, 2);
+    const filed = await accept(owner, file.id, { title: 'Gone soon' });
+    expect(filed.statusCode, filed.body).toBe(201);
+    const documentId = filed.json<{ document_id: string }>().document_id;
+    const key = (await fileRow(file.id))?.storage_key as string;
+    // Its own copy's removal after filing failed: its bytes and a page are
+    // still there, for the sweep.
+    const local = new LocalAdapter(h.vaultDir);
+    for (const k of [key, `${key}.p1.enc`]) {
+      await local.put(k, Readable.from([Buffer.from('left behind')]));
+    }
+    await admin('update incoming_file set object_removed_at = null where id = $1', [file.id]);
+
+    const trashed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/documents/${documentId}`,
+      headers: h.as(owner),
+    });
+    expect(trashed.statusCode, trashed.body).toBe(204);
+    await stepUp(owner);
+    const removed = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${documentId}/purge`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    // Nothing of it: not the row, with the sender's name for it and their
+    // note; not its bytes or its pages; and nothing left to delete.
+    expect(await fileRow(file.id)).toBeUndefined();
+    expect(await objectThere(key)).toBe(false);
+    expect(await objectThere(`${key}.p1.enc`)).toBe(false);
+    const left = await admin<{ n: number }>(
+      'select count(*)::int as n from purge_leftover where removed_document = $1',
+      [documentId],
+    );
+    expect(left[0]?.n).toBe(0);
   });
 
   // ------------------------------------------------------------ races
