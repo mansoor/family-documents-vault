@@ -6,6 +6,26 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.26] - 2026-10-03 — iteration 5.25
+
+Change a person's details; the owner's view of a sign-in.
+
+### Added
+
+- **Edit details** on a person's profile: their name, date of birth and relationship. Owners can change anybody's; adults their own and those of people who don't sign in; teens their own. If somebody else saved a change first, you are told, and shown what they saved.
+- An owner can record that somebody has **passed away** — only someone who no longer signs in — after confirming it's them. Any invitation waiting for that person is taken back, and they can never be given a sign-in.
+- **The Account card**, for owners, on each person's profile: their role and sign-in email, whether two-step sign-in is on, how many passkeys, when they last signed in, and the devices they are signed in on — never an address or a secret. It asks for a passkey or an authenticator code; an owner without two-step sign-in is shown how to turn it on. Each look is noted in the activity log, for the owners and the person.
+
+### Changed
+
+- From now on, new powers given to owners need two-step sign-in; what owners could already do is unchanged.
+- Adding a person checks that the date of birth is a real day and not in the future, as editing does.
+- The activity log says which details changed, never what they were changed to.
+
+### Security
+
+- The database itself refuses to give a sign-in to somebody recorded as passed away, and refuses changes to a person beyond what the role allows.
+
 ## [0.5.25] - 2026-10-02 — iteration 5.24
 
 Removing a document for good.

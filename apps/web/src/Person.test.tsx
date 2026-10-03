@@ -709,7 +709,7 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
     const form = within(about).getByRole('form', { name: 'Aisha’s details' });
     // The name first, ready to change.
-    expect(within(form).getByLabelText('Name')).toHaveFocus();
+    await waitFor(() => expect(within(form).getByLabelText('Name')).toHaveFocus());
     expect(within(form).getByLabelText('Name')).toHaveValue('Aisha Khan');
     expect(within(form).getByLabelText('Relationship (optional)')).toHaveValue('Daughter');
     expect(within(form).getByLabelText('Date of birth (optional)')).toHaveValue('2016-04-02');
@@ -726,7 +726,9 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     expect(within(about).getByText('Niece')).toBeInTheDocument();
     expect(within(about).queryByRole('form')).not.toBeInTheDocument();
     // Back where it began.
-    expect(within(about).getByRole('button', { name: 'Edit details' })).toHaveFocus();
+    await waitFor(() =>
+      expect(within(about).getByRole('button', { name: 'Edit details' })).toHaveFocus(),
+    );
 
     // Nothing changed: nothing sent, and the form goes.
     fireEvent.click(within(about).getByRole('button', { name: 'Edit details' }));
@@ -906,7 +908,8 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     expect(within(dialog).queryByLabelText(/password/i)).not.toBeInTheDocument();
     expect(within(dialog).getByText(/Your password isn’t enough for this/)).toBeInTheDocument();
     const codeField = within(dialog).getByLabelText('Code from your authenticator app');
-    expect(codeField).toHaveFocus();
+    // The dialog moves focus once it has opened, a moment after it is in the page.
+    await waitFor(() => expect(codeField).toHaveFocus());
     await expectAccessible();
     fireEvent.change(codeField, { target: { value: '000000' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
