@@ -1,5 +1,13 @@
 import { appendAudit, withPrincipal, type Db } from '@fdv/db';
-import { can, DECEASED_NO_SIGN_IN, roleLabel, ROLES, type Role } from '@fdv/shared';
+import {
+  can,
+  DECEASED_NO_SIGN_IN,
+  identityAudienceSees,
+  roleLabel,
+  ROLES,
+  type Role,
+} from '@fdv/shared';
+import { sql } from 'kysely';
 import { z } from 'zod';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import type { Enqueue } from '../documents/service.js';
@@ -125,7 +133,9 @@ export class CoOwnerService {
         .where('account_id', '=', target.account_id)
         .where('household_id', '=', p.householdId)
         .execute();
-      if (!can(to, 'document.see_adults')) await expireExportsOf(trx, target.account_id);
+      if (!can(to, 'document.see_adults') || (await losesIdentity(trx, target.role, to))) {
+        await expireExportsOf(trx, target.account_id);
+      }
       // Made a teen or a viewer: their requests to send documents close (A39),
       // and what was sent for them alone to review goes to the owners (5.23).
       if (!can(to, 'upload_request.create')) {
@@ -179,7 +189,9 @@ export class CoOwnerService {
         .where('account_id', '=', p.accountId)
         .where('household_id', '=', p.householdId)
         .execute();
-      if (!can(to, 'document.see_adults')) await expireExportsOf(trx, p.accountId);
+      if (!can(to, 'document.see_adults') || (await losesIdentity(trx, 'owner', to))) {
+        await expireExportsOf(trx, p.accountId);
+      }
       if (!can(to, 'upload_request.create')) {
         await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
       }
@@ -523,6 +535,9 @@ export class CoOwnerService {
         .where('account_id', '=', row.target_account)
         .where('household_id', '=', p.householdId)
         .execute();
+      if (await losesIdentity(trx, 'owner', 'adult')) {
+        await expireExportsOf(trx, row.target_account);
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -855,10 +870,24 @@ function formatDay(iso: string): string {
 }
 
 /**
+ * Whether a role change takes away sight of other people's identity
+ * details (5.27): read under the audience in effect now, as the database
+ * reads it (identity_audience_now()). Since 5.27 an export holds them, so
+ * an owner who becomes an adult under the narrowest audience loses, with
+ * their exports, what they no longer see.
+ */
+async function losesIdentity(trx: Db, from: Role, to: Role): Promise<boolean> {
+  const r = await sql<{ a: string | null }>`select identity_audience_now() as a`.execute(trx);
+  const audience = r.rows[0]?.a ?? 'owners_and_self';
+  return identityAudienceSees(audience, from) && !identityAudienceSees(audience, to);
+}
+
+/**
  * An export was built from what its requester could see then. When they
  * can no longer see the adults-only documents — demoted to teen or viewer,
- * or their sign-in taken away — it stops being downloadable, or it would
- * go on handing them what the demotion took away.
+ * or their sign-in taken away — or other people's identity details (5.27),
+ * it stops being downloadable, or it would go on handing them what the
+ * demotion took away.
  */
 async function expireExportsOf(trx: Db, accountId: string): Promise<void> {
   await trx

@@ -1,4 +1,4 @@
-import { can, type UploadRequestView } from '@fdv/shared';
+import { can, IDENTITY_AUDIENCE_LABELS, type UploadRequestView } from '@fdv/shared';
 import { useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
@@ -25,6 +25,11 @@ import { linkTarget, RequestRow, requestTarget } from './Sharing.js';
  */
 export function AfterRestoreScreen() {
   const { caps, guarded, withToken, authVersion } = useApp();
+  const identityKept = caps?.features.member_identity === true;
+  const { data: identity } = useLoad(
+    async (t) => (identityKept ? api.identityAudience(t) : null),
+    [authVersion, identityKept],
+  );
   const owner = can(storedRole(), 'restore.review');
   const {
     data: waiting,
@@ -115,12 +120,14 @@ export function AfterRestoreScreen() {
           </p>
         </>
       )}
-      {/* Every restore narrows who sees identity details (5.26): said here
-          in the words the command line uses (5.27). */}
+      {/* Every restore narrows who sees identity details (5.26): the rule,
+          then how it is now, read from the vault — true however long ago the
+          restore was, and whatever was waiting then (the 5.27 review). */}
       {caps?.features.member_identity && (
         <p className="muted" data-testid="restore-identity">
-          Who can see identity details went back to the owners and each person, and a wider audience
-          that was waiting was withdrawn.{' '}
+          A restore sets who can see identity details back to the owners and each person, and
+          withdraws any wider audience that was waiting.
+          {identity ? ` It is now: ${IDENTITY_AUDIENCE_LABELS[identity.audience]}.` : ''}{' '}
           {owner ? (
             <>
               To let more people see them again, choose it in{' '}

@@ -124,7 +124,8 @@ function IdentityAudienceCard() {
       {pending && (
         <p className="status status-warn">
           From {whenWords(pending.notice_until, timezone)}, {AUDIENCE_WHO[pending.to]} will see
-          them. Everyone with a sign-in has been told, and can mark anything Only me before then.
+          them. Everyone with a sign-in has been told, and all but viewers can mark anything Only me
+          before then.
         </p>
       )}
       {view && owner ? (
@@ -148,9 +149,9 @@ function IdentityAudienceCard() {
           />
           <p className="muted">
             Letting more people see them waits {IDENTITY_NOTICE_HOURS} hours: everyone with a
-            sign-in is told first, and can mark anything Only me before then. Fewer people takes
-            effect at once. Either way, you confirm it’s you with a passkey or a code from your
-            authenticator app.
+            sign-in is told first, and all but viewers can mark anything Only me before then. Fewer
+            people takes effect at once. Either way, you confirm it’s you with a passkey or a code
+            from your authenticator app.
           </p>
           {action && (
             <Button disabled={busy} onClick={() => void change(choice, action)}>

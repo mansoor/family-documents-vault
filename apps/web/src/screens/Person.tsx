@@ -102,7 +102,19 @@ export function ProfileScreen() {
   const { authVersion, session } = useApp();
   const navigate = useNavigate();
   const location = useLocation();
-  const came = location.state as Came | null;
+  // "Add their details now" (5.27) opens the form once, as the screen
+  // opens: taken, and the history entry cleared of it, so that Back and a
+  // reload show the card, not the form again (the 5.27 review).
+  const [start] = useState(() => ({
+    id,
+    edit: (location.state as Came | null)?.editIdentity === true,
+  }));
+  useEffect(() => {
+    if (!(location.state as Came | null)?.editIdentity) return;
+    void navigate(`${location.pathname}${location.hash}`, { replace: true, state: null });
+    // Only as the screen opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { data, error, reload } = useLoad(
     async (t) => {
       const [members, docs, types] = await Promise.all([
@@ -122,13 +134,6 @@ export function ProfileScreen() {
   const member = data?.member ?? null;
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const myRole: Role = session.info?.role ?? storedRole();
-  // Linked to from the notice of a wider audience (5.27): their details.
-  const loaded = member !== null;
-  useEffect(() => {
-    if (loaded && location.hash === '#identity') {
-      document.getElementById('identity')?.scrollIntoView?.();
-    }
-  }, [loaded, location.hash]);
 
   if (data && !member) {
     return (
@@ -182,7 +187,7 @@ export function ProfileScreen() {
             member={member}
             name={name}
             types={data?.types}
-            startEditing={came?.editIdentity === true}
+            startEditing={start.edit && start.id === member.id}
           />
 
           <section aria-labelledby="their-docs-h">

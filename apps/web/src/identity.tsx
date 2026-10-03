@@ -20,7 +20,7 @@ import {
 } from '@fdv/shared';
 import { Fragment, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
@@ -87,6 +87,50 @@ function idNumberLabel(e: { kind: IdentityIdKind; label?: string | null }): stri
 }
 
 const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/**
+ * What tells two IDs apart that would be called the same — two passports
+ * with no name of their own, a dual national's (the 5.27 review): who issued
+ * each, where that differs, or else a number. By key; '' where one is alone.
+ */
+export function idSuffixes(
+  ids: ReadonlyArray<{
+    key: string;
+    kind: string;
+    label?: string | null | undefined;
+    issuer?: string | null | undefined;
+  }>,
+): Map<string, string> {
+  const groups = new Map<string, typeof ids>();
+  for (const i of ids) {
+    const name = `${i.kind}|${(i.label ?? '').trim().toLowerCase()}`;
+    groups.set(name, [...(groups.get(name) ?? []), i]);
+  }
+  const out = new Map<string, string>();
+  for (const group of groups.values()) {
+    const issuers = group.map((i) => (i.issuer ?? '').trim());
+    const byIssuer =
+      issuers.every(Boolean) && new Set(issuers.map((x) => x.toLowerCase())).size === group.length;
+    group.forEach((i, n) => {
+      out.set(
+        i.key,
+        group.length < 2 ? '' : byIssuer ? `, issued by ${issuers[n] as string}` : ` ${n + 1}`,
+      );
+    });
+  }
+  return out;
+}
+
+/**
+ * Whether this browser can copy at all: the Clipboard API is there only on
+ * a secure connection, so a vault reached over plain http on the home
+ * network has none. Without it Copy is not offered, and nothing is revealed
+ * for a copy that cannot happen (the 5.27 review).
+ */
+export function canCopy(): boolean {
+  if (typeof navigator === 'undefined' || !navigator.clipboard) return false;
+  return typeof window === 'undefined' || window.isSecureContext !== false;
+}
 
 /**
  * Who sees a person's shared details, in a sentence (A34): the person (when
@@ -166,6 +210,7 @@ export function IdentityCard(props: {
 }) {
   const { member } = props;
   const { caps, authVersion, guarded } = useApp();
+  const location = useLocation();
   const offered = caps?.features.member_identity === true;
   const { data, error, setData, reload } = useLoad(
     async (t) => {
@@ -193,7 +238,24 @@ export function IdentityCard(props: {
   const [busy, setBusy] = useState<string | null>(null);
   const editButton = useRef<HTMLButtonElement>(null);
   const status = useRef<HTMLParagraphElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const problemAt = useRef<HTMLParagraphElement>(null);
   const values = useRef(new Map<string, HTMLElement>());
+  // A problem said after the card was read again: heard, once it is there.
+  const [problemHeard, setProblemHeard] = useState(0);
+  useEffect(() => {
+    if (problemHeard > 0) problemAt.current?.focus();
+  }, [problemHeard]);
+  // Linked to (the notice of a wider audience, 5.27): once the card is
+  // there to go to, it is scrolled to and its heading takes the focus.
+  const arrived = useRef(false);
+  const loaded = view !== null;
+  useEffect(() => {
+    if (!loaded || arrived.current || location.hash !== '#identity') return;
+    arrived.current = true;
+    heading.current?.scrollIntoView?.();
+    heading.current?.focus();
+  }, [loaded, location.hash]);
 
   if (!offered || !view) {
     return error ? (
@@ -237,8 +299,7 @@ export function IdentityCard(props: {
       if (!got) return;
       const value = got[key];
       if (value === undefined) {
-        setProblem(`There is no ${label} to show any more.`);
-        await reload();
+        await gone(label);
         return;
       }
       flushSync(() => setShown((s) => ({ ...s, [`${part}:${key}`]: value })));
@@ -257,15 +318,31 @@ export function IdentityCard(props: {
     });
   };
 
+  /**
+   * A value the vault no longer has — cleared elsewhere since the card was
+   * read: said, the card read again, and the focus on what was said, since
+   * the button pressed goes with it.
+   */
+  const gone = async (label: string) => {
+    setProblem(`There is no ${label} to show any more.`);
+    await reload();
+    setProblemHeard((n) => n + 1);
+  };
+
   const copy = async (part: IdentityPart, key: string, label: string) => {
     if (busy) return;
     setBusy(`${part}:${key}`);
     setSaid(null);
     try {
       // Copying shows it as surely as Show does: asked, and logged, the same.
-      const asked = reveal(part, [key]).then((v) => v?.[key] ?? null);
+      let missing = false;
+      const asked = reveal(part, [key]).then((v) => {
+        missing = v !== null && v[key] === undefined;
+        return v?.[key] ?? null;
+      });
       const copied = await copyRevealed(asked);
       if (copied) setSaid(`${capitalised(label)} copied.`);
+      else if (missing) await gone(label);
       else if ((await asked) !== null) {
         setProblem('This browser would not copy it. Show it instead, and copy it from there.');
       }
@@ -273,6 +350,7 @@ export function IdentityCard(props: {
       setBusy(null);
     }
   };
+  const copyOffered = canCopy();
 
   const closeForm = () => {
     setEditing(false);
@@ -282,11 +360,22 @@ export function IdentityCard(props: {
   const self = member.is_me;
   const empty =
     view.shared.filled.length === 0 && (view.only_me ? view.only_me.filled.length === 0 : true);
+  // Two IDs called the same are told apart (the 5.27 review).
+  const suffixes = idSuffixes(
+    PARTS.flatMap((part) =>
+      ((part === 'shared' ? view.shared : view.only_me)?.fields.ids ?? []).map((i) => ({
+        key: `${part}:${i.id}`,
+        kind: i.kind,
+        label: i.label,
+        issuer: i.issuer,
+      })),
+    ),
+  );
   const sections = SECTIONS.map((s) => ({
     ...s,
     rows: PARTS.flatMap((part) => {
       const pv = part === 'shared' ? view.shared : view.only_me;
-      return pv ? rowsOf(pv, part, s.key) : [];
+      return pv ? rowsOf(pv, part, s.key, suffixes) : [];
     }).sort((a, b) => a.order - b.order),
   })).filter((s) => s.rows.length > 0);
 
@@ -330,15 +419,17 @@ export function IdentityCard(props: {
           >
             {value !== undefined ? 'Hide' : 'Show'}
           </button>
-          <button
-            type="button"
-            className="btn btn-quiet btn-small"
-            aria-label={`Copy ${r.secretLabel ?? ''}`}
-            aria-disabled={busy !== null}
-            onClick={() => void copy(r.part, r.key, r.secretLabel ?? '')}
-          >
-            Copy
-          </button>
+          {copyOffered && (
+            <button
+              type="button"
+              className="btn btn-quiet btn-small"
+              aria-label={`Copy ${r.secretLabel ?? ''}`}
+              aria-disabled={busy !== null}
+              onClick={() => void copy(r.part, r.key, r.secretLabel ?? '')}
+            >
+              Copy
+            </button>
+          )}
         </span>
       </span>
     );
@@ -347,7 +438,7 @@ export function IdentityCard(props: {
   return (
     <section className="card stack" aria-labelledby="identity-h" id="identity">
       <div className="card-head">
-        <h2 id="identity-h" style={{ fontSize: 18 }}>
+        <h2 id="identity-h" style={{ fontSize: 18 }} ref={heading} tabIndex={-1}>
           Identity details
         </h2>
         {mayEdit && !editing && (
@@ -388,9 +479,11 @@ export function IdentityCard(props: {
             });
             editButton.current?.focus();
           }}
-          onCancel={() => {
+          onCancel={(wrote) => {
             flushSync(closeForm);
             editButton.current?.focus();
+            // A part saved on the way: the card shows what the vault has.
+            if (wrote) void reload();
           }}
         />
       ) : empty ? (
@@ -442,7 +535,11 @@ export function IdentityCard(props: {
       )}
       {/* A reveal's refusal, from the card or the form's Show. */}
       {twoStep && <TwoStepNeeded message={twoStep} />}
-      <ErrorNote message={problem} />
+      {problem && (
+        <p ref={problemAt} className="error" role="alert" tabIndex={-1}>
+          {problem}
+        </p>
+      )}
       <p ref={status} className="notice status-line" role="status">
         {said}
       </p>
@@ -479,7 +576,12 @@ interface Row {
 }
 
 /** A part's rows for one section, in the catalogue's order. */
-function rowsOf(pv: IdentityPartView, part: IdentityPart, section: string): Row[] {
+function rowsOf(
+  pv: IdentityPartView,
+  part: IdentityPart,
+  section: string,
+  suffixes: Map<string, string>,
+): Row[] {
   const f = pv.fields;
   const masked = new Set(pv.masked);
   const rows: Row[] = [];
@@ -503,7 +605,12 @@ function rowsOf(pv: IdentityPartView, part: IdentityPart, section: string): Row[
     if ((IDENTITY_LISTS as readonly string[]).includes(key)) {
       const list = key as IdentityList;
       for (const e of (f[list] ?? []) as unknown as Array<Record<string, unknown>>) {
-        const row = entryRow(list, e, masked.has(`${list}.${String(e.id)}`));
+        const row = entryRow(
+          list,
+          e,
+          masked.has(`${list}.${String(e.id)}`),
+          suffixes.get(`${part}:${String(e.id)}`) ?? '',
+        );
         if (row) rows.push({ ...row, part, order });
       }
       return;
@@ -536,6 +643,8 @@ function entryRow(
   list: IdentityList,
   e: Record<string, unknown>,
   isMasked: boolean,
+  /** What tells this ID from another called the same (idSuffixes). */
+  suffix = '',
 ): Omit<Row, 'part' | 'order'> | null {
   const key = `${list}.${String(e.id)}`;
   switch (list) {
@@ -580,9 +689,13 @@ function entryRow(
       const named = text(e.label);
       return {
         key,
-        label: named ? `${IDENTITY_ID_LABELS[kind] ?? 'ID'}: ${named}` : IDENTITY_ID_LABELS[kind],
+        label:
+          (named ? `${IDENTITY_ID_LABELS[kind] ?? 'ID'}: ${named}` : IDENTITY_ID_LABELS[kind]) +
+          suffix,
         value: isMasked ? null : number || 'No number kept',
-        ...(isMasked ? { secretLabel: idNumberLabel({ kind, label: named || null }) } : {}),
+        ...(isMasked
+          ? { secretLabel: idNumberLabel({ kind, label: named || null }) + suffix }
+          : {}),
         more,
         documentId: typeof e.document_id === 'string' ? e.document_id : null,
       };
@@ -634,6 +747,12 @@ interface DraftEntry {
   masked: boolean;
   /** What a reveal showed of it; null until then. */
   known: string | null;
+  /**
+   * The value a reveal showed was put in the field, for the editor to see:
+   * cleared after that, it is cleared on purpose. Never put there (some
+   * text was typed over it first), an empty field keeps it.
+   */
+  shownInField: boolean;
 }
 
 interface Draft {
@@ -677,6 +796,7 @@ function entryFrom(
     linkedBefore: linked,
     masked: masked.includes(`${list}.${String(e.id)}`),
     known: null,
+    shownInField: false,
   };
 }
 
@@ -738,33 +858,56 @@ function entryOut(e: DraftEntry, part: IdentityPart): Record<string, unknown> | 
   if (e.list === 'custom' && e.hidden) out.hidden = true;
   if (secret && e.masked) {
     const typed = (e.f[secret] ?? '').trim();
-    // Moved to the other part, or a hidden field unhidden: shown first, and
-    // sent whole, since the vault keeps a value left out where it was, and
-    // hidden (mergeIdentityWrite).
+    // Moved to the other part, or a hidden field unhidden: sent whole, since
+    // the vault keeps a value left out where it was, and hidden
+    // (mergeIdentityWrite). Moving and unhiding show it first (the form).
     const whole = moved || (e.list === 'custom' && !e.hidden);
-    if (whole && e.known !== null) {
-      out[secret] = typed || null;
-    } else if (whole || e.known === null) {
-      // Left out, the vault keeps what it has; typed, it is replaced.
-      if (typed) out[secret] = typed;
-    } else if (typed !== e.known.trim()) {
-      // Shown, then changed, or cleared on purpose.
-      out[secret] = typed || null;
+    if (typed) {
+      // Typed anew; shown and left as it was, it is no change.
+      if (whole || e.known === null || typed !== e.known.trim()) out[secret] = typed;
+    } else if (e.shownInField) {
+      // Shown in the field, and cleared on purpose.
+      out[secret] = null;
+    } else if (whole && e.known !== null) {
+      // Never shown there, nor typed over: it goes with the entry as it is.
+      out[secret] = e.known;
     }
+    // Otherwise left out: the vault keeps what it has.
   }
   if (typeof e.documentId === 'string') out.document_id = e.documentId;
   else if (e.documentId === null && typeof e.linkedBefore === 'string' && !moved) {
     out.document_id = null;
   }
-  // An entry with nothing in it is left out: a blank row added and not used.
+  // A row added here and left blank is left out. One read from the vault
+  // stays unless Remove takes it away, whatever this editor can see of it
+  // (the 5.27 review: a link to a document they may not see is all it had).
   const skip = e.list === 'ids' ? ['id', 'kind', 'label'] : ['id', 'label', 'hidden'];
   const keeps =
-    Object.entries(out).some(([k, v]) => !skip.includes(k) && v !== null) ||
-    (e.masked && e.known === null && !moved);
+    e.from !== null || Object.entries(out).some(([k, v]) => !skip.includes(k) && v !== null);
   if (!keeps) return null;
   if (e.list === 'ids' && !out.kind) out.kind = 'other';
   if (e.list === 'custom' && !out.label) out.label = 'Detail';
   return out;
+}
+
+/** Which part an item is in, as the form has it now. */
+const partOf = (x: { onlyMe: boolean }): IdentityPart => (x.onlyMe ? 'only_me' : 'shared');
+
+/**
+ * Entries moved to the other part whose masked value was never shown, nor
+ * typed over: saved, the value would be lost, since the part it moves to
+ * has no copy to keep (the 5.27 review). Moving one shows it first; this is
+ * what the form checks before it saves, in case anything ever does not.
+ */
+export function movedUnshown(d: Draft): DraftEntry[] {
+  return d.entries.filter(
+    (e) =>
+      e.masked &&
+      e.known === null &&
+      e.from !== null &&
+      e.from !== partOf(e) &&
+      !(e.f[secretOf(e.list) ?? ''] ?? '').trim(),
+  );
 }
 
 /** One part, as the form would send it. */
@@ -807,20 +950,47 @@ export interface Suggestion {
   expiresWords: string | null;
   issued: string | null;
   issuer: string | null;
-  /** The ID already linked to this document, to fill; null for a new one. */
-  into: string | null;
+  /**
+   * Where it goes: an Only me document's number into Only me, where the
+   * editor may write it (the 5.27 review); anything else, the shared part.
+   */
+  goesTo: IdentityPart;
+  /** Said when the document is seen by fewer people than where it goes; null otherwise. */
+  note: string | null;
+}
+
+/** What an entry's masked value is called, in a sentence: "passport number", "Locker code". */
+const secretWords = (e: DraftEntry): string =>
+  e.list === 'ids'
+    ? idNumberLabel({
+        kind: (e.f.kind as IdentityIdKind | undefined) ?? 'other',
+        label: e.f.label ?? null,
+      })
+    : e.f.label?.trim() || 'detail';
+
+/** Who may write where, and who reads the shared part: what a suggestion is weighed against. */
+export interface FillContext {
+  /** The editor may write the Only me part (the person themselves). */
+  onlyMe: boolean;
+  /** Who reads the shared part besides the person and the owners (A34). */
+  audience: IdentityAudience;
 }
 
 /**
  * What a person's identity documents offer the form (5.27): from each one
  * the editor can see — the list is theirs, as the vault gives it — its
- * number and its expiry, for the ID linked to it, or a new one. Only what
- * is not there already, and nothing until the editor says so.
+ * number and its expiry, as a new ID. Not a document an ID is linked to
+ * already (a saved number comes back masked, so it cannot be compared),
+ * nor a number the form already has; and nothing until the editor says so.
+ * Where it goes follows who sees the document: an Only me one's into Only
+ * me where the editor may write it, and a suggestion says where it goes
+ * whenever more people would see it there than see the document.
  */
 export function suggestionsFrom(
   docs: readonly DocumentView[],
   draft: Draft,
   types: readonly DocumentTypeView[] = [],
+  where: FillContext = { onlyMe: false, audience: 'owners_and_self' },
 ): Suggestion[] {
   const out: Suggestion[] = [];
   for (const d of docs) {
@@ -843,29 +1013,27 @@ export function suggestionsFrom(
       issued: d.issued?.precision === 'day' ? d.issued.date : null,
       issuer: d.issued_by?.trim() || null,
     };
-    const linked = draft.entries.find((e) => e.list === 'ids' && e.documentId === d.id);
-    if (linked) {
-      const needNumber = number !== null && !linked.masked && (linked.f.number ?? '').trim() === '';
-      const needExpiry = expires !== null && (linked.f.expires_on ?? '').trim() === '';
-      if (!needNumber && !needExpiry) continue;
-      out.push({
-        ...base,
-        number: needNumber ? number : null,
-        expires: needExpiry ? expires : null,
-        expiresWords: needExpiry ? base.expiresWords : null,
-        into: linked.uid,
-      });
-      continue;
-    }
-    // Already here, by its number.
-    const here =
-      number !== null &&
-      draft.entries.some((e) => e.list === 'ids' && (e.f.number ?? '').trim() === number);
-    if (here) continue;
-    out.push({ ...base, number, expires, into: null });
+    // An ID is linked to it already.
+    if (draft.entries.some((e) => e.list === 'ids' && e.documentId === d.id)) continue;
+    // Already here, by a number the form can read.
+    if (number !== null && draft.entries.some((e) => hasNumber(e, number))) continue;
+    const goesTo: IdentityPart = d.visibility === 'private' && where.onlyMe ? 'only_me' : 'shared';
+    const note =
+      d.visibility === 'private'
+        ? goesTo === 'only_me'
+          ? 'From an Only me document: it goes into your Only me details.'
+          : 'From an Only me document: it goes into the shared details, which the owners can see.'
+        : d.visibility === 'adults' && where.audience === 'family'
+          ? 'From an Adults only document: in the shared details, teens can see it too.'
+          : null;
+    out.push({ ...base, number, expires, goesTo, note });
   }
   return out;
 }
+
+/** Whether an ID in the form has this number, as typed or as shown. */
+const hasNumber = (e: DraftEntry, number: string) =>
+  e.list === 'ids' && [e.f.number, e.known].some((v) => (v ?? '').trim() === number);
 
 /** "Passport from “Mansoor’s passport”: number 563914782, expires March 2031". */
 export function suggestionWords(s: Suggestion): string {
@@ -910,15 +1078,33 @@ function IdentityForm(props: {
   types?: DocumentTypeView[] | undefined;
   reveal: (part: IdentityPart, keys: string[]) => Promise<Record<string, string> | null>;
   onSaved: (view: IdentityView) => void;
-  onCancel: () => void;
+  /** Closed unsaved: `wrote` when a part was saved on the way, so the card reads it again. */
+  onCancel: (wrote: boolean) => void;
 }) {
   const { withToken } = useApp();
   const [base, setBase] = useState<IdentityView>(props.view);
-  const [initial, setInitial] = useState<Draft>(() => draftFrom(props.view));
+  const [initial] = useState<Draft>(() => draftFrom(props.view));
   const [draft, setDraft] = useState<Draft>(initial);
+  /**
+   * Each part's version as this form read it, moved on only by this form's
+   * own write of that part (the 5.27 review): a part somebody else saved
+   * meanwhile is a 409, never written over.
+   */
+  const [readAt, setReadAt] = useState<Record<IdentityPart, number | null>>(() => ({
+    ...props.view.versions,
+  }));
+  /** Each part as the vault last had it from this form: what a save is a change from. */
+  const [written, setWritten] = useState(() => ({
+    shared: buildPart(initial, 'shared'),
+    only_me: buildPart(initial, 'only_me'),
+  }));
+  /** A part was saved on the way to a refusal: closed now, the card reads it again. */
+  const [wrote, setWrote] = useState(false);
   const [refused, setRefused] = useState<Refusal | null>(null);
   const [busy, setBusy] = useState(false);
   const [suggesting, setSuggesting] = useState<Suggestion[] | null>(null);
+  /** Fill from documents found something, this time: emptied, it was all used or left out. */
+  const [suggestedAny, setSuggestedAny] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const form = useRef<HTMLFormElement>(null);
   const refusal = useRef<HTMLParagraphElement>(null);
@@ -932,6 +1118,16 @@ function IdentityForm(props: {
     form.current?.querySelector<HTMLElement>('input, select, textarea')?.focus();
   }, []);
 
+  /** Said in the form, and heard: the alert takes the focus. */
+  const [refusalHeard, setRefusalHeard] = useState(0);
+  useEffect(() => {
+    if (refusalHeard > 0) refusal.current?.focus();
+  }, [refusalHeard]);
+  const refuse = (message: string, conflict = false) => {
+    setRefused({ message, conflict });
+    setRefusalHeard((n) => n + 1);
+  };
+
   const setText = (uid: string, change: Partial<DraftText>) =>
     setDraft((d) => ({
       ...d,
@@ -940,28 +1136,44 @@ function IdentityForm(props: {
   const setEntry = (uid: string, change: (e: DraftEntry) => DraftEntry) =>
     setDraft((d) => ({ ...d, entries: d.entries.map((e) => (e.uid === uid ? change(e) : e)) }));
 
-  /** Shows a masked value in the form, asking who is asking; false when it was not shown. */
-  const revealEntry = async (e: DraftEntry): Promise<boolean> => {
+  /**
+   * Shows a masked value in the form, asking who is asking: 'shown'; or
+   * 'refused' (not confirmed, or not allowed: the card says why); or 'gone',
+   * when the vault has none any more — said here, and the entry is no
+   * longer masked, with nothing in it to keep.
+   */
+  const revealEntry = async (e: DraftEntry): Promise<'shown' | 'refused' | 'gone'> => {
     const secret = secretOf(e.list);
-    if (!secret || !e.from) return false;
+    if (!secret || !e.from) return 'refused';
     const key = `${e.list}.${e.id}`;
     const got = await props.reveal(e.from, [key]);
-    const value = got?.[key];
-    if (value === undefined) return false;
-    setEntry(e.uid, (x) => ({
-      ...x,
-      known: value,
+    if (!got) return 'refused';
+    const value = got[key];
+    if (value === undefined) {
+      setEntry(e.uid, (x) => ({ ...x, masked: false, known: null }));
+      refuse(`There is no ${secretWords(e)} to show any more.`);
+      return 'gone';
+    }
+    setEntry(e.uid, (x) => {
       // What was typed over it stays; otherwise it is shown.
-      f: { ...x.f, [secret]: (x.f[secret] ?? '').trim() ? (x.f[secret] as string) : value },
-    }));
-    return true;
+      const typed = (x.f[secret] ?? '').trim() !== '';
+      return {
+        ...x,
+        known: value,
+        shownInField: !typed,
+        f: typed ? x.f : { ...x.f, [secret]: value },
+      };
+    });
+    return 'shown';
   };
 
-  /** An entry to the other part: a masked value goes with it only once shown. */
+  /**
+   * An entry to the other part: a masked value goes with it only once
+   * shown, whatever is typed over it (the 5.27 review: text typed, moved,
+   * then cleared lost the number).
+   */
   const moveEntry = async (e: DraftEntry, onlyMe: boolean) => {
-    if (e.masked && e.known === null && !(e.f[secretOf(e.list) ?? ''] ?? '').trim()) {
-      if (!(await revealEntry(e))) return;
-    }
+    if (e.masked && e.known === null && (await revealEntry(e)) === 'refused') return;
     setEntry(e.uid, (x) => ({ ...x, onlyMe }));
   };
 
@@ -971,9 +1183,7 @@ function IdentityForm(props: {
    * and only a reveal gives it (mergeIdentityWrite).
    */
   const hideEntry = async (e: DraftEntry, hidden: boolean) => {
-    if (!hidden && e.masked && e.known === null && !(e.f.value ?? '').trim()) {
-      if (!(await revealEntry(e))) return;
-    }
+    if (!hidden && e.masked && e.known === null && (await revealEntry(e)) === 'refused') return;
     setEntry(e.uid, (x) => ({ ...x, hidden }));
   };
 
@@ -990,6 +1200,7 @@ function IdentityForm(props: {
       linkedBefore: undefined,
       masked: false,
       known: null,
+      shownInField: false,
       ...fill,
     };
     flushSync(() => setDraft((d) => ({ ...d, entries: [...d.entries, entry] })));
@@ -1012,46 +1223,48 @@ function IdentityForm(props: {
         api.documents(t, { member_id: props.member.id, category: 'identity', limit: 100 }),
       );
       if (!docs) return;
-      flushSync(() => setSuggesting(suggestionsFrom(docs.items, draft, props.types)));
+      const found = suggestionsFrom(docs.items, draft, props.types, {
+        onlyMe: onlyMeOffered,
+        audience: base.audience,
+      });
+      flushSync(() => {
+        setSuggesting(found);
+        setSuggestedAny(found.length > 0);
+      });
       suggestionsHeading.current?.focus();
     } catch (err) {
-      setRefused({ message: describeError(err), conflict: false });
+      refuse(describeError(err));
     }
   };
 
   const accept = (s: Suggestion) => {
-    if (s.into) {
-      setEntry(s.into, (x) => ({
-        ...x,
-        f: {
-          ...x.f,
-          ...(s.number ? { number: s.number } : {}),
-          ...(s.expires ? { expires_on: s.expires } : {}),
-        },
-      }));
-    } else {
-      const entry: DraftEntry = {
-        uid: nextUid(),
-        list: 'ids',
-        id: newEntryId(),
-        onlyMe: false,
-        from: null,
-        f: {
-          kind: s.kind,
-          ...(s.label ? { label: s.label } : {}),
-          ...(s.number ? { number: s.number } : {}),
-          ...(s.expires ? { expires_on: s.expires } : {}),
-          ...(s.issued ? { issued_on: s.issued } : {}),
-          ...(s.issuer ? { issuer: s.issuer } : {}),
-        },
-        hidden: false,
-        documentId: s.documentId,
-        linkedBefore: undefined,
-        masked: false,
-        known: null,
-      };
-      setDraft((d) => ({ ...d, entries: [...d.entries, entry] }));
+    // Two documents with one number: the first used, the second is here.
+    if (s.number !== null && draft.entries.some((e) => hasNumber(e, s.number as string))) {
+      settle(s, `That number is here already. “${s.title}” left out.`);
+      return;
     }
+    const entry: DraftEntry = {
+      uid: nextUid(),
+      list: 'ids',
+      id: newEntryId(),
+      onlyMe: s.goesTo === 'only_me',
+      from: null,
+      f: {
+        kind: s.kind,
+        ...(s.label ? { label: s.label } : {}),
+        ...(s.number ? { number: s.number } : {}),
+        ...(s.expires ? { expires_on: s.expires } : {}),
+        ...(s.issued ? { issued_on: s.issued } : {}),
+        ...(s.issuer ? { issuer: s.issuer } : {}),
+      },
+      hidden: false,
+      documentId: s.documentId,
+      linkedBefore: undefined,
+      masked: false,
+      known: null,
+      shownInField: false,
+    };
+    setDraft((d) => ({ ...d, entries: [...d.entries, entry] }));
     settle(s, `Added from “${s.title}”. Save to keep it.`);
   };
 
@@ -1069,43 +1282,79 @@ function IdentityForm(props: {
     target?.focus();
   };
 
+  /**
+   * The writes a save makes, in an order that never leaves a field stored
+   * nowhere (the 5.27 review): the part a field moves into is written first.
+   * Fields moving both ways at once take three: Only me with what it gains
+   * and still what it gives, then the shared part, then Only me as it ends.
+   */
+  const plan = (): Array<{ part: IdentityPart; fields: IdentityFields }> => {
+    const moved = (x: { from: IdentityPart | null; onlyMe: boolean }, into: IdentityPart) =>
+      x.from !== null && x.from !== into && partOf(x) === into;
+    const into = (part: IdentityPart) =>
+      draft.entries.some((x) => moved(x, part)) ||
+      draft.texts.some((x) => moved(x, part) && x.value.trim() !== '');
+    const end = { shared: buildPart(draft, 'shared'), only_me: buildPart(draft, 'only_me') };
+    if (into('only_me') && into('shared')) {
+      // Only me, still holding what leaves it for the shared part.
+      const holding: Draft = {
+        texts: draft.texts.map((x) => (moved(x, 'shared') ? { ...x, onlyMe: true } : x)),
+        entries: draft.entries.map((x) => (moved(x, 'shared') ? { ...x, onlyMe: true } : x)),
+      };
+      return [
+        { part: 'only_me', fields: buildPart(holding, 'only_me') },
+        { part: 'shared', fields: end.shared },
+        { part: 'only_me', fields: end.only_me },
+      ];
+    }
+    const order: IdentityPart[] = into('only_me') ? ['only_me', 'shared'] : ['shared', 'only_me'];
+    return order.map((part) => ({ part, fields: end[part] }));
+  };
+
   const save = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    const changed = PARTS.filter(
-      (p) =>
-        base.can_edit[p] &&
-        (p === 'shared' || base.only_me !== null) &&
-        identityChanges(buildPart(initial, p), buildPart(draft, p)).length > 0,
-    );
-    if (changed.length === 0) {
-      props.onCancel();
+    const unshown = movedUnshown(draft)[0];
+    if (unshown) {
+      refuse(
+        `Show the ${secretWords(unshown)} first: it moves with its ${unshown.list === 'ids' ? 'ID' : 'detail'}.`,
+      );
       return;
     }
-    // A field moved into Only me is written there before it leaves the
-    // shared part: whatever happens between the two, it is not lost.
-    const intoOnlyMe =
-      draft.entries.some((x) => x.from === 'shared' && x.onlyMe) ||
-      draft.texts.some((x) => x.from === 'shared' && x.onlyMe && x.value.trim() !== '');
-    const order = intoOnlyMe ? [...changed].reverse() : changed;
+    const last = { ...written };
+    const steps = plan().filter(
+      (st) =>
+        base.can_edit[st.part] &&
+        (st.part === 'shared' || base.only_me !== null) &&
+        identityChanges(last[st.part], st.fields).length > 0,
+    );
+    if (steps.length === 0) {
+      props.onCancel(wrote);
+      return;
+    }
     setBusy(true);
     setRefused(null);
+    const at = { ...readAt };
     let now = base;
     try {
-      for (const part of order) {
+      for (const st of steps) {
+        if (identityChanges(last[st.part], st.fields).length === 0) continue;
         const saved = await withToken((t) =>
           api.updateIdentity(t, props.member.id, {
-            part,
-            version: (part === 'shared' ? now.versions.shared : now.versions.only_me) ?? 0,
-            fields: buildPart(draft, part),
+            part: st.part,
+            version: at[st.part] ?? 0,
+            fields: st.fields,
           }),
         );
         if (!saved) return;
+        // This part's version, from this write; the other's stays as read.
+        at[st.part] = saved.versions[st.part];
+        last[st.part] = st.fields;
+        setWrote(true);
         now = saved;
       }
       props.onSaved(now);
     } catch (err) {
-      let refusedNow: Refusal;
       if (err instanceof ApiRequestError && err.code === 'conflict') {
         // Somebody else's change, kept: read again, and shown, for these
         // changes to be made again on top of it (as 5.25's Edit details).
@@ -1113,22 +1362,25 @@ function IdentityForm(props: {
         if (fresh) {
           const again = draftFrom(fresh);
           setBase(fresh);
-          setInitial(again);
+          setReadAt({ ...fresh.versions });
+          setWritten({
+            shared: buildPart(again, 'shared'),
+            only_me: buildPart(again, 'only_me'),
+          });
           setDraft(again);
           setSuggesting(null);
         }
-        refusedNow = {
-          message: `Someone else changed ${who} identity details while you were editing. What they saved is shown now: make your changes again, then save.`,
-          conflict: true,
-        };
+        refuse(
+          `Someone else changed ${who} identity details while you were editing. What they saved is shown now: make your changes again, then save.`,
+          true,
+        );
       } else {
-        // A part saved before this one keeps its new version: tried again,
-        // it is made from that, and is no change.
-        setBase(now);
-        refusedNow = { message: describeError(err), conflict: false };
+        // A part written before the refusal keeps the version it was given;
+        // tried again, it is made from that, and is no change.
+        setReadAt(at);
+        setWritten(last);
+        refuse(describeError(err));
       }
-      flushSync(() => setRefused(refusedNow));
-      refusal.current?.focus();
     } finally {
       setBusy(false);
     }
@@ -1226,6 +1478,18 @@ function IdentityForm(props: {
     );
   };
 
+  // Two IDs called the same are told apart, in the form as on the card.
+  const idSuffix = idSuffixes(
+    draft.entries
+      .filter((x) => x.list === 'ids')
+      .map((x) => ({
+        key: x.uid,
+        kind: x.f.kind ?? 'other',
+        label: x.f.label,
+        issuer: x.f.issuer,
+      })),
+  );
+
   const entryFields = (e: DraftEntry, n: number) => {
     const id = `ide-${e.uid}`;
     const field = (
@@ -1245,15 +1509,19 @@ function IdentityForm(props: {
       />
     );
     const kind = (e.f.kind as IdentityIdKind | undefined) ?? 'other';
+    const suffix = idSuffix.get(e.uid) ?? '';
     const legend =
       e.list === 'ids'
-        ? `${IDENTITY_ID_LABELS[kind] ?? 'ID'}${e.f.label?.trim() ? `: ${e.f.label.trim()}` : ''}`
+        ? `${IDENTITY_ID_LABELS[kind] ?? 'ID'}${e.f.label?.trim() ? `: ${e.f.label.trim()}` : ''}${suffix}`
         : `${LIST_WORDS[e.list].one} ${n}`;
     const secret = secretOf(e.list);
     const secretLabel =
       e.list === 'ids'
-        ? capitalised(idNumberLabel({ kind, label: e.f.label ?? null }))
+        ? capitalised(idNumberLabel({ kind, label: e.f.label ?? null })) + suffix
         : e.f.label?.trim() || 'Value';
+    // Moved to the other part, it goes with the entry: not "kept" where it was.
+    const moving = e.from !== null && e.from !== partOf(e);
+    const what = e.list === 'ids' ? 'ID' : 'detail';
     const maskedField = (key: string) => (
       <Field
         id={`${id}-${key}`}
@@ -1261,11 +1529,15 @@ function IdentityForm(props: {
         value={e.f[key] ?? ''}
         required={false}
         maxLength={key === 'number' ? 80 : 2000}
-        {...(e.known === null ? { placeholder: 'Kept, and hidden' } : {})}
+        {...(e.shownInField
+          ? {}
+          : { placeholder: moving ? 'Moves with it, hidden' : 'Kept, and hidden' })}
         hint={
-          e.known === null
-            ? 'Kept as it is unless you type a new one here.'
-            : 'Shown. Clear it to remove it.'
+          e.shownInField
+            ? 'Shown. Clear it to remove it.'
+            : moving
+              ? `It moves with this ${what} unless you type a new one here.`
+              : 'Kept as it is unless you type a new one here.'
         }
         onChange={(v) => setEntry(e.uid, (x) => ({ ...x, f: { ...x.f, [key]: v } }))}
       />
@@ -1337,7 +1609,8 @@ function IdentityForm(props: {
           <Button
             kind="quiet"
             onClick={() =>
-              void revealEntry(e).then((shown) => {
+              void revealEntry(e).then((outcome) => {
+                const shown = outcome === 'shown';
                 // Shown where it is kept: the field itself.
                 if (shown && secret) document.getElementById(`${id}-${secret}`)?.focus();
               })
@@ -1436,23 +1709,35 @@ function IdentityForm(props: {
               tabIndex={-1}
               ref={suggestionsHeading}
             >
-              {suggesting.length === 0 ? 'Nothing to suggest' : 'From documents'}
+              {suggesting.length > 0
+                ? 'From documents'
+                : suggestedAny
+                  ? 'That’s all of them'
+                  : 'Nothing to suggest'}
             </h3>
             {suggesting.length === 0 ? (
-              <p className="muted">
-                None of {self ? 'your' : `${props.name}’s`} identity documents that you can see has
-                a number or an expiry date that isn’t here already.
-              </p>
+              !suggestedAny && (
+                <p className="muted">
+                  None of {self ? 'your' : `${props.name}’s`} identity documents that you can see
+                  has a number or an expiry date that isn’t here already.
+                </p>
+              )
             ) : (
               <ul className="list identity-suggestions">
                 {suggesting.map((s) => (
                   <li key={s.uid} className="place" data-suggestion={s.uid}>
                     <span>{suggestionWords(s)}</span>
+                    {s.note && (
+                      <span id={`${s.uid}-note`} className="muted">
+                        {s.note}
+                      </span>
+                    )}
                     <span className="row">
                       <button
                         type="button"
                         className="btn btn-quiet"
                         aria-label={`Use this: ${suggestionWords(s)}`}
+                        aria-describedby={s.note ? `${s.uid}-note` : undefined}
                         onClick={() => accept(s)}
                       >
                         Use this
@@ -1486,7 +1771,7 @@ function IdentityForm(props: {
         <Button type="submit" disabled={busy}>
           {busy ? 'Saving…' : 'Save'}
         </Button>
-        <Button kind="quiet" disabled={busy} onClick={props.onCancel}>
+        <Button kind="quiet" disabled={busy} onClick={() => props.onCancel(wrote)}>
           Cancel
         </Button>
       </div>

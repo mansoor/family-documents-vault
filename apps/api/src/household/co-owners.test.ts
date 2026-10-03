@@ -764,3 +764,123 @@ describe.skipIf(!testAdminUrl())('a request that ends without a refusal', () => 
     expect((await requests(owner)).find((r) => r.id === asked.id)?.state).toBe('refused');
   });
 });
+
+/**
+ * Since 5.27 an export holds other people's identity details: an owner who
+ * becomes an adult under the narrowest audience no longer reads them, so
+ * their exports end, as a demotion to teen ends them for the adults' documents.
+ */
+describe.skipIf(!testAdminUrl())('an owner who no longer sees identity details (5.27)', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let bea: Tokens;
+  let cal: Tokens;
+  let members: MemberView[];
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const accountId = async (t: Tokens) =>
+    json<{ account_id: string }>(await h.app.inject({ url: '/api/v1/me', headers: h.as(t) }))
+      .account_id;
+  const memberOf = (name: string) => members.find((m) => m.display_name === name) as MemberView;
+  const setRole = (as: Tokens, memberId: string, role: string) =>
+    h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${memberId}/role`,
+      headers: h.as(as),
+      payload: { role },
+    });
+  /** An export, made and still to be downloaded. */
+  const exportOf = async (t: Tokens) => {
+    const requestedBy = await accountId(t);
+    const row = await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .insertInto('export')
+        .values({
+          household_id: owner.household_id,
+          requested_by: requestedBy,
+          state: 'done',
+          expires_at: new Date(Date.now() + 7 * 864e5),
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow(),
+    );
+    return row.id;
+  };
+  const live = async (id: string) => {
+    const row = await withSystem(h.db, owner.household_id, (trx) =>
+      trx.selectFrom('export').select('expires_at').where('id', '=', id).executeTakeFirstOrThrow(),
+    );
+    return row.expires_at !== null && row.expires_at.getTime() > Date.now();
+  };
+  /** The audience, set by the operator's own connection, which its guard does not ask. */
+  const audience = async (to: string) => {
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      await pool.query('update household set identity_audience = $1', [to]);
+    } finally {
+      await pool.end();
+    }
+  };
+  const stepDown = (t: Tokens) =>
+    h.app.inject({
+      method: 'POST',
+      url: '/api/v1/me/step-down',
+      headers: h.as(t),
+      payload: { role: 'adult' },
+    });
+
+  beforeAll(async () => {
+    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    owner = await h.setup();
+    bea = await h.join(owner, { name: 'Bea', email: 'bea-527@example.test', role: 'adult' });
+    cal = await h.join(owner, { name: 'Cal', email: 'cal-527@example.test', role: 'adult' });
+    members = json<{ items: MemberView[] }>(
+      await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
+    ).items;
+    for (const who of ['Bea', 'Cal']) {
+      expect((await setRole(owner, memberOf(who).id, 'owner')).statusCode).toBe(200);
+    }
+  }, 90_000);
+  afterAll(() => h.close());
+
+  it('stepping down to adult ends their exports, under the owners and each person', async () => {
+    const hers = await exportOf(bea);
+    const his = await exportOf(cal);
+    expect((await stepDown(bea)).statusCode).toBe(200);
+    expect(await live(hers)).toBe(false);
+    // Another owner's are theirs still.
+    expect(await live(his)).toBe(true);
+    // Under all adults an adult reads them too: stepping down takes nothing.
+    await audience('adults');
+    try {
+      expect((await setRole(owner, memberOf('Bea').id, 'owner')).statusCode).toBe(200);
+      const again = await exportOf(bea);
+      expect((await stepDown(bea)).statusCode).toBe(200);
+      expect(await live(again)).toBe(true);
+    } finally {
+      await audience('owners_and_self');
+    }
+  });
+
+  it('a carried-out owner change ends the exports of the owner made an adult', async () => {
+    const his = await exportOf(cal);
+    const asked = json<RoleChangeResult>(await setRole(owner, memberOf('Cal').id, 'adult'));
+    const request = asked.request as OwnerChangeView;
+    await withSystem(h.db, owner.household_id, (trx) =>
+      trx
+        .updateTable('owner_change_request')
+        .set({ opens_at: new Date(Date.now() - 1000) })
+        .where('id', '=', request.id)
+        .execute(),
+    );
+    expect(await live(his)).toBe(true);
+    const done = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/owner-changes/${request.id}/complete`,
+      headers: h.as(owner),
+    });
+    expect(done.statusCode).toBe(200);
+    expect(json<RoleChangeResult>(done).role).toBe('adult');
+    expect(await live(his)).toBe(false);
+  });
+});

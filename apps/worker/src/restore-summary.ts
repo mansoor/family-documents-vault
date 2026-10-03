@@ -87,6 +87,13 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    Settings → Family; that waits 72 hours, while everybody is told.',
     );
   }
+  if (r.exportsExpired > 0) {
+    lines.push(
+      `  - ${plural(r.exportsExpired, 'export')} that could still be downloaded ` +
+        `${r.exportsExpired === 1 ? 'was' : 'were'} ended: each held what its maker`,
+      '    could see then. Whoever needs one makes it again, in Settings.',
+    );
+  }
   if (r.filesRemoved.length > 0) {
     const documents = [...new Set(r.filesRemoved.map((f) => f.document_id))];
     lines.push(

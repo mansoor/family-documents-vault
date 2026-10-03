@@ -173,6 +173,12 @@ async function seed(url: string): Promise<string> {
       [account, hh, randomBytes(32)],
     );
     await c.query('insert into document (household_id) select $1 from generate_series(1, 3)', [hh]);
+    // An export, made and still to be downloaded (5.27: a restore ends it).
+    await c.query(
+      `insert into export (household_id, requested_by, state, expires_at)
+       values ($1, $2, 'done', now() + interval '7 days')`,
+      [hh, account],
+    );
     // Collections of documents, where the schema has them (0036): one for
     // everyone and the first member's Only me, each with all three in it.
     // A schema from before 0039 has them by their old names, as a backup
@@ -1796,6 +1802,27 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     );
     expect(words).toContain('1 notice still waiting was withdrawn');
     expect(words).toContain('Settings → Family; that waits 72 hours, while everybody is told.');
+  }, 60_000);
+
+  it('an export built under a wider audience cannot be downloaded after a restore (5.27)', async () => {
+    // The backup's export was made while all adults saw identity details.
+    const before = await sql(
+      vault.adminUrl,
+      'select count(*)::int as n from export where expires_at > now()',
+    );
+    expect(before.rows[0]?.n).toBe(1);
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    expect(report.exportsExpired).toBe(1);
+    // Expired, as the vault reads it: ExportService.content() answers 410.
+    const { rows } = await sql(
+      t.adminUrl,
+      `select count(*)::int as n from export where expires_at is null or expires_at > now()`,
+    );
+    expect(rows[0]?.n).toBe(0);
+    expect(restoreSummary(file, report).replace(/\s+/g, ' ')).toContain(
+      '1 export that could still be downloaded was ended: each held what its maker could see then.',
+    );
   }, 60_000);
 
   it('after a restore every link is paused and no session survives', async () => {

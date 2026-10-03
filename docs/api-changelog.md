@@ -2820,6 +2820,20 @@ member_id, shared, only_me? }`, each part `{ fields, masked? }`.
       that document.
     - The command line's restore summary says who can see identity details
       went back to the owners and each person, and what it was.
+    - **Changed:** a person who takes a field out of their own shared part
+      — into Only me, or away — ends every export anybody else asked for
+      (`expires_at` now), as making a document Only me does: those were
+      built while they could read it. An owner's change to somebody else's
+      shared part ends none.
+    - **Changed:** a role change that takes away sight of other people's
+      identity details under the audience in effect ends that person's
+      exports, beside the rule for the adults' documents: an owner who steps
+      down to adult, or is made an adult by an owner change carried out,
+      while the audience is the owners and each person.
+    - **Changed:** a restore ends every export still to be downloaded, as it
+      ends every session: one made under a wider audience would otherwise be
+      served again. The report counts them (`exportsExpired`), and the
+      command line says so.
 
 ## Deprecations in effect
 

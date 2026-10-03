@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
-import { contactLabel, ONLY_ME_LIMIT } from './identity.js';
+import { contactLabel, draftFrom, movedUnshown, ONLY_ME_LIMIT } from './identity.js';
 import {
   AISHA,
   fresh,
@@ -407,16 +407,316 @@ describe("a person's identity details (5.27)", () => {
     state.identityTooLong = false;
     fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
     await within(region).findByText('Identity details saved.');
-    // Again, from the versions as they are now: Only me's is no change.
+    // Again: Only me, written already, is no change and is not sent; the
+    // shared part goes from the version it was read at.
     expect(puts(state).map((b) => [b.part, b.version])).toEqual([
       ['only_me', 3],
       ['shared', 1],
-      ['only_me', 4],
       ['shared', 1],
     ]);
     expect(state.identities?.me?.only_me?.version).toBe(4);
     expect(state.identities?.me?.only_me?.fields.place_of_birth).toBe('Lahore');
     expect(state.identities?.me?.shared?.fields.place_of_birth).toBeUndefined();
+  });
+
+  it('each part is written from the version it was read at: a save elsewhere meanwhile is a 409, not written over (C527-01)', async () => {
+    const record = myRecord();
+    if (record.shared) record.shared.fields.place_of_birth = 'Lahore';
+    const state = fresh({ members: [ME], identities: { me: record } });
+    // The first write lands, and in that moment somebody else saves the
+    // shared part (another device).
+    let writes = 0;
+    state.hold = (method, path) => {
+      if (method !== 'PUT' || path !== '/api/v1/members/me/identity') return undefined;
+      writes += 1;
+      const shared = state.identities?.me?.shared;
+      if (writes === 1 && shared) {
+        shared.version = 2;
+        shared.fields = { ...shared.fields, family_name: 'Jones-Smith' };
+      }
+      return undefined;
+    };
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.click(within(form).getByRole('switch', { name: 'Only me: Place of birth' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    const alert = await within(form).findByRole('alert');
+    expect(alert).toHaveTextContent(/^Someone else changed your identity details/);
+    await waitFor(() => expect(alert).toHaveFocus());
+    // The shared part went at the version this form read, and was refused:
+    // the other save stands.
+    expect(puts(state).map((b) => [b.part, b.version])).toEqual([
+      ['only_me', 3],
+      ['shared', 1],
+    ]);
+    expect(state.identities?.me?.shared?.version).toBe(2);
+    expect(state.identities?.me?.shared?.fields.family_name).toBe('Jones-Smith');
+  });
+
+  it('a masked number typed over, moved and cleared moves with its ID: it is shown first, and never lost (C527-02)', async () => {
+    const state = fresh({ members: [ME], identities: { me: myRecord() }, stepUpNeeded: true });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    const number = within(form).getByLabelText('Passport number');
+    fireEvent.change(number, { target: { value: 'X' } });
+    fireEvent.click(within(form).getByRole('switch', { name: 'Only me: Passport' }));
+    // Moved, it is shown first, whatever is typed over it.
+    const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.change(within(prompt).getByLabelText(/password/i), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm' }));
+    await waitFor(() =>
+      expect(within(form).getByRole('switch', { name: 'Only me: Passport' })).toBeChecked(),
+    );
+    expect(reveals(state).at(-1)?.body).toEqual({ keys: ['ids.mp'] });
+    // What was typed stays; and it is not said to be kept where it was.
+    expect(number).toHaveValue('X');
+    expect(form).toHaveTextContent('It moves with this ID unless you type a new one here.');
+    expect(number).not.toHaveAttribute('placeholder', 'Kept, and hidden');
+    fireEvent.change(number, { target: { value: '' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    expect(state.identities?.me?.only_me?.fields.ids).toEqual([
+      { id: 'mp', kind: 'passport', number: '563914782', issuer: 'United Kingdom' },
+    ]);
+    expect(state.identities?.me?.shared?.fields.ids).toBeUndefined();
+  });
+
+  it('fields moving both ways at once are never stored nowhere; closed after a refusal, the card shows what is kept (C527-03, C527-05)', async () => {
+    const state = fresh({
+      members: [ME],
+      identities: {
+        me: {
+          shared: { version: 1, fields: { given_name: 'Mansoor', place_of_birth: 'Lahore' } },
+          only_me: { version: 3, fields: { middle_name: 'Secretmiddle' } },
+        },
+      },
+      identityTooLong: 'shared',
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    let region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.click(within(form).getByRole('switch', { name: 'Only me: Place of birth' }));
+    fireEvent.click(within(form).getByRole('switch', { name: 'Only me: Middle name' }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent(IDENTITY_TOO_LONG);
+    // Only me was written holding what it gains and still what it gives:
+    // the middle name, refused its new place, is not lost.
+    expect(puts(state).map((b) => b.part)).toEqual(['only_me', 'shared']);
+    expect(state.identities?.me?.only_me?.fields).toEqual({
+      middle_name: 'Secretmiddle',
+      place_of_birth: 'Lahore',
+    });
+    // Closed: the card reads the record again, and shows what is kept.
+    const looks = state.calls.filter(
+      (c) => c.method === 'GET' && c.url === '/api/v1/members/me/identity',
+    ).length;
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(
+        state.calls.filter((c) => c.method === 'GET' && c.url === '/api/v1/members/me/identity')
+          .length,
+      ).toBe(looks + 1),
+    );
+    region = await card();
+    await waitFor(() => expect(within(region).getAllByText('Lahore')).toHaveLength(2));
+    // And the next edit starts from it: no conflict with its own save.
+    state.identityTooLong = false;
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const again = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.change(within(again).getByLabelText('Job title'), { target: { value: 'Engineer' } });
+    fireEvent.click(within(again).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    expect(state.identities?.me?.shared?.fields.job_title).toBe('Engineer');
+  });
+
+  it('an entry read from the vault is kept unless Remove takes it, its hidden link too (C527-04)', async () => {
+    const state = fresh({
+      members: [ME, AISHA_KHAN],
+      documents: [
+        PASSPORT,
+        HER_PASSPORT,
+        { ...PASSPORT, id: 'doc-hidden', visibility: 'private', owner_member_id: 'm-9' },
+      ],
+      identities: { 'm-0': aishaRecord() },
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.change(within(form).getByLabelText('First name'), { target: { value: 'Aishah' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    // The birth certificate holds nothing the owner can see but its name:
+    // sent as it is, and its document stays linked.
+    expect(puts(state)[0]?.fields.ids).toContainEqual({
+      id: 'b1',
+      kind: 'other',
+      label: 'Birth certificate',
+    });
+    expect(state.identities?.['m-0']?.shared?.fields.ids?.find((i) => i.id === 'b1')).toMatchObject(
+      {
+        kind: 'other',
+        label: 'Birth certificate',
+        document_id: 'doc-hidden',
+      },
+    );
+  });
+
+  it('a value the vault no longer has is said, on the card and in the form, and the focus goes to what is said (C527-06)', async () => {
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    });
+    const state = fresh({ members: [ME, AISHA_KHAN], identities: { 'm-0': aishaRecord() } });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    let shown = render(<App />);
+    let region = await card();
+    // Cleared elsewhere since the card was read.
+    const clear = () => {
+      const ids = state.identities?.['m-0']?.shared?.fields.ids ?? [];
+      for (const i of ids) delete i.number;
+    };
+    clear();
+    fireEvent.click(within(region).getByRole('button', { name: 'Show passport number' }));
+    let alert = await within(region).findByRole('alert');
+    expect(alert).toHaveTextContent('There is no passport number to show any more.');
+    await waitFor(() => expect(alert).toHaveFocus());
+    // Read again: there is nothing to show.
+    await waitFor(() =>
+      expect(within(region).queryByRole('button', { name: 'Show passport number' })).toBeNull(),
+    );
+    shown.unmount();
+    // Copy, the same.
+    state.identities = { 'm-0': aishaRecord() };
+    shown = render(<App />);
+    region = await card();
+    clear();
+    fireEvent.click(within(region).getByRole('button', { name: 'Copy passport number' }));
+    alert = await within(region).findByRole('alert');
+    expect(alert).toHaveTextContent('There is no passport number to show any more.');
+    await waitFor(() => expect(alert).toHaveFocus());
+    expect(region).not.toHaveTextContent('copied');
+    shown.unmount();
+    // And in the form.
+    state.identities = { 'm-0': aishaRecord() };
+    render(<App />);
+    region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    clear();
+    fireEvent.click(within(form).getByRole('button', { name: 'Show passport number' }));
+    const said = await within(form).findByRole('alert');
+    expect(said).toHaveTextContent('There is no passport number to show any more.');
+    await waitFor(() => expect(said).toHaveFocus());
+  });
+
+  it('where this browser cannot copy, Copy is not offered, and nothing is revealed for it (C527-07)', async () => {
+    // jsdom has no clipboard, as a vault at a plain http:// address has none.
+    const state = fresh({ members: [ME, AISHA_KHAN], identities: { 'm-0': aishaRecord() } });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    const { unmount } = render(<App />);
+    let region = await card();
+    expect(
+      within(region).getByRole('button', { name: 'Show passport number' }),
+    ).toBeInTheDocument();
+    expect(within(region).queryByRole('button', { name: /^Copy/ })).toBeNull();
+    expect(reveals(state)).toEqual([]);
+    unmount();
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    });
+    render(<App />);
+    region = await card();
+    expect(
+      within(region).getByRole('button', { name: 'Copy passport number' }),
+    ).toBeInTheDocument();
+  });
+
+  it('two IDs that would be called the same are told apart, by who issued them or by number (C527-09)', async () => {
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    });
+    const state = fresh({
+      members: [ME],
+      identities: {
+        me: {
+          shared: {
+            version: 1,
+            fields: {
+              ids: [
+                { id: 'p1', kind: 'passport', number: 'PK-1', issuer: 'Pakistan' },
+                { id: 'p2', kind: 'passport', number: 'GB-2', issuer: 'United Kingdom' },
+                { id: 'd1', kind: 'driving_licence', number: 'D-1' },
+                { id: 'd2', kind: 'driving_licence', number: 'D-2' },
+              ],
+            },
+          },
+        },
+      },
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    for (const name of [
+      'Show passport number, issued by Pakistan',
+      'Copy passport number, issued by United Kingdom',
+      'Show driving licence number 1',
+      'Copy driving licence number 2',
+    ]) {
+      expect(within(region).getByRole('button', { name })).toBeInTheDocument();
+    }
+    expect(within(region).getByText('Passport, issued by Pakistan')).toBeInTheDocument();
+    expect(within(region).getByText('Driving licence 2')).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    expect(
+      within(form).getByRole('switch', { name: 'Only me: Passport, issued by Pakistan' }),
+    ).toBeInTheDocument();
+    expect(
+      within(form).getByRole('button', { name: 'Remove Driving licence 1' }),
+    ).toBeInTheDocument();
+    expect(
+      within(form).getByRole('group', { name: 'Passport, issued by United Kingdom' }),
+    ).toBeInTheDocument();
+  });
+
+  it('the notice’s link goes to the Identity card once it is there, and its heading takes the focus (S527-3)', async () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    installFakeApi(fresh({ members: [ME], identities: { me: myRecord() } }));
+    signedIn();
+    at('/people/me#identity');
+    render(<App />);
+    const heading = await screen.findByRole('heading', { name: 'Identity details' });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(scrolled).toHaveBeenCalled();
   });
 
   it('a hidden field unhidden is shown first, and sent with its value', async () => {
@@ -545,6 +845,10 @@ describe("a person's identity details (5.27)", () => {
     unmount();
 
     // An owner: totp_required_for_owner, said the same way.
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText: vi.fn(() => Promise.resolve()) },
+    });
     const ownerState = fresh({
       members: [ME, AISHA_KHAN],
       identities: { 'm-0': aishaRecord() },
@@ -670,6 +974,125 @@ describe("a person's identity details (5.27)", () => {
     );
   });
 
+  it('Fill from documents: an Only me document’s number goes into Only me, and says so (S527-1)', async () => {
+    const mine = {
+      ...PASSPORT,
+      id: 'doc-p',
+      title: 'My passport',
+      owner_member_id: 'me',
+      visibility: 'private',
+      identifier: '563914782',
+    };
+    const state = fresh({ members: [{ ...ME, role: 'adult' }], documents: [mine], identities: {} });
+    installFakeApi(state);
+    signedIn('adult');
+    at('/people/me');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Add identity details' }));
+    const form = await screen.findByRole('form', { name: 'Your identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    const note = await within(form).findByText(
+      'From an Only me document: it goes into your Only me details.',
+    );
+    const use = within(form).getByRole('button', {
+      name: /^Use this: Passport from “My passport”/,
+    });
+    expect(use).toHaveAttribute('aria-describedby', note.id);
+    fireEvent.click(use);
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    await within(region).findByText('Identity details saved.');
+    expect(puts(state).map((b) => b.part)).toEqual(['only_me']);
+    expect(state.identities?.me?.only_me?.fields.ids?.[0]).toMatchObject({
+      kind: 'passport',
+      number: '563914782',
+      document_id: 'doc-p',
+    });
+    expect(state.identities?.me?.shared).toBeUndefined();
+  });
+
+  it('Fill from documents: an Adults only document, where teens see the shared part, says so (S527-1)', async () => {
+    const theirs = { ...HER_PASSPORT, visibility: 'adults' };
+    const state = fresh({
+      members: [ME, AISHA_KHAN],
+      documents: [theirs],
+      identities: {},
+      identityAudience: 'family',
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Add identity details' }));
+    const form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    expect(
+      await within(form).findByText(
+        'From an Adults only document: in the shared details, teens can see it too.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('Fill from documents offers no document an ID is linked to, and no number twice (S527-2)', async () => {
+    const twin = { ...HER_PASSPORT, id: 'doc-b', title: 'Aisha’s old passport' };
+    const record = aishaRecord();
+    // Linked already, its number masked, no expiry kept.
+    if (record.shared?.fields.ids?.[0]) delete record.shared.fields.ids[0].expires_on;
+    const state = fresh({
+      members: [ME, AISHA_KHAN],
+      documents: [HER_PASSPORT],
+      identities: { 'm-0': record },
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    const { unmount } = render(<App />);
+    let region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    let form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    expect(
+      await within(form).findByRole('heading', { name: 'Nothing to suggest' }),
+    ).toBeInTheDocument();
+    unmount();
+    // Two documents with one number: the second is not added again.
+    state.identities = {};
+    state.documents = [HER_PASSPORT, twin];
+    render(<App />);
+    region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Add identity details' }));
+    form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    await within(form).findByRole('heading', { name: 'From documents' });
+    for (const button of within(form).getAllByRole('button', { name: /^Use this/ })) {
+      fireEvent.click(button);
+    }
+    expect(
+      await within(form).findByText(
+        'That number is here already. “Aisha’s old passport” left out.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(form).getAllByRole('group', { name: 'Passport' })).toHaveLength(1);
+  });
+
+  it('Fill from documents, every suggestion used or left out: that is all of them, not nothing found (S527-9)', async () => {
+    installFakeApi(fresh({ members: [ME, AISHA_KHAN], documents: [HER_PASSPORT], identities: {} }));
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    const region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Add identity details' }));
+    const form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.click(within(form).getByRole('button', { name: 'Fill from documents' }));
+    fireEvent.click(await within(form).findByRole('button', { name: /^Not this/ }));
+    expect(
+      await within(form).findByRole('heading', { name: 'That’s all of them' }),
+    ).toBeInTheDocument();
+    expect(form).not.toHaveTextContent('None of Aisha’s identity documents');
+    expect(within(form).getByText('Left out.')).toBeInTheDocument();
+  });
+
   it('Add someone offers "Add their details now", which opens their Identity details form', async () => {
     const state = fresh({ members: [ME], identities: {} });
     installFakeApi(state);
@@ -691,7 +1114,14 @@ describe("a person's identity details (5.27)", () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Add identity details' })).toHaveFocus(),
     );
+    // Used once: the history entry no longer asks for the form, so Back to
+    // it, or a reload, shows the card (the 5.27 review).
+    expect((window.history.state as { usr?: unknown } | null)?.usr ?? null).toBeNull();
     unmount();
+    const reloaded = render(<App />);
+    await screen.findByRole('button', { name: 'Add identity details' });
+    expect(screen.queryByRole('form', { name: 'Zara’s identity details' })).toBeNull();
+    reloaded.unmount();
     // An adult changes nobody else's identity details: not offered.
     installFakeApi(fresh({ members: [{ ...ME, role: 'adult' }], identities: {} }));
     signedIn('adult');
@@ -699,6 +1129,36 @@ describe("a person's identity details (5.27)", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Add someone' }));
     expect(screen.queryByLabelText('Add their details now')).not.toBeInTheDocument();
+  });
+});
+
+describe('what the form will not save (5.27)', () => {
+  it('a masked value moved to the other part, never shown nor typed over, is found before saving (C527-02)', () => {
+    const view = {
+      member_id: 'me',
+      audience: 'owners_and_self' as const,
+      can_edit: { shared: true, only_me: true },
+      versions: { shared: 1, only_me: 0 },
+      shared: {
+        fields: { ids: [{ id: 'mp', kind: 'passport' as const }] },
+        masked: ['ids.mp'],
+        filled: ['ids.mp'],
+        version: 1,
+        updated_at: null,
+      },
+      only_me: { fields: {}, masked: [], filled: [], version: 0, updated_at: null },
+    };
+    const draft = draftFrom(view);
+    expect(movedUnshown(draft)).toEqual([]);
+    const moved = { ...draft, entries: draft.entries.map((e) => ({ ...e, onlyMe: true })) };
+    expect(movedUnshown(moved).map((e) => e.id)).toEqual(['mp']);
+    const typed = {
+      ...moved,
+      entries: moved.entries.map((e) => ({ ...e, f: { ...e.f, number: 'NEW-1' } })),
+    };
+    expect(movedUnshown(typed)).toEqual([]);
+    const shown = { ...moved, entries: moved.entries.map((e) => ({ ...e, known: 'OLD-1' })) };
+    expect(movedUnshown(shown)).toEqual([]);
   });
 });
 
@@ -739,7 +1199,12 @@ describe('who can see identity details (5.27, A34)', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('link', { name: /Family/ }));
     await screen.findByRole('heading', { name: 'Who can see identity details' });
-    expect(screen.getByText(/Letting more people see them waits 72 hours/)).toBeInTheDocument();
+    // Viewers change nothing of theirs: the owner is not told they can (the 5.27 review).
+    expect(
+      screen.getByText(
+        /waits 72 hours: everyone with a sign-in is told first, and all but viewers can mark anything Only me before then\./,
+      ),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'All adults' }));
     fireEvent.click(screen.getByRole('button', { name: 'Tell everyone, and wait 72 hours' }));
     const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
@@ -755,7 +1220,9 @@ describe('who can see identity details (5.27, A34)', () => {
       { audience: 'adults' },
     ]);
     expect(
-      screen.getByText(/has been told, and can mark anything Only me before then\./),
+      screen.getByText(
+        /has been told, and all but viewers can mark anything Only me before then\./,
+      ),
     ).toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(screen.getByRole('button', { name: 'Withdraw this' }));
@@ -764,7 +1231,7 @@ describe('who can see identity details (5.27, A34)', () => {
       audience: 'owners_and_self',
     });
     expect(
-      screen.queryByText(/has been told, and can mark anything Only me/),
+      screen.queryByText(/has been told, and all but viewers can mark anything Only me/),
     ).not.toBeInTheDocument();
   });
 
@@ -794,7 +1261,7 @@ describe('who can see identity details (5.27, A34)', () => {
     );
   });
 
-  it('after a restore, the screen says who can see identity details went back to the owners and each person', async () => {
+  it('after a restore, the screen says what a restore does to who can see identity details, and how it is now', async () => {
     const share = {
       id: 'sh-1',
       document_id: 'doc-1',
@@ -803,12 +1270,24 @@ describe('who can see identity details (5.27, A34)', () => {
       expires_at: '2099-01-01T00:00:00Z',
       has_pin: false,
     };
-    installFakeApi(fresh({ identities: {}, shares: [{ ...share, state: 'paused' }] }));
+    installFakeApi(
+      fresh({
+        identities: {},
+        identityAudience: 'adults',
+        shares: [{ ...share, state: 'paused' }],
+      }),
+    );
     signedIn();
     at('/settings/after-restore');
     render(<App />);
-    expect(await screen.findByTestId('restore-identity')).toHaveTextContent(
-      'Who can see identity details went back to the owners and each person',
+    const said = await screen.findByTestId('restore-identity');
+    // The rule, true after any restore; then the vault as it is now — widened
+    // again since, here — never a claim that something was withdrawn.
+    await waitFor(() =>
+      expect(said).toHaveTextContent(
+        'A restore sets who can see identity details back to the owners and each person, and withdraws any wider audience that was waiting. It is now: All adults.',
+      ),
     );
+    expect(said).not.toHaveTextContent('was withdrawn');
   });
 });
