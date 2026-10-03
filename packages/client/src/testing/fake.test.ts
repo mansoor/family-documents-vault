@@ -369,4 +369,28 @@ describe('the fake vault, identity details (5.26)', () => {
       message: "Turn on two-step sign-in to see another person's identity numbers.",
     });
   });
+
+  it('a widening is refused while anybody with a sign-in, a teen included, cannot sign in to be told', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const tokens = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    vault.state.members.push({ id: 'tariq', display_name: 'Tariq', role: 'teen', is_me: false });
+    vault.state.signInsOff = ['tariq'];
+    const refused = await api.setIdentityAudience(tokens.access_token, 'adults').then(
+      () => null,
+      (err: { status?: number; code?: string; message?: string }) => err,
+    );
+    expect(refused).toMatchObject({ status: 409, code: 'member_cannot_be_told' });
+    expect(refused?.message).toMatch(/^Tariq cannot sign in just now/);
+    vault.state.signInsOff = [];
+    expect((await api.setIdentityAudience(tokens.access_token, 'adults')).pending?.to).toBe(
+      'adults',
+    );
+  });
 });

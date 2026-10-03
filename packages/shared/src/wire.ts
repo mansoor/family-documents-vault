@@ -724,12 +724,14 @@ export interface StepUpState {
 
 /**
  * The step-ups that take a passkey or a code from an authenticator app,
- * never the password (A54, 5.25): the owner's powers over other people's
- * sign-ins and, since 5.26, an owner revealing another person's identity
- * numbers (`open_identity`) and changing who sees identity details
- * (`identity_audience`). An owner with neither is refused those powers
- * outright (`403 totp_required_for_owner`); a client asking for one of these
- * offers no password field.
+ * never the password: the owner's powers over other people's sign-ins (A54,
+ * 5.25) and who sees identity details (`identity_audience`, 5.26); and,
+ * whoever asks, showing another person's identity numbers (`open_identity`,
+ * 5.26) — one's own take `reveal_identity`, any credential. Somebody with
+ * neither is refused outright, in the words of what they asked for: an
+ * owner `403 totp_required_for_owner`, anybody else `403
+ * two_step_required`. A client asking for one of these offers no password
+ * field.
  */
 export const FACTOR_STEP_UPS: readonly string[] = [
   'manage_sign_ins',

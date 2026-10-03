@@ -777,23 +777,31 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
     });
   });
 
-  it('a widening is refused while an adult cannot sign in to be told', async () => {
+  it('a widening is refused while anybody with a sign-in, of any role, cannot sign in to be told', async () => {
     const pool = admin();
-    const adamAccount = await accountOf(adam);
-    try {
-      await pool.query('update account set disabled_at = now() where id = $1', [adamAccount]);
-      await ownerByCode();
-      const refused = await setAudience(owner, 'adults');
-      expect(refused.statusCode).toBe(409);
-      expect(error(refused)).toMatchObject({ code: 'adult_cannot_be_told' });
-      expect(error(refused).message).toMatch(/^Adam cannot sign in just now/);
-      expect(json<IdentityAudienceView>(await audience(owner)).pending).toBeNull();
-      // Narrowing never waits for anybody.
-      expect((await setAudience(owner, 'owners_and_self')).statusCode).toBe(200);
-    } finally {
-      await pool.query('update account set disabled_at = null where id = $1', [adamAccount]);
-      await pool.end();
+    // A teen is told too (the 5.26 review), and a switched-off one is
+    // reached by no mail and cannot sign in to mark anything Only me.
+    for (const [who, name] of [
+      [teen, 'Tariq'],
+      [adam, 'Adam'],
+      [viewer, 'The Accountant'],
+    ] as const) {
+      const account = await accountOf(who);
+      try {
+        await pool.query('update account set disabled_at = now() where id = $1', [account]);
+        await ownerByCode();
+        const refused = await setAudience(owner, 'adults');
+        expect(refused.statusCode, name).toBe(409);
+        expect(error(refused)).toMatchObject({ code: 'member_cannot_be_told' });
+        expect(error(refused).message).toMatch(new RegExp(`^${name} cannot sign in just now`));
+        expect(json<IdentityAudienceView>(await audience(owner)).pending).toBeNull();
+        // Narrowing never waits for anybody.
+        expect((await setAudience(owner, 'owners_and_self')).statusCode).toBe(200);
+      } finally {
+        await pool.query('update account set disabled_at = null where id = $1', [account]);
+      }
     }
+    await pool.end();
   });
 
   it('a widening whose mail cannot be queued is not asked: nothing waits, and asking again tells everybody (the 5.26 review)', async () => {

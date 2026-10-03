@@ -198,24 +198,25 @@ export const identityRevealBody = z
 /** PUT /household/identity-audience. */
 export const identityAudienceBody = z.object({ audience: z.enum(IDENTITY_AUDIENCES) }).strict();
 
-/** Said to an owner who would widen the audience while an adult could not be told (A34). */
-export const ADULT_CANNOT_BE_TOLD = (names: string[]) =>
-  `${names.join(', ')} cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once every adult can sign in.`;
+/** Said to an owner who would widen the audience while somebody could not be told (A34). */
+export const MEMBER_CANNOT_BE_TOLD = (names: string[]) =>
+  `${names.join(', ')} cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once everybody can sign in.`;
 
 /**
- * The adults who could not be told of a wider audience, nor mark fields
- * Only me while it waits (A34): those who cannot sign in. Today that is an
- * account switched off (account.disabled_at); 5.28 adds a sign-in an owner
- * has locked, or one paused after a restore, here — and has locking an
- * adult withdraw a widening still waiting.
+ * The people with a sign-in who could not be told of a wider audience, nor
+ * mark fields Only me while it waits (A34): everybody with a sign-in is
+ * told (the 5.26 review), whatever their role, so anybody who cannot sign
+ * in holds a widening back. Today that is an account switched off
+ * (account.disabled_at), which no alert reaches either. 5.28 adds here a
+ * sign-in an owner has locked, or one paused after a restore — and has
+ * locking somebody withdraw a widening still waiting.
  */
-export async function adultsWhoCannotBeTold(trx: Db): Promise<string[]> {
+export async function membersWhoCannotBeTold(trx: Db): Promise<string[]> {
   const rows = await trx
     .selectFrom('account_household')
     .innerJoin('account', 'account.id', 'account_household.account_id')
     .innerJoin('member', 'member.id', 'account_household.member_id')
     .select(['member.display_name'])
-    .where('account_household.role', 'in', ['owner', 'adult'])
     .where('account.disabled_at', 'is not', null)
     .orderBy('member.display_name')
     .execute();
@@ -624,11 +625,12 @@ export class IdentityService {
    *    record gains readers is told — everybody but the owner asking: in
    *    the app, which shows the widening waiting (`pending`); by the
    *    operator's mail server, where there is one — and may mark fields Only
-   *    me meanwhile. The mail is queued in this transaction: if it cannot
-   *    be, nothing was asked, and asking again tries again (the 5.26
-   *    review). Asked again for the same, the clock does not start again;
-   *    for another, the one waiting is withdrawn and the new one waits its
-   *    own 72 hours. Refused while an adult cannot sign in to be told.
+   *    me meanwhile. The mail is queued last, after the line in the log, in
+   *    this transaction: a failed enqueue rolls the notice back, and asking
+   *    again tries again (the 5.26 review). Asked again for the same, the
+   *    clock does not start again; for another, the one waiting is
+   *    withdrawn and the new one waits its own 72 hours. Refused while
+   *    anybody with a sign-in cannot sign in to be told.
    *
    * Everything here goes by the audience in effect: a widening whose
    * notice has run out is written in as it is found, and narrowing from it
@@ -730,11 +732,11 @@ export class IdentityService {
         return null;
       }
 
-      // Wider: only after every adult has been told.
+      // Wider: only after everybody with a sign-in has been told.
       if (pending?.subject === to) return null;
-      const cannot = await adultsWhoCannotBeTold(trx);
+      const cannot = await membersWhoCannotBeTold(trx);
       if (cannot.length > 0) {
-        throw new ApiError(409, 'adult_cannot_be_told', ADULT_CANNOT_BE_TOLD(cannot));
+        throw new ApiError(409, 'member_cannot_be_told', MEMBER_CANNOT_BE_TOLD(cannot));
       }
       await withdraw();
       const notice = await trx
@@ -755,23 +757,6 @@ export class IdentityService {
         .select(['account_id'])
         .where('account_id', '!=', p.accountId)
         .execute();
-      if (told.length > 0 && this.operatorMail) {
-        // Nothing of anybody's details: who will see them, and from when, on
-        // the household's clock. Queued with the notice, or neither is.
-        const when = `${shareEndWords(notice.notice_until, household.timezone)} (${household.timezone})`;
-        await this.alert({
-          householdId: p.householdId,
-          accountIds: told.map((a) => a.account_id),
-          subject: 'Who can see identity details is changing',
-          body:
-            `From ${when}, ${IDENTITY_AUDIENCE_LABELS[to].toLowerCase()} will see the identity ` +
-            'details people share in your family vault: names, contacts, addresses and ID ' +
-            'numbers. Anything you mark Only me before then stays yours alone. Open the vault ' +
-            'to look at yours.',
-          emailOnly: true,
-          operatorMail: true,
-        });
-      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -786,6 +771,26 @@ export class IdentityService {
         },
         ip: meta.ip,
       });
+      if (told.length > 0 && this.operatorMail) {
+        // Nothing of anybody's details: who will see them, and from when, on
+        // the household's clock. Queued last, as co-owners.ts queues its
+        // notice: the queue is not this transaction's, so a failed enqueue
+        // rolls the notice back, and only a failure after it (the commit
+        // itself) could leave a mail with no notice behind it.
+        const when = `${shareEndWords(notice.notice_until, household.timezone)} (${household.timezone})`;
+        await this.alert({
+          householdId: p.householdId,
+          accountIds: told.map((a) => a.account_id),
+          subject: 'Who can see identity details is changing',
+          body:
+            `From ${when}, ${IDENTITY_AUDIENCE_LABELS[to].toLowerCase()} will see the identity ` +
+            'details people share in your family vault: names, contacts, addresses and ID ' +
+            'numbers. Anything you mark Only me before then stays yours alone. Open the vault ' +
+            'to look at yours.',
+          emailOnly: true,
+          operatorMail: true,
+        });
+      }
       return null;
     });
     return this.audience(p);

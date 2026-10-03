@@ -82,14 +82,12 @@ const WHY: Record<StepUpAction, string> = {
   identity_audience: 'to change who can see identity details',
 };
 
-/** Said to an owner with neither two-step sign-in nor a passkey, for the powers of A54. */
-export const OWNER_NEEDS_TWO_STEP = "Turn on two-step sign-in to manage other people's sign-ins.";
-
 /**
  * Said to somebody with neither two-step sign-in nor a passkey who asks for
  * what takes one (`FACTOR_STEP_UPS`), in the words of what they asked for
  * (the 5.26 review): "Turn on two-step sign-in to see another person's
- * identity numbers." For `manage_sign_ins`, OWNER_NEEDS_TWO_STEP.
+ * identity numbers." For the account card (`manage_sign_ins`), as before 5.26:
+ * "Turn on two-step sign-in to manage other people's sign-ins."
  */
 export const needsTwoStep = (action: StepUpAction) => `Turn on two-step sign-in ${WHY[action]}.`;
 

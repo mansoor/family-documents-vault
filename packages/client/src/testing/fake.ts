@@ -158,6 +158,11 @@ export interface FakeVaultState {
   >;
   /** Who reads other people's shared identity details (A34), and a widening waiting its 72 hours. */
   identityAudience: IdentityAudience;
+  /**
+   * People whose sign-in is switched off, by member id: they could not be
+   * told of a wider audience, so it is refused while there are any (5.26).
+   */
+  signInsOff: string[];
   identityPending: IdentityAudienceView['pending'];
   /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
   photosOnTheirWay: Map<string, string>;
@@ -491,6 +496,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     identities: new Map(),
     identityAudience: 'owners_and_self',
     identityPending: null,
+    signInsOff: [],
     role: 'owner',
     collections: [],
     uploadRequests: [],
@@ -2222,6 +2228,15 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         state.identityAudience = to;
         state.identityPending = null;
       } else if (state.identityPending?.to !== to) {
+        // Everybody with a sign-in is told: anybody who cannot sign in holds it back.
+        const off = state.members.filter((m) => state.signInsOff.includes(m.id));
+        if (off.length > 0) {
+          return fail(
+            409,
+            'member_cannot_be_told',
+            `${off.map((m) => m.display_name).join(', ')} cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once everybody can sign in.`,
+          );
+        }
         const now = Date.now();
         state.identityPending = {
           to,

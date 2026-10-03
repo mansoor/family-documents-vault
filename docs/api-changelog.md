@@ -2722,15 +2722,17 @@ pending, can_change }`, for anybody signed in: `audience` is who reads
       where there is one (`FDV_SMTP_URL`), never by push, with nothing of
       anybody's details and the moment it applies on the household's clock,
       its zone named ("From Monday 5 October at 07:00 (America/Los_Angeles),
-      …"). The mail is queued with the request: if it cannot be, nothing was
-      asked, and asking again asks. Each may mark fields Only me meanwhile.
+      …"). The mail is queued last, in the request's transaction: if it
+      cannot be, nothing was asked, and asking again asks. Each may mark fields Only me meanwhile.
       Asking again
       for the same does not start the clock again; asking for another
       withdraws the one waiting, and the new one waits its own 72 hours;
       asking for the audience as it is withdraws one waiting. Refused, `409
-adult_cannot_be_told`, while an adult or an owner cannot sign in to be
-      told (today: their account switched off; from 5.28, a sign-in locked or
-      paused after a restore). `200` with the audience as `GET` gives it.
+member_cannot_be_told` ("Tariq cannot sign in just now, so could not be
+      told, or mark anything Only me first. …"), while anybody with a
+      sign-in, of any role, cannot sign in to be told (today: their account
+      switched off, which no mail reaches either; from 5.28, a sign-in locked
+      or paused after a restore). `200` with the audience as `GET` gives it.
     - **Changed (A54):** `FACTOR_STEP_UPS` adds `open_identity` and
       `identity_audience`: a client asking for either offers no password
       field. `reveal_identity` takes any credential. **Changed:** the message

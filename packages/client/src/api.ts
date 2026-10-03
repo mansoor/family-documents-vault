@@ -339,10 +339,13 @@ export function createApi(http: Http) {
       }),
     /**
      * Masked values, by key (`ids.<id>`, `custom.<id>`), of the shared part
-     * unless `part` says. Asks who is asking: `403 step_up_required` with
-     * `reveal_identity` (any credential), or for an owner showing somebody
-     * else's, `open_identity` (a passkey or a code; an owner with neither is
-     * `403 totp_required_for_owner`). Audited by key, never by value.
+     * unless `part` says. Asks who is asking. Another person's numbers,
+     * whoever asks: `403 step_up_required` with `open_identity`, a passkey or
+     * a code, never the password; somebody with neither is refused outright,
+     * an owner `403 totp_required_for_owner` and anybody else `403
+     * two_step_required`, each "Turn on two-step sign-in to see another
+     * person's identity numbers." One's own: `reveal_identity`, any
+     * credential. Audited by key, never by value.
      */
     revealIdentity: (
       token: string,
@@ -361,8 +364,8 @@ export function createApi(http: Http) {
      * An owner's (A54: `403 totp_required_for_owner` without two-step
      * sign-in or a passkey; `step_up_required`, `identity_audience`, never by
      * password). Narrower at once; wider after 72 hours' notice (`pending`),
-     * refused while an adult cannot sign in to be told (`409
-     * adult_cannot_be_told`).
+     * refused while anybody with a sign-in, of any role, cannot sign in to be
+     * told (`409 member_cannot_be_told`).
      */
     setIdentityAudience: (token: string, audience: IdentityAudience) =>
       request<IdentityAudienceView>('/api/v1/household/identity-audience', {
