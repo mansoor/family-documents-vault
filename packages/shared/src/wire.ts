@@ -1,4 +1,5 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
+import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
 import type { CollectionAudience, Role } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 
@@ -723,12 +724,82 @@ export interface StepUpState {
 
 /**
  * The step-ups that take a passkey or a code from an authenticator app,
- * never the password (A54, 5.25): the owner's powers over other people's
- * sign-ins. An owner with neither is refused those powers outright
- * (`403 totp_required_for_owner`); a client asking for one of these offers
- * no password field.
+ * never the password: the owner's powers over other people's sign-ins (A54,
+ * 5.25) and who sees identity details (`identity_audience`, 5.26); and,
+ * whoever asks, showing another person's identity numbers (`open_identity`,
+ * 5.26) — one's own take `reveal_identity`, any credential. Somebody with
+ * neither is refused outright, in the words of what they asked for: an
+ * owner `403 totp_required_for_owner`, anybody else `403
+ * two_step_required`. A client asking for one of these offers no password
+ * field.
  */
-export const FACTOR_STEP_UPS: readonly string[] = ['manage_sign_ins'];
+export const FACTOR_STEP_UPS: readonly string[] = [
+  'manage_sign_ins',
+  'open_identity',
+  'identity_audience',
+];
+
+/**
+ * One part of a person's identity details, as the reader is shown it
+ * (GET /members/{id}/identity, 5.26): every masked value left out of
+ * `fields` — an ID's `number`, a hidden custom field's `value` — and named
+ * in `masked`; sent back left out, it is kept. `filled` names what has a
+ * value, never a value. A part never written is empty, version 0.
+ */
+export interface IdentityPartView {
+  fields: IdentityFields;
+  /** `ids.<id>` and `custom.<id>`: what POST …/identity/reveal shows. */
+  masked: string[];
+  filled: string[];
+  version: number;
+  updated_at: string | null;
+}
+
+/** GET /members/{id}/identity (5.26): the record as the caller may see it. */
+export interface IdentityView {
+  member_id: string;
+  /** The household's audience in effect now (A34). */
+  audience: IdentityAudience;
+  /** Which parts the caller may change. */
+  can_edit: { shared: boolean; only_me: boolean };
+  /** Each part's version, for the next PUT; Only me's for the person alone, null to anybody else. */
+  versions: { shared: number; only_me: number | null };
+  shared: IdentityPartView;
+  /** The person's alone (A33): null to anybody else. */
+  only_me: IdentityPartView | null;
+}
+
+/** PUT /members/{id}/identity (5.26): a whole part, made from the version read. */
+export interface IdentityWrite {
+  part: IdentityPart;
+  /** The part's version as read: 0 for a part never written. */
+  version: number;
+  fields: IdentityFields;
+}
+
+/** POST /members/{id}/identity/reveal (5.26): the masked values asked for, by key. */
+export interface IdentityReveal {
+  part: IdentityPart;
+  values: Record<string, string>;
+}
+
+/**
+ * GET and PUT /household/identity-audience (5.26, A34): who reads other
+ * people's shared identity details now, and a wider audience waiting for
+ * its notice to run out — told to every adult, who can mark fields Only me
+ * meanwhile.
+ */
+export interface IdentityAudienceView {
+  audience: IdentityAudience;
+  pending: {
+    to: IdentityAudience;
+    requested_at: string;
+    /** From this moment on, the wider audience reads. */
+    notice_until: string;
+  } | null;
+  /** Whether the caller may change it: an owner (A54: with two-step sign-in or a passkey). */
+  can_change: boolean;
+}
 
 export interface CaptureResult {
   document_id: string;

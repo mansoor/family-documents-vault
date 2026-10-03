@@ -17,8 +17,9 @@ import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
-import { registerHousehold } from './household/routes.js';
+import { registerHousehold, registerIdentity } from './household/routes.js';
 import type { HouseholdService } from './household/service.js';
+import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
 import type { InvitationService } from './household/invitations.js';
 import type { CoOwnerService } from './household/co-owners.js';
@@ -77,6 +78,8 @@ export interface AppDeps {
   household: HouseholdService;
   /** People's photos (5.17c). */
   photos: PhotoService;
+  /** People's identity details, sealed, and who sees them (5.26). */
+  identity: IdentityService;
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
@@ -304,6 +307,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp, deps.passwords);
   registerVaults(app, deps.vaults, deps.stepUp);
   registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners, deps.photos);
+  registerIdentity(app, deps.identity, deps.stepUp);
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);

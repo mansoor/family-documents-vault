@@ -1297,6 +1297,124 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "a person's identity details: masked until shown, each part with a version of its own, a stale one 409; who sees them is an owner's with two-step sign-in (5.26)",
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.member_identity).toBe(true);
+      // Just signed in: showing one's own numbers asks nothing more.
+      const token = (await signIn(api, ctx)).access_token;
+      const me = await api.me(token);
+      expect(await api.identity(token, me.member_id)).toMatchObject({
+        member_id: me.member_id,
+        audience: 'owners_and_self',
+        can_edit: { shared: true, only_me: true },
+        versions: { shared: 0, only_me: 0 },
+        shared: { fields: {}, masked: [], version: 0 },
+        only_me: { fields: {}, version: 0 },
+      });
+      const made = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: 0,
+        fields: { given_name: 'Contract', ids: [{ id: 'p1', kind: 'passport', number: 'C-123' }] },
+      });
+      expect(made.versions).toEqual({ shared: 1, only_me: 0 });
+      expect(made.shared.masked).toEqual(['ids.p1']);
+      // Masked: left out, so that a form sending back what it was shown keeps it.
+      expect(made.shared.fields.ids?.[0]).not.toHaveProperty('number');
+      expect(made.shared.filled).toEqual(['given_name', 'ids.p1']);
+      // Made from a version that has moved on: refused, and nothing changed.
+      const stale = await refusal(
+        api.updateIdentity(token, me.member_id, { part: 'shared', version: 0, fields: {} }),
+      );
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      // A masked value left out is kept.
+      const kept = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: 1,
+        fields: { given_name: 'Contract', ids: [{ id: 'p1', kind: 'passport' }] },
+      });
+      expect(kept.versions.shared).toBe(1);
+      const renamed = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: 1,
+        fields: { given_name: 'Contracted', ids: [{ id: 'p1', kind: 'passport' }] },
+      });
+      expect(renamed.versions.shared).toBe(2);
+      expect(
+        (await api.revealIdentity(token, me.member_id, { keys: ['ids.p1', 'given_name'] })).values,
+      ).toEqual({ 'ids.p1': 'C-123' });
+      // What a GET gives, sent back as it is: nothing changes, nothing is lost.
+      const shown = await api.identity(token, me.member_id);
+      const echoed = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: shown.versions.shared,
+        fields: shown.shared.fields,
+      });
+      expect(echoed.versions.shared).toBe(2);
+      expect(echoed.shared.masked).toEqual(['ids.p1']);
+      expect((await api.revealIdentity(token, me.member_id, { keys: ['ids.p1'] })).values).toEqual({
+        'ids.p1': 'C-123',
+      });
+      // A hidden field written back unhidden, its value left out, stays
+      // hidden: unhiding it takes the value itself.
+      const hid = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: 2,
+        fields: {
+          ...shown.shared.fields,
+          custom: [{ id: 'k1', label: 'PIN', value: '4471', hidden: true }],
+        },
+      });
+      expect(hid.shared.masked).toEqual(['ids.p1', 'custom.k1']);
+      const unhid = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: hid.versions.shared,
+        fields: { ...hid.shared.fields, custom: [{ id: 'k1', label: 'PIN', hidden: false }] },
+      });
+      expect(unhid.versions.shared).toBe(hid.versions.shared);
+      expect(unhid.shared.fields.custom).toEqual([{ id: 'k1', label: 'PIN', hidden: true }]);
+      // A part too big to keep is refused as too long.
+      const tooLong = await refusal(
+        api.updateIdentity(token, me.member_id, {
+          part: 'only_me',
+          version: 0,
+          fields: {
+            custom: Array.from({ length: 40 }, (_, i) => ({
+              id: `c${i}`,
+              label: 'x',
+              value: 'ب'.repeat(2000),
+            })),
+          },
+        }),
+      );
+      expect(tooLong).toMatchObject({ status: 422, code: 'validation_failed' });
+      // The Only me part moves its own version, and nothing else.
+      const mine = await api.updateIdentity(token, me.member_id, {
+        part: 'only_me',
+        version: 0,
+        fields: { notes: 'mine alone' },
+      });
+      expect(mine.versions).toEqual({ shared: hid.versions.shared, only_me: 1 });
+      expect(mine.only_me?.fields.notes).toBe('mine alone');
+      // Nobody at all: nothing there.
+      const nobody = await refusal(api.identity(token, '00000000-0000-4000-8000-000000000000'));
+      expect(nobody).toMatchObject({ status: 404, code: 'not_found' });
+      // Who sees them: this owner signs in with a password alone, and is
+      // refused the switch until they have two-step sign-in or a passkey (A54).
+      expect(await api.identityAudience(token)).toMatchObject({
+        audience: 'owners_and_self',
+        pending: null,
+        can_change: true,
+      });
+      const refused = await refusal(api.setIdentityAudience(token, 'adults'));
+      expect(refused).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: 'Turn on two-step sign-in to change who can see identity details.',
+      });
+      expect((await api.identityAudience(token)).pending).toBeNull();
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

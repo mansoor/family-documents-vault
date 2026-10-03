@@ -99,6 +99,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.21 and 5.23: asking somebody outside to send documents, and
       // looking at what they sent before it is filed.
       upload_requests: true,
+      // 5.26: people's identity details, sealed; who sees them, wider only
+      // after 72 hours' notice (A34).
+      member_identity: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

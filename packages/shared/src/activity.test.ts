@@ -61,6 +61,68 @@ describe('the activity log, in sentences', () => {
     );
   });
 
+  it('says who looked at, showed or changed somebody’s identity details, and never a value; who sees them, and from when (5.26)', () => {
+    const sara = { object_type: 'member', object_id: 'm-sara', object_title: 'Sara' };
+    const said = (action: string, actorMember: string, detail: Record<string, unknown> = {}) =>
+      describeEvent(
+        ev({
+          action,
+          actor: actorMember === 'm-sara' ? 'Sara' : 'Mansoor',
+          ...sara,
+          actor_member_id: actorMember,
+          detail,
+        }),
+      );
+    expect(said('identity.viewed', 'm-mansoor')?.text).toBe(
+      'Mansoor looked at Sara’s identity details',
+    );
+    // A38: somebody else showing her numbers is news, said with no value.
+    expect(
+      said('identity.revealed', 'm-mansoor', { part: 'shared', keys: ['ids.p1'], number: 'P-1' }),
+    ).toMatchObject({ text: 'Mansoor showed one of Sara’s identity numbers', notable: true });
+    expect(said('identity.revealed', 'm-sara', { keys: ['ids.p1', 'ids.d1'] })).toMatchObject({
+      text: 'Sara showed 2 of their own identity numbers',
+      notable: false,
+    });
+    expect(
+      said('identity.updated', 'm-mansoor', { part: 'shared', keys: ['given_name'] })?.text,
+    ).toBe('Mansoor changed Sara’s identity details');
+    expect(said('identity.updated', 'm-sara', { part: 'only_me' })?.text).toBe(
+      'Sara changed their own Only me identity details',
+    );
+    const household = { object_type: 'household', object_id: 'h', object_title: null };
+    const audience = (detail: Record<string, unknown>) =>
+      describeEvent(
+        ev({ action: 'identity.audience_changed', actor: 'Mansoor', ...household, detail }),
+      );
+    expect(
+      audience({ from: 'owners_and_self', to: 'adults', notice_until: '2026-10-05T14:00:00.000Z' }),
+    ).toMatchObject({
+      text: 'Mansoor asked to let all adults see identity details from 5 October at 14:00',
+      notable: true,
+    });
+    // On the household's clock: west of UTC, the evening before (the 5.26 review).
+    const west = describeEvent(
+      ev({
+        action: 'identity.audience_changed',
+        actor: 'Mansoor',
+        ...household,
+        detail: { from: 'owners_and_self', to: 'family', notice_until: '2026-10-05T03:00:00.000Z' },
+        timezone: 'America/Los_Angeles',
+      }),
+    );
+    expect(west?.text).toBe(
+      'Mansoor asked to let everyone in the family see identity details from 4 October at 20:00',
+    );
+    expect(audience({ from: 'family', to: 'owners_and_self' })?.text).toBe(
+      'Mansoor made identity details visible to the owners and each person only',
+    );
+    expect(audience({ from: 'adults', to: 'adults', withdrawn: 'family' })?.text).toBe(
+      'Mansoor withdrew letting everyone in the family see identity details',
+    );
+    expect(audience({})?.text).toBe('Mansoor changed who can see identity details');
+  });
+
   it('says which of a person’s details changed, never what they were or are; a passing is news (5.25)', () => {
     const aisha = { object_type: 'member', object_id: 'm-aisha', object_title: 'Aisha Khan' };
     const said = (action: string, actorMember: string, detail: Record<string, unknown>) =>

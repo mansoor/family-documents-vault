@@ -7,14 +7,20 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
+  binding,
   CHUNK_SIZE,
   DecryptStream,
   deriveKey,
   EncryptStream,
   EnvKeyProvider,
   HEADER_BYTES,
+  KEK_PURPOSE,
+  newKey,
+  openIdentity,
   openPrivate,
   ScopeKeys,
+  sealIdentity,
+  wrapKey,
 } from '@fdv/crypto';
 import {
   applyPrivileges,
@@ -63,6 +69,11 @@ const quiet = () => undefined;
 const TAG = 16; // AES-GCM tag after each sealed chunk
 /** A person's photo as a backup holds it: sealed bytes, whatever they are (0040). */
 const PHOTO_SEALED = randomBytes(600);
+/** The first person's identity details, as the backup holds them sealed (0050). */
+const IDENTITY_SEED = {
+  shared: { given_name: 'One', ids: [{ id: 'p1', kind: 'passport', number: 'RESTORE-P-1' }] },
+  only_me: { notes: 'restored, and still mine' },
+} as const;
 
 /**
  * pg_dump and psql of the server's own major version, as the worker image
@@ -386,6 +397,47 @@ async function seed(url: string): Promise<string> {
           [hh, kept.rows[0]?.id, scope.rows[0]?.id, hh],
         );
       }
+    }
+    // People's identity details, where the schema has them (0050): the
+    // first person's shared part under the household's identity key, their
+    // Only me part under their own member key, each sealed as the API seals
+    // it; the household's audience all adults, and a widening to the whole
+    // family waiting for its notice.
+    const identity = await c.query<{ has: boolean }>(
+      "select to_regclass('public.member_identity') is not null as has",
+    );
+    if (identity.rows[0]?.has) {
+      const kek = deriveKey(MASTER, KEK_PURPOSE);
+      const person = m.rows[0]?.id as string;
+      for (const part of ['shared', 'only_me'] as const) {
+        const ref =
+          part === 'shared'
+            ? { householdId: hh, kind: 'identity' as const }
+            : { householdId: hh, kind: 'member' as const, memberId: person };
+        const key = newKey();
+        const scope = await c.query<{ id: string }>(
+          `insert into scope_key (household_id, kind, member_id, key_wrapped)
+           values ($1, $2, $3, $4) returning id`,
+          [hh, ref.kind, part === 'shared' ? null : person, wrapKey(key, kek, binding(ref))],
+        );
+        const sealed = sealIdentity(
+          key,
+          { householdId: hh, memberId: person, part },
+          IDENTITY_SEED[part],
+        );
+        await c.query(
+          `insert into member_identity
+             (household_id, member_id, part, sealed, dek_wrapped, wrapped_by_scope, filled)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [hh, person, part, sealed.sealed, sealed.dek_wrapped, scope.rows[0]?.id, ['given_name']],
+        );
+      }
+      await c.query("update household set identity_audience = 'adults' where id = $1", [hh]);
+      await c.query(
+        `insert into notice_request (household_id, kind, subject, requested_by, notice_until)
+         values ($1, 'identity_audience', 'family', $2, now() + interval '72 hours')`,
+        [hh, account],
+      );
     }
   });
   return hh;
@@ -1264,6 +1316,153 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it("notices a person's Only me identity details open to others, or identity details and notices that lost their rules (0050)", async () => {
+    const qual = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = '${name}'`,
+        )
+      ).rows[0]?.rule as string;
+    const actor = await qual('member_identity_actor');
+    const onlyMe = await qual('member_identity_only_me');
+    // The rule for each kind of caller gone: a caller who says nothing is
+    // given the shared parts.
+    await sql(vault.adminUrl, 'drop policy member_identity_actor on public.member_identity');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/member_identity/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_identity_actor on public.member_identity as restrictive using (${actor})`,
+      );
+    }
+    // Both rules open to anybody signed in, as each still reads: an Only me
+    // part is somebody else's to read.
+    await sql(
+      vault.adminUrl,
+      `alter policy member_identity_only_me on public.member_identity using (true);
+       alter policy member_identity_actor on public.member_identity
+         using (case app_actor() when 'account' then app_member() is null or true
+                                 when 'system' then true when 'link' then false
+                                 when 'upload' then false else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /a person's Only me identity details is open to somebody signed in/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy member_identity_only_me on public.member_identity using (${onlyMe});
+         alter policy member_identity_actor on public.member_identity using (${actor})`,
+      );
+    }
+    // The notices' rule for each kind of caller, gone.
+    const notices = await qual('notice_request_actor');
+    await sql(vault.adminUrl, 'drop policy notice_request_actor on public.notice_request');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/notice_request/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy notice_request_actor on public.notice_request as restrictive using (${notices})`,
+      );
+    }
+    // Each rule the vault relies on by name, dropped in turn (the 5.26
+    // review): a rule for each kind of caller that names the role must not
+    // stand in for the one that says who writes.
+    const definition = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select c.relname as tbl, p.polcmd as cmd,
+                  pg_get_expr(p.polqual, p.polrelid) as qual,
+                  pg_get_expr(p.polwithcheck, p.polrelid) as checked
+             from pg_policy p join pg_class c on c.oid = p.polrelid
+            where p.polname = '${name}'`,
+        )
+      ).rows[0] as { tbl: string; cmd: string; qual: string | null; checked: string | null };
+    const recreate = (
+      name: string,
+      d: { tbl: string; cmd: string; qual: string | null; checked: string | null },
+    ) => {
+      const cmd = { '*': 'all', r: 'select', a: 'insert', w: 'update', d: 'delete' }[d.cmd];
+      return `create policy ${name} on public.${d.tbl} as restrictive for ${cmd}${
+        d.qual ? ` using (${d.qual})` : ''
+      }${d.checked ? ` with check (${d.checked})` : ''}`;
+    };
+    for (const name of [
+      'member_identity_only_me',
+      'member_identity_writer_insert',
+      'member_identity_writer_update',
+      'notice_request_actor_insert',
+      'notice_request_actor_update',
+    ]) {
+      const d = await definition(name);
+      await sql(vault.adminUrl, `drop policy ${name} on public.${d.tbl}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(
+          new RegExp(`no rule says .*${name}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, recreate(name, d));
+      }
+    }
+    // And each still there by name, but letting through what it is there
+    // to stop: tried, as the vault's callers would be.
+    for (const [name, changed, refused] of [
+      [
+        'member_identity_writer_update',
+        `alter policy member_identity_writer_update on public.member_identity using (true)`,
+        /a viewer may change their own identity details/,
+      ],
+      [
+        'member_identity_writer_update',
+        `alter policy member_identity_writer_update on public.member_identity
+           using (app_role() is distinct from 'viewer')`,
+        /a teen may change somebody else's identity details/,
+      ],
+      [
+        'member_identity_writer_insert',
+        `alter policy member_identity_writer_insert on public.member_identity with check (true)`,
+        /a viewer may write identity details/,
+      ],
+      [
+        'notice_request_actor_insert',
+        `alter policy notice_request_actor_insert on public.notice_request with check (true)`,
+        /somebody signed in who is no owner may ask for a notice/,
+      ],
+    ] as const) {
+      const d = await definition(name);
+      await sql(vault.adminUrl, changed);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(refused);
+      } finally {
+        await sql(vault.adminUrl, `drop policy ${name} on public.${d.tbl}`);
+        await sql(vault.adminUrl, recreate(name, d));
+      }
+    }
+    // Each of their guards, off.
+    for (const [table, trigger] of [
+      ['notice_request', 'notice_request_fixed'],
+      ['household', 'household_identity_audience_guard'],
+      ['member_identity', 'member_identity_versioned'],
+    ]) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+    // Sixteen checks of the whole vault: more than the default 15 s in a
+    // container on CI (it timed out so, 5.26 review round).
+  }, 60_000);
+
   it("notices a person's details open to anybody to change, or their version unguarded (0046)", async () => {
     const rule = (
       await sql(
@@ -1432,6 +1631,8 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
   let file: string;
   let known: number;
   let vaultPrivileges: string[];
+  /** The household the backup holds. */
+  let seeded: string;
   const made: TestDatabase[] = [];
   const empty = async () => {
     const t = await createEmptyDatabase();
@@ -1447,7 +1648,7 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     if (PG_BIN) process.env.PATH = `${PG_BIN}${path.delimiter}${process.env.PATH ?? ''}`;
     vault = await createTestDatabase();
     await installQueue(vault.adminUrl);
-    await seed(vault.adminUrl);
+    seeded = await seed(vault.adminUrl);
     dir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-'));
     file = (
       await backupDatabase({
@@ -1511,6 +1712,63 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       "select count(*)::int as n from pgboss.job where name = 'restore.test'",
     );
     expect(jobs.rows[0]?.n).toBe(1);
+  }, 60_000);
+
+  it('identity details come back as they were; a pending widening does not come back, and the audience is the narrowest (5.26)', async () => {
+    const t = await empty();
+    const report = await restoreBackup(file, KEY, into(t), quiet, KEYS);
+    // The report says what the audience was, and that the widening went.
+    expect(report.noticesWithdrawn).toBe(1);
+    expect(report.identityAudiences).toEqual([{ household_id: seeded, was: 'adults' }]);
+    const { rows } = await sql(
+      t.adminUrl,
+      `select (select identity_audience from household) as audience,
+              (select count(*)::int from notice_request
+                where completed_at is null and withdrawn_at is null) as waiting,
+              (select count(*)::int from notice_request where withdrawn_at is not null) as withdrawn`,
+    );
+    expect(rows[0]).toEqual({ audience: 'owners_and_self', waiting: 0, withdrawn: 1 });
+    // Round trip: each part opens with the vault's own keys, as it was.
+    const db = createDb(createPool(t.adminUrl, 1));
+    try {
+      const parts = await db.selectFrom('member_identity').selectAll().orderBy('part').execute();
+      expect(parts.map((r) => r.part)).toEqual(['only_me', 'shared']);
+      for (const r of parts) {
+        const key = await KEYS.unwrapById(db, r.wrapped_by_scope);
+        const ref = { householdId: seeded, memberId: r.member_id, part: r.part };
+        expect(openIdentity(key, ref, r)).toEqual(IDENTITY_SEED[r.part]);
+      }
+    } finally {
+      await db.destroy();
+    }
+    // And through the restored rules, as the vault reads them: the person
+    // both parts; an owner who is somebody else, only the shared part.
+    const people = await sql(t.adminUrl, 'select id from member order by created_at, id');
+    const person = (
+      await sql(t.adminUrl, "select member_id from member_identity where part = 'only_me'")
+    ).rows[0]?.member_id as string;
+    const other = people.rows.map((r) => r.id as string).find((id) => id !== person) as string;
+    const seen = async (member: string) => {
+      const pool = new pg.Pool({ connectionString: t.appUrl, max: 1 });
+      const c = await pool.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.member_id', $2, true), set_config('app.role', 'owner', true)`,
+          [seeded, member],
+        );
+        return (
+          await c.query<{ part: string }>('select part from member_identity order by part')
+        ).rows.map((r) => r.part);
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        c.release();
+        await pool.end();
+      }
+    };
+    expect(await seen(person)).toEqual(['only_me', 'shared']);
+    expect(await seen(other)).toEqual(['shared']);
   }, 60_000);
 
   it('after a restore every link is paused and no session survives', async () => {

@@ -120,6 +120,14 @@ begin
   if to_regclass('public.document_tombstone') is not null then
     revoke update, delete on public.document_tombstone from fdv_app;
   end if;
+  -- Identity details (0050): a part is never removed but with its person,
+  -- nor a notice but with its household; and every caller's rule reads the
+  -- household's audience in effect now through the one function.
+  if to_regclass('public.member_identity') is not null then
+    revoke delete on public.member_identity from fdv_app;
+    revoke delete on public.notice_request from fdv_app;
+    grant execute on function public.identity_audience_now() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the
