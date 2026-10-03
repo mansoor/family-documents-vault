@@ -35,7 +35,10 @@ export type StepUpAction =
   | 'widen_type_visibility'
   | 'share_collection'
   | 'remove_for_good'
-  | 'manage_sign_ins';
+  | 'manage_sign_ins'
+  | 'open_identity'
+  | 'reveal_identity'
+  | 'identity_audience';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -67,10 +70,26 @@ const WHY: Record<StepUpAction, string> = {
   // with a passkey or a code from an authenticator app, never the password
   // (`FACTOR_STEP_UPS`).
   manage_sign_ins: "to manage other people's sign-ins",
+  // Showing another person's identity numbers (5.26), whoever asks — an
+  // owner (A54), or an adult or a teen the household's audience lets read
+  // them: a passkey or a code, never the password. One phished password
+  // must not open everybody's passport number.
+  open_identity: "to see another person's identity numbers",
+  // Showing one's own identity numbers (5.26): any credential, as opening
+  // an Only me document asks.
+  reveal_identity: 'to see your identity numbers',
+  // Who reads other people's identity details (5.26, A34, A54).
+  identity_audience: 'to change who can see identity details',
 };
 
-/** Said to an owner with neither two-step sign-in nor a passkey, for the powers of A54. */
-export const OWNER_NEEDS_TWO_STEP = "Turn on two-step sign-in to manage other people's sign-ins.";
+/**
+ * Said to somebody with neither two-step sign-in nor a passkey who asks for
+ * what takes one (`FACTOR_STEP_UPS`), in the words of what they asked for
+ * (the 5.26 review): "Turn on two-step sign-in to see another person's
+ * identity numbers." For the account card (`manage_sign_ins`), as before 5.26:
+ * "Turn on two-step sign-in to manage other people's sign-ins."
+ */
+export const needsTwoStep = (action: StepUpAction) => `Turn on two-step sign-in ${WHY[action]}.`;
 
 /**
  * Whether an action's step-up takes only a passkey or a code (A54): the
@@ -133,13 +152,29 @@ export class StepUpService {
    * action). Every route that calls this is listed in the API changelog.
    */
   async requireOwnerPower(p: Principal, action: StepUpAction): Promise<void> {
-    if (!factorOnly(action)) throw new Error(`${action} is not one of the owner's powers (A54)`);
+    await this.requireFactor(p, action);
+  }
+
+  /**
+   * What takes a passkey or a code (`FACTOR_STEP_UPS`), for anybody: an
+   * owner's powers (A54), and since 5.26 showing another person's identity
+   * numbers, whoever asks. Somebody with neither is refused outright, in the
+   * words of what they asked for — an owner `403 totp_required_for_owner`,
+   * anybody else `403 two_step_required` — and anybody else is asked for a
+   * passkey or a code within the last five minutes, never the password.
+   */
+  async requireFactor(p: Principal, action: StepUpAction): Promise<void> {
+    if (!factorOnly(action)) throw new Error(`${action} does not take a passkey or a code alone`);
     const [code, passkey] = await Promise.all([
       this.totp ? this.totp.isEnabled(p.accountId) : false,
       this.passkeys ? this.passkeys.has(p.accountId) : false,
     ]);
     if (!code && !passkey) {
-      throw new ApiError(403, 'totp_required_for_owner', OWNER_NEEDS_TWO_STEP);
+      throw new ApiError(
+        403,
+        p.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
+        needsTwoStep(action),
+      );
     }
     await this.require(p, action);
   }

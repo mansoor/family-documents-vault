@@ -11,7 +11,13 @@ import { credentialKey, newKdfParams, newKey, unwrapKey, wrapKey, type KdfParams
  * be pasted into another household's row and still unwrap.
  */
 
-export type ScopeKind = 'household' | 'adults' | 'member';
+/**
+ * 'identity' (5.26): the household's identity key, which wraps the data key
+ * of each person's shared identity details. Like the household and adults
+ * keys it has no member; unlike them it is minted on first use
+ * (`identityKey`), since the database never holds the master key.
+ */
+export type ScopeKind = 'household' | 'adults' | 'member' | 'identity';
 
 export interface ScopeRef {
   householdId: string;
@@ -76,6 +82,28 @@ export class ScopeKeys {
         kdf_params: params ? JSON.stringify(params) : null,
       })
       .execute();
+  }
+
+  /**
+   * The household's identity key (5.26), minted the first time anybody
+   * writes a shared part. Two first writes at once mint one key between
+   * them: the second waits on the first's row, adds nothing, and reads it.
+   */
+  async identityKey(trx: Db, householdId: string): Promise<{ id: string; key: Buffer }> {
+    const ref: ScopeRef = { householdId, kind: 'identity' };
+    const kek = await this.provider.keyEncryptionKey();
+    await trx
+      .insertInto('scope_key')
+      .values({
+        household_id: householdId,
+        kind: 'identity',
+        key_wrapped: wrapKey(newKey(), kek, binding(ref)),
+      })
+      .onConflict((oc) =>
+        oc.columns(['household_id', 'kind']).where('member_id', 'is', null).doNothing(),
+      )
+      .execute();
+    return this.unwrap(trx, ref);
   }
 
   /** The plaintext scope key, via the master key. */

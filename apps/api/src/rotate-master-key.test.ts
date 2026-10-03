@@ -9,6 +9,7 @@ import {
   deriveKey,
   EnvKeyProvider,
   KEK_PURPOSE,
+  openIdentity,
   ScopeKeys,
   unwrapKey,
   wrapKey,
@@ -53,6 +54,11 @@ const NEWER = 'a-newer-master-key-that-is-long-enough-5555555555';
 const FOREIGN = 'a-master-key-from-some-other-vault-0123456789';
 const S3 = { accessKeyId: 'AKIAEXAMPLE', secretAccessKey: 'the-bucket-secret-key' };
 const MAIL_PASSWORD = 'the household mail password';
+/** What the owner keeps of themselves (5.26): each part opens after the rotation as it was. */
+const IDENTITY = {
+  shared: { given_name: 'Rotated', ids: [{ id: 'p1', kind: 'passport', number: 'ROT-PASS-1' }] },
+  only_me: { notes: 'mine, under my own key' },
+} as const;
 const PDF = Buffer.from(
   '%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
 );
@@ -215,6 +221,18 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
 
     // A file under each of the household's scope keys.
     for (const v of ['household', 'adults', 'private'] as const) await upload(v);
+
+    // Identity details (5.26): the shared part under the identity key,
+    // minted by this first write; Only me under the owner's member key.
+    for (const [part, fields] of Object.entries(IDENTITY)) {
+      const res = await h.app.inject({
+        method: 'PUT',
+        url: `/api/v1/members/${owner.member_id}/identity`,
+        headers: h.as(owner),
+        payload: { part, version: 0, fields },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+    }
   });
   afterAll(async () => {
     await admin?.end();
@@ -473,6 +491,32 @@ describe.skipIf(!testAdminUrl())('rotating the master key', () => {
       const opened = { versions, scopes: scopes.size };
       // Household, adults and the owner's own: one file under each.
       expect(opened).toEqual({ versions: 3, scopes: 3 });
+    });
+
+    it('rotation keeps identity readable: each part opens under the new key, and not the old (5.26)', async () => {
+      const db = createDb(createPool(h.adminUrl, 1));
+      const fresh = new ScopeKeys(new EnvKeyProvider(NEW));
+      const stale = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      try {
+        const rows = await db
+          .selectFrom('member_identity')
+          .selectAll()
+          .where('member_id', '=', owner.member_id)
+          .orderBy('part')
+          .execute();
+        expect(rows.map((r) => r.part)).toEqual(['only_me', 'shared']);
+        for (const r of rows) {
+          const ref = { householdId: owner.household_id, memberId: owner.member_id, part: r.part };
+          const opened = openIdentity(await fresh.unwrapById(db, r.wrapped_by_scope), ref, r);
+          expect(opened).toMatchObject(IDENTITY[r.part]);
+          await expect(stale.unwrapById(db, r.wrapped_by_scope)).rejects.toThrow();
+        }
+        // The identity key is one of the scope keys the rotation moved.
+        const kinds = await db.selectFrom('scope_key').select('kind').execute();
+        expect(kinds.map((k) => k.kind)).toContain('identity');
+      } finally {
+        await db.destroy();
+      }
     });
 
     it('run again, it says an earlier run finished, and changes nothing', async () => {

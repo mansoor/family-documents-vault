@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { EnvKeyProvider, memberPhotoBinding, ScopeKeys, sealBytes } from '@fdv/crypto';
-import { withScope, withSystem } from '@fdv/db';
+import { createPool, withScope, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import type { ActivityLine, DocumentView, SuggestionView } from '@fdv/shared';
+import type {
+  ActivityLine,
+  DocumentView,
+  IdentityReveal,
+  IdentityView,
+  SuggestionView,
+} from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
+import { codeFor } from './auth/totp.js';
 import type { MemberView } from './household/service.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
@@ -1880,5 +1887,369 @@ describe.skipIf(!testAdminUrl())("the privacy wall: people's photos (5.17c)", ()
     expect(kept).toEqual([{ id: theirs }]);
     // Ours, asked for under their person: nothing there either.
     noPhoto(await get(owner, stranger.id, photos.child as string));
+  });
+});
+
+/**
+ * Identity details (5.26), from the other side: a second adult, an owner, a
+ * viewer and a teen each try every identity path there is on somebody
+ * else's record. An Only me part is its person's alone (A33): no owner opens,
+ * changes, clears or even notices it through the vault.
+ */
+describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)', () => {
+  let h: Harness;
+  let owner: Tokens;
+  let sam: Tokens;
+  let teen: Tokens;
+  let viewer: Tokens;
+  /** A second owner, with a password alone. */
+  let second: Tokens;
+  let secret = '';
+  const ONLY_ME = 'SAM-ONLY-ME-ZX81-quillon';
+  const LOCKER = 'SAM-LOCKER-PIN-80417';
+  const OWNER_PASSPORT = 'OWNERPASS-55210';
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+
+  const get = (who: Tokens, id: string) =>
+    h.app.inject({ url: `/api/v1/members/${id}/identity`, headers: h.as(who) });
+  const put = (who: Tokens, id: string, payload: Record<string, unknown>) =>
+    h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${id}/identity`,
+      headers: h.as(who),
+      payload,
+    });
+  const reveal = (who: Tokens, id: string, payload: Record<string, unknown>) =>
+    h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${id}/identity/reveal`,
+      headers: h.as(who),
+      payload,
+    });
+  const stepUp = (who: Tokens, payload: Record<string, unknown>) =>
+    h.app.inject({ method: 'POST', url: '/api/v1/auth/step-up', headers: h.as(who), payload });
+  const asOwner = async () =>
+    expect((await stepUp(owner, { code: codeFor(secret) })).statusCode).toBe(200);
+  const audit = async () =>
+    (await h.app.inject({ url: '/api/v1/audit?limit=100', headers: h.as(owner) })).body;
+  const setAudienceDirectly = async (to: string) => {
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      await pool.query('update household set identity_audience = $1 where id = $2', [
+        to,
+        owner.household_id,
+      ]);
+    } finally {
+      await pool.end();
+    }
+  };
+  const onlyMeRow = async () => {
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      return (
+        await pool.query<{ sealed: Buffer; version: number; updated_at: Date }>(
+          `select sealed, version, updated_at from member_identity
+            where member_id = $1 and part = 'only_me'`,
+          [sam.member_id],
+        )
+      ).rows[0];
+    } finally {
+      await pool.end();
+    }
+  };
+  /** What nobody but Sam may learn: the value, and that her Only me part has anything in it. */
+  const noTrace = (body: string) => {
+    expect(body).not.toContain(ONLY_ME);
+    expect(body).not.toContain('tax_id');
+    expect(body).not.toContain('ids.t9');
+  };
+
+  beforeAll(async () => {
+    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    owner = await h.setup();
+    sam = await h.join(owner, { name: 'Sam', email: 'sam-526@example.test', role: 'adult' });
+    teen = await h.join(owner, { name: 'Tariq', email: 'tariq-wall@example.test', role: 'teen' });
+    viewer = await h.join(owner, {
+      name: 'Accountant',
+      email: 'acc-wall@example.test',
+      role: 'viewer',
+    });
+    second = await h.join(owner, {
+      name: 'Second Owner',
+      email: 'second-wall@example.test',
+      role: 'owner',
+    });
+    const enrol = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/totp/enrol',
+      headers: h.as(owner),
+    });
+    secret = json<{ secret: string }>(enrol).secret;
+    await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/totp/confirm',
+      headers: h.as(owner),
+      payload: { code: codeFor(secret) },
+    });
+    // The owner's own record; Sam's, both parts.
+    const own = await put(owner, owner.member_id, {
+      part: 'shared',
+      version: 0,
+      fields: {
+        given_name: 'Olive',
+        ids: [{ id: 'p1', kind: 'passport', number: OWNER_PASSPORT }],
+      },
+    });
+    expect(own.statusCode, own.body).toBe(200);
+    const sams = await put(sam, sam.member_id, {
+      part: 'shared',
+      version: 0,
+      fields: { given_name: 'Sam' },
+    });
+    expect(sams.statusCode, sams.body).toBe(200);
+    const onlyMe = await put(sam, sam.member_id, {
+      part: 'only_me',
+      version: 0,
+      fields: { ids: [{ id: 't9', kind: 'tax_id', number: ONLY_ME }], notes: ONLY_ME },
+    });
+    expect(onlyMe.statusCode, onlyMe.body).toBe(200);
+  }, 120_000);
+  afterAll(() => h.close());
+
+  it("a second adult cannot read the owner's record", async () => {
+    // Exactly as for nobody at all.
+    const nobody = await get(sam, '00000000-0000-4000-8000-000000000000');
+    expect(nobody.statusCode).toBe(404);
+    const { code, message } = json<{ error: { code: string; message: string } }>(nobody).error;
+    const said = { code, message };
+    for (const res of [
+      await get(sam, owner.member_id),
+      await put(sam, owner.member_id, { part: 'shared', version: 1, fields: {} }),
+      await put(sam, owner.member_id, { part: 'only_me', version: 0, fields: {} }),
+      await reveal(sam, owner.member_id, { keys: ['ids.p1'] }),
+      await reveal(sam, owner.member_id, { part: 'only_me', keys: ['ids.p1'] }),
+    ]) {
+      expect(res.statusCode).toBe(404);
+      expect(json<{ error: { code: string; message: string } }>(res).error).toMatchObject(said);
+      expect(res.body).not.toContain(OWNER_PASSPORT);
+      expect(res.body).not.toContain('Olive');
+    }
+    // Asked to confirm it is them first, all the same.
+    expect((await stepUp(sam, { password: 'another correct horse' })).statusCode).toBe(200);
+    expect((await reveal(sam, owner.member_id, { keys: ['ids.p1'] })).statusCode).toBe(404);
+    // Nothing was looked at, shown or changed of the owner's by Sam.
+    expect(await audit()).not.toMatch(/Sam (looked at|showed|changed) [^"]*Owner/);
+  });
+
+  it("no API path opens an adult's Only me part for an owner", async () => {
+    await asOwner();
+    const seen = await get(owner, sam.member_id);
+    expect(seen.statusCode).toBe(200);
+    const view = json<IdentityView>(seen);
+    expect(view.only_me).toBeNull();
+    expect(view.versions.only_me).toBeNull();
+    expect(view.can_edit).toEqual({ shared: true, only_me: false });
+    noTrace(seen.body);
+    // Not shown, not by any key, whatever the owner has proved.
+    for (const keys of [['ids.t9'], ['notes'], ['custom.t9']]) {
+      const asked = await reveal(owner, sam.member_id, { part: 'only_me', keys });
+      expect(asked.statusCode).toBe(404);
+      noTrace(asked.body);
+      const shared = await reveal(owner, sam.member_id, { keys });
+      expect(json<IdentityReveal>(shared).values).toEqual({});
+      noTrace(shared.body);
+    }
+    // Nor under any wider audience: it is never an audience's.
+    for (const to of ['adults', 'family']) {
+      await setAudienceDirectly(to);
+      noTrace((await get(owner, sam.member_id)).body);
+      noTrace((await get(teen, sam.member_id)).body);
+    }
+    await setAudienceDirectly('owners_and_self');
+    // Nor in the log, the members list or the household's audience.
+    for (const url of [
+      '/api/v1/audit?limit=100',
+      '/api/v1/members',
+      '/api/v1/household/identity-audience',
+    ]) {
+      noTrace((await h.app.inject({ url, headers: h.as(owner) })).body);
+    }
+  });
+
+  it("an owner's PUT never changes or clears an adult's Only me part", async () => {
+    const before = await onlyMeRow();
+    await asOwner();
+    // Every way an owner could write: the Only me part outright, at any
+    // version; the shared part, emptied, or with the same fields as Only me.
+    for (const version of [0, 1, 2]) {
+      const r = await put(owner, sam.member_id, { part: 'only_me', version, fields: {} });
+      expect(r.statusCode).toBe(404);
+    }
+    const shared = json<IdentityView>(await get(owner, sam.member_id)).versions.shared;
+    const emptied = await put(owner, sam.member_id, {
+      part: 'shared',
+      version: shared,
+      fields: {},
+    });
+    expect(emptied.statusCode).toBe(200);
+    const copied = await put(owner, sam.member_id, {
+      part: 'shared',
+      version: shared + 1,
+      fields: { ids: [{ id: 't9', kind: 'tax_id', number: 'OWNER-GUESS' }], notes: 'owner notes' },
+    });
+    expect(copied.statusCode).toBe(200);
+    // Sam's Only me part is byte for byte as she left it, and opens to her.
+    expect(await onlyMeRow()).toEqual(before);
+    expect((await stepUp(sam, { password: 'another correct horse' })).statusCode).toBe(200);
+    const mine = await reveal(sam, sam.member_id, { part: 'only_me', keys: ['ids.t9'] });
+    expect(json<IdentityReveal>(mine).values).toEqual({ 'ids.t9': ONLY_ME });
+    expect(json<IdentityView>(await get(sam, sam.member_id)).only_me?.fields.notes).toBe(ONLY_ME);
+  });
+
+  it('a change to the Only me part moves no version another person can see', async () => {
+    await asOwner();
+    // The owner's look, and the teen's once the family is the audience,
+    // each made once already: no new line for either of them below.
+    await get(owner, sam.member_id);
+    await setAudienceDirectly('family');
+    await get(teen, sam.member_id);
+    const ownerBefore = (await get(owner, sam.member_id)).body;
+    const teenBefore = (await get(teen, sam.member_id)).body;
+    const auditBefore = await audit();
+    const v = json<IdentityView>(await get(sam, sam.member_id)).versions;
+    const changed = await put(sam, sam.member_id, {
+      part: 'only_me',
+      version: v.only_me,
+      fields: { ids: [{ id: 't9', kind: 'tax_id', number: ONLY_ME }], notes: 'moved on' },
+    });
+    expect(json<IdentityView>(changed).versions).toEqual({
+      shared: v.shared,
+      only_me: (v.only_me as number) + 1,
+    });
+    // What the owner and the teen are shown, and the owner's log, are
+    // exactly what they were.
+    expect((await get(owner, sam.member_id)).body).toBe(ownerBefore);
+    expect((await get(teen, sam.member_id)).body).toBe(teenBefore);
+    expect(await audit()).toBe(auditBefore);
+    await setAudienceDirectly('owners_and_self');
+  });
+
+  it("an owner never unmasks an adult's hidden field by writing it unhidden: not with a password alone, nor without a fresh code (the 5.26 review)", async () => {
+    // Sam keeps a hidden field in her shared part.
+    const mine = json<IdentityView>(await get(sam, sam.member_id));
+    const kept = await put(sam, sam.member_id, {
+      part: 'shared',
+      version: mine.versions.shared,
+      fields: {
+        ...mine.shared.fields,
+        custom: [{ id: 'c1', label: 'Locker', value: LOCKER, hidden: true }],
+      },
+    });
+    expect(kept.statusCode, kept.body).toBe(200);
+    // Each owner first asks to see it, and is refused...
+    const stale = async () => {
+      const pool = createPool(h.adminUrl, 1);
+      try {
+        await pool.query(
+          `update session set factor_verified_at = now() - interval '10 minutes',
+                  verified_at = now() - interval '10 minutes'
+            where household_id = $1`,
+          [owner.household_id],
+        );
+      } finally {
+        await pool.end();
+      }
+    };
+    await stale();
+    expect(
+      json<{ error: { code: string } }>(
+        await reveal(second, sam.member_id, { keys: ['custom.c1'] }),
+      ).error.code,
+    ).toBe('totp_required_for_owner');
+    expect(
+      json<{ error: { code: string } }>(await reveal(owner, sam.member_id, { keys: ['custom.c1'] }))
+        .error.code,
+    ).toBe('step_up_required');
+    // ...then writes it back unhidden, leaving out the value it never saw.
+    for (const who of [second, owner]) {
+      const shown = json<IdentityView>(await get(who, sam.member_id));
+      expect(shown.shared.masked).toContain('custom.c1');
+      const unhidden = await put(who, sam.member_id, {
+        part: 'shared',
+        version: shown.versions.shared,
+        fields: { ...shown.shared.fields, custom: [{ id: 'c1', label: 'Locker', hidden: false }] },
+      });
+      expect(unhidden.statusCode, unhidden.body).toBe(200);
+      // Still hidden, still masked, and nowhere in what came back.
+      expect(unhidden.body).not.toContain(LOCKER);
+      expect(json<IdentityView>(unhidden).shared.masked).toContain('custom.c1');
+      const after = await get(who, sam.member_id);
+      expect(after.body).not.toContain(LOCKER);
+      expect(json<IdentityView>(after).shared.fields.custom).toEqual([
+        { id: 'c1', label: 'Locker', hidden: true },
+      ]);
+    }
+    // No owner was shown it, and no line says one was; Sam's is as she left it.
+    expect(await audit()).not.toMatch(/Owner showed/);
+    expect((await stepUp(sam, { password: 'another correct horse' })).statusCode).toBe(200);
+    expect(
+      json<IdentityReveal>(await reveal(sam, sam.member_id, { keys: ['custom.c1'] })).values,
+    ).toEqual({ 'custom.c1': LOCKER });
+  });
+
+  it('viewers get 404', async () => {
+    const ids = [owner.member_id, sam.member_id, teen.member_id];
+    for (const to of ['owners_and_self', 'adults', 'family']) {
+      await setAudienceDirectly(to);
+      for (const id of ids) {
+        expect((await get(viewer, id)).statusCode, `${to} ${id}`).toBe(404);
+        const written = await put(viewer, id, { part: 'shared', version: 1, fields: {} });
+        expect(written.statusCode).toBe(404);
+        expect((await reveal(viewer, id, { keys: ['ids.p1'] })).statusCode).toBe(404);
+      }
+    }
+    await setAudienceDirectly('owners_and_self');
+    // Their own: read, never written.
+    expect((await get(viewer, viewer.member_id)).statusCode).toBe(200);
+    const own = await put(viewer, viewer.member_id, {
+      part: 'shared',
+      version: 0,
+      fields: { given_name: 'V' },
+    });
+    expect(own.statusCode).toBe(403);
+  });
+
+  it('a teen reads their own record', async () => {
+    const shared = await put(teen, teen.member_id, {
+      part: 'shared',
+      version: 0,
+      fields: {
+        given_name: 'Tariq',
+        ids: [{ id: 's1', kind: 'other', label: 'School ID', number: 'T-100' }],
+      },
+    });
+    expect(shared.statusCode, shared.body).toBe(200);
+    const onlyMe = await put(teen, teen.member_id, {
+      part: 'only_me',
+      version: 0,
+      fields: { notes: 'diary' },
+    });
+    expect(onlyMe.statusCode, onlyMe.body).toBe(200);
+    const own = json<IdentityView>(await get(teen, teen.member_id));
+    expect(own).toMatchObject({
+      can_edit: { shared: true, only_me: true },
+      versions: { shared: 1, only_me: 1 },
+      shared: { fields: { given_name: 'Tariq' }, masked: ['ids.s1'] },
+      only_me: { fields: { notes: 'diary' } },
+    });
+    expect((await stepUp(teen, { password: 'another correct horse' })).statusCode).toBe(200);
+    const shown = await reveal(teen, teen.member_id, { keys: ['ids.s1'] });
+    expect(json<IdentityReveal>(shown).values).toEqual({ 'ids.s1': 'T-100' });
+    // And nobody else's, until the family is the audience; then the shared part only.
+    expect((await get(teen, sam.member_id)).statusCode).toBe(404);
+    await setAudienceDirectly('family');
+    const sams = json<IdentityView>(await get(teen, sam.member_id));
+    expect(sams).toMatchObject({ only_me: null, can_edit: { shared: false, only_me: false } });
+    await setAudienceDirectly('owners_and_self');
   });
 });

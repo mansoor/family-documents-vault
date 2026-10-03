@@ -1,7 +1,9 @@
 import {
   can,
+  canEditIdentity,
   canSee,
   canSeeCollection,
+  canSeeIdentity,
   CATEGORY_LABELS,
   checkCaptureMetadata,
   checkExtra,
@@ -17,8 +19,19 @@ import {
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
+  IDENTITY_AUDIENCES,
+  IDENTITY_EDIT_REFUSAL,
+  IDENTITY_NOTICE_HOURS,
+  identityAudienceRank,
+  identityChanges,
+  identityFilled,
+  identityTooLong,
+  IDENTITY_TOO_LONG,
   inCollectionAudience,
   incomingFileName,
+  maskIdentity,
+  mergeIdentityWrite,
+  revealIdentity,
   libraryHasName,
   missingFields,
   nextReminder,
@@ -47,6 +60,11 @@ import {
   type DocumentView,
   type IncomingFileView,
   type UploadRequestView,
+  type IdentityAudience,
+  type IdentityAudienceView,
+  type IdentityFields,
+  type IdentityPart,
+  type IdentityPartView,
   type IssuerSuggestions,
   type MemberAccount,
   type OfflineGrant,
@@ -129,6 +147,23 @@ export interface FakeVaultState {
    */
   memberAccounts: Map<string, MemberAccount>;
   ownerTwoStep: boolean;
+  /**
+   * People's identity details (5.26), by member id: each part's fields, as
+   * the real vault keeps them sealed, and its version. The fake signs in as
+   * `fake-member`; another person's Only me part is not there for it.
+   */
+  identities: Map<
+    string,
+    Partial<Record<IdentityPart, { fields: IdentityFields; version: number; updated_at: string }>>
+  >;
+  /** Who reads other people's shared identity details (A34), and a widening waiting its 72 hours. */
+  identityAudience: IdentityAudience;
+  /**
+   * People whose sign-in is switched off, by member id: they could not be
+   * told of a wider audience, so it is refused while there are any (5.26).
+   */
+  signInsOff: string[];
+  identityPending: IdentityAudienceView['pending'];
   /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
   photosOnTheirWay: Map<string, string>;
   /**
@@ -458,6 +493,10 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     photosOnTheirWay: new Map(),
     memberAccounts: new Map(),
     ownerTwoStep: false,
+    identities: new Map(),
+    identityAudience: 'owners_and_self',
+    identityPending: null,
+    signInsOff: [],
     role: 'owner',
     collections: [],
     uploadRequests: [],
@@ -693,6 +732,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           member_edit: true,
           // Asking somebody to send documents, and looking before filing (5.23).
           upload_requests: true,
+          // People's identity details, and who sees them (5.26).
+          member_identity: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -2144,6 +2185,145 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     }
     // A person's details (5.25), changed as the caller saw them: If-Match on
     // their version, and an older one is a conflict, with them as they are.
+    // People's identity details (5.26), as the real vault answers them.
+    /**
+     * The audience in effect: a widening whose 72 hours are up reads from
+     * then, whichever request asks first (the 5.26 review).
+     */
+    const effectiveAudience = (): IdentityAudience => {
+      const pending = state.identityPending;
+      if (pending && Date.parse(pending.notice_until) <= Date.now()) {
+        state.identityAudience = pending.to;
+        state.identityPending = null;
+      }
+      return state.identityAudience;
+    };
+    /** What takes a passkey or a code, refused to whoever has neither, in its own words. */
+    const needsTwoStep = (why: string) =>
+      fail(
+        403,
+        state.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
+        `Turn on two-step sign-in ${why}.`,
+      );
+    if (path === '/api/v1/household/identity-audience') {
+      const s = session();
+      if (!('id' in s)) return s;
+      effectiveAudience();
+      const view = (): IdentityAudienceView => ({
+        audience: state.identityAudience,
+        pending: state.identityPending,
+        can_change: can(state.role, 'identity.audience'),
+      });
+      if (init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      if (!can(state.role, 'identity.audience')) {
+        return fail(403, 'forbidden', refusalFor('identity.audience'));
+      }
+      const to = (body as { audience?: string }).audience as IdentityAudience;
+      if (!IDENTITY_AUDIENCES.includes(to)) {
+        return fail(422, 'validation_failed', 'Choose who can see identity details.');
+      }
+      if (!state.ownerTwoStep) return needsTwoStep('to change who can see identity details');
+      if (identityAudienceRank(to) <= identityAudienceRank(state.identityAudience)) {
+        state.identityAudience = to;
+        state.identityPending = null;
+      } else if (state.identityPending?.to !== to) {
+        // Everybody with a sign-in is told: anybody who cannot sign in holds it back.
+        const off = state.members.filter((m) => state.signInsOff.includes(m.id));
+        if (off.length > 0) {
+          return fail(
+            409,
+            'member_cannot_be_told',
+            `${off.map((m) => m.display_name).join(', ')} cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once everybody can sign in.`,
+          );
+        }
+        const now = Date.now();
+        state.identityPending = {
+          to,
+          requested_at: new Date(now).toISOString(),
+          notice_until: new Date(now + IDENTITY_NOTICE_HOURS * 3_600_000).toISOString(),
+        };
+      }
+      return ok(view());
+    }
+    const identityAt = /^\/api\/v1\/members\/([^/]+)\/identity(\/reveal)?$/.exec(path);
+    if (identityAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const id = decodeURIComponent(identityAt[1] as string);
+      const me = { role: state.role, memberId: 'fake-member' };
+      const self = id === me.memberId;
+      if (!state.members.some((m) => m.id === id)) {
+        return fail(404, 'not_found', 'That page does not exist.');
+      }
+      const audience = effectiveAudience();
+      if (!canSeeIdentity(me, { id }, audience)) {
+        return fail(404, 'not_found', 'That page does not exist.');
+      }
+      const record = state.identities.get(id) ?? {};
+      state.identities.set(id, record);
+      const partView = (part: IdentityPart): IdentityPartView => {
+        const kept = record[part];
+        const masked = maskIdentity(kept?.fields ?? {});
+        return {
+          fields: masked.fields,
+          masked: masked.masked,
+          filled: identityFilled(kept?.fields ?? {}),
+          version: kept?.version ?? 0,
+          updated_at: kept?.updated_at ?? null,
+        };
+      };
+      const view = () => ({
+        member_id: id,
+        audience,
+        can_edit: {
+          shared: canEditIdentity(me, { id }, 'shared'),
+          only_me: canEditIdentity(me, { id }, 'only_me'),
+        },
+        versions: {
+          shared: record.shared?.version ?? 0,
+          only_me: self ? (record.only_me?.version ?? 0) : null,
+        },
+        shared: partView('shared'),
+        only_me: self ? partView('only_me') : null,
+      });
+      if (identityAt[2] !== undefined) {
+        if (init.method !== 'POST') return fail(404, 'not_found', 'Not here.');
+        const b = body as { part?: IdentityPart; keys?: string[] };
+        const part = b.part ?? 'shared';
+        if (part === 'only_me' && !self) return fail(404, 'not_found', 'That page does not exist.');
+        // Somebody else's numbers take a passkey or a code, whoever asks.
+        if (!self && !state.ownerTwoStep) {
+          return needsTwoStep("to see another person's identity numbers");
+        }
+        return ok({ part, values: revealIdentity(record[part]?.fields ?? {}, b.keys ?? []) });
+      }
+      if (init.method === 'GET') return ok(view());
+      if (init.method !== 'PUT') return fail(404, 'not_found', 'Not here.');
+      const b = body as { part?: IdentityPart; version?: number; fields?: IdentityFields };
+      const part = b.part;
+      if (part !== 'shared' && part !== 'only_me') {
+        return fail(422, 'validation_failed', 'Say which part.');
+      }
+      if (part === 'only_me' && !self) return fail(404, 'not_found', 'That page does not exist.');
+      if (!canEditIdentity(me, { id }, part)) return fail(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
+      const kept = record[part];
+      const version = kept?.version ?? 0;
+      if (b.version !== version) {
+        return fail(
+          409,
+          'conflict',
+          'Someone else changed these details. Reload and try again.',
+          JSON.stringify({ part, version }),
+        );
+      }
+      const next = mergeIdentityWrite(kept?.fields ?? {}, b.fields ?? {}, () => true);
+      if (identityChanges(kept?.fields ?? {}, next).length > 0) {
+        if (identityTooLong(next)) return fail(422, 'validation_failed', IDENTITY_TOO_LONG);
+        record[part] = { fields: next, version: version + 1, updated_at: new Date().toISOString() };
+      }
+      return ok(view());
+    }
     const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
     if (memberAt) {
       const s = session();

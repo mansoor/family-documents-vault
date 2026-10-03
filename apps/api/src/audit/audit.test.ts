@@ -257,6 +257,47 @@ describe('who reads each line', () => {
     }
   });
 
+  it("a line about somebody's identity details is for the owners, the person and whoever did it; an Only me one the person's alone (5.26)", () => {
+    const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
+    const actor = { ...adult, accountId: randomUUID() };
+    const person = { role: 'adult' as const, memberId: randomUUID(), accountId: randomUUID() };
+    const line = (action: string, detail: unknown) => ({
+      action,
+      object_type: 'member',
+      object_id: person.memberId,
+      document_visibility: null,
+      document_owner: null,
+      actor_account_id: actor.accountId,
+      detail,
+    });
+    for (const action of ['identity.viewed', 'identity.revealed', 'identity.updated']) {
+      const shared = line(action, { part: 'shared', keys: ['ids.p1'] });
+      expect(
+        [owner, person, actor, adult, teen].map((r) => shownTo(r, shared)),
+        action,
+      ).toEqual([true, true, true, false, false]);
+      // An Only me part's, or a part never heard of: the person alone.
+      for (const part of ['only_me', 'secret']) {
+        expect(
+          [owner, person, actor, adult, teen].map((r) => shownTo(r, line(action, { part }))),
+          `${action} ${part}`,
+        ).toEqual([false, true, false, false, false]);
+      }
+    }
+    // Who sees them at all: everybody told of it, which is everybody with a
+    // sign-in (the 5.26 review; a viewer reads no log).
+    const changed = {
+      ...line('identity.audience_changed', { to: 'adults' }),
+      object_type: 'household',
+    };
+    expect([owner, person, adult, teen].map((r) => shownTo(r, changed))).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
   it("a document's line follows the document, and with no row to go by is nobody's", () => {
     const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
     const doc = (visibility: 'household' | 'adults' | 'private' | null, by: string | null) => ({

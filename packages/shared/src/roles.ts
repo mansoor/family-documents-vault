@@ -101,7 +101,13 @@ export type Capability =
    * Remove a document in the Trash for good (5.24): one they filed or that
    * is theirs at once, anybody else's 24 hours after its filer was told.
    */
-  | 'document.purge';
+  | 'document.purge'
+  /**
+   * Choose who reads other people's shared identity details (5.26, A34):
+   * wider only after 72 hours' notice, narrower at once. Whose record each
+   * reader sees is `canSeeIdentity`.
+   */
+  | 'identity.audience';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -248,6 +254,13 @@ const MATRIX: Record<Capability, Rule> = {
     roles: ['owner'],
     refusal: 'Only an owner can remove a document for good.',
   },
+  'identity.audience': {
+    // Every adult's passport number in front of every other adult, or the
+    // teens: the owners' decision, made with two-step sign-in (A54), and
+    // never at once when it widens (A34).
+    roles: ['owner'],
+    refusal: 'Only an owner can change who sees identity details.',
+  },
 };
 
 export const CAPABILITIES = Object.keys(MATRIX) as Capability[];
@@ -322,6 +335,79 @@ export function canSee(
       return false;
   }
 }
+
+/**
+ * Whether somebody of this role reads other people's shared identity
+ * details under the household's audience (A34): owners always; adults once
+ * it is `adults` or `family`; teens once it is `family`; viewers, and any
+ * role or audience never heard of, never. The database's own copy is
+ * identity_audience_sees (0050); visibility-rule.test.ts holds them equal.
+ */
+export function identityAudienceSees(audience: string, role: Role): boolean {
+  switch (role) {
+    case 'owner':
+      return audience === 'owners_and_self' || audience === 'adults' || audience === 'family';
+    case 'adult':
+      return audience === 'adults' || audience === 'family';
+    case 'teen':
+      return audience === 'family';
+    default:
+      return false;
+  }
+}
+
+/**
+ * Whether someone may see a person's identity details (5.26), under the
+ * household's audience — a part of them, the shared one unless said:
+ *
+ *  - the person themselves: always, both parts;
+ *  - owners: every shared part, and never another person's Only me (A33);
+ *  - adults, once the audience is `adults`; teens, once it is `family`:
+ *    every shared part;
+ *  - viewers (and guests, 5.34): only their own record.
+ *
+ * The person themselves is the only reader of an Only me part, whoever
+ * else asks. The API asks this of a record before it says the record is
+ * there; anybody it refuses is told there is nothing (404).
+ */
+export function canSeeIdentity(
+  viewer: { role: Role; memberId: string | null },
+  subject: { id: string },
+  audience: string,
+  part: 'shared' | 'only_me' = 'shared',
+): boolean {
+  if (viewer.memberId !== null && viewer.memberId === subject.id) return true;
+  if (part !== 'shared') return false;
+  return identityAudienceSees(audience, viewer.role);
+}
+
+/**
+ * Whether someone may change a part of a person's identity details (5.26):
+ * the person, both parts of their own — an owner, an adult or a teen; a
+ * viewer changes nothing — and an owner, the shared part of anybody's.
+ * Nobody else, and nobody another person's Only me part. The database's
+ * own copy is member_identity's writer rule (0050).
+ */
+export function canEditIdentity(
+  viewer: { role: Role; memberId: string | null },
+  subject: { id: string },
+  part: 'shared' | 'only_me',
+): boolean {
+  const self = viewer.memberId !== null && viewer.memberId === subject.id;
+  switch (viewer.role) {
+    case 'owner':
+      return self || part === 'shared';
+    case 'adult':
+    case 'teen':
+      return self;
+    default:
+      return false;
+  }
+}
+
+/** Said to whoever may see a person's identity details and not change them (5.26). */
+export const IDENTITY_EDIT_REFUSAL =
+  'Only the person themselves, or an owner, can change these identity details.';
 
 /** Said to whoever tries to move somebody else's document into, or out of, Only me. */
 export const PRIVATE_OWNER_ONLY =

@@ -26,6 +26,10 @@ export type DatePrecision = 'day' | 'month' | 'year';
 export type CollectionAudience = 'everyone' | 'teens' | 'adults' | 'only_me';
 /** Where a version's page previews are (0027). */
 export type PreviewState = 'none' | 'queued' | 'ready' | 'unsupported' | 'failed';
+/** Who reads other people's shared identity details (0050, A34). */
+export type IdentityAudience = 'owners_and_self' | 'adults' | 'family';
+/** The two parts of a person's identity details (0050). */
+export type IdentityPart = 'shared' | 'only_me';
 /** Where a person's photo is (0040): on its way, made, or refused. */
 export type MemberPhotoState = 'processing' | 'ready' | 'failed';
 /** What an attribute holds (0031). */
@@ -48,6 +52,13 @@ export interface Schema {
     timezone: Generated<string>;
     created_at: GeneratedTimestamp;
     deleted_at: Timestamp | null;
+    /**
+     * Who reads other people's shared identity details (0050, A34): the
+     * owners and each person, all adults too, or the teens as well. Set
+     * narrower at once; wider only once its notice has run out
+     * (`notice_request`), which the database holds to.
+     */
+    identity_audience: Generated<IdentityAudience>;
   };
 
   member: {
@@ -69,6 +80,45 @@ export interface Schema {
     /** When those last changed, and by whom: null until they do (0046). */
     updated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
     updated_by: Generated<string | null>;
+  };
+
+  /**
+   * A person's identity details (0050): a shared part and an Only me part,
+   * each sealed under a fresh data key bound to its household, person and
+   * part, the key wrapped under the identity key (shared) or the person's
+   * member key (Only me). `filled` names fields, never values. The version,
+   * when and by whom are the database's to keep. Only me rows are the
+   * person's alone, whoever else asks.
+   */
+  member_identity: {
+    household_id: string;
+    member_id: string;
+    part: IdentityPart;
+    sealed: Buffer;
+    dek_wrapped: Buffer;
+    wrapped_by_scope: string;
+    filled: ColumnType<string[], string[] | undefined, string[]>;
+    version: Generated<number>;
+    updated_at: GeneratedTimestamp;
+    updated_by: Generated<string | null>;
+  };
+
+  /**
+   * Something done only after the people it touches were told (0050): today
+   * a wider identity audience, whose `subject` is the audience it widens to.
+   * Asked now, ending once: completed once `notice_until` has passed, or
+   * withdrawn. Never removed.
+   */
+  notice_request: {
+    id: Generated<string>;
+    household_id: string;
+    kind: 'identity_audience';
+    subject: string;
+    requested_by: string | null;
+    requested_at: GeneratedTimestamp;
+    notice_until: Timestamp;
+    completed_at: Timestamp | null;
+    withdrawn_at: Timestamp | null;
   };
 
   /**
@@ -575,7 +625,8 @@ export interface Schema {
   scope_key: {
     id: Generated<string>;
     household_id: string;
-    kind: 'household' | 'adults' | 'member';
+    /** 'identity' (0049): what wraps the data keys of people's shared identity details. */
+    kind: 'household' | 'adults' | 'member' | 'identity';
     member_id: string | null;
     key_wrapped: Buffer;
     key_wrapped_cred: Buffer | null;

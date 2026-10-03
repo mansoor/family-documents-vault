@@ -6,6 +6,30 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.29] - 2026-10-03 — iteration 5.26
+
+Identity records, sealed. This release adds the server side; the screens come in the next one.
+
+### Added
+
+- **Each person's identity details**, kept sealed in the vault: names, birth, nationalities, government IDs (each with a number, issuer, dates and an optional link to its document), emails, phones, addresses, work, custom fields and notes.
+  - Each record has a shared part and an **Only me** part.
+  - Nobody else in the family can open your Only me part, owners included.
+  - ID numbers and hidden custom fields stay masked until someone reveals them.
+- **Who may see them.** By default, owners see everyone's shared details, and everyone sees their own. Owners can let all adults, or everyone in the family, see shared details too. Viewers only ever see their own.
+- **Revealing a number.** Revealing your own numbers asks you to confirm it's you. Revealing someone else's needs a passkey or an authenticator code. Each reveal is noted in the activity log, without the values. The person sees a line when someone else reveals their numbers.
+
+### Changed
+
+- Letting more people see identity details waits 72 hours. Everyone with a sign-in is told, in the app and by email if the vault sends mail, and can mark anything Only me first. Making the audience narrower takes effect at once.
+- A widening is refused while someone's sign-in is switched off, because they could not be told.
+- After a restore, the identity audience goes back to owners and each person, and any widening that was waiting is withdrawn.
+
+### Security
+
+- Each part is sealed with its own key. The Only me part is sealed under that person's own key, and the database itself refuses to show it to anyone else.
+- Whoever runs your vault's server holds the master key, and so could open these details. The vault says so where it matters.
+
 ## [0.5.28] - 2026-10-03 — iteration 5.22
 
 Ask for documents, and the page that sends them.

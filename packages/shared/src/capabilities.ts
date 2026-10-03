@@ -146,6 +146,13 @@ export interface CapabilityFeatures {
    * adults. Absent from older vaults.
    */
   upload_requests?: boolean;
+  /**
+   * People's identity details, sealed (5.26): GET, PUT /members/{id}/identity
+   * and POST …/identity/reveal, a shared part and an Only me part each with
+   * its own version; and GET, PUT /household/identity-audience (A34), wider
+   * only after 72 hours' notice. Absent from older vaults, which keep none.
+   */
+  member_identity?: boolean;
 }
 
 export interface CapabilityLimits {
