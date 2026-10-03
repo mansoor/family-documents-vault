@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.27] - 2026-10-03 — iteration 5.23
+
+Files sent to you: look before they are filed.
+
+### Added
+
+- **Files sent to you.** What somebody outside the family sends through a request link now waits in its own inbox for whoever reviews that request. You can look at its pages, then file it as a new document or as a new version of one, or refuse it. The form is filled from the request's hints.
+- A file the vault could not scan for viruses says so: "Not scanned for viruses".
+- Reviewers are told how many files are waiting, by push and by email, once their pages are ready. The message says how many and nothing else.
+- A version's history says it was "Sent through a request link", and names the request.
+- If whoever asked for the files can no longer review them, the waiting files go to the owners, with a line in the activity log.
+
+### Changed
+
+- A file left waiting for 30 days is removed. So is what is left of a file once it has been filed or refused.
+- Refusing a file removes its name, the sender's note and its contents. The dialog says exactly what goes and what stays.
+- Removing a document for good also removes the file it was filed from.
+
+### Security
+
+- The database lets a reviewer file a waiting file only once, only as themselves, and only as the version they are making of it. Files moved to the owners are the owners' alone.
+- A restore drops waiting files whose contents have gone since the backup. It does so only where the files are clearly kept, and the report says how many.
+
 ## [0.5.26] - 2026-10-03 — iteration 5.25
 
 Change a person's details; the owner's view of a sign-in.
