@@ -6,6 +6,31 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.30] - 2026-10-03 — iteration 5.27
+
+Identity details on the web, and in the export.
+
+### Added
+
+- **Identity details** on each person's profile, between About and their documents. ID numbers and hidden fields stay as dots until you press Show, or Copy. Both ask you to confirm it's you, and each is noted in the activity log. Another person's Only me details don't appear at all.
+- **Edit identity details.** You can mark any of your own details Only me; nobody else in the family can open those. Owners can edit everyone's shared details. If someone else saved a change first, you are told and shown theirs.
+- **Fill from documents** suggests numbers, dates and issuers from the person's identity documents you can see. Nothing is filled until you press Use this, and a number from an Only me document goes into your Only me details.
+- **"Add their details now"** when adding someone.
+- **Settings → Family → Who can see identity details**, for owners. Letting more people see them waits 72 hours. Everyone is told, and a banner on Home shows the date.
+- **The export** now holds each identity record you may read, as JSON and in its page, and the photos of the people you may see. Your own record is complete. Other people's ID numbers stay hidden in it, and their Only me details are never in it.
+
+### Changed
+
+- Exports end early, so they can't be downloaded any more, in three cases:
+  - after a restore;
+  - when someone's role changes so they see fewer people's identity details;
+  - when a person takes details out of what others can see.
+- After a restore, the screen says who can see identity details now.
+
+### Fixed
+
+- Some tests that timed out under load have more time.
+
 ## [0.5.29] - 2026-10-03 — iteration 5.26
 
 Identity records, sealed. This release adds the server side; the screens come in the next one.
