@@ -233,20 +233,62 @@ export function identityMaskedKeys(f: IdentityFields): string[] {
 }
 
 /**
- * A part as a reader is shown it: every masked value taken out (null), and
- * the keys of what was. Revealing one is a request of its own, asked to
- * confirm who is asking, and audited by key.
+ * A part as a reader is shown it: every masked value left out — an ID's
+ * `number`, a hidden custom field's `value`, not there at all — and the keys
+ * of what was, in `masked`. Left out, because a write left out keeps it
+ * (`mergeIdentityWrite`): a form that sends back what it was shown keeps
+ * every value it was never shown, where a null would clear it (the 5.26
+ * review). Revealing one is a request of its own, asked to confirm who is
+ * asking, and audited by key.
  */
 export function maskIdentity(f: IdentityFields): { fields: IdentityFields; masked: string[] } {
   const masked = identityMaskedKeys(f);
   const fields: IdentityFields = { ...f };
-  if (f.ids) fields.ids = f.ids.map((i) => (blank(i.number) ? { ...i } : { ...i, number: null }));
+  if (f.ids) {
+    fields.ids = f.ids.map((i) => {
+      const shown = { ...i };
+      if (!blank(i.number)) delete shown.number;
+      return shown;
+    });
+  }
   if (f.custom) {
-    fields.custom = f.custom.map((c) =>
-      c.hidden === true && !blank(c.value) ? { ...c, value: null } : { ...c },
-    );
+    fields.custom = f.custom.map((c) => {
+      const shown = { ...c };
+      if (c.hidden === true && !blank(c.value)) delete shown.value;
+      return shown;
+    });
   }
   return { fields, masked };
+}
+
+/**
+ * The most a part may hold, as the JSON that is sealed, in bytes (0050's
+ * `member_identity_sealed_size` less the seal's 28): more is refused as too
+ * long (422), before anything is sealed.
+ */
+export const IDENTITY_MAX_BYTES = 131_072;
+
+/** Said to whoever writes a part bigger than that. */
+export const IDENTITY_TOO_LONG = 'These details are too long to keep. Shorten some of them.';
+
+/** Whether a part, as it would be sealed — its JSON, in UTF-8 — is too big to keep. */
+export function identityTooLong(f: IdentityFields): boolean {
+  return utf8Length(JSON.stringify(f)) > IDENTITY_MAX_BYTES;
+}
+
+/** A string's length in UTF-8 bytes. JSON.stringify leaves no lone surrogate. */
+function utf8Length(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) {
+      n += 4;
+      i += 1;
+    } else n += 3;
+  }
+  return n;
 }
 
 /** The masked values asked for, by key; a key that names nothing masked is left out. */
@@ -311,6 +353,10 @@ export function identityChanges(before: IdentityFields, after: IdentityFields): 
  *  - a masked value the write leaves out — an ID's `number`, a hidden
  *    custom field's `value`, on an entry of the same id — is kept; one sent
  *    as null or blank is cleared;
+ *  - and a hidden custom field whose value the write leaves out stays
+ *    hidden, whatever the write says (the 5.26 review): unhiding it would
+ *    hand the writer a value they were never shown. Unhiding takes the value
+ *    itself, which only a reveal gives;
  *  - an ID's document, where the writer may not see it (`mayLink` says no),
  *    is kept whatever the write says; one they may see is kept when left
  *    out, and cleared by null.
@@ -338,7 +384,9 @@ export function mergeIdentityWrite(
     const was = new Map((stored.custom ?? []).map((c) => [c.id, c]));
     out.custom = incoming.custom.map((c) => {
       const before = was.get(c.id);
-      return before && !('value' in c) ? { ...c, value: before.value ?? null } : { ...c };
+      if (!before || 'value' in c) return { ...c };
+      const masked = before.hidden === true && !blank(before.value);
+      return { ...c, value: before.value ?? null, ...(masked ? { hidden: true } : {}) };
     });
   }
   return out;

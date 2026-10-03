@@ -739,9 +739,10 @@ export const FACTOR_STEP_UPS: readonly string[] = [
 
 /**
  * One part of a person's identity details, as the reader is shown it
- * (GET /members/{id}/identity, 5.26): every masked value null, and named in
- * `masked`; `filled` names what has a value, never a value. A part never
- * written is empty, version 0.
+ * (GET /members/{id}/identity, 5.26): every masked value left out of
+ * `fields` — an ID's `number`, a hidden custom field's `value` — and named
+ * in `masked`; sent back left out, it is kept. `filled` names what has a
+ * value, never a value. A part never written is empty, version 0.
  */
 export interface IdentityPartView {
   fields: IdentityFields;

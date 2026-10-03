@@ -1902,8 +1902,11 @@ describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)',
   let sam: Tokens;
   let teen: Tokens;
   let viewer: Tokens;
+  /** A second owner, with a password alone. */
+  let second: Tokens;
   let secret = '';
   const ONLY_ME = 'SAM-ONLY-ME-ZX81-quillon';
+  const LOCKER = 'SAM-LOCKER-PIN-80417';
   const OWNER_PASSPORT = 'OWNERPASS-55210';
   const json = <T>(r: { json: () => unknown }) => r.json() as T;
 
@@ -1970,6 +1973,11 @@ describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)',
       name: 'Accountant',
       email: 'acc-wall@example.test',
       role: 'viewer',
+    });
+    second = await h.join(owner, {
+      name: 'Second Owner',
+      email: 'second-wall@example.test',
+      role: 'owner',
     });
     const enrol = await h.app.inject({
       method: 'POST',
@@ -2124,6 +2132,69 @@ describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)',
     expect((await get(teen, sam.member_id)).body).toBe(teenBefore);
     expect(await audit()).toBe(auditBefore);
     await setAudienceDirectly('owners_and_self');
+  });
+
+  it("an owner never unmasks an adult's hidden field by writing it unhidden: not with a password alone, nor without a fresh code (the 5.26 review)", async () => {
+    // Sam keeps a hidden field in her shared part.
+    const mine = json<IdentityView>(await get(sam, sam.member_id));
+    const kept = await put(sam, sam.member_id, {
+      part: 'shared',
+      version: mine.versions.shared,
+      fields: {
+        ...mine.shared.fields,
+        custom: [{ id: 'c1', label: 'Locker', value: LOCKER, hidden: true }],
+      },
+    });
+    expect(kept.statusCode, kept.body).toBe(200);
+    // Each owner first asks to see it, and is refused...
+    const stale = async () => {
+      const pool = createPool(h.adminUrl, 1);
+      try {
+        await pool.query(
+          `update session set factor_verified_at = now() - interval '10 minutes',
+                  verified_at = now() - interval '10 minutes'
+            where household_id = $1`,
+          [owner.household_id],
+        );
+      } finally {
+        await pool.end();
+      }
+    };
+    await stale();
+    expect(
+      json<{ error: { code: string } }>(
+        await reveal(second, sam.member_id, { keys: ['custom.c1'] }),
+      ).error.code,
+    ).toBe('totp_required_for_owner');
+    expect(
+      json<{ error: { code: string } }>(await reveal(owner, sam.member_id, { keys: ['custom.c1'] }))
+        .error.code,
+    ).toBe('step_up_required');
+    // ...then writes it back unhidden, leaving out the value it never saw.
+    for (const who of [second, owner]) {
+      const shown = json<IdentityView>(await get(who, sam.member_id));
+      expect(shown.shared.masked).toContain('custom.c1');
+      const unhidden = await put(who, sam.member_id, {
+        part: 'shared',
+        version: shown.versions.shared,
+        fields: { ...shown.shared.fields, custom: [{ id: 'c1', label: 'Locker', hidden: false }] },
+      });
+      expect(unhidden.statusCode, unhidden.body).toBe(200);
+      // Still hidden, still masked, and nowhere in what came back.
+      expect(unhidden.body).not.toContain(LOCKER);
+      expect(json<IdentityView>(unhidden).shared.masked).toContain('custom.c1');
+      const after = await get(who, sam.member_id);
+      expect(after.body).not.toContain(LOCKER);
+      expect(json<IdentityView>(after).shared.fields.custom).toEqual([
+        { id: 'c1', label: 'Locker', hidden: true },
+      ]);
+    }
+    // No owner was shown it, and no line says one was; Sam's is as she left it.
+    expect(await audit()).not.toMatch(/Owner showed/);
+    expect((await stepUp(sam, { password: 'another correct horse' })).statusCode).toBe(200);
+    expect(
+      json<IdentityReveal>(await reveal(sam, sam.member_id, { keys: ['custom.c1'] })).values,
+    ).toEqual({ 'custom.c1': LOCKER });
   });
 
   it('viewers get 404', async () => {

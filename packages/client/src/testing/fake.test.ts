@@ -323,3 +323,50 @@ describe('the fake vault, asking to be sent documents', () => {
     await expect(api.uploadRequests(teen.access_token)).rejects.toMatchObject({ status: 404 });
   });
 });
+
+describe('the fake vault, identity details (5.26)', () => {
+  it('a widening whose 72 hours are up reads from then, whichever request asks first (the 5.26 review)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const tokens = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Teen',
+      email: 'teen@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.role = 'teen';
+    vault.state.members.push({ id: 'sara', display_name: 'Sara', role: 'adult', is_me: false });
+    vault.state.identities.set('sara', {
+      shared: {
+        fields: { given_name: 'Sara', ids: [{ id: 'p1', kind: 'passport', number: 'P-1' }] },
+        version: 1,
+        updated_at: new Date().toISOString(),
+      },
+    });
+    // The whole family, from an hour ago; nothing has asked for the audience since.
+    vault.state.identityPending = {
+      to: 'family',
+      requested_at: new Date(Date.now() - 73 * 3_600_000).toISOString(),
+      notice_until: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    const hers = await api.identity(tokens.access_token, 'sara');
+    expect(hers).toMatchObject({
+      audience: 'family',
+      only_me: null,
+      shared: { masked: ['ids.p1'] },
+    });
+    expect(hers.shared.fields.ids?.[0]).not.toHaveProperty('number');
+    // Another person's numbers: a passkey or a code, which this teen has not.
+    const refused = await api
+      .revealIdentity(tokens.access_token, 'sara', { keys: ['ids.p1'] })
+      .then(
+        () => null,
+        (err: { status?: number; code?: string; message?: string }) => err,
+      );
+    expect(refused).toMatchObject({
+      status: 403,
+      code: 'two_step_required',
+      message: "Turn on two-step sign-in to see another person's identity numbers.",
+    });
+  });
+});

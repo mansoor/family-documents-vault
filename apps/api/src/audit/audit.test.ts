@@ -284,16 +284,17 @@ describe('who reads each line', () => {
         ).toEqual([false, true, false, false, false]);
       }
     }
-    // Who sees them at all: the owners, and the owner who changed it.
+    // Who sees them at all: everybody told of it, which is everybody with a
+    // sign-in (the 5.26 review; a viewer reads no log).
     const changed = {
       ...line('identity.audience_changed', { to: 'adults' }),
       object_type: 'household',
     };
     expect([owner, person, adult, teen].map((r) => shownTo(r, changed))).toEqual([
       true,
-      false,
-      false,
-      false,
+      true,
+      true,
+      true,
     ]);
   });
 

@@ -146,10 +146,10 @@ function registerPhotos(app: FastifyInstance, household: HouseholdService, photo
 
 /**
  * People's identity details (5.26). Who is not given a record is told there
- * is none (404). Showing a masked value asks who is asking: an owner showing
- * another person's, with a passkey or a code and never the password (A54),
- * and an owner with neither is refused it; anybody else, with any
- * credential. Changing who sees them is an owner's, asked the same way.
+ * is none (404). Showing a masked value asks who is asking: another person's,
+ * with a passkey or a code and never the password, whoever asks — somebody
+ * with neither is refused it; one's own, with any credential. Changing who
+ * sees them is an owner's, asked with a passkey or a code (A54).
  */
 export function registerIdentity(
   app: FastifyInstance,
@@ -181,7 +181,9 @@ export function registerIdentity(
     // Whose they are first: what is not there for the caller is 404 before
     // anybody is asked to confirm who they are.
     const { self } = await identity.mayReveal(p, id, part);
-    if (p.role === 'owner' && !self) await stepUp.requireOwnerPower(p, 'open_identity');
+    // Somebody else's numbers: a passkey or a code, whoever asks (the 5.26
+    // review). One's own: any credential.
+    if (!self) await stepUp.requireFactor(p, 'open_identity');
     else await stepUp.require(p, 'reveal_identity');
     return identity.reveal(p, id, part, body.keys, metaOf(req));
   });

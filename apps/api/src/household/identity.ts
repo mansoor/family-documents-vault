@@ -17,10 +17,13 @@ import {
   identityChanges,
   identityDocuments,
   identityFilled,
+  identityTooLong,
+  IDENTITY_TOO_LONG,
   maskIdentity,
   mergeIdentityWrite,
   revealIdentity,
   ROLES,
+  shareEndWords,
   SITTING_MS,
   type IdentityAudience,
   type IdentityAudienceView,
@@ -56,8 +59,8 @@ import { ApiError, notFound } from '../errors.js';
  *
  * Who is not given a record is told there is none (404), never that it is
  * kept from them. ID numbers and hidden custom fields come masked; showing
- * one is a request of its own (`reveal`), which asks who is asking — an
- * owner showing somebody else's, with a passkey or a code (A54) — and is a
+ * one is a request of its own (`reveal`), which asks who is asking —
+ * somebody else's, with a passkey or a code, whoever asks — and is a
  * line in the activity log naming the fields, never their values.
  */
 
@@ -512,6 +515,9 @@ export class IdentityService {
       }
       const changed = identityChanges(stored, next);
       if (changed.length === 0) return { stale: false as const, subject };
+      // More than the database keeps of a part (0050): refused as too long,
+      // before anything is sealed, never a failure of the server's own.
+      if (identityTooLong(next)) throw new ApiError(422, 'validation_failed', IDENTITY_TOO_LONG);
       const ref = { householdId: p.householdId, memberId: subject.id, part: body.part };
       // The shared part under the household's identity key, minted now if
       // this is the first; Only me under the person's own member key.
@@ -614,16 +620,25 @@ export class IdentityService {
    *    (they would hold them, from 5.27).
    *  - As it is: a widening still waiting is withdrawn.
    *  - Wider, after 72 hours' notice: a `notice_request`, from which moment
-   *    the wider audience reads (0050). Every adult is told — in the app,
-   *    which shows the widening waiting (`pending`); by the operator's mail
-   *    server, where there is one — and may mark fields Only me meanwhile.
-   *    Asked again for the same, the clock does not start again; for
-   *    another, the one waiting is withdrawn and the new one waits its own
-   *    72 hours. Refused while an adult cannot sign in to be told.
+   *    the wider audience reads (0050). Everybody with a sign-in whose
+   *    record gains readers is told — everybody but the owner asking: in
+   *    the app, which shows the widening waiting (`pending`); by the
+   *    operator's mail server, where there is one — and may mark fields Only
+   *    me meanwhile. The mail is queued in this transaction: if it cannot
+   *    be, nothing was asked, and asking again tries again (the 5.26
+   *    review). Asked again for the same, the clock does not start again;
+   *    for another, the one waiting is withdrawn and the new one waits its
+   *    own 72 hours. Refused while an adult cannot sign in to be told.
    *
-   * The household is held first, then the notice waiting, then exports,
-   * then the log (appendAudit's lock, last). A widening whose notice has
-   * run out is written in as it is found.
+   * Everything here goes by the audience in effect: a widening whose
+   * notice has run out is written in as it is found, and narrowing from it
+   * is narrowing from it.
+   *
+   * The household is held first — FOR NO KEY UPDATE, which lets the
+   * activity log's foreign key to it (FOR KEY SHARE) through, so a line
+   * written meanwhile by anybody else waits for nothing of ours (the 5.26
+   * review) — then the notice waiting, then exports, then the log
+   * (appendAudit's lock, last).
    */
   async setAudience(
     p: Principal,
@@ -631,12 +646,12 @@ export class IdentityService {
     meta: RequestMeta,
   ): Promise<IdentityAudienceView> {
     requireCapability(p, 'identity.audience');
-    const tell = await withPrincipal(this.db, p, async (trx) => {
+    await withPrincipal(this.db, p, async (trx) => {
       const household = await trx
         .selectFrom('household')
-        .select(['identity_audience'])
+        .select(['identity_audience', 'timezone'])
         .where('id', '=', p.householdId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       const waiting = await trx
         .selectFrom('notice_request')
@@ -733,12 +748,30 @@ export class IdentityService {
         })
         .returning(['notice_until'])
         .executeTakeFirstOrThrow();
-      const adults = await trx
+      // Everybody with a sign-in: whose details gain readers, and who may
+      // mark fields Only me before then. Not the owner asking.
+      const told = await trx
         .selectFrom('account_household')
         .select(['account_id'])
-        .where('role', 'in', ['owner', 'adult'])
         .where('account_id', '!=', p.accountId)
         .execute();
+      if (told.length > 0 && this.operatorMail) {
+        // Nothing of anybody's details: who will see them, and from when, on
+        // the household's clock. Queued with the notice, or neither is.
+        const when = `${shareEndWords(notice.notice_until, household.timezone)} (${household.timezone})`;
+        await this.alert({
+          householdId: p.householdId,
+          accountIds: told.map((a) => a.account_id),
+          subject: 'Who can see identity details is changing',
+          body:
+            `From ${when}, ${IDENTITY_AUDIENCE_LABELS[to].toLowerCase()} will see the identity ` +
+            'details people share in your family vault: names, contacts, addresses and ID ' +
+            'numbers. Anything you mark Only me before then stays yours alone. Open the vault ' +
+            'to look at yours.',
+          emailOnly: true,
+          operatorMail: true,
+        });
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -753,24 +786,8 @@ export class IdentityService {
         },
         ip: meta.ip,
       });
-      return { accounts: adults.map((a) => a.account_id), until: notice.notice_until };
+      return null;
     });
-    if (tell && tell.accounts.length > 0 && this.operatorMail) {
-      // Nothing of anybody's details: who will see them, and from when.
-      const when = `${tell.until.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-      await this.alert({
-        householdId: p.householdId,
-        accountIds: tell.accounts,
-        subject: 'Who can see identity details is changing',
-        body:
-          `From ${when}, ${IDENTITY_AUDIENCE_LABELS[to].toLowerCase()} will see the identity ` +
-          'details people share in your family vault: names, contacts, addresses and ID numbers. ' +
-          'Anything you mark Only me before then stays yours alone. Open the vault to look ' +
-          'at yours.',
-        emailOnly: true,
-        operatorMail: true,
-      });
-    }
     return this.audience(p);
   }
 }

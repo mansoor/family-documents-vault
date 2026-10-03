@@ -25,6 +25,8 @@ import {
   identityAudienceRank,
   identityChanges,
   identityFilled,
+  identityTooLong,
+  IDENTITY_TOO_LONG,
   inCollectionAudience,
   incomingFileName,
   maskIdentity,
@@ -2178,14 +2180,29 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     // A person's details (5.25), changed as the caller saw them: If-Match on
     // their version, and an older one is a conflict, with them as they are.
     // People's identity details (5.26), as the real vault answers them.
-    if (path === '/api/v1/household/identity-audience') {
-      const s = session();
-      if (!('id' in s)) return s;
+    /**
+     * The audience in effect: a widening whose 72 hours are up reads from
+     * then, whichever request asks first (the 5.26 review).
+     */
+    const effectiveAudience = (): IdentityAudience => {
       const pending = state.identityPending;
       if (pending && Date.parse(pending.notice_until) <= Date.now()) {
         state.identityAudience = pending.to;
         state.identityPending = null;
       }
+      return state.identityAudience;
+    };
+    /** What takes a passkey or a code, refused to whoever has neither, in its own words. */
+    const needsTwoStep = (why: string) =>
+      fail(
+        403,
+        state.role === 'owner' ? 'totp_required_for_owner' : 'two_step_required',
+        `Turn on two-step sign-in ${why}.`,
+      );
+    if (path === '/api/v1/household/identity-audience') {
+      const s = session();
+      if (!('id' in s)) return s;
+      effectiveAudience();
       const view = (): IdentityAudienceView => ({
         audience: state.identityAudience,
         pending: state.identityPending,
@@ -2200,13 +2217,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (!IDENTITY_AUDIENCES.includes(to)) {
         return fail(422, 'validation_failed', 'Choose who can see identity details.');
       }
-      if (!state.ownerTwoStep) {
-        return fail(
-          403,
-          'totp_required_for_owner',
-          "Turn on two-step sign-in to manage other people's sign-ins.",
-        );
-      }
+      if (!state.ownerTwoStep) return needsTwoStep('to change who can see identity details');
       if (identityAudienceRank(to) <= identityAudienceRank(state.identityAudience)) {
         state.identityAudience = to;
         state.identityPending = null;
@@ -2230,7 +2241,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (!state.members.some((m) => m.id === id)) {
         return fail(404, 'not_found', 'That page does not exist.');
       }
-      if (!canSeeIdentity(me, { id }, state.identityAudience)) {
+      const audience = effectiveAudience();
+      if (!canSeeIdentity(me, { id }, audience)) {
         return fail(404, 'not_found', 'That page does not exist.');
       }
       const record = state.identities.get(id) ?? {};
@@ -2248,7 +2260,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       };
       const view = () => ({
         member_id: id,
-        audience: state.identityAudience,
+        audience,
         can_edit: {
           shared: canEditIdentity(me, { id }, 'shared'),
           only_me: canEditIdentity(me, { id }, 'only_me'),
@@ -2265,12 +2277,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         const b = body as { part?: IdentityPart; keys?: string[] };
         const part = b.part ?? 'shared';
         if (part === 'only_me' && !self) return fail(404, 'not_found', 'That page does not exist.');
-        if (state.role === 'owner' && !self && !state.ownerTwoStep) {
-          return fail(
-            403,
-            'totp_required_for_owner',
-            "Turn on two-step sign-in to manage other people's sign-ins.",
-          );
+        // Somebody else's numbers take a passkey or a code, whoever asks.
+        if (!self && !state.ownerTwoStep) {
+          return needsTwoStep("to see another person's identity numbers");
         }
         return ok({ part, values: revealIdentity(record[part]?.fields ?? {}, b.keys ?? []) });
       }
@@ -2295,6 +2304,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       const next = mergeIdentityWrite(kept?.fields ?? {}, b.fields ?? {}, () => true);
       if (identityChanges(kept?.fields ?? {}, next).length > 0) {
+        if (identityTooLong(next)) return fail(422, 'validation_failed', IDENTITY_TOO_LONG);
         record[part] = { fields: next, version: version + 1, updated_at: new Date().toISOString() };
       }
       return ok(view());

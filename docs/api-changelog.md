@@ -2647,8 +2647,10 @@ issued_on?, expires_on?, document_id? }`, `kind` one of `passport`,
     - **Added:** `GET /api/v1/members/{id}/identity` → `{ member_id,
 audience, can_edit: { shared, only_me }, versions: { shared, only_me },
 shared, only_me }`, each part `{ fields, masked, filled, version,
-updated_at }`: masked values are null in `fields` and named in `masked`
-      (`ids.<id>`, `custom.<id>`); `filled` names what has a value, by key
+updated_at }`: a masked value is left out of `fields` — no `number` in
+      that ID, no `value` in that hidden custom field — and named in `masked`
+      (`ids.<id>`, `custom.<id>`), so that a part sent back as it was shown
+      keeps every value it was never shown; `filled` names what has a value, by key
       (`given_name`, `nationalities`, `ids.<id>`…), never a value. A part
       never written is `{}`, version 0. To anybody but the person, `only_me`
       and `versions.only_me` are null. An ID's `document_id` is left out for
@@ -2671,23 +2673,30 @@ forbidden`); an owner, the shared part of anybody's, people with no
       entry's `number` (or a hidden custom field's `value`) left out keeps
       what it had, and null or blank clears it; an ID's `document_id` that
       the writer may not see stays, whatever is sent, and one they may see
-      is kept when left out and cleared by null. A document linked anew must
-      be one the writer may see (`422 validation_failed`). Nothing different
-      is no change: no new version, no line. `200` with the record as the
-      writer is shown it. Each part has its own version: a change to Only me
-      moves nothing anybody else is shown.
+      is kept when left out and cleared by null. A hidden custom field whose
+      `value` is left out stays hidden, whatever `hidden` says: unhiding one
+      takes its value, which only a reveal gives. A document linked anew must
+      be one the writer may see (`422 validation_failed`). A part whose JSON
+      would be more than 128 KiB (131,072 bytes) is `422 validation_failed`
+      ("These details are too long to keep. Shorten some of them."), and
+      nothing is written. Nothing different is no change: no new version, no
+      line. `200` with the record as the writer is shown it. Each part has
+      its own version: a change to Only me moves nothing anybody else is
+      shown.
     - **Added:** `POST /api/v1/members/{id}/identity/reveal` with `{ part?,
 keys }` (`part` defaults to `shared`; 1 to 100 keys) → `{ part, values }`:
       the masked values asked for, by key; a key naming nothing masked is
       left out. Another person's Only me part, and any record not given, is
-      `404`, before anybody is asked who they are. Then it asks: an owner
-      showing somebody else's numbers, **new** `403 step_up_required` with
-      `action: "open_identity"` — a passkey or a code from an authenticator
-      app, never the password (A54) — and an owner with neither is `403
-totp_required_for_owner`; anybody else (one's own numbers; another's,
-      where the audience gives them), **new** `action: "reveal_identity"`,
-      any credential. Each reveal is a line naming the keys shown, never a
-      value.
+      `404`, before anybody is asked who they are. Then it asks. Another
+      person's numbers, whoever asks — an owner, or an adult or a teen the
+      household's audience lets read them: **new** `403 step_up_required`
+      with `action: "open_identity"`, a passkey or a code from an
+      authenticator app, never the password; somebody with neither is
+      refused outright, an owner `403 totp_required_for_owner` and anybody
+      else **new** `403 two_step_required`, each "Turn on two-step sign-in to
+      see another person's identity numbers." One's own numbers, owners
+      included: **new** `action: "reveal_identity"`, any credential. Each
+      reveal is a line naming the keys shown, never a value.
     - **Added:** `GET /api/v1/household/identity-audience` → `{ audience,
 pending, can_change }`, for anybody signed in: `audience` is who reads
       other people's shared parts now — `owners_and_self` (the default),
@@ -2698,17 +2707,24 @@ pending, can_change }`, for anybody signed in: `audience` is who reads
     - **Added:** `PUT /api/v1/household/identity-audience` with `{ audience
 }`, owners only (anybody else `403 forbidden`, "Only an owner can change
       who sees identity details.", the capability `identity.audience`); an
-      owner power (A54): `403 totp_required_for_owner` for an owner with
+      owner power (A54): `403 totp_required_for_owner` ("Turn on two-step
+      sign-in to change who can see identity details.") for an owner with
       neither two-step sign-in nor a passkey, and **new** `action:
 "identity_audience"`, a passkey or a code, never the password.
       Narrowing takes effect at once, withdraws a widening waiting, and
       expires the exports of everybody who no longer reads other people's
       details. Widening waits **72 hours**: `pending` is set, and from
       `notice_until` the wider audience reads — every request counts it from
-      then, without anybody having to ask again. Every adult and owner but
-      the one asking is emailed through the operator's mail server where
-      there is one (`FDV_SMTP_URL`), never by push, with nothing of
-      anybody's details; and may mark fields Only me meanwhile. Asking again
+      then, without anybody having to ask again; everything that reads the
+      audience reads that one. Everybody with a sign-in but the owner asking
+      — owners, adults, teens and viewers, whose details all gain readers —
+      is told: in the app (`pending`), and by the operator's mail server
+      where there is one (`FDV_SMTP_URL`), never by push, with nothing of
+      anybody's details and the moment it applies on the household's clock,
+      its zone named ("From Monday 5 October at 07:00 (America/Los_Angeles),
+      …"). The mail is queued with the request: if it cannot be, nothing was
+      asked, and asking again asks. Each may mark fields Only me meanwhile.
+      Asking again
       for the same does not start the clock again; asking for another
       withdraws the one waiting, and the new one waits its own 72 hours;
       asking for the audience as it is withdraws one waiting. Refused, `409
@@ -2717,21 +2733,24 @@ adult_cannot_be_told`, while an adult or an owner cannot sign in to be
       paused after a restore). `200` with the audience as `GET` gives it.
     - **Changed (A54):** `FACTOR_STEP_UPS` adds `open_identity` and
       `identity_audience`: a client asking for either offers no password
-      field. `reveal_identity` takes any credential.
+      field. `reveal_identity` takes any credential. **Changed:** the message
+      of `403 totp_required_for_owner` names what was asked for ("Turn on
+      two-step sign-in to …"); for the account card it is as it was.
     - The activity log: **new** `identity.viewed` ("Mansoor looked at Sara's
       identity details"), `identity.revealed` ("Mansoor showed one of Sara's
       identity numbers", notable when it is somebody else's) with
       `detail.part` and `detail.keys`, `identity.updated` ("Sara changed
       their own identity details") with `detail.part` and `detail.keys` —
-      which fields, never a value — and `identity.audience_changed` ("Mansoor
-      asked to let all adults see identity details from 5 October", "…made
-      identity details visible to the owners and each person only", "…withdrew
-      letting everyone in the family see identity details"), notable, with
-      `detail.from`, `detail.to`, and `detail.notice_until` or
-      `detail.withdrawn`. Each is shown to the owners, the person it is about
-      and whoever did it — nobody else; a line about an Only me part is the
-      person's alone. The person sees a line whenever somebody else shows
-      their numbers (A38).
+      which fields, never a value — each shown to the owners, the person it is
+      about and whoever did it, nobody else, and a line about an Only me part
+      to the person alone; the person sees a line whenever somebody else
+      shows their numbers (A38). And `identity.audience_changed` ("Mansoor
+      asked to let all adults see identity details from 5 October at 07:00",
+      the moment on the household's clock; "…made identity details visible to
+      the owners and each person only"; "…withdrew letting everyone in the
+      family see identity details"), notable, with `detail.from`,
+      `detail.to`, and `detail.notice_until` or `detail.withdrawn`, shown to
+      everybody who reads the log: everybody it tells.
     - Restore: every notice still waiting is withdrawn, so a widening
       withdrawn since the backup cannot come back, and every household's
       audience goes back to `owners_and_self`. The report says how many
@@ -2761,9 +2780,14 @@ notice_until, completed_at, withdrawn_at)`, a primitive for anything done
       under the key of its part; keep a notice as it was asked, 72 hours at
       least, ending once; and refuse an audience wider than the one in
       effect — nobody widens before the notice runs out, the vault itself
-      included. The restore check knows the rules and the triggers.
+      included. The restore check knows the triggers, asks for the rules that
+      say who writes by name and command, and tries them in a transaction it
+      rolls back: a viewer changes no identity details of their own, a teen
+      with the whole family the audience nobody else's, and nobody signed in
+      but an owner asks for a notice.
     - `@fdv/shared`: the field catalogue (`IDENTITY_FIELDS`, `IdentityFields`
-      and its entries, `IDENTITY_ID_KINDS`), `maskIdentity`,
+      and its entries, `IDENTITY_ID_KINDS`), `IDENTITY_MAX_BYTES`,
+      `identityTooLong`, `IDENTITY_TOO_LONG`, `maskIdentity`,
       `identityFilled`, `revealIdentity`, `mergeIdentityWrite`,
       `identityChanges`, `IDENTITY_AUDIENCES`, `IDENTITY_NOTICE_HOURS`,
       `IdentityView`, `IdentityWrite`, `IdentityReveal`,

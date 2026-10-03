@@ -18,6 +18,8 @@
  *     none it says "Somebody" and carries on rather than printing a uuid.
  */
 
+import { shareEndWords } from './shares.js';
+
 export interface ActivityEvent {
   id: number;
   at: string;
@@ -44,6 +46,12 @@ export interface ActivityEvent {
    */
   collection_name?: string | null;
   detail: Record<string, unknown>;
+  /**
+   * The household's time zone, for a line that names a moment (5.26: from
+   * when a wider audience reads identity details): said on its clock, as
+   * everything else is. UTC when not given.
+   */
+  timezone?: string | null;
 }
 
 export interface ActivityLine {
@@ -259,7 +267,10 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       const to = audienceWords(detail.to);
       const until = text(detail.notice_until);
       if (until && to) {
-        return line(`${who} asked to let ${to} see identity details from ${dayWords(until)}`, true);
+        return line(
+          `${who} asked to let ${to} see identity details from ${dayWords(until, e.timezone)}`,
+          true,
+        );
       }
       const withdrawn = audienceWords(detail.withdrawn);
       if (detail.to === detail.from && withdrawn) {
@@ -559,12 +570,15 @@ function audienceWords(audience: unknown): string {
   }
 }
 
-/** "5 October": a day, as the vault's clock has it. */
-function dayWords(iso: string): string {
+/** "5 October at 14:00": a moment, on the household's clock (the 5.26 review). */
+function dayWords(iso: string, timezone: string | null | undefined): string {
   const at = new Date(iso);
-  return Number.isNaN(at.getTime())
-    ? 'later'
-    : at.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' });
+  if (Number.isNaN(at.getTime())) return 'later';
+  try {
+    return shareEndWords(at, timezone || 'UTC', { weekday: false });
+  } catch {
+    return shareEndWords(at, 'UTC', { weekday: false });
+  }
 }
 
 function roleWords(role: unknown): string {

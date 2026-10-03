@@ -6,6 +6,8 @@ import {
   identityChanges,
   identityFilled,
   identityMaskedKeys,
+  identityTooLong,
+  IDENTITY_MAX_BYTES,
   maskIdentity,
   mergeIdentityWrite,
   revealIdentity,
@@ -41,14 +43,66 @@ describe('identity details: what a reader is shown (5.26)', () => {
     expect(identityMaskedKeys(record)).toEqual(['ids.p1', 'custom.c1']);
     const { fields, masked } = maskIdentity(record);
     expect(masked).toEqual(['ids.p1', 'custom.c1']);
+    // Left out, not null: what is sent back left out is kept (the 5.26 review).
     expect(fields.ids).toEqual([
-      { id: 'p1', kind: 'passport', number: null, document_id: 'doc-1' },
+      { id: 'p1', kind: 'passport', document_id: 'doc-1' },
       { id: 'n1', kind: 'other', label: 'Library card' },
     ]);
-    expect(fields.custom?.map((c) => c.value)).toEqual([null, '6', '']);
+    expect(fields.ids?.[0]).not.toHaveProperty('number');
+    expect(fields.custom).toEqual([
+      { id: 'c1', label: 'Locker', hidden: true },
+      { id: 'c2', label: 'Shoe size', value: '6', hidden: false },
+      { id: 'c3', label: 'Empty secret', value: '', hidden: true },
+    ]);
     expect(JSON.stringify(fields)).not.toMatch(/P-123|4471/);
     // The record itself is untouched.
     expect(record.ids?.[0]?.number).toBe('P-123');
+  });
+
+  it('what a reader was shown, sent back as it was, changes nothing and keeps every masked value', () => {
+    const { fields } = maskIdentity(record);
+    const back = mergeIdentityWrite(record, fields, () => false);
+    expect(identityChanges(record, back)).toEqual([]);
+    expect(revealIdentity(back, ['ids.p1', 'custom.c1'])).toEqual({
+      'ids.p1': 'P-123',
+      'custom.c1': '4471',
+    });
+  });
+
+  it('a hidden field whose value a write leaves out stays hidden, whatever the write says', () => {
+    // Unhiding it would hand the writer a value they were never shown.
+    const unhidden = mergeIdentityWrite(
+      record,
+      { custom: [{ id: 'c1', label: 'Locker', hidden: false }] },
+      () => false,
+    );
+    expect(unhidden.custom).toEqual([{ id: 'c1', label: 'Locker', hidden: true, value: '4471' }]);
+    expect(maskIdentity(unhidden).masked).toEqual(['custom.c1']);
+    expect(JSON.stringify(maskIdentity(unhidden).fields)).not.toContain('4471');
+    // With a value of its own, the write says what it likes: it knows it.
+    const rewritten = mergeIdentityWrite(
+      record,
+      { custom: [{ id: 'c1', label: 'Locker', value: '9999', hidden: false }] },
+      () => false,
+    );
+    expect(rewritten.custom).toEqual([{ id: 'c1', label: 'Locker', value: '9999', hidden: false }]);
+    // An entry never hidden may be hidden, its value kept.
+    const hidden = mergeIdentityWrite(
+      record,
+      { custom: [{ id: 'c2', label: 'Shoe size', hidden: true }] },
+      () => false,
+    );
+    expect(hidden.custom).toEqual([{ id: 'c2', label: 'Shoe size', hidden: true, value: '6' }]);
+  });
+
+  it('a part too big to keep is said to be, by its bytes as sealed', () => {
+    const many = (n: number, value: string) => ({
+      custom: Array.from({ length: n }, (_, i) => ({ id: `c${i}`, label: 'x', value })),
+    });
+    expect(identityTooLong(many(40, 'ب'.repeat(2000)))).toBe(true);
+    expect(identityTooLong(many(11, '\u0001'.repeat(2000)))).toBe(true);
+    expect(identityTooLong(many(30, 'b'.repeat(2000)))).toBe(false);
+    expect(IDENTITY_MAX_BYTES).toBe(131_072);
   });
 
   it('reveals only what is masked and asked for', () => {

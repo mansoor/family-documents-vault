@@ -98,9 +98,22 @@ describe('the activity log, in sentences', () => {
     expect(
       audience({ from: 'owners_and_self', to: 'adults', notice_until: '2026-10-05T14:00:00.000Z' }),
     ).toMatchObject({
-      text: 'Mansoor asked to let all adults see identity details from 5 October',
+      text: 'Mansoor asked to let all adults see identity details from 5 October at 14:00',
       notable: true,
     });
+    // On the household's clock: west of UTC, the evening before (the 5.26 review).
+    const west = describeEvent(
+      ev({
+        action: 'identity.audience_changed',
+        actor: 'Mansoor',
+        ...household,
+        detail: { from: 'owners_and_self', to: 'family', notice_until: '2026-10-05T03:00:00.000Z' },
+        timezone: 'America/Los_Angeles',
+      }),
+    );
+    expect(west?.text).toBe(
+      'Mansoor asked to let everyone in the family see identity details from 4 October at 20:00',
+    );
     expect(audience({ from: 'family', to: 'owners_and_self' })?.text).toBe(
       'Mansoor made identity details visible to the owners and each person only',
     );

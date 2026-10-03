@@ -1318,7 +1318,8 @@ export const contractScenarios: Scenario[] = [
       });
       expect(made.versions).toEqual({ shared: 1, only_me: 0 });
       expect(made.shared.masked).toEqual(['ids.p1']);
-      expect(made.shared.fields.ids?.[0]?.number).toBeNull();
+      // Masked: left out, so that a form sending back what it was shown keeps it.
+      expect(made.shared.fields.ids?.[0]).not.toHaveProperty('number');
       expect(made.shared.filled).toEqual(['given_name', 'ids.p1']);
       // Made from a version that has moved on: refused, and nothing changed.
       const stale = await refusal(
@@ -1341,13 +1342,58 @@ export const contractScenarios: Scenario[] = [
       expect(
         (await api.revealIdentity(token, me.member_id, { keys: ['ids.p1', 'given_name'] })).values,
       ).toEqual({ 'ids.p1': 'C-123' });
+      // What a GET gives, sent back as it is: nothing changes, nothing is lost.
+      const shown = await api.identity(token, me.member_id);
+      const echoed = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: shown.versions.shared,
+        fields: shown.shared.fields,
+      });
+      expect(echoed.versions.shared).toBe(2);
+      expect(echoed.shared.masked).toEqual(['ids.p1']);
+      expect((await api.revealIdentity(token, me.member_id, { keys: ['ids.p1'] })).values).toEqual({
+        'ids.p1': 'C-123',
+      });
+      // A hidden field written back unhidden, its value left out, stays
+      // hidden: unhiding it takes the value itself.
+      const hid = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: 2,
+        fields: {
+          ...shown.shared.fields,
+          custom: [{ id: 'k1', label: 'PIN', value: '4471', hidden: true }],
+        },
+      });
+      expect(hid.shared.masked).toEqual(['ids.p1', 'custom.k1']);
+      const unhid = await api.updateIdentity(token, me.member_id, {
+        part: 'shared',
+        version: hid.versions.shared,
+        fields: { ...hid.shared.fields, custom: [{ id: 'k1', label: 'PIN', hidden: false }] },
+      });
+      expect(unhid.versions.shared).toBe(hid.versions.shared);
+      expect(unhid.shared.fields.custom).toEqual([{ id: 'k1', label: 'PIN', hidden: true }]);
+      // A part too big to keep is refused as too long.
+      const tooLong = await refusal(
+        api.updateIdentity(token, me.member_id, {
+          part: 'only_me',
+          version: 0,
+          fields: {
+            custom: Array.from({ length: 40 }, (_, i) => ({
+              id: `c${i}`,
+              label: 'x',
+              value: 'ب'.repeat(2000),
+            })),
+          },
+        }),
+      );
+      expect(tooLong).toMatchObject({ status: 422, code: 'validation_failed' });
       // The Only me part moves its own version, and nothing else.
       const mine = await api.updateIdentity(token, me.member_id, {
         part: 'only_me',
         version: 0,
         fields: { notes: 'mine alone' },
       });
-      expect(mine.versions).toEqual({ shared: 2, only_me: 1 });
+      expect(mine.versions).toEqual({ shared: hid.versions.shared, only_me: 1 });
       expect(mine.only_me?.fields.notes).toBe('mine alone');
       // Nobody at all: nothing there.
       const nobody = await refusal(api.identity(token, '00000000-0000-4000-8000-000000000000'));
@@ -1360,7 +1406,11 @@ export const contractScenarios: Scenario[] = [
         can_change: true,
       });
       const refused = await refusal(api.setIdentityAudience(token, 'adults'));
-      expect(refused).toMatchObject({ status: 403, code: 'totp_required_for_owner' });
+      expect(refused).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: 'Turn on two-step sign-in to change who can see identity details.',
+      });
       expect((await api.identityAudience(token)).pending).toBeNull();
     },
   },

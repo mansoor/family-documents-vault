@@ -966,11 +966,175 @@ const CHANGED_BY_ROLE = [
   { table: 'member_identity', what: "a person's identity details" },
 ];
 
+/**
+ * Rules the vault relies on by name: each on its own table, for its own
+ * command, restrictive. Asking for "a rule that names the role" let these
+ * go unnoticed (the 5.26 review): member_identity's rule for each kind of
+ * caller names the role too, so with the writers' rules gone a teen wrote
+ * other people's details. Each is also tried below, where trying is cheap.
+ */
+const REQUIRED_RULES = [
+  // A person's Only me identity details are theirs alone, whoever asks (0050, A33).
+  {
+    table: 'member_identity',
+    name: 'member_identity_only_me',
+    cmd: '*',
+    what: "a person's Only me identity details are theirs alone",
+  },
+  // Who writes which part: the person, both of their own; an owner, the shared part (0050).
+  {
+    table: 'member_identity',
+    name: 'member_identity_writer_insert',
+    cmd: 'a',
+    what: 'who writes identity details',
+  },
+  {
+    table: 'member_identity',
+    name: 'member_identity_writer_update',
+    cmd: 'w',
+    what: 'who changes identity details',
+  },
+  // An owner asks for a notice, in their own name, and an owner ends it (0050).
+  {
+    table: 'notice_request',
+    name: 'notice_request_actor_insert',
+    cmd: 'a',
+    what: 'who asks for a notice',
+  },
+  {
+    table: 'notice_request',
+    name: 'notice_request_actor_update',
+    cmd: 'w',
+    what: 'who ends a notice',
+  },
+];
+
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
 const HOUSEHOLD_ROWS: Record<string, string> = {
   document_type: 'household_id is not null',
   document_attribute: 'household_id is not null',
 };
+
+/**
+ * The rules of 0050 that say who writes, tried as the vault's callers would
+ * be, each in a transaction rolled back (the 5.26 review):
+ *
+ *  - a viewer changes no identity details, not even their own;
+ *  - a teen, with the whole family the audience, changes nobody else's;
+ *  - nobody but the person writes a part of their own;
+ *  - nobody signed in but an owner asks for a notice.
+ *
+ * Where the household has nothing to try one on — no identity details yet
+ * — there is nothing that rule could let through, and it is not tried. The
+ * teen's is tried as the application role with the audience widened in the
+ * same transaction, which the owning role must be able to SET ROLE to; a
+ * database where it cannot (not the vault's own compose) skips that one.
+ */
+async function probeIdentityWriters(
+  admin: ReturnType<typeof createPool>,
+  app: ReturnType<typeof createPool>,
+  appUrl: string,
+  household: string,
+): Promise<void> {
+  const exists = await admin.query<{ ok: boolean }>(
+    "select to_regclass('public.member_identity') is not null as ok",
+  );
+  if (!exists.rows[0]?.ok) return;
+  const settings = `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                           set_config('app.role', $2, true), set_config('app.member_id', $3, true)`;
+  /** One statement as somebody signed in: what it changed, or the error's code. */
+  const asCaller = async (
+    role: string,
+    member: string,
+    text: string,
+    args: unknown[] = [],
+  ): Promise<number | string> => {
+    const client = await app.connect();
+    try {
+      await client.query('begin');
+      await client.query(settings, [household, role, member]);
+      return (await client.query(text, args)).rowCount ?? 0;
+    } catch (err) {
+      return (err as { code?: string }).code ?? 'error';
+    } finally {
+      await client.query('rollback').catch(() => undefined);
+      client.release();
+    }
+  };
+  const fail = (what: string) => {
+    throw new Error(`household ${household}: ${what}`);
+  };
+
+  // A person with identity details of their own, and their member key.
+  const { rows: people } = await admin.query<{ member_id: string; key: string | null }>(
+    `select i.member_id,
+            (select k.id::text from scope_key k
+              where k.household_id = i.household_id and k.kind = 'member'
+                and k.member_id = i.member_id) as key
+       from member_identity i where i.household_id = $1 order by i.member_id limit 1`,
+    [household],
+  );
+  const person = people[0];
+  if (person) {
+    // A viewer, of their own: read, never written.
+    const viewer = await asCaller(
+      'viewer',
+      person.member_id,
+      'update member_identity set filled = filled where member_id = app_member()',
+    );
+    if (viewer !== 0) fail('a viewer may change their own identity details');
+    // Nor added to, as the person's own Only me part (its key is theirs).
+    if (person.key) {
+      const added = await asCaller(
+        'viewer',
+        person.member_id,
+        `insert into member_identity (household_id, member_id, part, sealed, dek_wrapped, wrapped_by_scope)
+         values ($1, app_member(), 'only_me', $2, $3, $4)`,
+        [household, Buffer.alloc(28), Buffer.alloc(60), person.key],
+      );
+      if (added !== '42501') fail('a viewer may write identity details');
+    }
+  }
+
+  // An adult asks for no notice; only an owner does. An insert the rule
+  // refuses is refused before anything else could be (42501).
+  const asked = await asCaller(
+    'adult',
+    '00000000-0000-4000-8000-000000000000',
+    `insert into notice_request (household_id, kind, subject, notice_until)
+     values ($1, 'identity_audience', 'family', now() + interval '72 hours')`,
+    [household],
+  );
+  if (asked !== '42501') fail('somebody signed in who is no owner may ask for a notice');
+
+  // A teen, the whole family the audience, changes nobody else's details.
+  const shared = await admin.query<{ n: number }>(
+    "select count(*)::int as n from member_identity where household_id = $1 and part = 'shared'",
+    [household],
+  );
+  if ((shared.rows[0]?.n ?? 0) === 0) return;
+  const role = decodeURIComponent(new URL(appUrl).username);
+  const client = await admin.connect();
+  try {
+    await client.query('begin');
+    await client.query("update household set identity_audience = 'family' where id = $1", [
+      household,
+    ]);
+    try {
+      await client.query(`set local role "${role.replace(/"/g, '""')}"`);
+    } catch {
+      return; // the owning role may not be the application role here
+    }
+    await client.query(settings, [household, 'teen', '00000000-0000-4000-8000-000000000000']);
+    const changed = await client.query(
+      "update member_identity set filled = filled where part = 'shared'",
+    );
+    if ((changed.rowCount ?? 0) !== 0) fail("a teen may change somebody else's identity details");
+  } finally {
+    await client.query('rollback').catch(() => undefined);
+    client.release();
+  }
+}
 
 /**
  * The restored vault, seen the way the vault will see it: as the
@@ -1146,6 +1310,26 @@ export async function checkRestored(
         `no rule keeps what was moved to the owners theirs on ${unowned.map((u) => u.name).join(', ')}`,
       );
     }
+    // And the rules the vault relies on by name (0050, the 5.26 review).
+    const { rows: unnamed } = await admin.query<{ name: string }>(
+      `select r.name from unnest($1::text[], $2::text[], $3::text[]) as r(tbl, name, cmd)
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || r.tbl)
+                             and p.polname = r.name
+                             and p.polcmd = r.cmd::"char"
+                             and not p.polpermissive)`,
+      [
+        REQUIRED_RULES.map((r) => r.table),
+        REQUIRED_RULES.map((r) => r.name),
+        REQUIRED_RULES.map((r) => r.cmd),
+      ],
+    );
+    if (unnamed.length) {
+      const what = REQUIRED_RULES.filter((r) => unnamed.some((u) => u.name === r.name));
+      throw new Error(
+        `no rule says ${what.map((r) => `${r.what} (${r.name} on ${r.table})`).join(', ')}`,
+      );
+    }
 
     const { rows: rights } = await app.query<{
       unreadable: string[];
@@ -1301,6 +1485,9 @@ export async function checkRestored(
           `household ${h.id}: an upload link it never made is given ${reachedByUpload.join(', ')}`,
         );
       }
+      // Who writes identity details, and asks for a notice, tried (0050):
+      // each in a transaction rolled back, so nothing is kept.
+      await probeIdentityWriters(admin, app, target.appUrl, h.id);
       // Somebody signed in who is no member of it — so the maker of none,
       // with no role of the family's — is given no Only me collection (0036)
       // and nobody's photo (0040).

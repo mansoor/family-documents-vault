@@ -1,10 +1,20 @@
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
-import type { ActivityLine, IdentityAudienceView, IdentityReveal, IdentityView } from '@fdv/shared';
+import {
+  IDENTITY_TOO_LONG,
+  shareEndWords,
+  type ActivityLine,
+  type IdentityAudienceView,
+  type IdentityReveal,
+  type IdentityView,
+} from '@fdv/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Tokens } from '../auth/service.js';
+import type { AlertRequest } from '../alert-job.js';
+import type { Principal, Tokens } from '../auth/service.js';
 import { codeFor } from '../auth/totp.js';
-import { createHarness, mailSent, type Harness } from '../test-harness.js';
+import { createHarness, mailSent, TEST_MASTER, type Harness } from '../test-harness.js';
+import { IdentityService } from './identity.js';
 
 /**
  * People's identity details, sealed (5.26): who reads and writes which
@@ -208,14 +218,31 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
       country_of_birth: 'GB',
       nationalities: ['GB', 'PK'],
       ids: [
-        { id: 'p1', kind: 'passport', number: null, issuer: 'HMPO', expires_on: '2031-03-01' },
-        { id: 'd1', kind: 'driving_licence', number: null },
+        { id: 'p1', kind: 'passport', issuer: 'HMPO', expires_on: '2031-03-01' },
+        { id: 'd1', kind: 'driving_licence' },
       ],
       custom: [
-        { id: 'c1', label: 'Locker code', value: null, hidden: true },
+        { id: 'c1', label: 'Locker code', hidden: true },
         { id: 'c2', label: 'Shoe size', value: '6' },
       ],
     });
+    // Left out, not null (the 5.26 review): sent back, it is kept.
+    for (const i of view.shared.fields.ids ?? []) expect(i).not.toHaveProperty('number');
+    expect(view.shared.fields.custom?.[0]).not.toHaveProperty('value');
+    const shownBack = json<IdentityView>(await get(sara, sara.member_id));
+    const echoed = await put(sara, sara.member_id, {
+      part: 'shared',
+      version: shownBack.versions.shared,
+      fields: shownBack.shared.fields,
+    });
+    expect(echoed.statusCode, echoed.body).toBe(200);
+    // Nothing changed: no new version, and every masked value still there.
+    expect(json<IdentityView>(echoed).versions).toEqual({ shared: 1, only_me: 0 });
+    expect(json<IdentityView>(echoed).shared.masked.sort()).toEqual([
+      'custom.c1',
+      'ids.d1',
+      'ids.p1',
+    ]);
     expect(view.shared.filled.sort()).toEqual(
       [
         'given_name',
@@ -474,9 +501,10 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
   it('a password-only owner cannot reveal; step-up by password is refused for it; a code opens it', async () => {
     const refused = await reveal(second, sara.member_id, { keys: ['ids.p1'] });
     expect(refused.statusCode).toBe(403);
+    // In the words of what was asked (the 5.26 review).
     expect(error(refused)).toMatchObject({
       code: 'totp_required_for_owner',
-      message: "Turn on two-step sign-in to manage other people's sign-ins.",
+      message: "Turn on two-step sign-in to see another person's identity numbers.",
     });
     expect(refused.body).not.toContain(PASSPORT);
 
@@ -524,7 +552,10 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
   it('a password-only owner is refused the identity-audience switch, and step-up by password is refused', async () => {
     const refused = await setAudience(second, 'adults');
     expect(refused.statusCode).toBe(403);
-    expect(error(refused).code).toBe('totp_required_for_owner');
+    expect(error(refused)).toMatchObject({
+      code: 'totp_required_for_owner',
+      message: 'Turn on two-step sign-in to change who can see identity details.',
+    });
     // An owner with two-step sign-in, confirmed by password only: asked.
     expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
     const pool = admin();
@@ -554,6 +585,15 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
   it('widening waits 72 hours and every adult is told; narrowing is immediate', async () => {
     const saraAccount = await accountOf(sara);
     const adamAccount = await accountOf(adam);
+    // West of UTC: the day and the hour are the household's (the 5.26 review).
+    const zone = 'America/Los_Angeles';
+    const profile = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/profile',
+      headers: h.as(owner),
+      payload: { timezone: zone },
+    });
+    expect(profile.statusCode, profile.body).toBe(200);
     const since = h.jobs.length;
     await ownerByCode();
     const asked = await setAudience(owner, 'adults');
@@ -564,13 +604,13 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
     const wait = Date.parse(view.pending?.notice_until as string) - Date.now();
     expect(wait).toBeGreaterThan(72 * 3600_000 - 60_000);
     expect(wait).toBeLessThanOrEqual(72 * 3600_000 + 1000);
-    // Every adult is told: in the app, which shows it waiting to each of
-    // them; and by the operator's mail server, never by push.
-    for (const who of [sara, adam]) {
+    // Everybody with a sign-in is told (the 5.26 review): in the app, which
+    // shows it waiting to each of them; and by the operator's mail server,
+    // never by push. Not the owner asking.
+    for (const who of [sara, adam, teen, viewer, second]) {
       expect(json<IdentityAudienceView>(await audience(who))).toMatchObject({
         audience: 'owners_and_self',
         pending: { to: 'adults' },
-        can_change: false,
       });
     }
     const alerts = h.jobs
@@ -579,13 +619,23 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
       .map((j) => j.data);
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({ email_only: true, via: 'operator' });
-    expect((alerts[0]?.account_ids as string[]).sort()).toEqual(
-      expect.arrayContaining([saraAccount, adamAccount]),
+    expect([...(alerts[0]?.account_ids as string[])].sort()).toEqual(
+      [
+        saraAccount,
+        adamAccount,
+        await accountOf(teen),
+        await accountOf(viewer),
+        await accountOf(second),
+      ].sort(),
     );
-    expect(alerts[0]?.account_ids).not.toContain(await accountOf(teen));
-    expect(alerts[0]?.account_ids).not.toContain(await accountOf(viewer));
     expect(alerts[0]?.account_ids).not.toContain(await accountOf(owner));
     expect(h.jobs.slice(since).filter((j) => j.name === 'push.send')).toEqual([]);
+    // From when, on the household's clock, with its zone named.
+    const until = new Date(view.pending?.notice_until as string);
+    expect(alerts[0]?.body).toContain(`From ${shareEndWords(until, zone)} (${zone}),`);
+    // And the line about it, read by everybody told, says the same moment.
+    const askedLine = `Owner asked to let all adults see identity details from ${shareEndWords(until, zone, { weekday: false })}`;
+    for (const who of [owner, sara, teen]) expect(await activity(who)).toContain(askedLine);
     // Meanwhile Adam reads nobody's record but his own...
     expect((await get(adam, sara.member_id)).statusCode).toBe(404);
     expect((await get(adam, owner.member_id)).statusCode).toBe(404);
@@ -610,13 +660,28 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
         audience: 'adults',
         pending: null,
       });
+      // Adam may now read Sara's details, and show her numbers only with a
+      // passkey or a code, as anybody showing another person's (the 5.26
+      // review); he has neither.
+      expect((await stepUp(adam, { password: 'another correct horse' })).statusCode).toBe(200);
+      const hers = await reveal(adam, sara.member_id, { keys: ['ids.p1'] });
+      expect(hers.statusCode).toBe(403);
+      expect(error(hers)).toMatchObject({
+        code: 'two_step_required',
+        message: "Turn on two-step sign-in to see another person's identity numbers.",
+      });
+      expect(hers.body).not.toContain(PASSPORT);
+      // His own, with the password he just gave.
+      expect((await reveal(adam, adam.member_id, { keys: ['ids.x'] })).statusCode).toBe(200);
 
       // Adam's copy of everything, made while he could read them.
       await pool.query(
         'insert into export (household_id, requested_by, state) values ($1, $2, $3)',
         [owner.household_id, adamAccount, 'done'],
       );
-      // Narrowing: at once, and Adam's export ends with it.
+      // Narrowing: at once — from the audience in effect, the widening whose
+      // notice has run out though nothing has written it in yet — and
+      // Adam's export ends with it.
       await ownerByCode();
       const narrowed = await setAudience(owner, 'owners_and_self');
       expect(narrowed.statusCode, narrowed.body).toBe(200);
@@ -640,13 +705,11 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
     } finally {
       await pool.end();
     }
-    const said = await activity(owner);
-    expect(said).toContain(
-      'Owner made identity details visible to the owners and each person only',
-    );
-    expect(
-      said.some((l) => /^Owner asked to let all adults see identity details from /.test(l)),
-    ).toBe(true);
+    for (const who of [owner, adam, teen]) {
+      expect(await activity(who)).toContain(
+        'Owner made identity details visible to the owners and each person only',
+      );
+    }
   });
 
   it('a widening waiting is withdrawn by keeping things as they are, or replaced by another, each with its own 72 hours', async () => {
@@ -731,6 +794,111 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
       await pool.query('update account set disabled_at = null where id = $1', [adamAccount]);
       await pool.end();
     }
+  });
+
+  it('a widening whose mail cannot be queued is not asked: nothing waits, and asking again tells everybody (the 5.26 review)', async () => {
+    const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+    const p: Principal = {
+      accountId: await accountOf(owner),
+      sessionId: '00000000-0000-4000-8000-000000000000',
+      householdId: owner.household_id,
+      memberId: owner.member_id,
+      role: 'owner',
+    };
+    const waitingNotices = async () => {
+      const pool = admin();
+      try {
+        return (
+          await pool.query<{ n: number }>(
+            `select count(*)::int as n from notice_request
+              where household_id = $1 and completed_at is null and withdrawn_at is null`,
+            [owner.household_id],
+          )
+        ).rows[0]?.n;
+      } finally {
+        await pool.end();
+      }
+    };
+    const down = new IdentityService(
+      h.db,
+      keys,
+      async () => {
+        throw new Error('the queue is down');
+      },
+      true,
+    );
+    await expect(down.setAudience(p, 'family', { ip: null })).rejects.toThrow(/queue is down/);
+    expect(await waitingNotices()).toBe(0);
+    expect(json<IdentityAudienceView>(await audience(owner)).pending).toBeNull();
+    // Asked again, with the queue back: asked, and everybody is told.
+    const sent: AlertRequest[] = [];
+    const up = new IdentityService(h.db, keys, async (a) => void sent.push(a), true);
+    expect((await up.setAudience(p, 'family', { ip: null })).pending?.to).toBe('family');
+    expect(sent).toHaveLength(1);
+    expect(await waitingNotices()).toBe(1);
+    expect((await up.setAudience(p, 'owners_and_self', { ip: null })).pending).toBeNull();
+  });
+
+  it('a part too big to keep is refused as too long, never failed (the 5.26 review)', async () => {
+    const before = await versions(teen, teen.member_id);
+    for (const [n, ch] of [
+      [40, 'ب'],
+      [11, '\u0001'],
+    ] as const) {
+      const r = await put(teen, teen.member_id, {
+        part: 'only_me',
+        version: before.only_me,
+        fields: {
+          custom: Array.from({ length: n }, (_, i) => ({
+            id: `c${i}`,
+            label: 'x',
+            value: ch.repeat(2000),
+          })),
+        },
+      });
+      expect(r.statusCode, r.body).toBe(422);
+      expect(error(r)).toMatchObject({ code: 'validation_failed', message: IDENTITY_TOO_LONG });
+    }
+    expect(await versions(teen, teen.member_id)).toEqual(before);
+  });
+
+  it("the audience switch and somebody else's line in the activity log at once: no deadlock (the 5.26 review)", async () => {
+    await ownerByCode();
+    const v = json<IdentityView>(await get(sara, sara.member_id)).versions.shared;
+    const pool = admin();
+    const holder = await pool.connect();
+    const before = await deadlocks(pool);
+    try {
+      await holder.query('begin');
+      // The log, held from outside: both requests below queue for it.
+      await holder.query("select pg_advisory_xact_lock(hashtext('audit:' || $1::uuid::text))", [
+        owner.household_id,
+      ]);
+      // Sara's change, waiting to write its line...
+      const line = put(sara, sara.member_id, {
+        part: 'shared',
+        version: v,
+        fields: { ...saraShared, title: 'Dr' },
+      });
+      await waiting(pool, 1);
+      // ...and the owner's switch, the household held, waiting behind it.
+      const switched = setAudience(owner, 'adults');
+      await waiting(pool, 2);
+      await holder.query('rollback');
+      const [changed, asked] = await Promise.all([line, switched]);
+      expect(changed.statusCode, changed.body).toBe(200);
+      expect(asked.statusCode, asked.body).toBe(200);
+      await new Promise((res) => setTimeout(res, 1500));
+      expect(await deadlocks(pool)).toBe(before);
+    } finally {
+      await holder.query('rollback').catch(() => undefined);
+      holder.release();
+      await pool.end();
+    }
+    await ownerByCode();
+    expect(
+      json<IdentityAudienceView>(await setAudience(owner, 'owners_and_self')).pending,
+    ).toBeNull();
   });
 
   it('the database holds it: nobody widens before the notice runs out, a notice ends once, a viewer writes nothing', async () => {

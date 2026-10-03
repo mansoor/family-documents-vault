@@ -166,12 +166,12 @@ const ownersAndThePerson: Audience = (reader, line) =>
 
 /**
  * A line about somebody's identity details (5.26): who looked at them, showed
- * their numbers, changed them, or changed who sees them. For the owners, the
- * person it is about — who sees a line whenever somebody else shows their
- * numbers, with no values (A38) — and whoever did it; nobody else, not
- * another adult, not a teen (a viewer reads no log). A line about an Only me
- * part, or a part this does not know, is the person's alone: an owner is
- * told nothing of it, not even that it moved.
+ * their numbers or changed them. For the owners, the person it is about —
+ * who sees a line whenever somebody else shows their numbers, with no values
+ * (A38) — and whoever did it; nobody else, not another adult, not a teen (a
+ * viewer reads no log). A line about an Only me part, or a part this does
+ * not know, is the person's alone: an owner is told nothing of it, not even
+ * that it moved. Who sees them at all is everybody's (below).
  */
 const identityLine: Audience = (reader, line) => {
   const self =
@@ -265,7 +265,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['identity.viewed', identityLine],
   ['identity.revealed', identityLine],
   ['identity.updated', identityLine],
-  ['identity.audience_changed', identityLine],
+  // Who sees identity details: asked, narrowed, withdrawn. Everybody with a
+  // sign-in is told of a widening, and so reads each of these lines (the
+  // 5.26 review); a viewer reads no log.
+  ['identity.audience_changed', everyone],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],
@@ -469,6 +472,12 @@ export class AuditService {
       `.execute(trx);
 
       const rows = result.rows.slice(0, limit);
+      // A moment a line names is said on the household's clock (5.26).
+      const household = await trx
+        .selectFrom('household')
+        .select(['timezone'])
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
       const links = await this.collectionLinks(trx, p, rows);
       const events: ActivityEvent[] = [];
       for (const r of rows) {
@@ -488,6 +497,7 @@ export class AuditService {
           object_title: r.document_title ?? r.member_name,
           collection_name: r.collection_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
+          timezone: household?.timezone ?? null,
         });
       }
       // One sitting with a document is one line, not one per page (0.4.12).

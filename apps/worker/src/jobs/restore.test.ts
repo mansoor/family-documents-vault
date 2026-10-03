@@ -1369,6 +1369,80 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         `create policy notice_request_actor on public.notice_request as restrictive using (${notices})`,
       );
     }
+    // Each rule the vault relies on by name, dropped in turn (the 5.26
+    // review): a rule for each kind of caller that names the role must not
+    // stand in for the one that says who writes.
+    const definition = async (name: string) =>
+      (
+        await sql(
+          vault.adminUrl,
+          `select c.relname as tbl, p.polcmd as cmd,
+                  pg_get_expr(p.polqual, p.polrelid) as qual,
+                  pg_get_expr(p.polwithcheck, p.polrelid) as checked
+             from pg_policy p join pg_class c on c.oid = p.polrelid
+            where p.polname = '${name}'`,
+        )
+      ).rows[0] as { tbl: string; cmd: string; qual: string | null; checked: string | null };
+    const recreate = (
+      name: string,
+      d: { tbl: string; cmd: string; qual: string | null; checked: string | null },
+    ) => {
+      const cmd = { '*': 'all', r: 'select', a: 'insert', w: 'update', d: 'delete' }[d.cmd];
+      return `create policy ${name} on public.${d.tbl} as restrictive for ${cmd}${
+        d.qual ? ` using (${d.qual})` : ''
+      }${d.checked ? ` with check (${d.checked})` : ''}`;
+    };
+    for (const name of [
+      'member_identity_only_me',
+      'member_identity_writer_insert',
+      'member_identity_writer_update',
+      'notice_request_actor_insert',
+      'notice_request_actor_update',
+    ]) {
+      const d = await definition(name);
+      await sql(vault.adminUrl, `drop policy ${name} on public.${d.tbl}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(
+          new RegExp(`no rule says .*${name}`),
+        );
+      } finally {
+        await sql(vault.adminUrl, recreate(name, d));
+      }
+    }
+    // And each still there by name, but letting through what it is there
+    // to stop: tried, as the vault's callers would be.
+    for (const [name, changed, refused] of [
+      [
+        'member_identity_writer_update',
+        `alter policy member_identity_writer_update on public.member_identity using (true)`,
+        /a viewer may change their own identity details/,
+      ],
+      [
+        'member_identity_writer_update',
+        `alter policy member_identity_writer_update on public.member_identity
+           using (app_role() is distinct from 'viewer')`,
+        /a teen may change somebody else's identity details/,
+      ],
+      [
+        'member_identity_writer_insert',
+        `alter policy member_identity_writer_insert on public.member_identity with check (true)`,
+        /a viewer may write identity details/,
+      ],
+      [
+        'notice_request_actor_insert',
+        `alter policy notice_request_actor_insert on public.notice_request with check (true)`,
+        /somebody signed in who is no owner may ask for a notice/,
+      ],
+    ] as const) {
+      const d = await definition(name);
+      await sql(vault.adminUrl, changed);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(refused);
+      } finally {
+        await sql(vault.adminUrl, `drop policy ${name} on public.${d.tbl}`);
+        await sql(vault.adminUrl, recreate(name, d));
+      }
+    }
     // Each of their guards, off.
     for (const [table, trigger] of [
       ['notice_request', 'notice_request_fixed'],
