@@ -28,6 +28,7 @@ import {
 import {
   can,
   maskEmail,
+  dropFileName,
   SENDER_NOTE_MAX,
   SHARE_END_GRACE_MINUTES,
   SHARE_MAX_DAYS,
@@ -60,7 +61,7 @@ import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
-import { truncatedIp } from '../documents/shares.js';
+import { canonicalMadeUp, truncatedIp } from '../documents/shares.js';
 import type { Enqueue } from '../documents/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -129,6 +130,18 @@ export const DROP_DEVICE_MAX_AGE = SHARE_MAX_DAYS * 86_400;
 /** A session cookie's name, for its request. */
 export const dropCookieName = (requestId: string) =>
   `${DROP_COOKIE_PREFIX}${requestId.replace(/-/g, '').toLowerCase()}`;
+
+/**
+ * A sender's session as a call presents it: its cookie, and the request
+ * the call is about — what X-FDV-Drop-Request names, or the one request
+ * whose name the browser's only session cookie carries. A session is
+ * answered only for that request (the 5.22 review, N522S-2): a cookie under
+ * one request's name holding another's session opens neither.
+ */
+export interface DropCookie {
+  value: string | undefined;
+  requestId: string | null;
+}
 /** A session lasts 30 minutes from its last use, and 4 hours at most (A26, as a link's). */
 export const DROP_SESSION_IDLE_MS = 30 * 60_000;
 export const DROP_SESSION_MAX_MS = 4 * 3_600_000;
@@ -249,6 +262,7 @@ const SENDER_COLUMNS = [
   'recipient_label',
   'recipient_email',
   'secret_hash',
+  'secret_kind',
   'email_code',
   'this_device_only',
   'device_hash',
@@ -380,17 +394,10 @@ const endRefused = (message: string) => new ApiError(422, 'expiry_out_of_range',
 /**
  * A file's name as sent, made safe to show a reviewer: its last path part,
  * no control or direction characters, at most 200 characters. Never logged.
+ * The rule is @fdv/shared's, so the sender's page finds a file it sent by
+ * the name the vault keeps (the 5.22 review).
  */
-export function safeName(name: string): string {
-  const last = name.split(/[\\/]/).pop() ?? '';
-  const clean = last
-    .normalize('NFC')
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const cut = [...clean].slice(0, 200).join('');
-  return cut && cut !== '.' && cut !== '..' ? cut : 'file';
-}
+export const safeName = dropFileName;
 
 /** A password the vault makes up: three groups of four, with no look-alike letters. */
 function madePassword(): string {
@@ -515,8 +522,18 @@ export class UploadRequestService {
       }
     }
     const token = randomBytes(32).toString('base64url');
-    const password = input.with_password ? madePassword() : (input.password ?? null);
-    const secretHash = password ? await argon2.hash(password, ARGON2) : null;
+    // A password the vault makes up is read out and typed unseen, so it is
+    // hashed, and checked, in its canonical form (0048, as a share link's
+    // is): "ABCD EFGH JKMN" opens "abcd-efgh-jkmn". One the requester typed
+    // is theirs, and is checked exactly as typed.
+    const made = input.with_password ? madePassword() : null;
+    const typed = made ? null : (input.password ?? null);
+    const secretKind = made ? 'generated' : typed !== null ? 'password' : null;
+    const secretHash = made
+      ? await argon2.hash(canonicalMadeUp(made), ARGON2)
+      : typed !== null
+        ? await argon2.hash(typed, ARGON2)
+        : null;
     const items = input.items ?? [];
 
     const id = await withPrincipal(this.db, p, async (trx) => {
@@ -559,6 +576,7 @@ export class UploadRequestService {
           recipient_email: email,
           token_hash: hash(token),
           secret_hash: secretHash,
+          secret_kind: secretKind,
           email_code: input.email_code ?? false,
           this_device_only: input.this_device_only ?? false,
           expires_at: expiresAt,
@@ -613,8 +631,8 @@ export class UploadRequestService {
     const link_url = this.opts.publicUrl
       ? `${this.opts.publicUrl.replace(/\/+$/, '')}/drop#${token}`
       : null;
-    return password && input.with_password
-      ? { request, link_token: token, link_url, password }
+    return made
+      ? { request, link_token: token, link_url, password: made }
       : { request, link_token: token, link_url };
   }
 
@@ -836,15 +854,41 @@ export class UploadRequestService {
    * is counted or written down: a link scanner fetching the page is not
    * somebody opening it.
    */
-  async preview(token: string): Promise<DropPreview> {
+  async preview(
+    token: string,
+    devices: readonly DeviceCookie[] = [],
+    /** The browser's session cookie for a request, by its id: the one this request's name gives. */
+    sessionCookie: (requestId: string) => string | undefined = () => undefined,
+  ): Promise<DropPreview> {
     const scope = await this.scopeOf(token);
     return withScope(this.db, scope, async (trx) => {
       const r = await this.live(trx, scope.actor.requestId);
-      if (r.max_visits !== null && r.visits_used >= r.max_visits) throw usedUp();
+      // Opened as often as it allows — but if the last visit is this
+      // browser's, and its session still live, the page can carry on in it
+      // (N522S-3): the preview says which request it is, as ever, rather than
+      // turning away the one browser whose files would otherwise be stranded.
+      if (
+        r.max_visits !== null &&
+        r.visits_used >= r.max_visits &&
+        !(await this.hasLiveSession(trx, r.id, sessionCookie(r.id)))
+      ) {
+        throw usedUp();
+      }
+      // A request for one browser, bound to another (5.22, as 5.20's link
+      // preview): said before Open is pressed, which would be refused, and
+      // where its code goes is not said here, where none is sent.
+      const elsewhere =
+        r.this_device_only && r.device_hash !== null && !boundDevice(r.device_hash, r.id, devices);
       return {
         ...(await this.names(trx, r)),
         protection: protectionOf(r),
         expires_at: r.expires_at.toISOString(),
+        // Which request it is: a page with a session for it in this browser
+        // already carries on in that, rather than opening another (5.22).
+        request_id: r.id,
+        code_to:
+          r.email_code && r.recipient_email && !elsewhere ? maskEmail(r.recipient_email) : null,
+        other_device: elsewhere,
       };
     });
   }
@@ -1139,9 +1183,12 @@ export class UploadRequestService {
     if (r.attempts >= MAX_ATTEMPTS) return 'gone';
     let right = true;
     if (r.secret_hash) {
-      right = input.password
-        ? await argon2.verify(r.secret_hash, input.password).catch(() => false)
-        : false;
+      // A made-up password in its canonical form; a typed one as typed (0048).
+      const given =
+        input.password && r.secret_kind === 'generated'
+          ? canonicalMadeUp(input.password)
+          : input.password;
+      right = given ? await argon2.verify(r.secret_hash, given).catch(() => false) : false;
     }
     // The code only after the password (A23): a wrong password never uses
     // up a code's own tries.
@@ -1218,8 +1265,29 @@ export class UploadRequestService {
     return r.recipient_label ? `upload link (${r.recipient_label})` : 'upload link';
   }
 
+  /**
+   * Whether a cookie holds a session of this request that is still live —
+   * not past its end, and not idle for 30 minutes. Read as the request's
+   * own upload link, which may see its sessions and no others.
+   */
+  private async hasLiveSession(
+    trx: Db,
+    requestId: string,
+    cookie: string | undefined,
+  ): Promise<boolean> {
+    if (!cookie || cookie.length > 128) return false;
+    const row = await trx
+      .selectFrom('upload_session')
+      .select(['last_seen_at'])
+      .where('request_id', '=', requestId)
+      .where('cookie_hash', '=', hash(cookie))
+      .where('expires_at', '>', new Date())
+      .executeTakeFirst();
+    return row !== undefined && row.last_seen_at.getTime() + DROP_SESSION_IDLE_MS > Date.now();
+  }
+
   /** What is open in this browser's session. Free: nothing is counted. */
-  async session(cookie: string | undefined): Promise<DropSession> {
+  async session(cookie: DropCookie): Promise<DropSession> {
     return this.inSession(cookie, (trx, r, s) => this.sessionView(trx, r, s.id, s.expires_at));
   }
 
@@ -1229,7 +1297,7 @@ export class UploadRequestService {
    * its request as it is now. A session that fails is removed.
    */
   private async inSession<T>(
-    cookie: string | undefined,
+    presented: DropCookie,
     fn: (
       trx: Db,
       r: SenderRow,
@@ -1238,14 +1306,18 @@ export class UploadRequestService {
     ) => Promise<T>,
     opts: { mayEnd?: boolean } = {},
   ): Promise<T> {
-    if (!cookie || cookie.length > 128) throw sessionEnded();
+    const cookie = presented.value;
+    if (!cookie || cookie.length > 128 || !presented.requestId) throw sessionEnded();
     const cookieHash = hash(cookie);
     const found = (
       await sql<{ household_id: string; request_id: string; session_id: string }>`
         select household_id, request_id, session_id from upload_session_find(${cookieHash})
       `.execute(this.db)
     ).rows[0];
-    if (!found) throw sessionEnded();
+    // The session the cookie holds, for the request the call names, and no
+    // other: a cookie planted under one request's name that holds another
+    // request's session is not taken as either (N522S-2).
+    if (!found || found.request_id !== presented.requestId) throw sessionEnded();
     const scope: UploadScope = {
       householdId: found.household_id,
       actor: { kind: 'upload', requestId: found.request_id, sessionId: found.session_id },
@@ -1339,6 +1411,9 @@ export class UploadRequestService {
       .select(['id', 'original_name', 'mime', 'byte_size', 'item_id'])
       .where('session_id', '=', sessionId)
       .where('state', '=', 'received')
+      // Sent with Finish, they are the reviewer's: never listed here again
+      // (the 5.22 review), where Remove could not reach them anyway.
+      .where('submitted_at', 'is', null)
       .orderBy('created_at')
       .execute();
     const bytesLeft = Math.max(0, Number(r.max_total_bytes) - Number(r.bytes_used));
@@ -1354,6 +1429,7 @@ export class UploadRequestService {
       files_left: Math.max(0, r.max_files - r.files_used),
       bytes_left: bytesLeft,
       max_file_bytes: Math.min(this.opts.maxFileBytes, bytesLeft),
+      file_limit_bytes: this.opts.maxFileBytes,
       expires_at: r.expires_at.toISOString(),
       session_expires_at: sessionEnds.toISOString(),
       files: files.map(dropFile),
@@ -1361,7 +1437,7 @@ export class UploadRequestService {
   }
 
   /** Before any byte is read: whether this session may send a file at all. */
-  async mayAdd(cookie: string | undefined): Promise<void> {
+  async mayAdd(cookie: DropCookie): Promise<void> {
     await this.inSession(cookie, async (_trx, r) => {
       if (r.files_used >= r.max_files) throw filesUsedUp(r.max_files);
     });
@@ -1388,7 +1464,7 @@ export class UploadRequestService {
    * upload link can no longer reach them: such a row holds no room
    * (incoming_room(), 0044) and the nightly prune removes it (N521F-02).
    */
-  async addFile(cookie: string | undefined, upload: DropUpload): Promise<DropFile> {
+  async addFile(cookie: DropCookie, upload: DropUpload): Promise<DropFile> {
     const ctx = await this.inSession(cookie, async (trx, r, session, scope) => {
       if (upload.itemId) {
         const item = await trx
@@ -1695,7 +1771,7 @@ export class UploadRequestService {
    * /drop/files/{id}). Only its own: another session's file, or one already
    * sent, is not there for it.
    */
-  async removeFile(cookie: string | undefined, fileId: string): Promise<void> {
+  async removeFile(cookie: DropCookie, fileId: string): Promise<void> {
     const removed = await this.inSession(cookie, async (trx, r, session, scope) => {
       const file = await trx
         .selectFrom('incoming_file')
@@ -1729,7 +1805,7 @@ export class UploadRequestService {
    * nothing more, its sessions and codes end and its address is cleared.
    */
   async finish(
-    cookie: string | undefined,
+    cookie: DropCookie,
     input: z.infer<typeof dropFinishBody>,
     meta: RequestMeta,
   ): Promise<DropFinished> {

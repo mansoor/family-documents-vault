@@ -18,7 +18,7 @@ const PDF = Buffer.from(
 
 /**
  * Signed in through the page, once for this file. Signing in is limited to
- * 10 a minute, and the suite signs in up to nine times a run: once in each
+ * 10 a minute, and the suite signs in up to ten times a run: once in each
  * file, first-run.spec.ts only when it is run again. So wait a minute
  * between local runs. The access token it was given too, to make this
  * file's documents and to tidy up after it.

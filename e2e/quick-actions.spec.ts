@@ -27,7 +27,7 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
     });
   }
   // Signed in through the page, the one sign-in this file makes. Signing
-  // in is limited to 10 a minute, and the suite signs in up to nine times
+  // in is limited to 10 a minute, and the suite signs in up to ten times
   // a run: once in each file, first-run.spec.ts only when it is run again.
   // So wait a minute between local runs. The access token it was given
   // makes this file's document.

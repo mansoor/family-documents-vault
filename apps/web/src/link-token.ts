@@ -2,8 +2,9 @@
  * The secret a link carries, read from the address and taken out of it.
  *
  * A share link's token (5.16), a password reset's and an invitation's
- * (5.17) are each the whole secret, so a link carries it after the `#`:
- * `/s#…`, `/reset#…`, `/join#…`. A browser sends that part to no server —
+ * (5.17), and a request to send documents' (5.22) are each the whole
+ * secret, so a link carries it after the `#`: `/s#…`, `/reset#…`,
+ * `/join#…`, `/drop#…`. A browser sends that part to no server —
  * not the vault, not a proxy on the way. The page reads it once, before
  * anything is drawn (main.tsx), and replaces the address with one without
  * it: gone from the address bar and from this tab's history, its entry
@@ -115,7 +116,7 @@ export function markLinkSpent(): void {
 export function reopenOnNewLink(reload: () => void = () => window.location.reload()): () => void {
   const onHashChange = () => {
     if (
-      /^\/(?:s|join|reset)\/?$/.test(window.location.pathname) &&
+      /^\/(?:s|drop|join|reset)\/?$/.test(window.location.pathname) &&
       window.location.hash.length > 1
     ) {
       reload();

@@ -17,26 +17,41 @@ import {
   dropFinishBody,
   dropTokenBody,
   dropUnlockBody,
+  type DropCookie,
   type UploadRequestService,
 } from './requests.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** A session cookie's request id, from its name (`fdv_drop_s_<id without dashes>`). */
+const named = (cookieName: string): string | null => {
+  const hex = cookieName.slice(DROP_COOKIE_PREFIX.length);
+  if (!/^[0-9a-f]{32}$/.test(hex)) return null;
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
 /**
- * The session cookie a sender's call is for. Each request's has its own
- * name (a browser may have two open); the page says which with
- * `X-FDV-Drop-Request` (the `request_id` Open answered), and with one
- * session open it need not say.
+ * The session cookie a sender's call is for, and the request it is about.
+ * Each request's cookie has its own name (a browser may have two open); the
+ * page says which with `X-FDV-Drop-Request` (the `request_id` Open
+ * answered), and with one session open it need not say: then its cookie's
+ * name says. Either way the session is answered only for that request
+ * (N522S-2).
  */
-export function dropSessionCookie(req: FastifyRequest): string | undefined {
+export function dropSessionCookie(req: FastifyRequest): DropCookie {
   const wanted = req.headers[DROP_REQUEST_HEADER];
   if (typeof wanted === 'string') {
-    return UUID.test(wanted) ? req.cookies[dropCookieName(wanted)] : undefined;
+    return UUID.test(wanted)
+      ? { value: req.cookies[dropCookieName(wanted)], requestId: wanted.toLowerCase() }
+      : { value: undefined, requestId: null };
   }
   const open = Object.entries(req.cookies).filter(
     ([name, value]) => name.startsWith(DROP_COOKIE_PREFIX) && value,
   );
-  return open.length === 1 ? open[0]?.[1] : undefined;
+  const [only] = open;
+  return open.length === 1 && only
+    ? { value: only[1], requestId: named(only[0]) }
+    : { value: undefined, requestId: null };
 }
 
 /**
@@ -94,7 +109,11 @@ export function registerUploads(app: FastifyInstance, uploads: UploadRequestServ
   const inSession = { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } };
 
   app.post('/api/v1/drop/preview', tight, async (req) =>
-    uploads.preview(parse(dropTokenBody, req.body ?? {}).token),
+    uploads.preview(
+      parse(dropTokenBody, req.body ?? {}).token,
+      presentedDeviceCookies(req.cookies, DROP_DEVICE_COOKIE),
+      (requestId) => req.cookies[dropCookieName(requestId)],
+    ),
   );
 
   app.post('/api/v1/drop/code', tight, async (req) =>

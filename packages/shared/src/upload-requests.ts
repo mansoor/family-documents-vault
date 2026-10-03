@@ -171,6 +171,27 @@ export interface DropPreview {
   /** What Open asks for; empty when the link alone opens it. */
   protection: UploadProtection[];
   expires_at: string;
+  /**
+   * Which request it is (5.22): a page that has it open in this browser
+   * already — another tab, a link followed again — carries on in that
+   * session (`GET /drop/session`) rather than pressing Open, which would
+   * start another and leave the first one's files behind. Absent from older
+   * vaults.
+   */
+  request_id?: string;
+  /**
+   * Where an emailed code goes, masked (`j•••@e•••.com`), when Open asks for
+   * one (5.22), as a share link's preview says (5.20). The sender never
+   * types an address. Null in another browser than a this-device-only
+   * request's, and absent from older vaults.
+   */
+  code_to?: string | null;
+  /**
+   * It has been opened in another browser already, and opens only there
+   * (5.22): Open would be refused, and no code is sent here. Absent from
+   * older vaults.
+   */
+  other_device?: boolean;
 }
 
 /** `POST /api/v1/drop/code`: where the code went, masked, and until when it works. */
@@ -214,9 +235,33 @@ export interface DropSession {
   bytes_left: number;
   /** The largest one file may be now: the vault's limit, or what is left. */
   max_file_bytes: number;
+  /**
+   * The vault's own limit for one file (FDV_MAX_UPLOAD_BYTES), whatever is
+   * left: a page that gives room back on Remove caps one file by it too
+   * (the 5.22 review, N522W2-3).
+   */
+  file_limit_bytes: number;
   expires_at: string;
   session_expires_at: string;
   files: DropFile[];
+}
+
+/**
+ * A sent file's name as the vault keeps it, and shows it (`DropFile.name`):
+ * its last path part, in NFC, with no control or direction characters,
+ * runs of space as one, trimmed, and at most 200 characters; `file` when
+ * nothing is left. The API keeps names so, and a page that looks for a file
+ * it sent compares names so (the 5.22 review, N522W2-2).
+ */
+export function dropFileName(name: string): string {
+  const last = name.split(/[\\/]/).pop() ?? '';
+  const clean = last
+    .normalize('NFC')
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const cut = [...clean].slice(0, 200).join('');
+  return cut && cut !== '.' && cut !== '..' ? cut : 'file';
 }
 
 /** `POST /api/v1/drop/finish`: how many files went, and whether the request is closed now. */

@@ -249,15 +249,22 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
     expect(res.statusCode).toBe(200);
     const shown = res.json<Record<string, unknown>>();
     expect(Object.keys(shown).sort()).toEqual([
+      'code_to',
       'expires_at',
       'household_name',
+      'other_device',
       'protection',
+      'request_id',
       'requested_by',
     ]);
     expect(shown).toMatchObject({
       household_name: 'The Test family',
       requested_by: 'Adult',
       protection: ['password'],
+      // Which request it is (5.22): what a page has open already is found by it.
+      request_id: made.request.id,
+      code_to: null,
+      other_device: false,
     });
     for (const secret of ['W-2', 'tax return', '1099', 'Jane', 'accountant', 'jane@']) {
       expect(res.body, secret).not.toContain(secret);
@@ -2088,6 +2095,290 @@ describe.skipIf(!testAdminUrl())('asking somebody to send documents', () => {
       vi.useRealTimers();
     }
     expect(await stored(made.request.id)).toBe(1);
+  });
+
+  it('a made-up password opens however its capitals, spaces and dashes are typed; a typed one only as typed (0048)', async () => {
+    const made = await make(adult, { with_password: true });
+    const password = made.password as string;
+    expect(password).toMatch(/^[a-z2-9]{4}-[a-z2-9]{4}-[a-z2-9]{4}$/);
+    const shapes = [
+      password,
+      password.toUpperCase(),
+      password.replace(/-/g, ' '),
+      password.replace(/-/g, ''),
+      ` ${password.toUpperCase().replace(/-/g, ' - ')} `,
+    ];
+    for (const typed of shapes) {
+      const res = await unlock(made.link_token, { password: typed });
+      expect(res.statusCode, typed).toBe(200);
+    }
+    // Wrong is still wrong, and counted.
+    const wrong = await unlock(made.link_token, { password: password.replace(/^./, '_') });
+    expect(wrong.statusCode).toBe(401);
+    const [mine] = await admin<{ secret_kind: string; attempts: number }>(
+      'select secret_kind, attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(mine).toEqual({ secret_kind: 'generated', attempts: 1 });
+
+    // A password the requester typed is theirs: exactly as typed.
+    const typed = await make(adult, { password: 'River-Otter 7' });
+    for (const near of ['river-otter 7', 'RIVER-OTTER 7', 'RiverOtter7', 'River Otter 7']) {
+      const res = await unlock(typed.link_token, { password: near });
+      expect(res.statusCode, near).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('secret_wrong');
+    }
+    expect((await unlock(typed.link_token, { password: 'River-Otter 7' })).statusCode).toBe(200);
+    const [theirs] = await admin<{ secret_kind: string }>(
+      'select secret_kind from upload_request where id = $1',
+      [typed.request.id],
+    );
+    expect(theirs?.secret_kind).toBe('password');
+
+    // One made before 0048 has no kind, and is checked as it was hashed: as typed.
+    const older = await make(adult);
+    await admin('update upload_request set secret_hash = $2, secret_kind = null where id = $1', [
+      older.request.id,
+      await argon2.hash('abcd-efgh-jkmn'),
+    ]);
+    expect((await unlock(older.link_token, { password: 'ABCD EFGH JKMN' })).statusCode).toBe(401);
+    expect((await unlock(older.link_token, { password: 'abcd-efgh-jkmn' })).statusCode).toBe(200);
+    // And a kind is only ever a password's.
+    await expect(
+      admin('update upload_request set secret_kind = $2 where id = $1', [
+        (await make(adult)).request.id,
+        'generated',
+      ]),
+    ).rejects.toThrow(/upload_request_secret_kind_hashed/);
+  });
+
+  it('files sent with Finish are not listed in the session again (the 5.22 review)', async () => {
+    const made = await make(adult);
+    const { cookie } = await opened(made.link_token);
+    const session = () =>
+      h.app.inject({ url: '/api/v1/drop/session', cookies: cookie, remoteAddress: addr() });
+    expect((await send(cookie, { name: 'first.pdf', bytes: PDF() })).statusCode).toBe(201);
+    expect((await session()).json<DropSession>().files.map((f) => f.name)).toEqual(['first.pdf']);
+    const finished = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/finish',
+      cookies: cookie,
+      payload: {},
+      remoteAddress: addr(),
+    });
+    expect(finished.json()).toEqual({ files: 1, closed: false });
+    // Gone from this page: the reviewer's now, and nothing here could take it back.
+    const after = (await session()).json<DropSession>();
+    expect(after.files).toEqual([]);
+    expect(after.files_left).toBe(9);
+    // What is sent next is listed, alone, and Finish sends it alone.
+    expect((await send(cookie, { name: 'second.pdf', bytes: PDF() })).statusCode).toBe(201);
+    expect((await session()).json<DropSession>().files.map((f) => f.name)).toEqual(['second.pdf']);
+    // The vault's own limit for one file, whatever is left (N522W2-3): the
+    // harness gives its upload requests 5 MB.
+    const limit = 5 * 1024 * 1024;
+    expect(after.file_limit_bytes).toBe(limit);
+    await admin('update upload_request set bytes_used = max_total_bytes - 1000 where id = $1', [
+      made.request.id,
+    ]);
+    const nearlyFull = (await session()).json<DropSession>();
+    expect(nearlyFull.max_file_bytes).toBe(1000);
+    expect(nearlyFull.file_limit_bytes).toBe(limit);
+  });
+
+  it('the preview says which request it is, where its code goes, masked, and when this is another browser (5.22)', async () => {
+    const made = await make(adult, {
+      recipient_email: 'jane.smith@example.test',
+      email_code: true,
+      this_device_only: true,
+    });
+    const first = (await preview(made.link_token)).json<Record<string, unknown>>();
+    expect(first).toMatchObject({
+      request_id: made.request.id,
+      protection: ['email_code', 'this_device'],
+      code_to: 'j•••@e•••.test',
+      other_device: false,
+    });
+    // Opened, with a code, in one browser: bound to it.
+    const sent = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/drop/code',
+      payload: { token: made.link_token },
+      remoteAddress: addr(),
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const res = await unlock(made.link_token, { code: codeSentTo('jane.smith@example.test') });
+    expect(res.statusCode, res.body).toBe(200);
+    const device = res.cookies.find((c) => c.name === DEVICE)?.value as string;
+    const previewIn = (cookies: Record<string, string>) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/preview',
+        payload: { token: made.link_token },
+        cookies,
+        remoteAddress: addr(),
+      });
+    // That browser is told what it was.
+    expect((await previewIn({ [DEVICE]: device })).json()).toMatchObject({
+      other_device: false,
+      code_to: 'j•••@e•••.test',
+    });
+    // Another is told before it presses Open, and not where a code would go.
+    const elsewhere = (await previewIn({})).json<Record<string, unknown>>();
+    expect(elsewhere).toMatchObject({ other_device: true, code_to: null });
+    expect(JSON.stringify(elsewhere)).not.toContain('j•••');
+    // And nothing was counted by looking.
+    const [row] = await admin<{ visits_used: number; attempts: number }>(
+      'select visits_used, attempts from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row).toEqual({ visits_used: 1, attempts: 0 });
+  });
+
+  it('the request a call names binds its session: a cookie under one request’s name holding another’s opens neither (N522S-2)', async () => {
+    const a = await make(adult, { title: 'Request A' });
+    const b = await make(adult, { title: 'Request B' });
+    const openA = await opened(a.link_token);
+    const openB = await opened(b.link_token);
+    const nameA = Object.keys(openA.cookie)[0] as string;
+    const valueB = Object.values(openB.cookie)[0] as string;
+    // B's session, planted under A's name, asked about as A: refused, everywhere.
+    const swapped = { [nameA]: valueB };
+    const asA = { 'x-fdv-drop-request': a.request.id };
+    const answers = [
+      await h.app.inject({
+        url: '/api/v1/drop/session',
+        headers: asA,
+        cookies: swapped,
+        remoteAddress: addr(),
+      }),
+      await (() => {
+        const form = new FormData();
+        form.append('file', PDF(), { filename: 'meant-for-a.pdf', contentType: 'application/pdf' });
+        return h.app.inject({
+          method: 'POST',
+          url: '/api/v1/drop/files',
+          headers: { ...form.getHeaders(), ...asA },
+          cookies: swapped,
+          payload: form.getBuffer(),
+          remoteAddress: addr(),
+        });
+      })(),
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/drop/files/${randomUUID()}`,
+        headers: asA,
+        cookies: swapped,
+        remoteAddress: addr(),
+      }),
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/finish',
+        headers: asA,
+        cookies: swapped,
+        payload: {},
+        remoteAddress: addr(),
+      }),
+      // And with no header, the cookie's own name says which request it is.
+      await h.app.inject({ url: '/api/v1/drop/session', cookies: swapped, remoteAddress: addr() }),
+    ];
+    for (const res of answers) {
+      expect(res.statusCode, res.body).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('drop_session_ended');
+    }
+    // Nothing reached B's session.
+    const bSession = (
+      await h.app.inject({
+        url: '/api/v1/drop/session',
+        cookies: openB.cookie,
+        remoteAddress: addr(),
+      })
+    ).json<DropSession>();
+    expect(bSession.files).toEqual([]);
+    expect(bSession.request_id).toBe(b.request.id);
+    // Each under its own name, as itself, is answered.
+    const own = await h.app.inject({
+      url: '/api/v1/drop/session',
+      headers: asA,
+      cookies: openA.cookie,
+      remoteAddress: addr(),
+    });
+    expect(own.statusCode).toBe(200);
+    expect(own.json<DropSession>().request_id).toBe(a.request.id);
+  });
+
+  it('a call inside a session with no session to find is answered 401, whatever is missing (N522S-2)', async () => {
+    const a = await make(adult);
+    const b = await make(adult);
+    const openA = await opened(a.link_token);
+    const openB = await opened(b.link_token);
+    const ask = (headers: Record<string, string>, cookies: Record<string, string>) =>
+      h.app.inject({ url: '/api/v1/drop/session', headers, cookies, remoteAddress: addr() });
+    const cases: Array<[string, Record<string, string>, Record<string, string>]> = [
+      ['a header and no cookie', { 'x-fdv-drop-request': a.request.id }, {}],
+      [
+        'a header and a cookie that is no session',
+        { 'x-fdv-drop-request': a.request.id },
+        { [Object.keys(openA.cookie)[0] as string]: 'not-a-session-at-all' },
+      ],
+      ['a header that is no request id', { 'x-fdv-drop-request': 'not-a-uuid' }, openA.cookie],
+      [
+        'a header naming one request, and only the other’s cookie',
+        { 'x-fdv-drop-request': a.request.id },
+        openB.cookie,
+      ],
+      ['two sessions and no header', {}, { ...openA.cookie, ...openB.cookie }],
+      ['no cookie and no header', {}, {}],
+    ];
+    for (const [what, headers, cookies] of cases) {
+      const res = await ask(headers, cookies);
+      expect(res.statusCode, what).toBe(401);
+      expect(res.json<{ error: { code: string } }>().error.code, what).toBe('drop_session_ended');
+    }
+  });
+
+  it('its last visit in use in this browser: the preview still names the request, to that browser alone (N522S-3)', async () => {
+    const made = await make(adult, { max_visits: 1 });
+    const { cookie } = await opened(made.link_token);
+    expect((await send(cookie, { name: 'w2.pdf', bytes: PDF() })).statusCode).toBe(201);
+    const previewWith = (cookies: Record<string, string>) =>
+      h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/preview',
+        payload: { token: made.link_token },
+        cookies,
+        remoteAddress: addr(),
+      });
+    // The browser whose session used the last visit: told which request it is.
+    const mine = await previewWith(cookie);
+    expect(mine.statusCode, mine.body).toBe(200);
+    expect(mine.json()).toMatchObject({ request_id: made.request.id });
+    // And carries on in it: its file is still there to send.
+    const carried = await h.app.inject({
+      url: '/api/v1/drop/session',
+      headers: { 'x-fdv-drop-request': made.request.id },
+      cookies: cookie,
+      remoteAddress: addr(),
+    });
+    expect(carried.json<DropSession>().files.map((f) => f.name)).toEqual(['w2.pdf']);
+    // Any other browser, or a cookie that is no live session of it: used up.
+    for (const other of [{}, { [Object.keys(cookie)[0] as string]: 'not-a-session-at-all' }]) {
+      const res = await previewWith(other);
+      expect(res.statusCode).toBe(410);
+      expect(res.json<{ error: { code: string } }>().error.code).toBe('request_used_up');
+    }
+    // Its session idle past 30 minutes: used up for it too.
+    await admin(
+      "update upload_session set last_seen_at = now() - interval '31 minutes' where request_id = $1",
+      [made.request.id],
+    );
+    expect((await previewWith(cookie)).statusCode).toBe(410);
+    // Looking counted nothing.
+    const [row] = await admin<{ visits_used: number }>(
+      'select visits_used from upload_request where id = $1',
+      [made.request.id],
+    );
+    expect(row?.visits_used).toBe(1);
   });
 
   it("the database's copy of who may ask is the matrix's", async () => {

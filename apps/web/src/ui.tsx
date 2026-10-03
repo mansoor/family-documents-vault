@@ -182,6 +182,46 @@ export function Switch(props: {
   );
 }
 
+/**
+ * The app's box (`.check`, 5.19): beside the start of its label, never
+ * wrapped onto a line of its own on a phone. With a `note`, what is said
+ * about it sits just under the label, in the label's column (`.check-noted`),
+ * and is heard with the box — never pushed down by the row's tap height.
+ */
+export function Check(props: {
+  id: string;
+  checked: boolean;
+  label: ReactNode;
+  onChange: (on: boolean) => void;
+  note?: ReactNode;
+  /** The note's id, when something else names it; `<id>-note` otherwise. */
+  noteId?: string;
+  /** Something else said about it, outside the row. */
+  describedBy?: string | undefined;
+  disabled?: boolean;
+}) {
+  const noteId = props.note ? (props.noteId ?? `${props.id}-note`) : undefined;
+  const described = [noteId, props.describedBy].filter(Boolean).join(' ') || undefined;
+  return (
+    <div className={props.note ? 'check check-noted' : 'check'}>
+      <input
+        id={props.id}
+        type="checkbox"
+        checked={props.checked}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.checked)}
+        aria-describedby={described}
+      />
+      <label htmlFor={props.id}>{props.label}</label>
+      {props.note && (
+        <span id={noteId} className="muted check-note">
+          {props.note}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function Select(props: {
   id: string;
   label: string;

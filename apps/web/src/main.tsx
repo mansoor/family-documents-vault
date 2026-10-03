@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { holdAccountLinkToken, reopenOnNewLink, takeLinkToken } from './link-token.js';
+import { DropPage } from './screens/DropPage.js';
 import { SharePage } from './screens/SharePage.js';
 import './styles.css';
 
@@ -20,6 +21,16 @@ if (/^\/s\/?$/.test(window.location.pathname)) {
   root.render(
     <StrictMode>
       <SharePage token={token} />
+    </StrictMode>,
+  );
+} else if (/^\/drop\/?$/.test(window.location.pathname)) {
+  // The page a request to send documents opens (5.22), on its own as /s
+  // is: no sign-in, no session, no capability document. Its token is read,
+  // and taken out of the address, before anything is drawn.
+  const token = takeLinkToken();
+  root.render(
+    <StrictMode>
+      <DropPage token={token} />
     </StrictMode>,
   );
 } else {

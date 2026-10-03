@@ -14,7 +14,7 @@ const PASSWORD = 'correct horse battery staple';
 
 /**
  * Signed in through the page, once for this file, and its token. Signing in
- * is limited to 10 a minute, and the suite signs in up to nine times a run:
+ * is limited to 10 a minute, and the suite signs in up to ten times a run:
  * once in each file, first-run.spec.ts only when it is run again. So wait a
  * minute between local runs. The rest of what the suite asks, from its one
  * address, is under FDV_RATE_LIMIT_PER_MINUTE, which CI raises (0.5.17).
