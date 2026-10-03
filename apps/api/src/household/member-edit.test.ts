@@ -578,6 +578,64 @@ describe.skipIf(!testAdminUrl())("changing a person's details (5.25)", () => {
      * happen, not hoped for: the person is held from outside while the two
      * requests queue for them, the one that must go first queued first.
      */
+    it('removing for good (5.24) after a passing: an owner’s own filed by them goes at once, theirs still waits a day', async () => {
+      // Recorded as passed away, a filer never signs in here again, and so
+      // is never one to be told: as for a sign-in taken away (5.24).
+      expect((await stepUp(owner, { password: 'correct horse battery' })).statusCode).toBe(200);
+      const may = await h.join(owner, {
+        name: 'Aunt May',
+        email: 'may-525@example.test',
+        role: 'adult',
+      });
+      const file = async (who: Tokens, title: string, owner_member_id: string) => {
+        const r = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/documents',
+          headers: h.as(who),
+          payload: { title, type_key: 'utility_bill', visibility: 'household', owner_member_id },
+        });
+        expect(r.statusCode, r.body).toBe(201);
+        return json<{ id: string }>(r).id;
+      };
+      const hers = await file(may, 'May’s gas bill', may.member_id);
+      const forOwner = await file(owner, 'Filed by May', owner.member_id);
+      const mayAccount = json<{ account_id: string }>(
+        await h.app.inject({ url: '/api/v1/me', headers: h.as(may) }),
+      ).account_id;
+      await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .updateTable('document')
+          .set({ created_by: mayAccount })
+          .where('id', '=', forOwner)
+          .execute(),
+      );
+      for (const id of [hers, forOwner]) {
+        const binned = await h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/documents/${id}`,
+          headers: h.as(owner),
+        });
+        expect(binned.statusCode, binned.body).toBe(204);
+      }
+      const atOnce = async () => {
+        const trash = json<{ items: Array<{ id: string; purge_at_once: boolean }> }>(
+          await h.app.inject({ url: '/api/v1/documents?deleted=true', headers: h.as(owner) }),
+        ).items;
+        return [hers, forOwner].map((id) => trash.find((d) => d.id === id)?.purge_at_once);
+      };
+      // May signs in: neither goes without asking her first.
+      expect(await atOnce()).toEqual([false, false]);
+      const removed = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${may.member_id}/sign-in`,
+        headers: h.as(owner),
+      });
+      expect(removed.statusCode, removed.body).toBe(204);
+      expect((await edit(owner, may.member_id, { is_deceased: true })).statusCode).toBe(200);
+      // The owner's own goes at once; hers is still asked about, and waits.
+      expect(await atOnce()).toEqual([false, true]);
+    });
+
     describe('an invitation sent again, at the same moment as', () => {
       const deadlocks = async (admin: ReturnType<typeof createPool>) =>
         (
