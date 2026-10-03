@@ -1,4 +1,4 @@
-import type { Tokens } from '@fdv/shared';
+import { shareEndWords, suspensionInEffect, type Tokens } from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db, type Role } from '@fdv/db';
@@ -44,8 +44,13 @@ export interface RequestMeta {
   installationId?: string | null;
 }
 
-/** Why a session ended, as clients are told it (0.4.11). */
-export type SessionEndReason = 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed';
+/**
+ * Why a session ended, as clients are told it (0.4.11). `suspended` since
+ * 5.28: the person's sign-in was locked by an owner, or paused after a
+ * restore.
+ */
+export type SessionEndReason =
+  'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended';
 
 /** Sign in once, and a session lasts at most this long however much it is used. */
 export const SESSION_MAX_MS = 180 * 24 * 60 * 60 * 1000;
@@ -58,6 +63,8 @@ const GRACE_HASHES_KEPT = 8;
 export function endReasonOf(revokedReason: string | null): SessionEndReason {
   if (revokedReason === 'refresh token reuse') return 'reused';
   if (revokedReason === 'membership removed') return 'removed';
+  // 5.28: household/locks.ts LOCKED_REVOKED_REASON.
+  if (revokedReason === 'sign-in locked') return 'suspended';
   return 'revoked';
 }
 
@@ -81,6 +88,28 @@ const invalidCredentials = () =>
 
 const sessionEnded = (why: string, reason: SessionEndReason) =>
   new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why, reason });
+
+/**
+ * A sign-in refused because it is locked, or paused after a restore (5.28):
+ * said only once the password, the code or the passkey has been proven, so
+ * it tells nobody else anything about which accounts there are. Who it is
+ * said to is the person, so it says until when, on the household's clock.
+ */
+export function membershipSuspended(
+  reason: 'locked' | 'restored' | null,
+  until: Date | null,
+  timezone: string,
+): ApiError {
+  const message =
+    reason === 'restored'
+      ? 'The vault was restored from a backup, and your sign-in waits for an owner to turn it back on. Ask one of them.'
+      : until
+        ? `An owner has locked your sign-in until ${shareEndWords(until, timezone)} (${timezone}). Ask one of them if you need to get in sooner.`
+        : 'An owner has locked your sign-in. Ask one of them if you need to get in.';
+  return new ApiError(403, 'membership_suspended', message, {
+    reason: reason ?? 'locked',
+  });
+}
 
 export function scopesFor(role: Role): Tokens['scopes_unlocked'] {
   // Until member scope keys exist (1.1), this reflects role alone.
@@ -230,6 +259,18 @@ export class AuthService {
     meta: RequestMeta,
     method: string,
   ): Promise<Tokens> {
+    // A switched-off account opens nothing, however it was proven: a
+    // passkey too (5.28), which until then went straight on.
+    const switchedOff = await this.db
+      .selectFrom('account')
+      .select(['disabled_at'])
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    if (!switchedOff || switchedOff.disabled_at) {
+      throw method === 'passkey'
+        ? new ApiError(401, 'passkey_rejected', 'That passkey was not accepted. Try again.')
+        : invalidCredentials();
+    }
     const account = { id: accountId };
 
     // Proved, but not yet anybody in a household: only its own memberships show.
@@ -248,13 +289,37 @@ export class AuthService {
       throw new ApiError(403, 'no_household', 'Your sign-in is not part of any family vault yet.');
     }
 
-    const p = {
+    const asked = {
       accountId: account.id,
       householdId: m.household_id,
       memberId: m.member_id,
       role: m.role,
     };
-    return withPrincipal(this.db, p, async (trx) => {
+    return withPrincipal(this.db, asked, async (trx) => {
+      // The membership as it is now, held until the session is open (5.28):
+      // a lock at the same moment waits for this, and then ends the session
+      // it made; or this waits for the lock, and is refused.
+      const held = await trx
+        .selectFrom('account_household')
+        .select(['member_id', 'role', 'suspended_at', 'suspended_until', 'suspend_reason'])
+        .where('account_id', '=', account.id)
+        .where('household_id', '=', m.household_id)
+        .forShare()
+        .executeTakeFirst();
+      if (!held) {
+        throw new ApiError(
+          403,
+          'no_household',
+          'Your sign-in is not part of any family vault yet.',
+        );
+      }
+      // Locked, or paused after a restore: refused, now that who it is has
+      // been proven, and only now.
+      if (suspensionInEffect(held)) {
+        const hh = await trx.selectFrom('household').select(['timezone']).executeTakeFirstOrThrow();
+        throw membershipSuspended(held.suspend_reason, held.suspended_until, hh.timezone);
+      }
+      const p = { ...asked, memberId: held.member_id, role: held.role };
       await appendAudit(trx, {
         householdId: m.household_id,
         actorAccountId: account.id,
@@ -448,11 +513,15 @@ export class AuthService {
 
       const membership = await trx
         .selectFrom('account_household')
-        .select(['member_id', 'role'])
+        .select(['member_id', 'role', 'suspended_at', 'suspended_until'])
         .where('account_id', '=', session.account_id)
         .where('household_id', '=', session.household_id)
         .executeTakeFirst();
       if (!membership) throw sessionEnded('membership removed', 'removed');
+      // Locked, or paused after a restore (5.28): no new token.
+      if (suspensionInEffect(membership)) {
+        throw sessionEnded('membership suspended', 'suspended');
+      }
 
       const next = newRefreshToken(session.household_id);
       const expiresAt = new Date(
@@ -598,12 +667,22 @@ export class AuthService {
             .onRef('account_household.account_id', '=', 'session.account_id')
             .onRef('account_household.household_id', '=', 'session.household_id'),
         )
-        .select(['session.id', 'account_household.role', 'account_household.member_id'])
+        .select([
+          'session.id',
+          'account_household.role',
+          'account_household.member_id',
+          'account_household.suspended_at',
+          'account_household.suspended_until',
+        ])
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
         .executeTakeFirst(),
     );
     if (!open) throw await this.whyEnded(claims.hid, claims.sid);
+    // Locked, or paused after a restore (5.28): its sessions ended with it,
+    // and any that did not (opened at that very moment, or written by hand)
+    // answers nothing.
+    if (suspensionInEffect(open)) throw sessionEnded('membership suspended', 'suspended');
     return {
       accountId: claims.sub,
       sessionId: claims.sid,

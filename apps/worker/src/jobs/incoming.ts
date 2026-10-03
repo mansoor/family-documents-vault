@@ -10,6 +10,7 @@ import {
   INCOMING_KEEP_DAYS,
   incomingWords,
   PREVIEW_MAX_PAGES,
+  suspensionInEffect,
   type PushMessage,
 } from '@fdv/shared';
 import { adapterFromRow, deleteAll, StorageError, type StorageAdapter } from '@fdv/storage';
@@ -333,6 +334,7 @@ export async function tellReviewers(
         join incoming_file f on f.household_id = a.household_id
        where a.household_id = ${hh}
          and a.role in ('owner', 'adult')
+         and not suspension_in_effect(a.suspended_at, a.suspended_until)
          and f.state = 'received' and f.submitted_at is not null
          and f.scan_state in ('unscanned', 'clean')
          and case f.review_by
@@ -481,7 +483,9 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
               .whereRef('a.account_id', '=', 'r.created_by')
               .whereRef('a.household_id', '=', 'r.household_id')
               .whereRef('a.member_id', '=', 'r.requester_member_id')
-              .where('a.role', 'in', ['owner', 'adult']),
+              .where('a.role', 'in', ['owner', 'adult'])
+              // 5.28: locked, or paused after a restore, reviews nothing.
+              .where(sql<boolean>`not suspension_in_effect(a.suspended_at, a.suspended_until)`),
           ),
         ),
       )
@@ -517,13 +521,21 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
       // Who asked, as they are now, held: a role changing waits for this.
       const asker = await trx
         .selectFrom('account_household')
-        .select('role')
+        .select(['role', 'suspended_at', 'suspended_until'])
         .where('account_id', '=', r.created_by)
         .where('household_id', '=', hh)
         .where('member_id', '=', r.requester_member_id)
         .forShare()
         .executeTakeFirst();
-      if (asker && (asker.role === 'owner' || asker.role === 'adult')) return [];
+      // Still able to review: an owner or an adult whose sign-in is not
+      // locked, nor paused after a restore (5.28).
+      if (
+        asker &&
+        (asker.role === 'owner' || asker.role === 'adult') &&
+        !suspensionInEffect(asker)
+      ) {
+        return [];
+      }
       const held = await trx
         .selectFrom('upload_request')
         .select('id')

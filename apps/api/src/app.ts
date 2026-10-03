@@ -17,7 +17,8 @@ import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
-import { registerHousehold, registerIdentity } from './household/routes.js';
+import { registerHousehold, registerIdentity, registerLocks } from './household/routes.js';
+import type { LockService } from './household/locks.js';
 import type { HouseholdService } from './household/service.js';
 import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
@@ -80,6 +81,8 @@ export interface AppDeps {
   photos: PhotoService;
   /** People's identity details, sealed, and who sees them (5.26). */
   identity: IdentityService;
+  /** Locking a sign-in, and what a restore paused (5.28). */
+  locks: LockService;
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
@@ -308,6 +311,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerVaults(app, deps.vaults, deps.stepUp);
   registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners, deps.photos);
   registerIdentity(app, deps.identity, deps.stepUp);
+  registerLocks(app, deps.locks, deps.stepUp);
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);
@@ -325,6 +329,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.shares,
     deps.uploads,
     deps.purge,
+    deps.locks,
   );
   registerUploads(app, deps.uploads);
   registerIncoming(app, deps.incoming);

@@ -1188,6 +1188,45 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     expect((await fileRow(fb.id))?.state).toBe('received');
   });
 
+  it('accept while the requester is locked: the filing waits, then files nothing (5.28)', async () => {
+    await stepUp(owner);
+    const rana = await h.join(owner, {
+      name: 'Rana',
+      email: `rana-${randomUUID()}@example.test`,
+      role: 'adult',
+    });
+    const { files } = await arrive(rana, {}, [{ name: 'r.pdf', bytes: PDF('r') }]);
+    const f = files[0] as DropFile;
+    await ready(f.id);
+    // Locked, not yet committed (another connection, as an owner's lock
+    // holds the membership first): the filing waits for it, then finds her
+    // no longer able to review, and files nothing.
+    const pool = createPool(h.adminUrl, 1);
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(
+        `update account_household set suspended_at = now(), suspend_reason = 'locked'
+          where member_id = $1 and household_id = $2`,
+        [rana.member_id, household],
+      );
+      const filing = accept(rana, f.id, { title: 'R' });
+      expect(await soon(filing)).toBe('held');
+      await client.query('commit');
+      const answered = await filing;
+      expect(answered.statusCode, answered.body).toBe(404);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+    expect((await fileRow(f.id))?.state).toBe('received');
+    await admin(
+      `update account_household set suspended_at = null, suspend_reason = null
+        where member_id = $1 and household_id = $2`,
+      [rana.member_id, household],
+    );
+  });
+
   it('accept while its request is taken back: both are done', async () => {
     const { request, files } = await arrive(adult, {}, [{ name: 'c.pdf', bytes: PDF('c') }]);
     const file = files[0] as DropFile;

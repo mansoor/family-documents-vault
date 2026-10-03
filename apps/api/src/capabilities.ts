@@ -102,6 +102,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.26: people's identity details, sealed; who sees them, wider only
       // after 72 hours' notice (A34).
       member_identity: true,
+      // 5.28: an owner locks somebody's sign-in, and unlocks it (A51, A54);
+      // after a restore every sign-in but the owners' waits for an owner.
+      member_admin: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

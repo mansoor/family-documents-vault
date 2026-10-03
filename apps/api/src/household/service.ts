@@ -5,6 +5,7 @@ import {
   DECEASED_REFUSAL,
   DECEASED_SIGNED_IN,
   DETAILS_REFUSAL,
+  suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
 } from '@fdv/shared';
@@ -128,6 +129,11 @@ export class HouseholdService {
     private readonly keys: ScopeKeys,
     /** Recording that somebody has passed away asks for it (5.25). */
     private readonly stepUp?: StepUpService,
+    /**
+     * How long a phone shows its Essentials without reaching the vault
+     * (FDV_OFFLINE_MAX_DAYS): the account card says it, for a lock (5.28).
+     */
+    private readonly maxOfflineDays = 90,
   ) {}
 
   async profile(p: Principal) {
@@ -520,9 +526,22 @@ export class HouseholdService {
           'member.id',
           'account_household.role',
           'account_household.account_id',
+          'account_household.suspended_at',
+          'account_household.suspended_until',
+          'account_household.suspend_reason',
+          'account_household.suspend_note',
           'account.email',
           'account.totp_confirmed_at',
         ])
+        .select((eb) =>
+          eb
+            .selectFrom('account_household as locker')
+            .innerJoin('member as locker_member', 'locker_member.id', 'locker.member_id')
+            .select('locker_member.display_name')
+            .whereRef('locker.account_id', '=', 'account_household.suspended_by')
+            .whereRef('locker.household_id', '=', 'account_household.household_id')
+            .as('suspended_by_name'),
+        )
         .where('member.id', '=', requested)
         .executeTakeFirst();
       if (!row) throw new ApiError(404, 'not_found', 'They have no sign-in to show.');
@@ -582,6 +601,18 @@ export class HouseholdService {
         passkeys: Number(passkeys.n),
         last_signed_in_at: last?.toISOString() ?? null,
         devices,
+        // A lock, or a pause after a restore (5.28): one past its end is over.
+        suspension:
+          row.suspend_reason !== null && row.suspended_at !== null && suspensionInEffect(row)
+            ? {
+                reason: row.suspend_reason,
+                since: row.suspended_at.toISOString(),
+                until: row.suspended_until?.toISOString() ?? null,
+                note: row.suspend_note,
+                by: row.suspended_by_name ?? null,
+              }
+            : null,
+        max_offline_days: this.maxOfflineDays,
       };
     });
   }

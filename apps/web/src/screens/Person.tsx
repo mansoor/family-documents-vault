@@ -2,15 +2,23 @@ import {
   can,
   canRemovePhoto,
   initialsFor,
+  LOCK_MAX_DAYS,
+  LOCK_NOTE_MAX,
   PHOTO_MAX_BYTES,
   PHOTO_TYPES,
   roleLabel,
+  shareEndWords,
   shortName,
   whenWords,
+  zonedParts,
+  zonedTime,
   type MemberAccount,
   type MemberEdit,
+  type MemberLock,
+  type MemberSuspension,
   type PhotoCrop,
   type Role,
+  type SuspendReason,
 } from '@fdv/shared';
 import {
   Fragment,
@@ -33,12 +41,16 @@ import { storedRole } from '../session.js';
 import {
   BottomNav,
   Button,
+  Check,
   ConfirmDialog,
   ErrorNote,
   Field,
+  LockIcon,
   Sheet,
   Switch,
+  TextArea,
   TopBar,
+  useSheetFocus,
 } from '../ui.js';
 import { DocRow } from './Home.js';
 import { RoleControls } from './Roles.js';
@@ -218,7 +230,13 @@ export function ProfileScreen() {
           </section>
 
           {myRole === 'owner' && member.has_account && !member.is_me && (
-            <AccountCard member={member} name={name} />
+            <AccountCard
+              member={member}
+              name={name}
+              otherOwners={(data?.members ?? []).some(
+                (m) => m.role === 'owner' && !m.is_me && m.id !== member.id,
+              )}
+            />
           )}
 
           {/* Ask someone outside the family for their papers (5.22): the
@@ -468,20 +486,37 @@ const CLIENT_WORDS: Record<MemberAccount['devices'][number]['client'], string> =
 const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
- * The owner's Account card (5.25), read-only: the address somebody signs in
- * with, whether two-step sign-in is on, their passkeys, their last sign-in
- * and their devices. Fetched only when asked for, since it asks the owner
- * to confirm it is them with a passkey or a code, never the password; an
+ * The owner's Account card (5.25): the address somebody signs in with,
+ * whether two-step sign-in is on, their passkeys, their last sign-in and
+ * their devices. Fetched only when asked for, since it asks the owner to
+ * confirm it is them with a passkey or a code, never the password; an
  * owner with neither is told to turn two-step sign-in on (A54).
+ *
+ * Since 5.28 it locks the sign-in, when the vault can
+ * (`features.member_admin`); a locked one says since when, until when, by
+ * whom and the note, with Unlock; one a restore paused offers Turn back on.
+ * Each is an owner power, asked as the card is.
  */
-function AccountCard(props: { member: Member; name: string }) {
-  const { guarded, authVersion } = useApp();
+function AccountCard(props: { member: Member; name: string; otherOwners: boolean }) {
+  const { guarded, authVersion, caps } = useApp();
   const { data: me } = useLoad((t) => api.me(t), [authVersion]);
+  // The household's clock, which a lock's end is chosen and said on, as a
+  // link's is (5.18): the vault tells the person the same words.
+  const { data: timezone } = useLoad(
+    async (t) => (await api.profile(t).catch(() => null))?.timezone ?? 'UTC',
+    [authVersion],
+  );
   const [card, setCard] = useState<MemberAccount | null>(null);
   const [refused, setRefused] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [locking, setLocking] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
   const shown = useRef<HTMLDListElement>(null);
+  const heldLine = useRef<HTMLParagraphElement>(null);
+  const status = useRef<HTMLParagraphElement>(null);
+  const lockButton = useRef<HTMLButtonElement>(null);
+  const tz = timezone ?? 'UTC';
 
   const show = async () => {
     setBusy(true);
@@ -490,7 +525,8 @@ function AccountCard(props: { member: Member; name: string }) {
       const got = await guarded((t) => api.memberAccount(t, props.member.id));
       if (!got) return;
       flushSync(() => setCard(got));
-      shown.current?.focus();
+      // A lock is the first thing said, when there is one.
+      (heldLine.current ?? shown.current)?.focus();
     } catch (err) {
       if (err instanceof ApiRequestError && err.code === 'totp_required_for_owner') {
         setRefused(true);
@@ -502,12 +538,45 @@ function AccountCard(props: { member: Member; name: string }) {
     }
   };
 
+  /** Unlocks it, or turns it back on after a restore; then reads the card again. */
+  const release = async (reason: SuspendReason) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setSaid(null);
+    try {
+      const done = await guarded((t) =>
+        reason === 'locked'
+          ? api.unlockMember(t, props.member.id)
+          : api.resumeMember(t, props.member.id),
+      );
+      if (done === null) return;
+      // As the vault has it now; if that cannot be read, what was done.
+      const now = await guarded((t) => api.memberAccount(t, props.member.id)).catch(() => null);
+      flushSync(() => {
+        setCard((was) => now ?? (was ? { ...was, suspension: null } : was));
+        setSaid(`${props.name} can sign in again.`);
+      });
+      status.current?.focus();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const noTwoStep = refused || me?.totp_required === true;
+  const suspended = card?.suspension ?? null;
   return (
     <section className="card stack" aria-labelledby="account-h">
       <h2 id="account-h" style={{ fontSize: 18 }}>
         Account
       </h2>
+      {/* What a lock, an unlock or Turn back on did: the first thing heard,
+          where focus goes once it is done. */}
+      <p ref={status} className="notice" role="status" tabIndex={-1} hidden={!said}>
+        {said}
+      </p>
       {noTwoStep ? (
         <>
           <p className="status status-warn">{TWO_STEP_FOR_SIGN_INS}</p>
@@ -517,6 +586,46 @@ function AccountCard(props: { member: Member; name: string }) {
         </>
       ) : card ? (
         <>
+          {suspended && (
+            <div className="stack">
+              <p ref={heldLine} className="status status-warn" tabIndex={-1}>
+                {suspendedWords(suspended, props.name, tz)}
+              </p>
+              <dl className="facts">
+                <dt>{suspended.reason === 'locked' ? 'Locked' : 'Paused'}</dt>
+                <dd>
+                  {whenWords(suspended.since)}
+                  {suspended.by ? `, by ${suspended.by}` : ''}
+                </dd>
+                {suspended.note && (
+                  <>
+                    <dt>Note</dt>
+                    <dd style={{ whiteSpace: 'pre-line' }}>{suspended.note}</dd>
+                  </>
+                )}
+              </dl>
+              {suspended.reason !== 'locked' && (
+                <p className="muted">
+                  The vault was restored from a backup, which paused every sign-in but the owners’.
+                  Their role is as the backup had it, {roleLabel(card.role)}: check it is still
+                  right first.
+                </p>
+              )}
+              <ErrorNote message={error} />
+              <div className="row">
+                {/* aria-disabled while it is done, not disabled: "confirm it
+                    is you" gives focus back to it. */}
+                <button
+                  type="button"
+                  className={`btn ${suspended.reason === 'locked' ? 'btn-quiet' : 'btn-primary'}`}
+                  aria-disabled={busy}
+                  onClick={() => void release(suspended.reason)}
+                >
+                  {busy ? 'Working…' : suspended.reason === 'locked' ? 'Unlock' : 'Turn back on'}
+                </button>
+              </div>
+            </div>
+          )}
           <dl className="facts" ref={shown} tabIndex={-1}>
             <dt>Role</dt>
             <dd>{roleLabel(card.role)}</dd>
@@ -546,6 +655,48 @@ function AccountCard(props: { member: Member; name: string }) {
             </ul>
           )}
           <p className="muted">Only owners can see this.</p>
+          {caps?.features.member_admin === true && !suspended && (
+            <>
+              <p id="lock-about" className="muted">
+                Locking signs {props.name} out everywhere at once, and keeps them out until it is
+                unlocked.
+              </p>
+              <Button
+                ref={lockButton}
+                kind="quiet"
+                danger
+                describedBy="lock-about"
+                onClick={() => {
+                  setSaid(null);
+                  setLocking(true);
+                }}
+              >
+                Lock sign-in
+              </Button>
+            </>
+          )}
+          {locking && (
+            <LockDialog
+              member={props.member}
+              name={props.name}
+              offlineDays={card.max_offline_days}
+              otherOwners={props.otherOwners}
+              timezone={tz}
+              returnFocus={lockButton}
+              onLocked={(suspension) => {
+                flushSync(() => {
+                  // Signed out everywhere: a lock ends their sessions, and
+                  // the devices go with them. Said from the answer, without
+                  // a second look, which the activity log would note.
+                  setCard((was) => (was ? { ...was, suspension, devices: [] } : was));
+                  setLocking(false);
+                  setSaid(`${props.name}’s sign-in is locked.`);
+                });
+                status.current?.focus();
+              }}
+              onCancel={() => setLocking(false)}
+            />
+          )}
         </>
       ) : (
         <>
@@ -564,6 +715,248 @@ function AccountCard(props: { member: Member; name: string }) {
         </>
       )}
     </section>
+  );
+}
+
+/** " (Europe/London time)" when the household's clock is not this browser's. */
+const zoneWords = (timezone: string) =>
+  timezone !== Intl.DateTimeFormat().resolvedOptions().timeZone ? ` (${timezone} time)` : '';
+
+/** What a locked or paused sign-in is, in a sentence: until when, and who ends it. */
+export function suspendedWords(s: MemberSuspension, name: string, timezone: string): string {
+  if (s.reason !== 'locked') {
+    // `restored`, or a reason never heard of: paused (MemberSuspension).
+    return `${name}’s sign-in is paused after the restore, until an owner turns it back on.`;
+  }
+  return s.until
+    ? `${name}’s sign-in is locked until ${shareEndWords(new Date(s.until), timezone)}${zoneWords(timezone)}, unless an owner unlocks it sooner.`
+    : `${name}’s sign-in is locked until an owner unlocks it.`;
+}
+
+/**
+ * Why a lock's end will not do, in the vault's words (locks.ts); null when
+ * it will. Checked here first, so the button waits rather than the vault
+ * refusing.
+ */
+export function lockEndProblem(at: Date | null, now = Date.now()): string | null {
+  if (!at || Number.isNaN(at.getTime())) return 'Choose a date and a time.';
+  if (at.getTime() <= now) return 'Choose a time in the future to unlock.';
+  if (at.getTime() > now + LOCK_MAX_DAYS * 864e5) {
+    return 'A lock can end by itself within a year at most. Choose “Until I unlock it” to keep it longer.';
+  }
+  return null;
+}
+
+/**
+ * "Lock Tess’s sign-in" (5.28, A51): what a lock does, line by line, before
+ * it is done — each line what the vault does (locks.ts), and each changing
+ * with the choices under it: an end by itself, their links ended for good,
+ * a note for the owners. Focus starts on the heading, so the list is read
+ * from its top, not skipped for the first field; Tab stays inside, and
+ * Escape cancels until the lock is on its way (useSheetFocus).
+ */
+function LockDialog(props: {
+  member: Member;
+  name: string;
+  /** How long a phone keeps its offline copies (FDV_OFFLINE_MAX_DAYS); unsaid by an older vault. */
+  offlineDays: number | undefined;
+  otherOwners: boolean;
+  timezone: string;
+  /** Where focus goes once it has gone, if the button that opened it has too. */
+  returnFocus: RefObject<HTMLElement | null>;
+  onLocked: (suspension: MemberSuspension) => void;
+  onCancel: () => void;
+}) {
+  const { guarded } = useApp();
+  const { name, timezone } = props;
+  const [ends, setEnds] = useState<'unlocked' | 'dated'>('unlocked');
+  // A week from now, on the hour, on the household's clock: somewhere to start.
+  const [when, setWhen] = useState(() => {
+    const p = zonedParts(new Date(Date.now() + 7 * 864e5), timezone);
+    return { date: p.date, time: `${p.time.slice(0, 2)}:00` };
+  });
+  const [endLinks, setEndLinks] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const box = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useSheetFocus(box, {
+    start: heading,
+    onEscape: props.onCancel,
+    busy,
+    returnFocus: props.returnFocus,
+  });
+
+  const at = ends === 'dated' ? zonedTime(when.date, when.time, timezone) : null;
+  const problem = ends === 'dated' ? lockEndProblem(at) : null;
+  const endWords = at && !problem ? `${shareEndWords(at, timezone)}${zoneWords(timezone)}` : null;
+  // The days a lock may end on, as the dialog opens: today to a year on.
+  const [{ today, latest }] = useState(() => ({
+    today: zonedParts(new Date(), timezone).date,
+    latest: zonedParts(new Date(Date.now() + LOCK_MAX_DAYS * 864e5), timezone).date,
+  }));
+
+  const lock = async () => {
+    if (busy || problem) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Only what was chosen: no end, links paused, no note, otherwise.
+      const body: MemberLock = {};
+      if (at) body.until = at.toISOString();
+      if (endLinks) body.end_links = true;
+      if (note.trim()) body.note = note.trim();
+      const done = await guarded((t) => api.lockMember(t, props.member.id, body));
+      if (!done) return;
+      props.onLocked(done.suspension);
+    } catch (err) {
+      // Said here, where it is seen; the dialog stays open for another try.
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="scrim" role="presentation">
+      <section
+        ref={box}
+        className="card stack sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="lock-h"
+        aria-busy={busy}
+      >
+        <h2 id="lock-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+          Lock {name}’s sign-in
+        </h2>
+        <ul className="lock-effects" aria-label="What locking does">
+          <li>
+            {endWords
+              ? `${name} can’t sign in until ${endWords}, unless an owner unlocks it sooner.`
+              : `${name} can’t sign in until an owner unlocks it.`}
+          </li>
+          <li>{`Every device ${name} is signed in on is signed out now.`}</li>
+          {props.offlineDays !== undefined && (
+            <li>{`A phone that never reconnects keeps its offline copies up to ${props.offlineDays} days.`}</li>
+          )}
+          <li>
+            {endLinks
+              ? `Any links and requests to send documents ${name} made end for good.`
+              : `Any links and requests to send documents ${name} made pause, and work again when the lock ends.`}
+          </li>
+          <li>{`Any invitations ${name} sent are cancelled, and any exports they made stop working.`}</li>
+          <li>{`Files sent for ${name} alone to look at go to the owners.`}</li>
+          <li>
+            {props.otherOwners
+              ? `${name} is emailed to say so, and the other owners are told.`
+              : `${name} is emailed to say so.`}
+          </li>
+        </ul>
+
+        <div className="field" role="group" aria-labelledby="lock-end-h">
+          <span id="lock-end-h" className="field-label">
+            How long
+          </span>
+          <div className="pills">
+            {(
+              [
+                ['unlocked', 'Until I unlock it'],
+                ['dated', 'Until a date'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={`pill${ends === value ? ' pill-on' : ''}`}
+                aria-pressed={ends === value}
+                onClick={() => setEnds(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {ends === 'dated' && (
+            <>
+              <div className="share-when">
+                <label className="field" htmlFor="lock-date">
+                  <span>Date</span>
+                  <input
+                    id="lock-date"
+                    type="date"
+                    value={when.date}
+                    min={today}
+                    max={latest}
+                    onChange={(e) => setWhen({ date: e.target.value, time: when.time })}
+                    aria-describedby="lock-end-note"
+                  />
+                </label>
+                <label className="field" htmlFor="lock-time">
+                  <span>Time</span>
+                  <input
+                    id="lock-time"
+                    type="time"
+                    value={when.time}
+                    step={300}
+                    onChange={(e) => setWhen({ date: when.date, time: e.target.value })}
+                    aria-describedby="lock-end-note"
+                  />
+                </label>
+              </div>
+              <span
+                id="lock-end-note"
+                className={problem ? 'field-error' : 'muted'}
+                role={problem ? 'alert' : undefined}
+              >
+                {problem ?? `Unlocks by itself on ${endWords ?? ''}.`}
+              </span>
+            </>
+          )}
+        </div>
+
+        <Check
+          id="lock-end-links"
+          checked={endLinks}
+          onChange={setEndLinks}
+          label="End their links and requests for good"
+          note="Otherwise they pause, and work again when the lock ends."
+        />
+        <TextArea
+          id="lock-note"
+          label={props.otherOwners ? 'A note for the other owners (optional)' : 'A note (optional)'}
+          value={note}
+          maxLength={LOCK_NOTE_MAX}
+          onChange={setNote}
+          hint={`Owners see it on ${name}’s page. ${name} never does.`}
+        />
+
+        <ErrorNote message={error} />
+        <div className="row">
+          {/* aria-disabled, not disabled: a disabled button drops the focus
+              it holds, and "confirm it is you" gives it back here. */}
+          <button
+            type="button"
+            className="btn btn-danger btn-icon"
+            aria-disabled={busy || problem !== null}
+            onClick={() => void lock()}
+          >
+            <LockIcon />
+            {busy ? 'Locking…' : 'Lock sign-in'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-disabled={busy}
+            onClick={() => {
+              if (!busy) props.onCancel();
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 

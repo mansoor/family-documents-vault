@@ -24,6 +24,7 @@ import type { Capability } from '@fdv/shared';
 import type { MultipartFile } from '@fastify/multipart';
 import { needs } from '../authz.js';
 import { noPhoto, orderRefusal, parseCrop, photoOrder, type PhotoService } from './photos.js';
+import { lockBody, type LockService } from './locks.js';
 import {
   identityAudienceBody,
   identityRevealBody,
@@ -202,6 +203,43 @@ export function registerIdentity(
       return identity.setAudience(p, body.audience, metaOf(req));
     },
   );
+}
+
+/**
+ * Locking a sign-in (5.28): owners only (A52), and an owner power (A54) —
+ * an owner with only a password is refused it, and any other is asked for a
+ * passkey or a code, never the password. What is sent is checked first
+ * (422), then who is asking, then whom it is about (404, 409). Turning a
+ * sign-in back on after a restore asks the same.
+ */
+export function registerLocks(app: FastifyInstance, locks: LockService, stepUp: StepUpService) {
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+  const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
+
+  app.post('/api/v1/members/:id/lock', guard('member.suspend'), async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    const body = parse(lockBody, req.body ?? {});
+    await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+    return locks.lock(p, id, body, metaOf(req));
+  });
+
+  app.delete('/api/v1/members/:id/lock', guard('member.suspend'), async (req, reply) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+    await locks.unlock(p, id, metaOf(req));
+    return reply.status(204).send();
+  });
+
+  app.post('/api/v1/members/:id/resume', guard('restore.review'), async (req, reply) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+    await locks.resume(p, id, metaOf(req));
+    return reply.status(204).send();
+  });
 }
 
 export function registerHousehold(

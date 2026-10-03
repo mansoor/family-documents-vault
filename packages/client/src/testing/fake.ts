@@ -29,6 +29,8 @@ import {
   IDENTITY_TOO_LONG,
   inCollectionAudience,
   incomingFileName,
+  LOCK_MAX_DAYS,
+  LOCK_NOTE_MAX,
   maskIdentity,
   mergeIdentityWrite,
   revealIdentity,
@@ -42,6 +44,8 @@ import {
   PRIVATE_TO_THEM,
   PURGE_NOTICE_HOURS,
   refusalFor,
+  shareEndWords,
+  suspensionInEffect,
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
@@ -67,8 +71,10 @@ import {
   type IdentityPartView,
   type IssuerSuggestions,
   type MemberAccount,
+  type MemberSuspension,
   type OfflineGrant,
   type OfflineItem,
+  type PausedSignIn,
   type ReminderView,
   type Role,
   type Tokens,
@@ -99,10 +105,15 @@ interface FakeSession {
   graceUsed?: boolean;
   /** Tokens a grace replay touched: presented again, they end the session. */
   graceTokens?: string[];
-  /** Why it ended, as the real vault says it. */
-  endedBecause?: 'revoked' | 'reused';
+  /** Why it ended, as the real vault says it: since 5.28 `suspended`, by a lock. */
+  endedBecause?: 'revoked' | 'reused' | 'suspended';
   /** Its offline grant, as the real vault keeps it on the session (0.4.13). */
   offlineGrant?: OfflineGrant | null;
+  /**
+   * Whose it is, when it is not the fake's own person's (5.28): somebody
+   * in `signIns`, who signed in with their own password.
+   */
+  memberId?: string;
 }
 
 export interface FakeVaultState {
@@ -163,6 +174,26 @@ export interface FakeVaultState {
    * told of a wider audience, so it is refused while there are any (5.26).
    */
   signInsOff: string[];
+  /**
+   * Other people's sign-ins (5.28): each signs in with its own email and
+   * password as the person it names, one of `members`, and its sessions are
+   * theirs. Its tokens and GET /me, locking and unlocking, the account card
+   * and GET /after-restore know who is asking; everything else the fake
+   * answers as its one person, whoever asks.
+   */
+  signIns: Array<{ member_id: string; email: string; password: string }>;
+  /**
+   * Sign-ins locked by an owner or paused after a restore (5.28), by member
+   * id — the fake's own person, `fake-member`, included: a test sets one to
+   * show a phone its paused screens. While one is in effect (a lock past
+   * its `until` is over, by the clock) the person's sign-in is refused once
+   * the password is right (`403 membership_suspended`) and their sessions
+   * answer `401 session_ended` with the reason `suspended`, as the real
+   * vault's do. `pauseSignIns()` pauses them as a restore does.
+   */
+  suspensions: Map<string, MemberSuspension>;
+  /** The household's clock (5.28): the end of a lock is said in it. UTC, as a new vault's. */
+  timezone: string;
   identityPending: IdentityAudienceView['pending'];
   /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
   photosOnTheirWay: Map<string, string>;
@@ -469,7 +500,24 @@ export const FAKE_INSTANCE_ID = '3b9e1d2c-7a6f-4e5d-9c8b-1a2f3e4d5c6b';
 /** Upload keys are UUIDs, written the usual way. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
+/** How many days a phone shows its Essentials without reaching the vault: the vault's default. */
+const FAKE_OFFLINE_MAX_DAYS = 90;
+
+/** The one person the fake signs in as, unless somebody in `signIns` signs in (5.28). */
+const ME = 'fake-member';
+
+export function createFakeVault(): {
+  fetch: FetchLike;
+  state: FakeVaultState;
+  /**
+   * What a restore does to sign-ins (5.28, A55): every one but the owners'
+   * paused, for an owner to turn back on — the fake's own person's too,
+   * when `role` is not an owner — a lock in force kept as a lock, with no
+   * end of its own any more; and every session ended, as a restore ends
+   * them (`revoked`).
+   */
+  pauseSignIns: () => void;
+} {
   const state: FakeVaultState = {
     setupRequired: true,
     email: null,
@@ -497,6 +545,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     identityAudience: 'owners_and_self',
     identityPending: null,
     signInsOff: [],
+    signIns: [],
+    suspensions: new Map(),
+    timezone: 'UTC',
     role: 'owner',
     collections: [],
     uploadRequests: [],
@@ -646,21 +697,43 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     return null;
   };
 
+  /** Somebody's role now: the fake's own person's is `role`; a person without a sign-in, none. */
+  const roleOfMember = (memberId: string): Role | null =>
+    memberId === ME
+      ? state.role
+      : ((state.members.find((m) => m.id === memberId)?.role as Role | undefined) ?? null);
+  /** Whose a session is (5.28): the fake's own person, or somebody in `signIns`. */
+  const whoOf = (s: FakeSession): { memberId: string; role: Role } => ({
+    memberId: s.memberId ?? ME,
+    role: s.memberId === undefined ? state.role : (roleOfMember(s.memberId) ?? 'viewer'),
+  });
+  /** A lock or a pause in effect for somebody now (5.28): a lock past its end is over. */
+  const suspensionOf = (memberId: string): MemberSuspension | null => {
+    const s = state.suspensions.get(memberId);
+    return s && suspensionInEffect({ suspended_at: s.since, suspended_until: s.until }) ? s : null;
+  };
+  /** Everybody with a sign-in: the fake's own person, and each of `members` with a role. */
+  const withSignIn = () => [
+    ME,
+    ...state.members.filter((m) => m.id !== ME && Boolean(m.role)).map((m) => m.id),
+  ];
+
   const tokensFor = (s: FakeSession): Tokens => {
     const access = next('access');
     state.access.set(access, s.id);
+    const who = whoOf(s);
     return {
       access_token: access,
       expires_in: 900,
       refresh_token: s.refresh,
       refresh_expires_in: 2_592_000,
       household_id: 'fake-household',
-      member_id: 'fake-member',
-      role: state.role,
+      member_id: who.memberId,
+      role: who.role,
       scopes_unlocked: ['household', 'adults', 'member'],
     };
   };
-  const open = (installation: string | null = null): Tokens => {
+  const open = (installation: string | null = null, memberId?: string): Tokens => {
     const s: FakeSession = {
       id: next('session'),
       refresh: next('refresh'),
@@ -669,9 +742,34 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       installation,
       rotatedAt: Date.now(),
       graceUsed: false,
+      ...(memberId !== undefined ? { memberId } : {}),
     };
     state.sessions.push(s);
     return tokensFor(s);
+  };
+
+  const pauseSignIns = () => {
+    const now = new Date().toISOString();
+    for (const id of withSignIn()) {
+      const held = state.suspensions.get(id);
+      const lockedNow = held?.reason === 'locked' && suspensionOf(id) !== null;
+      if (roleOfMember(id) !== 'owner' && held?.reason !== 'restored' && !lockedNow) {
+        state.suspensions.set(id, {
+          reason: 'restored',
+          since: now,
+          until: null,
+          note: null,
+          by: null,
+        });
+      }
+    }
+    // A backup cannot know whether a lock was made longer since: kept until an owner unlocks it.
+    for (const s of state.suspensions.values()) if (s.reason === 'locked') s.until = null;
+    for (const s of state.sessions) {
+      if (s.revoked) continue;
+      s.revoked = true;
+      s.endedBecause = 'revoked';
+    }
   };
 
   const fetch: FetchLike = async (url, init) => {
@@ -686,6 +784,9 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       const s = state.sessions.find((x) => x.id === id);
       if (!s) return fail(401, 'unauthenticated', 'Sign in first.');
       if (s.revoked) return ended(s.endedBecause ?? 'revoked');
+      // Locked, or paused after a restore (5.28): a session a lock did not
+      // end — a test's own suspension — answers nothing while it lasts.
+      if (suspensionOf(whoOf(s).memberId)) return ended('suspended');
       return s;
     };
 
@@ -734,6 +835,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           upload_requests: true,
           // People's identity details, and who sees them (5.26).
           member_identity: true,
+          // Locking a sign-in, and sign-ins paused after a restore (5.28).
+          member_admin: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -755,10 +858,20 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       return ok(open(init.headers['x-fdv-installation'] ?? null), 201);
     }
     if (path === '/api/v1/auth/password' && init.method === 'POST') {
-      if (String(body.email).toLowerCase() !== state.email || body.password !== state.password) {
+      // The fake's own person, or somebody else with a sign-in (5.28).
+      const email = String(body.email).toLowerCase();
+      const other =
+        email === state.email
+          ? undefined
+          : state.signIns.find((x) => x.email.toLowerCase() === email);
+      const known = email === state.email || other !== undefined;
+      if (!known || body.password !== (other ? other.password : state.password)) {
         return fail(401, 'invalid_credentials', "That email and password don't match.");
       }
-      return ok(open(init.headers['x-fdv-installation'] ?? null));
+      // Locked, or paused after a restore: said only now the password is right.
+      const held = suspensionOf(other ? other.member_id : ME);
+      if (held) return membershipSuspended(held, state.timezone);
+      return ok(open(init.headers['x-fdv-installation'] ?? null, other?.member_id));
     }
     if (path === '/api/v1/auth/refresh' && init.method === 'POST') {
       const presented = String(body.refresh_token);
@@ -783,6 +896,8 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
           replayed.installation === installation &&
           Date.now() - (replayed.rotatedAt ?? 0) <= 30_000;
         if (grace) {
+          // Locked, or paused after a restore (5.28): no new token.
+          if (suspensionOf(whoOf(replayed).memberId)) return ended('suspended');
           replayed.graceTokens = [
             ...(replayed.graceTokens ?? []),
             presented,
@@ -801,6 +916,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       }
       if (!current) return ended('revoked');
       if (current.revoked) return ended(current.endedBecause ?? 'revoked');
+      if (suspensionOf(whoOf(current).memberId)) return ended('suspended');
       current.previous = current.refresh;
       current.refresh = next('refresh');
       current.rotatedAt = Date.now();
@@ -816,11 +932,12 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     if (path === '/api/v1/me') {
       const s = session();
       if (!('id' in s)) return s;
+      const who = whoOf(s);
       return ok({
-        account_id: 'fake-account',
+        account_id: s.memberId === undefined ? 'fake-account' : `fake-account-${s.memberId}`,
         household_id: 'fake-household',
-        member_id: 'fake-member',
-        role: state.role,
+        member_id: who.memberId,
+        role: who.role,
         totp_enabled: false,
         totp_required: true,
       });
@@ -1306,7 +1423,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         return ok({
           items: grant ? o.items.filter(visible) : [],
           grant,
-          max_offline_days: 90,
+          max_offline_days: FAKE_OFFLINE_MAX_DAYS,
           server_time: new Date().toISOString(),
           truncated: false,
         });
@@ -2228,8 +2345,13 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         state.identityAudience = to;
         state.identityPending = null;
       } else if (state.identityPending?.to !== to) {
-        // Everybody with a sign-in is told: anybody who cannot sign in holds it back.
-        const off = state.members.filter((m) => state.signInsOff.includes(m.id));
+        // Everybody with a sign-in is told: anybody who cannot sign in holds
+        // it back — switched off, and since 5.28 locked or paused, any role.
+        const off = state.members
+          .filter((m) => state.signInsOff.includes(m.id) || suspensionOf(m.id) !== null)
+          .sort((a, b) =>
+            a.display_name < b.display_name ? -1 : a.display_name > b.display_name ? 1 : 0,
+          );
         if (off.length > 0) {
           return fail(
             409,
@@ -2245,6 +2367,140 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
         };
       }
       return ok(view());
+    }
+    // Locking a sign-in (5.28, A50–A52), and turning on again one a restore
+    // paused (A55), as the real vault answers them, to whoever asks by their
+    // session. Refused in its order: who may (403), what was sent (422), the
+    // owner power (A54) as the account card asks it, then the person.
+    const lockAt = /^\/api\/v1\/members\/([^/]+)\/(lock|resume)$/.exec(path);
+    if (lockAt && (init.method === 'POST' || (lockAt[2] === 'lock' && init.method === 'DELETE'))) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s);
+      const resuming = lockAt[2] === 'resume';
+      const locking = !resuming && init.method === 'POST';
+      const capability = resuming ? 'restore.review' : 'member.suspend';
+      if (!can(me.role, capability)) return fail(403, 'forbidden', refusalFor(capability));
+      const asked = locking ? lockOf(body) : { until: null, note: null };
+      if (typeof asked === 'string') return fail(422, 'validation_failed', asked);
+      if (!state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to manage other people's sign-ins.",
+        );
+      }
+      const id = decodeURIComponent(lockAt[1] as string);
+      const m = state.members.find((x) => x.id === id);
+      const role = roleOfMember(id);
+      if (!m || !role) return fail(404, 'not_found', 'They have no sign-in to lock.');
+      const held = suspensionOf(id);
+      if (resuming) {
+        if (state.suspensions.get(id)?.reason !== 'restored') {
+          return fail(
+            409,
+            'not_paused',
+            `${m.display_name}'s sign-in is not waiting after a restore.`,
+          );
+        }
+        state.suspensions.delete(id);
+        return empty();
+      }
+      if (!locking) {
+        // Never locked, past its end, or paused after a restore (resumed, not unlocked).
+        if (held?.reason !== 'locked') {
+          return fail(409, 'not_locked', `${m.display_name}'s sign-in is not locked.`);
+        }
+        state.suspensions.delete(id);
+        return empty();
+      }
+      if (id === me.memberId) {
+        return fail(422, 'validation_failed', 'You cannot lock your own sign-in.');
+      }
+      if (role === 'owner') {
+        return fail(
+          409,
+          'owner_notice_required',
+          `${m.display_name} is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+        );
+      }
+      if (held?.reason === 'locked') {
+        return fail(
+          409,
+          'already_locked',
+          `${m.display_name}'s sign-in is locked already. Unlock it first to lock it differently.`,
+        );
+      }
+      const now = Date.now();
+      if (asked.until !== null && Date.parse(asked.until) <= now) {
+        return fail(422, 'validation_failed', 'Choose a time in the future to unlock.');
+      }
+      if (asked.until !== null && Date.parse(asked.until) > now + LOCK_MAX_DAYS * 86_400_000) {
+        return fail(
+          422,
+          'validation_failed',
+          'A lock can end by itself within a year at most. Leave the end out to keep it until you unlock it.',
+        );
+      }
+      // Somebody paused after a restore may be locked: the lock takes the pause's place.
+      const suspension: MemberSuspension = {
+        reason: 'locked',
+        since: new Date(now).toISOString(),
+        until: asked.until,
+        note: asked.note,
+        by: state.members.find((x) => x.id === me.memberId)?.display_name ?? 'An owner',
+      };
+      state.suspensions.set(id, suspension);
+      // Their sessions end, and say why. The fake keeps no links of anybody
+      // but its own person, so `end_links` has nothing to end.
+      for (const x of state.sessions) {
+        if (x.revoked || whoOf(x).memberId !== id) continue;
+        x.revoked = true;
+        x.endedBecause = 'suspended';
+      }
+      // A wider audience for identity details still waiting is withdrawn:
+      // they could neither be told nor mark anything Only me (5.26).
+      effectiveAudience();
+      state.identityPending = null;
+      return ok({ member_id: id, suspension: { ...suspension } });
+    }
+    // After a restore (5.16): what it paused that the caller may decide
+    // about, as the real vault lists it. The fake keeps no links; requests
+    // to send documents (5.21) as the vault lists them; and the sign-ins it
+    // paused (5.28), an owner's alone to turn back on.
+    if (path === '/api/v1/after-restore' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s);
+      const owner = can(me.role, 'restore.review');
+      const signIns: PausedSignIn[] = owner
+        ? withSignIn()
+            .flatMap((id) => {
+              const paused = state.suspensions.get(id);
+              const role = roleOfMember(id);
+              if (paused?.reason !== 'restored' || !role) return [];
+              const name = state.members.find((x) => x.id === id)?.display_name ?? '';
+              return [{ member_id: id, display_name: name, role, paused_at: paused.since }];
+            })
+            .sort((a, b) =>
+              a.display_name !== b.display_name
+                ? a.display_name < b.display_name
+                  ? -1
+                  : 1
+                : a.member_id < b.member_id
+                  ? -1
+                  : 1,
+            )
+        : [];
+      return ok({
+        links: [],
+        upload_requests: can(me.role, 'upload_request.create')
+          ? state.uploadRequests.filter(
+              (r) => r.state === 'paused' && r.paused_reason !== 'locked' && (owner || r.mine),
+            )
+          : [],
+        sign_ins: signIns,
+      });
     }
     const identityAt = /^\/api\/v1\/members\/([^/]+)\/identity(\/reveal)?$/.exec(path);
     if (identityAt) {
@@ -2330,7 +2586,7 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
       if (!('id' in s)) return s;
       const m = state.members.find((x) => x.id === decodeURIComponent(memberAt[1] as string));
       if (memberAt[2] !== undefined) {
-        if (init.method !== 'GET' || state.role !== 'owner') {
+        if (init.method !== 'GET' || whoOf(s).role !== 'owner') {
           return fail(404, 'not_found', 'That page does not exist.');
         }
         if (!state.ownerTwoStep) {
@@ -2340,8 +2596,28 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
             "Turn on two-step sign-in to manage other people's sign-ins.",
           );
         }
-        const card = m ? state.memberAccounts.get(m.id) : undefined;
-        return card ? ok(card) : fail(404, 'not_found', 'They have no sign-in to show.');
+        // The card a test gave them, or one for somebody in `signIns` (5.28).
+        const theirs = m ? state.signIns.find((x) => x.member_id === m.id) : undefined;
+        const card =
+          (m ? state.memberAccounts.get(m.id) : undefined) ??
+          (m && theirs
+            ? {
+                member_id: m.id,
+                role: m.role as Role,
+                email: theirs.email,
+                two_step: false,
+                passkeys: 0,
+                last_signed_in_at: null,
+                devices: [],
+              }
+            : undefined);
+        if (!card || !m) return fail(404, 'not_found', 'They have no sign-in to show.');
+        // A lock, or a pause after a restore (5.28): one past its end is over.
+        return ok({
+          ...card,
+          suspension: suspensionOf(m.id),
+          max_offline_days: FAKE_OFFLINE_MAX_DAYS,
+        });
       }
       if (init.method !== 'PATCH') return fail(404, 'not_found', 'Not here.');
       if (!m) return fail(404, 'not_found', 'That person is not in the family.');
@@ -2390,7 +2666,43 @@ export function createFakeVault(): { fetch: FetchLike; state: FakeVaultState } {
     return fail(404, 'not_found', `The fake vault has no ${init.method} ${path}.`);
   };
 
-  return { fetch, state };
+  return { fetch, state, pauseSignIns };
+}
+
+/** A moment as the real vault takes one for a lock's end: ISO, with its offset (5.28). */
+const ISO_MOMENT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * POST /members/{id}/lock's body as the real vault reads it (5.28): nothing
+ * it does not know; an end at a moment with its offset, or none; a note
+ * trimmed, 500 characters at most, and an empty one none. What is wrong,
+ * in words; or what was asked, the end as the vault writes it.
+ */
+function lockOf(
+  body: Record<string, unknown>,
+): string | { until: string | null; note: string | null } {
+  const { until, end_links: endLinks, note } = body;
+  if (
+    until !== undefined &&
+    until !== null &&
+    (typeof until !== 'string' || !ISO_MOMENT.test(until) || Number.isNaN(Date.parse(until)))
+  ) {
+    return 'Invalid ISO datetime';
+  }
+  if (endLinks !== undefined && typeof endLinks !== 'boolean') {
+    return 'Invalid input: expected boolean';
+  }
+  if (note !== undefined && note !== null && typeof note !== 'string') {
+    return 'Invalid input: expected string';
+  }
+  const words = typeof note === 'string' ? note.trim() : '';
+  if (words.length > LOCK_NOTE_MAX) return `A note can be ${LOCK_NOTE_MAX} characters at most.`;
+  const unknown = Object.keys(body).find((k) => !['until', 'end_links', 'note'].includes(k));
+  if (unknown !== undefined) return `Unrecognized key: "${unknown}"`;
+  return {
+    until: typeof until === 'string' ? new Date(until).toISOString() : null,
+    note: words || null,
+  };
 }
 
 /** A change to a kind's fields, as POST and PATCH /document-types send it (0.5.10). */
@@ -2595,8 +2907,11 @@ const fail = (status: number, code: string, message: string, detail?: string) =>
       request_id: 'fake',
     },
   });
-/** A session that has ended, and why, as the real vault says it (0.4.11). */
-const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed') =>
+/**
+ * A session that has ended, and why, as the real vault says it (0.4.11):
+ * since 5.28 `suspended`, its person's sign-in locked or paused.
+ */
+const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended') =>
   respond(401, {
     error: {
       code: 'session_ended',
@@ -2604,5 +2919,25 @@ const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed
       reason,
       retriable: false,
       request_id: 'fake',
+    },
+  });
+/**
+ * A sign-in refused for a lock or a pause after a restore (5.28), as the
+ * real vault says it once the password is right: to the person, so until
+ * when, on the household's clock.
+ */
+const membershipSuspended = (s: MemberSuspension, timezone: string) =>
+  respond(403, {
+    error: {
+      code: 'membership_suspended',
+      message:
+        s.reason === 'restored'
+          ? 'The vault was restored from a backup, and your sign-in waits for an owner to turn it back on. Ask one of them.'
+          : s.until
+            ? `An owner has locked your sign-in until ${shareEndWords(new Date(s.until), timezone)} (${timezone}). Ask one of them if you need to get in sooner.`
+            : 'An owner has locked your sign-in. Ask one of them if you need to get in.',
+      retriable: false,
+      request_id: 'fake',
+      reason: s.reason,
     },
   });

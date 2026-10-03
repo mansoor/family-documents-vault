@@ -124,8 +124,8 @@ async function withClient<T>(url: string, fn: (c: pg.PoolClient) => Promise<T>):
 }
 
 const snapshot = (url: string) => withClient(url, privilegeSnapshot);
-const sql = (url: string, text: string) =>
-  withClient(url, (c) => c.query<Record<string, unknown>>(text));
+const sql = (url: string, text: string, params: unknown[] = []) =>
+  withClient(url, (c) => c.query<Record<string, unknown>>(text, params));
 
 /** pg-boss's tables, installed by the owner as the API's start does, with a job in them. */
 async function installQueue(url: string): Promise<void> {
@@ -1524,6 +1524,22 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it('notices the rule for who locks a sign-in gone (0051)', async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.account_household disable trigger account_household_suspension',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.account_household enable trigger account_household_suspension',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {
@@ -1826,6 +1842,166 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       '1 export that could still be downloaded was ended: each held what its maker could see then.',
     );
   }, 60_000);
+
+  /** People of a household, signed in as each role, for 5.28's tests. */
+  const signedIn = async (url: string, hh: string, name: string, role: string) => {
+    const m = await sql(
+      url,
+      'insert into member (household_id, display_name) values ($1, $2) returning id',
+      [hh, name],
+    );
+    const a = await sql(url, 'insert into account (email) values ($1) returning id', [
+      `${name.toLowerCase()}-${hh}@example.test`,
+    ]);
+    await sql(
+      url,
+      'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+      [a.rows[0]?.id, hh, m.rows[0]?.id, role],
+    );
+    return m.rows[0]?.id as string;
+  };
+  const suspensions = async (url: string) =>
+    Object.fromEntries(
+      (
+        await sql(
+          url,
+          `select m.display_name as name, a.role, a.suspend_reason as reason,
+                  a.suspended_until is not null as ends,
+                  suspension_in_effect(a.suspended_at, a.suspended_until) as in_effect
+             from account_household a join member m on m.id = a.member_id
+            order by m.display_name`,
+        )
+      ).rows.map((r) => [r.name as string, { ...r, name: undefined }]),
+    );
+
+  it('a restore from before a lock leaves that person paused until an owner confirms (5.28)', async () => {
+    const live = await createTestDatabase();
+    made.push(live);
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-528-'));
+    try {
+      await installQueue(live.adminUrl);
+      const hh = await seed(live.adminUrl);
+      await signedIn(live.adminUrl, hh, 'Sara', 'adult');
+      await signedIn(live.adminUrl, hh, 'Tariq', 'teen');
+      await signedIn(live.adminUrl, hh, 'Accountant', 'viewer');
+      // Kemal is locked when the backup is made, until next week; Lina's
+      // lock ended yesterday.
+      await signedIn(live.adminUrl, hh, 'Kemal', 'adult');
+      await signedIn(live.adminUrl, hh, 'Lina', 'adult');
+      await sql(
+        live.adminUrl,
+        `update account_household a set suspended_at = now(), suspend_reason = 'locked',
+                suspended_until = now() + interval '7 days', suspend_note = 'away'
+           from member m where m.id = a.member_id and m.display_name = 'Kemal'`,
+      );
+      await sql(
+        live.adminUrl,
+        `update account_household a set suspended_at = now() - interval '3 days',
+                suspend_reason = 'locked', suspended_until = now() - interval '1 day'
+           from member m where m.id = a.member_id and m.display_name = 'Lina'`,
+      );
+      const backup = (
+        await backupDatabase({
+          adminUrl: live.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+      // After the backup, an owner locks Sara: the backup cannot know.
+      await sql(
+        live.adminUrl,
+        `update account_household a set suspended_at = now(), suspend_reason = 'locked'
+           from member m where m.id = a.member_id and m.display_name = 'Sara'`,
+      );
+
+      const t = await empty();
+      const report = await restoreBackup(backup, KEY, into(t), quiet, KEYS);
+      // Sara, Tariq, the accountant and Lina wait for an owner; Kemal stays
+      // locked, with no end of its own; the owner can sign in.
+      expect(report).toMatchObject({ signInsPaused: 4, locksKept: 1 });
+      const after = await suspensions(t.adminUrl);
+      expect(after).toMatchObject({
+        Sara: { reason: 'restored', ends: false, in_effect: true },
+        Tariq: { reason: 'restored', in_effect: true },
+        Accountant: { reason: 'restored', in_effect: true },
+        Lina: { reason: 'restored', ends: false, in_effect: true },
+        Kemal: { reason: 'locked', ends: false, in_effect: true },
+        One: { role: 'owner', reason: null, in_effect: false },
+      });
+      // Turned back on by an owner, as the vault does it (POST
+      // /members/{id}/resume): as the application role, signed in as one.
+      const owner = await sql(
+        t.adminUrl,
+        "select account_id, member_id from account_household where role = 'owner'",
+      );
+      const pool = new pg.Pool({ connectionString: t.appUrl, max: 1 });
+      const c = await pool.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.role', 'owner', true), set_config('app.account_id', $2, true),
+                  set_config('app.member_id', $3, true)`,
+          [hh, owner.rows[0]?.account_id, owner.rows[0]?.member_id],
+        );
+        const waiting = await c.query<{ name: string }>(
+          `select m.display_name as name from account_household a join member m on m.id = a.member_id
+            where a.suspend_reason = 'restored' order by m.display_name`,
+        );
+        expect(waiting.rows.map((r) => r.name)).toEqual(['Accountant', 'Lina', 'Sara', 'Tariq']);
+        const confirmed = await c.query(
+          `update account_household a set suspended_at = null, suspend_reason = null
+             from member m where m.id = a.member_id and m.display_name = 'Tariq'
+              and a.suspend_reason = 'restored'`,
+        );
+        expect(confirmed.rowCount).toBe(1);
+        await c.query('commit');
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        c.release();
+        await pool.end();
+      }
+      expect((await suspensions(t.adminUrl)).Tariq).toMatchObject({ in_effect: false });
+      expect((await suspensions(t.adminUrl)).Sara).toMatchObject({ in_effect: true });
+    } finally {
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a backup from before 0051 is brought up to date, then every sign-in but the owners’ is paused (5.28)', async () => {
+    const older = await empty();
+    const migrations = await migrationsUpTo(50);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0050-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const hh = await seed(older.adminUrl);
+      await signedIn(older.adminUrl, hh, 'Sara', 'adult');
+      await signedIn(older.adminUrl, hh, 'Tariq', 'teen');
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, signInsPaused: 2, locksKept: 0 });
+      expect(await suspensions(t.adminUrl)).toMatchObject({
+        Sara: { reason: 'restored', in_effect: true },
+        Tariq: { reason: 'restored', in_effect: true },
+        One: { role: 'owner', in_effect: false },
+      });
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('after a restore every link is paused and no session survives', async () => {
     // The backup has a session open, and a download it has had (0041).

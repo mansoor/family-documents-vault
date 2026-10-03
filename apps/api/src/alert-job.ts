@@ -29,6 +29,12 @@ export interface AlertRequest {
    * the alert is not pushed to phones at all.
    */
   pushType?: 'new_device' | 'owner_change';
+  /**
+   * About the recipients' own sign-in (5.28): their lock, and its end. It
+   * reaches them even while their sign-in is locked or paused, as nothing
+   * else does.
+   */
+  ownSignIn?: boolean;
 }
 
 export function alertJob(a: AlertRequest): Record<string, unknown> {
@@ -41,5 +47,6 @@ export function alertJob(a: AlertRequest): Record<string, unknown> {
     ...(a.emailOnly ? { email_only: true } : {}),
     ...(a.operatorMail ? { via: 'operator' } : {}),
     ...(a.pushType ? { push_type: a.pushType } : {}),
+    ...(a.ownSignIn ? { own_sign_in: true } : {}),
   };
 }

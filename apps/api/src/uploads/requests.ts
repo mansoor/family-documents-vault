@@ -44,6 +44,7 @@ import {
   UPLOAD_REQUEST_TITLE_MAX,
   INCOMING_HOUSEHOLD_MAX_BYTES,
   uploadRequestTypes,
+  suspensionInEffect,
   type CreatedUploadRequest,
   type DropCodeSent,
   type DropFile,
@@ -647,8 +648,18 @@ export class UploadRequestService {
       const rows = await trx
         .selectFrom('upload_request')
         .leftJoin('member', 'member.id', 'upload_request.requester_member_id')
+        // 5.28: its requester's sign-in locked, or paused after a restore.
+        .leftJoin('account_household as asker', (j) =>
+          j
+            .onRef('asker.account_id', '=', 'upload_request.created_by')
+            .onRef('asker.household_id', '=', 'upload_request.household_id'),
+        )
         .selectAll('upload_request')
-        .select('member.display_name as requested_by_name')
+        .select([
+          'member.display_name as requested_by_name',
+          'asker.suspended_at as asker_suspended_at',
+          'asker.suspended_until as asker_suspended_until',
+        ])
         .orderBy('upload_request.created_at', 'desc')
         .execute();
       if (rows.length === 0) return [];
@@ -668,6 +679,15 @@ export class UploadRequestService {
         .execute();
       return rows.map((r) => ({
         ...this.view(r, p),
+        // Paused while its requester's sign-in is locked (5.28): nothing is
+        // written onto it, and it opens again once they are unlocked.
+        ...(stateOf(r) === 'active' &&
+        suspensionInEffect({
+          suspended_at: r.asker_suspended_at,
+          suspended_until: r.asker_suspended_until,
+        })
+          ? { state: 'paused' as const, paused_reason: 'locked' as const }
+          : {}),
         requested_by_name: r.requested_by_name,
         items: items
           .filter((i) => i.request_id === r.id)
@@ -747,7 +767,11 @@ export class UploadRequestService {
   async paused(p: Principal): Promise<UploadRequestView[]> {
     if (!can(p.role, 'upload_request.create')) return [];
     const owner = can(p.role, 'restore.review');
-    return (await this.list(p)).filter((r) => r.state === 'paused' && (owner || r.mine));
+    // One paused only by its requester's lock (5.28) is not the restore's:
+    // it opens again with the unlock, and no owner turns it on.
+    return (await this.list(p)).filter(
+      (r) => r.state === 'paused' && r.paused_reason !== 'locked' && (owner || r.mine),
+    );
   }
 
   /** Turns a paused request back on: its link opens again, as it did before. Owners only. */
@@ -798,7 +822,7 @@ export class UploadRequestService {
   /**
    * The request, if it may be used now: not taken back, closed, paused, past
    * its end or locked, and its requester still an owner or an adult of the
-   * household (A39; locked from 5.28 joins them). The database gives an
+   * household (A39) whose sign-in is not locked or paused (5.28). The database gives an
    * upload link its row only then (app_live_upload_request(), 0044), and
    * an upload link reads nothing of who signs in (A74): the requester's
    * right is the database's to ask, and this asks the rest again, in words.
@@ -817,9 +841,9 @@ export class UploadRequestService {
     if (row.revoked_at || row.closed_at || row.paused_at) throw gone();
     if (row.expires_at.getTime() <= Date.now()) throw gone();
     if (row.attempts >= MAX_ATTEMPTS) throw gone();
-    // 5.28: a requester whose sign-in is locked asks for nothing either;
-    // that state arrives with 5.28, and its check goes in the database's
-    // app_live_upload_request(), beside the role's.
+    // A requester whose sign-in is locked, or paused after a restore, asks
+    // for nothing either (5.28): the database's app_live_upload_request()
+    // (0051) gives the link no row then, and it is answered as gone above.
     return row;
   }
 

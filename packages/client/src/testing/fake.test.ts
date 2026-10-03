@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { refusalFor, shareEndWords, type Role, type Tokens } from '@fdv/shared';
+import { describe, expect, it, vi } from 'vitest';
 import { createApi } from '../api.js';
 import { createHttp } from '../http.js';
 import { contractScenarios, type ContractContext } from './contract.js';
@@ -44,6 +45,17 @@ describe('the fake vault keeps the contract', () => {
           bytes: f.bytes,
         });
       }
+    },
+    // Somebody else with a sign-in (5.28): in the family, and able to sign in.
+    addSignIn: async (_token, who) => {
+      const id = `member-${vault.state.members.length + 1}`;
+      vault.state.members.push({ id, display_name: who.name, role: who.role, is_me: false });
+      vault.state.signIns.push({ member_id: id, email: who.email, password: who.password });
+      return id;
+    },
+    // The fake's owners have two-step sign-in, and have just used it.
+    ownerTwoStep: async () => {
+      vault.state.ownerTwoStep = true;
     },
   };
   for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
@@ -392,5 +404,423 @@ describe('the fake vault, identity details (5.26)', () => {
     expect((await api.setIdentityAudience(tokens.access_token, 'adults')).pending?.to).toBe(
       'adults',
     );
+  });
+});
+
+/**
+ * Locking a sign-in, and sign-ins paused after a restore (5.28), as the
+ * real vault does them: what the phone's paused screens are tested against.
+ */
+describe('the fake vault, locked and paused sign-ins (5.28)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string; message?: string; reason?: string }) => err,
+    );
+  /** A fake vault, its owner signed in with two-step sign-in, and a way to add people who sign in. */
+  const start = async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const owner = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    const add = (id: string, name: string, role: Role) => {
+      vault.state.members.push({ id, display_name: name, role, is_me: false });
+      vault.state.signIns.push({
+        member_id: id,
+        email: `${id}@example.test`,
+        password: `${id}'s own password`,
+      });
+    };
+    const signInAs = async (id: string): Promise<Tokens> => {
+      const t = await api.signIn(`${id}@example.test`, `${id}'s own password`);
+      if (!('access_token' in t)) throw new Error('no second step in the fake');
+      return t;
+    };
+    return { vault, api, owner, add, signInAs };
+  };
+
+  it("ends a locked person's sessions with the reason suspended, and refuses their right password — only once it is right — with 403 membership_suspended; an unlock lets them in again", async () => {
+    const { vault, api, owner, add, signInAs } = await start();
+    add('sara', 'Sara', 'adult');
+    vault.state.memberAccounts.set('sara', {
+      member_id: 'sara',
+      role: 'adult',
+      email: 'sara@example.test',
+      two_step: false,
+      passkeys: 0,
+      last_signed_in_at: null,
+      devices: [],
+    });
+    expect(await api.memberAccount(owner.access_token, 'sara')).toMatchObject({
+      suspension: null,
+      max_offline_days: 90,
+    });
+    const hers = await signInAs('sara');
+    expect(hers).toMatchObject({ member_id: 'sara', role: 'adult' });
+    expect(await api.me(hers.access_token)).toMatchObject({ member_id: 'sara', role: 'adult' });
+    // Her session is hers: no owner's view of a sign-in for an adult.
+    expect(await refusal(api.memberAccount(hers.access_token, 'sara'))).toMatchObject({
+      status: 404,
+    });
+
+    // Locked with no end, and a note that is only spaces: none.
+    const locked = await api.lockMember(owner.access_token, 'sara', { note: '   ' });
+    expect(locked).toEqual({
+      member_id: 'sara',
+      suspension: {
+        reason: 'locked',
+        since: expect.any(String) as unknown,
+        until: null,
+        note: null,
+        by: 'Fake Owner',
+      },
+    });
+    expect((await api.memberAccount(owner.access_token, 'sara')).suspension).toEqual(
+      locked.suspension,
+    );
+    // Her session, to its access token and its refresh token alike.
+    expect(await refusal(api.me(hers.access_token))).toMatchObject({
+      status: 401,
+      code: 'session_ended',
+      reason: 'suspended',
+    });
+    expect(await refusal(api.refresh(hers.refresh_token))).toMatchObject({
+      status: 401,
+      code: 'session_ended',
+      reason: 'suspended',
+    });
+    // A wrong password says nothing of the lock.
+    const wrong = await refusal(api.signIn('sara@example.test', 'not her password'));
+    expect(wrong).toMatchObject({ status: 401, code: 'invalid_credentials' });
+    expect(wrong?.reason).toBeUndefined();
+    expect(await refusal(api.signIn('sara@example.test', "sara's own password"))).toMatchObject({
+      status: 403,
+      code: 'membership_suspended',
+      reason: 'locked',
+      message: 'An owner has locked your sign-in. Ask one of them if you need to get in.',
+    });
+    // Nobody else's session is touched.
+    expect(await api.me(owner.access_token)).toMatchObject({ member_id: 'fake-member' });
+
+    await api.unlockMember(owner.access_token, 'sara');
+    expect((await api.memberAccount(owner.access_token, 'sara')).suspension).toBeNull();
+    expect(await api.me((await signInAs('sara')).access_token)).toMatchObject({
+      member_id: 'sara',
+    });
+    // The session the lock ended stays ended.
+    expect(await refusal(api.refresh(hers.refresh_token))).toMatchObject({ reason: 'suspended' });
+  });
+
+  it("shows a phone its paused screens: the fake's own person, locked by a test, has their session answer suspended while it lasts, and their sign-in says until when on the household's clock", async () => {
+    const { vault, api, owner } = await start();
+    vault.state.role = 'adult';
+    vault.state.timezone = 'Europe/London';
+    const until = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    vault.state.suspensions.set('fake-member', {
+      reason: 'locked',
+      since: new Date().toISOString(),
+      until,
+      note: null,
+      by: 'Mum',
+    });
+    expect(await refusal(api.me(owner.access_token))).toMatchObject({
+      status: 401,
+      code: 'session_ended',
+      reason: 'suspended',
+    });
+    expect(await refusal(api.refresh(owner.refresh_token))).toMatchObject({
+      code: 'session_ended',
+      reason: 'suspended',
+    });
+    expect(await refusal(api.signIn('owner@example.test', 'not the password'))).toMatchObject({
+      status: 401,
+      code: 'invalid_credentials',
+    });
+    expect(await refusal(api.signIn('owner@example.test', 'a long enough password'))).toMatchObject(
+      {
+        status: 403,
+        code: 'membership_suspended',
+        reason: 'locked',
+        message: `An owner has locked your sign-in until ${shareEndWords(new Date(until), 'Europe/London')} (Europe/London). Ask one of them if you need to get in sooner.`,
+      },
+    );
+    // No lock ended that session: once the suspension goes, it answers again, as the vault's would.
+    vault.state.suspensions.delete('fake-member');
+    expect(await api.me(owner.access_token)).toMatchObject({ member_id: 'fake-member' });
+  });
+
+  it('takes a lock past its end as over, by the clock: the card says nothing, they sign in, it is not there to unlock, and it may be locked again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const now = Date.parse('2026-10-05T09:00:00Z');
+      vi.setSystemTime(now);
+      const { api, owner, add, signInAs } = await start();
+      add('sara', 'Sara', 'adult');
+      const until = new Date(now + 3_600_000).toISOString();
+      await api.lockMember(owner.access_token, 'sara', { until });
+      expect((await api.memberAccount(owner.access_token, 'sara')).suspension?.until).toBe(until);
+      expect(await refusal(signInAs('sara'))).toMatchObject({ code: 'membership_suspended' });
+      // A widening waits while she is locked.
+      expect(await refusal(api.setIdentityAudience(owner.access_token, 'adults'))).toMatchObject({
+        status: 409,
+        code: 'member_cannot_be_told',
+      });
+
+      vi.setSystemTime(now + 2 * 3_600_000);
+      expect((await api.memberAccount(owner.access_token, 'sara')).suspension).toBeNull();
+      expect((await signInAs('sara')).member_id).toBe('sara');
+      expect(await refusal(api.unlockMember(owner.access_token, 'sara'))).toMatchObject({
+        status: 409,
+        code: 'not_locked',
+        message: "Sara's sign-in is not locked.",
+      });
+      // Once she can sign in, a widening is asked for; locking her again withdraws it.
+      expect((await api.setIdentityAudience(owner.access_token, 'adults')).pending?.to).toBe(
+        'adults',
+      );
+      const again = await api.lockMember(owner.access_token, 'sara');
+      expect(again.suspension).toMatchObject({ reason: 'locked', until: null });
+      expect((await api.identityAudience(owner.access_token)).pending).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses in the real vault's order: who may, what was sent, the owner power, then the person", async () => {
+    const { vault, api, owner, add } = await start();
+    add('sara', 'Sara', 'adult');
+    add('mum', 'Mum', 'owner');
+    const token = owner.access_token;
+
+    // Not an owner: refused, whatever was sent.
+    vault.state.role = 'adult';
+    for (const asked of [
+      () => api.lockMember(token, 'sara', { bogus: 1 } as never),
+      () => api.unlockMember(token, 'sara'),
+    ]) {
+      expect(await refusal(asked())).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+        message: refusalFor('member.suspend'),
+      });
+    }
+    expect(await refusal(api.resumeMember(token, 'sara'))).toMatchObject({
+      status: 403,
+      code: 'forbidden',
+      message: refusalFor('restore.review'),
+    });
+
+    // An owner without two-step sign-in: what was sent is read first.
+    vault.state.role = 'owner';
+    vault.state.ownerTwoStep = false;
+    for (const body of [
+      { bogus: 1 },
+      { until: '2026-10-05T07:00' },
+      { note: 'x'.repeat(501) },
+      { end_links: 'yes' },
+    ]) {
+      expect(await refusal(api.lockMember(token, 'sara', body as never))).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+      });
+    }
+    expect(await refusal(api.lockMember(token, 'sara', { note: 'x'.repeat(501) }))).toMatchObject({
+      message: 'A note can be 500 characters at most.',
+    });
+    for (const asked of [
+      () => api.lockMember(token, 'sara'),
+      () => api.unlockMember(token, 'sara'),
+      () => api.resumeMember(token, 'sara'),
+    ]) {
+      expect(await refusal(asked())).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: "Turn on two-step sign-in to manage other people's sign-ins.",
+      });
+    }
+
+    // Then the person: nobody; oneself; another owner; locked already.
+    vault.state.ownerTwoStep = true;
+    for (const asked of [
+      () => api.lockMember(token, 'nobody'),
+      () => api.unlockMember(token, 'nobody'),
+      () => api.resumeMember(token, 'nobody'),
+    ]) {
+      expect(await refusal(asked())).toMatchObject({
+        status: 404,
+        code: 'not_found',
+        message: 'They have no sign-in to lock.',
+      });
+    }
+    expect(await refusal(api.lockMember(token, 'fake-member'))).toMatchObject({
+      status: 422,
+      message: 'You cannot lock your own sign-in.',
+    });
+    expect(await refusal(api.lockMember(token, 'mum'))).toMatchObject({
+      status: 409,
+      code: 'owner_notice_required',
+      message:
+        "Mum is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.",
+    });
+    // An end with its offset, kept as the moment it names.
+    const until = new Date(Math.ceil((Date.now() + 10 * 86_400_000) / 60_000) * 60_000);
+    const sent = new Date(until.getTime() + 3_600_000).toISOString().replace('Z', '+01:00');
+    const locked = await api.lockMember(token, 'sara', { until: sent, end_links: true });
+    expect(locked.suspension.until).toBe(until.toISOString());
+    expect(await refusal(api.lockMember(token, 'sara', { until: 'nonsense' }))).toMatchObject({
+      status: 422,
+    });
+    expect(await refusal(api.lockMember(token, 'sara'))).toMatchObject({
+      status: 409,
+      code: 'already_locked',
+    });
+  });
+
+  it('pauses every sign-in but the owners’ as a restore does, keeps a lock as a lock, and an owner turns each back on', async () => {
+    const { vault, api, add, signInAs } = await start();
+    add('sara', 'Sara', 'adult');
+    add('tariq', 'Tariq', 'teen');
+    add('kim', 'Kim', 'viewer');
+    add('mum', 'Mum', 'owner');
+    const first = await api.signIn('owner@example.test', 'a long enough password');
+    if (!('access_token' in first)) throw new Error('no second step in the fake');
+    await api.lockMember(first.access_token, 'sara', {
+      until: new Date(Date.now() + 86_400_000).toISOString(),
+    });
+    const teen = await signInAs('tariq');
+
+    vault.pauseSignIns();
+    // Every session ends, as a restore ends them.
+    for (const t of [first, teen]) {
+      expect(await refusal(api.me(t.access_token))).toMatchObject({
+        status: 401,
+        code: 'session_ended',
+        reason: 'revoked',
+      });
+    }
+    const owner = await api.signIn('owner@example.test', 'a long enough password');
+    if (!('access_token' in owner)) throw new Error('no second step in the fake');
+    const token = owner.access_token;
+    // The lock stays a lock, with no end of its own; the others wait for an owner.
+    expect((await api.memberAccount(token, 'sara')).suspension).toMatchObject({
+      reason: 'locked',
+      until: null,
+    });
+    expect((await api.memberAccount(token, 'tariq')).suspension).toMatchObject({
+      reason: 'restored',
+      until: null,
+      by: null,
+    });
+    const paused = (await api.afterRestore(token)).sign_ins;
+    expect(paused?.map((p) => [p.member_id, p.display_name, p.role])).toEqual([
+      ['kim', 'Kim', 'viewer'],
+      ['tariq', 'Tariq', 'teen'],
+    ]);
+    expect(await refusal(signInAs('tariq'))).toMatchObject({
+      status: 403,
+      code: 'membership_suspended',
+      reason: 'restored',
+      message:
+        'The vault was restored from a backup, and your sign-in waits for an owner to turn it back on. Ask one of them.',
+    });
+    expect((await signInAs('mum')).role).toBe('owner');
+    // Nobody who cannot sign in could be told of a widening.
+    expect(await refusal(api.setIdentityAudience(token, 'adults'))).toMatchObject({
+      status: 409,
+      code: 'member_cannot_be_told',
+      message: expect.stringMatching(/^Kim, Sara, Tariq cannot sign in just now/) as unknown,
+    });
+
+    // A pause is turned back on, not unlocked; a lock is unlocked, not turned back on.
+    expect(await refusal(api.unlockMember(token, 'kim'))).toMatchObject({
+      status: 409,
+      code: 'not_locked',
+    });
+    expect(await refusal(api.resumeMember(token, 'sara'))).toMatchObject({
+      status: 409,
+      code: 'not_paused',
+    });
+    await api.resumeMember(token, 'kim');
+    const viewer = await signInAs('kim');
+    // Only an owner is shown them, or turns them back on.
+    expect((await api.afterRestore(viewer.access_token)).sign_ins).toEqual([]);
+    expect(await refusal(api.resumeMember(viewer.access_token, 'tariq'))).toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+    // Somebody paused may be locked: the lock takes the pause's place.
+    expect((await api.lockMember(token, 'tariq')).suspension.reason).toBe('locked');
+    expect((await api.afterRestore(token)).sign_ins).toEqual([]);
+
+    // Requests to send documents the restore paused are listed beside them;
+    // one paused only by its maker's lock is not the restore's.
+    for (const title of ['Paused', 'Locked']) {
+      await api.createUploadRequest(token, {
+        title,
+        expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+      });
+    }
+    for (const r of vault.state.uploadRequests) {
+      Object.assign(r, {
+        state: 'paused',
+        paused_reason: r.title === 'Paused' ? 'restored' : 'locked',
+      });
+    }
+    expect((await api.afterRestore(token)).upload_requests?.map((r) => r.title)).toEqual([
+      'Paused',
+    ]);
+    expect((await api.afterRestore(viewer.access_token)).upload_requests).toEqual([]);
+  });
+
+  it('gives a suspended person no new token, not even for the refresh just replaced (the grace)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(
+      createHttp({
+        baseUrl: 'https://fake.example',
+        fetch: vault.fetch,
+        installationId: '0f5a1c2e-9b7d-4e61-8a33-5c2d7e9f1a40',
+      }),
+    );
+    const first = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    // Rotated, its answer lost on the way: the replay would be let through...
+    await api.refresh(first.refresh_token);
+    vault.state.role = 'teen';
+    vault.state.suspensions.set('fake-member', {
+      reason: 'restored',
+      since: new Date().toISOString(),
+      until: null,
+      note: null,
+      by: null,
+    });
+    // ...but not while the sign-in is paused.
+    expect(await refusal(api.refresh(first.refresh_token))).toMatchObject({
+      status: 401,
+      code: 'session_ended',
+      reason: 'suspended',
+    });
+  });
+
+  it("pauses the fake's own person too, when not an owner: the phone's session ends, and its sign-in waits for an owner", async () => {
+    const { vault, api, owner } = await start();
+    vault.state.role = 'adult';
+    vault.pauseSignIns();
+    expect(await refusal(api.me(owner.access_token))).toMatchObject({ reason: 'revoked' });
+    expect(await refusal(api.signIn('owner@example.test', 'a long enough password'))).toMatchObject(
+      { status: 403, code: 'membership_suspended', reason: 'restored' },
+    );
+    // An owner turned it back on.
+    vault.state.suspensions.delete('fake-member');
+    const back = await api.signIn('owner@example.test', 'a long enough password');
+    expect(back).toMatchObject({ member_id: 'fake-member', role: 'adult' });
   });
 });

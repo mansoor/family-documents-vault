@@ -158,6 +158,18 @@ export interface Schema {
     member_id: string;
     role: Role;
     joined_at: GeneratedTimestamp;
+    /**
+     * Their sign-in locked by an owner, or paused after a restore (0051):
+     * since when, by whom (null for the vault itself), until when (a lock
+     * alone; null until an owner unlocks it), why, and the owner's note. In
+     * effect while `suspension_in_effect(suspended_at, suspended_until)`:
+     * a lock past its end is over, whoever reads it.
+     */
+    suspended_at: Timestamp | null;
+    suspended_by: string | null;
+    suspended_until: Timestamp | null;
+    suspend_reason: 'locked' | 'restored' | null;
+    suspend_note: string | null;
   };
 
   credential: {

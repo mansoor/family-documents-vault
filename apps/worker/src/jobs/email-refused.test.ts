@@ -274,4 +274,53 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
     expect(channels).toEqual([]);
     expect(household.delivered).toEqual([]);
   });
+
+  it('a sign-in locked, or paused after a restore, is told nothing but of its own sign-in (5.28)', async () => {
+    const alert = { household_id: hh, account_ids: [account], subject: 's', body: 'b' };
+    // An owner who can sign in, as every household keeps (0051's floor).
+    const m = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name) values ($1, 'Owner') returning id",
+      [hh],
+    );
+    const o = await admin.query<{ id: string }>(
+      "insert into account (email) values ('owner-mail-528@example.test') returning id",
+    );
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [o.rows[0]?.id, hh, m.rows[0]?.id],
+    );
+    for (const reason of ['locked', 'restored']) {
+      await admin.query(
+        `update account_household set suspended_at = now(), suspend_reason = $2 where account_id = $1`,
+        [account, reason],
+      );
+      const operatorBefore = operator.delivered.length;
+      const householdBefore = household.delivered.length;
+      // Neither server, whichever the alert would go by.
+      expect(await sendAlert(deps(true), { ...reset, account_ids: [account] })).toEqual([]);
+      expect(await sendAlert(deps(true), alert)).toEqual([]);
+      expect(operator.delivered).toHaveLength(operatorBefore);
+      expect(household.delivered).toHaveLength(householdBefore);
+      // Their lock, and its end, reach them all the same.
+      expect(await sendAlert(deps(true), { ...alert, own_sign_in: true })).toEqual(['email']);
+      expect(household.delivered.at(-1)).toBe('sam-reset@example.test');
+      await admin.query(
+        `update account_household set suspended_at = null, suspend_reason = null where account_id = $1`,
+        [account],
+      );
+    }
+    // A lock past its end is over: told again.
+    await admin.query(
+      `update account_household set suspended_at = now() - interval '2 days',
+              suspended_until = now() - interval '1 day', suspend_reason = 'locked'
+        where account_id = $1`,
+      [account],
+    );
+    expect(await sendAlert(deps(true), alert)).toEqual(['email']);
+    await admin.query(
+      `update account_household set suspended_at = null, suspended_until = null,
+              suspend_reason = null where account_id = $1`,
+      [account],
+    );
+  });
 });

@@ -153,6 +153,16 @@ export interface CapabilityFeatures {
    * only after 72 hours' notice. Absent from older vaults, which keep none.
    */
   member_identity?: boolean;
+  /**
+   * An owner can lock somebody's sign-in and unlock it (5.28): POST and
+   * DELETE /members/{id}/lock, owner powers (A54); a locked person's sign-in
+   * is refused with `403 membership_suspended` once their credentials are
+   * proven, and their sessions end with the reason `suspended`. After a
+   * restore every sign-in but the owners' is paused until an owner turns it
+   * back on (POST /members/{id}/resume; GET /after-restore's `sign_ins`).
+   * Absent from older vaults, which lock nobody.
+   */
+  member_admin?: boolean;
 }
 
 export interface CapabilityLimits {

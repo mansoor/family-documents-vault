@@ -4,8 +4,10 @@ import {
   COLLECTION_HINT_TEENS,
   reminderOf,
   reminderSentence,
+  shareEndWords,
   type CreatedUploadRequest,
   type DocumentTypeInput,
+  type Role,
   type Tokens,
 } from '@fdv/shared';
 import { expect } from 'vitest';
@@ -52,6 +54,25 @@ export interface ContractContext {
     made: CreatedUploadRequest,
     files: Array<{ name: string; bytes: Uint8Array; contentType: string }>,
   ) => Promise<void>;
+  /**
+   * Somebody else with a sign-in of their own (5.28), who then signs in
+   * with the email and password given: the real API's run invites them as
+   * the owner of `token` (asked to confirm it is them first) and accepts
+   * the invitation; the fake's puts them in `members` and `signIns`. Their
+   * member id.
+   */
+  addSignIn: (
+    token: string,
+    who: { name: string; email: string; password: string; role: Role },
+  ) => Promise<string>;
+  /**
+   * Two-step sign-in for the owner of `token`, just signed in, and a code
+   * just given (5.28): what an owner power asks for (A54). The real API's
+   * run turns on an authenticator and steps up with its code; the fake's
+   * says its owners have it (`ownerTwoStep`). An owner never turns it off,
+   * so a scenario asks it for an owner nothing after it signs in as.
+   */
+  ownerTwoStep: (token: string) => Promise<void>;
 }
 
 export interface Scenario {
@@ -86,8 +107,12 @@ async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   throw new Error('expected the vault to refuse');
 }
 
-const signIn = async (api: Api, ctx: ContractContext): Promise<Tokens> => {
-  const t = await api.signIn(ctx.email, ctx.password);
+const signIn = (api: Api, ctx: ContractContext): Promise<Tokens> =>
+  signInAs(api, ctx.email, ctx.password);
+
+/** Somebody signing in with a password alone: a session, not a second step. */
+const signInAs = async (api: Api, email: string, password: string): Promise<Tokens> => {
+  const t = await api.signIn(email, password);
   expect('access_token' in t).toBe(true);
   return t as Tokens;
 };
@@ -1412,6 +1437,176 @@ export const contractScenarios: Scenario[] = [
         message: 'Turn on two-step sign-in to change who can see identity details.',
       });
       expect((await api.identityAudience(token)).pending).toBeNull();
+    },
+  },
+  {
+    name: "an owner locks an adult's sign-in until a time, with a note: the card says so, her session ends (suspended), her right password is refused (403 membership_suspended), and an unlock lets her in again; never an owner's, never by anybody else (5.28)",
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.member_admin).toBe(true);
+      const first = await signIn(api, ctx);
+      const me = await api.me(first.access_token);
+      const firstName = (await api.members(first.access_token)).items.find(
+        (m) => m.id === me.member_id,
+      )?.display_name;
+      const sara = { email: 'locked-adult@example.test', password: 'the adult’s own password' };
+      const saraId = await ctx.addSignIn(first.access_token, {
+        name: 'Sara',
+        role: 'adult',
+        ...sara,
+      });
+      // Another owner, who locks: the scenarios' own owner keeps signing in
+      // with a password alone.
+      const second = {
+        email: 'second-owner@example.test',
+        password: 'the second owner’s password',
+      };
+      await ctx.addSignIn(first.access_token, { name: 'Second Owner', role: 'owner', ...second });
+
+      // Who may, first: never anybody but an owner, whatever they send.
+      const theirs = await signInAs(api, sara.email, sara.password);
+      expect(theirs).toMatchObject({ member_id: saraId, role: 'adult' });
+      const notAnOwner = {
+        status: 403,
+        code: 'forbidden',
+        message: "Only an owner can lock or unlock someone's sign-in.",
+      };
+      expect(
+        await refusal(api.lockMember(theirs.access_token, me.member_id, { bogus: 1 } as never)),
+      ).toMatchObject(notAnOwner);
+      expect(await refusal(api.unlockMember(theirs.access_token, me.member_id))).toMatchObject(
+        notAnOwner,
+      );
+      expect(await refusal(api.resumeMember(theirs.access_token, saraId))).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+      });
+      // Then what was sent, then the owner power (A54): an owner with only a
+      // password is refused it.
+      expect(
+        await refusal(api.lockMember(first.access_token, saraId, { bogus: 1 } as never)),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+      expect(await refusal(api.lockMember(first.access_token, saraId))).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: "Turn on two-step sign-in to manage other people's sign-ins.",
+      });
+
+      // The other owner, with two-step sign-in and a code just given.
+      const owner = await signInAs(api, second.email, second.password);
+      await ctx.ownerTwoStep(owner.access_token);
+      const token = owner.access_token;
+      // Nobody; oneself; another owner (A50).
+      expect(
+        await refusal(api.lockMember(token, '00000000-0000-4000-8000-000000000000')),
+      ).toMatchObject({ status: 404, code: 'not_found', message: 'They have no sign-in to lock.' });
+      expect(await refusal(api.lockMember(token, owner.member_id))).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'You cannot lock your own sign-in.',
+      });
+      expect(await refusal(api.lockMember(token, me.member_id))).toMatchObject({
+        status: 409,
+        code: 'owner_notice_required',
+        message: `${firstName} is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+      });
+      // An end that is not in the future, or more than a year off.
+      const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+      expect(await refusal(api.lockMember(token, saraId, { until: at(-60_000) }))).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message: 'Choose a time in the future to unlock.',
+      });
+      expect(
+        await refusal(api.lockMember(token, saraId, { until: at(366 * 86_400_000) })),
+      ).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+        message:
+          'A lock can end by itself within a year at most. Leave the end out to keep it until you unlock it.',
+      });
+
+      // A wider audience for identity details, waiting its notice...
+      expect((await api.setIdentityAudience(token, 'adults')).pending?.to).toBe('adults');
+      // Locked until a whole minute two days off, with a note for the owners.
+      const until = new Date(
+        Math.ceil((Date.now() + 2 * 86_400_000) / 60_000) * 60_000,
+      ).toISOString();
+      const locked = await api.lockMember(token, saraId, { until, note: '  Lost her phone.  ' });
+      expect(locked).toEqual({
+        member_id: saraId,
+        suspension: {
+          reason: 'locked',
+          since: expect.any(String) as unknown,
+          until,
+          note: 'Lost her phone.',
+          by: 'Second Owner',
+        },
+      });
+      // ...is withdrawn, as she could neither be told nor mark anything Only
+      // me; and none is asked for while she cannot sign in.
+      expect((await api.identityAudience(token)).pending).toBeNull();
+      expect(await refusal(api.setIdentityAudience(token, 'adults'))).toMatchObject({
+        status: 409,
+        code: 'member_cannot_be_told',
+        message:
+          'Sara cannot sign in just now, so could not be told, or mark anything Only me first. Let more people see identity details once everybody can sign in.',
+      });
+      // Locked already; and a lock is unlocked, not turned back on.
+      expect(await refusal(api.lockMember(token, saraId))).toMatchObject({
+        status: 409,
+        code: 'already_locked',
+        message: "Sara's sign-in is locked already. Unlock it first to lock it differently.",
+      });
+      expect(await refusal(api.resumeMember(token, saraId))).toMatchObject({
+        status: 409,
+        code: 'not_paused',
+        message: "Sara's sign-in is not waiting after a restore.",
+      });
+      // The card says so, and how long a phone shows what it keeps.
+      const card = await api.memberAccount(token, saraId);
+      expect(card.suspension).toEqual(locked.suspension);
+      expect(card.max_offline_days).toBe(90);
+      // A lock is not a restore's: nobody waits there.
+      expect((await api.afterRestore(token)).sign_ins).toEqual([]);
+
+      // Her session is over, and says why, to its access and refresh tokens alike.
+      const over = await refusal(api.me(theirs.access_token));
+      expect(over).toMatchObject({ status: 401, code: 'session_ended', reason: 'suspended' });
+      expect(isSessionOver(over)).toBe(true);
+      expect(await refusal(api.refresh(theirs.refresh_token))).toMatchObject({
+        status: 401,
+        code: 'session_ended',
+        reason: 'suspended',
+      });
+      // A wrong password is told nothing of the lock; the right one, once
+      // proven, is refused, saying until when — and is no session's end.
+      expect(await refusal(api.signIn(sara.email, 'not her password at all'))).toMatchObject({
+        status: 401,
+        code: 'invalid_credentials',
+      });
+      const refused = await refusal(api.signIn(sara.email, sara.password));
+      expect(refused).toMatchObject({
+        status: 403,
+        code: 'membership_suspended',
+        reason: 'locked',
+        message: `An owner has locked your sign-in until ${shareEndWords(new Date(until), 'UTC')} (UTC). Ask one of them if you need to get in sooner.`,
+      });
+      expect(isSessionOver(refused)).toBe(false);
+
+      // Unlocked: the card says nothing more, and she signs in as before.
+      await api.unlockMember(token, saraId);
+      expect((await api.memberAccount(token, saraId)).suspension).toBeNull();
+      expect(await refusal(api.unlockMember(token, saraId))).toMatchObject({
+        status: 409,
+        code: 'not_locked',
+        message: "Sara's sign-in is not locked.",
+      });
+      const back = await signInAs(api, sara.email, sara.password);
+      expect((await api.me(back.access_token)).member_id).toBe(saraId);
+      // The session the lock ended stays ended.
+      expect(await refusal(api.refresh(theirs.refresh_token))).toMatchObject({
+        reason: 'suspended',
+      });
     },
   },
   {

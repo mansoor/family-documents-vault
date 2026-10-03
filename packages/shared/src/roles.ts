@@ -107,7 +107,13 @@ export type Capability =
    * wider only after 72 hours' notice, narrower at once. Whose record each
    * reader sees is `canSeeIdentity`.
    */
-  | 'identity.audience';
+  | 'identity.audience'
+  /**
+   * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
+   * own, and never another owner's (A50). An owner power (A54): asked with a
+   * passkey or a code, never the password.
+   */
+  | 'member.suspend';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -260,6 +266,13 @@ const MATRIX: Record<Capability, Rule> = {
     // never at once when it widens (A34).
     roles: ['owner'],
     refusal: 'Only an owner can change who sees identity details.',
+  },
+  'member.suspend': {
+    // Only owners lock (A52), and one owner cannot lock out another (A50):
+    // that would be a weapon against a spouse, as taking the owner role
+    // away at once would be (co-owners.ts).
+    roles: ['owner'],
+    refusal: "Only an owner can lock or unlock someone's sign-in.",
   },
 };
 

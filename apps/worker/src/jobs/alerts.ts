@@ -1,5 +1,6 @@
 import type https from 'node:https';
 import { withSystem, type Db } from '@fdv/db';
+import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
 import { liveDevice, openPassword, type VapidKeys } from './notify.js';
 import { deliver, pushDepsOf, unifiedPayload } from './push.js';
@@ -44,7 +45,25 @@ export interface Alert {
    * a change of owner. An alert without one is not pushed to phones.
    */
   push_type?: 'new_device' | 'owner_change';
+  /**
+   * About the recipients' own sign-in (5.28): their lock, and its end. It
+   * reaches them while their sign-in is locked or paused after a restore,
+   * as no other alert does.
+   */
+  own_sign_in?: boolean;
 }
+
+/**
+ * Whose sign-in here is not locked, nor paused after a restore (5.28): told
+ * of nothing else, as a switched-off account is not (`disabled_at`). An
+ * alert about their own sign-in reaches them all the same.
+ */
+const signsIn = (household: string, alert: Alert, column: 'account.id' | 'device.account_id') =>
+  alert.own_sign_in
+    ? sql<boolean>`true`
+    : sql<boolean>`not exists (select 1 from account_household ah
+                    where ah.account_id = ${sql.ref(column)} and ah.household_id = ${household}
+                      and suspension_in_effect(ah.suspended_at, ah.suspended_until))`;
 
 export interface AlertDeps {
   app: Db;
@@ -97,6 +116,7 @@ async function pushAlert(deps: AlertDeps, alert: Alert): Promise<number> {
       .where('kind', 'in', ['web_push', 'unified_push'])
       .where('account_id', 'in', alert.account_ids)
       .where(liveDevice)
+      .where(signsIn(alert.household_id, alert, 'device.account_id'))
       .execute(),
   );
   const payload = JSON.stringify({
@@ -147,6 +167,7 @@ async function emailAlert(deps: AlertDeps, alert: Alert): Promise<number> {
       .select(['email'])
       .where('id', 'in', alert.account_ids)
       .where('disabled_at', 'is', null)
+      .where(signsIn(alert.household_id, alert, 'account.id'))
       .execute();
     return { smtp, recipients: people.map((x) => x.email) };
   });
@@ -201,6 +222,7 @@ async function operatorEmail(deps: AlertDeps, alert: Alert): Promise<number> {
       .select(['email'])
       .where('id', 'in', alert.account_ids)
       .where('disabled_at', 'is', null)
+      .where(signsIn(alert.household_id, alert, 'account.id'))
       .execute(),
   );
   const transport = nodemailer.createTransport(deps.operatorMail.url);

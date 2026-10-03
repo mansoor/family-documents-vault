@@ -128,6 +128,12 @@ begin
     revoke delete on public.notice_request from fdv_app;
     grant execute on function public.identity_audience_now() to fdv_app;
   end if;
+  -- A lock that ends a person's links for good ends their requests too
+  -- (0051), with the owner's rights: a review-by-me request is its
+  -- requester's alone.
+  if to_regprocedure('public.upload_requests_end_for_lock(uuid)') is not null then
+    grant execute on function public.upload_requests_end_for_lock(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

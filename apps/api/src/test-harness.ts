@@ -31,6 +31,7 @@ import { PhotoService } from './household/photos.js';
 import { IdentityService } from './household/identity.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
+import { LockService } from './household/locks.js';
 import {
   SHARE_CODE_KEY_PURPOSE,
   SHARE_DEVICE_KEY_PURPOSE,
@@ -299,11 +300,12 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       },
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
-    household: new HouseholdService(db, keys, stepUp),
+    household: new HouseholdService(db, keys, stepUp, config.FDV_OFFLINE_MAX_DAYS),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
     invitations,
     coOwners: new CoOwnerService(db, alert, push, enqueue),
+    locks: new LockService(db, alert, push, enqueue),
     suggestions: new SuggestionService(db),
     logger: opts.logger ?? false,
   });

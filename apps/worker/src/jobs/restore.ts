@@ -125,6 +125,20 @@ export interface RestoreReport {
    * narrowing since the backup had ended. Whoever needs one makes it again.
    */
   exportsExpired: number;
+  /**
+   * Sign-ins waiting for an owner to turn them back on (5.28, A55): every
+   * one but the owners', since a backup cannot know of a lock made after it,
+   * nor of a sign-in taken away since. Each is turned back on, one tap
+   * each, in Settings → After a restore.
+   */
+  signInsPaused: number;
+  /**
+   * Sign-ins the backup holds locked by an owner, still locked (5.28): each
+   * waits for an owner to unlock it, and a lock that would have ended by
+   * itself no longer does — the backup cannot know whether it was made
+   * longer since.
+   */
+  locksKept: number;
   openInvitations: number;
   /**
    * Versions whose file was not where it is kept (5.24): removed for good
@@ -184,6 +198,7 @@ export async function restoreBackup(
     const rekeyed = target.master ? await onCurrentKey(target.adminUrl, target.master, log) : null;
     const admin = createPool(target.adminUrl, 1);
     let open: StillOpen;
+    let signIns: SignInsPaused = { signInsPaused: 0, locksKept: 0 };
     let files: RemovedFiles = { filesRemoved: [], filesUnchecked: 0, filesUncheckedWhy: [] };
     let incomingDropped = 0;
     try {
@@ -198,6 +213,10 @@ export async function restoreBackup(
       // A backup older than 0.5.14 has nothing to pause links with until
       // the migrations have run: its links are paused now.
       undone.linksPaused += await pauseLinks(admin);
+      // Nor one older than 0.5.30 its sign-ins (0051): paused now, and then
+      // counted, every one checked (5.28). A restore fails closed: a sign-in
+      // left open, or a household left with no owner who can sign in, fails it.
+      signIns = await pauseSignIns(admin);
       // A file waiting in the backup whose bytes have gone since (5.23).
       incomingDropped = await dropPurgedIncoming(admin, storage, log);
       open = await stillOpen(admin);
@@ -208,6 +227,7 @@ export async function restoreBackup(
     return {
       ...(await checkRestored(target)),
       ...undone,
+      ...signIns,
       ...open,
       ...files,
       rekeyed,
@@ -255,6 +275,80 @@ interface Undone {
 
 interface StillOpen {
   openInvitations: number;
+}
+
+interface SignInsPaused {
+  signInsPaused: number;
+  locksKept: number;
+}
+
+/**
+ * Every sign-in but the owners', paused for an owner to turn back on (5.28,
+ * A55) — a lock still in force stays a lock, and loses any end of its own
+ * (the backup cannot know whether it was made longer since); one past its
+ * end is over, and is paused like the rest. UNDO says it too, and the
+ * restore check asks it again below. Written with no caller named, as the
+ * owning role: the rule for who locks lets the restore through, and the
+ * owner floor (0051) judges every change at commit.
+ */
+const PAUSE_SIGN_INS = `update public.account_household
+     set suspended_at = now(), suspended_by = null, suspended_until = null,
+         suspend_reason = 'restored', suspend_note = null
+   where role <> 'owner'
+     and suspend_reason is distinct from 'restored'
+     and not (suspend_reason = 'locked' and suspended_at is not null
+              and (suspended_until is null or suspended_until > now()))`;
+const KEEP_LOCKS = `update public.account_household set suspended_until = null
+   where suspend_reason = 'locked' and suspended_until is not null`;
+
+/**
+ * UNDO pauses the sign-ins in the load's own transaction when the backup has
+ * the columns; this does it for a backup from before 0051, once the
+ * migrations have added them (after a newer backup it finds nothing left),
+ * then counts what waits, and fails the restore — closed — if any sign-in
+ * but an owner's is still open, or a household has no owner who can sign in.
+ */
+async function pauseSignIns(admin: ReturnType<typeof createPool>): Promise<SignInsPaused> {
+  const client = await admin.connect();
+  try {
+    await client.query('begin');
+    await client.query(PAUSE_SIGN_INS);
+    await client.query(KEEP_LOCKS);
+    await client.query('commit');
+  } catch (err) {
+    await client.query('rollback').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+  const { rows } = await admin.query<{
+    paused: number;
+    locked: number;
+    open: number;
+    ownerless: string[];
+  }>(
+    `select (select count(*)::int from account_household where suspend_reason = 'restored') as paused,
+            (select count(*)::int from account_household where suspend_reason = 'locked') as locked,
+            (select count(*)::int from account_household
+              where role <> 'owner' and not suspension_in_effect(suspended_at, suspended_until)) as open,
+            array(select h.id::text from household h
+                   where exists (select 1 from account_household a where a.household_id = h.id)
+                     and not exists (select 1 from account_household a
+                                      where a.household_id = h.id and a.role = 'owner'
+                                        and not suspension_in_effect(a.suspended_at, a.suspended_until)))
+              as ownerless`,
+  );
+  const r = rows[0];
+  if (!r) throw new Error('the sign-ins could not be counted');
+  if (r.open > 0) {
+    throw new Error(
+      `${r.open} sign-in${r.open === 1 ? '' : 's'} other than an owner's could not be paused`,
+    );
+  }
+  if (r.ownerless.length > 0) {
+    throw new Error(`household ${r.ownerless.join(', ')} has no owner who can sign in`);
+  }
+  return { signInsPaused: r.paused, locksKept: r.locked };
 }
 
 /** Every live share link, paused for an owner to turn back on (A55). UNDO says it too. */
@@ -606,8 +700,11 @@ async function load(file: string, key: Buffer, adminUrl: string, known: number):
  * still to be downloaded is expired (5.27), as every session is ended: each
  * holds what its requester could see when it was made, identity details
  * included, which the narrowing above may take from them, and one a
- * narrowing since the backup had ended would be served again. Guarded for
- * older schemas.
+ * narrowing since the backup had ended would be served again. And every
+ * sign-in but the owners' is paused for an owner to turn back on (5.28,
+ * A55): a lock made since, or a sign-in taken away since, is not in the
+ * backup; a lock in it stays, with no end of its own. Guarded for older
+ * schemas.
  */
 const UNDO = `create temporary table fdv_restore_undone (what text, n int) on commit drop;
 create temporary table fdv_restore_audience (household_id uuid, was text) on commit drop;
@@ -682,6 +779,11 @@ begin
      where purge_requested_at is not null;
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('purge_requests', n);
+  end if;
+  if exists (select 1 from pg_attribute where attrelid = to_regclass('public.account_household')
+              and attname = 'suspend_reason' and not attisdropped) then
+    ${PAUSE_SIGN_INS};
+    ${KEEP_LOCKS};
   end if;
   if to_regclass('public.notice_request') is not null then
     -- What each household's audience was in effect: a widening whose notice
@@ -801,6 +903,13 @@ const GUARDS = [
     name: 'incoming_file_leaves_bytes',
     table: 'incoming_file',
     fn: 'incoming_file_leaves_bytes',
+  },
+  // Only an owner locks, never their own sign-in nor another owner's, and
+  // nobody locked is made an owner by anybody signed in (0051).
+  {
+    name: 'account_household_suspension',
+    table: 'account_household',
+    fn: 'account_household_suspension',
   },
   // A notice says what it said, asked now, and ends once (0050).
   { name: 'notice_request_fixed', table: 'notice_request', fn: 'notice_request_fixed' },
@@ -1164,7 +1273,12 @@ export async function checkRestored(
 ): Promise<
   Omit<
     RestoreReport,
-    keyof Undone | keyof StillOpen | keyof RemovedFiles | 'rekeyed' | 'incomingDropped'
+    | keyof Undone
+    | keyof StillOpen
+    | keyof SignInsPaused
+    | keyof RemovedFiles
+    | 'rekeyed'
+    | 'incomingDropped'
   >
 > {
   const admin = createPool(target.adminUrl, 1);

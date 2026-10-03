@@ -196,7 +196,7 @@ const BY_TYPE = 'by type';
  *    by name and takes the audience of its object type (`TYPES`), which is
  *    the audience it has always had.
  *  - Nothing else inherits. A new action — even about a type listed below,
- *    like the owner's actions of 5.28–5.30 on `member` — is shown to nobody
+ *    like the owner's actions of 5.29–5.30 on `member` — is shown to nobody
  *    until the iteration that adds it gives it a row. Actions written today
  *    with no sentence (step-ups, reminders, suggestions, devices) have no
  *    row either: they were never shown, and a sentence for one decides its
@@ -259,6 +259,11 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.deceased', BY_TYPE],
   // 5.25: an owner looked at somebody's sign-in — never what it said.
   ['member.account_viewed', ownersAndThePerson],
+  // 5.28: a sign-in locked, unlocked, or turned back on after a restore: for
+  // the owners — whoever did it is one — and the person it is about. Not
+  // another adult, not a teen (a viewer reads no log).
+  ['member.locked', ownersAndThePerson],
+  ['member.unlocked', ownersAndThePerson],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.

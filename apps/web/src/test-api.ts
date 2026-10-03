@@ -23,6 +23,8 @@ import {
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   inCollectionAudience,
+  LOCK_MAX_DAYS,
+  LOCK_NOTE_MAX,
   maskEmail,
   nextReminder,
   reminderOf,
@@ -306,6 +308,15 @@ export interface FakeState {
   twoStep?: boolean;
   accounts?: Record<string, MemberAccount>;
   accountStepUp?: boolean;
+  /**
+   * `features.member_admin` (5.28): an owner locks and unlocks a sign-in,
+   * and turns one a restore paused back on. Left out, the vault says so; a
+   * card then says whether it is locked (`suspension`, null when not) and
+   * how long a phone keeps its offline copies (`max_offline_days`, 90 when
+   * the card does not say). False: a vault from before, whose cards say
+   * neither, and whose After a restore lists no sign-ins.
+   */
+  memberAdmin?: boolean;
   /** Every PATCH /members/{id} that arrived: whose, what, and the If-Match. */
   memberEdits?: Array<{ id: string; body: unknown; ifMatch: string | null }>;
   /**
@@ -715,6 +726,7 @@ export function installFakeApi(state: FakeState) {
           share_second_factor: state.shareSecondFactor ?? true,
           share_email_code: state.operatorMail === true,
           member_edit: true,
+          ...(state.memberAdmin !== false ? { member_admin: true } : {}),
           ...(state.incoming ? { upload_requests: true } : {}),
           ...(state.identities ? { member_identity: true } : {}),
         },
@@ -1086,11 +1098,10 @@ export function installFakeApi(state: FakeState) {
       }
       return json(view());
     }
-    // A person's details (5.25), made to the version seen; the owner's view
-    // of a sign-in, asked with a passkey or a code (A54).
-    const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
-    if (memberAt && memberAt[2] && method === 'GET') {
-      if (storedRole() !== 'owner') return refuse(404, 'not_found', 'That page does not exist.');
+    // An owner power over somebody else's sign-in (A54): an owner with
+    // neither two-step sign-in nor a passkey is refused; otherwise it asks
+    // for a passkey or a code, until one has been given. Null: go ahead.
+    const ownerPower = () => {
       if (state.twoStep === false) {
         return refuse(
           403,
@@ -1106,8 +1117,122 @@ export function installFakeApi(state: FakeState) {
           { action: 'manage_sign_ins' },
         );
       }
+      return null;
+    };
+    // Locking a sign-in, unlocking it, and turning one a restore paused back
+    // on (5.28), refused in the vault's order: who may, the owner power,
+    // then the person.
+    const lockAt = /^\/api\/v1\/members\/([^/]+)\/(lock|resume)$/.exec(path);
+    if (lockAt && state.memberAdmin !== false) {
+      const id = lockAt[1] as string;
+      const resuming = lockAt[2] === 'resume';
+      if (method !== 'POST' && (resuming || method !== 'DELETE')) {
+        return refuse(405, 'method_not_allowed', 'Not here.');
+      }
+      if (storedRole() !== 'owner') {
+        return refuse(
+          403,
+          'forbidden',
+          resuming
+            ? 'Only an owner can turn things back on after a restore.'
+            : "Only an owner can lock or unlock someone's sign-in.",
+        );
+      }
+      const locking = !resuming && method === 'POST';
+      const b = (body ?? {}) as Record<string, unknown>;
+      if (locking) {
+        const unknown = Object.keys(b).filter((k) => !['until', 'end_links', 'note'].includes(k));
+        if (unknown.length > 0) {
+          return refuse(422, 'validation_failed', `Unrecognized key: "${unknown[0]}"`);
+        }
+        if (typeof b.note === 'string' && b.note.trim().length > LOCK_NOTE_MAX) {
+          return refuse(
+            422,
+            'validation_failed',
+            `A note can be ${LOCK_NOTE_MAX} characters at most.`,
+          );
+        }
+        if (
+          b.until != null &&
+          (typeof b.until !== 'string' || Number.isNaN(new Date(b.until).getTime()))
+        ) {
+          return refuse(422, 'validation_failed', 'Invalid datetime');
+        }
+      }
+      const power = ownerPower();
+      if (power) return power;
+      const card = state.accounts?.[id];
+      if (!card) return refuse(404, 'not_found', 'They have no sign-in to lock.');
+      const named = state.members.find((m) => m.id === id)?.display_name;
+      const name = typeof named === 'string' ? named : 'They';
+      const now = card.suspension ?? null;
+      if (resuming) {
+        if (now?.reason !== 'restored') {
+          return refuse(409, 'not_paused', `${name}'s sign-in is not waiting after a restore.`);
+        }
+        card.suspension = null;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (method === 'DELETE') {
+        if (now?.reason !== 'locked') {
+          return refuse(409, 'not_locked', `${name}'s sign-in is not locked.`);
+        }
+        card.suspension = null;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (id === 'me') {
+        return refuse(422, 'validation_failed', 'You cannot lock your own sign-in.');
+      }
+      if (card.role === 'owner') {
+        return refuse(
+          409,
+          'owner_notice_required',
+          `${name} is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+        );
+      }
+      if (now?.reason === 'locked') {
+        return refuse(
+          409,
+          'already_locked',
+          `${name}'s sign-in is locked already. Unlock it first to lock it differently.`,
+        );
+      }
+      const until = typeof b.until === 'string' ? new Date(b.until) : null;
+      if (until && until.getTime() <= Date.now()) {
+        return refuse(422, 'validation_failed', 'Choose a time in the future to unlock.');
+      }
+      if (until && until.getTime() > Date.now() + LOCK_MAX_DAYS * 864e5) {
+        return refuse(
+          422,
+          'validation_failed',
+          'A lock can end by itself within a year at most. Leave the end out to keep it until you unlock it.',
+        );
+      }
+      // Signed out everywhere: their devices go with their sessions.
+      card.suspension = {
+        reason: 'locked',
+        since: new Date().toISOString(),
+        until: until?.toISOString() ?? null,
+        note: typeof b.note === 'string' && b.note.trim() ? b.note.trim() : null,
+        by: ME.display_name,
+      };
+      card.devices = [];
+      return json({ member_id: id, suspension: card.suspension });
+    }
+    // A person's details (5.25), made to the version seen; the owner's view
+    // of a sign-in, asked with a passkey or a code (A54).
+    const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
+    if (memberAt && memberAt[2] && method === 'GET') {
+      if (storedRole() !== 'owner') return refuse(404, 'not_found', 'That page does not exist.');
+      const power = ownerPower();
+      if (power) return power;
       const card = state.accounts?.[memberAt[1] as string];
-      return card ? json(card) : refuse(404, 'not_found', 'They have no sign-in to show.');
+      if (!card) return refuse(404, 'not_found', 'They have no sign-in to show.');
+      // Since 5.28 a card says whether it is locked, and how long a phone
+      // keeps its offline copies; a vault from before says neither.
+      return json(
+        state.memberAdmin === false ? card : { suspension: null, max_offline_days: 90, ...card },
+      );
     }
     if (memberAt && !memberAt[2] && method === 'PATCH') {
       const m = state.members.find((x) => x.id === memberAt[1]);
@@ -1463,13 +1588,36 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/after-restore' && method === 'GET') {
       const owner = storedRole() === 'owner';
       const mine = (x: Record<string, unknown>) => x.created_by_name === ME.display_name;
+      // One paused only because its maker's sign-in is locked (5.28) is not
+      // the restore's: it opens again with the unlock.
+      const restored = (x: Record<string, unknown>) =>
+        x.state === 'paused' && x.paused_reason !== 'locked';
       return json({
-        links: state.shares.filter((x) => x.state === 'paused' && (owner || mine(x))),
+        links: state.shares.filter((x) => restored(x) && (owner || mine(x))),
         // 5.21: the paused requests the reader may decide about — an owner,
         // all they review; anybody else, their own.
         upload_requests: (state.uploadRequests ?? []).filter(
-          (r) => r.state === 'paused' && (owner || r.mine === true),
+          (r) => restored(r) && (owner || r.mine === true),
         ),
+        // 5.28: the sign-ins it paused, an owner's alone to turn back on,
+        // by name; absent from a vault from before.
+        ...(state.memberAdmin === false
+          ? {}
+          : {
+              sign_ins: owner
+                ? Object.values(state.accounts ?? {})
+                    .filter((a) => a.suspension?.reason === 'restored')
+                    .map((a) => ({
+                      member_id: a.member_id,
+                      display_name: ((n) => (typeof n === 'string' ? n : ''))(
+                        state.members.find((m) => m.id === a.member_id)?.display_name,
+                      ),
+                      role: a.role,
+                      paused_at: a.suspension?.since ?? '',
+                    }))
+                    .sort((x, y) => x.display_name.localeCompare(y.display_name))
+                : [],
+            }),
       });
     }
     if (path.startsWith('/api/v1/shares/') && path.endsWith('/resume') && method === 'POST') {

@@ -79,6 +79,14 @@ export function requestState(
     case 'active':
       return { words: `Working until ${at}`, tone: 'ok' };
     case 'paused':
+      // 5.28: whoever asked has their sign-in locked. Nobody turns it back
+      // on: it opens again, by itself, once they are unlocked.
+      if (r.paused_reason === 'locked') {
+        return {
+          words: `Paused while the sign-in of ${r.requested_by_name ?? 'whoever asked'} is locked. It works again once they are unlocked.`,
+          tone: 'warn',
+        };
+      }
       return {
         words: owner
           ? 'Paused after a restore'
@@ -371,6 +379,9 @@ export function RequestRow(props: {
   const r = props.request;
   const state = requestState(r, props.owner);
   const takeBack = useRef<HTMLButtonElement>(null);
+  // Only a restore's pause is an owner's to end (a lock's ends with the lock).
+  const resume =
+    props.owner && r.state === 'paused' && r.paused_reason !== 'locked' ? props.onResume : null;
   const who = [
     r.recipient_label ? `For ${r.recipient_label}` : null,
     !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
@@ -384,10 +395,10 @@ export function RequestRow(props: {
       <div className={`request-state${state.tone ? ` status status-${state.tone}` : ' muted'}`}>
         {state.words}
       </div>
-      {(props.onTakeBack || (props.onResume && props.owner && r.state === 'paused')) && (
+      {(props.onTakeBack || resume) && (
         <div className="row">
-          {props.onResume && props.owner && r.state === 'paused' && (
-            <Button disabled={props.busy} onClick={props.onResume}>
+          {resume && (
+            <Button disabled={props.busy} onClick={resume}>
               Turn back on
             </Button>
           )}

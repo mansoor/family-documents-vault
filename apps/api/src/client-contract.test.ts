@@ -12,9 +12,11 @@ import {
 } from '@fdv/crypto';
 import { withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
+import type { Tokens } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, it } from 'vitest';
+import { codeFor } from './auth/totp.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
@@ -185,6 +187,19 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
             .execute();
         }
       });
+    },
+    // Somebody joining as anybody does (5.28): invited by the owner, who is
+    // asked to confirm it is them first (change_people), and accepting.
+    addSignIn: async (token, who) => {
+      await api.stepUp(token, { password: ctx.password });
+      return (await h.join({ access_token: token } as Tokens, who)).member_id;
+    },
+    // An authenticator, turned on from the session the password just opened,
+    // and its code given for what an owner power asks (A54).
+    ownerTwoStep: async (token) => {
+      const { secret } = await api.totpEnrol(token);
+      await api.totpConfirm(token, codeFor(secret));
+      await api.stepUp(token, { code: codeFor(secret) });
     },
   };
 

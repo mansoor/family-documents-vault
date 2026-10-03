@@ -52,6 +52,7 @@ async function make(
       household: householdStub,
       photos: anyStub,
       identity: anyStub,
+      locks: anyStub,
       invitations: anyStub,
       coOwners: anyStub,
       shares: anyStub,

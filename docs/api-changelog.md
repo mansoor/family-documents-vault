@@ -2834,6 +2834,146 @@ member_id, shared, only_me? }`, each part `{ fields, masked? }`.
       ends every session: one made under a wider audience would otherwise be
       served again. The report counts them (`exportsExpired`), and the
       command line says so.
+  - Lock a sign-in (5.28, `features.member_admin`).
+    - **Added:** `features.member_admin` in the capability document, `true`.
+      Absent from older vaults, which lock nobody.
+    - **Added:** `POST /api/v1/members/{id}/lock` with `{ until?, end_links?,
+note? }`, strict: `until` an ISO moment with its offset, in the future and
+      within a year (`LOCK_MAX_DAYS`, 365), or left out or null for "until an
+      owner unlocks it"; `end_links` true to take their links and requests
+      back for good rather than pause them; `note` (trimmed; blank is none;
+      500 characters at most, `LOCK_NOTE_MAX`) for the owners, never shown
+      to the person. `200` with `{ member_id, suspension: { reason: "locked",
+since, until, note, by } }`, `by` the locking owner's name. Owners only
+      (A52; the capability `member.suspend`). Refused, in this order: what
+      was sent, `422 validation_failed`; anybody but an owner, `403
+forbidden` ("Only an owner can lock or unlock someone's sign-in."); an
+      owner power (A54), as the account card is — `403
+totp_required_for_owner` for an owner with neither two-step sign-in nor a
+      passkey, otherwise `403 step_up_required` with `action:
+"manage_sign_ins"`, a passkey or a code, never the password; a person with
+      no sign-in, or nobody, `404 not_found` ("They have no sign-in to
+      lock."); oneself, `422 validation_failed` ("You cannot lock your own
+      sign-in."); an owner, `409 owner_notice_required` (A50: "… one owner's
+      sign-in is never locked by another. Ask for their role to be changed
+      first — that takes seven days, and they are told about it."); somebody
+      locked already, `409 already_locked`; an end gone by, or more than a
+      year off, `422 validation_failed`. Somebody paused after a restore may
+      be locked: the lock takes the pause's place. What a lock does, in one
+      transaction (A51): every session of theirs ends, with the reason
+      `suspended`, and every device with it (their phones are pushed
+      `session_ended` once it commits); the invitations they sent are taken
+      back and their reset links used up; their exports stop being
+      downloadable; their share links, collection links and requests to send
+      documents stop answering — `404 link_not_valid` to whoever holds one,
+      as any link that has stopped, and a page open with one stops at its
+      next request — and answer again, as they were, once the lock ends;
+      with `end_links` they are taken back instead (a `share.revoked` or
+      `upload_request.revoked` line each), and stay so; a wider audience for
+      identity details still waiting is withdrawn (5.26: an
+      `identity.audience_changed` line with `detail.withdrawn`). Once it
+      commits, what was sent for them alone to review moves to the owners
+      (`incoming.move`, 5.23), and its request closes. The person is emailed,
+      with nothing secret and not the note; the other owners are told.
+    - **Added:** `DELETE /api/v1/members/{id}/lock` — the lock ends now:
+      `204`. Asked and refused as a lock is; somebody not locked (never,
+      past its end, or paused after a restore) is `409 not_locked`. Their
+      links and requests that were not taken back answer again, and they
+      sign in as before; the person is emailed, the other owners told.
+    - **Added:** a lock with `until` ends by itself: from that moment every
+      read takes it as over — signing in, their links and requests, the
+      account card, who can be told of a widening — with nothing written and
+      nothing to run. The next lock writes over it.
+    - **Added:** `GET /api/v1/members/{id}/account` gains `suspension` — `{
+reason, since, until, note, by }` while their sign-in is locked
+      (`reason: "locked"`) or paused after a restore (`reason: "restored"`,
+      `by` null), null otherwise — and `max_offline_days`, how many days a
+      phone may go on showing the Essentials it keeps without reaching the
+      vault (FDV_OFFLINE_MAX_DAYS, the `max_offline_days` a phone is given):
+      what a phone that never reconnects keeps after a lock. Both absent from
+      older vaults.
+    - **Added:** `403 membership_suspended`, with `error.reason` `locked` or
+      `restored`, for a sign-in refused while it is locked or paused — said
+      only once the password, the code (with two-step sign-in, at `POST
+/auth/mfa`; the password step still answers `mfa_required`) or the
+      passkey is proven, so it tells nobody else which accounts there are.
+      A wrong password is still `401 invalid_credentials`. Its message says
+      until when, on the household's clock ("An owner has locked your
+      sign-in until Monday 5 October at 07:00 (Europe/London). …"). Treat a
+      reason never heard of as paused.
+    - **Added:** `401 session_ended` gains the reason `suspended`: a session
+      ended by a lock, and any request or refresh of a session whose person
+      is locked or paused after a restore. A client says the person's sign-in
+      is paused, not that something went wrong; older apps wipe as for every
+      reason but `expired`.
+    - **Changed:** a switched-off account's passkey sign-in is refused (`401
+passkey_rejected`), as its password always was; it went straight on.
+    - **Changed:** `PUT /household/identity-audience` refuses a widening, `409
+member_cannot_be_told`, while anybody with a sign-in — of any role — is
+      locked or paused after a restore, as for a switched-off account.
+    - **Changed:** `POST /members/{id}/role` making a locked or paused person
+      an owner is `409 locked`: unlock them, or turn them back on, first.
+    - **Changed:** `ShareView.paused_reason` and
+      `UploadRequestView.paused_reason` gain `locked`, with `state: "paused"`,
+      for a link or a request whose maker's sign-in is locked or paused: it
+      works again by itself once they can sign in, and no owner turns it on
+      — `GET /after-restore` lists only a restore's pauses, and `POST
+/shares/{id}/resume` on one is `404`. Treat a reason never heard of as
+      paused.
+    - **Changed: a restore pauses every sign-in but the owners'** (A55). A
+      backup cannot know of a lock made after it, nor of a sign-in taken away
+      since; so after a restore each person but the owners waits, `reason:
+"restored"`, for an owner to turn their sign-in back on. A lock the backup
+      holds stays a lock, and loses any end of its own (it may have been made
+      longer since); one past its end is paused like the rest. A backup from
+      before 0051 is brought up to date, then paused. The report says how
+      many wait (`signInsPaused`) and how many locks it kept (`locksKept`),
+      and the command line says why. The restore fails, closed, if any
+      sign-in but an owner's is left open, or a household is left with no
+      owner who can sign in.
+    - **Added:** `GET /api/v1/after-restore` gains `sign_ins`: `[{ member_id,
+display_name, role, paused_at }]`, every sign-in a restore paused, for an
+      owner (anybody else, `[]`); its role is shown to confirm, and 5.33 adds
+      a viewer's restriction beside it. Absent from older vaults. **Added:**
+      `POST /api/v1/members/{id}/resume` turns one back on: `204`. Owners
+      only (`restore.review`, "Only an owner can turn things back on after a
+      restore."), asked as a lock is (`manage_sign_ins`); somebody not paused
+      by a restore is `409 not_paused` (a lock is unlocked, not resumed).
+    - Alerts, reminders and digests go to nobody whose sign-in is locked or
+      paused, as to nobody switched off; only what is about their own sign-in
+      — the lock, and its end — reaches them.
+    - The activity log: **new** `member.locked` ("Mansoor locked Sara’s
+      sign-in until 5 October at 07:00, and ended their links for good") with
+      `detail.until`, `detail.end_links` and how many sessions, invitations,
+      links, requests and exports it ended (`detail.widening_withdrawn` when a
+      widening was), never the note; and `member.unlocked` ("Mansoor unlocked
+      Sara’s sign-in"; with `detail.reason: "restored"`, "… turned Sara’s
+      sign-in back on after the restore"). Both notable, for the owners and
+      the person they are about, nobody else.
+    - The database: 0051 adds to `account_household` `suspended_at`,
+      `suspended_by`, `suspended_until`, `suspend_reason` (`locked` or
+      `restored`) and `suspend_note` (500 characters at most), and
+      `suspension_in_effect(at, until)`, which every read of one asks. The
+      owner floor (`assert_owner_remains`, now 0051's) asks for an owner who
+      can sign in — not locked, not paused — however the change is made: the
+      API, the vault itself, a restore, a statement by hand. The trigger
+      `account_household_suspension` lets only an owner signed in change a
+      suspension, never their own, never another owner's (A50), and lets
+      nobody signed in make a locked person an owner. `app_shared_document()`,
+      `app_live_share()` and `app_live_upload_request()` (now 0051's) give a
+      link or a request nothing while its maker's sign-in is suspended; and
+      `upload_requests_end_for_lock()` takes back a locked person's requests,
+      with the owner's rights, for a lock with `end_links`. The restore check
+      knows the new trigger.
+    - `@fdv/shared`: `MemberSuspension`, `SuspendReason`, `MemberLock`,
+      `PausedSignIn`, `LOCK_MAX_DAYS`, `LOCK_NOTE_MAX`, `suspensionInEffect`,
+      `MemberAccount.suspension` and `max_offline_days`, the capability
+      `member.suspend` (owners), and `features.member_admin`. `@fdv/client`:
+      `lockMember`, `unlockMember`, `resumeMember`, and `afterRestore`'s
+      `sign_ins`; the fake locks and unlocks, ends a locked person's sessions
+      with `suspended`, refuses their right password with `403
+membership_suspended`, takes a lock past its end as over, and pauses
+      sign-ins as a restore does (`pauseSignIns()`).
 
 ## Deprecations in effect
 

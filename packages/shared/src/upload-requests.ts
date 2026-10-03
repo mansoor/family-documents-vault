@@ -141,7 +141,12 @@ export interface UploadRequestView {
   suggested_type_key: string | null;
   close_after_submit: boolean;
   state: UploadRequestState;
-  paused_reason: 'restored' | null;
+  /**
+   * `restored`: a restore paused it, for an owner to turn back on. `locked`
+   * (5.28): its requester's sign-in is locked; it opens again, by itself,
+   * once they are unlocked.
+   */
+  paused_reason: 'restored' | 'locked' | null;
   closed_reason: 'submitted' | 'requester_lost_right' | null;
   /** Files sent in and waiting, or decided (5.23). */
   files_received: number;
