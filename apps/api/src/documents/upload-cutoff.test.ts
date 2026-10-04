@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { connect, type AddressInfo, type Socket } from 'node:net';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, Tokens } from '@fdv/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHarness, type Harness } from '../test-harness.js';
-import { UPLOAD_LINGER_MS } from './routes.js';
+import { cutOff, UPLOAD_LINGER_MS } from './routes.js';
 
 /**
  * An upload over the size limit is cut off (the 5.30 review, X530-3): the
@@ -86,5 +88,37 @@ describe.skipIf(!testAdminUrl())('an upload over the limit', () => {
     // And the vault goes on answering.
     const me = await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) });
     expect(me.statusCode).toBe(200);
+  });
+});
+
+/**
+ * A request made in-process (Fastify's inject, as most tests and nothing in
+ * production use) has a stand-in for a socket with nothing to close: cutting
+ * it off must do nothing, not throw from a timer, which would end the process
+ * (seen in 0.5.33's release gate).
+ */
+describe('cutting off an upload with no connection to close', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does nothing, and throws nothing', () => {
+    vi.useFakeTimers();
+    const raw = Object.assign(new EventEmitter(), { complete: false, socket: {} });
+    const replyRaw = new EventEmitter();
+    cutOff({ raw } as unknown as FastifyRequest, { raw: replyRaw } as unknown as FastifyReply);
+    replyRaw.emit('finish');
+    expect(() => vi.advanceTimersByTime(UPLOAD_LINGER_MS + 1)).not.toThrow();
+  });
+
+  it('a real connection still sending is closed', () => {
+    vi.useFakeTimers();
+    const destroy = vi.fn();
+    const raw = Object.assign(new EventEmitter(), { complete: false, socket: { destroy } });
+    const replyRaw = new EventEmitter();
+    cutOff({ raw } as unknown as FastifyRequest, { raw: replyRaw } as unknown as FastifyReply);
+    replyRaw.emit('finish');
+    vi.advanceTimersByTime(UPLOAD_LINGER_MS + 1);
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });

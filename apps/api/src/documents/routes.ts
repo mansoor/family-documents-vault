@@ -93,11 +93,15 @@ export const UPLOAD_LINGER_MS = 5_000;
  * gone, a client still sending is given a few seconds, and then the
  * connection is closed. Closed at once, the answer would be lost with it.
  */
-function cutOff(req: FastifyRequest, reply: FastifyReply): void {
-  const socket = req.raw.socket;
+export function cutOff(req: FastifyRequest, reply: FastifyReply): void {
+  const socket = req.raw.socket as { destroy?: () => void } | null | undefined;
   reply.raw.once('finish', () => {
     if (req.raw.complete) return;
-    const timer = setTimeout(() => socket.destroy(), UPLOAD_LINGER_MS);
+    // A request made in-process (inject) has no connection to close, and a
+    // throw from a timer would end the process.
+    const timer = setTimeout(() => {
+      if (typeof socket?.destroy === 'function') socket.destroy();
+    }, UPLOAD_LINGER_MS);
     timer.unref();
     req.raw.once('end', () => clearTimeout(timer));
   });
