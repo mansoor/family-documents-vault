@@ -152,7 +152,16 @@ export function registerAuth(
       // is that something — it is phishing-resistant and device-bound —
       // so it satisfies the rule as well as an authenticator app does.
       totp_required: p.role === 'owner' && !enabled && !passkey,
+      // 5.29: an owner made a link to hand over for this sign-in, not yet
+      // seen: told at every sign-in until it is.
+      reset_notice: passwords ? await passwords.notice(p) : null,
     };
+  });
+
+  // They have seen it (5.29). Nothing to see answers the same.
+  app.delete('/api/v1/me/reset-notice', { preHandler: app.requireAuth }, async (req, reply) => {
+    await passwords?.noticeSeen(req.principal as Principal);
+    return reply.status(204).send();
   });
 
   if (stepUp) {

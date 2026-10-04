@@ -44,6 +44,8 @@ import {
   PRIVATE_TO_THEM,
   PURGE_NOTICE_HOURS,
   refusalFor,
+  RESET_LINK_MINUTES,
+  resetCommand,
   shareEndWords,
   suspensionInEffect,
   TYPE_IN_USE,
@@ -76,6 +78,8 @@ import {
   type OfflineItem,
   type PausedSignIn,
   type ReminderView,
+  type ResetNotice,
+  type ResetPath,
   type Role,
   type Tokens,
   type VersionView,
@@ -194,6 +198,26 @@ export interface FakeVaultState {
   suspensions: Map<string, MemberSuspension>;
   /** The household's clock (5.28): the end of a lock is said in it. UTC, as a new vault's. */
   timezone: string;
+  /**
+   * Whether whoever runs the vault gave it a mail server (FDV_SMTP_URL),
+   * as the contract's real vault has: a reset an owner starts (5.29) then
+   * goes by it, `mail`. Without one, `handover` for somebody who keeps
+   * nothing private, `operator` for anybody in `keepsPrivate`.
+   */
+  operatorMail: boolean;
+  /**
+   * People who keep something private (5.29), by member id: the fake keeps
+   * no record of what, as the real vault tells an owner nothing of what.
+   */
+  keepsPrivate: string[];
+  /**
+   * That an owner made a link to hand over for somebody's sign-in (5.29),
+   * by member id: GET /me's `reset_notice` for them until DELETE
+   * /me/reset-notice.
+   */
+  resetNotices: Map<string, ResetNotice>;
+  /** Every password reset an owner started (5.29), in order, for assertions: never a link. */
+  resetsStarted: Array<{ member_id: string; path: ResetPath; stop_now: boolean }>;
   identityPending: IdentityAudienceView['pending'];
   /** The photo on its way for each person, by member id: made at the next GET /members (0.5.19). */
   photosOnTheirWay: Map<string, string>;
@@ -548,6 +572,10 @@ export function createFakeVault(): {
     signIns: [],
     suspensions: new Map(),
     timezone: 'UTC',
+    operatorMail: true,
+    keepsPrivate: [],
+    resetNotices: new Map(),
+    resetsStarted: [],
     role: 'owner',
     collections: [],
     uploadRequests: [],
@@ -711,6 +739,17 @@ export function createFakeVault(): {
   const suspensionOf = (memberId: string): MemberSuspension | null => {
     const s = state.suspensions.get(memberId);
     return s && suspensionInEffect({ suspended_at: s.since, suspended_until: s.until }) ? s : null;
+  };
+  /**
+   * Which way a reset an owner starts for somebody goes now (5.29): none for
+   * an owner (A50) or somebody locked or paused; the operator's mail when
+   * there is some; otherwise a link to hand over, unless they keep anything
+   * private.
+   */
+  const resetPathOf = (memberId: string): ResetPath | null => {
+    if (roleOfMember(memberId) === 'owner' || suspensionOf(memberId) !== null) return null;
+    if (state.operatorMail) return 'mail';
+    return state.keepsPrivate.includes(memberId) ? 'operator' : 'handover';
   };
   /** Everybody with a sign-in: the fake's own person, and each of `members` with a role. */
   const withSignIn = () => [
@@ -940,7 +979,15 @@ export function createFakeVault(): {
         role: who.role,
         totp_enabled: false,
         totp_required: true,
+        // 5.29: an owner made a link to hand over for this sign-in.
+        reset_notice: state.resetNotices.get(who.memberId) ?? null,
       });
+    }
+    if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {
+      const s = session();
+      if (!('id' in s)) return s;
+      state.resetNotices.delete(whoOf(s).memberId);
+      return empty();
     }
     /** A document as the real vault answers it, with its status in words (0.5.7). */
     const viewOf = (doc: FakeDocument) => documentView(doc, state.types, { role: state.role });
@@ -2464,6 +2511,93 @@ export function createFakeVault(): {
       state.identityPending = null;
       return ok({ member_id: id, suspension: { ...suspension } });
     }
+    // A password reset an owner starts (5.29, D5), as the real vault answers
+    // it: who may (403), what was sent (422), the owner power (A54) as the
+    // account card asks it, then the person (404, 422, 409). Never a link
+    // but in `handover`, shown this once.
+    const resetAt = /^\/api\/v1\/members\/([^/]+)\/password-reset$/.exec(path);
+    if (resetAt && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s);
+      if (!can(me.role, 'member.reset_password')) {
+        return fail(403, 'forbidden', refusalFor('member.reset_password'));
+      }
+      const b = body ?? {};
+      if (
+        Object.keys(b).some((k) => k !== 'stop_now') ||
+        (b.stop_now !== undefined && typeof b.stop_now !== 'boolean')
+      ) {
+        return fail(422, 'validation_failed', 'Please check the form.');
+      }
+      if (!state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to manage other people's sign-ins.",
+        );
+      }
+      const id = decodeURIComponent(resetAt[1] as string);
+      const m = state.members.find((x) => x.id === id);
+      const role = roleOfMember(id);
+      if (!m || !role) return fail(404, 'not_found', 'They have no sign-in to reset.');
+      if (id === me.memberId) {
+        return fail(
+          422,
+          'validation_failed',
+          'You cannot reset your own password here. Change it in Settings, or use “Forgotten your password?” on the sign-in page.',
+        );
+      }
+      if (role === 'owner') {
+        return fail(
+          409,
+          'owner_notice_required',
+          `${m.display_name} is an owner, and one owner's password is never reset by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+        );
+      }
+      const held = suspensionOf(id);
+      if (held) {
+        return fail(
+          409,
+          'locked',
+          held.reason === 'restored'
+            ? `${m.display_name}'s sign-in is waiting after a restore. Turn it back on first, then reset their password.`
+            : `${m.display_name}'s sign-in is locked. Unlock it first, then reset their password.`,
+        );
+      }
+      const how = resetPathOf(id) as ResetPath;
+      const stopNow = b.stop_now === true;
+      if (stopNow) {
+        // Their password stops now (A48): nobody is given one.
+        const theirs = state.signIns.find((x) => x.member_id === id);
+        if (theirs) theirs.password = '';
+        for (const x of state.sessions) {
+          if (x.revoked || whoOf(x).memberId !== id) continue;
+          x.revoked = true;
+          x.endedBecause = 'revoked';
+        }
+      }
+      const by = state.members.find((x) => x.id === me.memberId)?.display_name ?? null;
+      const now = Date.now();
+      if (how === 'handover') {
+        state.resetNotices.set(id, { by, at: new Date(now).toISOString() });
+      }
+      state.resetsStarted.push({ member_id: id, path: how, stop_now: stopNow });
+      const theirEmail =
+        state.signIns.find((x) => x.member_id === id)?.email ?? `${id}@example.test`;
+      return ok({
+        member_id: id,
+        path: how,
+        stop_now: stopNow,
+        ...(how !== 'operator'
+          ? { expires_at: new Date(now + RESET_LINK_MINUTES * 60_000).toISOString() }
+          : {}),
+        ...(how === 'handover'
+          ? { link: `http://vault.test/reset#${'h'.repeat(40)}${String(++n).padStart(3, '0')}` }
+          : {}),
+        ...(how === 'operator' ? { command: resetCommand(theirEmail) } : {}),
+      });
+    }
     // After a restore (5.16): what it paused that the caller may decide
     // about, as the real vault lists it. The fake keeps no links; requests
     // to send documents (5.21) as the vault lists them; and the sign-ins it
@@ -2617,6 +2751,8 @@ export function createFakeVault(): {
           ...card,
           suspension: suspensionOf(m.id),
           max_offline_days: FAKE_OFFLINE_MAX_DAYS,
+          // Which way a reset an owner starts would go (5.29).
+          reset_path: resetPathOf(m.id),
         });
       }
       if (init.method !== 'PATCH') return fail(404, 'not_found', 'Not here.');

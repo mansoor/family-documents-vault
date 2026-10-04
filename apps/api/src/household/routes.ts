@@ -25,6 +25,7 @@ import type { MultipartFile } from '@fastify/multipart';
 import { needs } from '../authz.js';
 import { noPhoto, orderRefusal, parseCrop, photoOrder, type PhotoService } from './photos.js';
 import { lockBody, type LockService } from './locks.js';
+import { ownerResetBody, type OwnerResetService } from './owner-resets.js';
 import {
   identityAudienceBody,
   identityRevealBody,
@@ -240,6 +241,34 @@ export function registerLocks(app: FastifyInstance, locks: LockService, stepUp: 
     await locks.resume(p, id, metaOf(req));
     return reply.status(204).send();
   });
+}
+
+/**
+ * A password reset an owner starts (5.29): owners only, and an owner power
+ * (A54) asked as a lock is — an owner with only a password is refused it,
+ * and any other is asked for a passkey or a code, never the password. What
+ * is sent is checked first (422), then who is asking, then whom it is about
+ * (404, 409).
+ */
+export function registerOwnerResets(
+  app: FastifyInstance,
+  resets: OwnerResetService,
+  stepUp: StepUpService,
+) {
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+
+  app.post(
+    '/api/v1/members/:id/password-reset',
+    { preHandler: [app.requireAuth, needs('member.reset_password')] },
+    async (req) => {
+      const p = principal(req);
+      const id = parse(idParam, req.params).id;
+      const body = parse(ownerResetBody, req.body ?? {});
+      await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+      return resets.start(p, id, body, metaOf(req));
+    },
+  );
 }
 
 export function registerHousehold(

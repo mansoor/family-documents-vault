@@ -2993,6 +2993,95 @@ display_name, role, paused_at }]`, every sign-in a restore paused, for an
       with `suspended`, refuses their right password with `403
 membership_suspended`, takes a lock past its end as over, and pauses
       sign-ins as a restore does (`pauseSignIns()`).
+  - A password reset the owner starts (5.29, D5, A48–A50).
+    - **Added:** `POST /api/v1/members/{id}/password-reset` with `{
+stop_now? }`, strict. Owners only (the capability `member.reset_password`:
+      "Only an owner can start a reset of someone's password."), and an owner
+      power (A54) asked as a lock is — `403 totp_required_for_owner` for an
+      owner with neither two-step sign-in nor a passkey, otherwise `403
+step_up_required` with `action: "manage_sign_ins"`, a passkey or a code,
+      never the password. Refused, in this order: what was sent, `422
+validation_failed`; anybody but an owner, `403 forbidden`; the owner
+      power; a person with no sign-in, or nobody, `404 not_found` ("They have
+      no sign-in to reset."); oneself, `422 validation_failed`; an owner, `409
+owner_notice_required` (A50); somebody locked, or paused after a restore,
+      `409 locked`. `200` with `{ member_id, path, stop_now, link?,
+expires_at?, command? }`, where `path` is the way it went:
+      - `mail` — whoever runs the server set `FDV_SMTP_URL`: a link that
+        works once, for an hour (`expires_at`), goes to the person's own
+        sign-in address by that mail server alone, never the household's,
+        by email alone. The answer and the activity log carry no link.
+      - `handover` — no operator mail, and the person keeps nothing private:
+        no Only me document (in the Trash too, or removed for good), note or
+        detail; no Only me identity field; no request to send documents that
+        they alone review still open, nor a file waiting in one; no export
+        that has not run out; no Only me collection. The answer's `link`
+        (`/reset#…`) is shown this once, and works once, for an hour. It
+        stops working — `404 reset_not_valid`, as any dead link, saying
+        nothing of why — if the person keeps anything private, or has been
+        made an owner, by the time it is spent: asked again as it is.
+      - `operator` — anybody else: no link is made. `command` is what
+        whoever runs the server types: `docker compose exec api node
+apps/api/dist/cli.mjs reset-password <their address>`.
+
+      The answer says only which way, never what was found. A teen follows
+      the same rule (A49). With `stop_now` their password stops working at
+      once and every session of theirs ends (`401 session_ended`, reason
+      `revoked`; their phones are pushed `session_ended`): nobody is given a
+      password (A48), and they choose one through the link — or, for
+      `operator`, the one whoever runs the server gives them. Spending any
+      link signs them out everywhere, removes their passkeys and leaves
+      two-step sign-in to be asked for, as before. The person is told — by
+      the link's own mail, or by a mail with no link — and the other owners
+      are told (`owner_change`).
+
+    - **Added:** `GET /api/v1/members/{id}/account` gains `reset_path`:
+      `mail`, `handover` or `operator`, which way a reset would go now; null
+      for an owner, or somebody locked or paused. Absent from older vaults,
+      which have no such reset. Treat a value never heard of as `operator`.
+    - **Added:** `GET /api/v1/me` gains `reset_notice` — `{ by, at }`, the
+      owner who was given a link to hand over for this sign-in (`by` null
+      once their sign-in is gone) and when — until the person says they
+      saw it with **`DELETE /api/v1/me/reset-notice`** (`204`, also when
+      there is nothing to see). Null otherwise; absent from older vaults.
+    - **Added:** `POST /api/v1/password-resets/lookup` (and its path form)
+      gains `issued_by`: `self`, `operator` or `owner`; `issued_by_operator`
+      is true for an owner's link too. Absent from older vaults.
+    - **Changed:** every reset link spent — the person's own, an owner's, the
+      command line's — now also ends the person's exports
+      (`auth.password_reset`'s `detail.exports` says how many).
+    - **Changed:** `401 session_ended` (reason `revoked`) also answers a
+      request that waited for a reset or a lock to end the session it came
+      from, and would have made something private for its person: it is not
+      made.
+    - The activity log: **new** `member.reset_started` ("Mansoor made a
+      one-time link to reset Sara’s password, and stopped their password
+      now"; "… sent Sara’s sign-in address a password reset"; "… asked for
+      Sara’s password to be reset by whoever runs the vault") with
+      `detail.path`, `detail.stop_now` and how many sessions it ended, never
+      a link. Notable, for the owners and the person it is about, nobody
+      else.
+    - The database: 0052 lets `password_reset.issued_by` be `owner`, and adds
+      `household_id`, `issued_by_account`, `handover` and `told_at`; a rule
+      for somebody signed in (`password_reset_account`) reaches their own
+      reset links, and an owner those of their household's people, no other;
+      and an owner's reset is read by no caller in another household
+      (`password_reset_household`). `member_holds_private(account)` answers yes or no, with the owner's
+      rights, to an owner or to the reset being spent for that account, and
+      refuses anybody else; `password_reset_expire_exports(account)` ends the
+      exports of the account whose reset this very transaction spent. Writing
+      anything private for somebody (`member_private_gained`, on documents,
+      collections, identity parts, requests, incoming files and exports)
+      waits for a reset being spent for them, and is refused for a session
+      that ended meanwhile. The restore check knows the new triggers and the
+      rule; a restore ends owners' links with every other.
+    - `@fdv/shared`: `ResetPath`, `OwnerResetInput`, `OwnerResetResult`,
+      `ResetNotice`, `RESET_LINK_MINUTES`, `resetCommand`,
+      `MemberAccount.reset_path`, `Me.reset_notice`, `ResetPreview.issued_by`
+      and the capability `member.reset_password` (owners). `@fdv/client`:
+      `startPasswordReset` and `dismissResetNotice`; the fake starts a reset
+      by the way its `operatorMail` and `keepsPrivate` say, stops a password
+      with `stop_now`, and keeps the notice until it is dismissed.
 
 ## Deprecations in effect
 

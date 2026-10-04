@@ -113,7 +113,14 @@ export type Capability =
    * own, and never another owner's (A50). An owner power (A54): asked with a
    * passkey or a code, never the password.
    */
-  | 'member.suspend';
+  | 'member.suspend'
+  /**
+   * Start a password reset for somebody (5.29, D5): never one's own, never
+   * another owner's (A50), never while they are locked or paused. An owner
+   * power (A54). Which way it goes is ResetPath: no owner is ever handed a
+   * working link for somebody who keeps anything private.
+   */
+  | 'member.reset_password';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -273,6 +280,13 @@ const MATRIX: Record<Capability, Rule> = {
     // away at once would be (co-owners.ts).
     roles: ['owner'],
     refusal: "Only an owner can lock or unlock someone's sign-in.",
+  },
+  'member.reset_password': {
+    // An owner, for somebody who is not one (A50): mailed to their own
+    // address, handed over only when they keep nothing private, and
+    // otherwise left to whoever runs the server (D5).
+    roles: ['owner'],
+    refusal: "Only an owner can start a reset of someone's password.",
   },
 };
 

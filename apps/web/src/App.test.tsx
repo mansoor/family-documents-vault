@@ -863,6 +863,21 @@ describe('App', () => {
     await expectAccessible();
   });
 
+  it("a link an owner made says so, and that the password chosen with it should be the person's alone (5.29)", async () => {
+    const state = fresh({ resetIssuedBy: 'owner' });
+    installFakeApi(state);
+    opened(`/reset#${RESET_TOKEN}`);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    expect(
+      screen.getByText(
+        'An owner of this vault made this link. Once you set a password with it, you are the only one who should know it: if somebody else chose it, change it after you sign in.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Whoever runs this vault made this link/)).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
   it('a reset link works from its fragment, and the token leaves the address bar', async () => {
     const state = fresh();
     installFakeApi(state);

@@ -40,6 +40,21 @@ export interface Me {
   totp_enabled: boolean;
   totp_required: boolean;
   has_passkey?: boolean;
+  /**
+   * An owner made a one-time link to set a new password for this sign-in, to
+   * hand over (5.29, path 2), and the person has not yet said they saw it:
+   * told at every sign-in until `DELETE /me/reset-notice`. Null otherwise;
+   * absent from older vaults.
+   */
+  reset_notice?: ResetNotice | null;
+}
+
+/** That an owner made a hand-over link for this sign-in (5.29): who, and when. */
+export interface ResetNotice {
+  /** The owner's name; null once their sign-in is gone. */
+  by: string | null;
+  /** When they made it. */
+  at: string;
 }
 
 export interface ExportRow {
@@ -216,7 +231,64 @@ export interface MemberAccount {
    * after a lock (5.28). Absent from older vaults.
    */
   max_offline_days?: number;
+  /**
+   * Which way a password reset an owner starts for them would go now (5.29):
+   * `mail`, `handover` or `operator` (ResetPath). Null when no owner may
+   * start one: they are an owner (A50), or their sign-in is locked or
+   * paused. Absent from older vaults, which have no such reset.
+   */
+  reset_path?: ResetPath | null;
 }
+
+/**
+ * The way a password reset an owner starts goes (5.29, D5):
+ *
+ *  - `mail`: whoever runs the server gave it a mail server (FDV_SMTP_URL),
+ *    and the link goes by that alone to the person's own sign-in address;
+ *  - `handover`: it has none, and the person keeps nothing private, so the
+ *    owner is shown a one-time link to hand over, once;
+ *  - `operator`: anybody else — no owner's way. Whoever runs the server
+ *    runs `cli reset-password`.
+ *
+ * Treat a value never heard of as `operator`.
+ */
+export type ResetPath = 'mail' | 'handover' | 'operator';
+
+/**
+ * POST /members/{id}/password-reset (5.29): `stop_now` makes their current
+ * password stop working at once and signs them out everywhere (A48); they
+ * choose a new one through the link.
+ */
+export interface OwnerResetInput {
+  stop_now?: boolean;
+}
+
+/**
+ * What an owner's password reset did (5.29). Never a link but in `handover`,
+ * where it is shown this once.
+ */
+export interface OwnerResetResult {
+  member_id: string;
+  path: ResetPath;
+  /** Their password stopped working, and every session of theirs ended. */
+  stop_now: boolean;
+  /** `handover` only: the one-time link, `/reset#…`, shown this once. */
+  link?: string;
+  /** `mail` and `handover`: when the link stops working. */
+  expires_at?: string;
+  /** `operator` only: what whoever runs the server types. */
+  command?: string;
+}
+
+/** How long a reset link works, from whoever it comes (minutes). */
+export const RESET_LINK_MINUTES = 60;
+
+/**
+ * What whoever runs the server types to give somebody a reset link
+ * (`operator`, 5.29): the README's command, for their sign-in address.
+ */
+export const resetCommand = (email: string) =>
+  `docker compose exec api node apps/api/dist/cli.mjs reset-password ${email}`;
 
 /**
  * Why somebody cannot sign in just now (5.28): `locked` by an owner (A51),
@@ -358,8 +430,14 @@ export interface InvitationPreview {
 export interface ResetPreview {
   household_name: string | null;
   email: string;
-  /** True when the person who runs the server made the link. */
+  /** True when somebody else made the link: whoever runs the server, or an owner (5.29). */
   issued_by_operator: boolean;
+  /**
+   * Who made it (5.29): the person (`self`), whoever runs the server
+   * (`operator`), or an owner of the vault (`owner`). Absent from older
+   * vaults; treat a value never heard of as somebody else.
+   */
+  issued_by?: 'self' | 'operator' | 'owner';
   expires_at: string;
 }
 

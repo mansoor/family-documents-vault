@@ -17,8 +17,14 @@ import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
-import { registerHousehold, registerIdentity, registerLocks } from './household/routes.js';
+import {
+  registerHousehold,
+  registerIdentity,
+  registerLocks,
+  registerOwnerResets,
+} from './household/routes.js';
 import type { LockService } from './household/locks.js';
+import type { OwnerResetService } from './household/owner-resets.js';
 import type { HouseholdService } from './household/service.js';
 import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
@@ -83,6 +89,8 @@ export interface AppDeps {
   identity: IdentityService;
   /** Locking a sign-in, and what a restore paused (5.28). */
   locks: LockService;
+  /** A password reset an owner starts (5.29). */
+  resets: OwnerResetService;
   invitations: InvitationService;
   coOwners: CoOwnerService;
   shares: ShareService;
@@ -206,6 +214,16 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(503).send(busy.toBody(req.id));
       return;
     }
+    // A write that waited for a reset or a lock to end the session asking
+    // (0052): that session is over, as its next request would be told.
+    if (pgCode === '28000') {
+      const ended = new ApiError(401, 'session_ended', 'Please sign in again.', {
+        detail: 'session ended while the request waited',
+        reason: 'revoked',
+      });
+      void reply.status(401).send(ended.toBody(req.id));
+      return;
+    }
     if (pgCode === '22021' || pgCode === '22P05') {
       const refused = new ApiError(
         422,
@@ -312,6 +330,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners, deps.photos);
   registerIdentity(app, deps.identity, deps.stepUp);
   registerLocks(app, deps.locks, deps.stepUp);
+  registerOwnerResets(app, deps.resets, deps.stepUp);
   registerExports(app, deps.exports, deps.stepUp);
   registerReminders(app, deps.reminders);
   registerSuggestions(app, deps.suggestions);

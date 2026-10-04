@@ -260,6 +260,21 @@ async function seed(url: string): Promise<string> {
        values ($1, $2, 'self', now() + interval '1 hour')`,
       [account, randomBytes(32)],
     );
+    // And a link an owner was given to hand over, where the schema has them
+    // (0052): ended by the restore with every other.
+    const handover = await c.query<{ has: boolean }>(
+      `select exists (select 1 from pg_attribute
+                       where attrelid = 'public.password_reset'::regclass
+                         and attname = 'handover' and not attisdropped) as has`,
+    );
+    if (handover.rows[0]?.has) {
+      await c.query(
+        `insert into password_reset
+           (account_id, token_hash, issued_by, household_id, issued_by_account, handover, expires_at)
+         values ($1, $2, 'owner', $3, $4, true, now() + interval '1 hour')`,
+        [other, randomBytes(32), hh, account],
+      );
+    }
     await c.query(
       `insert into device (household_id, account_id, endpoint, p256dh, auth, session_id)
        values ($1, $2, $3, 'k', 'a', null)`,
@@ -1536,6 +1551,47 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       await sql(
         vault.adminUrl,
         'alter table public.account_household enable trigger account_household_suspension',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
+  it("notices what keeps an owner's hand-over link from a person with something private gone (0052)", async () => {
+    // Each kind of private thing waits for a reset being spent.
+    for (const table of [
+      'document',
+      'doc_collection',
+      'member_identity',
+      'upload_request',
+      'incoming_file',
+      'export',
+    ]) {
+      const trigger = `${table}_private_gained`;
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    // And whose reset links somebody signed in reaches.
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as qual from pg_policy
+        where polname = 'password_reset_account'`,
+    );
+    const qual = (rows[0] as { qual: string }).qual;
+    await sql(vault.adminUrl, 'drop policy password_reset_account on public.password_reset');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule says .*password_reset_account/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy password_reset_account on public.password_reset as restrictive using (${qual})`,
       );
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });

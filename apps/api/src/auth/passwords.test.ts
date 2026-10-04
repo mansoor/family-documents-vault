@@ -9,6 +9,7 @@ import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SoftwareAuthenticator } from './passkey-test-authenticator.js';
 import { PasswordService } from './passwords.js';
 import type { Tokens } from './service.js';
+import { codeFor } from './totp.js';
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n');
 const FIRST = 'correct horse battery';
@@ -560,12 +561,15 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
   });
 
   /**
-   * The rule the whole privacy wall rests on. An owner who could reset
-   * another adult's password could sign in as them and read their private
-   * documents, so there is no endpoint that lets them — not under members,
-   * not under accounts, not anywhere.
+   * The rule the whole privacy wall rests on, rewritten deliberately in 5.29:
+   * an owner may now *start* a reset (household/owner-resets.ts), and the
+   * test is no longer that there is no endpoint, but what any endpoint can
+   * give an owner — never a working credential for somebody with anything
+   * private. The full walk is in the describe below; here, the spellings an
+   * owner might try that were never routes are still nothing, and a
+   * "forgotten password" asked for in Sam's name still goes to Sam alone.
    */
-  it('an owner has no way to reset anybody else’s password', async () => {
+  it('an owner reaches no reset by any other route, and a forgotten password goes to its own address', async () => {
     const members = json<{ items: Array<{ id: string; display_name: string }> }>(
       await h.app.inject({ url: '/api/v1/members', headers: h.as(owner) }),
     ).items;
@@ -685,3 +689,204 @@ describe.skipIf(!testAdminUrl())('reset links and whose mail server carries them
     expect(sent).toEqual([]);
   });
 });
+
+/**
+ * Rewritten deliberately in 5.29 (it said "an owner has no way to reset
+ * anybody else's password"): an owner never obtains a working credential for
+ * anyone with Only me content, by any path, waiting or not — with the
+ * operator's mail server or without it, an adult or a teen (A49), stopping
+ * their password now or not, and a link handed over while they kept nothing
+ * private that is spent after they gained something.
+ */
+describe.skipIf(!testAdminUrl())(
+  'an owner never obtains a working credential for anyone with Only me content, by any path, waiting or not',
+  () => {
+    const json = <T>(r: { json: () => unknown }) => r.json() as T;
+    const vaults: Array<{ operatorMail: boolean; h: Harness; owner: Tokens }> = [];
+    let nth = 0;
+    const peer = () => ({ remoteAddress: `10.7.${Math.floor(++nth / 200)}.${nth % 200}` });
+
+    beforeAll(async () => {
+      for (const operatorMail of [true, false]) {
+        const h = await createHarness({ operatorMail, rateLimitPerMinute: 100_000 });
+        const owner = await h.setup();
+        // An owner power asks for two-step sign-in (A54), and a code just given.
+        await stepUpFresh(h, owner);
+        const s = json<{ secret: string }>(
+          await h.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/totp/enrol',
+            headers: h.as(owner),
+          }),
+        ).secret;
+        const confirmed = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/totp/confirm',
+          headers: h.as(owner),
+          payload: { code: codeFor(s) },
+        });
+        expect(confirmed.statusCode, confirmed.body).toBe(204);
+        vaults.push({ operatorMail, h, owner });
+      }
+    }, 180_000);
+    afterAll(async () => {
+      for (const v of vaults) await v.h.close();
+    });
+
+    /** Every session of theirs just saw a code. */
+    const stepUpFresh = async (h: Harness, who: Tokens) => {
+      await withSystem(h.db, who.household_id, (trx) =>
+        trx
+          .updateTable('session')
+          .set({ verified_at: new Date(), factor_verified_at: new Date() })
+          .where('household_id', '=', who.household_id)
+          .execute(),
+      );
+    };
+    const accountOf = async (h: Harness, who: Tokens) =>
+      (
+        await withSystem(h.db, who.household_id, (trx) =>
+          trx
+            .selectFrom('account_household')
+            .select('account_id')
+            .where('member_id', '=', who.member_id)
+            .executeTakeFirstOrThrow(),
+        )
+      ).account_id;
+    /** Everything an owner could hold: answers, jobs, activity lines. */
+    const linksIn = (text: string) => text.match(/reset#[A-Za-z0-9_-]{20,}/g) ?? [];
+    const spendable = async (h: Harness, link: string) =>
+      (
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/password-resets/lookup',
+          payload: { token: link.slice(link.lastIndexOf('#') + 1) },
+          ...peer(),
+        })
+      ).statusCode === 200;
+
+    it('by every path, for an adult and a teen with something Only me', async () => {
+      for (const { operatorMail, h, owner } of vaults) {
+        const ownerAccount = await accountOf(h, owner);
+        for (const role of ['adult', 'teen'] as const) {
+          for (const stopNow of [false, true]) {
+            await stepUpFresh(h, owner);
+            const email = `${role}-${randomUUID().slice(0, 8)}@example.test`;
+            const who = await h.join(owner, { name: `${role} ${nth}`, email, role });
+            const theirAccount = await accountOf(h, who);
+            const made = await h.app.inject({
+              method: 'POST',
+              url: '/api/v1/documents',
+              headers: h.as(who),
+              payload: {
+                title: 'Mine alone',
+                type_key: 'medical_record',
+                owner_member_id: who.member_id,
+                visibility: 'private',
+              },
+            });
+            expect(made.statusCode, made.body).toBe(201);
+            const since = h.jobs.length;
+            await stepUpFresh(h, owner);
+            const res = await h.app.inject({
+              method: 'POST',
+              url: `/api/v1/members/${who.member_id}/password-reset`,
+              headers: h.as(owner),
+              payload: stopNow ? { stop_now: true } : {},
+            });
+            const label = `${operatorMail ? 'mail' : 'no mail'}, ${role}, stop_now ${stopNow}`;
+            expect(res.statusCode, label).toBe(200);
+            const answer = json<{ path: string }>(res);
+            expect(answer.path, label).toBe(operatorMail ? 'mail' : 'operator');
+            // Nothing the owner is answered with, or told, or can read in the
+            // log, holds a link.
+            expect(linksIn(res.body), label).toEqual([]);
+            const toOwner = h.jobs
+              .slice(since)
+              .filter((j) => ((j.data.account_ids as string[]) ?? []).includes(ownerAccount));
+            expect(linksIn(JSON.stringify(toOwner)), label).toEqual([]);
+            const lines = await h.app.inject({
+              url: '/api/v1/audit?limit=100',
+              headers: h.as(owner),
+            });
+            expect(linksIn(lines.body), label).toEqual([]);
+            // A link travels, if at all, to their own account, by the
+            // operator's mail server alone.
+            const carrying = h.jobs
+              .slice(since)
+              .filter((j) => linksIn(JSON.stringify(j.data)).length);
+            for (const j of carrying) {
+              expect(j.name, label).toBe('alert.send');
+              expect(j.data.account_ids, label).toEqual([theirAccount]);
+              expect(j.data.via, label).toBe('operator');
+            }
+            expect(carrying.length, label).toBe(operatorMail ? 1 : 0);
+            // And no reset that works was made but that one: none at all
+            // without the operator's mail server.
+            const live = await withSystem(h.db, owner.household_id, (trx) =>
+              trx
+                .selectFrom('password_reset')
+                .select(['issued_by', 'handover'])
+                .where('account_id', '=', theirAccount)
+                .where('used_at', 'is', null)
+                .execute(),
+            );
+            expect(live, label).toEqual(
+              operatorMail ? [{ issued_by: 'owner', handover: false }] : [],
+            );
+          }
+        }
+      }
+    });
+
+    it('waiting: a link handed over while they kept nothing private works no more once they do', async () => {
+      const v = vaults.find((x) => !x.operatorMail) as (typeof vaults)[number];
+      const { h, owner } = v;
+      for (const role of ['adult', 'teen'] as const) {
+        await stepUpFresh(h, owner);
+        const email = `waiting-${role}-${randomUUID().slice(0, 8)}@example.test`;
+        const who = await h.join(owner, { name: `Waiting ${role}`, email, role });
+        await stepUpFresh(h, owner);
+        const res = await h.app.inject({
+          method: 'POST',
+          url: `/api/v1/members/${who.member_id}/password-reset`,
+          headers: h.as(owner),
+          payload: {},
+        });
+        const { path, link } = json<{ path: string; link: string }>(res);
+        expect(path).toBe('handover');
+        expect(await spendable(h, link)).toBe(true);
+        const made = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/documents',
+          headers: h.as(who),
+          payload: {
+            title: 'Mine alone, since',
+            type_key: 'medical_record',
+            owner_member_id: who.member_id,
+            visibility: 'private',
+          },
+        });
+        expect(made.statusCode).toBe(201);
+        const spent = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/password-resets/complete',
+          payload: {
+            token: link.slice(link.lastIndexOf('#') + 1),
+            password: 'the owner chose this',
+          },
+          ...peer(),
+        });
+        expect(spent.statusCode).toBe(404);
+        expect(await spendable(h, link)).toBe(false);
+        const asOwner = await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/password',
+          payload: { email, password: 'the owner chose this' },
+          ...peer(),
+        });
+        expect(asOwner.statusCode).toBe(401);
+      }
+    });
+  },
+);

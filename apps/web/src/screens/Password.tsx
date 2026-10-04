@@ -312,8 +312,16 @@ export function ResetPasswordScreen() {
           For <strong>{preview.email}</strong>
           {preview.household_name ? ` in ${preview.household_name}` : ''}.
         </p>
-        {preview.issued_by_operator && (
-          <p className="muted">Whoever runs this vault made this link for you from the server.</p>
+        {/* Who made it: an owner (5.29), or whoever runs the server. */}
+        {preview.issued_by === 'owner' ? (
+          <p className="muted">
+            An owner of this vault made this link. Once you set a password with it, you are the only
+            one who should know it: if somebody else chose it, change it after you sign in.
+          </p>
+        ) : (
+          preview.issued_by_operator && (
+            <p className="muted">Whoever runs this vault made this link for you from the server.</p>
+          )
         )}
         <p className="muted">
           The link is out of the address bar and this tab's history now, but this browser's own

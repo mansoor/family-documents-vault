@@ -395,11 +395,27 @@ docker compose exec api node apps/api/dist/cli.mjs reset-password someone@exampl
 
 It prints a one-time link to hand over directly.
 
-**No owner or adult can reset another person's password**, and that is
-deliberate rather than an omission: they could then sign in as that person and
-read their private documents, which is the one thing the privacy wall exists to
-prevent. The two routes above are the only ones, and the second belongs to
-whoever holds the master key — who can already read everything.
+**An owner can start a reset for somebody else, but is never given a way into
+anything private.** From a person's page (Account → Send a password reset) an
+owner — with two-step sign-in or a passkey, never for another owner, never for
+somebody locked — starts one, and the vault says which way it goes:
+
+- with **`FDV_SMTP_URL`** set, the link goes to that person's own address, as
+  above, and no owner sees it;
+- without it, the owner is shown a one-time link to hand over **only if the
+  person keeps nothing private**: no Only me documents, collections or
+  identity details, no files waiting for them alone to look at, no export. It
+  stops working if they gain any of these before it is used, and they are told
+  about it when they next sign in;
+- for anybody else, a teen with private documents included, it is the command
+  line above.
+
+No owner ever sets or sees anybody's password. "Stop their current password
+now" signs the person out everywhere, and they choose a new one through the
+link. Taking somebody's private documents by resetting their password would
+be the one thing the privacy wall exists to prevent, so the only route that
+works whatever they keep belongs to whoever holds the master key — who can
+already read everything.
 
 ### Seeing what has happened
 

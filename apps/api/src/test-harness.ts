@@ -32,6 +32,7 @@ import { IdentityService } from './household/identity.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { LockService } from './household/locks.js';
+import { OwnerResetService } from './household/owner-resets.js';
 import {
   SHARE_CODE_KEY_PURPOSE,
   SHARE_DEVICE_KEY_PURPOSE,
@@ -224,15 +225,22 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   const invitations = new InvitationService(db, keys, auth);
   let joined = 1;
   const stepUp = new StepUpService(db, passkeys, totp);
-  // As if the operator had set FDV_SMTP_URL; passwords.test.ts builds one
-  // without it to test the other route.
+  // As if the operator had set FDV_SMTP_URL, unless the test said not
+  // (operatorMail: false); passwords.test.ts also builds one without it.
   const passwords = new PasswordService(
     db,
     keys,
     stepUp,
     'http://localhost:8080',
     alert,
-    true,
+    Boolean(config.FDV_SMTP_URL),
+    push,
+  );
+  const resets = new OwnerResetService(
+    db,
+    (token) => passwords.linkFor(token),
+    Boolean(config.FDV_SMTP_URL),
+    alert,
     push,
   );
   const documents = new DocumentService(
@@ -300,12 +308,15 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       },
     ),
     exports: new ExportService(db, keys, vaults, enqueue),
-    household: new HouseholdService(db, keys, stepUp, config.FDV_OFFLINE_MAX_DAYS),
+    household: new HouseholdService(db, keys, stepUp, config.FDV_OFFLINE_MAX_DAYS, (trx, target) =>
+      resets.pathFor(trx, target),
+    ),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
     invitations,
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
+    resets,
     suggestions: new SuggestionService(db),
     logger: opts.logger ?? false,
   });

@@ -31,6 +31,7 @@ const SETTINGS = [
   'app.share_id',
   'app.upload_request_id',
   'app.upload_session_id',
+  'app.session_id',
 ] as const;
 type Settings = Record<(typeof SETTINGS)[number], string | null>;
 
@@ -43,7 +44,8 @@ async function settings(executor: Db): Promise<Settings> {
     current_setting('app.role', true) as "app.role",
     current_setting('app.share_id', true) as "app.share_id",
     current_setting('app.upload_request_id', true) as "app.upload_request_id",
-    current_setting('app.upload_session_id', true) as "app.upload_session_id"`.execute(executor);
+    current_setting('app.upload_session_id', true) as "app.upload_session_id",
+    current_setting('app.session_id', true) as "app.session_id"`.execute(executor);
   return r.rows[0] as Settings;
 }
 
@@ -88,6 +90,17 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
         'app.account_id': accountId,
         'app.member_id': memberId,
         'app.role': 'teen',
+      },
+    ],
+    // Somebody signed in, from a session the database is told of (0052).
+    [
+      { kind: 'account', accountId, memberId, role: 'adult', sessionId: requestId },
+      {
+        'app.actor': 'account',
+        'app.account_id': accountId,
+        'app.member_id': memberId,
+        'app.role': 'adult',
+        'app.session_id': requestId,
       },
     ],
     [{ kind: 'system' }, { 'app.actor': 'system' }],
@@ -149,6 +162,17 @@ describe.skipIf(!testAdminUrl())('the actor', () => {
       'app.account_id': accountId,
       'app.member_id': memberId,
       'app.role': 'viewer',
+    });
+    // The session a principal asks from goes with it (0052).
+    const sessionId = randomUUID();
+    expect(none(await withPrincipal(db, { ...p, sessionId }, (trx) => settings(trx)))).toEqual({
+      ...blank,
+      'app.household_id': hh,
+      'app.actor': 'account',
+      'app.account_id': accountId,
+      'app.member_id': memberId,
+      'app.role': 'viewer',
+      'app.session_id': sessionId,
     });
     expect(none(await withSystem(db, hh, (trx) => settings(trx)))).toEqual({
       ...blank,

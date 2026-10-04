@@ -1614,6 +1614,115 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "an owner starts a password reset for an adult: by the operator's mail server the answer holds no link, and the card says which way beforehand; stop_now ends her session and her password; never by anybody but an owner, never for oneself, another owner or anybody locked (5.29)",
+    run: async (api, ctx) => {
+      const first = await signIn(api, ctx);
+      const me = await api.me(first.access_token);
+      // Nobody made a link to hand over for her own sign-in.
+      expect(me.reset_notice ?? null).toBeNull();
+      const firstName = (await api.members(first.access_token)).items.find(
+        (m) => m.id === me.member_id,
+      )?.display_name;
+      const rana = { email: 'reset-adult@example.test', password: 'the adult’s own password' };
+      const ranaId = await ctx.addSignIn(first.access_token, {
+        name: 'Rana',
+        role: 'adult',
+        ...rana,
+      });
+      const second = {
+        email: 'reset-second-owner@example.test',
+        password: 'the other owner’s password',
+      };
+      await ctx.addSignIn(first.access_token, { name: 'Other Owner', role: 'owner', ...second });
+
+      // Who may, first: never anybody but an owner, whatever they send.
+      const theirs = await signInAs(api, rana.email, rana.password);
+      expect(
+        await refusal(
+          api.startPasswordReset(theirs.access_token, me.member_id, { bogus: 1 } as never),
+        ),
+      ).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+        message: "Only an owner can start a reset of someone's password.",
+      });
+      // Then what was sent, before the owner power (A54) is asked. (A
+      // password-only owner's refusal is the lock's, above: the fake's
+      // owners have two-step sign-in from then on. The API's own tests walk
+      // it for a reset.)
+      expect(
+        await refusal(api.startPasswordReset(first.access_token, ranaId, { bogus: 1 } as never)),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+
+      const owner = await signInAs(api, second.email, second.password);
+      await ctx.ownerTwoStep(owner.access_token);
+      const token = owner.access_token;
+      // Nobody; oneself; another owner (A50).
+      expect(
+        await refusal(api.startPasswordReset(token, '00000000-0000-4000-8000-000000000000')),
+      ).toMatchObject({
+        status: 404,
+        code: 'not_found',
+        message: 'They have no sign-in to reset.',
+      });
+      expect(await refusal(api.startPasswordReset(token, owner.member_id))).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+      });
+      expect(await refusal(api.startPasswordReset(token, me.member_id))).toMatchObject({
+        status: 409,
+        code: 'owner_notice_required',
+        message: `${firstName} is an owner, and one owner's password is never reset by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+      });
+
+      // The card says which way beforehand: by the operator's mail server.
+      expect((await api.memberAccount(token, ranaId)).reset_path).toBe('mail');
+      const sent = await api.startPasswordReset(token, ranaId);
+      expect(sent).toEqual({
+        member_id: ranaId,
+        path: 'mail',
+        stop_now: false,
+        expires_at: expect.any(String) as unknown,
+      });
+      const hour = new Date(sent.expires_at as string).getTime() - Date.now();
+      expect(hour).toBeGreaterThan(55 * 60_000);
+      expect(hour).toBeLessThanOrEqual(60 * 60_000);
+      // Until she uses it, her session goes on and her password works.
+      expect((await api.me(theirs.access_token)).member_id).toBe(ranaId);
+      expect((await signInAs(api, rana.email, rana.password)).member_id).toBe(ranaId);
+
+      // Her password stops now (A48): her session ends, and the old
+      // password is refused as any wrong one is.
+      expect(await api.startPasswordReset(token, ranaId, { stop_now: true })).toMatchObject({
+        member_id: ranaId,
+        path: 'mail',
+        stop_now: true,
+      });
+      const over = await refusal(api.me(theirs.access_token));
+      expect(over).toMatchObject({ status: 401, code: 'session_ended', reason: 'revoked' });
+      expect(isSessionOver(over)).toBe(true);
+      expect(await refusal(api.signIn(rana.email, rana.password))).toMatchObject({
+        status: 401,
+        code: 'invalid_credentials',
+      });
+
+      // Locked: no reset, and the card says none.
+      await api.lockMember(token, ranaId);
+      expect((await api.memberAccount(token, ranaId)).reset_path).toBeNull();
+      expect(await refusal(api.startPasswordReset(token, ranaId))).toMatchObject({
+        status: 409,
+        code: 'locked',
+        message: "Rana's sign-in is locked. Unlock it first, then reset their password.",
+      });
+      await api.unlockMember(token, ranaId);
+      expect((await api.memberAccount(token, ranaId)).reset_path).toBe('mail');
+
+      // Nothing to have seen is as good as having seen it.
+      await api.dismissResetNotice(first.access_token);
+      expect((await api.me(first.access_token)).reset_notice ?? null).toBeNull();
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

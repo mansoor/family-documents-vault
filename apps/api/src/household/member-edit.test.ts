@@ -957,7 +957,8 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     expect(res.statusCode, res.body).toBe(200);
     const shown = json<MemberAccount>(res);
     // 5.28: whether their sign-in is locked, and how long a phone keeps its
-    // copies offline — a setting of the vault's, not of theirs.
+    // copies offline — a setting of the vault's, not of theirs. 5.29: which
+    // way a reset an owner starts would go, never why.
     expect(Object.keys(shown).sort()).toEqual([
       'devices',
       'email',
@@ -965,6 +966,7 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
       'max_offline_days',
       'member_id',
       'passkeys',
+      'reset_path',
       'role',
       'suspension',
       'two_step',

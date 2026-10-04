@@ -27,12 +27,15 @@ import {
   LOCK_NOTE_MAX,
   maskEmail,
   nextReminder,
+  resetCommand,
   reminderOf,
   dropFileName,
   uploadRequestTypes,
   type DocumentTypeView,
   type MemberAccount,
+  type OwnerResetResult,
   type ReminderProblem,
+  type ResetNotice,
   type Role,
 } from '@fdv/shared';
 import { vi } from 'vitest';
@@ -317,6 +320,18 @@ export interface FakeState {
    * neither, and whose After a restore lists no sign-ins.
    */
   memberAdmin?: boolean;
+  /**
+   * A password reset an owner starts (5.29): each POST
+   * /members/{id}/password-reset that arrived, and the way it went — the
+   * card's `reset_path` (a test sets it), or `resetGoes` when a test says the
+   * vault found otherwise as it was done.
+   */
+  resetsStarted?: Array<{ id: string; body: unknown }>;
+  resetGoes?: OwnerResetResult['path'];
+  /** GET /me's `reset_notice` (5.29): an owner made a link to hand over for me. */
+  resetNotice?: ResetNotice | null;
+  /** Who made the reset link the page at /reset shows (5.29); left out, `resetByOperator` says. */
+  resetIssuedBy?: 'self' | 'operator' | 'owner';
   /** Every PATCH /members/{id} that arrived: whose, what, and the If-Match. */
   memberEdits?: Array<{ id: string; body: unknown; ifMatch: string | null }>;
   /**
@@ -777,7 +792,12 @@ export function installFakeApi(state: FakeState) {
         role: storedRole(),
         totp_enabled: state.twoStep !== false,
         totp_required: state.twoStep === false && storedRole() === 'owner',
+        reset_notice: state.resetNotice ?? null,
       });
+    if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
+      state.resetNotice = null;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (path === '/api/v1/auth/sessions') return json({ items: [] });
     if (path === '/api/v1/auth/passkeys' && method === 'GET')
       return json({ items: state.passkeys });
@@ -1219,6 +1239,51 @@ export function installFakeApi(state: FakeState) {
       card.devices = [];
       return json({ member_id: id, suspension: card.suspension });
     }
+    // A password reset an owner starts (5.29), refused in the vault's order:
+    // who may, what was sent, the owner power, then the person.
+    const resetAt = /^\/api\/v1\/members\/([^/]+)\/password-reset$/.exec(path);
+    if (resetAt && method === 'POST') {
+      const id = resetAt[1] as string;
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', "Only an owner can start a reset of someone's password.");
+      }
+      const b = (body ?? {}) as Record<string, unknown>;
+      if (Object.keys(b).some((k) => k !== 'stop_now')) {
+        return refuse(422, 'validation_failed', 'Unrecognized key');
+      }
+      const power = ownerPower();
+      if (power) return power;
+      const card = state.accounts?.[id];
+      if (!card) return refuse(404, 'not_found', 'They have no sign-in to reset.');
+      const named = state.members.find((m) => m.id === id)?.display_name;
+      const name = typeof named === 'string' ? named : 'They';
+      if (card.role === 'owner') {
+        return refuse(
+          409,
+          'owner_notice_required',
+          `${name} is an owner, and one owner's password is never reset by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
+        );
+      }
+      if (card.suspension) {
+        return refuse(
+          409,
+          'locked',
+          `${name}'s sign-in is locked. Unlock it first, then reset their password.`,
+        );
+      }
+      state.resetsStarted = [...(state.resetsStarted ?? []), { id, body: b }];
+      const goes = state.resetGoes ?? card.reset_path ?? 'operator';
+      const stopNow = b.stop_now === true;
+      if (stopNow) card.devices = [];
+      const until = new Date(Date.now() + 36e5).toISOString();
+      const answer: OwnerResetResult = { member_id: id, path: goes, stop_now: stopNow };
+      if (goes !== 'operator') answer.expires_at = until;
+      if (goes === 'handover') {
+        answer.link = 'http://vault.example/reset#hHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHh';
+      }
+      if (goes === 'operator') answer.command = resetCommand(card.email);
+      return json(answer);
+    }
     // A person's details (5.25), made to the version seen; the owner's view
     // of a sign-in, asked with a passkey or a code (A54).
     const memberAt = /^\/api\/v1\/members\/([^/]+)(\/account)?$/.exec(path);
@@ -1389,7 +1454,8 @@ export function installFakeApi(state: FakeState) {
       return json({
         household_name: 'The Seikh family',
         email: 'mansoor@example.test',
-        issued_by_operator: state.resetByOperator,
+        issued_by_operator: state.resetByOperator || state.resetIssuedBy === 'owner',
+        ...(state.resetIssuedBy ? { issued_by: state.resetIssuedBy } : {}),
         expires_at: new Date(Date.now() + 36e5).toISOString(),
       });
     }

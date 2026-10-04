@@ -548,6 +548,8 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
       "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — household/identity.test.ts walks every role (5.26)",
     'member.suspend':
       "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — household/locks.test.ts refuses an adult, a teen and a viewer (5.28)",
+    'member.reset_password':
+      "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — household/owner-resets.test.ts refuses an adult, a teen and a viewer (5.29)",
   };
 
   it('every capability in the matrix is either exercised here or named as owed', () => {

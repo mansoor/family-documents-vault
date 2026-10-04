@@ -8,6 +8,8 @@ import {
   suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
+  type ResetPath,
+  type Role,
 } from '@fdv/shared';
 import { z } from 'zod';
 import { clientOf, describeDevice, type Principal, type RequestMeta } from '../auth/service.js';
@@ -134,6 +136,20 @@ export class HouseholdService {
      * (FDV_OFFLINE_MAX_DAYS): the account card says it, for a lock (5.28).
      */
     private readonly maxOfflineDays = 90,
+    /**
+     * Which way a password reset an owner starts would go for somebody
+     * (5.29, OwnerResetService.pathFor): the account card says it. Asked in
+     * the owner's own transaction.
+     */
+    private readonly resetPath?: (
+      trx: Db,
+      target: {
+        account_id: string;
+        role: Role;
+        suspended_at: Date | null;
+        suspended_until: Date | null;
+      },
+    ) => Promise<ResetPath | null>,
   ) {}
 
   async profile(p: Principal) {
@@ -585,6 +601,12 @@ export class HouseholdService {
           last_used_at: s.last_used_at.toISOString(),
           offline: s.offline_expires_at !== null && new Date(s.offline_expires_at).getTime() > now,
         }));
+      // Which way a reset would go (5.29): yes or no about what they keep
+      // private, never what.
+      const resetPath =
+        this.resetPath && row.account_id !== p.accountId
+          ? await this.resetPath(trx, row)
+          : undefined;
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -613,6 +635,7 @@ export class HouseholdService {
               }
             : null,
         max_offline_days: this.maxOfflineDays,
+        ...(this.resetPath ? { reset_path: resetPath ?? null } : {}),
       };
     });
   }

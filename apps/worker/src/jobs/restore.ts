@@ -939,6 +939,21 @@ const GUARDS = [
     table: 'member_identity',
     fn: 'member_identity_versioned',
   },
+  // Whatever makes somebody keep something private waits for a reset being
+  // spent, and a session that reset ended gains nothing (0052): one each
+  // on what can make a row private.
+  ...[
+    'document',
+    'doc_collection',
+    'member_identity',
+    'upload_request',
+    'incoming_file',
+    'export',
+  ].map((table) => ({
+    name: `${table}_private_gained`,
+    table,
+    fn: 'member_private_gained',
+  })),
 ];
 
 /**
@@ -1147,6 +1162,14 @@ const REQUIRED_RULES = [
     name: 'notice_request_actor_update',
     cmd: 'w',
     what: 'who ends a notice',
+  },
+  // Somebody signed in reaches their own reset links, and an owner those of
+  // their household's people, and no other (0052).
+  {
+    table: 'password_reset',
+    name: 'password_reset_account',
+    cmd: '*',
+    what: 'whose reset links somebody signed in reaches',
   },
 ];
 

@@ -1776,6 +1776,28 @@ fieldset.ask-items {
   overflow-wrap: anywhere;
 }
 
+/* 5.29: a reset link handed to an owner, or the command for whoever runs the
+   server: one block, broken anywhere, so a phone shows all of it. */
+.reset-secret {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  word-break: break-all;
+  user-select: all;
+}
+
+/* 5.29: an owner was given a link to reset your password, until seen. */
+.reset-notice p {
+  margin: 0;
+}
+
+.reset-notice-h {
+  font-size: 16px;
+  margin: 0;
+}
+
 .drop-message {
   margin: 0;
 }
