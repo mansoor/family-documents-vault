@@ -6,6 +6,32 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.31] - 2026-10-04 — iteration 5.28
+
+Lock a sign-in.
+
+### Added
+
+- **Lock a sign-in**, for owners, from a person's Account card. Locking someone:
+  - signs them out everywhere, and their phone is told;
+  - takes back the invitations they sent, and any password reset waiting for them;
+  - ends their exports;
+  - pauses their share links and upload requests, or ends them for good if you choose.
+    A lock can end on a date you set, or when you unlock. The person is told by email, and the other owners are told too. It asks for a passkey or an authenticator code.
+- Owners can't be locked; ask them to become an adult first. You can't lock yourself, and a locked person can't be made an owner.
+- Only owners and the person see that someone is locked. Everyone else just sees their links and requests as paused.
+
+### Changed
+
+- **After a restore, everyone's sign-in except the owners' is paused until an owner turns it back on** on the After a restore screen, one tap each. A backup can't know about a lock made after it, so this keeps a lock from being silently undone.
+- While anyone is locked or paused, the audience for identity details can't be widened, because they couldn't be told. Locking someone withdraws a widening that was waiting.
+- Reminders, digests and alerts skip people who are locked or paused.
+
+### Security
+
+- A locked person is refused only after their password and code or passkey are proven, so the refusal reveals nothing about which accounts exist. A switched-off account's passkey sign-in is now refused too.
+- The database itself keeps at least one owner who can sign in, and only an owner can lock or unlock anyone.
+
 ## [0.5.30] - 2026-10-03 — iteration 5.27
 
 Identity details on the web, and in the export.
