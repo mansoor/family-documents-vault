@@ -16,7 +16,7 @@ import {
   type PrivateValues,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { withSystem, type Db } from '@fdv/db';
+import { readAs, withSystem, type Db } from '@fdv/db';
 import {
   can,
   canSeeIdentity,
@@ -27,6 +27,7 @@ import {
   IDENTITY_LISTS,
   identityFilled,
   maskIdentity,
+  seesAdults,
   wellFormedDate,
   type DateValue,
   type IdentityFields,
@@ -173,30 +174,48 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .where('account_id', '=', exp.requested_by)
         .where('household_id', '=', hh)
         .executeTakeFirstOrThrow();
-      const adultsOk = requester.role === 'owner' || requester.role === 'adult';
-      const docs = await trx
-        .selectFrom('document')
-        .selectAll()
-        .where('deleted_at', 'is', null)
-        .where((eb) =>
-          eb.or([
-            eb('visibility', '=', 'household'),
-            ...(adultsOk ? [eb('visibility', '=', 'adults')] : []),
-            eb.and([
-              eb('visibility', '=', 'private'),
-              eb('owner_member_id', '=', requester.member_id),
+      // Who may see Adults only documents, as the API works it out (5.32):
+      // the role's answer, or a viewer's restriction's.
+      const restriction = await trx
+        .selectFrom('access_restriction')
+        .select(['include_adults_only', 'expires_at'])
+        .where('member_id', '=', requester.member_id)
+        .executeTakeFirst();
+      const adultsOk = seesAdults(requester.role, restriction ?? null);
+      // Read as the requester themselves (5.32): a restriction of theirs
+      // narrows the documents, and the people, as it narrows every list.
+      const as = {
+        accountId: exp.requested_by,
+        memberId: requester.member_id,
+        role: requester.role,
+      };
+      const docs = await readAs(trx, as, (mine) =>
+        mine
+          .selectFrom('document')
+          .selectAll()
+          .where('deleted_at', 'is', null)
+          .where((eb) =>
+            eb.or([
+              eb('visibility', '=', 'household'),
+              ...(adultsOk ? [eb('visibility', '=', 'adults')] : []),
+              eb.and([
+                eb('visibility', '=', 'private'),
+                eb('owner_member_id', '=', requester.member_id),
+              ]),
             ]),
-          ]),
-        )
-        .orderBy('category')
-        .orderBy('title')
-        .execute();
-      const members = await trx
-        .selectFrom('member')
-        .select(['id', 'display_name'])
-        .orderBy('display_name')
-        .orderBy('id')
-        .execute();
+          )
+          .orderBy('category')
+          .orderBy('title')
+          .execute(),
+      );
+      const members = await readAs(trx, as, (mine) =>
+        mine
+          .selectFrom('member')
+          .select(['id', 'display_name'])
+          .orderBy('display_name')
+          .orderBy('id')
+          .execute(),
+      );
       // What each detail is called: by its type as the household has it,
       // hidden ones too, or else by the attribute library (0.5.7).
       const types = await trx

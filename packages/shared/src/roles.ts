@@ -403,21 +403,63 @@ export function capabilityToInvite(role: Role): Capability {
  *
  * An unknown visibility is closed, not open: a value added later must be
  * taught here before anybody is shown it.
+ *
+ * `seesAdults` is the one answer to "may they see Adults only documents"
+ * (5.32): worked out once for each sign-in by `seesAdults()`, and handed to
+ * this and to every SQL copy. Without it, the role's own answer.
  */
 export function canSee(
-  viewer: { role: Role; memberId: string | null },
+  viewer: { role: Role; memberId: string | null; seesAdults?: boolean },
   doc: { visibility: string; owner_member_id: string | null },
 ): boolean {
   switch (doc.visibility) {
     case 'household':
       return true;
     case 'adults':
-      return can(viewer.role, 'document.see_adults');
+      return viewer.seesAdults ?? can(viewer.role, 'document.see_adults');
     case 'private':
       return viewer.memberId !== null && doc.owner_member_id === viewer.memberId;
     default:
       return false;
   }
+}
+
+/** What of a restriction decides whether it lets its viewer see Adults only documents. */
+export interface AdultsGrant {
+  include_adults_only: boolean;
+  expires_at: Date | string | null;
+}
+
+/**
+ * Whether somebody may see documents marked Adults only (5.32, D6): their
+ * role's `document.see_adults`, or a viewer whose restriction an owner has
+ * let include them, while it lasts. Worked out once for each sign-in, in
+ * `authenticate()` and for each person the worker writes to, and handed to
+ * `canSee` and every SQL copy of it: widening the copies one at a time is
+ * how the digest leaked before.
+ *
+ * An unrestricted viewer never sees them. A restriction adds nothing else —
+ * the database narrows to its grant — and one left on somebody of another
+ * role (their sign-in given back as a teen) gives them nothing: restrictions
+ * are for viewers (A58), and a teen sees Adults only documents under no rule.
+ */
+export function seesAdults(
+  role: Role,
+  restriction: AdultsGrant | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (can(role, 'document.see_adults')) return true;
+  if (!restrictionMayWiden(role) || restriction?.include_adults_only !== true) return false;
+  return restriction.expires_at === null || new Date(restriction.expires_at).getTime() > now;
+}
+
+/**
+ * Whether a restriction can let somebody of this role see Adults only
+ * documents (D6): a viewer's alone (A58). Everybody else's answer is their
+ * role's, so nothing about a restriction need be read for them.
+ */
+export function restrictionMayWiden(role: Role): boolean {
+  return role === 'viewer';
 }
 
 /**

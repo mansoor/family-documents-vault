@@ -898,6 +898,7 @@ describe.skipIf(!testAdminUrl())('an owner who no longer sees identity details (
       householdId: owner.household_id,
       memberId: t.member_id,
       role: 'owner',
+      seesAdults: true,
     });
     const asOwner = await principal(owner);
     const asDee = await principal(dee);

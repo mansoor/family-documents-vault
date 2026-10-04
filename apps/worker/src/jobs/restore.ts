@@ -954,6 +954,27 @@ const GUARDS = [
     table,
     fn: 'member_private_gained',
   })),
+  // A restriction is for a viewer, made for somebody who keeps Only me
+  // documents only once an owner has confirmed it, and stays its person's
+  // (0054).
+  {
+    name: 'access_restriction_guard',
+    table: 'access_restriction',
+    fn: 'access_restriction_guard',
+  },
+  // A kind granted is a built-in or the household's own (0054).
+  {
+    name: 'access_restriction_type_household',
+    table: 'access_restriction_type',
+    fn: 'access_restriction_type_household',
+  },
+  // A restricted person's sign-in given back, or their role changed: the
+  // owners confirm the restriction again (0054).
+  {
+    name: 'account_household_restriction_reconfirm',
+    table: 'account_household',
+    fn: 'account_household_restriction_reconfirm',
+  },
 ];
 
 /**
@@ -980,6 +1001,14 @@ const GIVEN_NOTHING: [actor: string, who: string][] = [
   ['anonymous', 'a signed-out page'],
   ['upload', 'an upload link'],
   ['link', 'a share link it never made'],
+];
+
+/** A restriction and what it names (0054). */
+const RESTRICTION_TABLES = [
+  'access_restriction',
+  'access_restriction_member',
+  'access_restriction_type',
+  'access_restriction_collection',
 ];
 
 /** The tables 0030 and 0031 give a rule for each kind of caller. */
@@ -1033,6 +1062,9 @@ const ACTOR_GUARDED = [
   // audience for them (0050).
   'member_identity',
   'notice_request',
+  // What a restricted viewer may see, and whom, which kinds and which
+  // collections it names (0054).
+  ...RESTRICTION_TABLES,
 ];
 
 /**
@@ -1108,6 +1140,43 @@ const MAKER_ONLY = [
     where: "part = 'only_me'",
     what: "a person's Only me identity details",
   },
+  // A restriction: the owners', and the person's own (0054).
+  { table: 'access_restriction', where: 'true', what: "a person's restriction" },
+];
+
+/**
+ * The tables a restricted viewer is narrowed in (0054, 5.32), each by a rule
+ * that asks whether the caller is restricted: the document and everything
+ * that hangs off it, the activity log's lines about one, and the family's
+ * people, photos, collections, identity details, answers and kinds. A rule
+ * missing here would give a restricted viewer the whole of that table.
+ */
+const RESTRICTED = [
+  'document',
+  'document_version',
+  'document_text',
+  'document_text_sealed',
+  'upload_idempotency',
+  'document_link',
+  'reminder',
+  'reminder_delivery',
+  'private_notice',
+  'offline_fill',
+  'share_link',
+  'share_link_item',
+  'share_session_use',
+  'share_page',
+  'share_page_failure',
+  'doc_collection_item',
+  'incoming_file',
+  'document_tombstone',
+  'audit_event',
+  'member',
+  'member_photo',
+  'doc_collection',
+  'member_identity',
+  'household_profile',
+  'document_type',
 ];
 
 /**
@@ -1171,6 +1240,22 @@ const REQUIRED_RULES = [
     cmd: '*',
     what: 'whose reset links somebody signed in reaches',
   },
+  // A restriction, and what it names, are written by an owner or the vault:
+  // the person reads theirs and changes none of it (0054).
+  ...RESTRICTION_TABLES.flatMap((table) =>
+    (
+      [
+        ['insert', 'a', 'writes'],
+        ['update', 'w', 'changes'],
+        ['delete', 'd', 'removes'],
+      ] as const
+    ).map(([verb, cmd, does]) => ({
+      table,
+      name: `${table}_writer_${verb}`,
+      cmd,
+      what: `who ${does} a restriction (${table})`,
+    })),
+  ),
 ];
 
 /** The rows of a guarded table that are a household's: the built-ins are everybody's. */
@@ -1297,6 +1382,70 @@ async function probeIdentityWriters(
   } finally {
     await client.query('rollback').catch(() => undefined);
     client.release();
+  }
+}
+
+/**
+ * Each restricted person of a household, asked as the vault will ask for
+ * them — the application role, signed in as them — sees exactly the
+ * documents their restriction gives, counted by app_granted_documents() as
+ * the owning role (0054). A rule that is there but gives more than the grant
+ * fails the restore, as one that is missing does above. A backup from
+ * before 0054 has none to ask about.
+ */
+async function probeRestrictions(
+  admin: ReturnType<typeof createPool>,
+  app: ReturnType<typeof createPool>,
+  household: string,
+): Promise<void> {
+  const exists = await admin.query<{ ok: boolean }>(
+    "select to_regclass('public.access_restriction') is not null as ok",
+  );
+  if (!exists.rows[0]?.ok) return;
+  const { rows: restricted } = await admin.query<{
+    member_id: string;
+    account_id: string | null;
+    role: string | null;
+  }>(
+    `select r.member_id, a.account_id, a.role
+       from access_restriction r
+       left join account_household a
+         on a.member_id = r.member_id and a.household_id = r.household_id
+      where r.household_id = $1
+      order by r.member_id`,
+    [household],
+  );
+  const settings = `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                           set_config('app.member_id', $2, true), set_config('app.role', $3, true),
+                           set_config('app.account_id', $4, true)`;
+  const count = async (
+    pool: ReturnType<typeof createPool>,
+    r: (typeof restricted)[number],
+    text: string,
+  ): Promise<number> => {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(settings, [
+        household,
+        r.member_id,
+        r.role ?? 'viewer',
+        r.account_id ?? '',
+      ]);
+      return (await client.query<{ n: number }>(text)).rows[0]?.n ?? -1;
+    } finally {
+      await client.query('rollback').catch(() => undefined);
+      client.release();
+    }
+  };
+  for (const r of restricted) {
+    const granted = await count(admin, r, 'select count(*)::int as n from app_granted_documents()');
+    const seen = await count(app, r, 'select count(*)::int as n from document');
+    if (seen !== granted) {
+      throw new Error(
+        `household ${household}: a restricted person would see ${seen} documents, but their restriction gives ${granted}`,
+      );
+    }
   }
 }
 
@@ -1499,6 +1648,22 @@ export async function checkRestored(
         `no rule says ${what.map((r) => `${r.what} (${r.name} on ${r.table})`).join(', ')}`,
       );
     }
+    // And the rules that narrow a restricted viewer (0054): on each table,
+    // one that governs what is read and asks whether the caller is restricted.
+    const { rows: unrestricted } = await admin.query<{ name: string }>(
+      `select t as name from unnest($1::text[]) as t
+        where not exists (select 1 from pg_policy p
+                           where p.polrelid = to_regclass('public.' || t)
+                             and not p.polpermissive
+                             and p.polcmd in ('*', 'r')
+                             and pg_get_expr(p.polqual, p.polrelid) like '%app_restricted()%')`,
+      [RESTRICTED],
+    );
+    if (unrestricted.length) {
+      throw new Error(
+        `no rule keeps a restricted viewer to their grant on ${unrestricted.map((u) => u.name).join(', ')}`,
+      );
+    }
 
     const { rows: rights } = await app.query<{
       unreadable: string[];
@@ -1657,6 +1822,8 @@ export async function checkRestored(
       // Who writes identity details, and asks for a notice, tried (0050):
       // each in a transaction rolled back, so nothing is kept.
       await probeIdentityWriters(admin, app, target.appUrl, h.id);
+      // Each restricted person sees exactly what their restriction gives (0054).
+      await probeRestrictions(admin, app, h.id);
       // Somebody signed in who is no member of it — so the maker of none,
       // with no role of the family's — is given no Only me collection (0036)
       // and nobody's photo (0040).

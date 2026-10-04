@@ -3220,6 +3220,53 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       `features.sign_out_everywhere`. `@fdv/client`: `signOutEverywhere`;
       the fake signs people out everywhere, and ends a session when any token
       it has spent is presented again.
+  - The restriction, enforced by the database (5.32, D6, A56–A59). No route
+    changes yet: 5.33 adds `PUT`/`DELETE /members/{id}/access` and the
+    screens. Older phones simply see fewer documents.
+    - **Added:** `GET /api/v1/after-restore`'s `sign_ins[]` gain
+      `restriction`: `{ summary }`, a restricted viewer's restriction in a
+      sentence ("Restricted: sees 1 person's documents of 2 kinds and 1
+      collection. Adults-only documents included."), shown to confirm beside
+      the role (A55); `null` for somebody with none. Absent from older
+      vaults.
+    - **Changed:** a restricted viewer is given, by every route, only what
+      their restriction grants — the database narrows each table, so a list,
+      a count, a search, a page, a file, a reminder, a link or a digest that
+      does not ask still cannot reach outside it. Within the ceiling (the
+      household's documents; Adults only ones when an owner allows it, D6;
+      their own Only me ones; never somebody else's Only me): their own
+      documents, those of the people named and the kinds named together
+      (A56), and those in a granted collection while it is for Everyone and
+      not deleted; a document of nobody's only with the checkbox (A57).
+      Nothing at all once the restriction's end date has passed. People:
+      themselves, those named, and the owners of what they can see; no
+      collection but those granted and their own; identity details, their
+      own only; none of the household's answers; kinds of document, the
+      built-ins and those granted or in use on what they can see.
+    - **Changed:** who may see Adults only documents is worked out once for
+      each sign-in (`seesAdults`): the role's `document.see_adults`, or a
+      viewer whose restriction an owner lets include them. Every copy of the
+      visibility rule — the document list, search, tags, issuers, reminders,
+      collections, suggestions, counts, links, the digest and the export —
+      reads it. An unrestricted viewer sees no Adults only document, as
+      before.
+    - The database: 0054 adds `access_restriction`, keyed on the person (not
+      on their sign-in: taking it away and giving it back keeps it, and
+      asks the owners to confirm it again, `reconfirm_since`), with
+      `include_adults_only`, `include_no_person_docs`, `expires_at`,
+      `created_by`, `updated_at` and `private_confirmed_at`; and
+      `access_restriction_member`, `_type` and `_collection`. Owners read and
+      write them, the person reads their own; a new one is for a viewer
+      only, and one for somebody who keeps Only me documents needs
+      `private_confirmed_at` (A59). `app_restricted()`, `doc_in_grant()`,
+      `member_in_grant()`, `collection_in_grant()` and `type_in_grant()`
+      answer with the owner's rights; a restrictive rule on every table a
+      document's rows hang from, and on the family's own, asks them. The
+      restore check knows the new rules and triggers, fails if any is
+      missing, and asks each restricted person's documents as them.
+    - `@fdv/shared`: `seesAdults`, `restrictionMayWiden`, `AdultsGrant`,
+      `canSee`'s `seesAdults`, `restrictionSummary`, `RestrictionCounts`,
+      `RestrictionSummary` and `PausedSignIn.restriction`.
 
 ## Deprecations in effect
 

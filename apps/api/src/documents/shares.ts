@@ -50,6 +50,7 @@ import {
   maskEmail,
   PREVIEW_MAX_PAGES,
   readShareCode,
+  seesAdults,
   SHARE_CODE_CANNOT_SEND,
   SHARE_CODE_MINUTES,
   SHARE_CODE_SENDS,
@@ -77,6 +78,18 @@ import {
   type ShareProtection,
   type ShareSecretKind,
 } from '@fdv/shared';
+
+/**
+ * Whose sight a link lends (5.32): its maker's, by their role — as the
+ * database's own copy asks (app_shared_document(), app_link_documents()). A
+ * restriction never widens what a link lends: only a viewer can be given
+ * Adults only documents by one, and a viewer makes no links.
+ */
+const sharerOf = (role: Role, memberId: string) => ({
+  role,
+  memberId,
+  seesAdults: seesAdults(role, null),
+});
 
 /**
  * Share links (SHR-05).
@@ -888,7 +901,7 @@ export class ShareService {
         .executeTakeFirst();
       // Nobody sends out what they cannot see. For a private document that
       // means nobody but its owner, however senior they are: it is theirs.
-      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
+      if (!doc || !canSee(p, doc)) {
         throw notFound('That document');
       }
       const newest = await trx
@@ -1444,7 +1457,7 @@ export class ShareService {
         .selectFrom('household')
         .select('timezone')
         .executeTakeFirstOrThrow();
-      const reader = { role: p.role, memberId: p.memberId };
+      const reader = p;
       // What each collection's link was made with, and has followed: the
       // reader must be able to see every one of them, or it is not theirs
       // to know about. (What it was made without, left out, is not.)
@@ -1627,7 +1640,7 @@ export class ShareService {
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
     const revoked = await withPrincipal(this.db, p, async (trx) => {
-      const reader = { role: p.role, memberId: p.memberId };
+      const reader = p;
       // A link to a document the caller cannot see is not there for them.
       const target = await trx
         .selectFrom('share_link')
@@ -2889,7 +2902,7 @@ export class ShareService {
     // app_live_share(), 0051).
     if (suspensionInEffect(membership)) throw gone();
     const maker = { role: membership.role, member_id: membership.member_id };
-    const sharer = { role: maker.role, memberId: maker.member_id };
+    const sharer = sharerOf(maker.role, maker.member_id);
     if (row.document_id !== null) {
       // A document moved to the trash stops being shared, without anybody
       // having to remember the link exists.
@@ -2976,7 +2989,7 @@ export class ShareService {
       .orderBy('i.position')
       .orderBy('i.document_id')
       .execute();
-    const sharer = { role: link.maker.role, memberId: link.maker.member_id };
+    const sharer = sharerOf(link.maker.role, link.maker.member_id);
     return rows
       .filter((d) => {
         const kind = snapshot.get(d.id);

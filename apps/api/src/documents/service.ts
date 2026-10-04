@@ -386,7 +386,7 @@ export function typeView(t: EffectiveType): DocumentTypeView {
  * caller's to add or leave out.
  */
 export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'household'
-  or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+  or (d.visibility = 'adults' and ${p.seesAdults})
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
@@ -530,7 +530,7 @@ export class DocumentService {
       <A extends string, B>(a: A, op: '=', b: B): Expression<SqlBool>;
     }) => {
       const clauses: Expression<SqlBool>[] = [eb('document.visibility', '=', 'household')];
-      if (allows(p, 'document.see_adults')) {
+      if (p.seesAdults) {
         clauses.push(eb('document.visibility', '=', 'adults'));
       }
       clauses.push(
@@ -840,7 +840,7 @@ export class DocumentService {
    * is only ever the filer's own.
    */
   private async ownVisibility(trx: Db, p: Principal, input: DocumentInput): Promise<DocumentInput> {
-    if (allows(p, 'document.see_adults')) return input;
+    if (p.seesAdults) return input;
     if (input.visibility === 'adults') {
       throw new ApiError(403, 'forbidden', 'Only an adult can make a document adults-only.');
     }
@@ -1146,7 +1146,7 @@ export class DocumentService {
           -- Tags are words people write about their documents, as telling
           -- as a title. Until 0.4.2 this was the one query with no rule.
           and (d.visibility = 'household'
-            or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+            or (d.visibility = 'adults' and ${p.seesAdults})
             or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
           ${q ? sql`and t ilike ${`${q}%`}` : sql``}
         group by t order by count desc, t limit 50`.execute(trx);
@@ -1200,7 +1200,7 @@ export class DocumentService {
        where d.deleted_at is null
          and d.issued_by is not null
          and (d.visibility = 'household'
-           or (d.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+           or (d.visibility = 'adults' and ${p.seesAdults})
            or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))
          ${f.member_id ? sql`and d.owner_member_id = ${f.member_id}::uuid` : sql``}
          ${f.category ? sql`and d.category = ${f.category}` : sql``}
@@ -1932,11 +1932,7 @@ export class DocumentService {
         // unsaid, it is for as few people as its filer may choose.
         visibility:
           sent.visibility ??
-          (owner === p.memberId
-            ? 'private'
-            : allows(p, 'document.see_adults')
-              ? 'adults'
-              : 'household'),
+          (owner === p.memberId ? 'private' : p.seesAdults ? 'adults' : 'household'),
       };
       loose = extra ?? null;
     }
@@ -2069,7 +2065,7 @@ export class DocumentService {
     sealed_pending: { count: number; token?: string };
   }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
-    const adultsOk = allows(p, 'document.see_adults');
+    const adultsOk = p.seesAdults;
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await sql<{
         document_id: string;
@@ -2225,7 +2221,7 @@ export class DocumentService {
       // A missing version, and one the caller may not see, are both a 404
       // further down. Asking for a credential first would answer "it is
       // there, and it is private" to somebody who must not know.
-      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      if (!row || !canSee(p, row)) return null;
       return sensitiveAction(row);
     });
   }
@@ -2238,7 +2234,7 @@ export class DocumentService {
         .select(['visibility', 'is_essential', 'owner_member_id'])
         .where('id', '=', documentId)
         .executeTakeFirst();
-      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      if (!row || !canSee(p, row)) return null;
       return sensitiveAction(row);
     });
   }
@@ -2269,7 +2265,7 @@ export class DocumentService {
         .where('id', '=', documentId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      if (!row || !canSee({ role: p.role, memberId: p.memberId }, row)) return null;
+      if (!row || !canSee(p, row)) return null;
       // A teen may change only their own: the rest is refused, not asked.
       if (p.role === 'teen' && row.owner_member_id !== p.memberId) return null;
       // A visibility change that will be refused is refused, not asked

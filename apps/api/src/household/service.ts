@@ -267,7 +267,7 @@ export class HouseholdService {
         .where((eb) =>
           eb.or([
             eb('visibility', '=', 'household'),
-            ...(allows(p, 'document.see_adults') ? [eb('visibility', '=', 'adults')] : []),
+            ...(p.seesAdults ? [eb('visibility', '=', 'adults')] : []),
             eb.and([eb('visibility', '=', 'private'), eb('owner_member_id', '=', p.memberId)]),
           ]),
         )

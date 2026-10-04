@@ -199,9 +199,9 @@ describe.skipIf(!testAdminUrl())('the activity log', () => {
  */
 describe('who reads each line', () => {
   const readers: Array<[string, Reader]> = [
-    ['an owner', { role: 'owner', memberId: randomUUID() }],
-    ['an adult', { role: 'adult', memberId: randomUUID() }],
-    ['a teen', { role: 'teen', memberId: randomUUID() }],
+    ['an owner', { role: 'owner', memberId: randomUUID(), seesAdults: true }],
+    ['an adult', { role: 'adult', memberId: randomUUID(), seesAdults: true }],
+    ['a teen', { role: 'teen', memberId: randomUUID(), seesAdults: false }],
   ];
   const about = (action: string, object_type: string | null) => ({
     action,
@@ -260,7 +260,12 @@ describe('who reads each line', () => {
   it("a line about somebody's identity details is for the owners, the person and whoever did it; an Only me one the person's alone (5.26)", () => {
     const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
     const actor = { ...adult, accountId: randomUUID() };
-    const person = { role: 'adult' as const, memberId: randomUUID(), accountId: randomUUID() };
+    const person = {
+      role: 'adult' as const,
+      memberId: randomUUID(),
+      accountId: randomUUID(),
+      seesAdults: true,
+    };
     const line = (action: string, detail: unknown) => ({
       action,
       object_type: 'member',
@@ -300,9 +305,19 @@ describe('who reads each line', () => {
 
   it("a sign-out everywhere, and a role change's effects, are for the owners, the person and whoever did it (5.30)", () => {
     const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
-    const person = { role: 'teen' as const, memberId: randomUUID(), accountId: randomUUID() };
+    const person = {
+      role: 'teen' as const,
+      memberId: randomUUID(),
+      accountId: randomUUID(),
+      seesAdults: false,
+    };
     // Whoever did it, and an owner no longer — they stepped down since.
-    const actor = { role: 'adult' as const, memberId: randomUUID(), accountId: randomUUID() };
+    const actor = {
+      role: 'adult' as const,
+      memberId: randomUUID(),
+      accountId: randomUUID(),
+      seesAdults: true,
+    };
     for (const action of [
       'member.signed_out_everywhere',
       'member.offline_ended',
@@ -360,7 +375,7 @@ describe('who reads each line', () => {
 
   it("a collection's line follows the collection: its audience, Only me its maker's, and with no row nobody's (5.14)", () => {
     const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
-    const viewer: Reader = { role: 'viewer', memberId: randomUUID() };
+    const viewer: Reader = { role: 'viewer', memberId: randomUUID(), seesAdults: false };
     const collection = (audience: string | null, by: string | null = owner.memberId) => ({
       action: 'collection.renamed',
       object_type: 'collection',

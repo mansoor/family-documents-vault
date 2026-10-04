@@ -600,3 +600,128 @@ describe.skipIf(!testAdminUrl())("an Only me bill's reminders and the digest", (
     expect(JSON.stringify(theirs)).not.toContain('Payday');
   });
 });
+
+/**
+ * A restricted viewer's digest (5.32): built inside their own scope, so the
+ * database narrows it to their grant; and an owner's letting them see Adults
+ * only documents reaches it, as it reaches every other copy of the rule. An
+ * unrestricted viewer's is as it was.
+ */
+describe.skipIf(!testAdminUrl())("a restricted viewer's digest (5.32)", () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  const hh = randomUUID();
+  const who = {
+    owner: { role: 'owner', member: '', account: '' },
+    ahmed: { role: 'adult', member: '', account: '' },
+    val: { role: 'viewer', member: '', account: '' },
+    uma: { role: 'viewer', member: '', account: '' },
+  };
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    await admin.query(
+      "insert into household (id, name, timezone) values ($1, 'The Granted family', 'UTC')",
+      [hh],
+    );
+    for (const [name, p] of Object.entries(who)) {
+      p.member = (
+        await admin.query<{ id: string }>(
+          'insert into member (household_id, display_name) values ($1, $2) returning id',
+          [hh, name],
+        )
+      ).rows[0]?.id as string;
+      p.account = (
+        await admin.query<{ id: string }>('insert into account (email) values ($1) returning id', [
+          `${name}-granted-${TAG}@example.test`,
+        ])
+      ).rows[0]?.id as string;
+      await admin.query(
+        'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+        [p.account, hh, p.member, p.role],
+      );
+    }
+    // Val sees Ahmed's tax returns, Adults only ones included.
+    await admin.query(
+      `insert into access_restriction (member_id, household_id, include_adults_only)
+       values ($1, $2, true)`,
+      [who.val.member, hh],
+    );
+    await admin.query(
+      `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+       values ($1, $2, $3)`,
+      [who.val.member, hh, who.ahmed.member],
+    );
+    await admin.query(
+      `insert into access_restriction_type (restricted_member_id, household_id, type_key)
+       values ($1, $2, 'tax_return')`,
+      [who.val.member, hh],
+    );
+    await withSystem(db, hh, async (trx) => {
+      for (const [title, visibility, owner, type] of [
+        ['Ahmed tax return', 'household', who.ahmed.member, 'tax_return'],
+        ['Ahmed adults-only tax return', 'adults', who.ahmed.member, 'tax_return'],
+        ['Ahmed private tax return', 'private', who.ahmed.member, 'tax_return'],
+        ['Ahmed water bill', 'household', who.ahmed.member, 'utility_bill'],
+        ['Owner council tax bill', 'household', who.owner.member, 'utility_bill'],
+      ] as const) {
+        const d = await trx
+          .insertInto('document')
+          .values({ household_id: hh, title, visibility, owner_member_id: owner, type_key: type })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        await trx
+          .insertInto('reminder')
+          .values({
+            household_id: hh,
+            document_id: d.id,
+            kind: 'manual',
+            fire_at: '2026-10-05',
+            status: 'due',
+          })
+          .execute();
+      }
+    });
+  });
+  afterAll(async () => {
+    await db?.destroy();
+    await admin?.end();
+    await tdb?.drop();
+  });
+
+  it('the digest lists only granted documents', async () => {
+    const digests: Digest[] = [];
+    await deliver({
+      admin,
+      app: db,
+      notifier: { digest: async (d) => (digests.push(d), ['test']) },
+      log: () => undefined,
+      now: () => new Date('2026-10-05T10:00:00Z'),
+      digestHour: 9,
+    });
+    const titles = (p: { account: string }) =>
+      (digests.find((d) => d.recipient.account_id === p.account)?.items ?? [])
+        .map((i) => i.title)
+        .sort();
+    // Their grant, Adults only included: nothing of the owner's, no bill,
+    // and never Ahmed's Only me.
+    expect(titles(who.val)).toEqual(['Ahmed adults-only tax return', 'Ahmed tax return']);
+    // An unrestricted viewer: every household document, no Adults only.
+    expect(titles(who.uma)).toEqual([
+      'Ahmed tax return',
+      'Ahmed water bill',
+      'Owner council tax bill',
+    ]);
+    // Ahmed sees all of his own, and the owner's.
+    expect(titles(who.ahmed)).toEqual([
+      'Ahmed adults-only tax return',
+      'Ahmed private tax return',
+      'Ahmed tax return',
+      'Ahmed water bill',
+      'Owner council tax bill',
+    ]);
+  });
+});

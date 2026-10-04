@@ -1596,6 +1596,189 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it("notices a restricted viewer's rules gone, a rule that gives more than the grant, or a restriction's guards gone (0054)", async () => {
+    // Every table a restricted viewer is narrowed in: its rule gone, the
+    // restore fails closed.
+    const rules = (
+      await sql(
+        vault.adminUrl,
+        `select c.relname as tbl, p.polname as name, p.polcmd as cmd,
+                pg_get_expr(p.polqual, p.polrelid) as qual
+           from pg_policy p join pg_class c on c.oid = p.polrelid
+          where p.polname like '%\\_restricted' order by c.relname`,
+      )
+    ).rows as Array<{ tbl: string; name: string; cmd: string; qual: string }>;
+    expect(rules.map((r) => r.tbl)).toEqual(
+      [
+        'audit_event',
+        'doc_collection',
+        'doc_collection_item',
+        'document',
+        'document_link',
+        'document_text',
+        'document_text_sealed',
+        'document_tombstone',
+        'document_type',
+        'document_version',
+        'household_profile',
+        'incoming_file',
+        'member',
+        'member_identity',
+        'member_photo',
+        'offline_fill',
+        'private_notice',
+        'reminder',
+        'reminder_delivery',
+        'share_link',
+        'share_link_item',
+        'share_page',
+        'share_page_failure',
+        'share_session_use',
+        'upload_idempotency',
+      ].sort(),
+    );
+    for (const r of rules) {
+      const command = r.cmd === 'r' ? 'for select' : '';
+      await sql(vault.adminUrl, `drop policy ${r.name} on public.${r.tbl}`);
+      try {
+        await expect(checkRestored(target()), r.tbl).rejects.toThrow(
+          new RegExp(`no rule keeps a restricted viewer to their grant on ${r.tbl}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${r.name} on public.${r.tbl} as restrictive ${command} using (${r.qual})`,
+        );
+      }
+    }
+
+    // A restricted person, with nothing granted: the document's rule there,
+    // but giving everything, fails the restore too.
+    const { rows: people } = await sql(
+      vault.adminUrl,
+      "select id, household_id from member where display_name = 'Two'",
+    );
+    const two = people[0] as { id: string; household_id: string };
+    await sql(
+      vault.adminUrl,
+      'insert into access_restriction (member_id, household_id) values ($1, $2)',
+      [two.id, two.household_id],
+    );
+    try {
+      expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      const qual = rules.find((r) => r.name === 'document_restricted')?.qual as string;
+      await sql(
+        vault.adminUrl,
+        'alter policy document_restricted on public.document using (app_restricted() or true)',
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /a restricted person would see 3 documents, but their restriction gives 0/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `alter policy document_restricted on public.document using (${qual})`,
+        );
+      }
+
+      // Its guards: a viewer's alone, confirmed for somebody with Only me
+      // documents, and confirmed again with a sign-in given back.
+      for (const [table, trigger] of [
+        ['access_restriction', 'access_restriction_guard'],
+        ['access_restriction_type', 'access_restriction_type_household'],
+        ['account_household', 'account_household_restriction_reconfirm'],
+      ]) {
+        await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+        try {
+          await expect(checkRestored(target()), trigger).rejects.toThrow(
+            /guard the vault relies on is missing/,
+          );
+        } finally {
+          await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+        }
+      }
+
+      // Who reads one: the owners and the person. Opened to anybody signed
+      // in, or with the rule for each kind of caller gone, it fails.
+      const actorRule = async (name: string) =>
+        (
+          (
+            await sql(
+              vault.adminUrl,
+              `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = $1`,
+              [name],
+            )
+          ).rows[0] as { qual: string }
+        ).qual;
+      // (Still naming the member, so that it is what the rule gives that is
+      // caught, not only how it reads.)
+      const own = await actorRule('access_restriction_actor');
+      await sql(
+        vault.adminUrl,
+        `alter policy access_restriction_actor on public.access_restriction
+           using (case app_actor()
+                    when 'account' then true or coalesce(member_id = app_member(), false)
+                    when 'system' then true
+                    else false
+                  end)`,
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /a person's restriction is open to somebody signed in who is not given it/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `alter policy access_restriction_actor on public.access_restriction using (${own})`,
+        );
+      }
+      for (const table of [
+        'access_restriction_member',
+        'access_restriction_type',
+        'access_restriction_collection',
+      ]) {
+        const qual = await actorRule(`${table}_actor`);
+        await sql(vault.adminUrl, `drop policy ${table}_actor on public.${table}`);
+        try {
+          await expect(checkRestored(target()), table).rejects.toThrow(
+            new RegExp(`no rule for each kind of caller on ${table}`),
+          );
+        } finally {
+          await sql(
+            vault.adminUrl,
+            `create policy ${table}_actor on public.${table} as restrictive using (${qual})`,
+          );
+        }
+      }
+
+      // Who writes one: an owner or the vault, never the person.
+      const { rows: writers } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual from pg_policy
+          where polname = 'access_restriction_writer_delete'`,
+      );
+      await sql(
+        vault.adminUrl,
+        'drop policy access_restriction_writer_delete on public.access_restriction',
+      );
+      try {
+        await expect(checkRestored(target())).rejects.toThrow(
+          /no rule says .*access_restriction_writer_delete/,
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy access_restriction_writer_delete on public.access_restriction
+             as restrictive for delete using (${(writers[0] as { qual: string }).qual})`,
+        );
+      }
+    } finally {
+      await sql(vault.adminUrl, 'delete from access_restriction where member_id = $1', [two.id]);
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  }, 120_000);
 });
 
 describe('the connection for pg_dump and psql', () => {
@@ -2131,6 +2314,122 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         Tariq: { reason: 'restored', in_effect: true },
         One: { role: 'owner', in_effect: false },
       });
+    } finally {
+      await rm(migrations, { recursive: true, force: true });
+      await rm(olderDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a restricted viewer comes back restricted and paused, and is still restricted once turned back on (5.32)', async () => {
+    const live = await createTestDatabase();
+    made.push(live);
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-532-'));
+    try {
+      await installQueue(live.adminUrl);
+      const hh = await seed(live.adminUrl);
+      const accountant = await signedIn(live.adminUrl, hh, 'Accountant', 'viewer');
+      // One of the owner's own, beside the house's three that belong to nobody.
+      await sql(
+        live.adminUrl,
+        `insert into document (household_id, owner_member_id)
+         select $1, m.id from member m where m.household_id = $1 and m.display_name = 'One'`,
+        [hh],
+      );
+      // The accountant sees the house's documents: those of nobody's.
+      await sql(
+        live.adminUrl,
+        `insert into access_restriction (member_id, household_id, include_no_person_docs)
+         values ($1, $2, true)`,
+        [accountant, hh],
+      );
+      const backup = (
+        await backupDatabase({
+          adminUrl: live.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      const t = await empty();
+      const report = await restoreBackup(backup, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ households: 1, documents: 4 });
+      expect(await suspensions(t.adminUrl)).toMatchObject({
+        Accountant: { role: 'viewer', reason: 'restored', in_effect: true },
+      });
+      const kept = await sql(
+        t.adminUrl,
+        'select include_no_person_docs from access_restriction where member_id = $1',
+        [accountant],
+      );
+      expect(kept.rows).toEqual([{ include_no_person_docs: true }]);
+
+      // Turned back on by an owner, as the vault does it.
+      await sql(
+        t.adminUrl,
+        `update account_household set suspended_at = null, suspend_reason = null
+          where member_id = $1`,
+        [accountant],
+      );
+      const account = await sql(
+        t.adminUrl,
+        'select account_id from account_household where member_id = $1',
+        [accountant],
+      );
+      // Signed in as the accountant: the house's three, not the owner's own.
+      const pool = new pg.Pool({ connectionString: t.appUrl, max: 1 });
+      const c = await pool.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.role', 'viewer', true), set_config('app.account_id', $2, true),
+                  set_config('app.member_id', $3, true)`,
+          [hh, account.rows[0]?.account_id, accountant],
+        );
+        const seen = await c.query<{ n: number }>(
+          'select count(*)::int as n from document where owner_member_id is null',
+        );
+        const all = await c.query<{ n: number }>('select count(*)::int as n from document');
+        expect([seen.rows[0]?.n, all.rows[0]?.n]).toEqual([3, 3]);
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        c.release();
+        await pool.end();
+      }
+    } finally {
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('a backup from before 0054 is brought up to date: nobody is restricted (5.32)', async () => {
+    const older = await empty();
+    const migrations = await migrationsUpTo(53);
+    const olderDir = await mkdtemp(path.join(tmpdir(), 'fdv-restore-0053-'));
+    try {
+      await migrate(older.adminUrl, { dir: migrations });
+      await installQueue(older.adminUrl);
+      const hh = await seed(older.adminUrl);
+      await signedIn(older.adminUrl, hh, 'Accountant', 'viewer');
+      const olderFile = (
+        await backupDatabase({
+          adminUrl: older.adminUrl,
+          backupKey: KEY,
+          dir: olderDir,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+      const t = await empty();
+      const report = await restoreBackup(olderFile, KEY, into(t), quiet, KEYS);
+      expect(report).toMatchObject({ schema: known, households: 1, signInsPaused: 1 });
+      const { rows } = await sql(
+        t.adminUrl,
+        `select (select count(*)::int from access_restriction) as restrictions,
+                to_regprocedure('public.doc_in_grant(access_grant, uuid, visibility, uuid, text)') is not null as helper`,
+      );
+      expect(rows[0]).toEqual({ restrictions: 0, helper: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });
       await rm(olderDir, { recursive: true, force: true });

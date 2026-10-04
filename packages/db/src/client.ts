@@ -970,6 +970,49 @@ export interface Schema {
     position: number;
   };
 
+  /**
+   * What a restricted viewer may see (0054, 5.32): keyed on the person, so
+   * it outlives their sign-in. Who made it, when it changed and who confirmed
+   * it are the database's to write (access_restriction_guard).
+   */
+  access_restriction: {
+    member_id: string;
+    household_id: string;
+    include_adults_only: Generated<boolean>;
+    include_no_person_docs: Generated<boolean>;
+    expires_at: Timestamp | null;
+    created_by: Generated<string | null>;
+    created_at: GeneratedTimestamp;
+    updated_at: GeneratedTimestamp;
+    updated_by: Generated<string | null>;
+    /** Set to anything to confirm: the database writes now, and who. */
+    private_confirmed_at: Timestamp | null;
+    private_confirmed_by: Generated<string | null>;
+    /** Their sign-in was given back, or their role changed: confirm again. */
+    reconfirm_since: Timestamp | null;
+  };
+
+  /** The people whose documents a restriction gives. */
+  access_restriction_member: {
+    restricted_member_id: string;
+    household_id: string;
+    member_id: string;
+  };
+
+  /** The kinds of document a restriction gives. */
+  access_restriction_type: {
+    restricted_member_id: string;
+    household_id: string;
+    type_key: string;
+  };
+
+  /** The collections a restriction gives (only one for Everyone counts). */
+  access_restriction_collection: {
+    restricted_member_id: string;
+    household_id: string;
+    collection_id: string;
+  };
+
   export: {
     id: Generated<string>;
     household_id: string;
@@ -1288,4 +1331,47 @@ export function withSystem<T>(
   fn: (trx: Db) => Promise<T>,
 ): Promise<T> {
   return inScope(db, { householdId, actor: { kind: 'system' } }, fn);
+}
+
+/**
+ * Reads as somebody signed in, inside a transaction of the vault's own
+ * (5.32): what the database gives that person — their restriction applied —
+ * and nothing more. The worker builds each person's digest this way, so
+ * nothing it sends them comes from outside what they may see.
+ *
+ * Only for reading. It runs in a savepoint that is always rolled back: the
+ * settings go back to what they were (the vault's), and anything `fn` wrote
+ * is undone with them. The household stays the transaction's own.
+ */
+export async function readAs<T>(
+  trx: Db,
+  who: Omit<ScopePrincipal, 'householdId'>,
+  fn: (trx: Db) => Promise<T>,
+): Promise<T> {
+  // Only from the vault's own: anybody else would be reading as somebody
+  // they are not.
+  const { rows } = await sql<{ actor: string | null }>`
+    select nullif(current_setting('app.actor', true), '') as actor`.execute(trx);
+  if (rows[0]?.actor !== 'system') {
+    throw new Error('readAs is only for a transaction of the vault itself');
+  }
+  await sql`savepoint fdv_read_as`.execute(trx);
+  try {
+    // Marked, so that a test listening for every scope opened can tell this
+    // narrowing inside the vault's own transaction from a scope of its own.
+    await sql`select /* fdv:read-as */
+      set_config('app.actor', 'account', true),
+      set_config('app.account_id', ${who.accountId}, true),
+      set_config('app.member_id', ${who.memberId}, true),
+      set_config('app.role', ${who.role}, true),
+      set_config('app.share_id', '', true),
+      set_config('app.upload_request_id', '', true),
+      set_config('app.upload_session_id', '', true),
+      set_config('app.session_id', ${who.sessionId ?? ''}, true)
+    `.execute(trx);
+    return await fn(trx);
+  } finally {
+    await sql`rollback to savepoint fdv_read_as`.execute(trx);
+    await sql`release savepoint fdv_read_as`.execute(trx);
+  }
 }

@@ -20,7 +20,7 @@ import {
 import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
-import { allows, requireCapability } from '../authz.js';
+import { requireCapability } from '../authz.js';
 
 /**
  * The reminder engine (design, Status and reminders).
@@ -333,7 +333,7 @@ export class ReminderService {
 
 function visibleTo(p: Principal) {
   return sql<boolean>`(document.visibility = 'household'
-    or (document.visibility = 'adults' and ${allows(p, 'document.see_adults')})
+    or (document.visibility = 'adults' and ${p.seesAdults})
     or (document.visibility = 'private' and document.owner_member_id = ${p.memberId}::uuid))`;
 }
 

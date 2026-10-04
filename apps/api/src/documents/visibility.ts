@@ -77,7 +77,7 @@ export class VisibilityService {
         .executeTakeFirst();
       // Somebody else's private document is not there, as it is everywhere
       // else — a 403 here would confirm that it exists.
-      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
+      if (!doc || !canSee(p, doc)) {
         throw new ApiError(404, 'not_found', 'That document is not in the vault.');
       }
       // Sealed and wrapped for the id as the database writes it: the one in

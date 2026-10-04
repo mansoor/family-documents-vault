@@ -1018,4 +1018,35 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     ]);
     expect(index.people.map((p) => p.name)).toContain('Child Photo');
   }, 120_000);
+
+  it("a restricted requester's export is read as them: only what their restriction gives (5.32)", async () => {
+    // Sana, an adult since the sealed notes' test, with a restriction left
+    // on her that grants nothing (her sign-in given back as an adult, say):
+    // it fails closed, and so does her export.
+    const sana = await admin.query<{ id: string }>(
+      "select id from account where email = 's@x.test'",
+    );
+    const sanaAccount = sana.rows[0]?.id as string;
+    const titles = async () =>
+      (await exported(sanaAccount)).index.documents.map((d) => d.title).sort();
+    expect(await titles()).toContain("Mansoor's passport");
+    await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
+      otherMember,
+      hh,
+    ]);
+    try {
+      const after = await titles();
+      // Her own, within the ceiling: no Adults only one, since none is allowed.
+      const own = await admin.query<{ title: string }>(
+        `select title from document
+          where owner_member_id = $1 and deleted_at is null and visibility <> 'adults'`,
+        [otherMember],
+      );
+      expect(after).toEqual(own.rows.map((r) => r.title).sort());
+      expect(after).not.toContain("Mansoor's passport");
+      expect(after.length).toBeGreaterThan(0);
+    } finally {
+      await admin.query('delete from access_restriction where member_id = $1', [otherMember]);
+    }
+  }, 60_000);
 });

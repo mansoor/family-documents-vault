@@ -414,6 +414,7 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
       householdId: owner.household_id,
       memberId: other.id,
       role: 'adult' as const,
+      seesAdults: true,
     };
     const { ScopeKeys, EnvKeyProvider } = await import('@fdv/crypto');
     const { VaultService } = await import('../vaults/service.js');
@@ -429,7 +430,7 @@ describe.skipIf(!testAdminUrl())('documents API', () => {
     const list = await service.list(asSana, {});
     expect(list.items.map((d) => d.id)).not.toContain(mine.id);
     expect(list.items.map((d) => d.id)).toContain(passport.id); // household-visible
-    const asTeen = { ...asSana, role: 'teen' as const };
+    const asTeen = { ...asSana, role: 'teen' as const, seesAdults: false };
     const teenList = await service.list(asTeen, {});
     expect(teenList.items.every((d) => d.visibility === 'household')).toBe(true);
   });

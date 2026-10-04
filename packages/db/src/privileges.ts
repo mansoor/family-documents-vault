@@ -144,6 +144,19 @@ begin
     -- ended by their next change of the password or reset (5.29).
     grant execute on function public.handover_links_end(uuid) to fdv_app;
   end if;
+  -- A restriction (0054): whether the caller is restricted, their grant read
+  -- once, the rule, and what of the household the grant gives — asked by
+  -- the rules, with the owner's rights where they read the grant, since it
+  -- names people and collections the caller may not read.
+  if to_regprocedure('public.app_restricted()') is not null then
+    grant execute on function public.app_restricted() to fdv_app;
+    grant execute on function public.app_grant() to fdv_app;
+    grant execute on function public.doc_in_grant(public.access_grant, uuid, public.visibility, uuid, text) to fdv_app;
+    grant execute on function public.app_granted_documents() to fdv_app;
+    grant execute on function public.app_granted_people() to fdv_app;
+    grant execute on function public.app_granted_collections() to fdv_app;
+    grant execute on function public.app_granted_types() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

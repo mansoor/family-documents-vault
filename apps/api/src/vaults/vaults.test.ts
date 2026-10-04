@@ -184,6 +184,7 @@ describe.skipIf(!testAdminUrl())('vaults API', () => {
           householdId: owner.household_id,
           memberId: 'm',
           role: 'adult',
+          seesAdults: true,
         },
         { provider: 'aws', bucket: 'b', accessKeyId: 'k', secretAccessKey: 's' },
         {},

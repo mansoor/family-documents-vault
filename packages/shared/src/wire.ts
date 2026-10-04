@@ -1,5 +1,6 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
+import type { RestrictionSummary } from './restrictions.js';
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 
@@ -359,14 +360,16 @@ export const LOCK_NOTE_MAX = 500;
 
 /**
  * A sign-in a restore paused (5.28, A55), waiting in "After a restore" for
- * an owner to turn it back on. Its `role` is shown to confirm; 5.33 adds a
- * viewer's restriction beside it.
+ * an owner to turn it back on. Its `role` is shown to confirm, and so is
+ * what a restricted viewer may see (5.32): `restriction`, a sentence, or
+ * null for somebody with none. Absent from a vault from before 5.32.
  */
 export interface PausedSignIn {
   member_id: string;
   display_name: string;
   role: Role;
   paused_at: string;
+  restriction?: RestrictionSummary | null;
 }
 
 /**

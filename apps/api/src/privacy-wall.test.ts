@@ -2253,3 +2253,312 @@ describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)',
     await setAudienceDirectly('owners_and_self');
   });
 });
+
+/**
+ * The same wall, for a viewer an owner has restricted (5.32): Val may see
+ * Ahmed's tax documents and nothing else. The owner's household letter is
+ * everybody's — an unrestricted viewer opens it — and Val, with its ids in
+ * hand, probes every endpoint for it, and for what hangs off it. Each is the
+ * answer for something that does not exist, or a list without it. The
+ * database gives Val nothing else, so a route that forgets to ask still
+ * cannot.
+ */
+describe.skipIf(!testAdminUrl())('the privacy wall, from a restricted viewer (5.32)', () => {
+  const WORD = 'xanthochroid';
+  let h: Harness;
+  let owner: Tokens;
+  let ahmed: Tokens;
+  let val: Tokens;
+  let uma: Tokens;
+  let admin: ReturnType<typeof createPool>;
+  const hidden = {
+    document: '',
+    version: '',
+    reminder: '',
+    collection: '',
+    share: '',
+    collectionShare: '',
+    type: 'h_zzzzzzzzzz',
+    exportId: '',
+  };
+  let granted = '';
+
+  const json = <T>(r: { json: () => unknown }) => r.json() as T;
+  const code = (r: { json: () => unknown }) =>
+    (r.json() as { error?: { code?: string } }).error?.code ?? null;
+  const fresh = async (t: Tokens) =>
+    withSystem(h.db, t.household_id, async (trx) => {
+      const a = await trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', t.member_id)
+        .executeTakeFirstOrThrow();
+      await trx
+        .updateTable('session')
+        .set({ verified_at: new Date(), factor_verified_at: new Date() })
+        .where('account_id', '=', a.account_id)
+        .execute();
+    });
+  const upload = async (who: Tokens, documentId: string) => {
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'letter.pdf', contentType: 'application/pdf' });
+    const up = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${documentId}/versions`,
+      headers: { ...h.as(who), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(up.statusCode, up.body).toBe(201);
+    return json<{ id: string }>(up).id;
+  };
+
+  beforeAll(async () => {
+    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    admin = createPool(h.adminUrl, 1);
+    owner = await h.setup();
+    const hh = owner.household_id;
+    ahmed = await h.join(owner, { name: 'Ahmed', email: 'ahmed-wall@example.test', role: 'adult' });
+    val = await h.join(owner, { name: 'Val', email: 'val-wall@example.test', role: 'viewer' });
+    uma = await h.join(owner, { name: 'Uma', email: 'uma-wall@example.test', role: 'viewer' });
+    await fresh(owner);
+
+    // A kind of the household's own, used by the hidden letter alone.
+    await admin.query(
+      `insert into document_type (key, household_id, label, category)
+       values ($1, $2, 'Council letters', 'other')`,
+      [hidden.type, hh],
+    );
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(owner),
+      payload: {
+        title: `Council letter ${WORD}`,
+        type_key: hidden.type,
+        owner_member_id: owner.member_id,
+        visibility: 'household',
+        tags: [WORD],
+        issued_by: `Issuer ${WORD}`,
+      },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    hidden.document = json<DocumentView>(made).id;
+    hidden.version = await upload(owner, hidden.document);
+    await admin.query(
+      `insert into document_text (version_id, household_id, document_id, content)
+       values ($1, $2, $3, $4)`,
+      [hidden.version, hh, hidden.document, `the letter says ${WORD}`],
+    );
+    const reminder = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/reminders',
+      headers: h.as(owner),
+      payload: { document_id: hidden.document, fire_at: '2030-01-01', note: WORD },
+    });
+    expect(reminder.statusCode, reminder.body).toBe(201);
+    hidden.reminder = json<{ id: string }>(reminder).id;
+    const share = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${hidden.document}/share`,
+      headers: h.as(owner),
+      payload: { recipient_label: `the ${WORD} office` },
+    });
+    expect(share.statusCode, share.body).toBe(201);
+    hidden.share = json<{ share: { id: string } }>(share).share.id;
+    const collection = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/collections',
+      headers: h.as(owner),
+      payload: { name: `Letters ${WORD}`, audience: 'everyone' },
+    });
+    expect(collection.statusCode, collection.body).toBe(201);
+    hidden.collection = json<{ id: string }>(collection).id;
+    expect(
+      (
+        await h.app.inject({
+          method: 'POST',
+          url: `/api/v1/collections/${hidden.collection}/items`,
+          headers: h.as(owner),
+          payload: { document_ids: [hidden.document] },
+        })
+      ).statusCode,
+    ).toBe(200);
+    await fresh(owner);
+    const collectionShare = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/collections/${hidden.collection}/shares`,
+      headers: h.as(owner),
+      payload: { document_ids: [hidden.document], recipient_label: 'the council' },
+    });
+    expect(collectionShare.statusCode, collectionShare.body).toBe(201);
+    hidden.collectionShare = json<{ share: { id: string } }>(collectionShare).share.id;
+    const answers = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/profile',
+      headers: h.as(owner),
+      payload: { owns_home: true, has_business: true },
+    });
+    expect(answers.statusCode, answers.body).toBe(200);
+    await fresh(owner);
+    const exported = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/exports',
+      headers: h.as(owner),
+    });
+    expect(exported.statusCode, exported.body).toBe(202);
+    hidden.exportId = json<{ id: string }>(exported).id;
+
+    // What Val is given: Ahmed's tax return.
+    const mine = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(ahmed),
+      payload: {
+        title: 'Ahmed tax return',
+        type_key: 'tax_return',
+        owner_member_id: ahmed.member_id,
+        visibility: 'household',
+      },
+    });
+    granted = json<DocumentView>(mine).id;
+    await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
+      val.member_id,
+      hh,
+    ]);
+    await admin.query(
+      `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+       values ($1, $2, $3)`,
+      [val.member_id, hh, ahmed.member_id],
+    );
+    await admin.query(
+      `insert into access_restriction_type (restricted_member_id, household_id, type_key)
+       values ($1, $2, 'tax_return')`,
+      [val.member_id, hh],
+    );
+  }, 120_000);
+  afterAll(async () => {
+    await admin?.end();
+    await h?.close();
+  });
+
+  it('the letter is everybody’s: an unrestricted viewer opens it, so the refusals mean something', async () => {
+    for (const url of [
+      `/api/v1/documents/${hidden.document}`,
+      `/api/v1/documents/${hidden.document}/versions`,
+      `/api/v1/versions/${hidden.version}/content`,
+    ]) {
+      expect((await h.app.inject({ url, headers: h.as(uma) })).statusCode, url).toBe(200);
+    }
+    const list = await h.app.inject({ url: '/api/v1/documents?limit=200', headers: h.as(val) });
+    expect(json<{ items: DocumentView[] }>(list).items.map((d) => d.id)).toEqual([granted]);
+  });
+
+  it('every endpoint by id answers as for something that does not exist', async () => {
+    const byId: Array<[string, (id: string) => string, string]> = [
+      ['the document', (id) => `/api/v1/documents/${id}`, hidden.document],
+      ['its versions', (id) => `/api/v1/documents/${id}/versions`, hidden.document],
+      ['its file', (id) => `/api/v1/versions/${id}/content`, hidden.version],
+      ['its thumbnail', (id) => `/api/v1/versions/${id}/thumbnail`, hidden.version],
+      ['a page of it', (id) => `/api/v1/versions/${id}/pages/1`, hidden.version],
+      [
+        'who issued it, by its words',
+        (id) => `/api/v1/documents/${id}/issuer-suggestions`,
+        hidden.document,
+      ],
+      ['its collections', (id) => `/api/v1/documents/${id}/collections`, hidden.document],
+      ['its collection', (id) => `/api/v1/collections/${id}`, hidden.collection],
+      ["the owner's identity details", (id) => `/api/v1/members/${id}/identity`, owner.member_id],
+      ["the owner's sign-in", (id) => `/api/v1/members/${id}/account`, owner.member_id],
+      ["the owner's export", (id) => `/api/v1/exports/${id}`, hidden.exportId],
+      ['its kind’s reach', (id) => `/api/v1/document-types/${id}/impact`, hidden.type],
+    ];
+    for (const [what, path, id] of byId) {
+      const asked = await h.app.inject({ url: path(id), headers: h.as(val) });
+      const absent = await h.app.inject({
+        url: path(id === hidden.type ? 'h_aaaaaaaaaa' : randomUUID()),
+        headers: h.as(val),
+      });
+      expect([403, 404, 422], `${what} → ${asked.statusCode}`).toContain(asked.statusCode);
+      expect(asked.statusCode, what).toBe(absent.statusCode);
+      expect(code(asked), what).toBe(code(absent));
+    }
+    // Writes aimed at it: a reminder, a link, a version, as for nothing.
+    for (const [what, method, url, payload] of [
+      [
+        'a reminder on it',
+        'POST',
+        '/api/v1/reminders',
+        { document_id: hidden.document, fire_at: '2031-01-01' },
+      ],
+      [
+        'its reminder snoozed',
+        'POST',
+        `/api/v1/reminders/${hidden.reminder}/snooze`,
+        { until: '2031-01-01' },
+      ],
+      ['its reminder acknowledged', 'POST', `/api/v1/reminders/${hidden.reminder}/acknowledge`, {}],
+      ['its link taken back', 'DELETE', `/api/v1/shares/${hidden.share}`, undefined],
+    ] as const) {
+      const r = await h.app.inject({
+        method,
+        url,
+        headers: h.as(val),
+        ...(payload ? { payload } : {}),
+      });
+      expect([403, 404, 422], `${what} → ${r.statusCode}`).toContain(r.statusCode);
+    }
+  });
+
+  it('every list is empty of it: search, tags, issuers, reminders, collections, links, members, profile, identity, kinds, offline, incoming, the activity log and exports', async () => {
+    const get = (url: string) => h.app.inject({ url, headers: h.as(val) });
+    const body = async (url: string) => {
+      const r = await get(url);
+      return { status: r.statusCode, text: r.body };
+    };
+    for (const url of [
+      `/api/v1/search?q=${WORD}`,
+      `/api/v1/tags?q=${WORD.slice(0, 5)}`,
+      `/api/v1/issuers?q=Issuer`,
+      '/api/v1/reminders?state=all',
+      '/api/v1/collections',
+      '/api/v1/shares',
+      '/api/v1/members',
+      '/api/v1/profile',
+      '/api/v1/document-types?all=true',
+      '/api/v1/document-attributes',
+      '/api/v1/documents/counts',
+      '/api/v1/offline/essentials',
+      '/api/v1/incoming',
+      '/api/v1/audit?limit=100',
+      '/api/v1/exports',
+      `/api/v1/members/${val.member_id}/identity`,
+    ]) {
+      const r = await body(url);
+      // Refused outright for a viewer (the activity log, links), or answered
+      // without a word of it.
+      expect([200, 403, 404], `${url} → ${r.status}`).toContain(r.status);
+      for (const leak of [
+        WORD,
+        hidden.document,
+        hidden.version,
+        hidden.reminder,
+        hidden.collection,
+        hidden.share,
+        hidden.collectionShare,
+        hidden.type,
+        hidden.exportId,
+        owner.member_id,
+      ]) {
+        expect(r.text, `${url} names ${leak}`).not.toContain(leak);
+      }
+    }
+    // The people list: themselves and Ahmed, whose document they are given.
+    const members = json<{ items: Array<{ id: string }> }>(await get('/api/v1/members')).items;
+    expect(members.map((m) => m.id).sort()).toEqual([val.member_id, ahmed.member_id].sort());
+    // The household's answers: none.
+    const profile = json<{ owns_home: boolean | null; has_business: boolean | null }>(
+      await get('/api/v1/profile'),
+    );
+    expect([profile.owns_home, profile.has_business]).toEqual([null, null]);
+  });
+});
