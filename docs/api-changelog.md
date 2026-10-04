@@ -3017,7 +3017,8 @@ expires_at?, command? }`, where `path` is the way it went:
         detail; no Only me identity part, whatever it holds (a label alone
         too); no request to send documents that they alone review, in any
         state — taken back, closed, run out — until the worker removes it,
-        nor any file sent through one that is still kept; no export that has
+        nor any file sent through one that is still kept while the request is
+        still theirs to review (one moved to the owners is not); no export that has
         not run out; no Only me collection, deleted too. The answer's `link`
         (`/reset#…`) is shown this once, and works once, for an hour. It
         stops working — `404 reset_not_valid`, as any dead link, saying
@@ -3047,23 +3048,33 @@ apps/api/dist/cli.mjs reset-password '<their address>'`, the address
       for an owner, or somebody locked or paused. Absent from older vaults,
       which have no such reset. Treat a value never heard of as `operator`.
     - **Added:** `GET /api/v1/me` gains `reset_notice` — `{ by, at, spent_at,
-passkeys_since, two_step_since }`: the owner who was given a link to hand
-      over for this sign-in (`by` null once their sign-in is gone) and when;
-      when such a link was last spent (null while none has been); and what
-      was added to the sign-in since — each passkey `{ label, added_at }`, and
-      when two-step sign-in was turned on (null if it was not) — until the
+passkeys_since, two_step_since, links_since }`: the owner who was given a
+      link to hand over for this sign-in (`by` null once their sign-in is
+      gone) and when; when such a link was last spent (null while none has
+      been); and what was added to the sign-in since — each passkey `{ label,
+added_at }`, when two-step sign-in was turned on (null if it was not), and
+      each share link made as them that still works `{ title, made_at }` — until the
       person says they saw it with **`DELETE /api/v1/me/reset-notice`** (`204`,
       also when there is nothing to see). Null otherwise; absent from older
       vaults. And `handover_since`: when such a link was last spent, null if
       never.
     - **Changed: after a hand-over link is spent, every change of the
       password, and every reset, removes each passkey and two-step sign-in
-      added to the sign-in since** — whoever spent the link chose the
-      password and could have added them. Not only the first change: an
-      owner could change it first, add a passkey, and then hand the person a
-      password. The person's own added since go too (a client says so before
-      the change, from `handover_since`); `auth.password_changed`'s
-      `detail.passkeys_removed` and `detail.two_step_removed` say what went.
+      added to the sign-in since, and ends each share link made as them since**
+      (document and collection links still working, each with a
+      `share.revoked` line) — whoever spent the link chose the password and
+      could have added them. Not only the first change: an owner could change
+      it first, add a passkey, and then hand the person a password. The
+      person's own added since go too (a client says so before the change,
+      from `handover_since`); `auth.password_changed`'s
+      `detail.passkeys_removed`, `detail.two_step_removed` and
+      `detail.links_removed` say what went. A reset keeps two-step sign-in
+      turned on after the last change of the password, which may be the
+      person's own: a reset leaves two-step sign-in to be asked for.
+    - **Changed:** a change of the password holds the person's sign-in while
+      it is made, as a reset and a lock do: a passkey added, two-step sign-in
+      turned on, or another change, from a session it ends, waits for it and
+      is then refused, `401 session_ended`.
     - **Added:** `POST /api/v1/password-resets/lookup` (and its path form)
       gains `issued_by`: `self`, `operator` or `owner`; `issued_by_operator`
       is true for an owner's link too. Absent from older vaults.
@@ -3093,7 +3104,10 @@ invalid_credentials` (a password) or `401 passkey_rejected` (a passkey),
       reset links, and an owner those of their household's people, no other;
       and an owner's reset is read by no caller in another household
       (`password_reset_household`); `account.handover_spent_at` says when a
-      hand-over link was last spent. `member_holds_private(account)` answers
+      hand-over link was last spent, and `account.password_changed_at` when the
+      password was last changed (not reset); `handover_links_end(account)` ends
+      the share links made as them since, with the owner's rights, for the
+      account itself or the reset of it spent this very transaction. `member_holds_private(account)` answers
       yes or no, with the owner's
       rights, to an owner or to the reset being spent for that account, and
       refuses anybody else; `password_reset_expire_exports(account)` ends the

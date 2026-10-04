@@ -412,7 +412,8 @@ which way it goes:
   is told, on the web, the next time they sign in (until they say they have
   seen it), and should then set a password of their own: every change of the
   password after a link like this removes each passkey and two-step sign-in
-  added since it was used, and the notice lists any there are;
+  added since it was used, and ends each share link made as them since, and
+  the notice lists any there are;
 - for anybody else, a teen with private documents included, it is the command
   line above.
 

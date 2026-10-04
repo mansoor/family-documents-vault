@@ -156,6 +156,11 @@ export interface Schema {
      * two-step sign-in added since.
      */
     handover_spent_at: Timestamp | null;
+    /**
+     * When the password was last changed with change(), not a reset (0052):
+     * two-step sign-in turned on after it is kept by a reset.
+     */
+    password_changed_at: Timestamp | null;
   };
 
   account_household: {

@@ -148,9 +148,10 @@ export function ForgotPasswordScreen() {
           <p className="muted">
             It works once and stops working in an hour. If nothing arrives, ask whoever runs the
             vault: they can make you a link. A link only comes by email when nobody else in the
-            family could read that email on its way to you, and nobody else in the family can reset
-            your password for you — both deliberately, because a link is a way into your private
-            documents.
+            family could read that email on its way to you, because a link is a way into your
+            private documents. An owner can start a reset for you too: the link goes only to your
+            own email address, or, while you keep nothing private, an owner may be given one to hand
+            to you.
           </p>
           <Button onClick={() => void navigate('/sign-in')}>Back to signing in</Button>
         </section>

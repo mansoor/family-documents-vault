@@ -72,6 +72,12 @@ export interface ResetNotice {
   passkeys_since?: Array<{ label: string | null; added_at: string }>;
   /** When two-step sign-in was turned on since; null if it was not. */
   two_step_since?: string | null;
+  /**
+   * Share links made as this sign-in since, still live (the 5.29 second
+   * round): what each is to, and when it was made. Changing the password
+   * ends each.
+   */
+  links_since?: Array<{ title: string | null; made_at: string }>;
 }
 
 export interface ExportRow {

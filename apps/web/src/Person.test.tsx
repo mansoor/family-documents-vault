@@ -1851,6 +1851,7 @@ describe('a password reset an owner starts (5.29)', () => {
         spent_at: '2026-10-02T09:05:00.000Z',
         passkeys_since: [{ label: 'Owner’s laptop', added_at: '2026-10-02T09:10:00.000Z' }],
         two_step_since: '2026-10-03T09:00:00.000Z',
+        links_since: [{ title: 'Bank statements', made_at: '2026-10-02T09:20:00.000Z' }],
       },
     });
     installFakeApi(state);
@@ -1867,6 +1868,7 @@ describe('a password reset an owner starts (5.29)', () => {
     ).toEqual([
       'A passkey called “Owner’s laptop”, on 2 October',
       'Two-step sign-in, on 3 October',
+      'A share link to “Bank statements”, made on 2 October',
     ]);
     expect(told).toHaveTextContent(
       'If you didn’t add them, change your password: that removes every one of them, and you add your own again.',

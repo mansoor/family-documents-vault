@@ -31,10 +31,12 @@
 --
 -- And account gains handover_spent_at: when a link an owner was handed for
 -- this sign-in was last spent. Whoever spent it chose the password, and could
--- add a passkey or two-step sign-in of their own with it; so every password
--- change after it, and every reset, takes away each passkey and two-step
--- sign-in added since that moment (passwords.ts), and the person is told
--- which there are.
+-- add a passkey or two-step sign-in, or make a share link, as the person; so
+-- every password change after it takes away each passkey and two-step
+-- sign-in added since that moment and ends each share link made since, and
+-- every reset does the same — but two-step sign-in turned on after a change
+-- of the password, which account.password_changed_at records, a reset leaves
+-- (passwords.ts). The person is told which there are.
 
 alter table password_reset drop constraint password_reset_issued_by_check;
 alter table password_reset
@@ -51,7 +53,9 @@ alter table password_reset
   add constraint password_reset_handover_owner check (not handover or issued_by = 'owner'),
   add constraint password_reset_told_handover check (told_at is null or handover);
 
-alter table account add column handover_spent_at timestamptz;
+alter table account
+  add column handover_spent_at   timestamptz,
+  add column password_changed_at timestamptz;
 
 -- Reset links belong to no household (0018), and every caller but a link
 -- read them (0042, 0044). Somebody signed in now reaches their own, and an
@@ -100,7 +104,8 @@ create function app_session() returns uuid
 --   a request to send documents that they alone review, in any state — its
 --     title, message and who it went to stay theirs alone (A43) until the
 --     worker removes it — and any file sent through one that is still kept,
---     under their key (0044, 0047);
+--     under their key, while it is still theirs to review: one moved to the
+--     owners (0047) is theirs no more (0044, 0047);
 --   an export that has not run out, under their key (0008);
 --   an Only me collection, deleted too: its name stays in their activity
 --     log alone (0036, 0039).
@@ -143,7 +148,7 @@ begin
                     and r.review_by = 'me')
       or exists (select 1 from incoming_file f
                   where f.household_id = hh and f.requester_member_id = m
-                    and f.scope = 'member')
+                    and f.scope = 'member' and f.review_by = 'me')
       or exists (select 1 from export e
                   where e.requested_by = p_account and e.state <> 'failed'
                     and (e.expires_at is null or e.expires_at > now()))
@@ -177,6 +182,55 @@ begin
   return n;
 end $$;
 grant execute on function password_reset_expire_exports(uuid) to fdv_app;
+
+-- The share links made as somebody since a link an owner was handed for
+-- their sign-in was spent, ended (5.29): whoever spent it could make a link
+-- as them, and a link lives while its maker can see what it is to — Only me
+-- documents they make later included. Ended by every change of the password
+-- and every reset, each one still live (one run out, or locked by ten wrong
+-- tries, is left as it ended), its address cleared and its open sessions
+-- ended. With the owner's rights, as a reset is spent by a signed-out page,
+-- which reads no link (0030): only by the account itself signed in, or by
+-- the reset of that account this very transaction spent. Returns what it
+-- ended, for the log.
+create function handover_links_end(p_account uuid)
+  returns table (id uuid, document_id uuid, collection_id uuid, permission text)
+  language plpgsql volatile security definer
+  set search_path = pg_catalog, public, pg_temp as $$
+declare
+  since timestamptz;
+begin
+  if not coalesce((app_actor() = 'account' and app_account() = p_account)
+                  or (app_actor() = 'anonymous' and app_account() = p_account
+                      and exists (select 1 from password_reset r
+                                   where r.account_id = p_account and r.used_at = now())),
+                  false) then
+    raise exception 'only the account itself, or its reset spent now, ends these links'
+      using errcode = 'insufficient_privilege';
+  end if;
+  select a.handover_spent_at into since from account a where a.id = p_account;
+  if since is null then
+    return;
+  end if;
+  return query
+    with ended as (
+      update share_link s
+         set revoked_at = now(), revoked_by = p_account, code_email = null
+       where s.created_by = p_account
+         and s.household_id = app_household()
+         and s.created_at > since
+         and s.revoked_at is null
+         and s.expires_at > now()
+         and s.attempts < 10
+      returning s.id, s.document_id, s.collection_id, s.permission::text),
+    sessions as (
+      delete from share_session
+       where share_session.id in (select x.id from share_session x
+                                   where x.share_id in (select e.id from ended e)
+                                   for update skip locked))
+    select e.id, e.document_id, e.collection_id, e.permission from ended e;
+end $$;
+grant execute on function handover_links_end(uuid) to fdv_app;
 
 -- ------------------------------------------------ gaining something private
 --

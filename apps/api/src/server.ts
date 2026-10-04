@@ -161,6 +161,7 @@ async function main(): Promise<void> {
     alert,
     Boolean(config.FDV_SMTP_URL),
     push,
+    enqueue,
   );
   // 5.29: a reset an owner starts goes by the operator's mail server alone,
   // or is handed over only for somebody who keeps nothing private.

@@ -300,6 +300,9 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
     ...(props.notice.two_step_since
       ? [`Two-step sign-in, on ${dayOf(props.notice.two_step_since)}`]
       : []),
+    ...(props.notice.links_since ?? []).map(
+      (l) => `A share link${l.title ? ` to “${l.title}”` : ''}, made on ${dayOf(l.made_at)}`,
+    ),
   ];
   const seen = async () => {
     if (busy) return;

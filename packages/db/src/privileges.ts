@@ -140,6 +140,9 @@ begin
   if to_regprocedure('public.member_holds_private(uuid)') is not null then
     grant execute on function public.member_holds_private(uuid) to fdv_app;
     grant execute on function public.password_reset_expire_exports(uuid) to fdv_app;
+    -- And the share links made as somebody since a hand-over link was spent,
+    -- ended by their next change of the password or reset (5.29).
+    grant execute on function public.handover_links_end(uuid) to fdv_app;
   end if;
 end $$;
 

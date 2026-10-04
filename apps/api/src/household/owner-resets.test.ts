@@ -16,7 +16,9 @@ import type { LightMyRequestResponse } from 'fastify';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SoftwareAuthenticator } from '../auth/passkey-test-authenticator.js';
+import type { AlertRequest } from '../alert-job.js';
 import { PasswordService } from '../auth/passwords.js';
+import { OwnerResetService } from './owner-resets.js';
 import type { Tokens } from '../auth/service.js';
 import { codeFor } from '../auth/totp.js';
 import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
@@ -491,6 +493,7 @@ describe.skipIf(!testAdminUrl())(
         spent_at: expect.any(String) as unknown,
         passkeys_since: [],
         two_step_since: null,
+        links_since: [],
       });
       // And again, until they say so.
       const again = json<Tokens>(await signIn(omar.email, NEW_PASSWORD));
@@ -654,6 +657,72 @@ describe.skipIf(!testAdminUrl())(
           ).toEqual(before);
         });
       }
+    });
+
+    it('path 2 comes back once a request she reviewed alone is moved to the owners (the second round, N529R-1)', async () => {
+      const lina = await person('adult', 'Lina');
+      const made = await askFor(lina, { close_after_submit: true });
+      const filed = await sendFile(made);
+      const waiting = await sendFile(made);
+      const finished = await t.h.app.inject({
+        method: 'POST',
+        url: '/api/v1/drop/finish',
+        cookies: filed.cookies,
+        payload: {},
+        ...f.peer(),
+      });
+      expect(finished.statusCode, finished.body).toBe(200);
+      await admin(`update incoming_file set scan_state = 'unscanned' where id = $1`, [filed.file]);
+      const accepted = await t.h.app.inject({
+        method: 'POST',
+        url: `/api/v1/incoming/${filed.file}/accept`,
+        headers: t.h.as(lina),
+        payload: { title: 'Payslip', visibility: 'household' },
+      });
+      expect(accepted.statusCode, accepted.body).toBeLessThan(300);
+      expect((await card(lina)).reset_path).toBe('operator');
+      // Locked: what was sent for her alone moves to the owners — as the
+      // worker's incoming.move does it (jobs/incoming.ts moveIncoming): the
+      // request reviewed by the adults and the owners' alone, its files
+      // following by its key, the waiting one rewrapped for the adults, the
+      // filed one left as it was filed, its bytes gone.
+      await fresh(t.owner);
+      const locked = await t.h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${lina.member_id}/lock`,
+        headers: t.h.as(t.owner),
+        payload: {},
+      });
+      expect(locked.statusCode, locked.body).toBe(200);
+      await admin(
+        `update upload_request set review_by = 'adults', moved_to_owners_at = now() where id = $1`,
+        [made.request.id],
+      );
+      await admin(
+        `update incoming_file set owners_only = true,
+                scope = case when state = 'accepted' then scope else 'adults' end,
+                object_removed_at = case when state = 'accepted' then now() else object_removed_at end
+          where request_id = $1`,
+        [made.request.id],
+      );
+      const rows = await admin<{ id: string; scope: string; review_by: string }>(
+        `select id, scope, review_by from incoming_file where request_id = $1 order by id`,
+        [made.request.id],
+      );
+      expect(rows.find((r) => r.id === filed.file)).toMatchObject({
+        scope: 'member',
+        review_by: 'adults',
+      });
+      expect(rows.find((r) => r.id === waiting.file)).toMatchObject({ scope: 'adults' });
+      await fresh(t.owner);
+      const unlocked = await t.h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${lina.member_id}/lock`,
+        headers: t.h.as(t.owner),
+      });
+      expect(unlocked.statusCode).toBe(204);
+      // Nothing of it is hers any more: a link may be handed over again.
+      expect((await card(lina)).reset_path).toBe('handover');
     });
 
     describe('a hand-over link stops working if the person gains any of these before it is used', () => {
@@ -854,7 +923,7 @@ describe.skipIf(!testAdminUrl())(
         expect((await me(hers)).handover_since).toEqual(expect.any(String));
       });
 
-      it('two-step sign-in turned on since goes at a change, and at any reset', async () => {
+      it('two-step sign-in turned on since goes at a change, and at a reset with no change since', async () => {
         const cy = await person('adult', 'Cyra');
         const asCy = await spentByOwner(cy);
         await enrolTotp(asCy);
@@ -866,19 +935,173 @@ describe.skipIf(!testAdminUrl())(
         expect(
           json<Record<string, unknown>>(await signIn(cy.email, 'changed by the owner')),
         ).not.toHaveProperty('mfa_required');
-        // On again; then a reset from the command line, which she spends.
-        await enrolTotp(asCy);
+        // Somebody else: two-step on since the spend, then a reset from the
+        // command line, which she spends — with no change in between.
+        const cal = await person('adult', 'Calla');
+        const asCal = await spentByOwner(cal);
+        await enrolTotp(asCal);
         const cli = new PasswordService(
           t.h.db,
           new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
           null,
           'http://localhost:8080',
         );
-        const printed = await cli.issue(await accountOf(cy), 'operator');
+        const printed = await cli.issue(await accountOf(cal), 'operator');
         expect((await spend(cli.linkFor(printed.token), THEIRS)).statusCode).toBe(200);
-        const back = await signIn(cy.email, THEIRS);
+        const back = await signIn(cal.email, THEIRS);
         expect(back.statusCode).toBe(200);
         expect(json<Record<string, unknown>>(back)).not.toHaveProperty('mfa_required');
+      });
+
+      it('two-step the person turns on after setting her own password stays at a later reset: a self link, and one an owner mails (the second round, N529C-02)', async () => {
+        const di = await person('adult', 'Dita');
+        const diAccount = await accountOf(di);
+        await spentByOwner(di);
+        const hers = json<Tokens>(await signIn(di.email, OWNERS));
+        expect((await change(hers, OWNERS, THEIRS)).statusCode).toBe(204);
+        await enrolTotp(hers);
+        expect(json<Record<string, unknown>>(await signIn(di.email, THEIRS))).toMatchObject({
+          mfa_required: true,
+        });
+        // Her own forgotten-password link, spent by whoever reads her mail.
+        const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+        const self = new PasswordService(t.h.db, keys, null, 'http://localhost:8080');
+        const own = await self.issue(diAccount, 'self');
+        expect((await spend(self.linkFor(own.token), 'whoever read her mail')).statusCode).toBe(
+          200,
+        );
+        expect(
+          json<Record<string, unknown>>(await signIn(di.email, 'whoever read her mail')),
+        ).toMatchObject({ mfa_required: true });
+        // And a reset an owner starts once the operator has added mail: the
+        // link by mail, spent by whoever reads it.
+        const mailed: AlertRequest[] = [];
+        const resets = new OwnerResetService(
+          t.h.db,
+          (token) => self.linkFor(token),
+          true,
+          async (a) => {
+            mailed.push(a);
+          },
+        );
+        const owner = {
+          accountId: await accountOf(t.owner),
+          sessionId: randomUUID(),
+          householdId: t.owner.household_id,
+          memberId: t.owner.member_id,
+          role: 'owner' as const,
+        };
+        expect((await resets.start(owner, di.member_id, {}, {})).path).toBe('mail');
+        const url = mailed.find((a) => typeof a.url === 'string')?.url as string;
+        expect((await spend(url, 'the owner read it too')).statusCode).toBe(200);
+        expect(
+          json<Record<string, unknown>>(await signIn(di.email, 'the owner read it too')),
+        ).toMatchObject({ mfa_required: true });
+      });
+
+      it('a share link made as the person since the spend ends at her change, and the notice lists it first (the second round, N529C-03)', async () => {
+        const fay = await person('adult', 'Fay');
+        const fayAccount = await accountOf(fay);
+        const asFay = await spentByOwner(fay);
+        // A household document of hers, with a file, shared as her.
+        const id = await document(asFay, { title: 'Bank statements', visibility: 'household' });
+        const form = new FormData();
+        form.append('file', PDF, { filename: 'statement.pdf', contentType: 'application/pdf' });
+        const v = await t.h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/versions`,
+          headers: { ...t.h.as(asFay), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+          payload: form.getBuffer(),
+        });
+        expect(v.statusCode, v.body).toBeLessThan(300);
+        const shared = await t.h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/share`,
+          headers: t.h.as(asFay),
+          payload: {},
+        });
+        expect(shared.statusCode, shared.body).toBe(201);
+        const { link_token: token, share } = json<{
+          link_token: string;
+          share: { id: string };
+        }>(shared);
+        const preview = () =>
+          t.h.app.inject({
+            method: 'POST',
+            url: '/api/v1/shared/preview',
+            payload: { token },
+            ...f.peer(),
+          });
+        expect((await preview()).statusCode).toBe(200);
+        // She is told of it, beside what else was added.
+        const hers = json<Tokens>(await signIn(fay.email, OWNERS));
+        expect((await me(hers)).reset_notice?.links_since).toEqual([
+          { title: 'Bank statements', made_at: expect.any(String) as unknown },
+        ]);
+        // Her change ends it, with a line, and counts it.
+        expect((await change(hers, OWNERS, THEIRS)).statusCode).toBe(204);
+        expect((await preview()).statusCode).toBe(404);
+        const lines = await admin<{ action: string; detail: Record<string, unknown> }>(
+          `select action, detail from audit_event
+            where actor_account_id = $1 and action in ('share.revoked', 'auth.password_changed')
+            order by id`,
+          [fayAccount],
+        );
+        expect(lines).toEqual([
+          {
+            action: 'auth.password_changed',
+            detail: expect.objectContaining({ links_removed: 1 }) as unknown,
+          },
+          { action: 'share.revoked', detail: { share_id: share.id } },
+        ]);
+        // Then she makes it Only me, as the probe did: the link opens nothing.
+        const moved = await t.h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/visibility`,
+          headers: t.h.as(hers),
+          payload: { visibility: 'private' },
+        });
+        expect(moved.statusCode, moved.body).toBeLessThan(300);
+        expect((await preview()).statusCode).toBe(404);
+        expect((await me(hers)).reset_notice?.links_since).toEqual([]);
+      });
+
+      it('a reset ends them too, whoever spends it (the second round, N529C-03)', async () => {
+        const gus = await person('adult', 'Gus');
+        const asGus = await spentByOwner(gus);
+        const id = await document(asGus, { title: 'Tenancy', visibility: 'household' });
+        const form = new FormData();
+        form.append('file', PDF, { filename: 'tenancy.pdf', contentType: 'application/pdf' });
+        const v = await t.h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/versions`,
+          headers: { ...t.h.as(asGus), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+          payload: form.getBuffer(),
+        });
+        expect(v.statusCode, v.body).toBeLessThan(300);
+        const shared = await t.h.app.inject({
+          method: 'POST',
+          url: `/api/v1/documents/${id}/share`,
+          headers: t.h.as(asGus),
+          payload: {},
+        });
+        expect(shared.statusCode, shared.body).toBe(201);
+        const token = json<{ link_token: string }>(shared).link_token;
+        const cli = new PasswordService(
+          t.h.db,
+          new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
+          null,
+          'http://localhost:8080',
+        );
+        const printed = await cli.issue(await accountOf(gus), 'operator');
+        expect((await spend(cli.linkFor(printed.token), THEIRS)).statusCode).toBe(200);
+        const preview = await t.h.app.inject({
+          method: 'POST',
+          url: '/api/v1/shared/preview',
+          payload: { token },
+          ...f.peer(),
+        });
+        expect(preview.statusCode).toBe(404);
       });
 
       it('the notice lists the passkey and two-step sign-in added since, and says when it was spent', async () => {
@@ -893,6 +1116,7 @@ describe.skipIf(!testAdminUrl())(
           spent_at: expect.any(String) as unknown,
           passkeys_since: [{ label: 'Owner’s laptop', added_at: expect.any(String) as unknown }],
           two_step_since: expect.any(String) as unknown,
+          links_since: [],
         });
         expect((await me(asDee)).handover_since).toBe(notice?.spent_at);
         // Nobody else's notice says anything of it.
@@ -1101,20 +1325,21 @@ describe.skipIf(!testAdminUrl())(
               from pg_proc p join pg_namespace n on n.oid = p.pronamespace
              where n.nspname = 'public'
                and p.proname in ('member_holds_private', 'password_reset_expire_exports',
-                                 'member_private_gained', 'app_session')
+                                 'member_private_gained', 'app_session', 'handover_links_end')
              order by 1`.execute(trx)
           ).rows,
       );
       const pinned = ['search_path=pg_catalog, public, pg_temp'];
       expect(defined).toEqual([
         { name: 'app_session', definer: false, config: pinned, granted: true },
+        { name: 'handover_links_end', definer: true, config: pinned, granted: true },
         { name: 'member_holds_private', definer: true, config: pinned, granted: true },
         { name: 'member_private_gained', definer: true, config: pinned, granted: true },
         { name: 'password_reset_expire_exports', definer: true, config: pinned, granted: true },
       ]);
     });
 
-    it('only an owner, or the reset being spent, asks what somebody keeps private; and only that reset ends their exports', async () => {
+    it('only an owner, or the reset being spent, asks what somebody keeps private; only that reset ends their exports, and only it or they the links made as them', async () => {
       const sami = await person('adult', 'Sami');
       const samiAccount = await accountOf(sami);
       const ownerAccount = await accountOf(t.owner);
@@ -1203,6 +1428,29 @@ describe.skipIf(!testAdminUrl())(
       expect(await as({ kind: 'anonymous', account: samiAccount }, expire, [samiAccount])).toBe(
         '42501',
       );
+
+      // The share links made as them since a hand-over (the second round,
+      // N529C-03): ended by themselves signed in, or by a reset of theirs
+      // spent in this very transaction; refused to an owner, to anybody
+      // else, and to a page whose reset was spent before now.
+      const end = 'select count(*)::int as n from handover_links_end($1)';
+      for (const actor of [
+        { kind: 'account', role: 'owner', account: ownerAccount, member: t.owner.member_id },
+        { kind: 'account', role: 'teen', account: await accountOf(teen), member: teen.member_id },
+        { kind: 'anonymous', account: samiAccount },
+        { kind: 'anonymous', account: ownerAccount },
+        { kind: 'link' },
+        { kind: '' },
+      ]) {
+        expect(await as(actor, end, [samiAccount]), JSON.stringify(actor)).toBe('42501');
+      }
+      expect(
+        await as(
+          { kind: 'account', role: 'adult', account: samiAccount, member: sami.member_id },
+          end,
+          [samiAccount],
+        ),
+      ).toEqual({ n: 0 });
     });
 
     it('somebody signed in reaches their own reset links, and an owner those of their household, no other', async () => {
@@ -1571,6 +1819,143 @@ describe.skipIf(!testAdminUrl())(
           [await accountOf(xan)],
         );
         expect(on).toEqual([{ on: false }]);
+      });
+
+      describe('the person changing the password ends the owner’s session first: what it asks for after waits, then is refused (the second round, N529C-01)', () => {
+        const OWNERS = 'the password the owner chose';
+        const THEIRS = 'a password of her very own';
+        const change = (who: Tokens, current: string, next: string) =>
+          t.h.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/password/change',
+            headers: t.h.as(who),
+            payload: { current_password: current, new_password: next },
+          });
+        /** Spent by the owner, who signs in as her; she signs in with what she was handed. */
+        const handedOver = async (name: string) => {
+          const who = await person('adult', name);
+          const link = (await started(who)).link as string;
+          expect((await spend(link, OWNERS)).statusCode).toBe(200);
+          const asOwner = json<Tokens>(await signIn(who.email, OWNERS));
+          const hers = json<Tokens>(await signIn(who.email, OWNERS));
+          return { who, asOwner, hers };
+        };
+
+        it('a passkey added from the owner’s session', async () => {
+          const { who, asOwner, hers } = await handedOver('Anabel');
+          await fresh(asOwner);
+          const device = new SoftwareAuthenticator();
+          const options = await t.h.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/passkeys/challenge',
+            headers: t.h.as(asOwner),
+          });
+          const response = device.register(options.json());
+          const [changed, added] = await race(
+            who.member_id,
+            () => change(hers, OWNERS, THEIRS),
+            () =>
+              t.h.app.inject({
+                method: 'POST',
+                url: '/api/v1/auth/passkeys',
+                headers: t.h.as(asOwner),
+                payload: { response, label: 'The owner’s' },
+              }),
+          );
+          expect(changed.statusCode, changed.body).toBe(204);
+          expect(added.statusCode).toBe(401);
+          expect(error(added).code).toBe('session_ended');
+          expect(
+            await admin(`select id from credential where account_id = $1 and kind = 'passkey'`, [
+              await accountOf(who),
+            ]),
+          ).toEqual([]);
+          expect((await passkeySignIn(device, who.email)).statusCode).toBe(401);
+        });
+
+        it('two-step sign-in confirmed from the owner’s session', async () => {
+          const { who, asOwner, hers } = await handedOver('Bettina');
+          await fresh(asOwner);
+          const enrol = await t.h.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/totp/enrol',
+            headers: t.h.as(asOwner),
+          });
+          const secret = json<{ secret: string }>(enrol).secret;
+          const [changed, confirmed] = await race(
+            who.member_id,
+            () => change(hers, OWNERS, THEIRS),
+            () =>
+              t.h.app.inject({
+                method: 'POST',
+                url: '/api/v1/auth/totp/confirm',
+                headers: t.h.as(asOwner),
+                payload: { code: codeFor(secret) },
+              }),
+          );
+          expect(changed.statusCode, changed.body).toBe(204);
+          expect(confirmed.statusCode).toBe(401);
+          expect(error(confirmed).code).toBe('session_ended');
+          expect(json<Record<string, unknown>>(await signIn(who.email, THEIRS))).not.toHaveProperty(
+            'mfa_required',
+          );
+        });
+
+        it('a change of the password from the owner’s session', async () => {
+          const { who, asOwner, hers } = await handedOver('Carys');
+          const [changed, theirs] = await race(
+            who.member_id,
+            () => change(hers, OWNERS, THEIRS),
+            () => change(asOwner, OWNERS, 'the owner’s next one'),
+          );
+          expect(changed.statusCode, changed.body).toBe(204);
+          expect(theirs.statusCode).toBe(401);
+          expect(error(theirs).code).toBe('session_ended');
+          expect((await signIn(who.email, THEIRS)).statusCode).toBe(200);
+          expect((await signIn(who.email, 'the owner’s next one')).statusCode).toBe(401);
+        });
+      });
+
+      describe('a code given after the password was proven, when the password has changed since, opens nothing (the second round, N529C-04)', () => {
+        /** Somebody with two-step sign-in, part-way through signing in: the password proven. */
+        const halfway = async (name: string) => {
+          const who = await person('adult', name);
+          const secret = await enrolTotp(who);
+          const first = json<{ mfa_required: boolean; mfa_token: string }>(await signIn(who.email));
+          expect(first.mfa_required).toBe(true);
+          const second = () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/mfa',
+              payload: { mfa_token: first.mfa_token, code: codeFor(secret) },
+              ...f.peer(),
+            });
+          return { who, second };
+        };
+
+        it('after a change of the password', async () => {
+          const { who, second } = await halfway('Della');
+          // A session of hers already open changes it meanwhile.
+          const changed = await t.h.app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/password/change',
+            headers: t.h.as(who),
+            payload: { current_password: PASSWORD, new_password: 'changed meanwhile, too' },
+          });
+          expect(changed.statusCode, changed.body).toBe(204);
+          const refused = await second();
+          expect(refused.statusCode).toBe(401);
+          expect(error(refused).code).toBe('invalid_credentials');
+        });
+
+        it('after a reset is spent, at the same moment', async () => {
+          const { who, second } = await halfway('Elin');
+          const link = (await started(who)).link as string;
+          const [spent, opened] = await race(who.member_id, () => spend(link), second);
+          expect(spent.statusCode, spent.body).toBe(200);
+          expect(opened.statusCode).toBe(401);
+          expect(error(opened).code).toBe('invalid_credentials');
+        });
       });
 
       it('two-step sign-in started from a session a reset ended while it waited is refused, and nothing is kept (F529-03)', async () => {

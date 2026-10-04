@@ -235,6 +235,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     alert,
     Boolean(config.FDV_SMTP_URL),
     push,
+    enqueue,
   );
   const resets = new OwnerResetService(
     db,

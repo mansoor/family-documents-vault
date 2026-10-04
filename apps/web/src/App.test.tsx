@@ -866,6 +866,14 @@ describe('App', () => {
     // arrives, including why another adult cannot do it for them.
     expect(screen.getByText(/ask whoever runs the\s+vault/)).toBeInTheDocument();
     expect(screen.getByText(/way into your private documents/)).toBeInTheDocument();
+    // What an owner can do for them, since 5.29, said as it is: never that
+    // nobody else in the family can.
+    expect(
+      screen.getByText(
+        /An owner can start a reset for you too: the link goes only to your own email address, or, while you keep nothing private, an owner may be given one to hand to you\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nobody else in the family can reset/)).not.toBeInTheDocument();
     await expectAccessible();
   });
 

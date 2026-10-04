@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { RESET_LINK_MINUTES, suspensionInEffect, type ResetNotice } from '@fdv/shared';
 import { ApiError } from '../errors.js';
 import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
+import type { Enqueue } from '../documents/service.js';
+import { SHARE_PAGES_PRUNE_JOB } from '../documents/shares.js';
 import type { StepUpService } from './step-up.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
@@ -130,6 +132,8 @@ export class PasswordService {
     private readonly operatorMail = false,
     /** Pushes the worker sends (4.13): "you were signed out" to the phones of ended sessions. */
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
+    /** The worker's queue: an ended view-only link's pages go (5.29, as a lock's). */
+    private readonly enqueue: Enqueue = async () => undefined,
   ) {}
 
   // -------------------------------------------------------- changing one
@@ -172,19 +176,31 @@ export class PasswordService {
 
     const hash = await argon2.hash(input.new_password, ARGON2);
     let removed: SinceHandover = { since: null, passkeys: 0, twoStep: false };
+    let links: EndedLink[] = [];
     await withPrincipal(this.db, p, async (trx) => {
+      // The person's membership first, FOR NO KEY UPDATE, as a reset, a
+      // stopped password and a lock take it (5.29): a passkey, two-step
+      // sign-in or another change from a session this change ends waits for
+      // it, then finds that session ended (stillSignedIn).
+      await trx
+        .selectFrom('account_household')
+        .select(['member_id'])
+        .where('account_id', '=', p.accountId)
+        .where('household_id', '=', p.householdId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
       // From a session still live (5.29): a reset or a stopped password that
       // ended it while this waited is not undone by it.
       await stillSignedIn(trx, p);
       await trx
         .updateTable('account')
-        .set({ password_hash: hash })
+        .set({ password_hash: hash, password_changed_at: sql<Date>`now()` })
         .where('id', '=', p.accountId)
         .execute();
       // Whoever spent a link an owner was handed chose a password, and could
       // add a passkey or two-step sign-in with it (5.29): every change takes
       // away each one added since, so none outlasts the person's own.
-      removed = await takeAwaySinceHandover(trx, p.accountId);
+      removed = await takeAwaySinceHandover(trx, p.accountId, 'change');
       // The member key follows the password, or the person keeps their
       // private documents and loses the way into them.
       if (input.current_password) {
@@ -211,6 +227,9 @@ export class PasswordService {
       // And they stop being told things there. Devices registered before
       // 0.4.2 name no session, so they go too; the phones hear once this commits.
       phones = await endDevices(trx, { accountId: p.accountId, exceptSessionId: p.sessionId });
+      // And the share links made as them since a hand-over link was spent:
+      // whoever spent it could make one as them (5.29).
+      links = await endHandoverLinks(trx, p.accountId);
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -218,15 +237,21 @@ export class PasswordService {
         detail: {
           method,
           ...(removed.since
-            ? { passkeys_removed: removed.passkeys, two_step_removed: removed.twoStep }
+            ? {
+                passkeys_removed: removed.passkeys,
+                two_step_removed: removed.twoStep,
+                links_removed: links.length,
+              }
             : {}),
         },
         ip: meta.ip,
       });
+      await auditEndedLinks(trx, p.householdId, p.accountId, links, meta);
     });
     // The other devices' phones: "you were signed out" (4.13).
     if (phones.length > 0)
       await this.push({ householdId: p.householdId, message: SESSION_ENDED, targets: phones });
+    await this.prunePages(p.householdId, links);
 
     await this.alert({
       householdId: p.householdId,
@@ -421,6 +446,7 @@ export class PasswordService {
     let resetPhones: PushTarget[] = [];
     let handedOver = false;
     let handedBy: string | null = null;
+    let endedLinks: EndedLink[] = [];
     // A reset signs nobody in, so it is not the account asking even now; the
     // account it is for is named, for what the database asks of it (0052).
     const scope = {
@@ -458,8 +484,9 @@ export class PasswordService {
         }
       }
       // Two-step sign-in turned on since a link an owner was handed was
-      // spent goes (5.29), as every passkey goes below.
-      await takeAwaySinceHandover(trx, account.id);
+      // spent goes (5.29), as every passkey goes below — but not one turned
+      // on after a change of the password, which the person may have made.
+      await takeAwaySinceHandover(trx, account.id, 'reset');
       await trx
         .updateTable('account')
         .set({
@@ -505,6 +532,9 @@ export class PasswordService {
         .where('account_id', '=', account.id)
         .where('kind', '=', 'passkey')
         .execute();
+      // And the share links made as them since a hand-over link was spent
+      // (5.29), whoever spends this one.
+      endedLinks = await endHandoverLinks(trx, account.id);
       // And their exports (5.29): everything they could see, in one file, is
       // not left for whoever spent the link — their own, an owner's or the
       // command line's.
@@ -518,11 +548,13 @@ export class PasswordService {
         detail: { issued_by: row.issued_by, exports: Number(exports.rows[0]?.n ?? 0) },
         ip: meta.ip,
       });
+      await auditEndedLinks(trx, membership.household_id, account.id, endedLinks, meta);
       return 'done' as const;
     });
     // A link used up because they keep something private now commits as
     // used up, and is answered as any dead link: nothing says why.
     if (outcome !== 'done') throw gone();
+    await this.prunePages(membership.household_id, endedLinks);
     if (resetPhones.length > 0) {
       await this.push({
         householdId: membership.household_id,
@@ -582,6 +614,7 @@ export class PasswordService {
         spent_at: added.since,
         passkeys_since: added.passkeys,
         two_step_since: added.twoStep,
+        links_since: added.links,
       };
     });
   }
@@ -612,6 +645,17 @@ export class PasswordService {
         .where('told_at', 'is', null)
         .execute(),
     );
+  }
+
+  /** An ended view-only link's pages go (5.29), as a lock's do. */
+  private async prunePages(householdId: string, links: EndedLink[]): Promise<void> {
+    for (const l of links) {
+      if (l.permission !== 'view') continue;
+      await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
+        household_id: householdId,
+        share_id: l.id,
+      }).catch(() => undefined);
+    }
   }
 
   /**
@@ -668,10 +712,14 @@ interface SinceHandover {
  * hand the person a password. The person's own added since go too, and are
  * added again in a tap.
  */
-async function takeAwaySinceHandover(trx: Db, accountId: string): Promise<SinceHandover> {
+async function takeAwaySinceHandover(
+  trx: Db,
+  accountId: string,
+  at: 'change' | 'reset',
+): Promise<SinceHandover> {
   const account = await trx
     .selectFrom('account')
-    .select(['handover_spent_at', 'totp_confirmed_at'])
+    .select(['handover_spent_at', 'totp_confirmed_at', 'password_changed_at'])
     .where('id', '=', accountId)
     .executeTakeFirstOrThrow();
   const since = account.handover_spent_at;
@@ -682,7 +730,17 @@ async function takeAwaySinceHandover(trx: Db, accountId: string): Promise<SinceH
     .where('kind', '=', 'passkey')
     .where('created_at', '>', since)
     .executeTakeFirst();
-  const twoStep = account.totp_confirmed_at !== null && account.totp_confirmed_at > since;
+  // A change takes away two-step sign-in turned on since the hand-over. A
+  // reset takes it away only if it was turned on before any change of the
+  // password since then (5.29, the second round): one the person turned on
+  // after setting their own password is what keeps a mailed link, spent by
+  // whoever reads their mail, from being enough — a reset leaves two-step
+  // sign-in to be asked for.
+  const changedSince = account.password_changed_at;
+  const twoStep =
+    account.totp_confirmed_at !== null &&
+    account.totp_confirmed_at > since &&
+    (at === 'change' || changedSince === null || account.totp_confirmed_at < changedSince);
   if (twoStep) {
     await trx
       .updateTable('account')
@@ -693,6 +751,47 @@ async function takeAwaySinceHandover(trx: Db, accountId: string): Promise<SinceH
   return { since, passkeys: Number(passkeys.numDeletedRows), twoStep };
 }
 
+/** A share link a change or a reset ended (5.29), for the log and its pages. */
+interface EndedLink {
+  id: string;
+  document_id: string | null;
+  collection_id: string | null;
+  permission: string;
+}
+
+/**
+ * The share links made as somebody since a link an owner was handed for
+ * their sign-in was spent, ended (0052's handover_links_end, 5.29): whoever
+ * spent it could make one as them, and a link lives while its maker can see
+ * what it is to — Only me documents they make later included.
+ */
+async function endHandoverLinks(trx: Db, accountId: string): Promise<EndedLink[]> {
+  const r = await sql<EndedLink>`select * from handover_links_end(${accountId})`.execute(trx);
+  return r.rows;
+}
+
+/** A line each, as taking a link back writes one: about its document, or its collection. */
+async function auditEndedLinks(
+  trx: Db,
+  householdId: string,
+  accountId: string,
+  links: EndedLink[],
+  meta: RequestMeta,
+): Promise<void> {
+  for (const l of links) {
+    await appendAudit(trx, {
+      householdId,
+      actorAccountId: accountId,
+      action: 'share.revoked',
+      ...(l.collection_id !== null
+        ? { objectType: 'collection', objectId: l.collection_id }
+        : { objectType: 'document', objectId: l.document_id }),
+      detail: { share_id: l.id },
+      ip: meta.ip,
+    });
+  }
+}
+
 /** What was added since a hand-over link was spent, for the person to see (5.29). */
 async function addedSinceHandover(
   trx: Db,
@@ -701,6 +800,7 @@ async function addedSinceHandover(
   since: string | null;
   passkeys: Array<{ label: string | null; added_at: string }>;
   twoStep: string | null;
+  links: Array<{ title: string | null; made_at: string }>;
 }> {
   const account = await trx
     .selectFrom('account')
@@ -708,7 +808,24 @@ async function addedSinceHandover(
     .where('id', '=', accountId)
     .executeTakeFirstOrThrow();
   const since = account.handover_spent_at;
-  if (!since) return { since: null, passkeys: [], twoStep: null };
+  if (!since) return { since: null, passkeys: [], twoStep: null, links: [] };
+  // The links made as them since, still live: each goes at the next change.
+  const links = await trx
+    .selectFrom('share_link')
+    .leftJoin('document', 'document.id', 'share_link.document_id')
+    .leftJoin('doc_collection', 'doc_collection.id', 'share_link.collection_id')
+    .select([
+      'share_link.created_at',
+      'document.title as document_title',
+      'doc_collection.name as collection_name',
+    ])
+    .where('share_link.created_by', '=', accountId)
+    .where('share_link.created_at', '>', since)
+    .where('share_link.revoked_at', 'is', null)
+    .where('share_link.expires_at', '>', sql<Date>`now()`)
+    .where('share_link.attempts', '<', 10)
+    .orderBy('share_link.created_at')
+    .execute();
   const passkeys = await trx
     .selectFrom('credential')
     .select(['label', 'created_at'])
@@ -724,5 +841,9 @@ async function addedSinceHandover(
       account.totp_confirmed_at && account.totp_confirmed_at > since
         ? account.totp_confirmed_at.toISOString()
         : null,
+    links: links.map((l) => ({
+      title: l.document_title ?? l.collection_name ?? null,
+      made_at: l.created_at.toISOString(),
+    })),
   };
 }
