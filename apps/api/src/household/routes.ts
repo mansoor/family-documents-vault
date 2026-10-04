@@ -241,6 +241,15 @@ export function registerLocks(app: FastifyInstance, locks: LockService, stepUp: 
     await locks.resume(p, id, metaOf(req));
     return reply.status(204).send();
   });
+
+  // Signing somebody out everywhere (5.30, A53): asked as a lock is. A
+  // co-owner too, who is told; oneself, every device but this one.
+  app.delete('/api/v1/members/:id/sessions', guard('member.sign_out'), async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    await stepUp.requireOwnerPower(p, 'manage_sign_ins');
+    return locks.signOutEverywhere(p, id, metaOf(req));
+  });
 }
 
 /**

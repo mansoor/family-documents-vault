@@ -3127,6 +3127,99 @@ invalid_credentials` (a password) or `401 passkey_rejected` (a passkey),
       by the way its `operatorMail` and `keepsPrivate` say, stops a password
       with `stop_now` (refusing it on `operator`), and keeps the notice until
       it is dismissed.
+  - Role changes reach every device; sign out everywhere (5.30,
+    `features.sign_out_everywhere`).
+    - **Added:** `features.sign_out_everywhere` in the capability document,
+      `true`. Absent from older vaults.
+    - **Added:** `DELETE /api/v1/members/{id}/sessions` signs somebody out
+      everywhere (A53): `200` with `{ member_id, sessions_ended }`. Every
+      session of theirs ends — `401 session_ended`, reason `revoked`, to its
+      access and refresh tokens alike — with its offline grant, and every
+      device of theirs here; their phones are pushed `session_ended` once it
+      commits. Their sign-in is as it was: they sign in again with their own
+      password. A co-owner too, who is emailed; anybody else it is about is
+      emailed as well (no push: their devices went with their sessions).
+      Oneself: every session but the one asking, as a password change does.
+      Owners only (the capability `member.sign_out`): anybody else `403
+forbidden` ("Only an owner can sign someone out everywhere."), oneself
+      included. An owner power (A54), asked as a lock is: `403
+totp_required_for_owner` for an owner with neither two-step sign-in nor a
+      passkey, otherwise `403 step_up_required` with `action:
+"manage_sign_ins"`, a passkey or a code, never the password. Nobody with a
+      sign-in: `404 not_found` ("They have no sign-in to sign out.").
+    - **Added:** `RoleChangeResult.effects` — what a role change did besides
+      the role, each `{ effect, count }`, only what happened (`[]` for
+      nothing, and for a change that did not happen or waits its seven
+      days): `offline_ended` (the sessions whose offline grant ended),
+      `requests_closed`, `exports_ended`. On `POST /members/{id}/role`, `POST
+/me/step-down` and `POST /owner-changes/{id}/complete`. Its `message`
+      says them too ("Wes is now a teen. Their phone removes the Essentials it
+      keeps at its next sync."). Absent from older vaults; treat an effect
+      never heard of as something it did. `@fdv/shared`'s
+      `roleChangeEffects(from, to)` says which a change may do, before it is
+      made.
+    - **Changed:** a role change that takes sight away — an owner or an adult
+      made a teen or a viewer, anybody made a viewer (`reducesSight`) — ends
+      the offline grant of every session of theirs: `GET
+/offline/essentials` answers `items: []` and `grant: null` at the phone's
+      next sync, so it removes what it keeps (older phones already take no
+      grant as an empty set, 4.9). Keeping Essentials again asks for the
+      password, as ever. And a viewer is given no grant whatever their
+      session holds.
+    - **Changed:** a role change that takes away `upload_request.create`
+      closed their requests already (A39); it now says how many, and a line
+      says so. Only live ones are counted, and have an `upload_request.closed`
+      line: one that had run out, or locked itself after ten wrong tries, is
+      closed too, with no line, as for any change that takes asking away
+      (0053 narrows what `upload_requests_close_lost()` returns).
+    - **Changed: token families.** Every refresh token names its session:
+      `household.session.secret`, the secret 16 random bytes and 16 of an
+      HMAC under a key derived from the master key. Any token the vault made
+      for a live session, presented once it has been replaced, ends the
+      session as `reused` — not only the token just replaced: a thief who
+      spends a stolen token and then its successor before the owner does
+      loses the session when the owner's token comes in, whichever is
+      presented second. The 30-second grace for an answer that never
+      arrived is unchanged. A token that names a session but whose tag is
+      not the vault's ends nothing (`revoked`). Treat refresh tokens as
+      opaque, as ever: a token from before (`household.secret`) still
+      refreshes, and is answered with one of a family; the vault keeps it
+      with the tokens a grace touched, so it too ends the session if it is
+      ever presented again. A spent token of a session that has ended says
+      why it ended, as the token just replaced always did.
+    - **Changed: trusted proxies.** `FDV_TRUST_PROXY` gains `network`, the
+      new default: `X-Forwarded-For` is believed only from the networks the
+      API's own container is on (nginx and Caddy in the compose setup),
+      never from a device on the LAN, and only the one address that peer
+      wrote last: a proxy of one's own must overwrite the header, not add to
+      it. `private` (the old default, every
+      private address), `all` and `none` stay. nginx passes on the address a
+      request came from and nothing the caller wrote; the TLS overlay's
+      Caddy sends `/api/*`, `/healthz` and `/readyz` to the API itself, and
+      binds `:8080` to `127.0.0.1`; there Caddy bounds a request's headers (10
+      seconds), its whole body (30 minutes) and an idle connection (2
+      minutes), as nginx did. An `X-Forwarded-For` entry that is not an
+      address is not believed — the address recorded is the last good one —
+      where it was a `500`.
+    - **Changed:** an upload over the size limit (`POST /documents/{id}/versions`,
+      `POST /capture`) is answered `413 too_large` as before, and if the
+      client is still sending five seconds later the connection is closed;
+      until now the rest was read to nowhere for as long as it came.
+    - The activity log: **new** `member.signed_out_everywhere` ("Mansoor
+      signed Sara out everywhere"; oneself, "… signed out of every other
+      device") with `detail.sessions` (and `detail.self`), notable;
+      `member.offline_ended` ("Mansoor changed Wes’s role, so their phone
+      stops keeping Essentials") with `detail.sessions`; and
+      `member.requests_closed` ("… so their request to send documents
+      closed") with `detail.requests`. Each for the owners, the person it is
+      about and whoever did it, nobody else. The role change's own line keeps
+      its audience.
+    - `@fdv/shared`: `SignedOutEverywhere`, `RoleChangeEffect`,
+      `RoleChangeEffectDone`, `RoleChangeResult.effects`, `reducesSight`,
+      `roleChangeEffects`, the capability `member.sign_out` (owners), and
+      `features.sign_out_everywhere`. `@fdv/client`: `signOutEverywhere`;
+      the fake signs people out everywhere, and ends a session when any token
+      it has spent is presented again.
 
 ## Deprecations in effect
 

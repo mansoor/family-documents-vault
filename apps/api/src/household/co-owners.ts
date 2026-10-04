@@ -3,10 +3,12 @@ import {
   can,
   DECEASED_NO_SIGN_IN,
   identityAudienceSees,
+  reducesSight,
   roleLabel,
   ROLES,
   suspensionInEffect,
   type Role,
+  type RoleChangeEffectDone,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -64,6 +66,8 @@ export interface RoleChangeResult {
   role: Role;
   request?: OwnerChangeView;
   message: string;
+  /** What else it did (5.30): only what happened, `[]` for nothing. */
+  effects: RoleChangeEffectDone[];
 }
 
 export class CoOwnerService {
@@ -115,6 +119,7 @@ export class CoOwnerService {
           applied: false,
           role: to,
           message: `${target.display_name} is already ${article(to)}.`,
+          effects: [],
         };
       }
       // A locked person is not made an owner (5.28): an owner's sign-in is
@@ -138,24 +143,23 @@ export class CoOwnerService {
           role: target.role,
           request,
           message: `Every owner has been told. ${target.display_name} stays an owner until ${formatDay(request.opens_at)}, and can refuse before then.`,
+          effects: [],
         };
       }
 
-      await trx
+      const changed = await trx
         .updateTable('account_household')
         .set({ role: to })
         .where('account_id', '=', target.account_id)
         .where('household_id', '=', p.householdId)
-        .execute();
-      if (!can(to, 'document.see_adults') || (await losesIdentity(trx, target.role, to))) {
-        await expireExportsOf(trx, target.account_id);
-      }
-      // Made a teen or a viewer: their requests to send documents close (A39),
-      // and what was sent for them alone to review goes to the owners (5.23).
-      if (!can(to, 'upload_request.create')) {
-        await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
-        after.move = true;
-      }
+        .executeTakeFirst();
+      // A rule that quietly changed nothing is not a change of role.
+      if (Number(changed.numUpdatedRows) !== 1) throw notFound('That sign-in');
+      // What else it takes away (5.30): the Essentials on their phones, their
+      // exports, their requests to send documents (A39) — and what was sent
+      // for them alone to review goes to the owners once this commits (5.23).
+      const effects = await takeAway(trx, p, target, target.role, to, meta);
+      after.move = !can(to, 'upload_request.create');
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -165,6 +169,7 @@ export class CoOwnerService {
         detail: { from: target.role, to },
         ip: meta.ip,
       });
+      await logEffects(trx, p, target.member_id, effects, meta);
 
       if (to === 'owner') {
         // Promotion is immediate and everybody hears about it, because a
@@ -181,7 +186,11 @@ export class CoOwnerService {
       return {
         applied: true,
         role: to,
-        message: `${target.display_name} is now ${article(to)}.`,
+        message: [
+          `${target.display_name} is now ${article(to)}.`,
+          ...effectWords(effects, 'Their'),
+        ].join(' '),
+        effects,
       };
     });
     if (after.move) await this.filesMove(p.householdId);
@@ -198,18 +207,16 @@ export class CoOwnerService {
     }
     const result = await withPrincipal(this.db, p, async (trx) => {
       await holdHousehold(trx);
-      await trx
+      const changed = await trx
         .updateTable('account_household')
         .set({ role: to })
         .where('account_id', '=', p.accountId)
         .where('household_id', '=', p.householdId)
-        .execute();
-      if (!can(to, 'document.see_adults') || (await losesIdentity(trx, 'owner', to))) {
-        await expireExportsOf(trx, p.accountId);
-      }
-      if (!can(to, 'upload_request.create')) {
-        await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
-      }
+        .executeTakeFirst();
+      if (Number(changed.numUpdatedRows) !== 1) throw notFound('That sign-in');
+      // As for anybody whose role changes (5.30): their own phones'
+      // Essentials, their exports, their requests.
+      const effects = await takeAway(trx, p, { account_id: p.accountId }, 'owner', to, meta);
       // A request to take the owner role off somebody who has now given it
       // up has nothing left to do — carried out, it would make them an
       // adult, whatever they chose to be, and tell them they had lost a role
@@ -231,10 +238,15 @@ export class CoOwnerService {
         detail: { to, requests_closed: Number(closed.numUpdatedRows) },
         ip: meta.ip,
       });
+      await logEffects(trx, p, p.memberId, effects, meta);
       return {
         applied: true,
         role: to,
-        message: `You are ${article(to)} now. Another owner can give the role back.`,
+        message: [
+          `You are ${article(to)} now. Another owner can give the role back.`,
+          ...effectWords(effects, 'Your'),
+        ].join(' '),
+        effects,
       };
     });
     if (!can(to, 'upload_request.create')) await this.filesMove(p.householdId);
@@ -551,9 +563,16 @@ export class CoOwnerService {
         .where('account_id', '=', row.target_account)
         .where('household_id', '=', p.householdId)
         .execute();
-      if (await losesIdentity(trx, 'owner', 'adult')) {
-        await expireExportsOf(trx, row.target_account);
-      }
+      // An adult sees the documents an owner does: only exports that showed
+      // identity details they no longer see can end (5.27).
+      const effects = await takeAway(
+        trx,
+        p,
+        { account_id: row.target_account },
+        'owner',
+        'adult',
+        meta,
+      );
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
@@ -563,6 +582,7 @@ export class CoOwnerService {
         detail: { from: 'owner', to: 'adult', via: 'owner_change_request' },
         ip: meta.ip,
       });
+      await logEffects(trx, p, row.target_member_id, effects, meta);
       await this.alert({
         pushType: 'owner_change',
         householdId: p.householdId,
@@ -573,7 +593,10 @@ export class CoOwnerService {
       return {
         applied: true,
         role: 'adult',
-        message: `${row.target_name} is an adult now.`,
+        message: [`${row.target_name} is an adult now.`, ...effectWords(effects, 'Their')].join(
+          ' ',
+        ),
+        effects,
       };
     });
   }
@@ -901,7 +924,7 @@ function formatDay(iso: string): string {
  * role changes do not wait for each other. Taken first, before any row, as
  * setAudience takes it first; the activity log's lock comes last in both.
  */
-async function holdHousehold(trx: Db): Promise<void> {
+export async function holdHousehold(trx: Db): Promise<void> {
   await sql`select 1 from household where id = app_household() for share`.execute(trx);
 }
 
@@ -925,11 +948,105 @@ async function losesIdentity(trx: Db, from: Role, to: Role): Promise<boolean> {
  * it stops being downloadable, or it would go on handing them what the
  * demotion took away.
  */
-async function expireExportsOf(trx: Db, accountId: string): Promise<void> {
-  await trx
+async function expireExportsOf(trx: Db, accountId: string): Promise<number> {
+  const r = await trx
     .updateTable('export')
     .set({ expires_at: new Date() })
     .where('requested_by', '=', accountId)
     .where((eb) => eb.or([eb('expires_at', 'is', null), eb('expires_at', '>', new Date())]))
-    .execute();
+    .executeTakeFirst();
+  return Number(r.numUpdatedRows);
+}
+
+/**
+ * What a change of role takes away besides the role itself (5.30), once the
+ * role is written, in the order every change takes its locks: the household
+ * (FOR SHARE) and the person's membership are held already; then their
+ * sessions, their exports, their requests; the activity log's lock last.
+ *
+ *  - Sight taken away (`reducesSight`: an adult made a teen or a viewer,
+ *    anybody made a viewer): the offline grant of every session of theirs
+ *    ends, so each phone is given an empty set at its next sync and removes
+ *    what it keeps (4.9). Keeping Essentials again takes the password.
+ *  - The adults' documents, or identity details, no longer seen: their
+ *    exports stop being downloadable (5.27).
+ *  - No longer an adult: their requests to send documents close (A39), with
+ *    the owner's rights (`upload_requests_close_lost()`), and a line each.
+ *
+ * Only what happened is answered, each with how many.
+ */
+async function takeAway(
+  trx: Db,
+  p: Principal,
+  person: { account_id: string },
+  from: Role,
+  to: Role,
+  meta: RequestMeta,
+): Promise<RoleChangeEffectDone[]> {
+  const effects: RoleChangeEffectDone[] = [];
+  if (reducesSight(from, to)) {
+    const ended = await trx
+      .updateTable('session')
+      .set({ offline_granted_at: null, offline_expires_at: null, offline_include_private: false })
+      .where('account_id', '=', person.account_id)
+      .where('household_id', '=', p.householdId)
+      .where('revoked_at', 'is', null)
+      .where('offline_expires_at', '>', new Date())
+      .executeTakeFirst();
+    const n = Number(ended.numUpdatedRows);
+    if (n > 0) effects.push({ effect: 'offline_ended', count: n });
+  }
+  if (!can(to, 'document.see_adults') || (await losesIdentity(trx, from, to))) {
+    const n = await expireExportsOf(trx, person.account_id);
+    if (n > 0) effects.push({ effect: 'exports_ended', count: n });
+  }
+  if (!can(to, 'upload_request.create')) {
+    const n = await closeLostRequests(trx, p.householdId, p.accountId, meta.ip);
+    if (n > 0) effects.push({ effect: 'requests_closed', count: n });
+  }
+  return effects;
+}
+
+/**
+ * A line each in the activity log for what a role change ended on the
+ * person's phones, and of their requests (5.30): for the owners, the person
+ * and whoever did it — never another adult, never a teen (audit/service.ts).
+ * The change's own line keeps its audience.
+ */
+async function logEffects(
+  trx: Db,
+  p: Principal,
+  memberId: string,
+  effects: RoleChangeEffectDone[],
+  meta: RequestMeta,
+): Promise<void> {
+  for (const e of effects) {
+    if (e.effect === 'exports_ended') continue;
+    await appendAudit(trx, {
+      householdId: p.householdId,
+      actorAccountId: p.accountId,
+      action: e.effect === 'offline_ended' ? 'member.offline_ended' : 'member.requests_closed',
+      objectType: 'member',
+      objectId: memberId,
+      detail: e.effect === 'offline_ended' ? { sessions: e.count } : { requests: e.count },
+      ip: meta.ip,
+    });
+  }
+}
+
+/** What else a role change did, in sentences: "Their phone removes the Essentials it keeps at its next sync." */
+function effectWords(effects: RoleChangeEffectDone[], whose: 'Their' | 'Your'): string[] {
+  return effects.map((e) => {
+    const n = e.count;
+    switch (e.effect) {
+      case 'offline_ended':
+        return n === 1
+          ? `${whose} phone removes the Essentials it keeps at its next sync.`
+          : `${whose} phones remove the Essentials they keep at their next sync.`;
+      case 'requests_closed':
+        return `${whose} ${n === 1 ? 'request' : `${n} requests`} to send documents closed.`;
+      case 'exports_ended':
+        return `${whose} ${n === 1 ? 'export' : `${n} exports`} stopped working.`;
+    }
+  });
 }

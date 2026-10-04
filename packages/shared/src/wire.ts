@@ -1,6 +1,6 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
-import type { CollectionAudience, Role } from './roles.js';
+import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 
 /**
@@ -771,6 +771,28 @@ export interface RoleChangeResult {
   role: Role;
   request?: OwnerChange;
   message: string;
+  /**
+   * What else the change did (5.30), each with how many it touched: the
+   * sessions whose offline Essentials ended, the requests to send documents
+   * closed, the exports ended. Only what happened is listed; `[]` when
+   * nothing else did, or the role did not change. Absent from older vaults.
+   */
+  effects?: RoleChangeEffectDone[];
+}
+
+/** One thing a role change did (5.30). Treat an `effect` never heard of as something it did. */
+export interface RoleChangeEffectDone {
+  effect: RoleChangeEffect;
+  count: number;
+}
+
+/**
+ * DELETE /members/{id}/sessions (5.30): how many sessions it ended. Oneself,
+ * every other one: the device asking stays signed in.
+ */
+export interface SignedOutEverywhere {
+  member_id: string;
+  sessions_ended: number;
 }
 
 export interface Profile {

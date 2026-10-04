@@ -165,6 +165,17 @@ const ownersAndThePerson: Audience = (reader, line) =>
   (line.object_type === 'member' && line.object_id != null && line.object_id === reader.memberId);
 
 /**
+ * What an owner did to somebody's sign-in, or a role change did besides the
+ * role (5.30): signed out everywhere; the Essentials on their phones ended;
+ * their requests to send documents closed. For the owners, the person it is
+ * about and whoever did it — nobody else, not another adult, not a teen (a
+ * viewer reads no log).
+ */
+const ownersThePersonAndTheActor: Audience = (reader, line) =>
+  ownersAndThePerson(reader, line) ||
+  (line.actor_account_id != null && line.actor_account_id === reader.accountId);
+
+/**
  * A line about somebody's identity details (5.26): who looked at them, showed
  * their numbers or changed them. For the owners, the person it is about —
  * who sees a line whenever somebody else shows their numbers, with no values
@@ -267,6 +278,14 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 5.29: a password reset an owner started, which way it went and never a
   // link — for the owners, whoever started it among them, and the person.
   ['member.reset_started', ownersAndThePerson],
+  // 5.30: somebody signed out everywhere by an owner (or an owner signing
+  // their own other devices out); and what a role change ended besides the
+  // role — the Essentials on their phones, their requests to send
+  // documents: for the owners, the person and whoever did it. The change's
+  // own line (member.role_changed) keeps the family's audience.
+  ['member.signed_out_everywhere', ownersThePersonAndTheActor],
+  ['member.offline_ended', ownersThePersonAndTheActor],
+  ['member.requests_closed', ownersThePersonAndTheActor],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.

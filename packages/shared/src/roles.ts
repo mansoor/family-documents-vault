@@ -120,7 +120,13 @@ export type Capability =
    * power (A54). Which way it goes is ResetPath: no owner is ever handed a
    * working link for somebody who keeps anything private.
    */
-  | 'member.reset_password';
+  | 'member.reset_password'
+  /**
+   * Sign somebody out everywhere (5.30, A53): every session and device of
+   * theirs ends at once, a co-owner's too, who is told. An owner power
+   * (A54), as a lock is.
+   */
+  | 'member.sign_out';
 
 interface Rule {
   readonly roles: readonly Role[];
@@ -288,6 +294,12 @@ const MATRIX: Record<Capability, Rule> = {
     roles: ['owner'],
     refusal: "Only an owner can start a reset of someone's password.",
   },
+  'member.sign_out': {
+    // Signing a person out of every device is the owners' (A53), as locking
+    // is (A52): for a lost phone, or a password somebody else has.
+    roles: ['owner'],
+    refusal: 'Only an owner can sign someone out everywhere.',
+  },
 };
 
 export const CAPABILITIES = Object.keys(MATRIX) as Capability[];
@@ -327,6 +339,51 @@ export function roleDescription(role: Role): string {
     teen: 'Their own documents, plus anything shared with the whole family.',
     viewer: 'Can open and download what the family shares. Changes nothing.',
   }[role];
+}
+
+/**
+ * How much of the family's documents a role sees, for comparing two: the
+ * adults' documents (owners and adults), the family's (teens), or only what
+ * is given (viewers).
+ */
+const SIGHT: Record<Role, number> = { owner: 2, adult: 2, teen: 1, viewer: 0 };
+
+/**
+ * Whether a change of role takes sight away (5.30): an owner or an adult
+ * made a teen or a viewer, anybody made a viewer. An owner made an adult
+ * sees what they saw.
+ */
+export function reducesSight(from: Role, to: Role): boolean {
+  return SIGHT[to] < SIGHT[from];
+}
+
+/**
+ * What a change of role does besides the role (5.30), said before it is
+ * made and answered once it is (`RoleChangeResult.effects`):
+ *
+ *  - `offline_ended`: sight taken away, so the Essentials their phones keep
+ *    go — each phone is given an empty set at its next sync;
+ *  - `requests_closed`: no longer an adult, so their requests to send
+ *    documents close (A39), and what was sent for them alone to review goes
+ *    to the owners (5.23);
+ *  - `exports_ended`: no longer seeing the adults' documents, so their
+ *    exports stop being downloadable. (One that showed identity details
+ *    they no longer see ends too, which only the vault can tell.)
+ *
+ * Treat a kind never heard of as something it did.
+ */
+export type RoleChangeEffect = 'offline_ended' | 'requests_closed' | 'exports_ended';
+
+export function roleChangeEffects(from: Role, to: Role): RoleChangeEffect[] {
+  const effects: RoleChangeEffect[] = [];
+  if (reducesSight(from, to)) effects.push('offline_ended');
+  if (can(from, 'upload_request.create') && !can(to, 'upload_request.create')) {
+    effects.push('requests_closed');
+  }
+  if (can(from, 'document.see_adults') && !can(to, 'document.see_adults')) {
+    effects.push('exports_ended');
+  }
+  return effects;
 }
 
 /** Which role may hand out which. Used before an invitation is created. */

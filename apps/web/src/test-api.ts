@@ -29,6 +29,7 @@ import {
   nextReminder,
   resetCommand,
   reminderOf,
+  roleChangeEffects,
   dropFileName,
   uploadRequestTypes,
   type DocumentTypeView,
@@ -334,6 +335,11 @@ export interface FakeState {
   handoverSince?: string | null;
   /** Who made the reset link the page at /reset shows (5.29); left out, `resetByOperator` says. */
   resetIssuedBy?: 'self' | 'operator' | 'owner';
+  /**
+   * `features.sign_out_everywhere` (5.30): an owner signs somebody out
+   * everywhere. Left out, the vault says so; false, a vault from before.
+   */
+  signOutEverywhere?: boolean;
   /** Every PATCH /members/{id} that arrived: whose, what, and the If-Match. */
   memberEdits?: Array<{ id: string; body: unknown; ifMatch: string | null }>;
   /**
@@ -744,6 +750,7 @@ export function installFakeApi(state: FakeState) {
           share_email_code: state.operatorMail === true,
           member_edit: true,
           ...(state.memberAdmin !== false ? { member_admin: true } : {}),
+          ...(state.signOutEverywhere !== false ? { sign_out_everywhere: true } : {}),
           ...(state.incoming ? { upload_requests: true } : {}),
           ...(state.identities ? { member_identity: true } : {}),
         },
@@ -1293,6 +1300,22 @@ export function installFakeApi(state: FakeState) {
       }
       if (goes === 'operator') answer.command = resetCommand(card.email);
       return json(answer);
+    }
+    // Signing somebody out everywhere (5.30), refused in the vault's order:
+    // who may, the owner power, then the person. Their devices go.
+    const outAt = /^\/api\/v1\/members\/([^/]+)\/sessions$/.exec(path);
+    if (outAt && method === 'DELETE' && state.signOutEverywhere !== false) {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can sign someone out everywhere.');
+      }
+      const power = ownerPower();
+      if (power) return power;
+      const id = outAt[1] as string;
+      const card = state.accounts?.[id];
+      if (!card) return refuse(404, 'not_found', 'They have no sign-in to sign out.');
+      const ended = card.devices.length;
+      card.devices = [];
+      return json({ member_id: id, sessions_ended: ended });
     }
     // A person's details (5.25), made to the version seen; the owner's view
     // of a sign-in, asked with a passkey or a code (A54).
@@ -2259,10 +2282,25 @@ export function installFakeApi(state: FakeState) {
           applied: false,
           role: 'owner',
           message: 'Every owner has been told. They can refuse before then.',
+          effects: [],
         });
       }
+      // What else it did (5.30), as the vault answers it: a phone keeping
+      // Essentials, a request, an export — each one of them, here.
+      const from = (target?.role ?? 'adult') as Role;
+      const effects = target ? roleChangeEffects(from, role as Role) : [];
       if (target) target.role = role;
-      return json({ applied: true, role, message: `They are now ${role}.` });
+      return json({
+        applied: true,
+        role,
+        message: [
+          `They are now ${role}.`,
+          ...(effects.includes('offline_ended')
+            ? ['Their phone removes the Essentials it keeps at its next sync.']
+            : []),
+        ].join(' '),
+        effects: effects.map((effect) => ({ effect, count: 1 })),
+      });
     }
     if (path.endsWith('/sign-in') && method === 'DELETE') {
       const memberId = path.split('/')[4] as string;

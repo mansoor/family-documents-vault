@@ -105,6 +105,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.28: an owner locks somebody's sign-in, and unlocks it (A51, A54);
       // after a restore every sign-in but the owners' waits for an owner.
       member_admin: true,
+      // 5.30: an owner signs somebody out everywhere, a co-owner too (A53);
+      // a role change says what else it did.
+      sign_out_everywhere: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

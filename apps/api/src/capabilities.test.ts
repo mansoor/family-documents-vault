@@ -84,6 +84,8 @@ describe('buildCapabilities', () => {
       member_identity: true,
       // 5.28: an owner locks and unlocks a sign-in; a restore pauses the rest.
       member_admin: true,
+      // 5.30: an owner signs somebody out everywhere; a role change says what it did.
+      sign_out_everywhere: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

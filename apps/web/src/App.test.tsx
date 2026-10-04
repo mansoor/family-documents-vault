@@ -571,13 +571,15 @@ describe('App', () => {
     render(<App />);
 
     await screen.findByRole('heading', { name: 'What Sam can do' });
-    fireEvent.click(screen.getByRole('button', { name: 'Adult' }));
-    // Before pressing anything, the screen says what will and will not
+    fireEvent.click(screen.getByRole('button', { name: 'Change what they can do' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Change what Sam can do' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Adult' }));
+    // Before pressing anything, the dialog says what will and will not
     // happen — the seven days are the feature, not a technicality.
-    expect(screen.getByText(/takes seven days/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/takes seven days/)).toBeInTheDocument();
     await expectAccessible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Change what they can do' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Ask for the change' }));
     await screen.findByText(/Every owner has been told/);
     // Sam is still an owner until it is carried out.
     expect(state.members.find((m) => m.id === 'm-1')?.role).toBe('owner');

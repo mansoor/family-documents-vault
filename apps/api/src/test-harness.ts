@@ -144,6 +144,8 @@ export interface HarnessOptions {
   incomingMaxBytes?: number;
   /** A decision on a file sent in, held before it commits (5.23): for the races. */
   incomingBeforeCommit?: IncomingOptions['beforeCommit'];
+  /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
+  trustProxy?: 'network' | 'private' | 'all' | 'none';
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -186,6 +188,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     ...(opts.rateLimitPerMinute
       ? { FDV_RATE_LIMIT_PER_MINUTE: String(opts.rateLimitPerMinute) }
       : {}),
+    ...(opts.trustProxy ? { FDV_TRUST_PROXY: opts.trustProxy } : {}),
     // Nothing is ever sent to it: the harness catches every email (mailSent).
     ...(opts.operatorMail === false ? {} : { FDV_SMTP_URL: 'smtp://operator-mail.test:25' }),
   });

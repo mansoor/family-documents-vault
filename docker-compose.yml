@@ -44,9 +44,8 @@ services:
       FDV_VAPID_PUBLIC_KEY: ${FDV_VAPID_PUBLIC_KEY:-}
       FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS: ${FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS:-false}
       # Where the vault is published. The API needs it for the same reason
-      # the worker does — links it puts in email — and for two things only
-      # it does: checking the origin a passkey was signed for, and deciding
-      # whose X-Forwarded-For to believe.
+      # the worker does — links it puts in email — and for one thing only it
+      # does: checking the origin a passkey was signed for.
       FDV_BASE_URL: ${FDV_BASE_URL:-http://localhost:8080}
       # The public-only site, when you run one (README): share links start with it.
       FDV_PUBLIC_URL: ${FDV_PUBLIC_URL:-}
@@ -54,7 +53,9 @@ services:
       FDV_SHARE_MAX_DAYS: ${FDV_SHARE_MAX_DAYS:-}
       FDV_SMTP_URL: ${FDV_SMTP_URL:-}
       FDV_RP_ID: ${FDV_RP_ID:-}
-      FDV_TRUST_PROXY: ${FDV_TRUST_PROXY:-private}
+      # Whose X-Forwarded-For to believe (5.30): the networks the API's own
+      # container is on — nginx and Caddy — and nothing on your LAN.
+      FDV_TRUST_PROXY: ${FDV_TRUST_PROXY:-network}
       FDV_MAX_UPLOAD_BYTES: ${FDV_MAX_UPLOAD_BYTES:-}
       FDV_OFFLINE_MAX_DAYS: ${FDV_OFFLINE_MAX_DAYS:-}
       FDV_RATE_LIMIT_PER_MINUTE: ${FDV_RATE_LIMIT_PER_MINUTE:-}
@@ -101,6 +102,9 @@ services:
       context: .
       target: web
     restart: unless-stopped
+    # Open to the network, as phones and laptops in the house reach the vault
+    # at this machine's address on it; the TLS overlay keeps it to this
+    # machine (docker-compose.tls.yml).
     ports:
       - '${FDV_PORT:-8080}:80'
     depends_on:

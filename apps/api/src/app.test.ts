@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
+import { metaOf } from './auth/routes.js';
 import type { AuthService } from './auth/service.js';
 import type { DocumentService } from './documents/service.js';
 import type { HouseholdService } from './household/service.js';
@@ -36,6 +37,8 @@ async function make(
   pingDatabase: () => Promise<void> = async () => undefined,
   over: Partial<ApiConfig> = {},
   logger?: object,
+  /** The networks the API is on, for FDV_TRUST_PROXY=network (5.30): this machine's otherwise. */
+  networks?: string[],
 ) {
   app = await buildApp(
     { ...config, ...over },
@@ -71,6 +74,7 @@ async function make(
       suggestions: anyStub,
       notifications: anyStub,
       logger: logger ?? false,
+      ...(networks ? { ownNetworks: () => networks } : {}),
     },
   );
   return app;
@@ -261,44 +265,104 @@ describe('error envelope', () => {
   });
 });
 
-describe('whose X-Forwarded-For is believed', () => {
-  // The audit log records where an action came from and the rate limiter
-  // counts per address. Believing any caller's header would let anyone
-  // write their own address into someone else's log.
-  const seen = async (headers: Record<string, string>, over: Partial<ApiConfig> = {}) => {
-    const built = await make(undefined, over);
-    let ip = '';
+describe('whose X-Forwarded-For is believed (5.30)', () => {
+  // The audit log records where an action came from, the rate limiter
+  // counts per address, and a browser's refresh grace compares addresses.
+  // Believing any caller's header would let anyone write their own address
+  // into someone else's log. The API's container is on the compose network
+  // with nginx and Caddy (172.18.0.0/16 here); the family's LAN is not.
+  const COMPOSE = ['172.18.0.3/16', '127.0.0.1/8', '::1/128'];
+  const NGINX = '172.18.0.5';
+  const CADDY = '172.18.0.7';
+  const PHONE = '192.168.1.50';
+  /** The address a request is recorded under (metaOf), and what rate limits count. */
+  const seen = async (
+    peer: string,
+    forwarded: string | null,
+    over: Partial<ApiConfig> = {},
+    networks: string[] = COMPOSE,
+  ): Promise<{ meta: string | null | undefined; status: number }> => {
+    const built = await make(undefined, over, undefined, networks);
+    let meta: string | null | undefined;
     built.get('/spy', (req) => {
-      ip = req.ip;
+      meta = metaOf(req).ip;
       return { ok: true };
     });
-    await built.inject({ url: '/spy', headers, remoteAddress: '10.1.2.3' });
-    return ip;
+    const res = await built.inject({
+      url: '/spy',
+      headers: forwarded === null ? {} : { 'x-forwarded-for': forwarded },
+      remoteAddress: peer,
+    });
+    return { meta, status: res.statusCode };
   };
 
-  it('by default a private proxy is believed', async () => {
-    expect(await seen({ 'x-forwarded-for': '203.0.113.9' })).toBe('203.0.113.9');
+  it('nginx, on the compose network, is believed: the phone it was reached from', async () => {
+    expect((await seen(NGINX, PHONE)).meta).toBe(PHONE);
+    expect((await seen(NGINX, null)).meta).toBe(NGINX);
   });
 
-  it('with none, the header is ignored entirely', async () => {
-    expect(await seen({ 'x-forwarded-for': '203.0.113.9' }, { FDV_TRUST_PROXY: 'none' })).toBe(
-      '10.1.2.3',
+  it('a LAN peer cannot set the client address', async () => {
+    // Straight to the API from the home Wi-Fi: its own address, whatever it says.
+    expect((await seen(PHONE, '203.0.113.9')).meta).toBe(PHONE);
+    // Through an nginx that adds to what it was sent, as before 5.30: the
+    // LAN hop is not a proxy, so what it wrote to its left is not believed.
+    expect((await seen(NGINX, `203.0.113.9, ${PHONE}`)).meta).toBe(PHONE);
+    // The rule before 5.30 believed every private address, and so the phone.
+    expect((await seen(NGINX, `203.0.113.9, ${PHONE}`, { FDV_TRUST_PROXY: 'private' })).meta).toBe(
+      '203.0.113.9',
     );
   });
 
+  it('through Caddy, which writes the address it was reached from: that one', async () => {
+    // Caddy to the API itself (docker/caddy).
+    expect((await seen(CADDY, PHONE)).meta).toBe(PHONE);
+    // An IPv4 peer as an IPv6 socket names it is the same peer.
+    expect((await seen(`::ffff:${NGINX}`, PHONE)).meta).toBe(PHONE);
+  });
+
+  it('a proxy on the network is believed for one hop: the address it wrote last (the 5.30 review, X530-1)', async () => {
+    // The network's gateway is on it too, and Docker Desktop and
+    // docker-proxy hand on outside connections from there: a proxy of one's
+    // own that adds to what a caller wrote passes on a forged address behind it.
+    const owners = ['172.19.0.5/16', '127.0.0.1/8', '::1/128'];
+    const forged = await seen('172.19.0.9', '203.0.113.7, 172.19.0.1', {}, owners);
+    expect(forged.meta).toBe('172.19.0.1');
+    expect((await seen(NGINX, `${PHONE}, ${CADDY}`)).meta).toBe(CADDY);
+  });
+
+  it('a forged non-address in X-Forwarded-For is ignored, not a 500', async () => {
+    for (const forged of ['<script>', 'unknown', `nonsense, ${PHONE}`, '999.1.1.1']) {
+      const r = await seen(NGINX, forged);
+      expect(r.status, forged).toBe(200);
+      // The last address before it: the proxy's own, or the hop it named.
+      expect(r.meta, forged).toBe(forged.endsWith(PHONE) ? PHONE : NGINX);
+    }
+    // Whatever is believed, never text: all, too.
+    expect((await seen(PHONE, 'not-an-address', { FDV_TRUST_PROXY: 'all' })).meta).toBe(PHONE);
+  });
+
+  it('with none, the header is ignored entirely', async () => {
+    expect((await seen(NGINX, '203.0.113.9', { FDV_TRUST_PROXY: 'none' })).meta).toBe(NGINX);
+  });
+
   it('a caller from a public address cannot claim to be a proxy', async () => {
-    const built = await make();
-    let ip = '';
-    built.get('/spy2', (req) => {
-      ip = req.ip;
-      return { ok: true };
-    });
-    await built.inject({
-      url: '/spy2',
-      headers: { 'x-forwarded-for': '198.51.100.7' },
-      remoteAddress: '203.0.113.200',
-    });
-    expect(ip).toBe('203.0.113.200');
+    expect((await seen('203.0.113.200', '198.51.100.7')).meta).toBe('203.0.113.200');
+  });
+
+  it('the rate limit counts the address as believed, not as claimed', async () => {
+    const built = await make(undefined, { FDV_RATE_LIMIT_PER_MINUTE: 60 }, undefined, COMPOSE);
+    // A LAN peer that writes a new address each time is still one address.
+    let last = 0;
+    for (let i = 0; i < 61; i += 1) {
+      last = (
+        await built.inject({
+          url: '/api/v1/capabilities',
+          headers: { 'x-forwarded-for': `203.0.113.${i}` },
+          remoteAddress: PHONE,
+        })
+      ).statusCode;
+    }
+    expect(last).toBe(429);
   });
 });
 

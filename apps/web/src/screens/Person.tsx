@@ -500,8 +500,9 @@ const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
  * whom and the note, with Unlock; one a restore paused offers Turn back on.
  * Since 5.29 it sends a password reset, for somebody an owner may reset
  * (`reset_path`, which a vault from before does not say), its dialog saying
- * which way this vault takes for them and why. Each is an owner power,
- * asked as the card is.
+ * which way this vault takes for them and why. Since 5.30 it signs them out
+ * everywhere (`features.sign_out_everywhere`, A53), a co-owner too, once
+ * confirmed. Each is an owner power, asked as the card is.
  */
 function AccountCard(props: { member: Member; name: string; otherOwners: boolean }) {
   const { guarded, authVersion, caps } = useApp();
@@ -518,12 +519,14 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
   const [busy, setBusy] = useState(false);
   const [locking, setLocking] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const shown = useRef<HTMLDListElement>(null);
   const heldLine = useRef<HTMLParagraphElement>(null);
   const status = useRef<HTMLParagraphElement>(null);
   const lockButton = useRef<HTMLButtonElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
+  const signOutButton = useRef<HTMLButtonElement>(null);
   const tz = timezone ?? 'UTC';
 
   const show = async () => {
@@ -567,6 +570,30 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
       });
       status.current?.focus();
     } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Signs them out everywhere (5.30), once confirmed, and asked as the card is. */
+  const signOut = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await guarded((t) => api.signOutEverywhere(t, props.member.id));
+      if (done === null) return;
+      flushSync(() => {
+        // Their devices went with their sessions: said from the answer,
+        // without a second look, which the activity log would note.
+        setCard((was) => (was ? { ...was, devices: [] } : was));
+        setSigningOut(false);
+        setSaid(`${props.name} is signed out everywhere.`);
+      });
+      status.current?.focus();
+    } catch (err) {
+      flushSync(() => setSigningOut(false));
       setError(describeError(err));
     } finally {
       setBusy(false);
@@ -671,6 +698,58 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
             </ul>
           )}
           <p className="muted">Only owners can see this.</p>
+          {/* Signed out everywhere (5.30, A53): a co-owner too. Somebody
+              signed in nowhere has nothing to sign out of. */}
+          {caps?.features.sign_out_everywhere === true && card.devices.length > 0 && (
+            <>
+              <ErrorNote message={suspended ? null : error} />
+              <p id="sign-out-about" className="muted">
+                {`Signing out everywhere ends each of these at once. ${props.name} can sign in again with their own password.`}
+              </p>
+              <Button
+                ref={signOutButton}
+                kind="quiet"
+                danger
+                describedBy="sign-out-about"
+                onClick={() => {
+                  setSaid(null);
+                  setError(null);
+                  setSigningOut(true);
+                }}
+              >
+                Sign out everywhere
+              </Button>
+            </>
+          )}
+          {signingOut && (
+            <ConfirmDialog
+              title={`Sign ${props.name} out everywhere?`}
+              confirmLabel="Sign out everywhere"
+              busyLabel="Signing out…"
+              danger
+              busy={busy}
+              returnFocus={signOutButton}
+              onConfirm={() => void signOut()}
+              onCancel={() => setSigningOut(false)}
+            >
+              <ul className="lock-effects" aria-label="What signing out everywhere does">
+                <li>
+                  {card.devices.length === 1
+                    ? `The one device ${props.name} is signed in on is signed out now.`
+                    : `Each of the ${card.devices.length} devices ${props.name} is signed in on is signed out now.`}
+                </li>
+                {card.max_offline_days !== undefined && (
+                  <li>{`A phone that never reconnects keeps its offline copies up to ${card.max_offline_days} days.`}</li>
+                )}
+                <li>
+                  {caps?.features.member_admin === true
+                    ? `${props.name} can sign in again with their own password at once. To keep them out, lock their sign-in instead.`
+                    : `${props.name} can sign in again with their own password at once.`}
+                </li>
+                <li>{`${props.name} is emailed to say so.`}</li>
+              </ul>
+            </ConfirmDialog>
+          )}
           {/* A sign-in a restore paused may be locked as well (the 5.28
               review): a lock the backup lost is put back without turning
               them on first, and the lock takes the pause's place. */}

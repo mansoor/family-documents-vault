@@ -99,6 +99,37 @@ the server and on the family's devices, use the internal Caddyfile with the Tail
 as `FDV_HOSTNAME`, and nothing is exposed to the internet at all — every device reaches
 the vault over the private network, with a name and a certificate that just work.
 
+With the TLS overlay running, `:8080` answers this machine only (it is bound to
+`127.0.0.1`): every other device comes in through Caddy and its certificate, and none
+goes round it. Without the overlay, `:8080` stays open to your network, as that is how
+the house reaches the vault. The overlay's `!override` needs Docker Compose 2.24.4 or
+later.
+
+### Who is asking
+
+The activity log records the address each action came from, sign-in attempts are limited
+per address, and a browser's refresh grace (see [Sign-in and sessions](#sign-in-and-sessions))
+compares addresses. So the vault is careful about whose word it takes for an address:
+
+- **nginx** (`:8080`) passes on the address a request came from, and nothing the caller
+  wrote in `X-Forwarded-For`.
+- **Caddy** (the TLS overlay) sends the API's requests to the API itself, with the address
+  it was reached from, and takes no caller's word for one either.
+- **The API** believes `X-Forwarded-For` only from the networks its own container is on —
+  in the compose setup, nginx and Caddy (`FDV_TRUST_PROXY=network`, the default) — never
+  from a device on your LAN, and only the one address that proxy wrote last; an entry
+  that is not an address is not believed at all.
+
+`FDV_TRUST_PROXY=private` believes any private address, as the vault did before. A
+reverse proxy of your own in front of `:8080` is recorded as its own address, since nginx
+takes nobody's word; use the TLS overlay for a certificate, or put your proxy in front of
+the API on the vault's own network. Such a proxy must **overwrite** `X-Forwarded-For` with
+the address it was reached from (Caddy and Traefik do by default; nginx with
+`proxy_set_header X-Forwarded-For $remote_addr`), not add to what the caller sent: the API
+takes only the last address, and nothing a caller wrote should reach it. On Docker
+Desktop, every device can reach the vault as the Docker network's gateway, and so be
+recorded as that one address.
+
 ### Links for people outside the family
 
 A share link is for someone who is not on your network — the letting agent, the
@@ -280,7 +311,7 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_PUBLIC_HOSTNAME`              | unset                                     | The public-only site's name, for its certificate (profile `public-only`).                                                                                                                                               |
 | `FDV_PUBLIC_HTTPS_PORT`            | `8443`                                    | The port the public-only site listens on for `https://`; forward the router's 443 to it.                                                                                                                                |
 | `FDV_PUBLIC_HTTP_PORT`             | `8081`                                    | The port it listens on for `http://` (certificates, and the redirect); forward the router's 80 to it.                                                                                                                   |
-| `FDV_TRUST_PROXY`                  | `private`                                 | Whose `X-Forwarded-For` to believe when recording who did what: `private` (the container network and a proxy on your LAN), `all`, or `none`.                                                                            |
+| `FDV_TRUST_PROXY`                  | `network`                                 | Whose `X-Forwarded-For` to believe: `network` (the API's own network: nginx and Caddy, never your LAN), `private` (any private address), `all` or `none`. See [Who is asking](#who-is-asking).                          |
 | `FDV_SMTP_URL`                     | unset                                     | Your own mail server for password-reset links and the codes a share link can ask for, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. Set it on the API and the worker. See [Passwords](#passwords).            |
 | `FDV_SMTP_FROM`                    | `Family Document Vault <vault@localhost>` | Who those emails come from.                                                                                                                                                                                             |
 | `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS` | `false`                                   | Let notifications go to addresses inside your own network — a UnifiedPush distributor (ntfy) on your LAN. Set it on both the API and the worker. See [Notifications on the phone app](#notifications-on-the-phone-app). |
@@ -292,7 +323,8 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
 - Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a refresh token that rotates on every use.
 - **A session lasts 30 days from when it was last used, and 180 days at most** from the sign-in: a device used every week stays signed in for half a year, then asks once for the password. This is the same for browsers and the phone app.
-- A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session.
+- A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device that still holds a token from before this kind is given one of the new kind at its next refresh, and the vault remembers the old token from then on, however many refreshes later; tokens it had replaced before the upgrade are remembered only as before.)
+- **Sign out everywhere.** An owner can sign somebody out of every device at once from their page (**People → their name → Account**), with a passkey or a code from an authenticator app — for a lost phone, or a password somebody else knows. Another owner too, who is told by email; anybody it is about is emailed. Their sign-in stays as it was: they sign in again with their own password. To keep them out, lock their sign-in instead.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.
 - The token signing key is derived from `FDV_MASTER_KEY`. [Rotating the master key](#rotating-the-master-key) signs everyone out.
@@ -337,6 +369,14 @@ The four roles:
 An owner can hand out any role. An adult can give a teen or a viewer a
 sign-in, but only an owner can make another adult or owner, because that
 opens the adults-only documents.
+
+Changing somebody's role says first what else it changes, and does it on
+every device they use. Made a teen or a viewer (or anybody made a viewer),
+their phone stops keeping Essentials: it removes them at its next sync, and
+keeping them again asks for their password. No longer an adult, their
+requests to send documents close, and files sent for them alone to look at go
+to the owners; their exports stop working. The activity log says so, to the
+owners and to them.
 
 ### Two owners, and what happens when that ends
 

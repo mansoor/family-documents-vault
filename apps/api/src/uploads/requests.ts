@@ -1971,7 +1971,9 @@ function megabytes(n: number): string {
  * their sign-in taken away — closed, with their sessions and codes, in the
  * transaction that made the change (A39), and each written down. The
  * database finds them (upload_requests_close_lost(), 0044): whoever makes
- * the change may not see them.
+ * the change may not see them. Answers how many of them were live: one run
+ * out or locked by ten wrong tries is closed too, with no line, and not
+ * counted (0053, the 5.30 review).
  */
 export async function closeLostRequests(
   trx: Db,

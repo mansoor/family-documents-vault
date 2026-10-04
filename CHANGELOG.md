@@ -6,6 +6,33 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.33] - 2026-10-04 — iteration 5.30
+
+Role changes reach every device; sign out everywhere.
+
+### Added
+
+- **Sign out everywhere**, for owners, from a person's Account card. It ends every session and device that person has, and their phone is told at once. It asks for a passkey or an authenticator code. The person is emailed, and a co-owner signed out this way is pointed to the activity log.
+- **Changing someone's role** now opens a dialog that lists what will happen, for example "Their phone removes the Essentials it keeps at its next sync" or "Their upload requests close". Afterwards it says what did happen.
+
+### Changed
+
+- A role change that lets someone see less now reaches their devices: the offline copies their phone keeps are removed at its next sync. Upload requests they can no longer make are closed; only ones that still worked are counted.
+- **Stolen sign-ins are caught more reliably.** If any earlier sign-in token of a session is used again, that session ends, not only when it is the most recent one. Sessions open at upgrade join in from their next refresh.
+- **The vault takes nobody's word for a visitor's address** except its own web server's. A device on your home network can no longer pretend to be somewhere else, for sign-in limits or in the activity log.
+  - The new default is `FDV_TRUST_PROXY=network`.
+  - If you run your own reverse proxy in front of the vault, it must replace `X-Forwarded-For` rather than add to it. Otherwise every visitor is recorded at the proxy's address.
+
+### Upgrading
+
+- **TLS overlay (Caddy).** The vault's web port is now bound to this machine only, `127.0.0.1`, and Caddy talks to the API directly. This needs Docker Compose 2.24.4 or later.
+- **Update your checkout too.** The Caddyfiles are read from it, so update it along with the images. With an old Caddyfile everything still works, but the API sees Caddy's address for everyone.
+- **Without the TLS overlay**, the vault stays reachable on your home network on port 8080, as before.
+
+### Security
+
+- Under the TLS overlay, slow or never-finished requests are cut off, as nginx did before. An upload over the size limit is refused and its connection closed, instead of being read to the end.
+
 ## [0.5.32] - 2026-10-04 — iteration 5.29
 
 A password reset an owner starts.

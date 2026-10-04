@@ -24,6 +24,15 @@
 #   docker compose -f docker-compose.yml -f docker-compose.tls.yml --profile public-only up -d
 
 services:
+  # With TLS in front, the plain port answers this machine only (5.30):
+  # nobody else on the network goes round Caddy, and its certificate, to
+  # :8080. Without this file :8080 stays open to the network, as the vault
+  # is reached that way (docker-compose.yml). Needs Compose 2.24.4 or later
+  # for `!override`, which replaces the port rather than adding a second.
+  web:
+    ports: !override
+      - '127.0.0.1:${FDV_PORT:-8080}:80'
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
