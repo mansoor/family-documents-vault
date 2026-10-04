@@ -51,6 +51,21 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       '    Settings → After a restore.',
     );
   }
+  if (r.signInsPaused > 0) {
+    lines.push(
+      `  - ${plural(r.signInsPaused, 'sign-in')} ${r.signInsPaused === 1 ? 'is' : 'are'} paused — ` +
+        'every one but the owners’ — since the backup cannot',
+      '    know of a lock, or a sign-in taken away, since it was made. An owner turns',
+      '    each back on, one tap each, in Settings → After a restore.',
+    );
+  }
+  if (r.locksKept > 0) {
+    lines.push(
+      `  - ${plural(r.locksKept, 'sign-in')} locked when the backup was made ` +
+        `${r.locksKept === 1 ? 'stays' : 'stay'} locked until an owner`,
+      '    unlocks it: a lock that would have ended by itself no longer does.',
+    );
+  }
   if (r.incomingDropped > 0) {
     lines.push(
       `  - ${plural(r.incomingDropped, 'file')} sent through a request and waiting when the backup ` +

@@ -248,10 +248,10 @@ describe('who reads each line', () => {
       // Today's lines about a member are everyone's …
       expect(shownTo(reader, about('member.role_changed', 'member')), who).toBe(true);
       expect(shownTo(reader, about('member.sign_in_removed', 'member')), who).toBe(true);
-      // … and an owner's action from 5.28–5.30, before its iteration gives
+      // … and an owner's action from 5.29–5.30, before its iteration gives
       // it an audience, is nobody's.
       expect(shownTo(reader, about('member.made_owner', 'member')), who).toBe(false);
-      expect(shownTo(reader, about('member.suspended', 'member')), who).toBe(false);
+      expect(shownTo(reader, about('member.signed_out_everywhere', 'member')), who).toBe(false);
       // Nor does a name that happens to be on every object count as a rule.
       expect(shownTo(reader, about('constructor', 'member')), who).toBe(false);
     }

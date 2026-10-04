@@ -7,6 +7,7 @@ import {
   INCOMING_KEEP_DAYS,
   incomingFileName,
   PREVIEW_MAX_PAGES,
+  lockInEffect,
   type IncomingAccepted,
   type IncomingFileView,
   type IncomingPreviewState,
@@ -143,18 +144,22 @@ export class IncomingService {
 
   /**
    * The reviewer as they are now, held until the decision commits: a role
-   * changed, or a sign-in taken away, waits for it, and it for them. One
-   * who can no longer review is answered as anybody else who cannot.
+   * changed, a sign-in taken away, or locked (5.28), waits for it, and it
+   * for them. One who can no longer review is answered as anybody else who
+   * cannot.
    */
   private async stillReviews(trx: Db, p: Principal): Promise<void> {
     const me = await trx
       .selectFrom('account_household')
-      .select('role')
+      .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
       .where('account_id', '=', p.accountId)
       .where('household_id', '=', p.householdId)
       .forShare()
       .executeTakeFirst();
     if (!me || !can(me.role, 'upload_request.create')) throw notHere();
+    // Locked by an owner (5.28): reviews nothing. (A pause after a restore
+    // takes nothing away; a paused sign-in cannot ask anyway.)
+    if (lockInEffect(me)) throw notHere();
     // The database answers this transaction as the role it was asked with.
     if (me.role !== p.role) throw busy();
   }

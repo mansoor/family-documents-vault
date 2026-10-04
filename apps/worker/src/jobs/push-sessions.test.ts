@@ -122,6 +122,42 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
     expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
   });
 
+  it('a sign-in locked, or paused after a restore, is pushed nothing but of its own sign-in (5.28)', async () => {
+    const alert = { household_id: hh, account_ids: [account], subject: 'A new device', body: 'b' };
+    const deps = { app: db, vapid, smtpKey, baseUrl: 'x', log: () => undefined };
+    // Another owner who can sign in, as every household keeps (0051's floor):
+    // this one is locked as no owner could be through the API, to see the rule.
+    const m = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name) values ($1, 'Other') returning id",
+      [hh],
+    );
+    const o = await admin.query<{ id: string }>(
+      "insert into account (email) values ('other-sessions-528@example.test') returning id",
+    );
+    await admin.query(
+      "insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, 'owner')",
+      [o.rows[0]?.id, hh, m.rows[0]?.id],
+    );
+    await admin.query(
+      `update account_household set suspended_at = now(), suspend_reason = 'locked' where account_id = $1`,
+      [account],
+    );
+    try {
+      let endpoints = pushedTo();
+      await sendAlert(deps, alert);
+      expect(endpoints).toEqual([]);
+      vi.restoreAllMocks();
+      endpoints = pushedTo();
+      await sendAlert(deps, { ...alert, own_sign_in: true });
+      expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
+    } finally {
+      await admin.query(
+        `update account_household set suspended_at = null, suspend_reason = null where account_id = $1`,
+        [account],
+      );
+    }
+  });
+
   it('once every sign-in has ended, nothing is sent anywhere', async () => {
     await withSystem(db, hh, (trx) =>
       trx.updateTable('session').set({ revoked_at: new Date() }).execute(),

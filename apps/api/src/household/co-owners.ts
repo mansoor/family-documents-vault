@@ -5,6 +5,7 @@ import {
   identityAudienceSees,
   roleLabel,
   ROLES,
+  suspensionInEffect,
   type Role,
 } from '@fdv/shared';
 import { sql } from 'kysely';
@@ -115,6 +116,18 @@ export class CoOwnerService {
           role: to,
           message: `${target.display_name} is already ${article(to)}.`,
         };
+      }
+      // A locked person is not made an owner (5.28): an owner's sign-in is
+      // never locked, so it would be one an owner could not lock again. The
+      // database refuses it too (account_household_suspension, 0051).
+      if (to === 'owner' && suspensionInEffect(target)) {
+        throw new ApiError(
+          409,
+          'locked',
+          target.suspend_reason === 'restored'
+            ? `${target.display_name}'s sign-in is waiting after a restore. Turn it back on first, then make them an owner.`
+            : `${target.display_name}'s sign-in is locked. Unlock it first, then make them an owner.`,
+        );
       }
 
       // Taking the owner role away is the only change that waits.
@@ -684,16 +697,22 @@ export class CoOwnerService {
   }
 
   private async membership(trx: Db, memberId: string) {
+    // Held for the change (5.28): a lock at the same moment waits for this,
+    // or this for it, and each sees the other.
     const row = await trx
       .selectFrom('account_household')
       .innerJoin('member', 'member.id', 'account_household.member_id')
       .select([
         'account_household.account_id',
         'account_household.role',
+        'account_household.suspended_at',
+        'account_household.suspended_until',
+        'account_household.suspend_reason',
         'member.display_name',
         'member.id as member_id',
       ])
       .where('account_household.member_id', '=', memberId)
+      .forNoKeyUpdate('account_household')
       .executeTakeFirst();
     if (!row) throw notFound('That sign-in');
     return row;

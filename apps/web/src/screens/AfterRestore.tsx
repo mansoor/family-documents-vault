@@ -1,11 +1,17 @@
-import { can, IDENTITY_AUDIENCE_LABELS, type UploadRequestView } from '@fdv/shared';
+import {
+  can,
+  IDENTITY_AUDIENCE_LABELS,
+  roleLabel,
+  type PausedSignIn,
+  type UploadRequestView,
+} from '@fdv/shared';
 import { useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
-import { linkTarget, RequestRow, requestTarget } from './Sharing.js';
+import { linkTarget, RequestRow, requestTarget, turnedBackOnWords } from './Sharing.js';
 
 /**
  * Settings → After a restore (5.16).
@@ -21,7 +27,12 @@ import { linkTarget, RequestRow, requestTarget } from './Sharing.js';
  * Requests to send documents wait here too (5.22, the API of 5.21): an owner
  * turns each back on; an adult sees their own, to take back — and their own
  * review-by-me request, which no owner can see, only to take back and ask
- * again. 5.28 adds the people whose sign-ins wait.
+ * again.
+ *
+ * And the people whose sign-ins wait (5.28, A55): a restore pauses every
+ * sign-in but the owners', and each role is as the backup had it, so an
+ * owner sees it beside the name before turning the sign-in back on, one tap
+ * each (a passkey or a code first, as for every power over a sign-in).
  */
 export function AfterRestoreScreen() {
   const { caps, guarded, withToken, authVersion } = useApp();
@@ -38,7 +49,12 @@ export function AfterRestoreScreen() {
   } = useLoad(
     async (t) => {
       const paused = await api.afterRestore(t);
-      return { links: paused.links, requests: paused.upload_requests ?? [] };
+      return {
+        links: paused.links,
+        requests: paused.upload_requests ?? [],
+        // An owner's alone; absent from a vault from before 5.28.
+        signIns: paused.sign_ins ?? [],
+      };
     },
     [authVersion],
   );
@@ -61,10 +77,13 @@ export function AfterRestoreScreen() {
       setAsking(null);
       if (done === null && how === 'resume') return;
       const what = requestTarget(r);
+      const What = `${what.charAt(0).toUpperCase()}${what.slice(1)}`;
       setSaid(
-        how === 'resume'
-          ? `${what.charAt(0).toUpperCase()}${what.slice(1)} works again.`
-          : `${what.charAt(0).toUpperCase()}${what.slice(1)} is taken back. What was sent already stays.`,
+        // Maybe still paused by its requester's sign-in (5.28): on, but not
+        // working yet, as the vault answered.
+        how === 'resume' && done
+          ? turnedBackOnWords(what, done, done.requested_by_name ?? 'whoever asked')
+          : `${What} is taken back. What was sent already stays.`,
       );
       await reload();
       status.current?.focus();
@@ -86,7 +105,31 @@ export function AfterRestoreScreen() {
           : await withToken((t) => api.revokeShare(t, link.id));
       if (done === null) return;
       const what = `The link to ${linkTarget(link, true)}`;
-      setSaid(how === 'resume' ? `${what} works again.` : `${what} is taken back for good.`);
+      setSaid(
+        // Maybe still paused by its maker's sign-in (5.28): on, but not
+        // working yet, as the vault answered.
+        how === 'resume' && done
+          ? turnedBackOnWords(what, done, done.created_by_name ?? 'whoever made it')
+          : `${what} is taken back for good.`,
+      );
+      await reload();
+      status.current?.focus();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // A sign-in back on: they can sign in with their own password, as before.
+  const resumeSignIn = async (s: PausedSignIn) => {
+    if (busy !== null) return;
+    setBusy(s.member_id);
+    setError(null);
+    try {
+      const done = await guarded((t) => api.resumeMember(t, s.member_id));
+      if (done === null) return;
+      setSaid(`${s.display_name} can sign in again.`);
       await reload();
       status.current?.focus();
     } catch (err) {
@@ -98,6 +141,7 @@ export function AfterRestoreScreen() {
 
   const links = data ?? [];
   const requests = waiting?.requests ?? [];
+  const signIns = waiting?.signIns ?? [];
   return (
     <main className="page page-top has-nav">
       <TopBar title="After a restore" back="/settings" />
@@ -145,13 +189,48 @@ export function AfterRestoreScreen() {
       <p className="notice" role="status" tabIndex={-1} ref={status} hidden={!said}>
         {said}
       </p>
+      {signIns.length > 0 && (
+        <section aria-labelledby="paused-sign-ins-h" className="stack">
+          <h2 id="paused-sign-ins-h" className="section-h">
+            Sign-ins waiting for you
+          </h2>
+          <p className="muted">
+            Everyone but the owners was signed out, and can’t sign in until you turn their sign-in
+            back on. Each role is as the backup had it: check it is still right first.
+          </p>
+          <ul className="list" aria-label="Paused sign-ins">
+            {signIns.map((s) => (
+              <li key={s.member_id} className="place">
+                <div className="place-title">{s.display_name}</div>
+                <div className="muted">Role: {roleLabel(s.role)}</div>
+                {/* 5.33: a viewer's restriction goes here, beside the role,
+                    to be confirmed with it. The restriction itself arrives
+                    in 5.32 and 5.33; until then there is nothing to show. */}
+                <div className="row">
+                  {/* aria-disabled while one is on its way, not disabled:
+                      "confirm it is you" gives focus back to it. */}
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    aria-disabled={busy !== null}
+                    aria-label={`Turn back on ${s.display_name}’s sign-in`}
+                    onClick={() => void resumeSignIn(s)}
+                  >
+                    {busy === s.member_id ? 'Working…' : 'Turn back on'}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <section aria-labelledby="paused-links-h" className="stack">
         <h2 id="paused-links-h" className="section-h">
           {owner ? 'Links waiting for you' : 'Your paused links'}
         </h2>
         {data && links.length === 0 ? (
           <p className="muted">
-            {requests.length > 0
+            {requests.length > 0 || signIns.length > 0
               ? 'No link is waiting.'
               : 'Nothing is waiting. Every link you may decide about is decided.'}
           </p>

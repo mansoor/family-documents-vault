@@ -128,7 +128,11 @@ interface Due extends Omit<DigestItem, 'private'> {
   owner_member_id: string | null;
 }
 
-/** Everyone in the household whose sign-in still works. */
+/**
+ * Everyone in the household whose sign-in still works: not switched off,
+ * and since 5.28 not locked, nor paused after a restore — a lock past its
+ * end is over, and they hear again.
+ */
 function people(trx: Db) {
   return trx
     .selectFrom('account_household')
@@ -140,6 +144,9 @@ function people(trx: Db) {
       'account.email',
     ])
     .where('account.disabled_at', 'is', null)
+    .where(
+      sql<boolean>`not suspension_in_effect(account_household.suspended_at, account_household.suspended_until)`,
+    )
     .orderBy('account_household.joined_at')
     .execute();
 }

@@ -204,6 +204,100 @@ export interface MemberAccount {
   last_signed_in_at: string | null;
   /** Where they are signed in now, the most recently used first. */
   devices: MemberAccountDevice[];
+  /**
+   * Their sign-in locked by an owner, or paused after a restore (5.28); null
+   * when they can sign in. Absent from older vaults, which lock nobody.
+   */
+  suspension?: MemberSuspension | null;
+  /**
+   * How many days a phone may go on showing the Essentials it keeps without
+   * reaching the vault (FDV_OFFLINE_MAX_DAYS, the `max_offline_days` a phone
+   * is given): a phone that never reconnects keeps its copies that long
+   * after a lock (5.28). Absent from older vaults.
+   */
+  max_offline_days?: number;
+}
+
+/**
+ * Why somebody cannot sign in just now (5.28): `locked` by an owner (A51),
+ * or `restored` — paused after the vault was restored from a backup, until
+ * an owner turns it back on (A55). Treat a reason never heard of as
+ * paused.
+ */
+export type SuspendReason = 'locked' | 'restored';
+
+/** A sign-in locked or paused (5.28), as an owner is shown it. */
+export interface MemberSuspension {
+  reason: SuspendReason;
+  /** When it was locked or paused. */
+  since: string;
+  /** A lock that ends by itself at this moment; null until an owner unlocks it. */
+  until: string | null;
+  /** The owner's note to the other owners; never shown to the person. */
+  note: string | null;
+  /** Who locked it, by name; null after a restore, or once they have gone. */
+  by: string | null;
+}
+
+/**
+ * POST /members/{id}/lock (5.28): until when (an ISO moment, in the future,
+ * within a year; left out or null, until an owner unlocks it); whether their
+ * links and requests end for good rather than pause (`end_links`); and a
+ * note for the other owners (500 characters at most).
+ */
+export interface MemberLock {
+  until?: string | null;
+  end_links?: boolean;
+  note?: string | null;
+}
+
+/** The longest a lock may be set to last by itself (5.28): a year. */
+export const LOCK_MAX_DAYS = 365;
+
+/** The longest note a lock keeps (5.28). */
+export const LOCK_NOTE_MAX = 500;
+
+/**
+ * A sign-in a restore paused (5.28, A55), waiting in "After a restore" for
+ * an owner to turn it back on. Its `role` is shown to confirm; 5.33 adds a
+ * viewer's restriction beside it.
+ */
+export interface PausedSignIn {
+  member_id: string;
+  display_name: string;
+  role: Role;
+  paused_at: string;
+}
+
+/**
+ * Whether a lock or a pause is in effect now (5.28): there, and not past
+ * its end — a lock past its date is over, whoever asks, with nothing
+ * written. The database's suspension_in_effect() (0051) says the same;
+ * change them together.
+ */
+export function suspensionInEffect(
+  s: { suspended_at: Date | string | null; suspended_until: Date | string | null },
+  now: number = Date.now(),
+): boolean {
+  if (s.suspended_at === null) return false;
+  return s.suspended_until === null || new Date(s.suspended_until).getTime() > now;
+}
+
+/**
+ * Whether an owner's lock is in effect now (5.28): what takes away somebody's
+ * right to review what was sent for them alone, and what is the owners' and
+ * the person's to know. A pause after a restore is not one: it waits for an
+ * owner (A55), and takes nothing away.
+ */
+export function lockInEffect(
+  s: {
+    suspend_reason: string | null;
+    suspended_at: Date | string | null;
+    suspended_until: Date | string | null;
+  },
+  now: number = Date.now(),
+): boolean {
+  return s.suspend_reason === 'locked' && suspensionInEffect(s, now);
 }
 
 /** The largest photo a person's picture is made from (5.17c): 20 MiB. */
@@ -305,9 +399,19 @@ export interface Share {
    * older vaults, where every link is legacy.
    */
   flow?: 'legacy' | 'v2';
-  /** When it was paused, and why (0.5.14). Absent from older vaults. */
+  /**
+   * When it was paused, and why (0.5.14): `restored`, by a restore, for an
+   * owner to turn back on. Since 5.28, to an owner and to whoever made it,
+   * `locked` — its maker's sign-in is locked, and it works again by itself
+   * once they are unlocked — or `sign_in_paused` — its maker's sign-in
+   * waits after a restore, and it works again once that is turned back on;
+   * no owner turns either on (`paused_at` is then when the sign-in was
+   * locked or paused). Anybody else is told it is paused, with no reason
+   * and no moment (null): a lock is the owners' and the person's to know.
+   * Absent from older vaults; treat a reason never heard of as paused.
+   */
   paused_at?: string | null;
-  paused_reason?: 'restored' | null;
+  paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | null;
   /**
    * What it gives (5.18): `view`, the pages the vault drew for it, with
    * whom it is for across each, and never the file; `download`, the file.

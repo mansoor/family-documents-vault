@@ -9,16 +9,26 @@ import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
 import { ChangePassword } from './Password.js';
 
-/** "1 link is paused until you turn it back on", "2 links and 1 request you made are paused". */
-export function pausedWords(waiting: { links: number; requests: number }, owner: boolean): string {
+/**
+ * "1 link is paused until you turn it back on", "2 links and 1 request you
+ * made are paused"; since 5.28 an owner's sign-ins first: "1 sign-in, 2
+ * links and 1 request are paused until you turn them back on".
+ */
+export function pausedWords(
+  waiting: { links: number; requests: number; signIns?: number },
+  owner: boolean,
+): string {
+  const signIns = waiting.signIns ?? 0;
+  const count = (n: number, one: string, many: string) =>
+    n > 0 ? `${n} ${n === 1 ? one : many}` : null;
   const parts = [
-    waiting.links > 0 ? `${waiting.links} ${waiting.links === 1 ? 'link' : 'links'}` : null,
-    waiting.requests > 0
-      ? `${waiting.requests} ${waiting.requests === 1 ? 'request' : 'requests'}`
-      : null,
+    count(signIns, 'sign-in', 'sign-ins'),
+    count(waiting.links, 'link', 'links'),
+    count(waiting.requests, 'request', 'requests'),
   ].filter((p): p is string => p !== null);
-  const many = waiting.links + waiting.requests > 1;
-  const what = parts.join(' and ');
+  const many = signIns + waiting.links + waiting.requests > 1;
+  const last = parts.pop();
+  const what = parts.length > 0 ? `${parts.join(', ')} and ${last ?? ''}` : (last ?? '');
   return owner
     ? `${what} ${many ? 'are' : 'is'} paused until you turn ${many ? 'them' : 'it'} back on`
     : `${what} you made ${many ? 'are' : 'is'} paused`;
@@ -37,12 +47,17 @@ export function SettingsScreen() {
   // made, which only an owner turns back on.
   const mayShare = can(storedRole(), 'document.share');
   const owner = can(storedRole(), 'restore.review');
-  // Requests to send documents a restore paused count too (5.22).
+  // Requests to send documents a restore paused count too (5.22), and the
+  // sign-ins it paused, which only an owner is given (5.28).
   const { data: waiting } = useLoad(
     async (t) => {
-      if (!mayShare) return { links: 0, requests: 0 };
+      if (!mayShare) return { links: 0, requests: 0, signIns: 0 };
       const paused = await api.afterRestore(t);
-      return { links: paused.links.length, requests: (paused.upload_requests ?? []).length };
+      return {
+        links: paused.links.length,
+        requests: (paused.upload_requests ?? []).length,
+        signIns: (paused.sign_ins ?? []).length,
+      };
     },
     [authVersion, mayShare],
   );
@@ -64,7 +79,7 @@ export function SettingsScreen() {
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
       <ul className="list">
-        {waiting && waiting.links + waiting.requests > 0 && (
+        {waiting && waiting.links + waiting.requests + waiting.signIns > 0 && (
           <li>
             <Link to="/settings/after-restore" className="rowbtn">
               <span className="doc-title">After a restore</span>

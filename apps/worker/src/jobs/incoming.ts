@@ -10,6 +10,7 @@ import {
   INCOMING_KEEP_DAYS,
   incomingWords,
   PREVIEW_MAX_PAGES,
+  lockInEffect,
   type PushMessage,
 } from '@fdv/shared';
 import { adapterFromRow, deleteAll, StorageError, type StorageAdapter } from '@fdv/storage';
@@ -185,7 +186,18 @@ export async function tellWaiting(
       .where('submitted_at', 'is not', null)
       .where('scan_state', 'in', ['unscanned', 'clean'])
       .where('preview_state', 'in', ['ready', 'unsupported', 'failed'])
-      .where('told_at', 'is', null);
+      .where('told_at', 'is', null)
+      // Not one for somebody alone whose sign-in waits — locked, or paused
+      // after a restore (5.28): they could not be told, and it would be
+      // marked told all the same. Taken once they can sign in again (a lock
+      // moves it to the owners, who are told then).
+      .where(
+        sql<boolean>`not (review_by = 'me' and exists (
+          select 1 from account_household a
+           where a.household_id = incoming_file.household_id
+             and a.member_id = incoming_file.requester_member_id
+             and suspension_in_effect(a.suspended_at, a.suspended_until)))`,
+      );
     if (requestId) q = q.where('request_id', '=', requestId);
     return q.returning('id').execute();
   });
@@ -333,6 +345,7 @@ export async function tellReviewers(
         join incoming_file f on f.household_id = a.household_id
        where a.household_id = ${hh}
          and a.role in ('owner', 'adult')
+         and not suspension_in_effect(a.suspended_at, a.suspended_until)
          and f.state = 'received' and f.submitted_at is not null
          and f.scan_state in ('unscanned', 'clean')
          and case f.review_by
@@ -481,7 +494,12 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
               .whereRef('a.account_id', '=', 'r.created_by')
               .whereRef('a.household_id', '=', 'r.household_id')
               .whereRef('a.member_id', '=', 'r.requester_member_id')
-              .where('a.role', 'in', ['owner', 'adult']),
+              .where('a.role', 'in', ['owner', 'adult'])
+              // 5.28: locked by an owner, reviews nothing. A pause after a
+              // restore takes nothing away: the files wait for them (A55).
+              .where(
+                sql<boolean>`not (a.suspend_reason = 'locked' and suspension_in_effect(a.suspended_at, a.suspended_until))`,
+              ),
           ),
         ),
       )
@@ -517,13 +535,18 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
       // Who asked, as they are now, held: a role changing waits for this.
       const asker = await trx
         .selectFrom('account_household')
-        .select('role')
+        .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
         .where('account_id', '=', r.created_by)
         .where('household_id', '=', hh)
         .where('member_id', '=', r.requester_member_id)
         .forShare()
         .executeTakeFirst();
-      if (asker && (asker.role === 'owner' || asker.role === 'adult')) return [];
+      // Still able to review: an owner or an adult whose sign-in an owner has
+      // not locked (5.28). Paused after a restore, they still are: what was
+      // sent for them waits until an owner turns them back on.
+      if (asker && (asker.role === 'owner' || asker.role === 'adult') && !lockInEffect(asker)) {
+        return [];
+      }
       const held = await trx
         .selectFrom('upload_request')
         .select('id')
@@ -588,6 +611,24 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
         .set({ owners_only: true })
         .where('request_id', '=', id)
         .execute();
+      // The owners are told of these below, so they are taken now, as
+      // tellWaiting takes what it tells of: the next one would tell them
+      // again (the 5.28 second round). One still arriving or being scanned
+      // is left for its scan job to tell of.
+      if (deps.tell) {
+        await trx
+          .updateTable('incoming_file')
+          .set({ told_at: sql<Date>`coalesce(told_at, now())` })
+          .where(
+            'id',
+            'in',
+            waiting.map((f) => f.id),
+          )
+          .where('state', '=', 'received')
+          .where('submitted_at', 'is not', null)
+          .where('scan_state', 'in', ['unscanned', 'clean'])
+          .execute();
+      }
       await appendAudit(trx, {
         householdId: hh,
         action: 'incoming.moved',

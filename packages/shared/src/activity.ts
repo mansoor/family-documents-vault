@@ -280,6 +280,19 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
         ? line(`${who} made identity details visible to ${to} only`, true)
         : line(`${who} changed who can see identity details`, true);
     }
+    // A sign-in locked by an owner, and unlocked, or turned back on after a
+    // restore (5.28): to the owners, the person and whoever did it, nobody
+    // else — never the note the owner wrote.
+    case 'member.locked': {
+      const until = text(detail.until);
+      const end = until ? ` until ${dayWords(until, e.timezone)}` : '';
+      const links = detail.end_links === true ? ', and ended their links for good' : '';
+      return line(`${who} locked ${possessive(personOf(e))} sign-in${end}${links}`, true);
+    }
+    case 'member.unlocked':
+      return detail.reason === 'restored'
+        ? line(`${who} turned ${possessive(personOf(e))} sign-in back on after the restore`, true)
+        : line(`${who} unlocked ${possessive(personOf(e))} sign-in`, true);
     case 'member.deceased':
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)

@@ -766,3 +766,100 @@ describe.skipIf(!testAdminUrl())('types.regenerate and the date a kind reminds f
     expect(sent).toHaveLength(1);
   });
 });
+
+/**
+ * Whose sign-in is locked by an owner, or paused after a restore (5.28),
+ * hears nothing, as a switched-off account hears nothing: their digest is
+ * left out. A lock past its end is over, and they hear again.
+ */
+describe.skipIf(!testAdminUrl())('the digest skips them (5.28)', () => {
+  let tdb: TestDatabase;
+  let db: Db;
+  let admin: pg.Pool;
+  const hh = randomUUID();
+  const sent: Digest[] = [];
+  const notifier = { digest: async (d: Digest) => (sent.push(d), ['test']) };
+  const clock = new Date('2026-09-22T09:10:00Z');
+  const deps = () => ({ admin, app: db, notifier, log: () => undefined, now: () => clock });
+  const accounts: Record<string, string> = {};
+
+  beforeAll(async () => {
+    tdb = await createTestDatabase();
+    db = createDb(createPool(tdb.appUrl, 3));
+    admin = new pg.Pool({ connectionString: tdb.adminUrl, max: 1 });
+    await admin.query("insert into household (id, name, timezone) values ($1, 'Locks', 'UTC')", [
+      hh,
+    ]);
+    // An owner; an adult locked until an owner unlocks them; a teen paused
+    // after a restore; and an adult whose lock ended yesterday.
+    const people: Array<[string, string, string]> = [
+      ['owner', 'owner', ''],
+      ['locked', 'adult', "suspended_at = now(), suspend_reason = 'locked'"],
+      ['paused', 'teen', "suspended_at = now(), suspend_reason = 'restored'"],
+      [
+        'over',
+        'adult',
+        "suspended_at = now() - interval '3 days', suspended_until = now() - interval '1 day', suspend_reason = 'locked'",
+      ],
+    ];
+    for (const [name, role, suspension] of people) {
+      const m = await admin.query<{ id: string }>(
+        'insert into member (household_id, display_name) values ($1, $2) returning id',
+        [hh, name],
+      );
+      const a = await admin.query<{ id: string }>(
+        'insert into account (email) values ($1) returning id',
+        [`${name}-${hh}@example.test`],
+      );
+      const account = a.rows[0]?.id as string;
+      accounts[name] = account;
+      await admin.query(
+        'insert into account_household (account_id, household_id, member_id, role) values ($1, $2, $3, $4)',
+        [account, hh, m.rows[0]?.id, role],
+      );
+      if (suspension) {
+        await admin.query(`update account_household set ${suspension} where account_id = $1`, [
+          account,
+        ]);
+      }
+    }
+    await withSystem(db, hh, async (trx) => {
+      const d = await trx
+        .insertInto('document')
+        .values({
+          household_id: hh,
+          title: 'Home insurance',
+          type_key: 'other',
+          expires_on: '2026-10-22',
+          expires_precision: 'day',
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('reminder')
+        .values({
+          household_id: hh,
+          document_id: d.id,
+          kind: 'derived',
+          source: 'expires',
+          fire_at: '2026-09-22',
+          lead_days: 30,
+        })
+        .execute();
+    });
+  });
+  afterAll(async () => {
+    await db.destroy();
+    await admin.end();
+    await tdb.drop();
+  });
+
+  it('the digest skips them', async () => {
+    await tick(deps());
+    expect(await deliver({ ...deps(), digestHour: 9 })).toEqual({ digests: 1 });
+    const to = sent.map((d) => d.recipient.account_id).sort();
+    expect(to).toEqual([accounts.owner, accounts.over].sort());
+    expect(to).not.toContain(accounts.locked);
+    expect(to).not.toContain(accounts.paused);
+  });
+});

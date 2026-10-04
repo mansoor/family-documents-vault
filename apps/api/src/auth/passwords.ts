@@ -3,6 +3,7 @@ import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db } from '@fdv/db';
 import argon2 from 'argon2';
 import { z } from 'zod';
+import { suspensionInEffect } from '@fdv/shared';
 import { ApiError } from '../errors.js';
 import type { Principal, RequestMeta } from './service.js';
 import type { StepUpService } from './step-up.js';
@@ -229,11 +230,14 @@ export class PasswordService {
       (trx) =>
         trx
           .selectFrom('account_household')
-          .select(['household_id'])
+          .select(['household_id', 'suspended_at', 'suspended_until'])
           .orderBy('joined_at', 'desc')
           .executeTakeFirst(),
     );
     if (!membership) return;
+    // Locked, or paused after a restore (5.28): no link either — a lock
+    // used up the ones they had — and the page answers as ever.
+    if (suspensionInEffect(membership)) return;
 
     // The link is a way into this person's private documents, so it only
     // travels by a mail server nobody else in the family can redirect:

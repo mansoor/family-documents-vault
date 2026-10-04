@@ -25,6 +25,7 @@ import {
   ROLES,
   shareEndWords,
   SITTING_MS,
+  suspensionInEffect,
   type IdentityAudience,
   type IdentityAudienceView,
   type IdentityFields,
@@ -206,21 +207,27 @@ export const MEMBER_CANNOT_BE_TOLD = (names: string[]) =>
  * The people with a sign-in who could not be told of a wider audience, nor
  * mark fields Only me while it waits (A34): everybody with a sign-in is
  * told (the 5.26 review), whatever their role, so anybody who cannot sign
- * in holds a widening back. Today that is an account switched off
- * (account.disabled_at), which no alert reaches either. 5.28 adds here a
- * sign-in an owner has locked, or one paused after a restore — and has
- * locking somebody withdraw a widening still waiting.
+ * in holds a widening back: an account switched off (account.disabled_at),
+ * which no alert reaches either; and since 5.28 a sign-in an owner has
+ * locked, or one paused after a restore — of any role. Locking somebody
+ * withdraws a widening still waiting (household/locks.ts).
  */
 export async function membersWhoCannotBeTold(trx: Db): Promise<string[]> {
   const rows = await trx
     .selectFrom('account_household')
     .innerJoin('account', 'account.id', 'account_household.account_id')
     .innerJoin('member', 'member.id', 'account_household.member_id')
-    .select(['member.display_name'])
-    .where('account.disabled_at', 'is not', null)
+    .select([
+      'member.display_name',
+      'account.disabled_at',
+      'account_household.suspended_at',
+      'account_household.suspended_until',
+    ])
     .orderBy('member.display_name')
     .execute();
-  return rows.map((r) => r.display_name);
+  return rows
+    .filter((r) => r.disabled_at !== null || suspensionInEffect(r))
+    .map((r) => r.display_name);
 }
 
 interface Subject {
@@ -654,7 +661,8 @@ export class IdentityService {
    * The household is held first — FOR NO KEY UPDATE, which lets the
    * activity log's foreign key to it (FOR KEY SHARE) through, so a line
    * written meanwhile by anybody else waits for nothing of ours (the 5.26
-   * review) — then the notice waiting, then exports, then the log
+   * review) — then everybody's sign-in (FOR SHARE, 5.28: a lock holds the
+   * person's first), then the notice waiting, then exports, then the log
    * (appendAudit's lock, last).
    */
   async setAudience(
@@ -670,6 +678,14 @@ export class IdentityService {
         .where('id', '=', p.householdId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
+      // Everybody's sign-in, held as it is now (5.28), so a lock at the same
+      // moment either lands first and is seen below (membersWhoCannotBeTold),
+      // or waits for this and then withdraws what this asks for. Held before
+      // the notice and the exports, as a lock holds the person before it
+      // reaches its exports and the notices: the one order, so neither waits
+      // on the other for ever — a narrowing too, which expires exports a
+      // lock may be expiring.
+      await trx.selectFrom('account_household').select(['account_id']).forShare().execute();
       const waiting = await trx
         .selectFrom('notice_request')
         .select(['id', 'subject', sql<boolean>`notice_until <= now()`.as('due')])

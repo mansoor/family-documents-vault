@@ -43,6 +43,8 @@ import type {
   Member,
   MemberAccount,
   MemberEdit,
+  MemberLock,
+  MemberSuspension,
   MfaChallenge,
   OfflineGrant,
   OfflineOpen,
@@ -51,6 +53,7 @@ import type {
   NewVault,
   OwnerChange,
   Page,
+  PausedSignIn,
   PasskeyView,
   Preferences,
   Profile,
@@ -317,6 +320,32 @@ export function createApi(http: Http) {
      */
     memberAccount: (token: string, memberId: string) =>
       request<MemberAccount>(`/api/v1/members/${enc(memberId)}/account`, { token }),
+    /**
+     * Locks somebody's sign-in (5.28, when `features.member_admin`): their
+     * sessions end (`suspended`), their links and requests pause — or with
+     * `end_links` end for good — and they cannot sign in (`403
+     * membership_suspended`, once their credentials are proven) until an
+     * owner unlocks them or `until` comes. Owners only (anybody else `403
+     * forbidden`), and an owner power (A54): `403 totp_required_for_owner`,
+     * or `step_up_required` with `manage_sign_ins` (a passkey or a code).
+     * Never oneself (`422`), never an owner (`409 owner_notice_required`),
+     * nobody locked already (`409 already_locked`).
+     */
+    lockMember: (token: string, memberId: string, body: MemberLock = {}) =>
+      request<{ member_id: string; suspension: MemberSuspension }>(
+        `/api/v1/members/${enc(memberId)}/lock`,
+        { method: 'POST', body, token },
+      ),
+    /** Unlocks it (5.28): `204`; somebody not locked is `409 not_locked`. Asks as a lock does. */
+    unlockMember: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}/lock`, { method: 'DELETE', token }),
+    /**
+     * Turns a sign-in a restore paused back on (5.28, A55): `204`. Owners
+     * only; asks as a lock does. Somebody not paused by a restore is `409
+     * not_paused`.
+     */
+    resumeMember: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}/resume`, { method: 'POST', token }),
     /**
      * A person's identity details (5.26, when `features.member_identity`): the
      * shared part, and the Only me part for the person alone, ID numbers and
@@ -839,7 +868,12 @@ export function createApi(http: Http) {
      * to take back.
      */
     afterRestore: (token: string) =>
-      request<{ links: Share[]; upload_requests?: UploadRequestView[] }>('/api/v1/after-restore', {
+      request<{
+        links: Share[];
+        upload_requests?: UploadRequestView[];
+        /** The sign-ins it paused (5.28), an owner's to turn back on; absent from older vaults. */
+        sign_ins?: PausedSignIn[];
+      }>('/api/v1/after-restore', {
         token,
       }),
     /** Owners only (`restore.review`): anybody else is `403 forbidden`. */

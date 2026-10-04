@@ -1,8 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { shareEndWords, whenWords, zonedParts, zonedTime, type MemberAccount } from '@fdv/shared';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { clearPhotos, photosHeld } from './photos.js';
+import { requestState } from './screens/Sharing.js';
 import { AISHA, fresh, installFakeApi, ME, PASSPORT, signedIn } from './test-api.js';
 
 /**
@@ -907,8 +909,12 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
       within(devices).getByText(/^App · last used today, .* · Keeps Essentials for offline use$/),
     ).toBeInTheDocument();
     expect(within(devices).getByText(/^Browser · last used today, /)).toBeInTheDocument();
-    // Read-only: nothing on it to press.
-    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    // Nothing on it to press but Lock sign-in (5.28).
+    expect(
+      within(card)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Lock sign-in']);
     await expectAccessible();
   });
 
@@ -971,5 +977,605 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
     expect(await show('adult', 'm-1')).toBe(false);
     expect(await show('owner', 'me')).toBe(false);
     expect(await show('owner', 'm-0')).toBe(false);
+  });
+});
+
+describe('locking a sign-in (5.28)', () => {
+  /** Tess, a teen with a sign-in; Sam, another owner. */
+  const TESS = { ...AISHA, id: 'm-1', display_name: 'Tess', has_account: true, role: 'teen' };
+  const SAM = { ...AISHA, id: 'm-3', display_name: 'Sam Seikh', has_account: true, role: 'owner' };
+  /** Tess's card, as the vault gives it since 5.28: phones keep offline copies 30 days here. */
+  const card = (over: Partial<MemberAccount> = {}): MemberAccount => ({
+    member_id: 'm-1',
+    role: 'teen',
+    email: 'tess@example.test',
+    two_step: false,
+    passkeys: 0,
+    last_signed_in_at: new Date().toISOString(),
+    devices: [
+      {
+        label: 'Safari on a Mac',
+        client: 'browser',
+        last_used_at: new Date().toISOString(),
+        offline: false,
+      },
+    ],
+    suspension: null,
+    max_offline_days: 30,
+    ...over,
+  });
+  const since = new Date(Date.now() - 2 * 3600e3).toISOString();
+
+  /** The owner opens somebody's Account card, already confirmed it is them. */
+  async function showCard(over: Parameters<typeof fresh>[0] = {}, id = 'm-1') {
+    const state = fresh({ members: [ME, TESS, SAM], ...over });
+    installFakeApi(state);
+    signedIn();
+    at(`/people/${id}`);
+    render(<App />);
+    const region = await screen.findByRole('region', { name: 'Account' });
+    fireEvent.click(within(region).getByRole('button', { name: 'Show their account' }));
+    await within(region).findByText('Signs in as');
+    return { state, region };
+  }
+
+  /** Lock sign-in, pressed as a browser presses it: focused, then clicked. */
+  async function openLock(region: HTMLElement, name = 'Tess') {
+    const open = within(region).getByRole('button', { name: 'Lock sign-in' });
+    open.focus();
+    fireEvent.click(open);
+    const dialog = await screen.findByRole('dialog', { name: `Lock ${name}’s sign-in` });
+    return { open, dialog };
+  }
+
+  /** The card's facts, by name. */
+  const factsOf = (region: HTMLElement) =>
+    Object.fromEntries(
+      within(region)
+        .getAllByRole('term')
+        .map((t) => [t.textContent, t.nextElementSibling?.textContent]),
+    );
+
+  /** "Confirm it is you", answered with a code: never a password, for a sign-in. */
+  async function confirmWithCode() {
+    const ask = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(ask).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    fireEvent.change(within(ask).getByLabelText('Code from your authenticator app'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
+  }
+
+  it("the lock dialog says what a lock does, phones' offline days from the card, and Escape does nothing", async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card() } });
+    expect(
+      within(region).getByRole('button', { name: 'Lock sign-in' }),
+    ).toHaveAccessibleDescription(
+      'Locking signs Tess out everywhere at once, and keeps them out until it is unlocked.',
+    );
+    const { open, dialog } = await openLock(region);
+    // Read from its top: the heading has focus, not the first field.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('heading', { name: 'Lock Tess’s sign-in' })).toHaveFocus(),
+    );
+    const effects = () =>
+      within(within(dialog).getByRole('list', { name: 'What locking does' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent);
+    expect(effects()).toEqual([
+      'Tess can’t sign in until an owner unlocks it.',
+      'Every device Tess is signed in on is signed out now.',
+      'A phone that never reconnects keeps its offline copies up to 30 days.',
+      'Any links and requests to send documents Tess made pause, and work again when the lock ends.',
+      'Any invitations Tess sent are cancelled, and any exports they made stop working.',
+      'Files sent for Tess alone to look at go to the owners.',
+      'Tess is emailed to say so, and the other owners are told.',
+    ]);
+    expect(within(dialog).getByLabelText('A note for the other owners (optional)')).toHaveAttribute(
+      'maxlength',
+      '500',
+    );
+    await expectAccessible();
+
+    // Each line follows the choices under it.
+    fireEvent.click(within(dialog).getByLabelText('End their links and requests for good'));
+    expect(effects()[3]).toBe('Any links and requests to send documents Tess made end for good.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Until a date' }));
+    expect(within(dialog).getByRole('button', { name: 'Until a date' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(effects()[0]).toMatch(
+      /^Tess can’t sign in until \w+day \d+ \w+ at \d\d:00( \(UTC time\))?, unless an owner unlocks it sooner\.$/,
+    );
+    await expectAccessible();
+
+    // Escape: nothing locked, and back on the button that opened it.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(open).toHaveFocus());
+    expect(state.calls.some((c) => c.url.endsWith('/lock'))).toBe(false);
+  });
+
+  it('with no other owner, nobody else is said to be told', async () => {
+    const { region } = await showCard({ members: [ME, TESS], accounts: { 'm-1': card() } });
+    const { dialog } = await openLock(region);
+    expect(within(dialog).getByText('Tess is emailed to say so.')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/other owners/)).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText('A note (optional)')).toBeInTheDocument();
+  });
+
+  it('locking sends the end, the links and the note chosen, after a passkey or a code, and the card says it is locked', async () => {
+    const { state, region } = await showCard({
+      accounts: { 'm-1': card() },
+      timezone: 'Asia/Tokyo',
+    });
+    // Five minutes on: the next power over a sign-in asks again.
+    state.accountStepUp = true;
+    const { dialog } = await openLock(region);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Until a date' }));
+    // On the household's clock, Tokyo's, whatever this browser's.
+    const day = zonedParts(new Date(Date.now() + 3 * 864e5), 'Asia/Tokyo').date;
+    fireEvent.change(within(dialog).getByLabelText('Date'), { target: { value: day } });
+    fireEvent.change(within(dialog).getByLabelText('Time'), { target: { value: '07:00' } });
+    const until = zonedTime(day, '07:00', 'Asia/Tokyo') as Date;
+    const words = shareEndWords(until, 'Asia/Tokyo');
+    expect(
+      within(dialog).getByText(
+        new RegExp(`^Unlocks by itself on ${words}( \\(Asia/Tokyo time\\))?\\.$`),
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByLabelText('End their links and requests for good'));
+    fireEvent.change(within(dialog).getByLabelText('A note for the other owners (optional)'), {
+      target: { value: '  Lost her phone at school.  ' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    await confirmWithCode();
+
+    const said = await within(region).findByText('Tess’s sign-in is locked.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // Asked, refused until it was confirmed, then made: the same each time.
+    const sent = {
+      until: until.toISOString(),
+      end_links: true,
+      note: 'Lost her phone at school.',
+    };
+    expect(
+      state.calls
+        .filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/lock')
+        .map((c) => c.body),
+    ).toEqual([sent, sent]);
+    // Locked until then, since now, by whom, and the note; signed out everywhere.
+    expect(
+      within(region).getByText(
+        new RegExp(
+          `^Tess’s sign-in is locked until ${words}( \\(Asia/Tokyo time\\))?, unless an owner unlocks it sooner\\.$`,
+        ),
+      ),
+    ).toBeInTheDocument();
+    const facts = factsOf(region);
+    expect(facts.Locked).toMatch(/^today, \d+:\d\d[ap]m, by Mansoor Seikh$/);
+    expect(facts.Note).toBe('Lost her phone at school.');
+    expect(within(region).getByText('No device at the moment.')).toBeInTheDocument();
+    expect(within(region).queryByRole('button', { name: 'Lock sign-in' })).not.toBeInTheDocument();
+    expect(within(region).getByRole('button', { name: 'Unlock' })).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('an end that has gone by, or is more than a year away, is said, and nothing is sent', async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card() } });
+    const { dialog } = await openLock(region);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Until a date' }));
+    const lock = within(dialog).getByRole('button', { name: 'Lock sign-in' });
+    expect(lock).toHaveAttribute('aria-disabled', 'false');
+    const date = within(dialog).getByLabelText('Date');
+    fireEvent.change(date, {
+      target: { value: zonedParts(new Date(Date.now() - 864e5), 'UTC').date },
+    });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Choose a time in the future to unlock.',
+    );
+    expect(lock).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(lock);
+    fireEvent.change(date, {
+      target: { value: zonedParts(new Date(Date.now() + 400 * 864e5), 'UTC').date },
+    });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(
+      'A lock can end by itself within a year at most. Choose “Until I unlock it” to keep it longer.',
+    );
+    fireEvent.click(lock);
+    // Until I unlock it: nothing to put right.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Until I unlock it' }));
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(lock).toHaveAttribute('aria-disabled', 'false');
+    expect(state.calls.some((c) => c.url.endsWith('/lock'))).toBe(false);
+  });
+
+  it('a locked sign-in says since when, until when, by whom and the note; Unlock asks, and the card is read again', async () => {
+    const { state, region } = await showCard({
+      accounts: {
+        'm-1': card({
+          devices: [],
+          suspension: {
+            reason: 'locked',
+            since,
+            until: null,
+            note: 'Lost her phone.\nAsk Sam before unlocking.',
+            by: 'Sam Seikh',
+          },
+        }),
+      },
+    });
+    const line = within(region).getByText('Tess’s sign-in is locked until an owner unlocks it.');
+    // The first thing heard once the card opens.
+    await waitFor(() => expect(line).toHaveFocus());
+    const facts = factsOf(region);
+    expect(facts.Locked).toBe(`${whenWords(since)}, by Sam Seikh`);
+    expect(facts.Note).toBe('Lost her phone.\nAsk Sam before unlocking.');
+    expect(within(region).queryByRole('button', { name: 'Lock sign-in' })).not.toBeInTheDocument();
+    await expectAccessible();
+
+    state.accountStepUp = true;
+    const reads = state.calls.filter((c) => c.url === '/api/v1/members/m-1/account').length;
+    fireEvent.click(within(region).getByRole('button', { name: 'Unlock' }));
+    await confirmWithCode();
+    const said = await within(region).findByText('Tess can sign in again.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      state.calls.filter((c) => c.method === 'DELETE' && c.url === '/api/v1/members/m-1/lock'),
+    ).toHaveLength(2);
+    // Read again, as the vault has it now.
+    expect(state.calls.filter((c) => c.url === '/api/v1/members/m-1/account')).toHaveLength(
+      reads + 1,
+    );
+    expect(within(region).queryByText(/is locked/)).not.toBeInTheDocument();
+    expect(within(region).queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
+    expect(within(region).getByRole('button', { name: 'Lock sign-in' })).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('a lock that ends by itself says when, on the household’s clock', async () => {
+    const until = new Date(Date.now() + 5 * 864e5).toISOString();
+    const { region } = await showCard({
+      timezone: 'Asia/Tokyo',
+      accounts: {
+        'm-1': card({
+          suspension: { reason: 'locked', since, until, note: null, by: 'Sam Seikh' },
+        }),
+      },
+    });
+    const words = shareEndWords(new Date(until), 'Asia/Tokyo');
+    expect(
+      await within(region).findByText(
+        new RegExp(
+          `^Tess’s sign-in is locked until ${words}( \\(Asia/Tokyo time\\))?, unless an owner unlocks it sooner\\.$`,
+        ),
+      ),
+    ).toBeInTheDocument();
+    // No note, no line for one.
+    expect(factsOf(region)).not.toHaveProperty('Note');
+  });
+
+  it('a sign-in paused after a restore offers Turn back on, with their role to check', async () => {
+    const { state, region } = await showCard({
+      accounts: {
+        'm-1': card({
+          devices: [],
+          suspension: { reason: 'restored', since, until: null, note: null, by: null },
+        }),
+      },
+    });
+    expect(
+      within(region).getByText(
+        'Tess’s sign-in is paused after the restore, until an owner turns it back on.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(region).getByText(/Their role is as the backup had it, Teen: check it is still right/),
+    ).toBeInTheDocument();
+    expect(factsOf(region).Paused).toBe(whenWords(since));
+    expect(within(region).queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
+    // It may be locked instead (the 5.28 review): see the next test.
+    expect(within(region).getByRole('button', { name: 'Lock sign-in' })).toBeInTheDocument();
+    await expectAccessible();
+
+    state.accountStepUp = true;
+    fireEvent.click(within(region).getByRole('button', { name: 'Turn back on' }));
+    await confirmWithCode();
+    const said = await within(region).findByText('Tess can sign in again.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/resume'),
+    ).toHaveLength(2);
+    expect(state.calls.some((c) => c.url.endsWith('/lock'))).toBe(false);
+    expect(within(region).queryByText(/paused after the restore/)).not.toBeInTheDocument();
+  });
+
+  it('a sign-in paused after a restore may be locked instead: the dialog says the lock takes the pause’s place (the 5.28 review)', async () => {
+    const { state, region } = await showCard({
+      accounts: {
+        'm-1': card({
+          devices: [],
+          suspension: { reason: 'restored', since, until: null, note: null, by: null },
+        }),
+      },
+    });
+    expect(
+      within(region).getByRole('button', { name: 'Lock sign-in' }),
+    ).toHaveAccessibleDescription(
+      'Locking keeps Tess out until it is unlocked, with a note and an end of its own, in place of the pause.',
+    );
+    const { dialog } = await openLock(region);
+    const effects = within(within(dialog).getByRole('list', { name: 'What locking does' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(effects[0]).toBe(
+      'The lock takes the place of the pause after the restore: once it is unlocked, Tess can sign in again.',
+    );
+    // Her links and requests the restore paused are not the lock's: an
+    // unlock does not turn them back on, and the dialog does not say it does
+    // (the 5.28 second round, N528P-4).
+    expect(effects).toContain(
+      'Any links and requests to send documents Tess made stay paused. Those an owner has turned back on after the restore work again when the lock ends; the others still wait in After a restore for an owner to turn each back on.',
+    );
+    expect(effects.join(' ')).not.toMatch(/pause, and work again when the lock ends/);
+    expect(
+      within(dialog).getByLabelText('End their links and requests for good'),
+    ).toHaveAccessibleDescription(
+      'Otherwise they stay paused: those turned back on after the restore work again when the lock ends, and the others still wait in After a restore.',
+    );
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    const said = await within(region).findByText('Tess’s sign-in is locked.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/lock'),
+    ).toHaveLength(1);
+    // Locked now, not paused: Unlock ends it, and nothing of the pause is left.
+    expect(within(region).getByRole('button', { name: 'Unlock' })).toBeInTheDocument();
+    expect(within(region).queryByText(/paused after the restore/)).not.toBeInTheDocument();
+    expect(within(region).queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
+  });
+
+  it('a refusal is said: in the dialog, which stays open, or on the card', async () => {
+    // Sam is an owner: one owner's sign-in is never locked by another.
+    const sam = card({ member_id: 'm-3', role: 'owner', email: 'sam@example.test' });
+    const first = await showCard({ accounts: { 'm-3': sam } }, 'm-3');
+    const { dialog } = await openLock(first.region, 'Sam');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      "Sam Seikh is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.",
+    );
+    expect(screen.getByRole('dialog', { name: 'Lock Sam’s sign-in' })).toBeInTheDocument();
+    // Nothing chosen: no end, no note, their links paused.
+    expect(
+      first.state.calls.find((c) => c.method === 'POST' && c.url.endsWith('/m-3/lock'))?.body,
+    ).toEqual({});
+    cleanup();
+
+    // Unlocked meanwhile, by another owner.
+    const tess = card({
+      suspension: { reason: 'locked', since, until: null, note: null, by: 'Sam Seikh' },
+    });
+    const { region } = await showCard({ accounts: { 'm-1': tess } });
+    tess.suspension = null;
+    fireEvent.click(within(region).getByRole('button', { name: 'Unlock' }));
+    expect(await within(region).findByRole('alert')).toHaveTextContent(
+      "Tess's sign-in is not locked.",
+    );
+  });
+
+  it('a vault from before 5.28 is offered no lock', async () => {
+    const { region } = await showCard({ memberAdmin: false, accounts: { 'm-1': card() } });
+    expect(within(region).queryByRole('button', { name: 'Lock sign-in' })).not.toBeInTheDocument();
+    expect(within(region).queryByText(/Locking signs/)).not.toBeInTheDocument();
+  });
+
+  describe('Settings → After a restore: the sign-ins waiting', () => {
+    const VIC = { ...AISHA, id: 'm-4', display_name: 'Vic', has_account: true, role: 'viewer' };
+    const paused = (id: string, role: MemberAccount['role']) =>
+      card({
+        member_id: id,
+        role,
+        devices: [],
+        suspension: { reason: 'restored', since, until: null, note: null, by: null },
+      });
+
+    it('lists each with its role, and an owner turns each back on, one tap each, after a code', async () => {
+      const state = fresh({
+        members: [ME, TESS, SAM, VIC],
+        accounts: { 'm-1': paused('m-1', 'teen'), 'm-4': paused('m-4', 'viewer') },
+      });
+      installFakeApi(state);
+      signedIn();
+      at('/settings');
+      render(<App />);
+      fireEvent.click(
+        await screen.findByRole('link', {
+          name: /After a restore.*2 sign-ins are paused until you turn them back on/,
+        }),
+      );
+      const list = await screen.findByRole('list', { name: 'Paused sign-ins' });
+      const rows = () =>
+        within(list)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent);
+      // Each with the role the backup had, to check before it is turned on.
+      expect(rows()).toEqual(['TessRole: TeenTurn back on', 'VicRole: ViewerTurn back on']);
+      expect(screen.getByText(/Each role is as the backup had it/)).toBeInTheDocument();
+      await expectAccessible();
+
+      // Asked to confirm it is them with a passkey or a code, as for an unlock.
+      state.accountStepUp = true;
+      fireEvent.click(within(list).getByRole('button', { name: 'Turn back on Tess’s sign-in' }));
+      await confirmWithCode();
+      const said = await screen.findByText('Tess can sign in again.');
+      await waitFor(() => expect(said).toHaveFocus());
+      expect(
+        state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/resume'),
+      ).toHaveLength(2);
+      // One tap: Tess's row goes, Vic's waits.
+      await waitFor(() => expect(rows()).toEqual(['VicRole: ViewerTurn back on']));
+      expect(state.calls.some((c) => c.url === '/api/v1/members/m-4/resume')).toBe(false);
+      await expectAccessible();
+    });
+
+    it('nobody but an owner is shown one', async () => {
+      installFakeApi(
+        fresh({ members: [ME, TESS, VIC], accounts: { 'm-1': paused('m-1', 'teen') } }),
+      );
+      signedIn('adult');
+      at('/settings/after-restore');
+      render(<App />);
+      await screen.findByRole('heading', { name: /paused links/i });
+      expect(screen.queryByRole('list', { name: 'Paused sign-ins' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Tess')).not.toBeInTheDocument();
+    });
+  });
+
+  it('a request paused by its requester’s lock says so, and no owner is offered to turn it on', () => {
+    const request = {
+      state: 'paused',
+      paused_reason: 'locked',
+      requested_by_name: 'Sara',
+      expires_at: new Date(Date.now() + 864e5).toISOString(),
+    } as unknown as Parameters<typeof requestState>[0];
+    expect(requestState(request, true)).toEqual({
+      words: 'Paused while the sign-in of Sara is locked. It works again once they are unlocked.',
+      tone: 'warn',
+    });
+    // A restore's pause is still an owner's to turn back on.
+    expect(requestState({ ...request, paused_reason: 'restored' }, true).words).toBe(
+      'Paused after a restore',
+    );
+    // Its requester's sign-in waiting after a restore is not a lock (the 5.28
+    // review)…
+    expect(requestState({ ...request, paused_reason: 'sign_in_paused' }, true).words).toBe(
+      'Paused until the sign-in of Sara is turned back on after the restore.',
+    );
+    // … and to anybody the vault gives no reason, it is paused, and that is all.
+    const plain = requestState({ ...request, paused_reason: null }, false);
+    expect(plain.words).toBe('Paused for now');
+    expect(plain.words).not.toMatch(/lock|restore/i);
+  });
+
+  it('After a restore says when a link it turned on still waits for its maker’s sign-in (the 5.28 review)', async () => {
+    const link = {
+      id: 'sh-1',
+      document_id: 'doc-1',
+      document_title: 'Sara’s payslip',
+      recipient_label: 'the bank',
+      created_by_name: 'Sara',
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      has_pin: false,
+      open_count: 0,
+      last_opened_at: null,
+      state: 'paused',
+      flow: 'v2',
+      paused_at: since,
+      paused_reason: 'restored',
+      summary: 'Shared with the bank. Paused after a restore.',
+      maker_paused: true,
+    };
+    const state = fresh({
+      members: [ME, TESS],
+      shares: [
+        { ...link },
+        { ...link, id: 'sh-2', maker_paused: false, document_title: 'The lease' },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/settings/after-restore');
+    render(<App />);
+    await screen.findByText('Sara’s payslip');
+    const row = (title: string) => screen.getByText(title).closest('li') as HTMLElement;
+    state.accountStepUp = false;
+    fireEvent.click(within(row('Sara’s payslip')).getByRole('button', { name: 'Turn back on' }));
+    const waits = await screen.findByText(
+      'The link to “Sara’s payslip” is turned back on. It works once Sara can sign in again: turn their sign-in back on too.',
+    );
+    await waitFor(() => expect(waits).toHaveFocus());
+    fireEvent.click(within(row('The lease')).getByRole('button', { name: 'Turn back on' }));
+    const works = await screen.findByText('The link to “The lease” works again.');
+    await waitFor(() => expect(works).toHaveFocus());
+  });
+
+  it('After a restore says when a link or a request it turned on stays paused by a lock the restore kept (the 5.28 second round, N528P-3)', async () => {
+    const link = {
+      id: 'sh-1',
+      document_id: 'doc-1',
+      document_title: 'Sara’s payslip',
+      recipient_label: 'the bank',
+      created_by_name: 'Sara',
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      has_pin: false,
+      open_count: 0,
+      last_opened_at: null,
+      state: 'paused',
+      flow: 'v2',
+      paused_at: since,
+      paused_reason: 'restored',
+      summary: 'Shared with the bank. Paused after a restore.',
+      // Locked when the backup was made: the restore kept the lock.
+      maker_paused: 'locked',
+    };
+    const request = {
+      id: 'req-1',
+      title: 'Tax papers',
+      message: null,
+      items: [],
+      recipient_label: 'Jane',
+      recipient_email: null,
+      requested_by_name: 'Sara',
+      mine: false,
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      protection: [],
+      max_visits: null,
+      visits_used: 0,
+      max_files: 10,
+      files_used: 0,
+      max_total_bytes: 1024,
+      bytes_used: 0,
+      accept_types: 'standard',
+      review_by: 'adults',
+      suggested_member_id: null,
+      suggested_type_key: null,
+      close_after_submit: false,
+      state: 'paused',
+      paused_reason: 'restored',
+      closed_reason: null,
+      files_received: 0,
+      requester_paused: 'locked',
+    };
+    const state = fresh({ members: [ME, TESS], shares: [link], uploadRequests: [request] });
+    installFakeApi(state);
+    signedIn();
+    at('/settings/after-restore');
+    render(<App />);
+    await screen.findByText('Sara’s payslip');
+    state.accountStepUp = false;
+    fireEvent.click(
+      within(screen.getByText('Sara’s payslip').closest('li') as HTMLElement).getByRole('button', {
+        name: 'Turn back on',
+      }),
+    );
+    const turnedOn = await screen.findByText(
+      'The link to “Sara’s payslip” is turned back on. It stays paused until Sara is unlocked, from their page.',
+    );
+    await waitFor(() => expect(turnedOn).toHaveFocus());
+    // Not told to turn on a sign-in that is not waiting here: it is locked.
+    expect(screen.queryByText(/turn their sign-in back on/)).not.toBeInTheDocument();
+    const requests = screen.getByRole('list', { name: 'Paused requests' });
+    fireEvent.click(within(requests).getByRole('button', { name: 'Turn back on' }));
+    const asked = await screen.findByText(
+      'The request “Tax papers” to Jane is turned back on. It stays paused until Sara is unlocked, from their page.',
+    );
+    await waitFor(() => expect(asked).toHaveFocus());
+    expect(screen.queryByText(/turn their sign-in back on/)).not.toBeInTheDocument();
   });
 });

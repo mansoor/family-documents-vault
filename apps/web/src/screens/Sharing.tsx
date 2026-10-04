@@ -79,6 +79,23 @@ export function requestState(
     case 'active':
       return { words: `Working until ${at}`, tone: 'ok' };
     case 'paused':
+      // 5.28: whoever asked has their sign-in locked, or waiting after a
+      // restore. Nobody turns the request on: it opens again with them.
+      // Said so only to an owner and to whoever asked; anybody else is
+      // given no reason, and told it is paused (the 5.28 review).
+      if (r.paused_reason === 'locked') {
+        return {
+          words: `Paused while the sign-in of ${r.requested_by_name ?? 'whoever asked'} is locked. It works again once they are unlocked.`,
+          tone: 'warn',
+        };
+      }
+      if (r.paused_reason === 'sign_in_paused') {
+        return {
+          words: `Paused until the sign-in of ${r.requested_by_name ?? 'whoever asked'} is turned back on after the restore.`,
+          tone: 'warn',
+        };
+      }
+      if (r.paused_reason !== 'restored') return { words: 'Paused for now', tone: 'warn' };
       return {
         words: owner
           ? 'Paused after a restore'
@@ -113,6 +130,29 @@ export function requestState(
 /** Whom a request is for, in a sentence: "the request to Jane, accountant". */
 export const requestTarget = (r: UploadRequestView) =>
   `the request “${r.title}”${r.recipient_label ? ` to ${r.recipient_label}` : ''}`;
+
+/**
+ * What turning on a link or a request a restore paused did, said by what the
+ * vault answered (the 5.28 second round): it works again, or it is on and
+ * still paused by the sign-in of whoever made it or asked — locked, until
+ * they are unlocked; or waiting after the restore, until that is turned back
+ * on too. Sharing's and After a restore's.
+ */
+export function turnedBackOnWords(
+  what: string,
+  done: { state: string; paused_reason?: string | null },
+  who: string,
+): string {
+  const What = capital(what);
+  if (done.state !== 'paused') return `${What} works again.`;
+  if (done.paused_reason === 'locked') {
+    return `${What} is turned back on. It stays paused until ${who} is unlocked, from their page.`;
+  }
+  if (done.paused_reason === 'sign_in_paused') {
+    return `${What} is turned back on. It works once ${who} can sign in again: turn their sign-in back on too.`;
+  }
+  return `${What} is turned back on, but it is still paused for now.`;
+}
 
 export function SharingScreen() {
   const { withToken, guarded, authVersion } = useApp();
@@ -176,7 +216,8 @@ export function SharingScreen() {
     try {
       const done = await guarded((t) => api.resumeUploadRequest(t, r.id));
       if (done === null) return;
-      setSaid(`${capital(requestTarget(r))} works again.`);
+      // As the vault answered: its requester's sign-in may still hold it (5.28).
+      setSaid(turnedBackOnWords(requestTarget(r), done, done.requested_by_name ?? 'whoever asked'));
       await requests.reload();
       status.current?.focus();
     } catch (err) {
@@ -371,6 +412,13 @@ export function RequestRow(props: {
   const r = props.request;
   const state = requestState(r, props.owner);
   const takeBack = useRef<HTMLButtonElement>(null);
+  // Only a restore's own pause is an owner's to end here. One that comes
+  // from its requester's sign-in ends with it: a lock with the unlock, and
+  // a wait after the restore once their sign-in is turned back on, which
+  // the row points to (the 5.28 second round).
+  const resume =
+    props.owner && r.state === 'paused' && r.paused_reason === 'restored' ? props.onResume : null;
+  const signInFirst = props.owner && r.state === 'paused' && r.paused_reason === 'sign_in_paused';
   const who = [
     r.recipient_label ? `For ${r.recipient_label}` : null,
     !r.mine && r.requested_by_name ? `Asked by ${r.requested_by_name}` : null,
@@ -384,12 +432,19 @@ export function RequestRow(props: {
       <div className={`request-state${state.tone ? ` status status-${state.tone}` : ' muted'}`}>
         {state.words}
       </div>
-      {(props.onTakeBack || (props.onResume && props.owner && r.state === 'paused')) && (
+      {(props.onTakeBack || resume || signInFirst) && (
         <div className="row">
-          {props.onResume && props.owner && r.state === 'paused' && (
-            <Button disabled={props.busy} onClick={props.onResume}>
+          {resume && (
+            <Button disabled={props.busy} onClick={resume}>
               Turn back on
             </Button>
+          )}
+          {signInFirst && (
+            <Link to="/settings/after-restore" className="btn btn-quiet">
+              {r.requested_by_name
+                ? `Turn on ${r.requested_by_name}’s sign-in`
+                : 'Turn on their sign-in'}
+            </Link>
           )}
           {props.onTakeBack && (
             <Button

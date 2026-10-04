@@ -956,15 +956,20 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     const res = await card(owner, adult.member_id);
     expect(res.statusCode, res.body).toBe(200);
     const shown = json<MemberAccount>(res);
+    // 5.28: whether their sign-in is locked, and how long a phone keeps its
+    // copies offline — a setting of the vault's, not of theirs.
     expect(Object.keys(shown).sort()).toEqual([
       'devices',
       'email',
       'last_signed_in_at',
+      'max_offline_days',
       'member_id',
       'passkeys',
       'role',
+      'suspension',
       'two_step',
     ]);
+    expect(shown.suspension).toBeNull();
     expect(shown).toMatchObject({
       member_id: adult.member_id,
       role: 'adult',
