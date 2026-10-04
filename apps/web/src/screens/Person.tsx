@@ -855,7 +855,12 @@ function LockDialog(props: {
           <li>
             {endLinks
               ? `Any links and requests to send documents ${name} made end for good.`
-              : `Any links and requests to send documents ${name} made pause, and work again when the lock ends.`}
+              : props.replacesPause
+                ? // The restore paused each of them for an owner to decide, as
+                  // well as the sign-in, and an unlock does not decide for
+                  // them (A55; the 5.28 second round).
+                  `Any links and requests to send documents ${name} made stay paused. Those an owner has turned back on after the restore work again when the lock ends; the others still wait in After a restore for an owner to turn each back on.`
+                : `Any links and requests to send documents ${name} made pause, and work again when the lock ends.`}
           </li>
           <li>{`Any invitations ${name} sent are cancelled, and any exports they made stop working.`}</li>
           <li>{`Files sent for ${name} alone to look at go to the owners.`}</li>
@@ -931,7 +936,11 @@ function LockDialog(props: {
           checked={endLinks}
           onChange={setEndLinks}
           label="End their links and requests for good"
-          note="Otherwise they pause, and work again when the lock ends."
+          note={
+            props.replacesPause
+              ? 'Otherwise they stay paused: those turned back on after the restore work again when the lock ends, and the others still wait in After a restore.'
+              : 'Otherwise they pause, and work again when the lock ends.'
+          }
         />
         <TextArea
           id="lock-note"

@@ -451,6 +451,96 @@ describe('Sharing lists requests (5.22)', () => {
     await waitFor(() => expect(within(live).getByText(/Working until/)).toBeInTheDocument());
   });
 
+  it('a request paused by its requester’s sign-in offers no Turn back on: the owner is pointed to the sign-in, or waits for the unlock (the 5.28 second round, N528P-1)', async () => {
+    const state = await openSharing([
+      request({
+        state: 'paused',
+        paused_reason: 'sign_in_paused',
+        requested_by_name: 'Sara',
+        mine: false,
+      }),
+      request({
+        id: 'req-b',
+        title: 'Lease papers',
+        state: 'paused',
+        paused_reason: 'locked',
+        requested_by_name: 'Sara',
+        mine: false,
+      }),
+    ]);
+    const live = await screen.findByRole('list', { name: 'Requests that work now' });
+    const [waits, locked] = (await within(live).findAllByRole('listitem')) as [
+      HTMLElement,
+      HTMLElement,
+    ];
+    // Nothing the vault would refuse: neither has a pause of its own.
+    expect(within(live).queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
+    expect(waits).toHaveTextContent(
+      'Paused until the sign-in of Sara is turned back on after the restore.',
+    );
+    expect(within(waits).getByRole('link', { name: 'Turn on Sara’s sign-in' })).toHaveAttribute(
+      'href',
+      '/settings/after-restore',
+    );
+    // A lock ends with the unlock: nothing to do here.
+    expect(locked).toHaveTextContent('Paused while the sign-in of Sara is locked.');
+    expect(within(locked).queryByRole('link')).not.toBeInTheDocument();
+    expect(state.calls.some((c) => c.url.endsWith('/resume'))).toBe(false);
+    await expectAccessible();
+  });
+
+  it('turning on a request its requester’s sign-in still holds says so, as the vault answered (the 5.28 second round, N528P-2 and N528P-3)', async () => {
+    const state = await openSharing([
+      request({
+        state: 'paused',
+        paused_reason: 'restored',
+        requested_by_name: 'Sara',
+        mine: false,
+        // Her sign-in still waits after the restore.
+        requester_paused: 'sign_in_paused',
+      }),
+      request({
+        id: 'req-b',
+        title: 'Lease papers',
+        state: 'paused',
+        paused_reason: 'restored',
+        requested_by_name: 'Sara',
+        mine: false,
+        // Her sign-in was locked when the backup was made, and still is.
+        requester_paused: 'locked',
+      }),
+    ]);
+    const live = await screen.findByRole('list', { name: 'Requests that work now' });
+    await within(live).findByText('“Lease papers”');
+    const row = (title: string) =>
+      within(live).getByText(`“${title}”`).closest('li') as HTMLElement;
+    fireEvent.click(
+      within(row('Tax papers for 2025')).getByRole('button', { name: 'Turn back on' }),
+    );
+    const waits = await screen.findByText(
+      'The request “Tax papers for 2025” to Jane, accountant is turned back on. It works once Sara can sign in again: turn their sign-in back on too.',
+    );
+    await waitFor(() => expect(waits).toHaveFocus());
+    expect(screen.queryByText(/works again\./)).not.toBeInTheDocument();
+    // Its row now points to her sign-in, and offers nothing the vault would refuse.
+    await waitFor(() =>
+      expect(
+        within(row('Tax papers for 2025')).getByRole('link', { name: 'Turn on Sara’s sign-in' }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      within(row('Tax papers for 2025')).queryByRole('button', { name: 'Turn back on' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(row('Lease papers')).getByRole('button', { name: 'Turn back on' }));
+    const locked = await screen.findByText(
+      'The request “Lease papers” to Jane, accountant is turned back on. It stays paused until Sara is unlocked, from their page.',
+    );
+    await waitFor(() => expect(locked).toHaveFocus());
+    expect(screen.queryByText(/works again\./)).not.toBeInTheDocument();
+    expect(state.calls.filter((c) => c.url.endsWith('/resume'))).toHaveLength(2);
+  });
+
   it('to an adult a paused request offers only Take it back, and says who can turn it back on', async () => {
     await openSharing(
       [

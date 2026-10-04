@@ -611,6 +611,24 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
         .set({ owners_only: true })
         .where('request_id', '=', id)
         .execute();
+      // The owners are told of these below, so they are taken now, as
+      // tellWaiting takes what it tells of: the next one would tell them
+      // again (the 5.28 second round). One still arriving or being scanned
+      // is left for its scan job to tell of.
+      if (deps.tell) {
+        await trx
+          .updateTable('incoming_file')
+          .set({ told_at: sql<Date>`coalesce(told_at, now())` })
+          .where(
+            'id',
+            'in',
+            waiting.map((f) => f.id),
+          )
+          .where('state', '=', 'received')
+          .where('submitted_at', 'is not', null)
+          .where('scan_state', 'in', ['unscanned', 'clean'])
+          .execute();
+      }
       await appendAudit(trx, {
         householdId: hh,
         action: 'incoming.moved',

@@ -1325,6 +1325,79 @@ describe.skipIf(!testAdminUrl())('locking a sign-in (5.28)', () => {
     expect((await dropPreview(asked.link_token)).statusCode).toBe(200);
   });
 
+  it('locked after a restore, then unlocked: they sign in, what an owner turned back on works, and what nobody has still waits for an owner (the 5.28 second round, N528P-4)', async () => {
+    const ines = await person('adult', 'Ines');
+    const doc = await document(ines, 'Boiler service');
+    const kept = await shareDoc(ines, doc);
+    const left = await shareDoc(ines, doc);
+    const asked = await askFor(ines, 'adults');
+    // As a restore leaves her, her links and her request.
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      await pool.query(
+        `update account_household set suspended_at = now(), suspend_reason = 'restored'
+          where member_id = $1`,
+        [ines.member_id],
+      );
+      await pool.query(
+        `update share_link set paused_at = now(), paused_reason = 'restored'
+          where id = any($1::uuid[])`,
+        [[kept.share.id, left.share.id]],
+      );
+      await pool.query(
+        `update upload_request set paused_at = now(), paused_reason = 'restored' where id = $1`,
+        [asked.request.id],
+      );
+    } finally {
+      await pool.end();
+    }
+    // An owner turns one link and the request back on: they wait for her.
+    for (const url of [
+      `/api/v1/shares/${kept.share.id}/resume`,
+      `/api/v1/upload-requests/${asked.request.id}/resume`,
+    ]) {
+      await fresh(owner);
+      const r = await h.app.inject({ method: 'POST', url, headers: h.as(owner) });
+      expect(r.statusCode, r.body).toBe(200);
+    }
+    expect((await preview(kept.link_token)).statusCode).toBe(404);
+
+    // Locked in place of the pause, then unlocked.
+    await fresh(owner);
+    expect((await lock(owner, ines)).statusCode).toBe(200);
+    expect((await preview(kept.link_token)).statusCode).toBe(404);
+    expect((await dropPreview(asked.link_token)).statusCode).toBe(404);
+    await fresh(owner);
+    expect((await unlock(owner, ines)).statusCode).toBe(204);
+
+    // The unlock ends both: she is not left paused, and signs in.
+    expect((await card(ines)).suspension).toBeNull();
+    expect((await signIn(ines.email)).statusCode).toBe(200);
+    const after = json<{
+      links: ShareView[];
+      upload_requests: Array<{ id: string }>;
+      sign_ins: PausedSignIn[];
+    }>(await h.app.inject({ url: '/api/v1/after-restore', headers: h.as(owner) }));
+    expect(after.sign_ins.map((s) => s.member_id)).not.toContain(ines.member_id);
+    // And what an owner turned back on works: the link opens, and so does the request.
+    expect((await preview(kept.link_token)).statusCode).toBe(200);
+    expect((await dropPreview(asked.link_token)).statusCode).toBe(200);
+    // The link nobody turned on is still the restore's to decide (A55): one
+    // taken back after the backup would otherwise work again. It waits for
+    // an owner, as the lock dialog says, and opens once turned on.
+    expect((await preview(left.link_token)).statusCode).toBe(404);
+    expect(after.links.map((l) => l.id)).toContain(left.share.id);
+    expect(after.links.map((l) => l.id)).not.toContain(kept.share.id);
+    await fresh(owner);
+    const turned = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/shares/${left.share.id}/resume`,
+      headers: h.as(owner),
+    });
+    expect(json<ShareView>(turned)).toMatchObject({ state: 'active', paused_reason: null });
+    expect((await preview(left.link_token)).statusCode).toBe(200);
+  });
+
   it('end_links takes back only what still works: one that has run out stays as it ended (the 5.28 review, E528-4)', async () => {
     const tom = await person('adult', 'Tomas');
     const doc = await document(tom, 'TV licence');

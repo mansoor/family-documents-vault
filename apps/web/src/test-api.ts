@@ -1627,16 +1627,21 @@ export function installFakeApi(state: FakeState) {
         return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
       }
       const link = state.shares.find((x) => x.id === path.split('/')[4]);
-      if (!link || link.state !== 'paused') {
+      // Only a restore's own pause is turned on, as the vault does: one paused
+      // by its maker's sign-in is no paused link to it (the 5.28 second round).
+      if (!link || link.state !== 'paused' || link.paused_reason !== 'restored') {
         return refuse(404, 'not_found', 'That paused link does not exist.');
       }
       // A link whose maker's sign-in still waits after the restore (5.28,
-      // `maker_paused` in a test's state): turned on, and paused by them.
+      // `maker_paused` in a test's state), or is locked (`maker_paused:
+      // 'locked'`): turned on, and paused by them.
       Object.assign(
         link,
         link.maker_paused === true
           ? { state: 'paused', paused_reason: 'sign_in_paused' }
-          : { state: 'active', paused_at: null, paused_reason: null },
+          : link.maker_paused === 'locked'
+            ? { state: 'paused', paused_reason: 'locked' }
+            : { state: 'active', paused_at: null, paused_reason: null },
       );
       return json(link);
     }
@@ -1733,10 +1738,20 @@ export function installFakeApi(state: FakeState) {
         if (role !== 'owner') {
           return refuse(403, 'forbidden', 'Only an owner can turn things back on after a restore.');
         }
-        if (r.state !== 'paused') {
+        // Only a restore's own pause, as the vault: one paused by its
+        // requester's sign-in has no pause of its own (the 5.28 second round).
+        if (r.state !== 'paused' || r.paused_reason !== 'restored') {
           return refuse(404, 'not_found', 'That paused request does not exist.');
         }
-        Object.assign(r, { state: 'active', paused_reason: null });
+        // Its requester's sign-in still waiting after the restore, or locked
+        // (`requester_paused` in a test's state): turned on, and paused by them.
+        const by = r.requester_paused;
+        Object.assign(
+          r,
+          by === 'sign_in_paused' || by === 'locked'
+            ? { state: 'paused', paused_reason: by }
+            : { state: 'active', paused_reason: null },
+        );
         return json(r);
       }
     }

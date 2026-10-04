@@ -11,7 +11,7 @@ import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
-import { linkTarget, RequestRow, requestTarget } from './Sharing.js';
+import { linkTarget, RequestRow, requestTarget, turnedBackOnWords } from './Sharing.js';
 
 /**
  * Settings → After a restore (5.16).
@@ -79,11 +79,10 @@ export function AfterRestoreScreen() {
       const what = requestTarget(r);
       const What = `${what.charAt(0).toUpperCase()}${what.slice(1)}`;
       setSaid(
-        how === 'resume'
-          ? // Still paused by its requester's sign-in (5.28): on, but not working yet.
-            done && done.state === 'paused'
-            ? `${What} is turned back on. It works once ${done.requested_by_name ?? 'whoever asked'} can sign in again: turn their sign-in back on too.`
-            : `${What} works again.`
+        // Maybe still paused by its requester's sign-in (5.28): on, but not
+        // working yet, as the vault answered.
+        how === 'resume' && done
+          ? turnedBackOnWords(what, done, done.requested_by_name ?? 'whoever asked')
           : `${What} is taken back. What was sent already stays.`,
       );
       await reload();
@@ -107,11 +106,10 @@ export function AfterRestoreScreen() {
       if (done === null) return;
       const what = `The link to ${linkTarget(link, true)}`;
       setSaid(
-        how === 'resume'
-          ? // Still paused by its maker's sign-in (5.28): on, but not working yet.
-            done && done.state === 'paused'
-            ? `${what} is turned back on. It works once ${done.created_by_name ?? 'whoever made it'} can sign in again: turn their sign-in back on too.`
-            : `${what} works again.`
+        // Maybe still paused by its maker's sign-in (5.28): on, but not
+        // working yet, as the vault answered.
+        how === 'resume' && done
+          ? turnedBackOnWords(what, done, done.created_by_name ?? 'whoever made it')
           : `${what} is taken back for good.`,
       );
       await reload();

@@ -2929,8 +2929,11 @@ member_cannot_be_told`, while anybody with a sign-in — of any role — is
       `paused_reason: null` and `paused_at: null`, and a link's `summary`
       says only that it is paused: a lock is the owners' and the person's to
       know (A51). A link or request turned back on after a restore whose
-      maker still waits answers `state: "paused"`, `sign_in_paused`. Treat a
-      reason never heard of as paused.
+      maker still waits answers `state: "paused"`, `sign_in_paused`; one
+      whose maker's lock the restore kept answers `locked`. Say what it
+      still waits for from the answer, not that it works again, and offer
+      turning one on only for `paused_reason: "restored"`. Treat a reason
+      never heard of as paused.
     - **Changed: a restore pauses every sign-in but the owners'** (A55). A
       backup cannot know of a lock made after it, nor of a sign-in taken away
       since; so after a restore each person but the owners waits, `reason:

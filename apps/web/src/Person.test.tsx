@@ -1313,6 +1313,18 @@ describe('locking a sign-in (5.28)', () => {
     expect(effects[0]).toBe(
       'The lock takes the place of the pause after the restore: once it is unlocked, Tess can sign in again.',
     );
+    // Her links and requests the restore paused are not the lock's: an
+    // unlock does not turn them back on, and the dialog does not say it does
+    // (the 5.28 second round, N528P-4).
+    expect(effects).toContain(
+      'Any links and requests to send documents Tess made stay paused. Those an owner has turned back on after the restore work again when the lock ends; the others still wait in After a restore for an owner to turn each back on.',
+    );
+    expect(effects.join(' ')).not.toMatch(/pause, and work again when the lock ends/);
+    expect(
+      within(dialog).getByLabelText('End their links and requests for good'),
+    ).toHaveAccessibleDescription(
+      'Otherwise they stay paused: those turned back on after the restore work again when the lock ends, and the others still wait in After a restore.',
+    );
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
     const said = await within(region).findByText('Tess’s sign-in is locked.');
@@ -1489,5 +1501,81 @@ describe('locking a sign-in (5.28)', () => {
     fireEvent.click(within(row('The lease')).getByRole('button', { name: 'Turn back on' }));
     const works = await screen.findByText('The link to “The lease” works again.');
     await waitFor(() => expect(works).toHaveFocus());
+  });
+
+  it('After a restore says when a link or a request it turned on stays paused by a lock the restore kept (the 5.28 second round, N528P-3)', async () => {
+    const link = {
+      id: 'sh-1',
+      document_id: 'doc-1',
+      document_title: 'Sara’s payslip',
+      recipient_label: 'the bank',
+      created_by_name: 'Sara',
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      has_pin: false,
+      open_count: 0,
+      last_opened_at: null,
+      state: 'paused',
+      flow: 'v2',
+      paused_at: since,
+      paused_reason: 'restored',
+      summary: 'Shared with the bank. Paused after a restore.',
+      // Locked when the backup was made: the restore kept the lock.
+      maker_paused: 'locked',
+    };
+    const request = {
+      id: 'req-1',
+      title: 'Tax papers',
+      message: null,
+      items: [],
+      recipient_label: 'Jane',
+      recipient_email: null,
+      requested_by_name: 'Sara',
+      mine: false,
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      protection: [],
+      max_visits: null,
+      visits_used: 0,
+      max_files: 10,
+      files_used: 0,
+      max_total_bytes: 1024,
+      bytes_used: 0,
+      accept_types: 'standard',
+      review_by: 'adults',
+      suggested_member_id: null,
+      suggested_type_key: null,
+      close_after_submit: false,
+      state: 'paused',
+      paused_reason: 'restored',
+      closed_reason: null,
+      files_received: 0,
+      requester_paused: 'locked',
+    };
+    const state = fresh({ members: [ME, TESS], shares: [link], uploadRequests: [request] });
+    installFakeApi(state);
+    signedIn();
+    at('/settings/after-restore');
+    render(<App />);
+    await screen.findByText('Sara’s payslip');
+    state.accountStepUp = false;
+    fireEvent.click(
+      within(screen.getByText('Sara’s payslip').closest('li') as HTMLElement).getByRole('button', {
+        name: 'Turn back on',
+      }),
+    );
+    const turnedOn = await screen.findByText(
+      'The link to “Sara’s payslip” is turned back on. It stays paused until Sara is unlocked, from their page.',
+    );
+    await waitFor(() => expect(turnedOn).toHaveFocus());
+    // Not told to turn on a sign-in that is not waiting here: it is locked.
+    expect(screen.queryByText(/turn their sign-in back on/)).not.toBeInTheDocument();
+    const requests = screen.getByRole('list', { name: 'Paused requests' });
+    fireEvent.click(within(requests).getByRole('button', { name: 'Turn back on' }));
+    const asked = await screen.findByText(
+      'The request “Tax papers” to Jane is turned back on. It stays paused until Sara is unlocked, from their page.',
+    );
+    await waitFor(() => expect(asked).toHaveFocus());
+    expect(screen.queryByText(/turn their sign-in back on/)).not.toBeInTheDocument();
   });
 });
