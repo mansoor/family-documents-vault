@@ -264,6 +264,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // another adult, not a teen (a viewer reads no log).
   ['member.locked', ownersAndThePerson],
   ['member.unlocked', ownersAndThePerson],
+  // 5.29: a password reset an owner started, which way it went and never a
+  // link — for the owners, whoever started it among them, and the person.
+  ['member.reset_started', ownersAndThePerson],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.

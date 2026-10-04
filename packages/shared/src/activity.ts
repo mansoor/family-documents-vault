@@ -289,6 +289,22 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       const links = detail.end_links === true ? ', and ended their links for good' : '';
       return line(`${who} locked ${possessive(personOf(e))} sign-in${end}${links}`, true);
     }
+    // A password reset an owner started (5.29): which way it went, never a
+    // link — to the owners, the person and whoever did it, nobody else.
+    case 'member.reset_started': {
+      const whose = possessive(personOf(e));
+      const stopped = detail.stop_now === true ? ', and stopped their password now' : '';
+      if (detail.path === 'mail') {
+        return line(`${who} sent ${whose} sign-in address a password reset${stopped}`, true);
+      }
+      if (detail.path === 'handover') {
+        return line(`${who} made a one-time link to reset ${whose} password${stopped}`, true);
+      }
+      return line(
+        `${who} asked for ${whose} password to be reset by whoever runs the vault${stopped}`,
+        true,
+      );
+    }
     case 'member.unlocked':
       return detail.reason === 'restored'
         ? line(`${who} turned ${possessive(personOf(e))} sign-in back on after the restore`, true)

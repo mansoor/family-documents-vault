@@ -150,6 +150,17 @@ export interface Schema {
     totp_confirmed_at: Timestamp | null;
     created_at: GeneratedTimestamp;
     disabled_at: Timestamp | null;
+    /**
+     * When a link an owner was handed for this sign-in was last spent (0052):
+     * every password change and reset after it takes away each passkey and
+     * two-step sign-in added since.
+     */
+    handover_spent_at: Timestamp | null;
+    /**
+     * When the password was last changed with change(), not a reset (0052):
+     * two-step sign-in turned on after it is kept by a reset.
+     */
+    password_changed_at: Timestamp | null;
   };
 
   account_household: {
@@ -191,11 +202,20 @@ export interface Schema {
     id: Generated<string>;
     account_id: string;
     token_hash: Buffer;
-    issued_by: 'self' | 'operator';
+    /** `owner` since 0052: an owner started it (5.29). */
+    issued_by: 'self' | 'operator' | 'owner';
     created_at: GeneratedTimestamp;
     expires_at: Timestamp;
     used_at: Timestamp | null;
     ip: string | null;
+    /** An owner's: the household whose owner made it (0052). */
+    household_id: string | null;
+    /** An owner's: who made it; null once their account is gone (0052). */
+    issued_by_account: string | null;
+    /** An owner's, made to be handed over rather than mailed (0052, path 2). */
+    handover: Generated<boolean>;
+    /** When the person saw that an owner made one for them (0052). */
+    told_at: Timestamp | null;
   };
 
   webauthn_challenge: {
@@ -1149,7 +1169,11 @@ export function createDb(pool: pg.Pool): Db {
  * A transaction that names nobody is given nothing.
  */
 export type Actor =
-  | { kind: 'account'; accountId: string; memberId: string; role: Role }
+  /**
+   * `sessionId`, when known, is the session asking (0052's app_session()):
+   * a write that waited for a reset or a lock ending it gains nothing.
+   */
+  | { kind: 'account'; accountId: string; memberId: string; role: Role; sessionId?: string }
   | { kind: 'system' }
   | { kind: 'link'; shareId: string }
   /**
@@ -1191,6 +1215,8 @@ export interface ScopePrincipal {
   accountId: string;
   memberId: string;
   role: Role;
+  /** The session asking, when there is one: told to the database too (0052). */
+  sessionId?: string;
 }
 
 /**
@@ -1227,7 +1253,8 @@ async function inScope<T>(
       set_config('app.role', ${account?.role ?? ''}, true),
       set_config('app.share_id', ${actor.kind === 'link' ? actor.shareId : ''}, true),
       set_config('app.upload_request_id', ${actor.kind === 'upload' ? actor.requestId : ''}, true),
-      set_config('app.upload_session_id', ${actor.kind === 'upload' ? (actor.sessionId ?? '') : ''}, true)
+      set_config('app.upload_session_id', ${actor.kind === 'upload' ? (actor.sessionId ?? '') : ''}, true),
+      set_config('app.session_id', ${account?.sessionId ?? ''}, true)
     `.execute(trx);
     return fn(trx);
   });
@@ -1239,8 +1266,15 @@ export function withPrincipal<T>(
   principal: ScopePrincipal,
   fn: (trx: Db) => Promise<T>,
 ): Promise<T> {
-  const { householdId, accountId, memberId, role } = principal;
-  return withScope(db, { householdId, actor: { kind: 'account', accountId, memberId, role } }, fn);
+  const { householdId, accountId, memberId, role, sessionId } = principal;
+  return withScope(
+    db,
+    {
+      householdId,
+      actor: { kind: 'account', accountId, memberId, role, ...(sessionId ? { sessionId } : {}) },
+    },
+    fn,
+  );
 }
 
 /**

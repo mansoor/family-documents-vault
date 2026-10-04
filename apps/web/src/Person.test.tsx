@@ -1579,3 +1579,398 @@ describe('locking a sign-in (5.28)', () => {
     expect(screen.queryByText(/turn their sign-in back on/)).not.toBeInTheDocument();
   });
 });
+
+describe('a password reset an owner starts (5.29)', () => {
+  /** Tess, a teen with a sign-in; Sam, another owner. */
+  const TESS = { ...AISHA, id: 'm-1', display_name: 'Tess', has_account: true, role: 'teen' };
+  const SAM = { ...AISHA, id: 'm-3', display_name: 'Sam Seikh', has_account: true, role: 'owner' };
+  const card = (over: Partial<MemberAccount> = {}): MemberAccount => ({
+    member_id: 'm-1',
+    role: 'teen',
+    email: 'tess@example.test',
+    two_step: false,
+    passkeys: 0,
+    last_signed_in_at: new Date().toISOString(),
+    devices: [
+      {
+        label: 'Safari on a Mac',
+        client: 'browser',
+        last_used_at: new Date().toISOString(),
+        offline: false,
+      },
+    ],
+    suspension: null,
+    max_offline_days: 30,
+    reset_path: 'handover',
+    ...over,
+  });
+
+  async function showCard(over: Parameters<typeof fresh>[0] = {}, id = 'm-1') {
+    const state = fresh({ members: [ME, TESS, SAM], ...over });
+    installFakeApi(state);
+    signedIn();
+    at(`/people/${id}`);
+    render(<App />);
+    const region = await screen.findByRole('region', { name: 'Account' });
+    fireEvent.click(within(region).getByRole('button', { name: 'Show their account' }));
+    await within(region).findByText('Signs in as');
+    return { state, region };
+  }
+
+  /** Send a password reset, pressed as a browser presses it: focused, then clicked. */
+  async function openReset(region: HTMLElement, name = 'Tess') {
+    const open = within(region).getByRole('button', { name: 'Send a password reset' });
+    open.focus();
+    fireEvent.click(open);
+    const dialog = await screen.findByRole('dialog', { name: `Reset ${name}’s password` });
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole('heading', { name: `Reset ${name}’s password` }),
+      ).toHaveFocus(),
+    );
+    return { open, dialog };
+  }
+
+  const effectsOf = (dialog: HTMLElement) =>
+    within(within(dialog).getByRole('list', { name: 'What a reset does' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+
+  const sentTo = (state: ReturnType<typeof fresh>) =>
+    state.calls
+      .filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/password-reset')
+      .map((c) => c.body);
+
+  async function confirmWithCode() {
+    const ask = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(ask).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    fireEvent.change(within(ask).getByLabelText('Code from your authenticator app'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
+  }
+
+  it("with the vault's own mail server: the link goes to their address, and the card says it is on its way", async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card({ reset_path: 'mail' }) } });
+    expect(
+      within(region).getByRole('button', { name: 'Send a password reset' }),
+    ).toHaveAccessibleDescription(
+      'A link to set a new password goes to the address Tess signs in with.',
+    );
+    state.accountStepUp = true;
+    const { dialog } = await openReset(region);
+    expect(
+      within(dialog).getByText(
+        'Whoever runs your vault gave it a mail server of its own, so a link to set a new password goes to tess@example.test, the address Tess signs in with. No owner sees it.',
+      ),
+    ).toBeInTheDocument();
+    expect(effectsOf(dialog)).toEqual([
+      'It works once, for an hour.',
+      'When it is used, Tess is signed out everywhere, their passkeys are removed, two-step sign-in is still asked for, and any exports they made stop working.',
+      'Until then, Tess’s password still works. The other owners are told.',
+    ]);
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send the link' }));
+    await confirmWithCode();
+    const said = await within(region).findByText(
+      'A link to set a new password is on its way to tess@example.test.',
+    );
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // Asked, refused until it was confirmed, then made: nothing chosen.
+    expect(sentTo(state)).toEqual([{}, {}]);
+    // No link anywhere on the page.
+    expect(document.body.textContent).not.toMatch(/reset#/);
+  });
+
+  it('for somebody with nothing private: the link is shown once, with Copy and the warning', async () => {
+    const copied = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
+    const { state, region } = await showCard({ accounts: { 'm-1': card() } });
+    const { dialog } = await openReset(region);
+    expect(
+      within(dialog).getByText(
+        'Your vault has no mail server of its own, and Tess keeps nothing only they can see, so you are given a link to hand to them.',
+      ),
+    ).toBeInTheDocument();
+    expect(effectsOf(dialog)).toEqual([
+      'It is shown to you once, works once, for an hour, and stops working if Tess starts keeping something only they can see first.',
+      'When it is used, Tess is signed out everywhere, their passkeys are removed, two-step sign-in is still asked for, and any exports they made stop working.',
+      'Tess is told the next time they sign in. The other owners are told.',
+    ]);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make the link' }));
+    const shown = await screen.findByRole('dialog', { name: 'The link for Tess' });
+    await waitFor(() =>
+      expect(within(shown).getByRole('heading', { name: 'The link for Tess' })).toHaveFocus(),
+    );
+    expect(within(shown).getByRole('alert')).toHaveTextContent(
+      'Shown once: this link is not kept anywhere you can see it again. Copy it now, and give it to Tess yourself — in person, or in a message only they read.',
+    );
+    const link = 'http://vault.example/reset#hHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHhHh';
+    expect(within(shown).getByText(link)).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(shown).getByRole('button', { name: 'Copy the link' }));
+    await within(shown).findByRole('button', { name: 'Copied' });
+    expect(copied).toHaveBeenCalledWith(link);
+    fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
+    const said = await within(region).findByText('You were given Tess’s link.');
+    await waitFor(() => expect(said).toHaveFocus());
+    // Gone from the page once it is closed.
+    expect(document.body.textContent).not.toContain(link);
+    expect(sentTo(state)).toEqual([{}]);
+  });
+
+  it('for anybody else: no owner can, and the dialog gives the command for whoever runs the server', async () => {
+    const copied = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: copied } });
+    const { state, region } = await showCard({
+      accounts: { 'm-1': card({ role: 'adult', reset_path: 'operator' }) },
+    });
+    expect(
+      within(region).getByRole('button', { name: 'Send a password reset' }),
+    ).toHaveAccessibleDescription(
+      'No owner can reset Tess’s password on this vault: it says who can, and what to ask them.',
+    );
+    const { dialog } = await openReset(region);
+    const command =
+      "docker compose exec api node apps/api/dist/cli.mjs reset-password 'tess@example.test'";
+    expect(
+      within(dialog).getByText(
+        'Your vault has no mail server of its own, and Tess keeps something only they can see. A link in an owner’s hands could open it, so no owner can reset Tess’s password. Ask whoever runs your vault’s server to run:',
+      ),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(command)).toBeInTheDocument();
+    // No stopping a password where no link can reach them (the 5.29 review).
+    expect(
+      within(dialog).queryByLabelText('Stop their current password now'),
+    ).not.toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Start the reset' }));
+    const shown = await screen.findByRole('dialog', { name: 'Ask whoever runs the vault' });
+    expect(within(shown).getByText(command)).toBeInTheDocument();
+    expect(within(shown).queryByText(/reset#/)).not.toBeInTheDocument();
+    fireEvent.click(within(shown).getByRole('button', { name: 'Copy the command' }));
+    await waitFor(() => expect(copied).toHaveBeenCalledWith(command));
+    fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
+    expect(
+      await within(region).findByText(
+        'Asked for Tess’s password to be reset by whoever runs the vault.',
+      ),
+    ).toBeInTheDocument();
+    expect(sentTo(state)).toEqual([{}]);
+  });
+
+  it('the way the vault finds as it is done is the one said: a link that could not be made is never shown', async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card() } });
+    // Tess began keeping something private since the card was read.
+    state.resetGoes = 'operator';
+    const { dialog } = await openReset(region);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make the link' }));
+    const shown = await screen.findByRole('dialog', { name: 'Ask whoever runs the vault' });
+    expect(within(shown).queryByText(/reset#/)).not.toBeInTheDocument();
+  });
+
+  it('stop_now is sent when ticked, and the card says they are signed out everywhere', async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card({ reset_path: 'mail' }) } });
+    const { dialog } = await openReset(region);
+    const stop = within(dialog).getByLabelText('Stop their current password now');
+    expect(stop).toHaveAccessibleDescription(
+      'Tess is signed out everywhere at once, and can’t sign in again until they set a new password through the link.',
+    );
+    expect(effectsOf(dialog)[2]).toBe(
+      'Until then, Tess’s password still works. The other owners are told.',
+    );
+    fireEvent.click(stop);
+    // What the list says follows the choice under it.
+    expect(effectsOf(dialog)[2]).toBe(
+      'Tess’s password stops working now. The other owners are told.',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Send the link' }));
+    expect(
+      await within(region).findByText(
+        'A link to set a new password is on its way to tess@example.test. Tess is signed out everywhere, and their password stopped working.',
+      ),
+    ).toBeInTheDocument();
+    expect(sentTo(state)).toEqual([{ stop_now: true }]);
+    expect(within(region).getByText('No device at the moment.')).toBeInTheDocument();
+  });
+
+  it('a way never heard of is taken as no owner’s: the command, never a link', async () => {
+    const { region } = await showCard({
+      accounts: { 'm-1': card({ reset_path: 'courier' as never }) },
+    });
+    expect(
+      within(region).getByRole('button', { name: 'Send a password reset' }),
+    ).toHaveAccessibleDescription(
+      'No owner can reset Tess’s password on this vault: it says who can, and what to ask them.',
+    );
+    const { dialog } = await openReset(region);
+    expect(within(dialog).getByRole('button', { name: 'Start the reset' })).toBeInTheDocument();
+  });
+
+  it('with a passkey, stopping the password says the passkey still signs them in until the link is used (the 5.29 review, W529-2)', async () => {
+    const { state, region } = await showCard({
+      accounts: { 'm-1': card({ reset_path: 'handover', passkeys: 1 }) },
+    });
+    const { dialog } = await openReset(region);
+    const stop = within(dialog).getByLabelText('Stop their current password now');
+    expect(stop).toHaveAccessibleDescription(
+      'Tess’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.',
+    );
+    fireEvent.click(stop);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make the link' }));
+    const shown = await screen.findByRole('dialog', { name: 'The link for Tess' });
+    fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
+    const said = await within(region).findByText(
+      'You were given Tess’s link. Tess is signed out everywhere, and their password stopped working — but a passkey of theirs still signs them in until the link is used.',
+    );
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(state.resetsStarted?.at(-1)?.body).toEqual({ stop_now: true });
+  });
+
+  it('once locked from the card, no reset is offered (the 5.29 review, W529-3)', async () => {
+    const { region } = await showCard({ accounts: { 'm-1': card() } });
+    expect(
+      within(region).getByRole('button', { name: 'Send a password reset' }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole('button', { name: 'Lock sign-in' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Lock Tess’s sign-in' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    const said = await within(region).findByText('Tess’s sign-in is locked.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      within(region).queryByRole('button', { name: 'Send a password reset' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('the notice lists what was added to the sign-in since the link was used (the 5.29 review, F529-01)', async () => {
+    const state = fresh({
+      resetNotice: {
+        by: 'Sam Seikh',
+        at: '2026-10-02T09:00:00.000Z',
+        spent_at: '2026-10-02T09:05:00.000Z',
+        passkeys_since: [{ label: 'Owner’s laptop', added_at: '2026-10-02T09:10:00.000Z' }],
+        two_step_since: '2026-10-03T09:00:00.000Z',
+        links_since: [{ title: 'Bank statements', made_at: '2026-10-02T09:20:00.000Z' }],
+      },
+    });
+    installFakeApi(state);
+    signedIn('adult');
+    at('/');
+    render(<App />);
+    const told = await screen.findByRole('region', {
+      name: 'An owner made a link to reset your password',
+    });
+    expect(
+      within(within(told).getByRole('list', { name: 'Added since the link was used' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([
+      'A passkey called “Owner’s laptop”, on 2 October',
+      'Two-step sign-in, on 3 October',
+      'A share link to “Bank statements”, made on 2 October',
+    ]);
+    expect(told).toHaveTextContent(
+      'If you didn’t add them, change your password: that removes every one of them, and you add your own again.',
+    );
+    expect(within(told).getByRole('link', { name: 'Change your password' })).toHaveAttribute(
+      'href',
+      '/settings',
+    );
+    await expectAccessible();
+  });
+
+  it('Escape cancels, nothing is sent, and focus goes back to the button', async () => {
+    const { state, region } = await showCard({ accounts: { 'm-1': card() } });
+    const { open } = await openReset(region);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(open).toHaveFocus());
+    expect(sentTo(state)).toEqual([]);
+  });
+
+  it('no reset is offered for another owner, nor for somebody locked, nor by a vault from before 5.29', async () => {
+    const sam = card({
+      member_id: 'm-3',
+      role: 'owner',
+      email: 'sam@example.test',
+      reset_path: null,
+    });
+    const first = await showCard({ accounts: { 'm-3': sam } }, 'm-3');
+    expect(
+      within(first.region).queryByRole('button', { name: 'Send a password reset' }),
+    ).not.toBeInTheDocument();
+    cleanup();
+    const locked = card({
+      reset_path: null,
+      suspension: {
+        reason: 'locked',
+        since: new Date().toISOString(),
+        until: null,
+        note: null,
+        by: 'Sam Seikh',
+      },
+    });
+    const second = await showCard({ accounts: { 'm-1': locked } });
+    expect(
+      within(second.region).queryByRole('button', { name: 'Send a password reset' }),
+    ).not.toBeInTheDocument();
+    cleanup();
+    const before = card();
+    delete before.reset_path;
+    const third = await showCard({ accounts: { 'm-1': before } });
+    expect(
+      within(third.region).queryByRole('button', { name: 'Send a password reset' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('a refusal is said in the dialog, which stays open', async () => {
+    const { region, state } = await showCard({ accounts: { 'm-1': card() } });
+    const { dialog } = await openReset(region);
+    // Locked meanwhile, by another owner.
+    (state.accounts as Record<string, MemberAccount>)['m-1'] = card({
+      suspension: {
+        reason: 'locked',
+        since: new Date().toISOString(),
+        until: null,
+        note: null,
+        by: 'Sam Seikh',
+      },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make the link' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      "Tess's sign-in is locked. Unlock it first, then reset their password.",
+    );
+    expect(screen.getByRole('dialog', { name: 'Reset Tess’s password' })).toBeInTheDocument();
+  });
+
+  it('the person is told at their next sign-in, on Home, until they say they saw it', async () => {
+    const state = fresh({
+      resetNotice: { by: 'Sam Seikh', at: '2026-10-02T09:00:00.000Z' },
+    });
+    installFakeApi(state);
+    signedIn('adult');
+    at('/');
+    render(<App />);
+    const told = await screen.findByRole('region', {
+      name: 'An owner made a link to reset your password',
+    });
+    expect(told).toHaveTextContent(
+      'On 2 October, Sam Seikh was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings and talk to them.',
+    );
+    expect(within(told).getByRole('link', { name: 'Change your password' })).toHaveAttribute(
+      'href',
+      '/settings',
+    );
+    await expectAccessible();
+    fireEvent.click(within(told).getByRole('button', { name: 'I’ve seen this' }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('region', { name: 'An owner made a link to reset your password' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      state.calls.some((c) => c.method === 'DELETE' && c.url === '/api/v1/me/reset-notice'),
+    ).toBe(true);
+  });
+});

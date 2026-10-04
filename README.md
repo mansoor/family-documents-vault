@@ -390,16 +390,40 @@ Anybody else is sent nothing, and the page answers exactly as it would have.
 Whoever runs the vault can make them a link from the command line:
 
 ```bash
-docker compose exec api node apps/api/dist/cli.mjs reset-password someone@example.com
+docker compose exec api node apps/api/dist/cli.mjs reset-password 'someone@example.com'
 ```
 
 It prints a one-time link to hand over directly.
 
-**No owner or adult can reset another person's password**, and that is
-deliberate rather than an omission: they could then sign in as that person and
-read their private documents, which is the one thing the privacy wall exists to
-prevent. The two routes above are the only ones, and the second belongs to
-whoever holds the master key — who can already read everything.
+**An owner can start a reset for somebody else.** From a person's page (Account
+→ Send a password reset) an owner — with two-step sign-in or a passkey, never
+for another owner, never for somebody locked — starts one, and the vault says
+which way it goes:
+
+- with **`FDV_SMTP_URL`** set, the link goes to that person's own address, as
+  above, and no owner sees it;
+- without it, **the owner is given a one-time link that sets the person's
+  password**, to hand over — offered only while the person keeps nothing
+  private: no Only me documents, collections or identity details (in the Trash
+  or deleted too), no request to send documents that only they review, no
+  export. Whoever spends that link chooses the password and can sign in with
+  it, so it is a working way in for as long as the person keeps that password.
+  It stops working if they gain anything private before it is used. The person
+  is told, on the web, the next time they sign in (until they say they have
+  seen it), and should then set a password of their own: every change of the
+  password after a link like this removes each passkey and two-step sign-in
+  added since it was used, and ends each share link made as them since, and
+  the notice lists any there are;
+- for anybody else, a teen with private documents included, it is the command
+  line above.
+
+"Stop their current password now", offered only where a link can reach the
+person, signs them out everywhere and stops their password; they choose a new
+one through the link. A passkey of theirs still signs them in until then — lock
+their sign-in to keep them out. Taking somebody's private documents by resetting
+their password would be the one thing the privacy wall exists to prevent, so the
+only route that works whatever they keep belongs to whoever holds the master key
+— who can already read everything.
 
 ### Seeing what has happened
 

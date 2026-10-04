@@ -6,18 +6,26 @@ import {
   type DateValue,
   type DocumentTypeView,
   type DocumentView,
+  type ResetNotice,
   type SuggestionView,
 } from '@fdv/shared';
 import { useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { api, type Member } from '../api.js';
-import { useApp, useLoad } from '../app-context.js';
+import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
 import { DocActions, type RowCollection } from '../DocActions.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
-import { BottomNav, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
+import {
+  BottomNav,
+  Button,
+  categoryLabel,
+  CollapsibleSection,
+  ErrorNote,
+  StatusBadge,
+} from '../ui.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 
 /**
@@ -114,6 +122,9 @@ export function HomeScreen() {
       )}
       {/* A wider audience for identity details, waiting its 72 hours (5.27). */}
       <IdentityNotice memberId={data?.me.member_id} />
+      {data?.me.reset_notice && (
+        <ResetNoticeStrip notice={data.me.reset_notice} onSeen={() => void reload()} />
+      )}
       <RemovalNotice items={data?.removals ?? []} memberId={data?.me.member_id} />
       <AttentionStrip items={data?.attention ?? []} />
       <MissingStrip items={data?.suggestions ?? []} />
@@ -269,6 +280,81 @@ function AttentionStrip({
  * said here, where you will see it, as well as by email — the Trash is
  * where you bring one back to keep it, for a day from when you were told.
  */
+/**
+ * An owner was given a one-time link to set a new password for this sign-in
+ * (5.29, path 2): said at every sign-in, until the person says they saw it.
+ * Whoever used it knew the password it set, so it says what to do.
+ */
+export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => void }) {
+  const { guarded } = useApp();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const by = props.notice.by ?? 'An owner';
+  const dayOf = (at: string) =>
+    new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+  const day = dayOf(props.notice.at);
+  const added = [
+    ...(props.notice.passkeys_since ?? []).map(
+      (k) => `A passkey${k.label ? ` called “${k.label}”` : ''}, on ${dayOf(k.added_at)}`,
+    ),
+    ...(props.notice.two_step_since
+      ? [`Two-step sign-in, on ${dayOf(props.notice.two_step_since)}`]
+      : []),
+    ...(props.notice.links_since ?? []).map(
+      (l) => `A share link${l.title ? ` to “${l.title}”` : ''}, made on ${dayOf(l.made_at)}`,
+    ),
+  ];
+  const seen = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await guarded((t) => api.dismissResetNotice(t));
+      if (done !== null) props.onSeen();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="attention stack reset-notice" aria-labelledby="reset-notice-h">
+      <h2 id="reset-notice-h" className="reset-notice-h">
+        An owner made a link to reset your password
+      </h2>
+      <p>
+        {`On ${day}, ${by} was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings and talk to them.`}
+      </p>
+      {/* What was added to the sign-in since the link was used (the 5.29
+          review): whoever used it could have added it, and changing the
+          password takes each away. */}
+      {added.length > 0 && (
+        <>
+          <p>Added to your sign-in since the link was used:</p>
+          <ul aria-label="Added since the link was used">
+            {added.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+          <p>
+            If you didn’t add them, change your password: that removes every one of them, and you
+            add your own again.
+          </p>
+        </>
+      )}
+      <ErrorNote message={error} />
+      <div className="row">
+        <Link to="/settings" className="btn btn-quiet">
+          Change your password
+        </Link>
+        <Button kind="quiet" disabled={busy} onClick={() => void seen()}>
+          I’ve seen this
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function RemovalNotice({
   items,
   memberId,

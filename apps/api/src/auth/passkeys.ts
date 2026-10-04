@@ -9,7 +9,13 @@ import { withPrincipal, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import { appendAudit } from '@fdv/db';
 import { ApiError } from '../errors.js';
-import type { AuthService, Principal, RequestMeta, Tokens } from './service.js';
+import {
+  stillSignedIn,
+  type AuthService,
+  type Principal,
+  type RequestMeta,
+  type Tokens,
+} from './service.js';
 
 /**
  * Passkeys: the primary credential, with the password kept as the fallback
@@ -127,33 +133,36 @@ export class PasskeyService {
     }
 
     const { credential, aaguid, credentialBackedUp } = verification.registrationInfo;
-    const row = await this.db
-      .insertInto('credential')
-      .values({
-        account_id: p.accountId,
-        kind: 'passkey',
-        credential_id: Buffer.from(credential.id, 'base64url'),
-        public_key: Buffer.from(credential.publicKey),
-        sign_count: credential.counter,
-        transports: credential.transports ?? [],
-        backed_up: credentialBackedUp,
-        aaguid: aaguid ?? null,
-        label: label?.trim() || null,
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-
-    await withPrincipal(this.db, p, (trx) =>
-      appendAudit(trx, {
+    const row = await withPrincipal(this.db, p, async (trx) => {
+      // From a session still live (5.29): a passkey added by a session that
+      // a reset ended while this waited would outlast the reset.
+      await stillSignedIn(trx, p);
+      const made = await trx
+        .insertInto('credential')
+        .values({
+          account_id: p.accountId,
+          kind: 'passkey',
+          credential_id: Buffer.from(credential.id, 'base64url'),
+          public_key: Buffer.from(credential.publicKey),
+          sign_count: credential.counter,
+          transports: credential.transports ?? [],
+          backed_up: credentialBackedUp,
+          aaguid: aaguid ?? null,
+          label: label?.trim() || null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'credential.passkey_added',
         objectType: 'credential',
-        objectId: row.id,
-        detail: { label: row.label },
+        objectId: made.id,
+        detail: { label: made.label },
         ip: meta.ip,
-      }),
-    );
+      });
+      return made;
+    });
     return view(row);
   }
 
@@ -250,7 +259,10 @@ export class PasskeyService {
       .where('id', '=', credential.id)
       .execute();
 
-    return this.auth.openSessionForAccount(credential.account_id, meta, 'passkey');
+    // Which passkey, checked again where the session opens (5.29).
+    return this.auth.openSessionForAccount(credential.account_id, meta, 'passkey', {
+      passkey: credential.id,
+    });
   }
 
   /**

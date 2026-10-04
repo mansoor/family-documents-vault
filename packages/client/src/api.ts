@@ -47,6 +47,8 @@ import type {
   MemberSuspension,
   MfaChallenge,
   OfflineGrant,
+  OwnerResetInput,
+  OwnerResetResult,
   OfflineOpen,
   OfflineOpensResult,
   OfflineSet,
@@ -155,6 +157,13 @@ export function createApi(http: Http) {
       request<Tokens>('/api/v1/auth/refresh', { method: 'POST', body: { refresh_token } }),
     logout: (token: string) => request<void>('/api/v1/auth/logout', { method: 'POST', token }),
     me: (token: string) => request<Me>('/api/v1/me', { token }),
+    /**
+     * The person has seen that an owner made a link to hand over for their
+     * sign-in (5.29, `Me.reset_notice`): `204`, and it is not said again.
+     * Nothing to see answers the same.
+     */
+    dismissResetNotice: (token: string) =>
+      request<void>('/api/v1/me/reset-notice', { method: 'DELETE', token }),
     sessions: (token: string) =>
       request<{ items: SessionRow[] }>('/api/v1/auth/sessions', { token }),
     revokeSession: (token: string, id: string) =>
@@ -336,6 +345,23 @@ export function createApi(http: Http) {
         `/api/v1/members/${enc(memberId)}/lock`,
         { method: 'POST', body, token },
       ),
+    /**
+     * Starts a password reset for somebody (5.29, D5): which way it goes is
+     * the answer's `path` — `mail` to their own address by the operator's
+     * mail server; `handover`, a one-time `link` shown this once, only for
+     * somebody who keeps nothing private; `operator`, no owner's way, with
+     * the `command` whoever runs the server types. `stop_now` stops their
+     * current password and ends their sessions (A48). Owners only (`403
+     * forbidden`), an owner power asked as a lock is; never oneself (`422`),
+     * never an owner (`409 owner_notice_required`), nobody locked or paused
+     * (`409 locked`). `MemberAccount.reset_path` says beforehand which way.
+     */
+    startPasswordReset: (token: string, memberId: string, body: OwnerResetInput = {}) =>
+      request<OwnerResetResult>(`/api/v1/members/${enc(memberId)}/password-reset`, {
+        method: 'POST',
+        body,
+        token,
+      }),
     /** Unlocks it (5.28): `204`; somebody not locked is `409 not_locked`. Asks as a lock does. */
     unlockMember: (token: string, memberId: string) =>
       request<void>(`/api/v1/members/${enc(memberId)}/lock`, { method: 'DELETE', token }),

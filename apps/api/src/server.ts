@@ -23,6 +23,7 @@ import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { IdentityService } from './household/identity.js';
 import { LockService } from './household/locks.js';
+import { OwnerResetService } from './household/owner-resets.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
@@ -152,6 +153,25 @@ async function main(): Promise<void> {
   );
 
   const stepUpService = new StepUpService(db, passkeys, totp);
+  const passwords = new PasswordService(
+    db,
+    keys,
+    stepUpService,
+    config.FDV_BASE_URL,
+    alert,
+    Boolean(config.FDV_SMTP_URL),
+    push,
+    enqueue,
+  );
+  // 5.29: a reset an owner starts goes by the operator's mail server alone,
+  // or is handed over only for somebody who keeps nothing private.
+  const resets = new OwnerResetService(
+    db,
+    (token) => passwords.linkFor(token),
+    Boolean(config.FDV_SMTP_URL),
+    alert,
+    push,
+  );
   const documents = new DocumentService(
     db,
     keys,
@@ -186,13 +206,20 @@ async function main(): Promise<void> {
       alert,
       { push, allowPrivateEndpoints: config.FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS === 'true' },
     ),
-    household: new HouseholdService(db, keys, stepUpService, config.FDV_OFFLINE_MAX_DAYS),
+    household: new HouseholdService(
+      db,
+      keys,
+      stepUpService,
+      config.FDV_OFFLINE_MAX_DAYS,
+      (trx, target) => resets.pathFor(trx, target),
+    ),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     // 5.26: a wider audience is told by the operator's mail server alone.
     identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
+    resets,
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
       enqueue,
       maxDays: config.FDV_SHARE_MAX_DAYS,
@@ -218,15 +245,7 @@ async function main(): Promise<void> {
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,
-    passwords: new PasswordService(
-      db,
-      keys,
-      stepUpService,
-      config.FDV_BASE_URL,
-      alert,
-      Boolean(config.FDV_SMTP_URL),
-      push,
-    ),
+    passwords,
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(masterSecret)),
   });
 

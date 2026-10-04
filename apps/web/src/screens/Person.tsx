@@ -6,6 +6,7 @@ import {
   LOCK_NOTE_MAX,
   PHOTO_MAX_BYTES,
   PHOTO_TYPES,
+  resetCommand,
   roleLabel,
   shareEndWords,
   shortName,
@@ -16,7 +17,9 @@ import {
   type MemberEdit,
   type MemberLock,
   type MemberSuspension,
+  type OwnerResetResult,
   type PhotoCrop,
+  type ResetPath,
   type Role,
   type SuspendReason,
 } from '@fdv/shared';
@@ -495,7 +498,10 @@ const capitalised = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
  * Since 5.28 it locks the sign-in, when the vault can
  * (`features.member_admin`); a locked one says since when, until when, by
  * whom and the note, with Unlock; one a restore paused offers Turn back on.
- * Each is an owner power, asked as the card is.
+ * Since 5.29 it sends a password reset, for somebody an owner may reset
+ * (`reset_path`, which a vault from before does not say), its dialog saying
+ * which way this vault takes for them and why. Each is an owner power,
+ * asked as the card is.
  */
 function AccountCard(props: { member: Member; name: string; otherOwners: boolean }) {
   const { guarded, authVersion, caps } = useApp();
@@ -511,11 +517,13 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [locking, setLocking] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
   const shown = useRef<HTMLDListElement>(null);
   const heldLine = useRef<HTMLParagraphElement>(null);
   const status = useRef<HTMLParagraphElement>(null);
   const lockButton = useRef<HTMLButtonElement>(null);
+  const resetButton = useRef<HTMLButtonElement>(null);
   const tz = timezone ?? 'UTC';
 
   const show = async () => {
@@ -567,6 +575,14 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
 
   const noTwoStep = refused || me?.totp_required === true;
   const suspended = card?.suspension ?? null;
+  // Which way a reset goes (5.29); a way never heard of is no owner's. None
+  // for somebody locked or paused, whatever the card read before said.
+  const resetPath: ResetPath | null =
+    card?.reset_path && !suspended
+      ? card.reset_path in RESET_ABOUT
+        ? card.reset_path
+        : 'operator'
+      : null;
   return (
     <section className="card stack" aria-labelledby="account-h">
       <h2 id="account-h" style={{ fontSize: 18 }}>
@@ -680,6 +696,48 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
                 </Button>
               </>
             )}
+          {/* A password reset (5.29): for somebody an owner may reset — not
+              an owner (A50), not somebody locked or paused — which a vault
+              from before does not say. */}
+          {resetPath && (
+            <>
+              <p id="reset-about" className="muted">
+                {RESET_ABOUT[resetPath](props.name)}
+              </p>
+              <Button
+                ref={resetButton}
+                kind="quiet"
+                describedBy="reset-about"
+                onClick={() => {
+                  setSaid(null);
+                  setResetting(true);
+                }}
+              >
+                Send a password reset
+              </Button>
+            </>
+          )}
+          {resetting && resetPath && (
+            <ResetDialog
+              member={props.member}
+              name={props.name}
+              email={card.email}
+              path={resetPath}
+              passkeys={card.passkeys}
+              otherOwners={props.otherOwners}
+              returnFocus={resetButton}
+              onDone={(done) => {
+                flushSync(() => {
+                  setResetting(false);
+                  // Signed out everywhere, when their password stopped now.
+                  if (done.stop_now) setCard((was) => (was ? { ...was, devices: [] } : was));
+                  setSaid(resetSaid(done, props.name, card.email, card.passkeys));
+                });
+                status.current?.focus();
+              }}
+              onCancel={() => setResetting(false)}
+            />
+          )}
           {locking && (
             <LockDialog
               member={props.member}
@@ -694,7 +752,10 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
                   // Signed out everywhere: a lock ends their sessions, and
                   // the devices go with them. Said from the answer, without
                   // a second look, which the activity log would note.
-                  setCard((was) => (was ? { ...was, suspension, devices: [] } : was));
+                  // And no reset is offered while it lasts (the 5.29 review).
+                  setCard((was) =>
+                    was ? { ...was, suspension, devices: [], reset_path: null } : was,
+                  );
                   setLocking(false);
                   setSaid(`${props.name}’s sign-in is locked.`);
                 });
@@ -721,6 +782,246 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
         </>
       )}
     </section>
+  );
+}
+
+/** Under "Send a password reset" (5.29): which way this vault would take, in a sentence. */
+const RESET_ABOUT: Record<ResetPath, (name: string) => string> = {
+  mail: (name) => `A link to set a new password goes to the address ${name} signs in with.`,
+  handover: (name) => `You are given a one-time link to set a new password, to hand to ${name}.`,
+  operator: (name) =>
+    `No owner can reset ${name}’s password on this vault: it says who can, and what to ask them.`,
+};
+
+/** What the card says once a reset is on its way (5.29). */
+export function resetSaid(
+  done: OwnerResetResult,
+  name: string,
+  email: string,
+  passkeys = 0,
+): string {
+  // A passkey of theirs still signs them in until the link is used (the
+  // 5.29 review): only a lock keeps somebody out.
+  const stopped = done.stop_now
+    ? passkeys > 0
+      ? ` ${name} is signed out everywhere, and their password stopped working — but a passkey of theirs still signs them in until the link is used.`
+      : ` ${name} is signed out everywhere, and their password stopped working.`
+    : '';
+  if (done.path === 'mail')
+    return `A link to set a new password is on its way to ${email}.${stopped}`;
+  if (done.path === 'handover') return `You were given ${name}’s link.${stopped}`;
+  return `Asked for ${name}’s password to be reset by whoever runs the vault.${stopped}`;
+}
+
+/**
+ * "Reset Tess’s password" (5.29, D5): which way this vault takes for them,
+ * and why, before anything is done —
+ *
+ *  - `mail`: the link goes to their own address by the vault's own mail
+ *    server, and no owner sees it;
+ *  - `handover`: no mail server, and they keep nothing only they can see,
+ *    so the owner is given the link, shown once, with Copy;
+ *  - `operator`: no mail server, and they keep something only they can see,
+ *    so no owner may: whoever runs the server runs the command shown.
+ *
+ * With "Stop their password now" (A48) their sessions end at once. What the
+ * vault answered decides what is shown after: it asks again as it is done,
+ * and a way that changed since the card was read is said as it is now.
+ */
+function ResetDialog(props: {
+  member: Member;
+  name: string;
+  email: string;
+  path: ResetPath;
+  /** How many passkeys they have: a stopped password leaves those working. */
+  passkeys: number;
+  otherOwners: boolean;
+  returnFocus: RefObject<HTMLElement | null>;
+  onDone: (done: OwnerResetResult) => void;
+  onCancel: () => void;
+}) {
+  const { guarded } = useApp();
+  const { name } = props;
+  const [stopNow, setStopNow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** A link handed over, or a command to pass on: shown here, this once. */
+  const [shown, setShown] = useState<OwnerResetResult | null>(null);
+  const [copied, setCopied] = useState(false);
+  const box = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const shownHeading = useRef<HTMLHeadingElement>(null);
+  useSheetFocus(box, {
+    start: heading,
+    onEscape: () => (shown ? props.onDone(shown) : props.onCancel()),
+    busy,
+    returnFocus: props.returnFocus,
+  });
+  const command = resetCommand(props.email);
+
+  const start = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const done = await guarded((t) =>
+        api.startPasswordReset(t, props.member.id, stopNow ? { stop_now: true } : {}),
+      );
+      if (!done) return;
+      if (done.path === 'mail') {
+        props.onDone(done);
+        return;
+      }
+      flushSync(() => setShown(done));
+      shownHeading.current?.focus();
+    } catch (err) {
+      setError(describeError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = (text: string) => {
+    void navigator.clipboard?.writeText(text).then(
+      () => setCopied(true),
+      () => setCopied(false),
+    );
+  };
+
+  const toldOwners = props.otherOwners ? ' The other owners are told.' : '';
+  return (
+    <div className="scrim" role="presentation">
+      <section
+        ref={box}
+        className="card stack sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={shown ? 'reset-shown-h' : 'reset-h'}
+        aria-busy={busy}
+      >
+        {shown ? (
+          <>
+            <h2 id="reset-shown-h" ref={shownHeading} tabIndex={-1} style={{ fontSize: 20 }}>
+              {shown.link ? `The link for ${name}` : 'Ask whoever runs the vault'}
+            </h2>
+            {shown.link ? (
+              <>
+                <p className="status status-warn" role="alert">
+                  {`Shown once: this link is not kept anywhere you can see it again. Copy it now, and give it to ${name} yourself — in person, or in a message only they read.`}
+                </p>
+                <code className="reset-secret">{shown.link}</code>
+                <p className="muted">
+                  {`Whoever has it can set ${name}’s password, once, until ${new Date(
+                    shown.expires_at as string,
+                  ).toLocaleTimeString([], {
+                    timeStyle: 'short',
+                  })}. It stops working if ${name} starts keeping something only they can see first. ${name} is told the next time they sign in.`}
+                </p>
+                <Button kind="quiet" onClick={() => copy(shown.link as string)}>
+                  {copied ? 'Copied' : 'Copy the link'}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p>{`Ask whoever runs your vault’s server to run this, and to give ${name} the link it prints:`}</p>
+                <code className="reset-secret">{shown.command ?? command}</code>
+                <Button kind="quiet" onClick={() => copy(shown.command ?? command)}>
+                  {copied ? 'Copied' : 'Copy the command'}
+                </Button>
+              </>
+            )}
+            <div className="row">
+              <button type="button" className="btn btn-primary" onClick={() => props.onDone(shown)}>
+                Done
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 id="reset-h" ref={heading} tabIndex={-1} style={{ fontSize: 20 }}>
+              Reset {name}’s password
+            </h2>
+            {props.path === 'mail' && (
+              <p>{`Whoever runs your vault gave it a mail server of its own, so a link to set a new password goes to ${props.email}, the address ${name} signs in with. No owner sees it.`}</p>
+            )}
+            {props.path === 'handover' && (
+              <p>{`Your vault has no mail server of its own, and ${name} keeps nothing only they can see, so you are given a link to hand to them.`}</p>
+            )}
+            {props.path === 'operator' && (
+              <>
+                <p>{`Your vault has no mail server of its own, and ${name} keeps something only they can see. A link in an owner’s hands could open it, so no owner can reset ${name}’s password. Ask whoever runs your vault’s server to run:`}</p>
+                <code className="reset-secret">{command}</code>
+              </>
+            )}
+            <ul className="lock-effects" aria-label="What a reset does">
+              {props.path === 'handover' && (
+                <li>{`It is shown to you once, works once, for an hour, and stops working if ${name} starts keeping something only they can see first.`}</li>
+              )}
+              {props.path === 'mail' && <li>It works once, for an hour.</li>}
+              {props.path === 'operator' && (
+                <li>{`Their link works once, for an hour. Starting the reset here puts it in the activity log.${toldOwners}`}</li>
+              )}
+              <li>{`When it is used, ${name} is signed out everywhere, their passkeys are removed, two-step sign-in is still asked for, and any exports they made stop working.`}</li>
+              {props.path === 'mail' && (
+                <li>
+                  {stopNow
+                    ? `${name}’s password stops working now.${toldOwners}`
+                    : `Until then, ${name}’s password still works.${toldOwners}`}
+                </li>
+              )}
+              {props.path === 'handover' && (
+                <li>{`${name} is told the next time they sign in.${toldOwners}`}</li>
+              )}
+            </ul>
+            {/* Only where a link can reach them (the 5.29 review): on the
+                operator's way a stopped password would be a lock with none
+                of a lock's record or safeguards. A passkey of theirs still
+                signs them in until the link is used. */}
+            {props.path !== 'operator' && (
+              <Check
+                id="reset-stop-now"
+                checked={stopNow}
+                onChange={setStopNow}
+                label="Stop their current password now"
+                note={
+                  props.passkeys > 0
+                    ? `${name}’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.`
+                    : `${name} is signed out everywhere at once, and can’t sign in again until they set a new password through the link.`
+                }
+              />
+            )}
+            <ErrorNote message={error} />
+            <div className="row">
+              {/* aria-disabled, not disabled: "confirm it is you" gives focus back to it. */}
+              <button
+                type="button"
+                className="btn btn-primary"
+                aria-disabled={busy}
+                onClick={() => void start()}
+              >
+                {busy
+                  ? 'Working…'
+                  : props.path === 'mail'
+                    ? 'Send the link'
+                    : props.path === 'handover'
+                      ? 'Make the link'
+                      : 'Start the reset'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet"
+                aria-disabled={busy}
+                onClick={() => {
+                  if (!busy) props.onCancel();
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
   );
 }
 

@@ -212,13 +212,20 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
     const { rows: guard } = await admin.query(
       `select t.tgname::text as name, t.tgrelid::regclass::text as tbl, p.proname::text as fn
          from pg_trigger t join pg_proc p on p.oid = t.tgfoid
-        where not t.tgisinternal and t.tgrelid = 'doc_collection'::regclass`,
+        where not t.tgisinternal and t.tgrelid = 'doc_collection'::regclass
+        order by 1`,
     );
     expect(guard).toEqual([
       {
         name: 'doc_collection_owner_writes',
         tbl: 'doc_collection',
         fn: 'doc_collection_owner_writes',
+      },
+      // And, since 0052, an Only me collection made waits for a reset being spent.
+      {
+        name: 'doc_collection_private_gained',
+        tbl: 'doc_collection',
+        fn: 'member_private_gained',
       },
     ]);
     const { rows: gone } = await admin.query(

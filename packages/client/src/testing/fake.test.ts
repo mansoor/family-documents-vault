@@ -827,3 +827,124 @@ describe('the fake vault, locked and paused sign-ins (5.28)', () => {
     expect(back).toMatchObject({ member_id: 'fake-member', role: 'adult' });
   });
 });
+
+describe('the fake vault, a password reset an owner starts (5.29)', () => {
+  const refusal = (p: Promise<unknown>) =>
+    p.then(
+      () => null,
+      (err: { status?: number; code?: string; message?: string; reason?: string }) => err,
+    );
+  const start = async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const owner = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    vault.state.ownerTwoStep = true;
+    for (const [id, name, role] of [
+      ['sara', 'Sara', 'adult'],
+      ['tariq', 'Tariq', 'teen'],
+    ] as const) {
+      vault.state.members.push({ id, display_name: name, role, is_me: false });
+      vault.state.signIns.push({ member_id: id, email: `${id}@example.test`, password: `${id}!` });
+    }
+    const signInAs = async (id: string): Promise<Tokens> => {
+      const t = await api.signIn(`${id}@example.test`, `${id}!`);
+      if (!('access_token' in t)) throw new Error('no second step in the fake');
+      return t;
+    };
+    return { vault, api, owner, signInAs };
+  };
+
+  it('with no operator mail: a link to hand over for somebody with nothing private, none for anybody else; the card says which beforehand', async () => {
+    const { vault, api, owner } = await start();
+    vault.state.operatorMail = false;
+    vault.state.keepsPrivate = ['tariq'];
+    const token = owner.access_token;
+    expect((await api.memberAccount(token, 'sara')).reset_path).toBe('handover');
+    expect((await api.memberAccount(token, 'tariq')).reset_path).toBe('operator');
+    const handed = await api.startPasswordReset(token, 'sara');
+    expect(handed).toMatchObject({ member_id: 'sara', path: 'handover', stop_now: false });
+    expect(handed.link).toMatch(/\/reset#[A-Za-z0-9_-]{43}$/);
+    expect(handed.expires_at).toEqual(expect.any(String));
+    const left = await api.startPasswordReset(token, 'tariq');
+    expect(left).toEqual({
+      member_id: 'tariq',
+      path: 'operator',
+      stop_now: false,
+      command:
+        "docker compose exec api node apps/api/dist/cli.mjs reset-password 'tariq@example.test'",
+    });
+    // No stopping a password where no link can reach them (the 5.29 review).
+    const refused = await api.startPasswordReset(token, 'tariq', { stop_now: true }).then(
+      () => null,
+      (e: { status?: number; code?: string }) => e,
+    );
+    expect(refused).toMatchObject({ status: 409, code: 'stop_now_unavailable' });
+    expect(vault.state.resetsStarted).toEqual([
+      { member_id: 'sara', path: 'handover', stop_now: false },
+      { member_id: 'tariq', path: 'operator', stop_now: false },
+    ]);
+  });
+
+  it('the person is told at their next sign-in until they say they saw it; nobody else is', async () => {
+    const { vault, api, owner, signInAs } = await start();
+    vault.state.operatorMail = false;
+    await api.startPasswordReset(owner.access_token, 'sara');
+    const sara = await signInAs('sara');
+    expect((await api.me(sara.access_token)).reset_notice).toEqual({
+      by: 'Fake Owner',
+      at: expect.any(String) as unknown,
+    });
+    expect((await api.me(owner.access_token)).reset_notice).toBeNull();
+    await api.dismissResetNotice(sara.access_token);
+    expect((await api.me(sara.access_token)).reset_notice).toBeNull();
+    // A link by the operator's mail tells nobody at sign-in: the mail is the telling.
+    vault.state.operatorMail = true;
+    await api.startPasswordReset(owner.access_token, 'sara');
+    expect((await api.me(sara.access_token)).reset_notice).toBeNull();
+  });
+
+  it("refuses in the real vault's order: who may, what was sent, the owner power, then the person", async () => {
+    const { vault, api, owner, signInAs } = await start();
+    const sara = await signInAs('sara');
+    expect(await refusal(api.startPasswordReset(sara.access_token, 'tariq'))).toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+    expect(
+      await refusal(
+        api.startPasswordReset(owner.access_token, 'sara', { stop_now: 'yes' } as never),
+      ),
+    ).toMatchObject({ status: 422, code: 'validation_failed' });
+    vault.state.ownerTwoStep = false;
+    expect(await refusal(api.startPasswordReset(owner.access_token, 'sara'))).toMatchObject({
+      status: 403,
+      code: 'totp_required_for_owner',
+    });
+    vault.state.ownerTwoStep = true;
+    expect(await refusal(api.startPasswordReset(owner.access_token, 'nobody'))).toMatchObject({
+      status: 404,
+    });
+    expect(await refusal(api.startPasswordReset(owner.access_token, 'fake-member'))).toMatchObject({
+      status: 422,
+    });
+    vault.state.suspensions.set('sara', {
+      reason: 'restored',
+      since: new Date().toISOString(),
+      until: null,
+      note: null,
+      by: null,
+    });
+    expect(await refusal(api.startPasswordReset(owner.access_token, 'sara'))).toMatchObject({
+      status: 409,
+      code: 'locked',
+      message:
+        "Sara's sign-in is waiting after a restore. Turn it back on first, then reset their password.",
+    });
+    expect((await api.memberAccount(owner.access_token, 'sara')).reset_path).toBeNull();
+  });
+});

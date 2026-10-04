@@ -795,6 +795,34 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
     await screen.findByText(/Your password is changed/);
     expect(state.passwordChanged).toBe('a whole new password');
+    // No hand-over link was ever used: nothing is said to go.
+    expect(screen.queryByText(/added since/)).not.toBeInTheDocument();
+  });
+
+  it('after a hand-over link, changing the password says what it takes away (the 5.29 review, F529-01)', async () => {
+    const state = fresh({ handoverSince: '2026-10-02T09:05:00.000Z' });
+    installFakeApi(state);
+    signedIn('adult');
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
+    const warned = await screen.findByText(
+      'Passkeys and two-step sign-in added since 2 October 2026 are removed; add yours again.',
+    );
+    expect(warned).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Your password now'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a whole new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
+    expect(
+      await screen.findByText(
+        'Your password is changed, and your other devices have been signed out. Passkeys and two-step sign-in added since 2 October 2026 are removed; add yours again.',
+      ),
+    ).toBeInTheDocument();
+    await expectAccessible();
   });
 
   it('somebody with only a passkey is asked to prove it is them instead', async () => {
@@ -838,6 +866,14 @@ describe('App', () => {
     // arrives, including why another adult cannot do it for them.
     expect(screen.getByText(/ask whoever runs the\s+vault/)).toBeInTheDocument();
     expect(screen.getByText(/way into your private documents/)).toBeInTheDocument();
+    // What an owner can do for them, since 5.29, said as it is: never that
+    // nobody else in the family can.
+    expect(
+      screen.getByText(
+        /An owner can start a reset for you too: the link goes only to your own email address, or, while you keep nothing private, an owner may be given one to hand to you\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nobody else in the family can reset/)).not.toBeInTheDocument();
     await expectAccessible();
   });
 
@@ -860,6 +896,21 @@ describe('App', () => {
     expect(state.passwordChanged).toBe('a brand new password');
     // Spent, which is what keeps it safe in the browser's own history.
     expect(screen.getByText(/The link is used up: it opens nothing now/)).toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it("a link an owner made says so, and that the password chosen with it should be the person's alone (5.29)", async () => {
+    const state = fresh({ resetIssuedBy: 'owner' });
+    installFakeApi(state);
+    opened(`/reset#${RESET_TOKEN}`);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Set a new password' });
+    expect(
+      screen.getByText(
+        'An owner of this vault made this link. Once you set a password with it, you are the only one who should know it: if somebody else chose it, change it after you sign in.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Whoever runs this vault made this link/)).not.toBeInTheDocument();
     await expectAccessible();
   });
 

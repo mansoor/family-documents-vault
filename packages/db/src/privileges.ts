@@ -134,6 +134,16 @@ begin
   if to_regprocedure('public.upload_requests_end_for_lock(uuid)') is not null then
     grant execute on function public.upload_requests_end_for_lock(uuid) to fdv_app;
   end if;
+  -- A reset an owner starts (0052): whether somebody keeps anything
+  -- private, asked by an owner and as a hand-over link is spent; and the
+  -- exports every reset ends, by the page that spends it.
+  if to_regprocedure('public.member_holds_private(uuid)') is not null then
+    grant execute on function public.member_holds_private(uuid) to fdv_app;
+    grant execute on function public.password_reset_expire_exports(uuid) to fdv_app;
+    -- And the share links made as somebody since a hand-over link was spent,
+    -- ended by their next change of the password or reset (5.29).
+    grant execute on function public.handover_links_end(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the
