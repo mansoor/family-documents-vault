@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.32] - 2026-10-04 — iteration 5.29
+
+A password reset an owner starts.
+
+### Added
+
+- **Send a password reset**, for owners, from a person's Account card. It asks for a passkey or an authenticator code. Which way it works depends on the vault and on the person:
+  - **If the vault sends its own email**, the link goes only to that person's own address. The owner never sees it.
+  - **If it doesn't, and the person keeps nothing private**, the owner is shown a link once, for an hour, to hand to them. Private here means Only me documents, details or collections, files waiting for their review, or an export. The link stops working if they start keeping something private before it is used.
+  - **Otherwise**, it can't be done from the vault. The dialog shows the command for whoever runs the server.
+- "Stop their current password now" ends their sessions at once and makes them choose a new password through the link. It isn't offered when no link can reach them.
+- The person is told, by email and in the app at their next sign-in. The other owners are told too. No owner can reset another owner, or someone who is locked.
+
+### Changed
+
+- **Every password reset now ends the person's exports**, including their own "forgot my password" and the server command.
+- After a reset link an owner was handed, the person's next password change removes every passkey, two-step sign-in and share link added since. Whoever used the link could have added them, and the notice lists them.
+
+### Security
+
+- No owner ever holds a working password for someone who keeps anything private. This holds while a link waits, and whoever spends it.
+- A sign-in, password change or new passkey that was in flight when a reset or lock happened is refused, rather than slipping in afterwards.
+
 ## [0.5.31] - 2026-10-04 — iteration 5.28
 
 Lock a sign-in.
