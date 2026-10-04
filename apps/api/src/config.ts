@@ -172,12 +172,13 @@ const schema = z.object({
     ),
 
   FDV_TRUST_PROXY: z
-    .enum(['private', 'all', 'none'])
-    .default('private')
+    .enum(['network', 'private', 'all', 'none'])
+    .default('network')
     .describe(
-      'Whose X-Forwarded-For to believe. "private" trusts the container ' +
-        'network and any reverse proxy on a private address, which is the ' +
-        'compose setup; "all" is for a proxy elsewhere; "none" records the ' +
+      'Whose X-Forwarded-For to believe. "network" trusts the networks the ' +
+        "API's own container is on — nginx and Caddy in the compose setup, " +
+        'and nothing on your LAN; "private" trusts any private address (the ' +
+        'old default); "all" is for a proxy elsewhere; "none" records the ' +
         'connecting address as it is.',
     ),
 });

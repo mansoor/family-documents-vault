@@ -4,6 +4,7 @@ import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { clearPhotos, photosHeld } from './photos.js';
+import { roleChangeLines } from './screens/Roles.js';
 import { requestState } from './screens/Sharing.js';
 import { AISHA, fresh, installFakeApi, ME, PASSPORT, signedIn } from './test-api.js';
 
@@ -909,12 +910,12 @@ describe("a person's details, and the owner's view of a sign-in (5.25)", () => {
       within(devices).getByText(/^App · last used today, .* · Keeps Essentials for offline use$/),
     ).toBeInTheDocument();
     expect(within(devices).getByText(/^Browser · last used today, /)).toBeInTheDocument();
-    // Nothing on it to press but Lock sign-in (5.28).
+    // Nothing on it to press but Sign out everywhere (5.30) and Lock sign-in (5.28).
     expect(
       within(card)
         .getAllByRole('button')
         .map((b) => b.textContent),
-    ).toEqual(['Lock sign-in']);
+    ).toEqual(['Sign out everywhere', 'Lock sign-in']);
     await expectAccessible();
   });
 
@@ -1972,5 +1973,236 @@ describe('a password reset an owner starts (5.29)', () => {
     expect(
       state.calls.some((c) => c.method === 'DELETE' && c.url === '/api/v1/me/reset-notice'),
     ).toBe(true);
+  });
+});
+
+describe('role changes reach every device; sign out everywhere (5.30)', () => {
+  /** Wes, an adult with a sign-in; Tess, a teen. */
+  const WES = { ...AISHA, id: 'm-6', display_name: 'Wes', has_account: true, role: 'adult' };
+  const TESS = { ...AISHA, id: 'm-1', display_name: 'Tess', has_account: true, role: 'teen' };
+  const card = (over: Partial<MemberAccount> = {}): MemberAccount => ({
+    member_id: 'm-1',
+    role: 'teen',
+    email: 'tess@example.test',
+    two_step: false,
+    passkeys: 0,
+    last_signed_in_at: new Date().toISOString(),
+    devices: [
+      {
+        label: 'Safari on a Mac',
+        client: 'browser',
+        last_used_at: new Date().toISOString(),
+        offline: false,
+      },
+    ],
+    suspension: null,
+    max_offline_days: 30,
+    ...over,
+  });
+
+  /** "Change what Wes can do", pressed as a browser presses it: focused, then clicked. */
+  async function openRoles(over: Parameters<typeof fresh>[0] = {}) {
+    const state = fresh({ members: [ME, WES, TESS], ...over });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-6');
+    render(<App />);
+    await screen.findByRole('heading', { name: 'What Wes can do' });
+    const open = screen.getByRole('button', { name: 'Change what they can do' });
+    open.focus();
+    fireEvent.click(open);
+    const dialog = await screen.findByRole('dialog', { name: 'Change what Wes can do' });
+    return { state, open, dialog };
+  }
+  const linesOf = (dialog: HTMLElement) => {
+    const list = within(dialog).queryByRole('list', { name: 'What changing it does' });
+    return list
+      ? within(list)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent)
+      : [];
+  };
+
+  it('the roles sit behind a dialog that says what the change does, following the role chosen; Escape changes nothing', async () => {
+    const { state, open, dialog } = await openRoles();
+    // Read from its top: the heading has focus, not the first pill.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('heading', { name: 'Change what Wes can do' })).toHaveFocus(),
+    );
+    // As they are: nothing would change, and nothing is offered.
+    expect(within(dialog).getByRole('button', { name: 'Adult' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(linesOf(dialog)).toEqual([]);
+    expect(within(dialog).getByRole('button', { name: 'Change role' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await expectAccessible();
+
+    // Sight and asking taken away: their phone, their requests, their exports.
+    const takenAway = [
+      'Their phone removes the Essentials it keeps at its next sync.',
+      'Their upload requests close, and files sent for them alone to look at go to the owners.',
+      'Their exports stop working.',
+    ];
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Teen' }));
+    expect(linesOf(dialog)).toEqual(takenAway);
+    expect(within(dialog).getByRole('button', { name: 'Change role' })).toHaveAttribute(
+      'aria-disabled',
+      'false',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Viewer' }));
+    expect(linesOf(dialog)).toEqual(takenAway);
+    await expectAccessible();
+    // Made an owner: at once, and every adult is told.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Owner' }));
+    expect(linesOf(dialog)).toEqual([
+      'Wes can change where your files are kept, who is in the family, and the emergency contacts, from now on. Every adult is told.',
+    ]);
+
+    // Escape: nothing changed, and back on the button that opened it.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(open).toHaveFocus());
+    expect(state.calls.some((c) => c.url.endsWith('/role'))).toBe(false);
+  });
+
+  it('a teen made a viewer loses their phone’s Essentials; one made an adult keeps everything', () => {
+    expect(roleChangeLines('Tess', 'teen', 'viewer')).toEqual([
+      'Their phone removes the Essentials it keeps at its next sync.',
+    ]);
+    expect(roleChangeLines('Tess', 'teen', 'adult')).toEqual([
+      'Tess keeps their sign-in, and what their phone keeps.',
+    ]);
+    // An owner only ever becomes an adult, after seven days.
+    expect(roleChangeLines('Sam', 'owner', 'adult')[0]).toMatch(
+      /^Taking away an owner’s role takes seven days/,
+    );
+    expect(roleChangeLines('Sam', 'owner', 'teen')).toEqual([
+      'An owner can only be made an adult. Change it again afterwards if you need to.',
+    ]);
+  });
+
+  it('changing it says what the vault did, and that is where focus goes', async () => {
+    const { state, dialog } = await openRoles();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Teen' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Change role' }));
+    const said = await screen.findByText(
+      'They are now teen. Their phone removes the Essentials it keeps at its next sync.',
+    );
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(
+      state.calls
+        .filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-6/role')
+        .map((c) => c.body),
+    ).toEqual([{ role: 'teen' }]);
+    expect(state.members.find((m) => m.id === 'm-6')?.role).toBe('teen');
+    await expectAccessible();
+  });
+
+  /** The owner opens Tess's Account card, already confirmed it is them. */
+  async function showCard(over: Parameters<typeof fresh>[0] = {}) {
+    const state = fresh({ members: [ME, WES, TESS], accounts: { 'm-1': card() }, ...over });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-1');
+    render(<App />);
+    const region = await screen.findByRole('region', { name: 'Account' });
+    fireEvent.click(within(region).getByRole('button', { name: 'Show their account' }));
+    await within(region).findByText('Signs in as');
+    return { state, region };
+  }
+
+  it('Sign out everywhere says what it does, is asked with a code, and the card says no device', async () => {
+    const { state, region } = await showCard();
+    const button = within(region).getByRole('button', { name: 'Sign out everywhere' });
+    expect(button).toHaveAccessibleDescription(
+      'Signing out everywhere ends each of these at once. Tess can sign in again with their own password.',
+    );
+    button.focus();
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('alertdialog', { name: 'Sign Tess out everywhere?' });
+    expect(
+      within(within(dialog).getByRole('list', { name: 'What signing out everywhere does' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([
+      'The one device Tess is signed in on is signed out now.',
+      'A phone that never reconnects keeps its offline copies up to 30 days.',
+      'Tess can sign in again with their own password at once. To keep them out, lock their sign-in instead.',
+      'Tess is emailed to say so.',
+    ]);
+    // Cancel first, so Enter never does it by accident.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
+    await expectAccessible();
+
+    // Five minutes on: the next power over a sign-in asks again, a code, never the password.
+    state.accountStepUp = true;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign out everywhere' }));
+    const ask = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(ask).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    fireEvent.change(within(ask).getByLabelText('Code from your authenticator app'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
+
+    const said = await within(region).findByText('Tess is signed out everywhere.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(
+      state.calls.filter((c) => c.method === 'DELETE' && c.url === '/api/v1/members/m-1/sessions'),
+    ).toHaveLength(2);
+    expect(within(region).getByText('No device at the moment.')).toBeInTheDocument();
+    expect(
+      within(region).queryByRole('button', { name: 'Sign out everywhere' }),
+    ).not.toBeInTheDocument();
+    await expectAccessible();
+  });
+
+  it('Cancel signs nobody out; several devices are counted', async () => {
+    const two = card({
+      devices: [
+        {
+          label: 'Safari on a Mac',
+          client: 'browser',
+          last_used_at: new Date().toISOString(),
+          offline: false,
+        },
+        {
+          label: 'the app on a Google Pixel 8a',
+          client: 'app',
+          last_used_at: new Date().toISOString(),
+          offline: true,
+        },
+      ],
+    });
+    const { state, region } = await showCard({ accounts: { 'm-1': two } });
+    fireEvent.click(within(region).getByRole('button', { name: 'Sign out everywhere' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Sign Tess out everywhere?' });
+    expect(
+      within(dialog).getByText('Each of the 2 devices Tess is signed in on is signed out now.'),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(state.calls.some((c) => c.url.endsWith('/sessions'))).toBe(false);
+    expect(within(region).getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('is not offered by a vault from before, nor for somebody signed in nowhere', async () => {
+    const older = await showCard({ signOutEverywhere: false });
+    expect(
+      within(older.region).queryByRole('button', { name: 'Sign out everywhere' }),
+    ).not.toBeInTheDocument();
+    cleanup();
+    const nowhere = await showCard({ accounts: { 'm-1': card({ devices: [] }) } });
+    expect(within(nowhere.region).getByText('No device at the moment.')).toBeInTheDocument();
+    expect(
+      within(nowhere.region).queryByRole('button', { name: 'Sign out everywhere' }),
+    ).not.toBeInTheDocument();
   });
 });

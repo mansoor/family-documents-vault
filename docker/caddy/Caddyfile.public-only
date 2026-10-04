@@ -43,8 +43,10 @@
 {$FDV_PUBLIC_HOSTNAME} {
 	encode zstd gzip
 
-	# What a stranger's browser may ask for. Anything not named is not there.
-	@public path /s /s/ /shared/* /drop /drop/* /assets/* /icon-192.png /icon-512.png /manifest.webmanifest /api/v1/shared/* /api/v1/drop/*
+	# What a stranger's browser may ask for: the pages and what they load,
+	# and the API routes they call. Anything not named is not there.
+	@public path /s /s/ /shared/* /drop /drop/* /assets/* /icon-192.png /icon-512.png /manifest.webmanifest
+	@public_api path /api/v1/shared/* /api/v1/drop/*
 
 	# A link's calls carry a token, a PIN or nothing: a few kilobytes at most.
 	@link_api path /api/v1/shared/*
@@ -58,6 +60,14 @@
 	@drop_api path /api/v1/drop/preview /api/v1/drop/code /api/v1/drop/unlock /api/v1/drop/session /api/v1/drop/finish
 	request_body @drop_api {
 		max_size 16KB
+	}
+
+	# The API's routes go to the API itself (5.30), with the address Caddy
+	# was reached from: through nginx it would be told Caddy's own.
+	handle @public_api {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
 	}
 
 	handle @public {

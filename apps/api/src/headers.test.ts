@@ -87,8 +87,11 @@ describe('the public-only site', () => {
 
   beforeAll(async () => {
     caddy = await readFile(root('docker/caddy/Caddyfile.public-only'), 'utf8');
-    const m = /^\s*@public path (.+)$/m.exec(caddy);
-    publicPaths = (m?.[1] ?? '').trim().split(/\s+/);
+    // The pages, and (5.30) the API routes they call, which go to the API itself.
+    publicPaths = ['@public', '@public_api'].flatMap((name) => {
+      const m = new RegExp(`^\\s*${name} path (.+)$`, 'm').exec(caddy);
+      return (m?.[1] ?? '').trim().split(/\s+/);
+    });
   });
 
   it('/api/v1/auth/sign-in and /api/v1/documents are 404', () => {
@@ -116,8 +119,14 @@ describe('the public-only site', () => {
     // Everything not served is answered 404, and the site sends nothing
     // else anywhere.
     expect(caddy).toMatch(/handle \{\s*respond 404\s*\}/);
-    expect(caddy.match(/reverse_proxy /g)).toHaveLength(1);
+    expect(caddy.match(/reverse_proxy /g)).toHaveLength(2);
     expect(caddy).toMatch(/handle @public \{\s*reverse_proxy web:80/);
+    expect(caddy).toMatch(/handle @public_api \{\s*reverse_proxy api:3000/);
+    // The pages' matcher names no API route, and the API's nothing else.
+    const pages = /^\s*@public path (.+)$/m.exec(caddy)?.[1] ?? '';
+    expect(pages).not.toMatch(/\/api\//);
+    const api = (/^\s*@public_api path (.+)$/m.exec(caddy)?.[1] ?? '').trim().split(/\s+/);
+    expect(api.sort()).toEqual(['/api/v1/drop/*', '/api/v1/shared/*']);
   });
 
   it('serves the pages a link opens, what they load, and what they call', () => {
@@ -182,6 +191,51 @@ describe('the public-only site', () => {
     const service = /\n {2}caddy-public:\n([\s\S]*?)\n(?=\S| {2}\S)/.exec(compose)?.[1] ?? '';
     expect(service).toMatch(/profiles: \[public-only\]/);
     expect(service).toContain('./docker/caddy/Caddyfile.public-only:/etc/caddy/Caddyfile:ro');
+  });
+});
+
+/**
+ * Who is asking (5.30): whose X-Forwarded-For reaches the API. nginx and
+ * Caddy do not run here; their files are read and held to it. The API's own
+ * rule is app.test.ts's and client-address.test.ts's.
+ */
+describe('the address a request came from', () => {
+  it('nginx passes on the address it was reached from, never what the caller wrote', async () => {
+    const conf = (await readFile(root('docker/nginx.conf'), 'utf8')).replace(/^\s*#.*$/gm, '');
+    expect(conf).toMatch(/^\s*proxy_set_header X-Forwarded-For \$remote_addr;$/m);
+    expect(conf).not.toMatch(/proxy_add_x_forwarded_for/);
+    expect(conf.match(/X-Forwarded-For/g)).toHaveLength(1);
+  });
+
+  it("Caddy sends the API's requests to the API itself, and believes no proxy in front of it", async () => {
+    for (const file of ['Caddyfile.internal', 'Caddyfile.public', 'Caddyfile.public-only']) {
+      const caddy = (await readFile(root(`docker/caddy/${file}`), 'utf8')).replace(
+        /^\s*#.*$/gm,
+        '',
+      );
+      expect(caddy, file).toMatch(/reverse_proxy api:3000/);
+      expect(caddy, file).not.toMatch(/trusted_proxies/);
+      expect(caddy, file).not.toMatch(/header_up X-Forwarded-For/i);
+    }
+    for (const file of ['Caddyfile.internal', 'Caddyfile.public']) {
+      const caddy = await readFile(root(`docker/caddy/${file}`), 'utf8');
+      expect(caddy, file).toMatch(/^\s*@api path \/api\/\* \/healthz \/readyz$/m);
+      expect(caddy, file).toMatch(/handle @api \{\s*reverse_proxy api:3000/);
+      expect(caddy, file).toMatch(/handle \{\s*reverse_proxy web:80/);
+    }
+  });
+
+  it(':8080 answers this machine only under the TLS overlay, and the network otherwise', async () => {
+    const service = (compose: string, name: string) =>
+      new RegExp(`\\n {2}${name}:\\n([\\s\\S]*?)\\n(?=\\S| {2}\\S)`).exec(compose)?.[1] ?? '';
+    const tls = service(await readFile(root('docker-compose.tls.yml'), 'utf8'), 'web');
+    expect(tls).toMatch(/ports: !override\n\s*- '127\.0\.0\.1:\$\{FDV_PORT:-8080\}:80'/);
+    // The phones in the house reach the vault at this machine's address.
+    const main = await readFile(root('docker-compose.yml'), 'utf8');
+    expect(service(main, 'web')).toMatch(/ports:\n\s*- '\$\{FDV_PORT:-8080\}:80'/);
+    expect(await readFile(root('docker-compose.dev.yml'), 'utf8')).not.toMatch(/127\.0\.0\.1/);
+    // And the API believes the compose network, not the LAN, unless told otherwise.
+    expect(service(main, 'api')).toMatch(/FDV_TRUST_PROXY: \$\{FDV_TRUST_PROXY:-network\}/);
   });
 });
 

@@ -52,6 +52,7 @@ import type { IncomingService } from './uploads/incoming.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
+import { ownNetworks, trustProxyFor } from './client-address.js';
 import { ApiError, notFound, notReady } from './errors.js';
 
 /**
@@ -103,6 +104,11 @@ export interface AppDeps {
   /** Essentials a phone may keep (0.4.13). */
   offline: OfflineService;
   logger?: boolean | object;
+  /**
+   * The networks this process is on, for `FDV_TRUST_PROXY=network` (5.30):
+   * read from its interfaces unless a test says otherwise.
+   */
+  ownNetworks?: () => string[];
 }
 
 /**
@@ -118,19 +124,6 @@ export const PUBLIC_API_HEADERS = {
   'x-robots-tag': 'noindex, nofollow',
   'content-security-policy': "default-src 'none'; frame-ancestors 'none'; sandbox",
 } as const;
-
-/**
- * The audit log records who did what from where, and the rate limiter
- * counts per address; both read `X-Forwarded-For`, so who may set it
- * matters. Trusting every caller would let anyone write their own address
- * into the log. The default trusts only private ranges — the container
- * network and a reverse proxy on the same LAN.
- */
-function trustProxy(mode: ApiConfig['FDV_TRUST_PROXY']): boolean | string[] {
-  if (mode === 'all') return true;
-  if (mode === 'none') return false;
-  return ['127.0.0.1/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'];
-}
 
 /**
  * The logger, as the caller asked for it, but never with a secret from a
@@ -162,7 +155,9 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     logger: loggerOptions(config, deps.logger),
     requestIdHeader: 'x-request-id',
     genReqId: () => crypto.randomUUID(),
-    trustProxy: trustProxy(config.FDV_TRUST_PROXY),
+    // Whose X-Forwarded-For is believed (client-address.ts): by default the
+    // networks the API's own container is on, never the LAN (5.30).
+    trustProxy: trustProxyFor(config.FDV_TRUST_PROXY, deps.ownNetworks ?? (() => ownNetworks())),
   });
 
   app.addHook('onSend', async (req, reply) => {

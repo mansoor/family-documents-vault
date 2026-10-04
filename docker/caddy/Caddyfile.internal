@@ -23,10 +23,23 @@
 
 	encode zstd gzip
 
-	# The web container serves the app and proxies /api to the API.
-	reverse_proxy web:80 {
-		# Uploads stream through; the API enforces its own size limit.
-		flush_interval -1
+	# The API's requests go to the API itself (5.30), with the address Caddy
+	# was reached from — never one the caller wrote, as no proxy in front of
+	# Caddy is trusted. Through nginx the API would be told Caddy's own
+	# address, as nginx writes the address it is reached from.
+	@api path /api/* /healthz /readyz
+	handle @api {
+		reverse_proxy api:3000 {
+			# Uploads stream through; the API enforces its own size limit.
+			flush_interval -1
+		}
+	}
+
+	# Everything else: the web container serves the app.
+	handle {
+		reverse_proxy web:80 {
+			flush_interval -1
+		}
 	}
 
 	header {

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../errors.js';
+import { clientAddressOf } from '../client-address.js';
 import type { AuthService, Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
@@ -53,7 +54,12 @@ export function metaOf(req: FastifyRequest): RequestMeta {
     typeof installation === 'string' && UUID.test(installation) ? installation.toLowerCase() : null;
   // A user agent is kept to its first 512 characters: all a person needs, and all we store.
   const agent = req.headers['user-agent'];
-  return { ip: req.ip, userAgent: agent ? agent.slice(0, 512) : null, installationId };
+  // An address, never text a proxy passed on that is none (5.30).
+  return {
+    ip: clientAddressOf(req),
+    userAgent: agent ? agent.slice(0, 512) : null,
+    installationId,
+  };
 }
 
 /**

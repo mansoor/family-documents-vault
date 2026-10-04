@@ -109,6 +109,11 @@ interface FakeSession {
   graceUsed?: boolean;
   /** Tokens a grace replay touched: presented again, they end the session. */
   graceTokens?: string[];
+  /**
+   * Every token it has been given and replaced (5.30): as the real vault's
+   * tokens name their session, any of them presented again ends it.
+   */
+  spent?: string[];
   /** Why it ended, as the real vault says it: since 5.28 `suspended`, by a lock. */
   endedBecause?: 'revoked' | 'reused' | 'suspended';
   /** Its offline grant, as the real vault keeps it on the session (0.4.13). */
@@ -876,6 +881,8 @@ export function createFakeVault(): {
           member_identity: true,
           // Locking a sign-in, and sign-ins paused after a restore (5.28).
           member_admin: true,
+          // Signing somebody out everywhere (5.30).
+          sign_out_everywhere: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -942,6 +949,7 @@ export function createFakeVault(): {
             presented,
             replayed.refresh,
           ].slice(-8);
+          replayed.spent = [...(replayed.spent ?? []), replayed.refresh];
           replayed.previous = replayed.refresh;
           replayed.refresh = next('refresh');
           replayed.graceUsed = true;
@@ -953,9 +961,19 @@ export function createFakeVault(): {
         replayed.endedBecause = 'reused';
         return ended('reused');
       }
+      // Token families (5.30): any token a session was given, presented
+      // once it has been replaced, ends it — however many refreshes ago.
+      const family = current ? undefined : state.sessions.find((s) => s.spent?.includes(presented));
+      if (family) {
+        if (family.revoked) return ended(family.endedBecause ?? 'revoked');
+        family.revoked = true;
+        family.endedBecause = 'reused';
+        return ended('reused');
+      }
       if (!current) return ended('revoked');
       if (current.revoked) return ended(current.endedBecause ?? 'revoked');
       if (suspensionOf(whoOf(current).memberId)) return ended('suspended');
+      current.spent = [...(current.spent ?? []), current.refresh];
       current.previous = current.refresh;
       current.refresh = next('refresh');
       current.rotatedAt = Date.now();
@@ -2606,6 +2624,41 @@ export function createFakeVault(): {
           : {}),
         ...(how === 'operator' ? { command: resetCommand(theirEmail) } : {}),
       });
+    }
+    // Signing somebody out everywhere (5.30, A53), as the real vault answers
+    // it: who may (403), the owner power (A54), then the person (404). Their
+    // sessions end (`revoked`) — oneself, every one but the one asking — and
+    // their sign-in stays as it is.
+    const outAt = /^\/api\/v1\/members\/([^/]+)\/sessions$/.exec(path);
+    if (outAt && init.method === 'DELETE') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s);
+      if (!can(me.role, 'member.sign_out')) {
+        return fail(403, 'forbidden', refusalFor('member.sign_out'));
+      }
+      if (!state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to manage other people's sign-ins.",
+        );
+      }
+      const id = decodeURIComponent(outAt[1] as string);
+      if (!roleOfMember(id) || (id !== ME && !state.members.some((x) => x.id === id))) {
+        return fail(404, 'not_found', 'They have no sign-in to sign out.');
+      }
+      let ended = 0;
+      for (const x of state.sessions) {
+        if (x.revoked || x.id === s.id || whoOf(x).memberId !== id) continue;
+        x.revoked = true;
+        x.endedBecause = 'revoked';
+        ended += 1;
+      }
+      // Their devices go with their sessions.
+      const card = id === me.memberId ? undefined : state.memberAccounts.get(id);
+      if (card) card.devices = [];
+      return ok({ member_id: id, sessions_ended: ended });
     }
     // After a restore (5.16): what it paused that the caller may decide
     // about, as the real vault lists it. The fake keeps no links; requests

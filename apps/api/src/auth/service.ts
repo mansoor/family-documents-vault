@@ -11,6 +11,8 @@ import {
   newRefreshToken,
   parseRefreshToken,
   REFRESH_TTL_SECONDS,
+  refreshFamilyKey,
+  sessionOfToken,
   signAccessToken,
   verifyAccessToken,
   type AccessClaims,
@@ -156,6 +158,9 @@ export function scopesFor(role: Role): Tokens['scopes_unlocked'] {
 }
 
 export class AuthService {
+  /** What a refresh token's tag is made with (5.30, tokens.ts). */
+  private readonly familyKey: Buffer;
+
   constructor(
     private readonly db: Db,
     private readonly signingKey: Uint8Array,
@@ -185,7 +190,9 @@ export class AuthService {
     } | null = null,
     /** Pushes the worker sends (4.13): "you were signed out" to a session's phones. */
     private readonly push: (input: PushRequest) => Promise<void> = async () => undefined,
-  ) {}
+  ) {
+    this.familyKey = refreshFamilyKey(signingKey);
+  }
 
   async setupComplete(): Promise<boolean> {
     const r = await sql<{ done: boolean }>`select setup_complete() as done`.execute(this.db);
@@ -420,13 +427,16 @@ export class AuthService {
     meta: RequestMeta,
     method = 'password',
   ): Promise<Tokens> {
-    const refresh = newRefreshToken(p.householdId);
+    // Its id is chosen here, as its first token names it (5.30).
+    const sessionId = randomUUID();
+    const refresh = newRefreshToken(this.familyKey, p.householdId, sessionId);
     const now = Date.now();
     const factor = method === 'passkey' || method === 'password+totp';
     const expiresAt = new Date(now + REFRESH_TTL_SECONDS * 1000);
     const session = await trx
       .insertInto('session')
       .values({
+        id: sessionId,
         account_id: p.accountId,
         household_id: p.householdId,
         refresh_hash: hashRefreshToken(refresh),
@@ -542,6 +552,14 @@ export class AuthService {
    * It gets a new rotation, and the token it displaces becomes the
    * previous one, so that whoever holds that one ends the session if they
    * ever use it.
+   *
+   * Since 5.30 every token names its session (tokens.ts), so any token the
+   * vault made for a session, presented once it has been replaced, ends it —
+   * not only the one just replaced: a thief who spends a stolen token and
+   * then its successor before the owner does loses the session when the
+   * owner's token comes in, and the owner who refreshed first ends it when
+   * the thief's does, however many refreshes later. A token from before
+   * then still refreshes, and is answered with one of a family.
    */
   async refresh(refreshToken: string, meta: RequestMeta): Promise<Tokens> {
     const parsed = parseRefreshToken(refreshToken);
@@ -601,7 +619,8 @@ export class AuthService {
         throw sessionEnded('membership suspended', 'suspended');
       }
 
-      const next = newRefreshToken(session.household_id);
+      // A session from before 5.30 is given a token of a family here, and is one from now on.
+      const next = newRefreshToken(this.familyKey, session.household_id, session.id);
       const expiresAt = new Date(
         Math.min(now.getTime() + REFRESH_TTL_SECONDS * 1000, session.absolute_expires_at.getTime()),
       );
@@ -667,53 +686,67 @@ export class AuthService {
     if (result) return result;
 
     // A token that ended a session is proof of reuse; one that matches
-    // nothing (garbage, a restored backup's, one long retired) is only no
-    // longer valid.
-    const revoked = await this.revokeOnReuse(parsed.householdId, presented, meta);
-    throw sessionEnded('unknown or reused refresh token', revoked ? 'reused' : 'revoked');
+    // nothing (garbage, a restored backup's, one long retired, one whose
+    // tag is not the vault's) is only no longer valid.
+    const why = await this.endSpent(
+      parsed.householdId,
+      presented,
+      sessionOfToken(this.familyKey, parsed),
+      meta,
+    );
+    throw sessionEnded('unknown or reused refresh token', why);
   }
 
   /**
-   * Revokes the session a spent token belongs to — its previous token, or
-   * any a grace replay touched — if one is still open. Says whether it did.
+   * Ends the session a spent token belongs to: the token before its current
+   * one, any a grace replay touched, or — a token of a family (5.30) — any
+   * the vault made for it. Answers why the session is over: `reused` when
+   * this ended it; why it ended, when it already had; `revoked` for a token
+   * that belongs to no session at all.
    */
-  private async revokeOnReuse(
+  private async endSpent(
     householdId: string,
     presented: Buffer,
+    named: string | null,
     meta: RequestMeta,
-  ): Promise<boolean> {
+  ): Promise<SessionEndReason> {
     const scope = { householdId, actor: ANONYMOUS };
     const ended = await withScope(this.db, scope, async (trx) => {
-      const replayed = await trx
+      const spent = await trx
         .selectFrom('session')
-        .select(['id', 'account_id'])
-        .where(sql<boolean>`(prev_refresh_hash = ${presented} or ${presented} = any(grace_hashes))`)
-        .where('revoked_at', 'is', null)
+        .select(['id', 'account_id', 'revoked_at', 'revoked_reason'])
+        .where(
+          sql<boolean>`(prev_refresh_hash = ${presented} or ${presented} = any(grace_hashes) or id = ${named})`,
+        )
+        .forUpdate()
         .executeTakeFirst();
-      if (!replayed) return null;
-      await trx
+      if (!spent) return { why: 'revoked' as const, phones: [] };
+      // A session that has already ended says why, not "reused".
+      if (spent.revoked_at) return { why: endReasonOf(spent.revoked_reason), phones: [] };
+      const revoked = await trx
         .updateTable('session')
         .set({ revoked_at: new Date(), revoked_reason: 'refresh token reuse' })
-        .where('id', '=', replayed.id)
-        .execute();
+        .where('id', '=', spent.id)
+        .where('revoked_at', 'is', null)
+        .executeTakeFirst();
+      if (Number(revoked.numUpdatedRows) !== 1) return { why: 'revoked' as const, phones: [] };
       // Its devices go with it; its phones are told once this commits.
       const phones = await endDevices(trx, {
-        accountId: replayed.account_id,
-        sessionIds: [replayed.id],
+        accountId: spent.account_id,
+        sessionIds: [spent.id],
       });
       await appendAudit(trx, {
         householdId,
         action: 'auth.session_revoked',
         objectType: 'session',
-        objectId: replayed.id,
+        objectId: spent.id,
         detail: { reason: 'refresh token reuse' },
         ip: meta.ip,
       });
-      return phones;
+      return { why: 'reused' as const, phones };
     });
-    if (ended === null) return false;
-    await this.tellEnded(householdId, ended);
-    return true;
+    await this.tellEnded(householdId, ended.phones);
+    return ended.why;
   }
 
   /** "You were signed out", to the phones of sessions that just ended (4.13). */

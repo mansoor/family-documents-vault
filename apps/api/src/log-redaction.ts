@@ -1,4 +1,5 @@
 import type { FastifyRequest } from 'fastify';
+import { clientAddressOf } from './client-address.js';
 
 /**
  * What the log may say about a request (0.5.0).
@@ -70,7 +71,7 @@ export function requestForLog(req: FastifyRequest) {
   return {
     method: req.method,
     url: loggableUrl(req.url),
-    remoteAddress: req.ip,
+    remoteAddress: clientAddressOf(req),
     remotePort: req.socket?.remotePort,
   };
 }

@@ -309,6 +309,29 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return detail.reason === 'restored'
         ? line(`${who} turned ${possessive(personOf(e))} sign-in back on after the restore`, true)
         : line(`${who} unlocked ${possessive(personOf(e))} sign-in`, true);
+    // Signed out everywhere by an owner (5.30, A53), and what a change of
+    // role ended besides the role: to the owners, the person and whoever
+    // did it, nobody else.
+    case 'member.signed_out_everywhere':
+      return isOwn(e)
+        ? line(`${who} signed out of every other device`, true)
+        : line(`${who} signed ${personOf(e)} out everywhere`, true);
+    // One's own role changes only by stepping down.
+    case 'member.offline_ended':
+      return isOwn(e)
+        ? line(`${who} stepped down, so their phone stops keeping Essentials`)
+        : line(
+            `${who} changed ${possessive(personOf(e))} role, so their phone stops keeping Essentials`,
+          );
+    case 'member.requests_closed': {
+      const n = typeof detail.requests === 'number' ? detail.requests : 0;
+      const what = n === 1 ? 'request' : n > 1 ? `${n} requests` : 'requests';
+      return isOwn(e)
+        ? line(`${who} stepped down, so their ${what} to send documents closed`)
+        : line(
+            `${who} changed ${possessive(personOf(e))} role, so their ${what} to send documents closed`,
+          );
+    }
     case 'member.deceased':
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)

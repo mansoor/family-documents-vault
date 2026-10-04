@@ -163,6 +163,14 @@ export interface CapabilityFeatures {
    * Absent from older vaults, which lock nobody.
    */
   member_admin?: boolean;
+  /**
+   * An owner can sign somebody out everywhere (5.30, A53): DELETE
+   * /members/{id}/sessions, an owner power (A54); a co-owner too, who is
+   * told. A role change says what else it did (`RoleChangeResult.effects`):
+   * Essentials on their phones ended, their requests closed, their exports
+   * ended. Absent from older vaults.
+   */
+  sign_out_everywhere?: boolean;
 }
 
 export interface CapabilityLimits {

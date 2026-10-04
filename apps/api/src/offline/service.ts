@@ -154,8 +154,15 @@ export class OfflineService {
     });
   }
 
-  /** The grant in force on this session, if any. */
+  /**
+   * The grant in force on this session, if any. Asked as the person is now
+   * (5.30): a viewer keeps nothing on a phone, as a grant is refused them,
+   * whatever this session was granted before — made a viewer at the moment
+   * of the grant, say. A change of role that takes sight away ends the
+   * grant itself (co-owners.ts).
+   */
   private async current(p: Principal): Promise<OfflineGrant | null> {
+    if (p.role === 'viewer') return null;
     const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('session')

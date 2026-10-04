@@ -8,6 +8,7 @@ import {
   type MemberSuspension,
   type PausedSignIn,
   type Role,
+  type SignedOutEverywhere,
 } from '@fdv/shared';
 import { sql } from 'kysely';
 import { z } from 'zod';
@@ -20,6 +21,7 @@ import { SHARE_PAGES_PRUNE_JOB } from '../documents/shares.js';
 import { ApiError } from '../errors.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 import { INCOMING_MOVE_JOB } from '../uploads/incoming.js';
+import { holdHousehold } from './co-owners.js';
 
 /**
  * Locking a sign-in (5.28, A50–A52).
@@ -51,6 +53,9 @@ import { INCOMING_MOVE_JOB } from '../uploads/incoming.js';
  * over (suspensionInEffect), with nothing written; their links and requests
  * answer again at that moment, as after an unlock.
  *
+ * Signing somebody out everywhere (5.30, A53) is here too: their sessions
+ * and devices end, and nothing else; they sign in again as before.
+ *
  * The order every one of these takes its locks in: the person's membership
  * first (FOR NO KEY UPDATE, which their own sign-in, a widening and a
  * reviewer's decision wait for, as they hold it FOR SHARE); then sessions
@@ -79,6 +84,10 @@ export const lockBody = z
   .strict();
 
 const noSignIn = () => new ApiError(404, 'not_found', 'They have no sign-in to lock.');
+const noSignInToEnd = () => new ApiError(404, 'not_found', 'They have no sign-in to sign out.');
+
+/** What a session ended by "Sign out everywhere" says it ended for (endReasonOf: `revoked`). */
+export const SIGNED_OUT_EVERYWHERE_REASON = 'signed out everywhere';
 
 /** The person whose sign-in it is, held. */
 interface Held {
@@ -107,8 +116,8 @@ export class LockService {
    * first lock any of these takes. Somebody with no sign-in, or nobody of
    * the family, is 404.
    */
-  private async hold(trx: Db, memberId: string): Promise<Held> {
-    if (!UUID.test(memberId)) throw noSignIn();
+  private async hold(trx: Db, memberId: string, missing = noSignIn): Promise<Held> {
+    if (!UUID.test(memberId)) throw missing();
     const row = await trx
       .selectFrom('account_household')
       .select([
@@ -122,7 +131,7 @@ export class LockService {
       .where('member_id', '=', memberId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!row) throw noSignIn();
+    if (!row) throw missing();
     const person = await trx
       .selectFrom('member')
       .select(['display_name'])
@@ -509,6 +518,107 @@ export class LockService {
         ownSignIn: true,
       });
     });
+  }
+
+  /**
+   * DELETE /members/{id}/sessions (5.30, A53): signs somebody out everywhere
+   * — a lost phone, a password somebody else has — and leaves their sign-in
+   * as it is: they sign in again with their own password, at once if they
+   * like. Owners only, and an owner power (A54, the route). A co-owner too,
+   * who is told (A53); anybody it is about is emailed — no push, as their
+   * devices go with it — unless their sign-in is locked or paused, which
+   * ended their sessions already.
+   *
+   * Oneself: every other session, as a password change does, and the device
+   * asking stays signed in.
+   *
+   * In one transaction, in the order a role change takes its locks: the
+   * household (FOR SHARE, as since 5.27), the person's membership (FOR NO
+   * KEY UPDATE), their sessions — each ends, the reason `revoked`, and with
+   * it its offline grant — and every device of theirs here; the activity
+   * log's lock last. A refresh at the same moment either lands first, and
+   * its new token's session ends here, or waits, and finds its session
+   * ended. Their phones are told once it commits.
+   */
+  async signOutEverywhere(
+    p: Principal,
+    memberId: string,
+    meta: RequestMeta,
+  ): Promise<SignedOutEverywhere> {
+    requireCapability(p, 'member.sign_out');
+    const after: {
+      phones: PushTarget[];
+      told: { accountId: string; owner: boolean; by: string; household: string } | null;
+      result: SignedOutEverywhere | null;
+    } = { phones: [], told: null, result: null };
+    await withPrincipal(this.db, p, async (trx) => {
+      // 1. The household, then the person.
+      await holdHousehold(trx);
+      const target = await this.hold(trx, memberId, noSignInToEnd);
+      const self = target.account_id === p.accountId;
+
+      // 2. Their sessions — one's own but this one — and their devices.
+      let sessions = trx
+        .updateTable('session')
+        .set({ revoked_at: new Date(), revoked_reason: SIGNED_OUT_EVERYWHERE_REASON })
+        .where('account_id', '=', target.account_id)
+        .where('household_id', '=', p.householdId)
+        .where('revoked_at', 'is', null);
+      if (self) sessions = sessions.where('id', '!=', p.sessionId);
+      const ended = Number((await sessions.executeTakeFirst()).numUpdatedRows);
+      after.phones = await endDevices(
+        trx,
+        self
+          ? { accountId: target.account_id, exceptSessionId: p.sessionId }
+          : { accountId: target.account_id },
+      );
+
+      // 3. The activity log, last.
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.signed_out_everywhere',
+        objectType: 'member',
+        objectId: target.member_id,
+        detail: { sessions: ended, ...(self ? { self: true } : {}) },
+        ip: meta.ip,
+      });
+      // Told, unless locked or paused: they could not sign in again as the
+      // email says, and their sessions ended with the lock already.
+      if (!self && !suspensionInEffect(target)) {
+        after.told = {
+          accountId: target.account_id,
+          owner: target.role === 'owner',
+          by: await this.nameOf(trx, p),
+          household: (await this.household(trx)).name,
+        };
+      }
+      after.result = { member_id: target.member_id, sessions_ended: ended };
+    });
+    // Once it has committed: their phones, and the person.
+    if (after.phones.length > 0) {
+      await this.push({
+        householdId: p.householdId,
+        message: SESSION_ENDED,
+        targets: after.phones,
+      });
+    }
+    if (after.told) {
+      const { by, household } = after.told;
+      await this.alert({
+        householdId: p.householdId,
+        accountIds: [after.told.accountId],
+        subject: `${by} signed you out of ${household} everywhere`,
+        body:
+          `${by} signed you out on every device you were signed in on. You can sign in again ` +
+          'with your own password, and your documents are as you left them. If you did not ' +
+          (after.told.owner
+            ? `expect this, talk to ${by}, and look at the activity log.`
+            : `expect this, talk to ${by}.`),
+        emailOnly: true,
+      });
+    }
+    return after.result as SignedOutEverywhere;
   }
 
   /** The suspension taken off, counted: a rule that changed nothing has changed nothing. */

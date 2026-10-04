@@ -18,8 +18,19 @@
 {$FDV_HOSTNAME} {
 	encode zstd gzip
 
-	reverse_proxy web:80 {
-		flush_interval -1
+	# The API's requests go to the API itself (5.30), with the address Caddy
+	# was reached from; nginx would tell it Caddy's (Caddyfile.internal).
+	@api path /api/* /healthz /readyz
+	handle @api {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:80 {
+			flush_interval -1
+		}
 	}
 
 	header {

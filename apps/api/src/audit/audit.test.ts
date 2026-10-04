@@ -248,10 +248,10 @@ describe('who reads each line', () => {
       // Today's lines about a member are everyone's …
       expect(shownTo(reader, about('member.role_changed', 'member')), who).toBe(true);
       expect(shownTo(reader, about('member.sign_in_removed', 'member')), who).toBe(true);
-      // … and an owner's action from 5.29–5.30, before its iteration gives
-      // it an audience, is nobody's.
+      // … and an owner's action of a later iteration, before it is given an
+      // audience, is nobody's (as 5.30's were, until it gave them theirs).
       expect(shownTo(reader, about('member.made_owner', 'member')), who).toBe(false);
-      expect(shownTo(reader, about('member.signed_out_everywhere', 'member')), who).toBe(false);
+      expect(shownTo(reader, about('member.signed_out_nowhere', 'member')), who).toBe(false);
       // Nor does a name that happens to be on every object count as a rule.
       expect(shownTo(reader, about('constructor', 'member')), who).toBe(false);
     }
@@ -296,6 +296,36 @@ describe('who reads each line', () => {
       true,
       true,
     ]);
+  });
+
+  it("a sign-out everywhere, and a role change's effects, are for the owners, the person and whoever did it (5.30)", () => {
+    const [owner, adult, teen] = readers.map(([, r]) => r) as [Reader, Reader, Reader];
+    const person = { role: 'teen' as const, memberId: randomUUID(), accountId: randomUUID() };
+    // Whoever did it, and an owner no longer — they stepped down since.
+    const actor = { role: 'adult' as const, memberId: randomUUID(), accountId: randomUUID() };
+    for (const action of [
+      'member.signed_out_everywhere',
+      'member.offline_ended',
+      'member.requests_closed',
+    ]) {
+      const line = {
+        action,
+        object_type: 'member',
+        object_id: person.memberId,
+        document_visibility: null,
+        document_owner: null,
+        actor_account_id: actor.accountId,
+        detail: {},
+      };
+      expect(
+        [owner, person, actor, adult, teen].map((r) => shownTo(r, line)),
+        action,
+      ).toEqual([true, true, true, false, false]);
+    }
+    // The role change's own line keeps the family's audience.
+    expect(
+      [owner, adult, teen].map((r) => shownTo(r, about('member.role_changed', 'member'))),
+    ).toEqual([true, true, true]);
   });
 
   it("a document's line follows the document, and with no row to go by is nobody's", () => {

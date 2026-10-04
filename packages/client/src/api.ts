@@ -75,6 +75,7 @@ import type {
   ShareInput,
   ShareLinkPreview,
   SharePreview,
+  SignedOutEverywhere,
   SmtpInput,
   SmtpProvider,
   SmtpView,
@@ -372,6 +373,22 @@ export function createApi(http: Http) {
      */
     resumeMember: (token: string, memberId: string) =>
       request<void>(`/api/v1/members/${enc(memberId)}/resume`, { method: 'POST', token }),
+    /**
+     * Signs somebody out everywhere (5.30, A53, when
+     * `features.sign_out_everywhere`): every session and device of theirs
+     * ends (`session_ended`, reason `revoked`; their phones are pushed
+     * `session_ended`), and their sign-in stays as it is. A co-owner too, who
+     * is emailed; anybody else it is about is emailed too. Oneself: every
+     * device but the one asking. Owners only (anybody else `403 forbidden`),
+     * and an owner power (A54), asked as a lock is: `403
+     * totp_required_for_owner`, or `step_up_required` with `manage_sign_ins`
+     * (a passkey or a code). Nobody with a sign-in: `404`.
+     */
+    signOutEverywhere: (token: string, memberId: string) =>
+      request<SignedOutEverywhere>(`/api/v1/members/${enc(memberId)}/sessions`, {
+        method: 'DELETE',
+        token,
+      }),
     /**
      * A person's identity details (5.26, when `features.member_identity`): the
      * shared part, and the Only me part for the person alone, ID numbers and

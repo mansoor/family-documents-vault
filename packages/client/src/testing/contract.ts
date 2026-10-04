@@ -1723,6 +1723,75 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'an owner signs an adult out everywhere: each of her sessions ends (revoked), she signs in again as before; nobody else may, and nobody is 404 (5.30)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.sign_out_everywhere).toBe(true);
+      const first = await signIn(api, ctx);
+      const tess = { email: 'signed-out-adult@example.test', password: 'the adult’s own password' };
+      const tessId = await ctx.addSignIn(first.access_token, {
+        name: 'Tess',
+        role: 'adult',
+        ...tess,
+      });
+      const third = { email: 'third-owner@example.test', password: 'the third owner’s password' };
+      await ctx.addSignIn(first.access_token, { name: 'Third Owner', role: 'owner', ...third });
+      const phone = await signInAs(api, tess.email, tess.password);
+      const laptop = await signInAs(api, tess.email, tess.password);
+
+      // Who may: never anybody but an owner — not an adult, of anybody.
+      expect(
+        await refusal(api.signOutEverywhere(phone.access_token, first.member_id)),
+      ).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+        message: 'Only an owner can sign someone out everywhere.',
+      });
+
+      // An owner with two-step sign-in and a code just given (A54).
+      const owner = await signInAs(api, third.email, third.password);
+      await ctx.ownerTwoStep(owner.access_token);
+      expect(
+        await refusal(
+          api.signOutEverywhere(owner.access_token, '00000000-0000-4000-8000-000000000000'),
+        ),
+      ).toMatchObject({
+        status: 404,
+        code: 'not_found',
+        message: 'They have no sign-in to sign out.',
+      });
+      // Both of these, and any other she has: the vault's own count.
+      const out = await api.signOutEverywhere(owner.access_token, tessId);
+      expect(out.member_id).toBe(tessId);
+      expect(out.sessions_ended).toBeGreaterThanOrEqual(2);
+      // Both of her sessions are over, and say they were signed out.
+      for (const t of [phone, laptop]) {
+        const over = await refusal(api.me(t.access_token));
+        expect(over).toMatchObject({ status: 401, code: 'session_ended', reason: 'revoked' });
+        expect(isSessionOver(over)).toBe(true);
+        expect(await refusal(api.refresh(t.refresh_token))).toMatchObject({ reason: 'revoked' });
+      }
+      // Her sign-in is as it was: she signs in again with her own password.
+      const back = await signInAs(api, tess.email, tess.password);
+      expect((await api.me(back.access_token)).member_id).toBe(tessId);
+    },
+  },
+  {
+    name: 'a refresh token spent twice by a thief before the owner refreshes ends the session as reused when the owner’s comes in, and the thief’s with it (5.30)',
+    run: async (api, ctx) => {
+      const stolen = await signIn(api, ctx);
+      const thief1 = await api.refresh(stolen.refresh_token);
+      const thief2 = await api.refresh(thief1.refresh_token);
+      // The owner's copy of the first token, two refreshes behind.
+      expect(await refusal(api.refresh(stolen.refresh_token))).toMatchObject({
+        status: 401,
+        code: 'session_ended',
+        reason: 'reused',
+      });
+      expect(await refusal(api.refresh(thief2.refresh_token))).toMatchObject({ reason: 'reused' });
+      expect(await refusal(api.me(thief2.access_token))).toMatchObject({ reason: 'reused' });
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;
