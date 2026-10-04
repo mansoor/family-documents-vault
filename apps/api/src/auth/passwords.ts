@@ -6,7 +6,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import { RESET_LINK_MINUTES, suspensionInEffect, type ResetNotice } from '@fdv/shared';
 import { ApiError } from '../errors.js';
-import type { Principal, RequestMeta } from './service.js';
+import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
 import type { StepUpService } from './step-up.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
@@ -171,12 +171,20 @@ export class PasswordService {
     }
 
     const hash = await argon2.hash(input.new_password, ARGON2);
+    let removed: SinceHandover = { since: null, passkeys: 0, twoStep: false };
     await withPrincipal(this.db, p, async (trx) => {
+      // From a session still live (5.29): a reset or a stopped password that
+      // ended it while this waited is not undone by it.
+      await stillSignedIn(trx, p);
       await trx
         .updateTable('account')
         .set({ password_hash: hash })
         .where('id', '=', p.accountId)
         .execute();
+      // Whoever spent a link an owner was handed chose a password, and could
+      // add a passkey or two-step sign-in with it (5.29): every change takes
+      // away each one added since, so none outlasts the person's own.
+      removed = await takeAwaySinceHandover(trx, p.accountId);
       // The member key follows the password, or the person keeps their
       // private documents and loses the way into them.
       if (input.current_password) {
@@ -207,7 +215,12 @@ export class PasswordService {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'auth.password_changed',
-        detail: { method },
+        detail: {
+          method,
+          ...(removed.since
+            ? { passkeys_removed: removed.passkeys, two_step_removed: removed.twoStep }
+            : {}),
+        },
         ip: meta.ip,
       });
     });
@@ -406,6 +419,8 @@ export class PasswordService {
 
     const hash = await argon2.hash(newPassword, ARGON2);
     let resetPhones: PushTarget[] = [];
+    let handedOver = false;
+    let handedBy: string | null = null;
     // A reset signs nobody in, so it is not the account asking even now; the
     // account it is for is named, for what the database asks of it (0052).
     const scope = {
@@ -442,11 +457,30 @@ export class PasswordService {
           return 'refused' as const;
         }
       }
+      // Two-step sign-in turned on since a link an owner was handed was
+      // spent goes (5.29), as every passkey goes below.
+      await takeAwaySinceHandover(trx, account.id);
       await trx
         .updateTable('account')
-        .set({ password_hash: hash })
+        .set({
+          password_hash: hash,
+          // A link an owner was handed (5.29): from now, what is added to
+          // this sign-in goes at the next change of its password.
+          ...(claimed.handover ? { handover_spent_at: sql<Date>`now()` } : {}),
+        })
         .where('id', '=', account.id)
         .execute();
+      if (claimed.handover && row.issued_by_account) {
+        const owner = await trx
+          .selectFrom('account_household')
+          .innerJoin('member', 'member.id', 'account_household.member_id')
+          .select(['member.display_name'])
+          .where('account_household.account_id', '=', row.issued_by_account)
+          .where('account_household.household_id', '=', membership.household_id)
+          .executeTakeFirst();
+        handedBy = owner?.display_name ?? null;
+      }
+      handedOver = claimed.handover;
       // No old password to unwrap with, so the member key comes back
       // through the master key and is given a fresh credential wrap.
       await this.keys.attachCredential(
@@ -501,7 +535,11 @@ export class PasswordService {
       householdId: membership.household_id,
       accountIds: [account.id],
       subject: 'Your vault password was reset',
-      body: 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.',
+      // A link an owner was handed (5.29) never went by email: whoever spent
+      // it had it from the owner, so the person is told that, and what to do.
+      body: handedOver
+        ? `${handedBy ?? 'An owner'}, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.`
+        : 'Somebody used a reset link to set a new password, and every device has been signed out. If that was not you, whoever did it can read your email — deal with that first.',
       emailOnly: true,
     });
     return { email: account.email };
@@ -534,8 +572,32 @@ export class PasswordService {
             .where('account_household.account_id', '=', row.issued_by_account)
             .executeTakeFirst()
         : undefined;
-      return { by: by?.display_name ?? null, at: row.created_at.toISOString() };
+      // What was added to this sign-in since such a link was spent (5.29):
+      // whoever spent it could have added it, and the next change of the
+      // password takes it away.
+      const added = await addedSinceHandover(trx, p.accountId);
+      return {
+        by: by?.display_name ?? null,
+        at: row.created_at.toISOString(),
+        spent_at: added.since,
+        passkeys_since: added.passkeys,
+        two_step_since: added.twoStep,
+      };
     });
+  }
+
+  /**
+   * GET /me's `handover_since` (5.29): when a link an owner was handed for
+   * this sign-in was last spent, if ever. Every password change takes away
+   * each passkey and two-step sign-in added since, and says so.
+   */
+  async handoverSince(p: Principal): Promise<string | null> {
+    const row = await this.db
+      .selectFrom('account')
+      .select(['handover_spent_at'])
+      .where('id', '=', p.accountId)
+      .executeTakeFirst();
+    return row?.handover_spent_at?.toISOString() ?? null;
   }
 
   /** DELETE /me/reset-notice: they have seen it. Nothing to see is as good. */
@@ -588,4 +650,79 @@ export async function holdsPrivate(trx: Db, accountId: string): Promise<boolean>
     held: boolean | null;
   }>`select member_holds_private(${accountId}) as held`.execute(trx);
   return r.rows[0]?.held !== false;
+}
+
+/** What a password change or a reset took away since a hand-over link was spent (5.29). */
+interface SinceHandover {
+  since: Date | null;
+  passkeys: number;
+  twoStep: boolean;
+}
+
+/**
+ * Each passkey and two-step sign-in added to this sign-in since a link an
+ * owner was handed for it was last spent (0052's handover_spent_at), taken
+ * away (5.29): whoever spent the link chose the password, and could have
+ * added them. Asked at every change of the password and every reset, not
+ * only the first: an owner could change it first, add a passkey, and then
+ * hand the person a password. The person's own added since go too, and are
+ * added again in a tap.
+ */
+async function takeAwaySinceHandover(trx: Db, accountId: string): Promise<SinceHandover> {
+  const account = await trx
+    .selectFrom('account')
+    .select(['handover_spent_at', 'totp_confirmed_at'])
+    .where('id', '=', accountId)
+    .executeTakeFirstOrThrow();
+  const since = account.handover_spent_at;
+  if (!since) return { since: null, passkeys: 0, twoStep: false };
+  const passkeys = await trx
+    .deleteFrom('credential')
+    .where('account_id', '=', accountId)
+    .where('kind', '=', 'passkey')
+    .where('created_at', '>', since)
+    .executeTakeFirst();
+  const twoStep = account.totp_confirmed_at !== null && account.totp_confirmed_at > since;
+  if (twoStep) {
+    await trx
+      .updateTable('account')
+      .set({ totp_secret: null, totp_confirmed_at: null })
+      .where('id', '=', accountId)
+      .execute();
+  }
+  return { since, passkeys: Number(passkeys.numDeletedRows), twoStep };
+}
+
+/** What was added since a hand-over link was spent, for the person to see (5.29). */
+async function addedSinceHandover(
+  trx: Db,
+  accountId: string,
+): Promise<{
+  since: string | null;
+  passkeys: Array<{ label: string | null; added_at: string }>;
+  twoStep: string | null;
+}> {
+  const account = await trx
+    .selectFrom('account')
+    .select(['handover_spent_at', 'totp_confirmed_at'])
+    .where('id', '=', accountId)
+    .executeTakeFirstOrThrow();
+  const since = account.handover_spent_at;
+  if (!since) return { since: null, passkeys: [], twoStep: null };
+  const passkeys = await trx
+    .selectFrom('credential')
+    .select(['label', 'created_at'])
+    .where('account_id', '=', accountId)
+    .where('kind', '=', 'passkey')
+    .where('created_at', '>', since)
+    .orderBy('created_at')
+    .execute();
+  return {
+    since: since.toISOString(),
+    passkeys: passkeys.map((k) => ({ label: k.label, added_at: k.created_at.toISOString() })),
+    twoStep:
+      account.totp_confirmed_at && account.totp_confirmed_at > since
+        ? account.totp_confirmed_at.toISOString()
+        : null,
+  };
 }

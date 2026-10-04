@@ -795,9 +795,14 @@ describe.skipIf(!testAdminUrl())(
               payload: stopNow ? { stop_now: true } : {},
             });
             const label = `${operatorMail ? 'mail' : 'no mail'}, ${role}, stop_now ${stopNow}`;
-            expect(res.statusCode, label).toBe(200);
-            const answer = json<{ path: string }>(res);
-            expect(answer.path, label).toBe(operatorMail ? 'mail' : 'operator');
+            // Where no link can reach them, their password is not stopped
+            // from here either (the 5.29 review): refused, and nothing made.
+            const refusedStop = !operatorMail && stopNow;
+            expect(res.statusCode, label).toBe(refusedStop ? 409 : 200);
+            if (!refusedStop) {
+              const answer = json<{ path: string }>(res);
+              expect(answer.path, label).toBe(operatorMail ? 'mail' : 'operator');
+            }
             // Nothing the owner is answered with, or told, or can read in the
             // log, holds a link.
             expect(linksIn(res.body), label).toEqual([]);

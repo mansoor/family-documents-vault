@@ -876,8 +876,14 @@ describe('the fake vault, a password reset an owner starts (5.29)', () => {
       path: 'operator',
       stop_now: false,
       command:
-        'docker compose exec api node apps/api/dist/cli.mjs reset-password tariq@example.test',
+        "docker compose exec api node apps/api/dist/cli.mjs reset-password 'tariq@example.test'",
     });
+    // No stopping a password where no link can reach them (the 5.29 review).
+    const refused = await api.startPasswordReset(token, 'tariq', { stop_now: true }).then(
+      () => null,
+      (e: { status?: number; code?: string }) => e,
+    );
+    expect(refused).toMatchObject({ status: 409, code: 'stop_now_unavailable' });
     expect(vault.state.resetsStarted).toEqual([
       { member_id: 'sara', path: 'handover', stop_now: false },
       { member_id: 'tariq', path: 'operator', stop_now: false },

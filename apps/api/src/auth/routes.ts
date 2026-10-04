@@ -155,6 +155,9 @@ export function registerAuth(
       // 5.29: an owner made a link to hand over for this sign-in, not yet
       // seen: told at every sign-in until it is.
       reset_notice: passwords ? await passwords.notice(p) : null,
+      // And when such a link was last spent: every password change takes
+      // away what was added to the sign-in since.
+      handover_since: passwords ? await passwords.handoverSince(p) : null,
     };
   });
 

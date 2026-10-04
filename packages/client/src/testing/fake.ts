@@ -981,6 +981,7 @@ export function createFakeVault(): {
         totp_required: true,
         // 5.29: an owner made a link to hand over for this sign-in.
         reset_notice: state.resetNotices.get(who.memberId) ?? null,
+        handover_since: null,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {
@@ -2567,6 +2568,14 @@ export function createFakeVault(): {
       }
       const how = resetPathOf(id) as ResetPath;
       const stopNow = b.stop_now === true;
+      // No link can reach them on the operator's path: no stop either (5.29 review).
+      if (stopNow && how === 'operator') {
+        return fail(
+          409,
+          'stop_now_unavailable',
+          `${m.display_name}'s password can't be stopped from here: no link to set a new one can reach them on this vault. Lock their sign-in to keep them out, and ask whoever runs the server for a reset.`,
+        );
+      }
       if (stopNow) {
         // Their password stops now (A48): nobody is given one.
         const theirs = state.signIns.find((x) => x.member_id === id);

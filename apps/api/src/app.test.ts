@@ -208,6 +208,33 @@ describe('error envelope', () => {
     }
   });
 
+  it('only the vault’s own “session ended while it waited” is a session’s end; a database refusing a connection (28000) is the server’s (the 5.29 review, F529-07)', async () => {
+    const server = await make();
+    try {
+      setupComplete = async () => {
+        throw Object.assign(new Error('no pg_hba.conf entry for host'), { code: '28000' });
+      };
+      const refused = await server.inject('/api/v1/capabilities');
+      expect(refused.statusCode).toBe(500);
+      expect(refused.json<{ error: { code: string } }>().error.code).not.toBe('session_ended');
+      // 0052's FDV01, with why the session ended: a lock's is `suspended`.
+      setupComplete = async () => {
+        throw Object.assign(new Error('this sign-in has ended'), {
+          code: 'FDV01',
+          detail: 'sign-in locked',
+        });
+      };
+      const ended = await server.inject('/api/v1/capabilities');
+      expect(ended.statusCode).toBe(401);
+      expect(ended.json<{ error: Record<string, unknown> }>().error).toMatchObject({
+        code: 'session_ended',
+        reason: 'suspended',
+      });
+    } finally {
+      setupComplete = async () => true;
+    }
+  });
+
   it('honours a caller-supplied request id', async () => {
     const res = await (
       await make()

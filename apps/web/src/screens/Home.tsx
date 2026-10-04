@@ -290,10 +290,17 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const by = props.notice.by ?? 'An owner';
-  const day = new Date(props.notice.at).toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'long',
-  });
+  const dayOf = (at: string) =>
+    new Date(at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+  const day = dayOf(props.notice.at);
+  const added = [
+    ...(props.notice.passkeys_since ?? []).map(
+      (k) => `A passkey${k.label ? ` called “${k.label}”` : ''}, on ${dayOf(k.added_at)}`,
+    ),
+    ...(props.notice.two_step_since
+      ? [`Two-step sign-in, on ${dayOf(props.notice.two_step_since)}`]
+      : []),
+  ];
   const seen = async () => {
     if (busy) return;
     setBusy(true);
@@ -315,6 +322,23 @@ export function ResetNoticeStrip(props: { notice: ResetNotice; onSeen: () => voi
       <p>
         {`On ${day}, ${by} was given a one-time link to set a new password for your sign-in, to hand to you. If you didn’t ask for it, or someone else set the password you use now, change it in Settings and talk to them.`}
       </p>
+      {/* What was added to the sign-in since the link was used (the 5.29
+          review): whoever used it could have added it, and changing the
+          password takes each away. */}
+      {added.length > 0 && (
+        <>
+          <p>Added to your sign-in since the link was used:</p>
+          <ul aria-label="Added since the link was used">
+            {added.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+          <p>
+            If you didn’t add them, change your password: that removes every one of them, and you
+            add your own again.
+          </p>
+        </>
+      )}
       <ErrorNote message={error} />
       <div className="row">
         <Link to="/settings" className="btn btn-quiet">

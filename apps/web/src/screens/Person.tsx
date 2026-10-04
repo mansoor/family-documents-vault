@@ -575,12 +575,14 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
 
   const noTwoStep = refused || me?.totp_required === true;
   const suspended = card?.suspension ?? null;
-  // Which way a reset goes (5.29); a way never heard of is no owner's.
-  const resetPath: ResetPath | null = card?.reset_path
-    ? card.reset_path in RESET_ABOUT
-      ? card.reset_path
-      : 'operator'
-    : null;
+  // Which way a reset goes (5.29); a way never heard of is no owner's. None
+  // for somebody locked or paused, whatever the card read before said.
+  const resetPath: ResetPath | null =
+    card?.reset_path && !suspended
+      ? card.reset_path in RESET_ABOUT
+        ? card.reset_path
+        : 'operator'
+      : null;
   return (
     <section className="card stack" aria-labelledby="account-h">
       <h2 id="account-h" style={{ fontSize: 18 }}>
@@ -721,6 +723,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
               name={props.name}
               email={card.email}
               path={resetPath}
+              passkeys={card.passkeys}
               otherOwners={props.otherOwners}
               returnFocus={resetButton}
               onDone={(done) => {
@@ -728,7 +731,7 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
                   setResetting(false);
                   // Signed out everywhere, when their password stopped now.
                   if (done.stop_now) setCard((was) => (was ? { ...was, devices: [] } : was));
-                  setSaid(resetSaid(done, props.name, card.email));
+                  setSaid(resetSaid(done, props.name, card.email, card.passkeys));
                 });
                 status.current?.focus();
               }}
@@ -749,7 +752,10 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
                   // Signed out everywhere: a lock ends their sessions, and
                   // the devices go with them. Said from the answer, without
                   // a second look, which the activity log would note.
-                  setCard((was) => (was ? { ...was, suspension, devices: [] } : was));
+                  // And no reset is offered while it lasts (the 5.29 review).
+                  setCard((was) =>
+                    was ? { ...was, suspension, devices: [], reset_path: null } : was,
+                  );
                   setLocking(false);
                   setSaid(`${props.name}’s sign-in is locked.`);
                 });
@@ -788,9 +794,18 @@ const RESET_ABOUT: Record<ResetPath, (name: string) => string> = {
 };
 
 /** What the card says once a reset is on its way (5.29). */
-export function resetSaid(done: OwnerResetResult, name: string, email: string): string {
+export function resetSaid(
+  done: OwnerResetResult,
+  name: string,
+  email: string,
+  passkeys = 0,
+): string {
+  // A passkey of theirs still signs them in until the link is used (the
+  // 5.29 review): only a lock keeps somebody out.
   const stopped = done.stop_now
-    ? ` ${name} is signed out everywhere, and their password stopped working.`
+    ? passkeys > 0
+      ? ` ${name} is signed out everywhere, and their password stopped working — but a passkey of theirs still signs them in until the link is used.`
+      : ` ${name} is signed out everywhere, and their password stopped working.`
     : '';
   if (done.path === 'mail')
     return `A link to set a new password is on its way to ${email}.${stopped}`;
@@ -818,6 +833,8 @@ function ResetDialog(props: {
   name: string;
   email: string;
   path: ResetPath;
+  /** How many passkeys they have: a stopped password leaves those working. */
+  passkeys: number;
   otherOwners: boolean;
   returnFocus: RefObject<HTMLElement | null>;
   onDone: (done: OwnerResetResult) => void;
@@ -956,17 +973,23 @@ function ResetDialog(props: {
                 <li>{`${name} is told the next time they sign in.${toldOwners}`}</li>
               )}
             </ul>
-            <Check
-              id="reset-stop-now"
-              checked={stopNow}
-              onChange={setStopNow}
-              label="Stop their current password now"
-              note={
-                props.path === 'operator'
-                  ? `${name} is signed out everywhere at once, and can’t sign in again until whoever runs the server gives them a link.`
-                  : `${name} is signed out everywhere at once, and can’t sign in again until they set a new password through the link.`
-              }
-            />
+            {/* Only where a link can reach them (the 5.29 review): on the
+                operator's way a stopped password would be a lock with none
+                of a lock's record or safeguards. A passkey of theirs still
+                signs them in until the link is used. */}
+            {props.path !== 'operator' && (
+              <Check
+                id="reset-stop-now"
+                checked={stopNow}
+                onChange={setStopNow}
+                label="Stop their current password now"
+                note={
+                  props.passkeys > 0
+                    ? `${name}’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.`
+                    : `${name} is signed out everywhere at once, and can’t sign in again until they set a new password through the link.`
+                }
+              />
+            )}
             <ErrorNote message={error} />
             <div className="row">
               {/* aria-disabled, not disabled: "confirm it is you" gives focus back to it. */}

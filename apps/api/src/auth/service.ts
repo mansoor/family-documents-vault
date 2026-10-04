@@ -89,6 +89,45 @@ const invalidCredentials = () =>
 const sessionEnded = (why: string, reason: SessionEndReason) =>
   new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why, reason });
 
+/** What a session's end is answered with when it ended while a request waited (5.29). */
+export const endedMeanwhile = (revokedReason: string | null) =>
+  sessionEnded('the session ended while this waited', endReasonOf(revokedReason));
+
+/**
+ * What a password or a passkey proved, carried to where the session is
+ * opened (5.29): checked again there, under the person's membership, so a
+ * reset or a stopped password that commits between the proof and the
+ * session is seen, and the session is not opened.
+ */
+export type SignInProof = { password: string } | { passkey: string };
+
+/** A password hash, as a sign-in carries it: never the hash itself. */
+export const passwordProof = (hash: string) =>
+  createHash('sha256').update(hash, 'utf8').digest('base64url');
+
+/**
+ * The session asking is still live, held so (5.29): the person's membership
+ * FOR SHARE — which a reset, a stopped password and a lock hold FOR NO KEY
+ * UPDATE while they end every session — then the session itself. A change
+ * to how somebody signs in (a password, a passkey, two-step sign-in) that
+ * waited for one of those is refused, as its next request would be.
+ */
+export async function stillSignedIn(trx: Db, p: Principal): Promise<void> {
+  await trx
+    .selectFrom('account_household')
+    .select(['member_id'])
+    .where('account_id', '=', p.accountId)
+    .where('household_id', '=', p.householdId)
+    .forShare()
+    .executeTakeFirst();
+  const s = await trx
+    .selectFrom('session')
+    .select(['revoked_at', 'revoked_reason'])
+    .where('id', '=', p.sessionId)
+    .executeTakeFirst();
+  if (!s || s.revoked_at) throw endedMeanwhile(s?.revoked_reason ?? null);
+}
+
 /**
  * A sign-in refused because it is locked, or paused after a restore (5.28):
  * said only once the password, the code or the passkey has been proven, so
@@ -126,7 +165,6 @@ export class AuthService {
       trx: Db,
       householdId: string,
     ) => Promise<void> = async () => undefined,
-    /** Answers whether an account must present a second factor, and mints the interim token. */
     /** Tells named accounts something at once (SEC-11). */
     private readonly alert: (input: {
       householdId: string;
@@ -135,10 +173,14 @@ export class AuthService {
       body: string;
       pushType?: 'new_device' | 'owner_change';
     }) => Promise<void> = async () => undefined,
+    /**
+     * Answers whether an account must present a second factor, and mints the
+     * interim token — which carries what the password proved (5.29).
+     */
     private readonly mfa: {
       isEnabled: (accountId: string) => Promise<boolean>;
-      mfaToken: (accountId: string) => Promise<string>;
-      accountFromMfaToken: (token: string) => Promise<string>;
+      mfaToken: (accountId: string, proof?: string) => Promise<string>;
+      mfaClaims: (token: string) => Promise<{ accountId: string; proof: string | null }>;
       verify: (accountId: string, code: string) => Promise<boolean>;
     } | null = null,
     /** Pushes the worker sends (4.13): "you were signed out" to a session's phones. */
@@ -231,33 +273,42 @@ export class AuthService {
 
     const hash = account?.password_hash ?? (await DUMMY_HASH_PROMISE);
     const ok = await argon2.verify(hash, password);
-    if (!account || !ok || account.disabled_at) throw invalidCredentials();
+    if (!account?.password_hash || !ok || account.disabled_at) throw invalidCredentials();
 
+    // What the password proved goes on to where the session opens (5.29).
+    const proof = passwordProof(account.password_hash);
     if (this.mfa && (await this.mfa.isEnabled(account.id))) {
-      return { mfa_required: true, mfa_token: await this.mfa.mfaToken(account.id) };
+      return { mfa_required: true, mfa_token: await this.mfa.mfaToken(account.id, proof) };
     }
-    return this.openSessionForAccount(account.id, meta, 'password');
+    return this.openSessionForAccount(account.id, meta, 'password', { password: proof });
   }
 
   /** Second step: the interim token plus a code from the authenticator. */
   async signInWithMfa(mfaToken: string, code: string, meta: RequestMeta): Promise<Tokens> {
     if (!this.mfa) throw invalidCredentials();
-    const accountId = await this.mfa.accountFromMfaToken(mfaToken);
+    const { accountId, proof } = await this.mfa.mfaClaims(mfaToken);
     if (!(await this.mfa.verify(accountId, code))) {
       throw new ApiError(401, 'totp_invalid', "That code didn't match. Try the current one.");
     }
-    return this.openSessionForAccount(accountId, meta, 'password+totp');
+    // A token from before 5.29 carries no proof: it is no longer than five
+    // minutes old, and asks for the password again.
+    if (proof === null) throw invalidCredentials();
+    return this.openSessionForAccount(accountId, meta, 'password+totp', { password: proof });
   }
 
   /**
    * Opens a session for an account that has already proved who it is.
-   * Public so the passkey service can finish a sign-in; there is no check
-   * inside it, so every caller must have done the proving first.
+   * Public so the passkey service can finish a sign-in; every caller must
+   * have done the proving first. What the proof was (5.29) is checked again
+   * once the person's membership is held: the password is still the one
+   * proved, or the passkey is still theirs. A reset or a stopped password
+   * that committed in between leaves nothing to open a session with.
    */
   async openSessionForAccount(
     accountId: string,
     meta: RequestMeta,
     method: string,
+    proof?: SignInProof,
   ): Promise<Tokens> {
     // A switched-off account opens nothing, however it was proven: a
     // passkey too (5.28), which until then went straight on.
@@ -312,6 +363,33 @@ export class AuthService {
           'no_household',
           'Your sign-in is not part of any family vault yet.',
         );
+      }
+      // The proof still holds (5.29): the password is the one proved, or the
+      // passkey is still theirs. Held, so a change waits for this session to
+      // open, and ends it; or this sees the change, and opens nothing.
+      if (proof && 'password' in proof) {
+        const now = await trx
+          .selectFrom('account')
+          .select(['password_hash'])
+          .where('id', '=', account.id)
+          .forShare()
+          .executeTakeFirst();
+        if (!now?.password_hash || passwordProof(now.password_hash) !== proof.password) {
+          throw invalidCredentials();
+        }
+      }
+      if (proof && 'passkey' in proof) {
+        const still = await trx
+          .selectFrom('credential')
+          .select(['id'])
+          .where('id', '=', proof.passkey)
+          .where('account_id', '=', account.id)
+          .where('kind', '=', 'passkey')
+          .forShare()
+          .executeTakeFirst();
+        if (!still) {
+          throw new ApiError(401, 'passkey_rejected', 'That passkey was not accepted. Try again.');
+        }
       }
       // Locked, or paused after a restore: refused, now that who it is has
       // been proven, and only now.

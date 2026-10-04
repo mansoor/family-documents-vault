@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { api, type ResetPreview } from '../api.js';
-import { describeError, useApp } from '../app-context.js';
+import { describeError, useApp, useLoad } from '../app-context.js';
 import { heldLinkToken, linkSpent, markLinkSpent } from '../link-token.js';
 import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
@@ -16,7 +16,20 @@ import { Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /** In Settings, for somebody who is signed in and knows their password. */
 export function ChangePassword() {
-  const { guarded } = useApp();
+  const { guarded, authVersion } = useApp();
+  // When a link an owner was handed for this sign-in was last used (5.29):
+  // every change takes away each passkey and two-step sign-in added since.
+  const { data: me } = useLoad((t) => api.me(t), [authVersion]);
+  const since = me?.handover_since
+    ? new Date(me.handover_since).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : null;
+  const takenAway = since
+    ? `Passkeys and two-step sign-in added since ${since} are removed; add yours again.`
+    : null;
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -54,6 +67,7 @@ export function ChangePassword() {
         {done && (
           <p className="status status-ok">
             Your password is changed, and your other devices have been signed out.
+            {takenAway ? ` ${takenAway}` : ''}
           </p>
         )}
         <Button kind="quiet" onClick={() => setOpen(true)}>
@@ -89,6 +103,7 @@ export function ChangePassword() {
         This also unlocks your own private documents, so they come with it. Every other device you
         are signed in on will be signed out.
       </p>
+      {takenAway && <p className="status status-warn">{takenAway}</p>}
       <ErrorNote message={error} />
       <div className="row">
         <Button type="submit" disabled={busy || next.length < 10}>

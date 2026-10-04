@@ -1733,18 +1733,17 @@ describe('a password reset an owner starts (5.29)', () => {
     );
     const { dialog } = await openReset(region);
     const command =
-      'docker compose exec api node apps/api/dist/cli.mjs reset-password tess@example.test';
+      "docker compose exec api node apps/api/dist/cli.mjs reset-password 'tess@example.test'";
     expect(
       within(dialog).getByText(
         'Your vault has no mail server of its own, and Tess keeps something only they can see. A link in an owner’s hands could open it, so no owner can reset Tess’s password. Ask whoever runs your vault’s server to run:',
       ),
     ).toBeInTheDocument();
     expect(within(dialog).getByText(command)).toBeInTheDocument();
+    // No stopping a password where no link can reach them (the 5.29 review).
     expect(
-      within(dialog).getByLabelText('Stop their current password now'),
-    ).toHaveAccessibleDescription(
-      'Tess is signed out everywhere at once, and can’t sign in again until whoever runs the server gives them a link.',
-    );
+      within(dialog).queryByLabelText('Stop their current password now'),
+    ).not.toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Start the reset' }));
     const shown = await screen.findByRole('dialog', { name: 'Ask whoever runs the vault' });
@@ -1807,6 +1806,76 @@ describe('a password reset an owner starts (5.29)', () => {
     );
     const { dialog } = await openReset(region);
     expect(within(dialog).getByRole('button', { name: 'Start the reset' })).toBeInTheDocument();
+  });
+
+  it('with a passkey, stopping the password says the passkey still signs them in until the link is used (the 5.29 review, W529-2)', async () => {
+    const { state, region } = await showCard({
+      accounts: { 'm-1': card({ reset_path: 'handover', passkeys: 1 }) },
+    });
+    const { dialog } = await openReset(region);
+    const stop = within(dialog).getByLabelText('Stop their current password now');
+    expect(stop).toHaveAccessibleDescription(
+      'Tess’s password stops working and every device is signed out now, but a passkey of theirs still signs them in until the link is used. Lock their sign-in to keep them out.',
+    );
+    fireEvent.click(stop);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make the link' }));
+    const shown = await screen.findByRole('dialog', { name: 'The link for Tess' });
+    fireEvent.click(within(shown).getByRole('button', { name: 'Done' }));
+    const said = await within(region).findByText(
+      'You were given Tess’s link. Tess is signed out everywhere, and their password stopped working — but a passkey of theirs still signs them in until the link is used.',
+    );
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(state.resetsStarted?.at(-1)?.body).toEqual({ stop_now: true });
+  });
+
+  it('once locked from the card, no reset is offered (the 5.29 review, W529-3)', async () => {
+    const { region } = await showCard({ accounts: { 'm-1': card() } });
+    expect(
+      within(region).getByRole('button', { name: 'Send a password reset' }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole('button', { name: 'Lock sign-in' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Lock Tess’s sign-in' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    const said = await within(region).findByText('Tess’s sign-in is locked.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      within(region).queryByRole('button', { name: 'Send a password reset' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('the notice lists what was added to the sign-in since the link was used (the 5.29 review, F529-01)', async () => {
+    const state = fresh({
+      resetNotice: {
+        by: 'Sam Seikh',
+        at: '2026-10-02T09:00:00.000Z',
+        spent_at: '2026-10-02T09:05:00.000Z',
+        passkeys_since: [{ label: 'Owner’s laptop', added_at: '2026-10-02T09:10:00.000Z' }],
+        two_step_since: '2026-10-03T09:00:00.000Z',
+      },
+    });
+    installFakeApi(state);
+    signedIn('adult');
+    at('/');
+    render(<App />);
+    const told = await screen.findByRole('region', {
+      name: 'An owner made a link to reset your password',
+    });
+    expect(
+      within(within(told).getByRole('list', { name: 'Added since the link was used' }))
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([
+      'A passkey called “Owner’s laptop”, on 2 October',
+      'Two-step sign-in, on 3 October',
+    ]);
+    expect(told).toHaveTextContent(
+      'If you didn’t add them, change your password: that removes every one of them, and you add your own again.',
+    );
+    expect(within(told).getByRole('link', { name: 'Change your password' })).toHaveAttribute(
+      'href',
+      '/settings',
+    );
+    await expectAccessible();
   });
 
   it('Escape cancels, nothing is sent, and focus goes back to the button', async () => {

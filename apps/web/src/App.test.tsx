@@ -795,6 +795,34 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
     await screen.findByText(/Your password is changed/);
     expect(state.passwordChanged).toBe('a whole new password');
+    // No hand-over link was ever used: nothing is said to go.
+    expect(screen.queryByText(/added since/)).not.toBeInTheDocument();
+  });
+
+  it('after a hand-over link, changing the password says what it takes away (the 5.29 review, F529-01)', async () => {
+    const state = fresh({ handoverSince: '2026-10-02T09:05:00.000Z' });
+    installFakeApi(state);
+    signedIn('adult');
+    window.history.replaceState({}, '', '/settings');
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change your password' }));
+    const warned = await screen.findByText(
+      'Passkeys and two-step sign-in added since 2 October 2026 are removed; add yours again.',
+    );
+    expect(warned).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Your password now'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.change(screen.getByLabelText('Your new password'), {
+      target: { value: 'a whole new password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Change it' }));
+    expect(
+      await screen.findByText(
+        'Your password is changed, and your other devices have been signed out. Passkeys and two-step sign-in added since 2 October 2026 are removed; add yours again.',
+      ),
+    ).toBeInTheDocument();
+    await expectAccessible();
   });
 
   it('somebody with only a passkey is asked to prove it is them instead', async () => {

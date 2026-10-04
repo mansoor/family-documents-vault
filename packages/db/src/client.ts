@@ -150,6 +150,12 @@ export interface Schema {
     totp_confirmed_at: Timestamp | null;
     created_at: GeneratedTimestamp;
     disabled_at: Timestamp | null;
+    /**
+     * When a link an owner was handed for this sign-in was last spent (0052):
+     * every password change and reset after it takes away each passkey and
+     * two-step sign-in added since.
+     */
+    handover_spent_at: Timestamp | null;
   };
 
   account_household: {

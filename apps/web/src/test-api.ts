@@ -330,6 +330,8 @@ export interface FakeState {
   resetGoes?: OwnerResetResult['path'];
   /** GET /me's `reset_notice` (5.29): an owner made a link to hand over for me. */
   resetNotice?: ResetNotice | null;
+  /** GET /me's `handover_since` (5.29): when such a link was last used. */
+  handoverSince?: string | null;
   /** Who made the reset link the page at /reset shows (5.29); left out, `resetByOperator` says. */
   resetIssuedBy?: 'self' | 'operator' | 'owner';
   /** Every PATCH /members/{id} that arrived: whose, what, and the If-Match. */
@@ -793,6 +795,7 @@ export function installFakeApi(state: FakeState) {
         totp_enabled: state.twoStep !== false,
         totp_required: state.twoStep === false && storedRole() === 'owner',
         reset_notice: state.resetNotice ?? null,
+        handover_since: state.handoverSince ?? null,
       });
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;
@@ -1274,6 +1277,13 @@ export function installFakeApi(state: FakeState) {
       state.resetsStarted = [...(state.resetsStarted ?? []), { id, body: b }];
       const goes = state.resetGoes ?? card.reset_path ?? 'operator';
       const stopNow = b.stop_now === true;
+      if (stopNow && goes === 'operator') {
+        return refuse(
+          409,
+          'stop_now_unavailable',
+          `${name}'s password can't be stopped from here: no link to set a new one can reach them on this vault. Lock their sign-in to keep them out, and ask whoever runs the server for a reset.`,
+        );
+      }
       if (stopNow) card.devices = [];
       const until = new Date(Date.now() + 36e5).toISOString();
       const answer: OwnerResetResult = { member_id: id, path: goes, stop_now: stopNow };

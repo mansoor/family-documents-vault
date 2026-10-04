@@ -47,6 +47,13 @@ export interface Me {
    * absent from older vaults.
    */
   reset_notice?: ResetNotice | null;
+  /**
+   * When a link an owner was handed for this sign-in was last spent (5.29);
+   * null if never. Every password change takes away each passkey and
+   * two-step sign-in added since: a client says so before the change.
+   * Absent from older vaults.
+   */
+  handover_since?: string | null;
 }
 
 /** That an owner made a hand-over link for this sign-in (5.29): who, and when. */
@@ -55,6 +62,16 @@ export interface ResetNotice {
   by: string | null;
   /** When they made it. */
   at: string;
+  /**
+   * When such a link was last spent, and what was added to this sign-in
+   * since — by whoever spent it, perhaps: changing the password takes each
+   * away. Null and empty while no link has been spent. Absent from vaults
+   * before the 5.29 review.
+   */
+  spent_at?: string | null;
+  passkeys_since?: Array<{ label: string | null; added_at: string }>;
+  /** When two-step sign-in was turned on since; null if it was not. */
+  two_step_since?: string | null;
 }
 
 export interface ExportRow {
@@ -285,10 +302,15 @@ export const RESET_LINK_MINUTES = 60;
 
 /**
  * What whoever runs the server types to give somebody a reset link
- * (`operator`, 5.29): the README's command, for their sign-in address.
+ * (`operator`, 5.29): the README's command, for their sign-in address —
+ * quoted for a POSIX shell, each `'` written `'\''`, so an address with a
+ * quote in it is passed whole and as it is, never as another one.
  */
 export const resetCommand = (email: string) =>
-  `docker compose exec api node apps/api/dist/cli.mjs reset-password ${email}`;
+  `docker compose exec api node apps/api/dist/cli.mjs reset-password ${shellQuoted(email)}`;
+
+/** One argument for a POSIX shell, taken literally: single quotes, each `'` as `'\''`. */
+export const shellQuoted = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
 
 /**
  * Why somebody cannot sign in just now (5.28): `locked` by an owner (A51),

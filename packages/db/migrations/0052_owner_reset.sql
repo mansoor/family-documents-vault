@@ -28,6 +28,13 @@
 --   handover           made to be handed over (2.), not mailed (1.);
 --   told_at            when the person saw that an owner made one for them:
 --                      they are told at their next sign-in until they have.
+--
+-- And account gains handover_spent_at: when a link an owner was handed for
+-- this sign-in was last spent. Whoever spent it chose the password, and could
+-- add a passkey or two-step sign-in of their own with it; so every password
+-- change after it, and every reset, takes away each passkey and two-step
+-- sign-in added since that moment (passwords.ts), and the person is told
+-- which there are.
 
 alter table password_reset drop constraint password_reset_issued_by_check;
 alter table password_reset
@@ -43,6 +50,8 @@ alter table password_reset
   -- Only an owner's is handed over, and only one handed over is told of.
   add constraint password_reset_handover_owner check (not handover or issued_by = 'owner'),
   add constraint password_reset_told_handover check (told_at is null or handover);
+
+alter table account add column handover_spent_at timestamptz;
 
 -- Reset links belong to no household (0018), and every caller but a link
 -- read them (0042, 0044). Somebody signed in now reaches their own, and an
@@ -86,11 +95,15 @@ create function app_session() returns uuid
 --   an Only me document of theirs, in the Trash too, and with it its sealed
 --     notes and details (0033 keeps those on Only me documents alone);
 --   one removed for good, whose title their activity log still names (0045);
---   an Only me identity field (0050);
---   a request to send documents that they alone review, still open, and any
---     file sent through one still waiting, under their key (0044, 0047);
+--   an Only me identity part, whatever it holds — a label is theirs alone
+--     too — under their key (0050);
+--   a request to send documents that they alone review, in any state — its
+--     title, message and who it went to stay theirs alone (A43) until the
+--     worker removes it — and any file sent through one that is still kept,
+--     under their key (0044, 0047);
 --   an export that has not run out, under their key (0008);
---   an Only me collection (0036, 0039).
+--   an Only me collection, deleted too: its name stays in their activity
+--     log alone (0036, 0039).
 --
 -- Asked only by an owner signed in, of somebody in their household, or by
 -- the reset being spent for that very account (a signed-out page, which says
@@ -124,20 +137,19 @@ begin
                     and t.visibility = 'private')
       or exists (select 1 from member_identity i
                   where i.household_id = hh and i.member_id = m
-                    and i.part = 'only_me' and cardinality(i.filled) > 0)
+                    and i.part = 'only_me')
       or exists (select 1 from upload_request r
                   where r.household_id = hh and r.requester_member_id = m
-                    and r.review_by = 'me' and r.revoked_at is null and r.closed_at is null
-                    and r.expires_at > now())
+                    and r.review_by = 'me')
       or exists (select 1 from incoming_file f
                   where f.household_id = hh and f.requester_member_id = m
-                    and f.scope = 'member' and f.state in ('uploading', 'received'))
+                    and f.scope = 'member')
       or exists (select 1 from export e
                   where e.requested_by = p_account and e.state <> 'failed'
                     and (e.expires_at is null or e.expires_at > now()))
       or exists (select 1 from doc_collection c
                   where c.household_id = hh and c.owner_member_id = m
-                    and c.audience = 'only_me' and c.deleted_at is null);
+                    and c.audience = 'only_me');
 end $$;
 grant execute on function member_holds_private(uuid) to fdv_app;
 
@@ -176,7 +188,9 @@ grant execute on function password_reset_expire_exports(uuid) to fdv_app;
 -- what was made before it, and what is made after it waits for the reset.
 -- What waited, made by a session the reset ended meanwhile (it ends them
 -- all), is refused: a request that began before a reset gains nothing for
--- whoever holds its link. A lock (5.28) ends sessions the same way.
+-- whoever holds its link. A lock (5.28) ends sessions the same way. The
+-- refusal is SQLSTATE FDV01, the vault's own, with why the session ended as
+-- its detail: the API answers it, and nothing else, as the session's end.
 --
 -- One function, by table; each trigger fires on what can make a row
 -- private. With the owner's rights: a sender's upload reads no membership.
@@ -186,6 +200,7 @@ create function member_private_gained() returns trigger
 declare
   who uuid;
   acct uuid;
+  ended text;
 begin
   if tg_table_name = 'document' then
     if new.visibility = 'private' and new.owner_member_id is not null
@@ -200,9 +215,9 @@ begin
       who := new.owner_member_id;
     end if;
   elsif tg_table_name = 'member_identity' then
-    if new.part = 'only_me' and cardinality(new.filled) > 0
+    if new.part = 'only_me'
        and (tg_op = 'INSERT' or old.part is distinct from 'only_me'
-            or cardinality(old.filled) = 0 or old.member_id is distinct from new.member_id) then
+            or old.member_id is distinct from new.member_id) then
       who := new.member_id;
     end if;
   elsif tg_table_name = 'upload_request' then
@@ -212,7 +227,7 @@ begin
       who := new.requester_member_id;
     end if;
   elsif tg_table_name = 'incoming_file' then
-    if new.scope = 'member' and new.state in ('uploading', 'received')
+    if new.scope = 'member'
        and (tg_op = 'INSERT' or old.scope is distinct from 'member'
             or old.requester_member_id is distinct from new.requester_member_id) then
       who := new.requester_member_id;
@@ -236,11 +251,14 @@ begin
   end if;
   -- The session asking, ended since it was let in (a reset ends them all;
   -- a lock, sign-out everywhere): it gains nothing private now.
-  if app_actor() = 'account'
-     and exists (select 1 from session s
-                  where s.id = app_session() and s.revoked_at is not null) then
-    raise exception 'this sign-in has ended'
-      using errcode = 'invalid_authorization_specification';
+  if app_actor() = 'account' then
+    select coalesce(s.revoked_reason, '') into ended
+      from session s
+     where s.id = app_session() and s.revoked_at is not null;
+    if found then
+      raise exception 'this sign-in has ended'
+        using errcode = 'FDV01', detail = ended;
+    end if;
   end if;
   return new;
 end $$;
@@ -252,7 +270,7 @@ create trigger doc_collection_private_gained
   before insert or update of audience, owner_member_id on doc_collection
   for each row execute function member_private_gained();
 create trigger member_identity_private_gained
-  before insert or update of part, filled, member_id on member_identity
+  before insert or update of part, member_id on member_identity
   for each row execute function member_private_gained();
 create trigger upload_request_private_gained
   before insert or update of review_by, requester_member_id on upload_request

@@ -15,6 +15,7 @@ import FormData from 'form-data';
 import type { LightMyRequestResponse } from 'fastify';
 import { sql } from 'kysely';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { SoftwareAuthenticator } from '../auth/passkey-test-authenticator.js';
 import { PasswordService } from '../auth/passwords.js';
 import type { Tokens } from '../auth/service.js';
 import { codeFor } from '../auth/totp.js';
@@ -181,17 +182,17 @@ function family(operatorMail: boolean) {
     expect(r.statusCode, r.body).toBe(201);
     return json<DocumentView>(r).id;
   };
-  const askFor = async (who: Tokens) => {
+  const askFor = async (who: Tokens, more: Record<string, unknown> = {}) => {
     const r = await t.h.app.inject({
       method: 'POST',
       url: '/api/v1/upload-requests',
       headers: t.h.as(who),
-      payload: { title: 'Your payslips', expires_at: inAWeek(), review_by: 'me' },
+      payload: { title: 'Your payslips', expires_at: inAWeek(), review_by: 'me', ...more },
     });
     expect(r.statusCode, r.body).toBe(201);
     return json<CreatedUploadRequest>(r);
   };
-  /** A file sent in through their request, as its sender sends it. */
+  /** A file sent in through their request, as its sender sends it: the sender's cookie and the file. */
   const sendFile = async (made: CreatedUploadRequest) => {
     const open = await t.h.app.inject({
       method: 'POST',
@@ -203,15 +204,51 @@ function family(operatorMail: boolean) {
     const set = open.cookies.find((c) => c.name.startsWith('fdv_drop_s_'));
     const form = new FormData();
     form.append('file', PDF, { filename: 'payslip.pdf', contentType: 'application/pdf' });
+    const cookies = { [set?.name as string]: set?.value as string };
     const sent = await t.h.app.inject({
       method: 'POST',
       url: '/api/v1/drop/files',
       headers: form.getHeaders(),
-      cookies: { [set?.name as string]: set?.value as string },
+      cookies,
       payload: form.getBuffer(),
       ...peer(),
     });
     expect(sent.statusCode, sent.body).toBe(201);
+    return { cookies, file: json<{ id: string }>(sent).id };
+  };
+  /** A passkey of their own, added from their session (a code or the password just given). */
+  const addPasskey = async (who: Tokens, label: string) => {
+    await fresh(who);
+    const device = new SoftwareAuthenticator();
+    const options = await t.h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkeys/challenge',
+      headers: t.h.as(who),
+    });
+    expect(options.statusCode, options.body).toBe(200);
+    const made = await t.h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkeys',
+      headers: t.h.as(who),
+      payload: { response: device.register(options.json()), label },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    return device;
+  };
+  /** Signing in with a passkey, as a browser does: a challenge for the address, then the answer. */
+  const passkeySignIn = async (device: SoftwareAuthenticator, email: string) => {
+    const challenge = await t.h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkey/challenge',
+      payload: { email },
+      ...peer(),
+    });
+    return t.h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/passkey/verify',
+      payload: { response: device.authenticate(challenge.json()) },
+      ...peer(),
+    });
   };
 
   /**
@@ -314,6 +351,9 @@ function family(operatorMail: boolean) {
   return {
     t,
     peer,
+    addPasskey,
+    passkeySignIn,
+    sendFile,
     accountOf,
     fresh,
     stale,
@@ -341,6 +381,7 @@ describe.skipIf(!testAdminUrl())(
     const f = family(false);
     const { t, accountOf, fresh, stale, person, enrolTotp, reset, started, card } = f;
     const { signIn, spend, lookup, me, activity, admin, jobsNamed, document, gains } = f;
+    const { askFor, sendFile, addPasskey, passkeySignIn } = f;
     let coOwner: Person;
     let coOwnerAccount = '';
     let teen: Person;
@@ -443,7 +484,14 @@ describe.skipIf(!testAdminUrl())(
       expect((await spend(made.link as string)).statusCode).toBe(200);
       const back = json<Tokens>(await signIn(omar.email, NEW_PASSWORD));
       const told = (await me(back)).reset_notice;
-      expect(told).toEqual({ by: 'Owner', at: expect.any(String) as unknown });
+      expect(told).toEqual({
+        by: 'Owner',
+        at: expect.any(String) as unknown,
+        // Spent, with nothing added to the sign-in since.
+        spent_at: expect.any(String) as unknown,
+        passkeys_since: [],
+        two_step_since: null,
+      });
       // And again, until they say so.
       const again = json<Tokens>(await signIn(omar.email, NEW_PASSWORD));
       expect((await me(again)).reset_notice).toEqual(told);
@@ -484,6 +532,102 @@ describe.skipIf(!testAdminUrl())(
             );
           },
         ],
+        // The 5.29 review (R529-01): a request they alone review stays theirs
+        // alone whatever became of it — its title, its message, who it went to.
+        [
+          'a request they alone review, taken back',
+          async (who: Person) => {
+            const made = await askFor(who);
+            const taken = await t.h.app.inject({
+              method: 'DELETE',
+              url: `/api/v1/upload-requests/${made.request.id}`,
+              headers: t.h.as(who),
+            });
+            expect(taken.statusCode, taken.body).toBe(204);
+          },
+        ],
+        [
+          'a request they alone review, closed once a file came, the file filed',
+          async (who: Person) => {
+            const made = await askFor(who, { close_after_submit: true });
+            const { cookies, file } = await sendFile(made);
+            const finished = await t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/drop/finish',
+              cookies,
+              payload: {},
+              ...f.peer(),
+            });
+            expect(finished.statusCode, finished.body).toBe(200);
+            // What the worker does once Finish is pressed: no scan (A42).
+            await admin(`update incoming_file set scan_state = 'unscanned' where id = $1`, [file]);
+            const filed = await t.h.app.inject({
+              method: 'POST',
+              url: `/api/v1/incoming/${file}/accept`,
+              headers: t.h.as(who),
+              payload: { title: 'Payslip', visibility: 'household' },
+            });
+            expect(filed.statusCode, filed.body).toBeLessThan(300);
+            const closed = await admin<{ closed: boolean; state: string }>(
+              `select r.closed_at is not null as closed, f.state from upload_request r
+                 join incoming_file f on f.request_id = r.id where f.id = $1`,
+              [file],
+            );
+            expect(closed).toEqual([{ closed: true, state: 'accepted' }]);
+          },
+        ],
+        [
+          'a request they alone review, run out but not yet removed',
+          async (who: Person) => {
+            const made = await askFor(who);
+            await admin(
+              `update upload_request set created_at = now() - interval '40 days',
+                      expires_at = now() - interval '1 day' where id = $1`,
+              [made.request.id],
+            );
+          },
+        ],
+        // (R529-02) an Only me identity part holding a label alone.
+        [
+          'an Only me identity entry with a label and nothing else',
+          async (who: Person) => {
+            const r = await t.h.app.inject({
+              method: 'PUT',
+              url: `/api/v1/members/${who.member_id}/identity`,
+              headers: t.h.as(who),
+              payload: {
+                part: 'only_me',
+                version: 0,
+                fields: { custom: [{ id: 'c1', label: 'Asylum case: ref pending' }] },
+              },
+            });
+            expect(r.statusCode, r.body).toBe(200);
+            const row = await admin<{ filled: string[] }>(
+              `select filled from member_identity where member_id = $1 and part = 'only_me'`,
+              [who.member_id],
+            );
+            expect(row).toEqual([{ filled: [] }]);
+          },
+        ],
+        // (R529-03) a deleted Only me collection: its name stays in their log alone.
+        [
+          'an Only me collection, deleted',
+          async (who: Person) => {
+            const made = await t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/collections',
+              headers: t.h.as(who),
+              payload: { name: 'Leaving him', audience: 'only_me' },
+            });
+            expect(made.statusCode, made.body).toBe(201);
+            const gone = await t.h.app.inject({
+              method: 'DELETE',
+              url: `/api/v1/collections/${json<{ id: string }>(made).id}`,
+              headers: t.h.as(who),
+            });
+            expect(gone.statusCode, gone.body).toBeLessThan(300);
+          },
+        ],
       ] as Array<[string, (who: Person) => Promise<void>]>) {
         it(what, async () => {
           const p = await person('adult');
@@ -500,7 +644,7 @@ describe.skipIf(!testAdminUrl())(
             member_id: p.member_id,
             path: 'operator',
             stop_now: false,
-            command: `docker compose exec api node apps/api/dist/cli.mjs reset-password ${p.email}`,
+            command: `docker compose exec api node apps/api/dist/cli.mjs reset-password '${p.email}'`,
           });
           // No link was made, for anybody.
           expect(
@@ -568,7 +712,7 @@ describe.skipIf(!testAdminUrl())(
       const since = t.h.jobs.length;
       const made = await started(lena);
       expect(made.path).toBe('operator');
-      expect(made.command).toContain(`reset-password ${lena.email}`);
+      expect(made.command).toContain(`reset-password '${lena.email}'`);
       expect(made.link).toBeUndefined();
       expect(
         await admin(`select id from password_reset where account_id = $1`, [lenaAccount]),
@@ -621,17 +765,160 @@ describe.skipIf(!testAdminUrl())(
       // He chooses a new one through the link (A48): nobody was given one.
       expect((await spend(made.link as string)).statusCode).toBe(200);
       expect((await signIn(rami.email, NEW_PASSWORD)).statusCode).toBe(200);
-      // With no owner's way, it stops all the same, and the operator's link is how back.
+    });
+
+    it('stop_now is refused where no link can reach the person, and nothing changes (the 5.29 review)', async () => {
       const lena = await person('adult', 'Leila');
       await document(lena, { title: 'Private', visibility: 'private' });
-      expect(await started(lena, { stop_now: true })).toMatchObject({
-        path: 'operator',
-        stop_now: true,
+      await fresh(t.owner);
+      const since = t.h.jobs.length;
+      const refused = await reset(t.owner, lena, { stop_now: true });
+      expect(refused.statusCode).toBe(409);
+      expect(error(refused)).toMatchObject({
+        code: 'stop_now_unavailable',
+        message:
+          "Leila's password can't be stopped from here: no link to set a new one can reach them on this vault. Lock their sign-in to keep them out, and ask whoever runs the server for a reset.",
       });
-      expect((await signIn(lena.email)).statusCode).toBe(401);
+      // Her password and her session as they were; nothing logged, nobody told.
+      expect((await signIn(lena.email)).statusCode).toBe(200);
       expect((await t.h.app.inject({ url: '/api/v1/me', headers: t.h.as(lena) })).statusCode).toBe(
-        401,
+        200,
       );
+      expect(t.h.jobs.slice(since).filter((j) => j.name === 'alert.send')).toEqual([]);
+      expect(
+        await admin(
+          `select id from audit_event where action = 'member.reset_started' and object_id = $1`,
+          [lena.member_id],
+        ),
+      ).toEqual([]);
+      // Without stop_now, the operator's way is as before.
+      expect((await started(lena)).path).toBe('operator');
+    });
+
+    describe('what whoever spends a hand-over link adds goes at the next change of the password (the 5.29 review, F529-01)', () => {
+      const OWNERS = 'the password the owner chose';
+      const THEIRS = 'a password of her very own';
+      /** The owner spends the link, and signs in as the person with the password they chose. */
+      const spentByOwner = async (who: Person) => {
+        const made = await started(who);
+        expect((await spend(made.link as string, OWNERS)).statusCode).toBe(200);
+        return json<Tokens>(await signIn(who.email, OWNERS));
+      };
+      const change = (who: Tokens, current: string, next: string) =>
+        t.h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/password/change',
+          headers: t.h.as(who),
+          payload: { current_password: current, new_password: next },
+        });
+
+      it('the reviewer’s chain: the owner adds a passkey; the person changes the password; the passkey signs nobody in', async () => {
+        const ada = await person('adult', 'Ada');
+        const asAda = await spentByOwner(ada);
+        const planted = await addPasskey(asAda, 'Owner’s laptop');
+        // The planted passkey works, until…
+        expect((await passkeySignIn(planted, ada.email)).statusCode).toBe(200);
+        // …the person, handed the owner's password, changes it, as the notice says.
+        const hers = json<Tokens>(await signIn(ada.email, OWNERS));
+        expect((await change(hers, OWNERS, THEIRS)).statusCode).toBe(204);
+        const refused = await passkeySignIn(planted, ada.email);
+        expect(refused.statusCode).toBe(401);
+        expect(error(refused).code).toBe('passkey_rejected');
+        expect((await signIn(ada.email, OWNERS)).statusCode).toBe(401);
+        // Whatever she keeps from now is hers: the owner holds no way in.
+        await document(hers, { title: 'Counselling notes', visibility: 'private' });
+        const line = await admin<{ detail: Record<string, unknown> }>(
+          `select detail from audit_event where action = 'auth.password_changed'
+            and actor_account_id = $1 order by id desc limit 1`,
+          [await accountOf(ada)],
+        );
+        expect(line[0]?.detail).toMatchObject({ passkeys_removed: 1, two_step_removed: false });
+      });
+
+      it('the owner changing the password first gains nothing: every change takes away what was added since', async () => {
+        const bea = await person('adult', 'Bea');
+        const asBea = await spentByOwner(bea);
+        // The owner changes it first: nothing added yet, so nothing goes.
+        expect((await change(asBea, OWNERS, 'the owner changed it again')).statusCode).toBe(204);
+        const planted = await addPasskey(asBea, 'Owner’s phone');
+        expect((await passkeySignIn(planted, bea.email)).statusCode).toBe(200);
+        // Then hands Bea that password; she changes it to her own.
+        const hers = json<Tokens>(await signIn(bea.email, 'the owner changed it again'));
+        expect((await change(hers, 'the owner changed it again', THEIRS)).statusCode).toBe(204);
+        expect((await passkeySignIn(planted, bea.email)).statusCode).toBe(401);
+        // Her own passkey, added after, goes at her next change too (the cost).
+        const own = await addPasskey(hers, 'Bea’s phone');
+        expect((await change(hers, THEIRS, 'and changed once more')).statusCode).toBe(204);
+        expect((await passkeySignIn(own, bea.email)).statusCode).toBe(401);
+        // What she was told before that change.
+        expect((await me(hers)).handover_since).toEqual(expect.any(String));
+      });
+
+      it('two-step sign-in turned on since goes at a change, and at any reset', async () => {
+        const cy = await person('adult', 'Cyra');
+        const asCy = await spentByOwner(cy);
+        await enrolTotp(asCy);
+        expect(json<Record<string, unknown>>(await signIn(cy.email, OWNERS))).toMatchObject({
+          mfa_required: true,
+        });
+        // A change of the password by whoever holds the session takes it away.
+        expect((await change(asCy, OWNERS, 'changed by the owner')).statusCode).toBe(204);
+        expect(
+          json<Record<string, unknown>>(await signIn(cy.email, 'changed by the owner')),
+        ).not.toHaveProperty('mfa_required');
+        // On again; then a reset from the command line, which she spends.
+        await enrolTotp(asCy);
+        const cli = new PasswordService(
+          t.h.db,
+          new ScopeKeys(new EnvKeyProvider(TEST_MASTER)),
+          null,
+          'http://localhost:8080',
+        );
+        const printed = await cli.issue(await accountOf(cy), 'operator');
+        expect((await spend(cli.linkFor(printed.token), THEIRS)).statusCode).toBe(200);
+        const back = await signIn(cy.email, THEIRS);
+        expect(back.statusCode).toBe(200);
+        expect(json<Record<string, unknown>>(back)).not.toHaveProperty('mfa_required');
+      });
+
+      it('the notice lists the passkey and two-step sign-in added since, and says when it was spent', async () => {
+        const dee = await person('adult', 'Deena');
+        const asDee = await spentByOwner(dee);
+        await addPasskey(asDee, 'Owner’s laptop');
+        await enrolTotp(asDee);
+        const notice = (await me(asDee)).reset_notice;
+        expect(notice).toEqual({
+          by: 'Owner',
+          at: expect.any(String) as unknown,
+          spent_at: expect.any(String) as unknown,
+          passkeys_since: [{ label: 'Owner’s laptop', added_at: expect.any(String) as unknown }],
+          two_step_since: expect.any(String) as unknown,
+        });
+        expect((await me(asDee)).handover_since).toBe(notice?.spent_at);
+        // Nobody else's notice says anything of it.
+        expect((await me(t.owner)).reset_notice).toBeNull();
+      });
+
+      it('the email after a hand-over link is spent says an owner was given it, and what to do (F529-04)', async () => {
+        const eve = await person('adult', 'Evie');
+        const evesAccount = await accountOf(eve);
+        const made = await started(eve);
+        const since = t.h.jobs.length;
+        expect((await spend(made.link as string, OWNERS)).statusCode).toBe(200);
+        const told = t.h.jobs
+          .slice(since)
+          .filter(
+            (j) =>
+              j.name === 'alert.send' && (j.data.account_ids as string[]).includes(evesAccount),
+          )
+          .map((j) => j.data);
+        expect(told).toHaveLength(1);
+        expect(told[0]?.subject).toBe('Your vault password was reset');
+        expect(told[0]?.body).toBe(
+          'Owner, an owner of your family vault, was given a one-time link for your sign-in, and it has been used to set a new password. Every device has been signed out and every passkey removed. If you did not choose that password yourself, set one of your own in Settings when you next sign in — that also removes any passkey or two-step sign-in added since — and talk to them.',
+        );
+        expect(told[0]?.body).not.toMatch(/read your email/);
+      });
     });
 
     it('a password-only owner is refused a reset, and step-up by password is refused', async () => {
@@ -1118,6 +1405,222 @@ describe.skipIf(!testAdminUrl())(
         expect(error(madeDoc2)).toMatchObject({ code: 'session_ended' });
         expect(await theirs(quinn)).toEqual([]);
         expect((await signIn(quinn.email, NEW_PASSWORD)).statusCode).toBe(200);
+      });
+
+      it('the person writing a label-only Only me identity part: the link is spent on nobody with one (R529-02)', async () => {
+        const rita = await person('adult', 'Rita');
+        const link = (await started(rita)).link as string;
+        const write = () =>
+          t.h.app.inject({
+            method: 'PUT',
+            url: `/api/v1/members/${rita.member_id}/identity`,
+            headers: t.h.as(rita),
+            payload: {
+              part: 'only_me',
+              version: 0,
+              fields: { custom: [{ id: 'c1', label: 'Second passport (hidden)' }] },
+            },
+          });
+        // Written first, and waited for: the link, spent second, finds it.
+        const [written, spent] = await race(rita.member_id, write, () => spend(link));
+        expect(written.statusCode, written.body).toBe(200);
+        expect(spent.statusCode).toBe(404);
+        expect((await signIn(rita.email)).statusCode).toBe(200);
+      });
+
+      it('a sign-in proven with the old password before a reset is spent opens nothing after it (R529-04)', async () => {
+        const sid = await person('adult', 'Sid');
+        const link = (await started(sid)).link as string;
+        const [spent, signedIn] = await race(
+          sid.member_id,
+          () => spend(link),
+          () => signIn(sid.email),
+        );
+        expect(spent.statusCode, spent.body).toBe(200);
+        expect(signedIn.statusCode).toBe(401);
+        expect(error(signedIn).code).toBe('invalid_credentials');
+        const live = await admin<{ n: number }>(
+          `select count(*)::int as n from session where account_id = $1 and revoked_at is null`,
+          [await accountOf(sid)],
+        );
+        expect(live[0]?.n).toBe(0);
+      });
+
+      it('nor one proven before their password is stopped (R529-04, A48)', async () => {
+        const tia = await person('adult', 'Tia');
+        await fresh(t.owner);
+        const [stopped, signedIn] = await race(
+          tia.member_id,
+          () => reset(t.owner, tia, { stop_now: true }),
+          () => signIn(tia.email),
+        );
+        expect(stopped.statusCode, stopped.body).toBe(200);
+        expect(signedIn.statusCode).toBe(401);
+      });
+
+      it('nor a passkey proven before a reset removed it (R529-04)', async () => {
+        const uma = await person('adult', 'Uma');
+        const device = await addPasskey(uma, 'Uma’s phone');
+        const link = (await started(uma)).link as string;
+        const challenge = await t.h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/passkey/challenge',
+          payload: { email: uma.email },
+          ...f.peer(),
+        });
+        const answer = device.authenticate(challenge.json());
+        const [spent, signedIn] = await race(
+          uma.member_id,
+          () => spend(link),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/passkey/verify',
+              payload: { response: answer },
+              ...f.peer(),
+            }),
+        );
+        expect(spent.statusCode, spent.body).toBe(200);
+        expect(signedIn.statusCode).toBe(401);
+        expect(error(signedIn).code).toBe('passkey_rejected');
+      });
+
+      it('a password change from a session stop_now ended while it waited is refused, and the password stays stopped (F529-03)', async () => {
+        const vic = await person('adult', 'Victor');
+        await fresh(t.owner);
+        const [stopped, changed] = await race(
+          vic.member_id,
+          () => reset(t.owner, vic, { stop_now: true }),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/password/change',
+              headers: t.h.as(vic),
+              payload: { current_password: PASSWORD, new_password: 'the thief’s own password' },
+            }),
+        );
+        expect(stopped.statusCode, stopped.body).toBe(200);
+        expect(changed.statusCode).toBe(401);
+        expect(error(changed)).toMatchObject({ code: 'session_ended', reason: 'revoked' });
+        expect((await signIn(vic.email, 'the thief’s own password')).statusCode).toBe(401);
+        const hash = await admin<{ none: boolean }>(
+          `select password_hash is null as none from account where id = $1`,
+          [await accountOf(vic)],
+        );
+        expect(hash).toEqual([{ none: true }]);
+      });
+
+      it('a passkey added from a session a reset ended while it waited is refused, and not kept (F529-03)', async () => {
+        const wes = await person('adult', 'Wes');
+        const link = (await started(wes)).link as string;
+        await fresh(wes);
+        const device = new SoftwareAuthenticator();
+        const options = await t.h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/passkeys/challenge',
+          headers: t.h.as(wes),
+        });
+        const response = device.register(options.json());
+        const [spent, added] = await race(
+          wes.member_id,
+          () => spend(link),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/passkeys',
+              headers: t.h.as(wes),
+              payload: { response, label: 'Too late' },
+            }),
+        );
+        expect(spent.statusCode, spent.body).toBe(200);
+        expect(added.statusCode).toBe(401);
+        expect(error(added).code).toBe('session_ended');
+        expect(
+          await admin(`select id from credential where account_id = $1 and kind = 'passkey'`, [
+            await accountOf(wes),
+          ]),
+        ).toEqual([]);
+      });
+
+      it('two-step sign-in turned on from a session a reset ended while it waited is refused (F529-03)', async () => {
+        const xan = await person('adult', 'Xan');
+        const link = (await started(xan)).link as string;
+        await fresh(xan);
+        const enrol = await t.h.app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/totp/enrol',
+          headers: t.h.as(xan),
+        });
+        const secret = json<{ secret: string }>(enrol).secret;
+        const [spent, confirmed] = await race(
+          xan.member_id,
+          () => spend(link),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/totp/confirm',
+              headers: t.h.as(xan),
+              payload: { code: codeFor(secret) },
+            }),
+        );
+        expect(spent.statusCode, spent.body).toBe(200);
+        expect(confirmed.statusCode).toBe(401);
+        expect(error(confirmed).code).toBe('session_ended');
+        const on = await admin<{ on: boolean }>(
+          `select totp_confirmed_at is not null as on from account where id = $1`,
+          [await accountOf(xan)],
+        );
+        expect(on).toEqual([{ on: false }]);
+      });
+
+      it('two-step sign-in started from a session a reset ended while it waited is refused, and nothing is kept (F529-03)', async () => {
+        const zed = await person('adult', 'Zed');
+        const link = (await started(zed)).link as string;
+        await fresh(zed);
+        const [spent, started2] = await race(
+          zed.member_id,
+          () => spend(link),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/auth/totp/enrol',
+              headers: t.h.as(zed),
+            }),
+        );
+        expect(spent.statusCode, spent.body).toBe(200);
+        expect(started2.statusCode).toBe(401);
+        expect(error(started2).code).toBe('session_ended');
+        const kept = await admin<{ kept: boolean }>(
+          `select totp_secret is not null as kept from account where id = $1`,
+          [await accountOf(zed)],
+        );
+        expect(kept).toEqual([{ kept: false }]);
+      });
+
+      it('something private made by a session a lock ended while it waited says the session was suspended (F529-07)', async () => {
+        const yan = await person('adult', 'Yan');
+        await fresh(t.owner);
+        const [locked, made] = await race(
+          yan.member_id,
+          () => lock(yan),
+          () =>
+            t.h.app.inject({
+              method: 'POST',
+              url: '/api/v1/documents',
+              headers: t.h.as(yan),
+              payload: {
+                title: 'Made as the lock came',
+                type_key: 'utility_bill',
+                owner_member_id: yan.member_id,
+                visibility: 'private',
+              },
+            }),
+        );
+        expect(locked.statusCode, locked.body).toBe(200);
+        expect(made.statusCode).toBe(401);
+        expect(error(made)).toMatchObject({ code: 'session_ended', reason: 'suspended' });
+        await fresh(t.owner);
+        expect((await unlock(yan)).statusCode).toBe(204);
       });
     });
   },

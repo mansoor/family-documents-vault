@@ -3,7 +3,7 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import { SignJWT, jwtVerify } from 'jose';
 import * as OTPAuth from 'otpauth';
 import { ApiError } from '../errors.js';
-import type { Principal, RequestMeta } from './service.js';
+import { stillSignedIn, type Principal, type RequestMeta } from './service.js';
 
 /**
  * Two-step sign-in with a time-based code (SEC-03). Mandatory for owners:
@@ -48,22 +48,25 @@ export class TotpService {
     }
     const secret = new OTPAuth.Secret({ size: 20 });
     const totp = new OTPAuth.TOTP({ issuer: ISSUER, label: email, secret, digits: 6, period: 30 });
-    await this.db
-      .updateTable('account')
-      .set({
-        totp_secret: seal(this.secretKey, secret.base32, p.accountId),
-        totp_confirmed_at: null,
-      })
-      .where('id', '=', p.accountId)
-      .execute();
-    await withPrincipal(this.db, p, (trx) =>
-      appendAudit(trx, {
+    await withPrincipal(this.db, p, async (trx) => {
+      // From a session still live (5.29): a reset that ended it meanwhile
+      // is not followed by an authenticator it never saw.
+      await stillSignedIn(trx, p);
+      await trx
+        .updateTable('account')
+        .set({
+          totp_secret: seal(this.secretKey, secret.base32, p.accountId),
+          totp_confirmed_at: null,
+        })
+        .where('id', '=', p.accountId)
+        .execute();
+      await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'auth.totp_enrol_started',
         ip: meta.ip,
-      }),
-    );
+      });
+    });
     return { secret: secret.base32, otpauth_url: totp.toString() };
   }
 
@@ -83,19 +86,21 @@ export class TotpService {
         "That code didn't match. Codes change every 30 seconds — try the current one.",
       );
     }
-    await this.db
-      .updateTable('account')
-      .set({ totp_confirmed_at: new Date() })
-      .where('id', '=', p.accountId)
-      .execute();
-    await withPrincipal(this.db, p, (trx) =>
-      appendAudit(trx, {
+    await withPrincipal(this.db, p, async (trx) => {
+      // From a session still live (5.29), as starting it asks.
+      await stillSignedIn(trx, p);
+      await trx
+        .updateTable('account')
+        .set({ totp_confirmed_at: new Date() })
+        .where('id', '=', p.accountId)
+        .execute();
+      await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'auth.totp_enabled',
         ip: meta.ip,
-      }),
-    );
+      });
+    });
   }
 
   async disable(p: Principal, code: string, meta: RequestMeta): Promise<void> {
@@ -146,9 +151,12 @@ export class TotpService {
     return this.check(open(this.secretKey, row.totp_secret, accountId), code);
   }
 
-  /** A short-lived token that says "password was right, now the code" (API spec §2). */
-  async mfaToken(accountId: string): Promise<string> {
-    return new SignJWT({ purpose: 'mfa' })
+  /**
+   * A short-lived token that says "password was right, now the code" (API
+   * spec §2), carrying what the password proved (5.29), never the password.
+   */
+  async mfaToken(accountId: string, proof?: string): Promise<string> {
+    return new SignJWT({ purpose: 'mfa', ...(proof ? { pwp: proof } : {}) })
       .setProtectedHeader({ alg: 'HS256' })
       .setSubject(accountId)
       .setIssuedAt()
@@ -159,13 +167,21 @@ export class TotpService {
   }
 
   async accountFromMfaToken(token: string): Promise<string> {
+    return (await this.mfaClaims(token)).accountId;
+  }
+
+  /** Whose the token is, and what the password proved (5.29; null in an older token). */
+  async mfaClaims(token: string): Promise<{ accountId: string; proof: string | null }> {
     try {
       const { payload } = await jwtVerify(token, this.signingKey, {
         issuer: 'fdv',
         audience: 'fdv-mfa',
       });
       if (payload.purpose !== 'mfa' || typeof payload.sub !== 'string') throw new Error('bad');
-      return payload.sub;
+      return {
+        accountId: payload.sub,
+        proof: typeof payload.pwp === 'string' ? payload.pwp : null,
+      };
     } catch {
       throw new ApiError(401, 'mfa_expired', 'That sign-in attempt has expired. Start again.');
     }

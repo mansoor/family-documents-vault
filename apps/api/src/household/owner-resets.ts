@@ -41,7 +41,10 @@ import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '..
  * A teen follows the same rule (A49): a teen with anything private is 1 or
  * 3, never 2. `stop_now` makes their current password stop working at once
  * and ends every session of theirs (A48): nobody is given a password, ever;
- * they choose a new one through the link. Spending any reset link signs
+ * they choose a new one through the link — so only where there is one, on
+ * `mail` and `handover` (409 `stop_now_unavailable` on `operator`). A
+ * passkey of theirs still signs them in until the link is spent; a lock is
+ * what keeps somebody out. Spending any reset link signs
  * them out, removes their passkeys, ends their exports and leaves two-step
  * sign-in to be asked (passwords.ts).
  *
@@ -193,6 +196,16 @@ export class OwnerResetService {
         : (await holdsPrivate(trx, target.account_id))
           ? 'operator'
           : 'handover';
+      // No link can reach them on the operator's path, so their password is
+      // not stopped from here: that would be a lock with none of a lock's
+      // record, end or safeguards.
+      if (stopNow && path === 'operator') {
+        throw new ApiError(
+          409,
+          'stop_now_unavailable',
+          `${target.display_name}'s password can't be stopped from here: no link to set a new one can reach them on this vault. Lock their sign-in to keep them out, and ask whoever runs the server for a reset.`,
+        );
+      }
 
       // 3. Their reset links: a new one retires the old — nobody holds two.
       let token: string | null = null;

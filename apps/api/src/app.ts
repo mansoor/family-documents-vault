@@ -12,7 +12,7 @@ import { registerAuth } from './auth/routes.js';
 import type { PasskeyService } from './auth/passkeys.js';
 import type { StepUpService } from './auth/step-up.js';
 import type { PasswordService } from './auth/passwords.js';
-import type { AuthService } from './auth/service.js';
+import { endedMeanwhile, type AuthService } from './auth/service.js';
 import { buildCapabilities } from './capabilities.js';
 import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
@@ -215,13 +215,14 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       return;
     }
     // A write that waited for a reset or a lock to end the session asking
-    // (0052): that session is over, as its next request would be told.
-    if (pgCode === '28000') {
-      const ended = new ApiError(401, 'session_ended', 'Please sign in again.', {
-        detail: 'session ended while the request waited',
-        reason: 'revoked',
-      });
-      void reply.status(401).send(ended.toBody(req.id));
+    // (0052's own SQLSTATE, FDV01, with the session's end as its detail):
+    // that session is over, as its next request would be told. Nothing else
+    // is answered so: a database refusing a connection is the server's.
+    if (pgCode === 'FDV01') {
+      const why = (err as { detail?: unknown }).detail;
+      void reply
+        .status(401)
+        .send(endedMeanwhile(typeof why === 'string' && why ? why : null).toBody(req.id));
       return;
     }
     if (pgCode === '22021' || pgCode === '22P05') {
