@@ -277,11 +277,14 @@ export interface ShareView {
   /** Which routes open it (5.16): the old ones for `legacy`, the new ones for `v2`. */
   flow: 'legacy' | 'v2';
   /**
-   * Paused, and why: a restore (5.16), which an owner turns back on; or its
-   * maker's sign-in locked (5.28), which works again once they are unlocked.
+   * Paused, and why: a restore (5.16), which an owner turns back on; or, to
+   * an owner and to whoever made it (5.28), its maker's sign-in — locked,
+   * working again once they are unlocked, or waiting after a restore,
+   * working again once it is turned back on. Anybody else is told only that
+   * it is paused: a lock is the owners' and the person's to know (A51).
    */
   paused_at: string | null;
-  paused_reason: 'restored' | 'locked' | null;
+  paused_reason: 'restored' | 'locked' | 'sign_in_paused' | null;
   /** What it gives (5.18): the pages, drawn with whom it is for, or the file. */
   permission: SharePermission;
   max_opens: number | null;
@@ -1433,6 +1436,7 @@ export class ShareService {
           // 5.28: its maker's sign-in locked, or paused after a restore.
           'account_household.suspended_at as maker_suspended_at',
           'account_household.suspended_until as maker_suspended_until',
+          'account_household.suspend_reason as maker_suspend_reason',
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
@@ -1473,16 +1477,25 @@ export class ShareService {
       for (const r of seen) {
         // A link whose maker's sign-in is locked, or paused after a restore,
         // is paused by it (5.28): nothing is written onto the link, and it
-        // works again once they can sign in.
-        const makerLocked = suspensionInEffect({
+        // works again once they can sign in. Why, and since when, is said
+        // to an owner and to its maker; anybody else is told it is paused
+        // (the 5.28 review, E528-2).
+        const makerPaused = suspensionInEffect({
           suspended_at: r.maker_suspended_at,
           suspended_until: r.maker_suspended_until,
         });
         const stored = stateOf(r);
-        const state = stored === 'active' && makerLocked ? 'paused' : stored;
-        const pausedReason =
-          r.paused_reason ?? (state === 'paused' && makerLocked ? ('locked' as const) : null);
-        const pausedAt = r.paused_at ?? (pausedReason === 'locked' ? r.maker_suspended_at : null);
+        const state = stored === 'active' && makerPaused ? 'paused' : stored;
+        const byMaker = r.paused_reason === null && state === 'paused' && makerPaused;
+        const told = p.role === 'owner' || r.created_by === p.accountId;
+        const pausedReason = byMaker
+          ? told
+            ? r.maker_suspend_reason === 'locked'
+              ? ('locked' as const)
+              : ('sign_in_paused' as const)
+            : null
+          : r.paused_reason;
+        const pausedAt = byMaker ? (told ? r.maker_suspended_at : null) : r.paused_at;
         views.push({
           id: r.id,
           document_id: r.document_id,
@@ -1694,13 +1707,13 @@ export class ShareService {
    */
   async paused(p: Principal): Promise<ShareView[]> {
     const owner = can(p.role, 'restore.review');
-    // A link paused only by its maker's lock (5.28) is not the restore's:
-    // it works again with the unlock, and no owner turns it on.
+    // Only what a restore paused (5.16): one paused by its maker's sign-in
+    // (5.28) comes back with them, and no owner turns it on here.
     return (await this.views(p))
       .filter(
         (s) =>
           s.state === 'paused' &&
-          s.paused_reason !== 'locked' &&
+          s.paused_reason === 'restored' &&
           (owner || s.created_by === p.accountId),
       )
       .map(viewOnly);
@@ -1725,7 +1738,7 @@ export class ShareService {
     requireCapability(p, 'restore.review');
     const link = (await this.views(p)).find((s) => s.id === id);
     if (!link) throw notFound('That link');
-    if (link.state !== 'paused' || link.paused_reason === 'locked') {
+    if (link.state !== 'paused' || link.paused_reason !== 'restored') {
       throw notFound('That paused link');
     }
     return { document_id: link.document_id, collection_id: link.collection_id };
@@ -3064,7 +3077,7 @@ function summarise(
     secret_kind?: SecretKind | null;
     code_email?: string | null;
     this_device_only?: boolean;
-    paused_reason?: 'restored' | 'locked' | null;
+    paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | null;
   },
   state: ShareView['state'],
   timezone: string,
@@ -3100,11 +3113,18 @@ function summarise(
         ? `${who}. The PIN was wrong too many times, so it stopped working.`
         : `${who}. What it asks for was wrong too many times, so it stopped working.`;
     case 'paused':
-      // 5.28: its maker's sign-in is locked; it comes back with the unlock.
+      // 5.28: its maker's sign-in is locked, or waits after a restore; it
+      // comes back with them. Said so to an owner and the maker alone.
       if (r.paused_reason === 'locked') {
         return `${who}, ${opened}. Paused while the sign-in of whoever made it is locked; it works again once they are unlocked, and would stop working on ${end}.`;
       }
-      return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
+      if (r.paused_reason === 'sign_in_paused') {
+        return `${who}, ${opened}. Paused until the sign-in of whoever made it is turned back on after the restore; it would stop working on ${end}.`;
+      }
+      if (r.paused_reason === 'restored') {
+        return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
+      }
+      return `${who}, ${opened}. Paused for now; it would stop working on ${end}.`;
   }
 }
 

@@ -659,6 +659,7 @@ export class UploadRequestService {
           'member.display_name as requested_by_name',
           'asker.suspended_at as asker_suspended_at',
           'asker.suspended_until as asker_suspended_until',
+          'asker.suspend_reason as asker_suspend_reason',
         ])
         .orderBy('upload_request.created_at', 'desc')
         .execute();
@@ -679,14 +680,24 @@ export class UploadRequestService {
         .execute();
       return rows.map((r) => ({
         ...this.view(r, p),
-        // Paused while its requester's sign-in is locked (5.28): nothing is
-        // written onto it, and it opens again once they are unlocked.
+        // Paused while its requester's sign-in is locked, or waits after a
+        // restore (5.28): nothing is written onto it, and it opens again
+        // once they can sign in. Why is said to an owner and the requester;
+        // anybody else is told it is paused (the 5.28 review, E528-2).
         ...(stateOf(r) === 'active' &&
         suspensionInEffect({
           suspended_at: r.asker_suspended_at,
           suspended_until: r.asker_suspended_until,
         })
-          ? { state: 'paused' as const, paused_reason: 'locked' as const }
+          ? {
+              state: 'paused' as const,
+              paused_reason:
+                p.role === 'owner' || r.created_by === p.accountId
+                  ? r.asker_suspend_reason === 'locked'
+                    ? ('locked' as const)
+                    : ('sign_in_paused' as const)
+                  : null,
+            }
           : {}),
         requested_by_name: r.requested_by_name,
         items: items
@@ -767,10 +778,10 @@ export class UploadRequestService {
   async paused(p: Principal): Promise<UploadRequestView[]> {
     if (!can(p.role, 'upload_request.create')) return [];
     const owner = can(p.role, 'restore.review');
-    // One paused only by its requester's lock (5.28) is not the restore's:
-    // it opens again with the unlock, and no owner turns it on.
+    // Only what a restore paused: one paused by its requester's sign-in
+    // (5.28) opens again with them, and no owner turns it on here.
     return (await this.list(p)).filter(
-      (r) => r.state === 'paused' && r.paused_reason !== 'locked' && (owner || r.mine),
+      (r) => r.state === 'paused' && r.paused_reason === 'restored' && (owner || r.mine),
     );
   }
 

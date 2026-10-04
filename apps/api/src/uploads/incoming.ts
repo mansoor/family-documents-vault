@@ -7,7 +7,7 @@ import {
   INCOMING_KEEP_DAYS,
   incomingFileName,
   PREVIEW_MAX_PAGES,
-  suspensionInEffect,
+  lockInEffect,
   type IncomingAccepted,
   type IncomingFileView,
   type IncomingPreviewState,
@@ -151,14 +151,15 @@ export class IncomingService {
   private async stillReviews(trx: Db, p: Principal): Promise<void> {
     const me = await trx
       .selectFrom('account_household')
-      .select(['role', 'suspended_at', 'suspended_until'])
+      .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
       .where('account_id', '=', p.accountId)
       .where('household_id', '=', p.householdId)
       .forShare()
       .executeTakeFirst();
     if (!me || !can(me.role, 'upload_request.create')) throw notHere();
-    // Locked, or paused after a restore (5.28): reviews nothing.
-    if (suspensionInEffect(me)) throw notHere();
+    // Locked by an owner (5.28): reviews nothing. (A pause after a restore
+    // takes nothing away; a paused sign-in cannot ask anyway.)
+    if (lockInEffect(me)) throw notHere();
     // The database answers this transaction as the role it was asked with.
     if (me.role !== p.role) throw busy();
   }

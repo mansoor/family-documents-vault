@@ -283,6 +283,23 @@ export function suspensionInEffect(
   return s.suspended_until === null || new Date(s.suspended_until).getTime() > now;
 }
 
+/**
+ * Whether an owner's lock is in effect now (5.28): what takes away somebody's
+ * right to review what was sent for them alone, and what is the owners' and
+ * the person's to know. A pause after a restore is not one: it waits for an
+ * owner (A55), and takes nothing away.
+ */
+export function lockInEffect(
+  s: {
+    suspend_reason: string | null;
+    suspended_at: Date | string | null;
+    suspended_until: Date | string | null;
+  },
+  now: number = Date.now(),
+): boolean {
+  return s.suspend_reason === 'locked' && suspensionInEffect(s, now);
+}
+
 /** The largest photo a person's picture is made from (5.17c): 20 MiB. */
 export const PHOTO_MAX_BYTES = 20 * 1024 * 1024;
 
@@ -384,13 +401,17 @@ export interface Share {
   flow?: 'legacy' | 'v2';
   /**
    * When it was paused, and why (0.5.14): `restored`, by a restore, for an
-   * owner to turn back on; since 5.28 `locked`, its maker's sign-in locked
-   * — it works again, by itself, once they are unlocked, and no owner turns
-   * it back on (`paused_at` is then when the lock began). Absent from
-   * older vaults.
+   * owner to turn back on. Since 5.28, to an owner and to whoever made it,
+   * `locked` — its maker's sign-in is locked, and it works again by itself
+   * once they are unlocked — or `sign_in_paused` — its maker's sign-in
+   * waits after a restore, and it works again once that is turned back on;
+   * no owner turns either on (`paused_at` is then when the sign-in was
+   * locked or paused). Anybody else is told it is paused, with no reason
+   * and no moment (null): a lock is the owners' and the person's to know.
+   * Absent from older vaults; treat a reason never heard of as paused.
    */
   paused_at?: string | null;
-  paused_reason?: 'restored' | 'locked' | null;
+  paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | null;
   /**
    * What it gives (5.18): `view`, the pages the vault drew for it, with
    * whom it is for across each, and never the file; `download`, the file.

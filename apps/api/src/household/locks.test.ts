@@ -1209,8 +1209,212 @@ describe.skipIf(!testAdminUrl())('locking a sign-in (5.28)', () => {
     expect(error(await resume(owner, nadia)).code).toBe('not_paused');
     await fresh(owner);
     expect((await unlock(owner, nadia)).statusCode).toBe(204);
+    // The unlock ends both: she is not left paused, and signs in.
+    expect((await card(nadia)).suspension).toBeNull();
+    expect((await waiting(owner)).map((s) => s.member_id)).not.toContain(nadia.member_id);
+    expect((await signIn(nadia.email)).statusCode).toBe(200);
     const lines = (await activity(owner)).map((l) => l.text);
     expect(lines).toContain('Owner turned Mina’s sign-in back on after the restore');
+  });
+
+  it('a second adult and a teen see no trace of a lock in any list or answer (the 5.28 review, E528-2)', async () => {
+    const amal = await person('adult', 'Amira');
+    const dina = await person('adult', 'Dalia');
+    const doc = await document(amal, 'Water rates');
+    const link = await shareDoc(amal, doc);
+    const asked = await askFor(amal, 'adults');
+    await fresh(owner);
+    const locked = await lock(owner, amal, { note: 'nobody else’s business' });
+    expect(locked.statusCode).toBe(200);
+    const since = json<{ suspension: MemberSuspension }>(locked).suspension.since;
+    // The owner is told why, and since when.
+    const ownersLink = (await links(owner)).find((l) => l.id === link.share.id);
+    expect(ownersLink).toMatchObject({
+      state: 'paused',
+      paused_reason: 'locked',
+      paused_at: since,
+    });
+    // The other adult: paused, and that is all — no reason, no moment, no words.
+    const theirs = (await links(dina)).find((l) => l.id === link.share.id);
+    expect(theirs).toMatchObject({ state: 'paused', paused_reason: null, paused_at: null });
+    expect(theirs?.summary).toMatch(/Paused for now/);
+    const request = json<{ items: Array<{ id: string; state: string; paused_reason: unknown }> }>(
+      await h.app.inject({ url: '/api/v1/upload-requests', headers: h.as(dina) }),
+    ).items.find((r) => r.id === asked.request.id);
+    expect(request).toMatchObject({ state: 'paused', paused_reason: null });
+    // Nothing they are given says it, anywhere.
+    for (const who of [dina, teen]) {
+      for (const url of [
+        '/api/v1/shares',
+        '/api/v1/upload-requests',
+        '/api/v1/members',
+        '/api/v1/after-restore',
+        '/api/v1/collections',
+        '/api/v1/audit?limit=100',
+      ]) {
+        const r = await h.app.inject({ url, headers: h.as(who) });
+        expect(r.body, url).not.toMatch(/\block(ed)?\b|sign_in_paused/i);
+        expect(r.body, url).not.toContain(since);
+      }
+    }
+    await fresh(owner);
+    expect((await unlock(owner, amal)).statusCode).toBe(204);
+  });
+
+  it('a link or a request whose maker waits after a restore says so, not that they are locked (the 5.28 review, E528-6)', async () => {
+    const rosa = await person('adult', 'Rosa');
+    const doc = await document(rosa, 'Car tax');
+    const link = await shareDoc(rosa, doc);
+    const asked = await askFor(rosa, 'adults');
+    // As a restore leaves her, and her link and request; the owner then turns
+    // the link and the request back on before her sign-in.
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      await pool.query(
+        `update account_household set suspended_at = now(), suspend_reason = 'restored'
+          where member_id = $1`,
+        [rosa.member_id],
+      );
+      await pool.query(
+        `update share_link set paused_at = now(), paused_reason = 'restored' where id = $1`,
+        [link.share.id],
+      );
+      await pool.query(
+        `update upload_request set paused_at = now(), paused_reason = 'restored' where id = $1`,
+        [asked.request.id],
+      );
+    } finally {
+      await pool.end();
+    }
+    await fresh(owner);
+    const resumed = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/shares/${link.share.id}/resume`,
+      headers: h.as(owner),
+    });
+    expect(resumed.statusCode, resumed.body).toBe(200);
+    // On, and still waiting for her: said as that, never as a lock.
+    expect(json<ShareView>(resumed)).toMatchObject({
+      state: 'paused',
+      paused_reason: 'sign_in_paused',
+    });
+    expect(json<ShareView>(resumed).summary).toMatch(
+      /Paused until the sign-in of whoever made it is turned back on after the restore/,
+    );
+    expect(json<ShareView>(resumed).summary).not.toMatch(/locked/);
+    const req = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/upload-requests/${asked.request.id}/resume`,
+      headers: h.as(owner),
+    });
+    expect(req.statusCode, req.body).toBe(200);
+    expect(json<{ state: string; paused_reason: string }>(req)).toMatchObject({
+      state: 'paused',
+      paused_reason: 'sign_in_paused',
+    });
+    // No longer the restore's to turn on: once she is, they work.
+    const waiting = json<{ links: ShareView[]; upload_requests: Array<{ id: string }> }>(
+      await h.app.inject({ url: '/api/v1/after-restore', headers: h.as(owner) }),
+    );
+    expect(waiting.links.map((l) => l.id)).not.toContain(link.share.id);
+    expect(waiting.upload_requests.map((r) => r.id)).not.toContain(asked.request.id);
+    expect((await preview(link.link_token)).statusCode).toBe(404);
+    await fresh(owner);
+    expect((await resume(owner, rosa)).statusCode).toBe(204);
+    expect((await preview(link.link_token)).statusCode).toBe(200);
+    expect((await dropPreview(asked.link_token)).statusCode).toBe(200);
+  });
+
+  it('end_links takes back only what still works: one that has run out stays as it ended (the 5.28 review, E528-4)', async () => {
+    const tom = await person('adult', 'Tomas');
+    const doc = await document(tom, 'TV licence');
+    const live = await shareDoc(tom, doc);
+    const old = await shareDoc(tom, doc);
+    const liveRequest = await askFor(tom, 'me');
+    const oldRequest = await askFor(tom, 'me');
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      // Ran out a year ago, both of them.
+      await pool.query(
+        `update share_link set created_at = now() - interval '400 days',
+                expires_at = now() - interval '1 year' where id = $1`,
+        [old.share.id],
+      );
+      await pool.query(
+        `update upload_request set created_at = now() - interval '400 days',
+                expires_at = now() - interval '1 year' where id = $1`,
+        [oldRequest.request.id],
+      );
+      await fresh(owner);
+      const locked = await lock(owner, tom, { end_links: true });
+      expect(locked.statusCode, locked.body).toBe(200);
+      const rows = await pool.query<{ id: string; revoked_at: Date | null }>(
+        `select id, revoked_at from share_link where id = any($1::uuid[])
+          union all
+         select id, revoked_at from upload_request where id = any($1::uuid[])`,
+        [[live.share.id, old.share.id, liveRequest.request.id, oldRequest.request.id]],
+      );
+      const revoked = Object.fromEntries(rows.rows.map((r) => [r.id, r.revoked_at !== null]));
+      expect(revoked).toEqual({
+        [live.share.id]: true,
+        [old.share.id]: false,
+        [liveRequest.request.id]: true,
+        [oldRequest.request.id]: false,
+      });
+      // A line only for what was taken back, and the count says so.
+      const lines = await pool.query<{ action: string; detail: Record<string, unknown> }>(
+        `select action, detail from audit_event
+          where household_id = $1 and action in ('share.revoked', 'upload_request.revoked', 'member.locked')
+            and object_id = any($2::uuid[])`,
+        [owner.household_id, [doc, liveRequest.request.id, oldRequest.request.id, tom.member_id]],
+      );
+      expect(lines.rows.filter((l) => l.action === 'share.revoked')).toHaveLength(1);
+      expect(lines.rows.filter((l) => l.action === 'upload_request.revoked')).toHaveLength(1);
+      expect(lines.rows.find((l) => l.action === 'member.locked')?.detail).toMatchObject({
+        links: 1,
+        requests: 1,
+      });
+    } finally {
+      await pool.end();
+    }
+    await fresh(owner);
+    expect((await unlock(owner, tom)).statusCode).toBe(204);
+  });
+
+  it('a lock that ran out by itself leaves nothing behind on somebody made an owner (the 5.28 review, D528-1)', async () => {
+    const una = await person('adult', 'Una');
+    const pool = createPool(h.adminUrl, 1);
+    try {
+      await pool.query(
+        `update account_household set suspended_at = now() - interval '3 days',
+                suspended_until = now() - interval '1 day', suspend_reason = 'locked',
+                suspend_note = 'gone by' where member_id = $1`,
+        [una.member_id],
+      );
+      await fresh(owner);
+      const promoted = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${una.member_id}/role`,
+        headers: h.as(owner),
+        payload: { role: 'owner' },
+      });
+      expect(promoted.statusCode, promoted.body).toBe(200);
+      const row = await pool.query(
+        `select role, suspended_at, suspended_by, suspended_until, suspend_reason, suspend_note
+           from account_household where member_id = $1`,
+        [una.member_id],
+      );
+      expect(row.rows[0]).toEqual({
+        role: 'owner',
+        suspended_at: null,
+        suspended_by: null,
+        suspended_until: null,
+        suspend_reason: null,
+        suspend_note: null,
+      });
+    } finally {
+      await pool.end();
+    }
   });
 
   describe('at the same moment as', () => {

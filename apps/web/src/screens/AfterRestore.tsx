@@ -77,10 +77,14 @@ export function AfterRestoreScreen() {
       setAsking(null);
       if (done === null && how === 'resume') return;
       const what = requestTarget(r);
+      const What = `${what.charAt(0).toUpperCase()}${what.slice(1)}`;
       setSaid(
         how === 'resume'
-          ? `${what.charAt(0).toUpperCase()}${what.slice(1)} works again.`
-          : `${what.charAt(0).toUpperCase()}${what.slice(1)} is taken back. What was sent already stays.`,
+          ? // Still paused by its requester's sign-in (5.28): on, but not working yet.
+            done && done.state === 'paused'
+            ? `${What} is turned back on. It works once ${done.requested_by_name ?? 'whoever asked'} can sign in again: turn their sign-in back on too.`
+            : `${What} works again.`
+          : `${What} is taken back. What was sent already stays.`,
       );
       await reload();
       status.current?.focus();
@@ -102,7 +106,14 @@ export function AfterRestoreScreen() {
           : await withToken((t) => api.revokeShare(t, link.id));
       if (done === null) return;
       const what = `The link to ${linkTarget(link, true)}`;
-      setSaid(how === 'resume' ? `${what} works again.` : `${what} is taken back for good.`);
+      setSaid(
+        how === 'resume'
+          ? // Still paused by its maker's sign-in (5.28): on, but not working yet.
+            done && done.state === 'paused'
+            ? `${what} is turned back on. It works once ${done.created_by_name ?? 'whoever made it'} can sign in again: turn their sign-in back on too.`
+            : `${what} works again.`
+          : `${what} is taken back for good.`,
+      );
       await reload();
       status.current?.focus();
     } catch (err) {

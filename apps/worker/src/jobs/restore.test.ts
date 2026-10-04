@@ -1970,6 +1970,84 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     }
   }, 120_000);
 
+  it('a lock that ran out before its person was made an owner neither locks them nor stops the restore, alone or beside another owner (the 5.28 review, D528-1)', async () => {
+    const live = await createTestDatabase();
+    made.push(live);
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-528r-'));
+    try {
+      await installQueue(live.adminUrl);
+      const sole = await seed(live.adminUrl);
+      const shared = await seed(live.adminUrl);
+      // What is left of a lock that ran out by itself, on somebody who is an
+      // owner now (written as it was before the trigger cleared it).
+      const lapsed = `suspended_at = now() - interval '5 days', suspended_until = now() - interval '2 days',
+                      suspend_reason = 'locked', suspend_note = 'long over'`;
+      const ownerWith = async (hh: string, name: string, suspension: string) => {
+        const id = await signedIn(live.adminUrl, hh, name, 'owner');
+        await sql(
+          live.adminUrl,
+          `update account_household set ${suspension} where member_id = $1`,
+          [id],
+        );
+        return id;
+      };
+      // Alone: the household's first two owners step down, and Sara is its only owner.
+      const sara = await ownerWith(sole, 'Sara Sole', lapsed);
+      await sql(
+        live.adminUrl,
+        `update account_household set role = 'adult'
+          where household_id = $1 and role = 'owner' and member_id <> $2`,
+        [sole, sara],
+      );
+      // Beside another owner: Sam's lapsed lock, and Tom's still in force
+      // until next week (an owner locked by the vault itself).
+      const sam = await ownerWith(shared, 'Sam Shared', lapsed);
+      const tom = await ownerWith(
+        shared,
+        'Tom Shared',
+        `suspended_at = now(), suspended_until = now() + interval '7 days', suspend_reason = 'locked'`,
+      );
+      const backup = (
+        await backupDatabase({
+          adminUrl: live.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      const t = await empty();
+      const report = await restoreBackup(backup, KEY, into(t), quiet, KEYS);
+      // Those two, adults now, wait; Tom's lock, in force, is kept.
+      expect(report).toMatchObject({ signInsPaused: 2, locksKept: 1 });
+      const rows = await sql(
+        t.adminUrl,
+        `select member_id, role, suspend_reason, suspended_at is not null as since,
+                suspended_until is not null as ends, suspend_note is not null as noted,
+                suspension_in_effect(suspended_at, suspended_until) as in_effect
+           from account_household where member_id = any($1::uuid[])`,
+        [[sara, sam, tom]],
+      );
+      const byId = Object.fromEntries(rows.rows.map((r) => [r.member_id as string, r]));
+      // Nothing is left of the locks that ran out: both sign in.
+      for (const id of [sara, sam]) {
+        expect(byId[id]).toMatchObject({
+          role: 'owner',
+          suspend_reason: null,
+          since: false,
+          ends: false,
+          noted: false,
+          in_effect: false,
+        });
+      }
+      // An owner's lock is no non-owner's: it keeps its end, and ends by itself.
+      expect(byId[tom]).toMatchObject({ suspend_reason: 'locked', ends: true, in_effect: true });
+    } finally {
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('a backup from before 0051 is brought up to date, then every sign-in but the owners’ is paused (5.28)', async () => {
     const older = await empty();
     const migrations = await migrationsUpTo(50);

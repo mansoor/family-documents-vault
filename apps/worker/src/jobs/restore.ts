@@ -284,12 +284,16 @@ interface SignInsPaused {
 
 /**
  * Every sign-in but the owners', paused for an owner to turn back on (5.28,
- * A55) — a lock still in force stays a lock, and loses any end of its own
- * (the backup cannot know whether it was made longer since); one past its
- * end is over, and is paused like the rest. UNDO says it too, and the
- * restore check asks it again below. Written with no caller named, as the
- * owning role: the rule for who locks lets the restore through, and the
- * owner floor (0051) judges every change at commit.
+ * A55) — a lock still in force on somebody who is no owner stays a lock, and
+ * loses any end of its own (the backup cannot know whether it was made
+ * longer since); one past its end is over, and is paused like the rest. And
+ * what is left of a lock that ran out on somebody who is an owner now — an
+ * owner is never paused — is cleared: kept, it could leave a household with
+ * no owner who can sign in, and the restore failed for it (the 5.28 review,
+ * D528-1). UNDO says it too, in this order, and the restore check asks it
+ * again below. Written with no caller named, as the owning role: the rule
+ * for who locks lets the restore through, and the owner floor (0051) judges
+ * every change at commit.
  */
 const PAUSE_SIGN_INS = `update public.account_household
      set suspended_at = now(), suspended_by = null, suspended_until = null,
@@ -299,7 +303,12 @@ const PAUSE_SIGN_INS = `update public.account_household
      and not (suspend_reason = 'locked' and suspended_at is not null
               and (suspended_until is null or suspended_until > now()))`;
 const KEEP_LOCKS = `update public.account_household set suspended_until = null
-   where suspend_reason = 'locked' and suspended_until is not null`;
+   where suspend_reason = 'locked' and role <> 'owner'
+     and suspended_until is not null and suspended_until > now()`;
+const CLEAR_LAPSED = `update public.account_household
+     set suspended_at = null, suspended_by = null, suspended_until = null,
+         suspend_reason = null, suspend_note = null
+   where suspend_reason = 'locked' and suspended_until is not null and suspended_until <= now()`;
 
 /**
  * UNDO pauses the sign-ins in the load's own transaction when the backup has
@@ -314,6 +323,7 @@ async function pauseSignIns(admin: ReturnType<typeof createPool>): Promise<SignI
     await client.query('begin');
     await client.query(PAUSE_SIGN_INS);
     await client.query(KEEP_LOCKS);
+    await client.query(CLEAR_LAPSED);
     await client.query('commit');
   } catch (err) {
     await client.query('rollback').catch(() => undefined);
@@ -328,7 +338,9 @@ async function pauseSignIns(admin: ReturnType<typeof createPool>): Promise<SignI
     ownerless: string[];
   }>(
     `select (select count(*)::int from account_household where suspend_reason = 'restored') as paused,
-            (select count(*)::int from account_household where suspend_reason = 'locked') as locked,
+            (select count(*)::int from account_household
+              where suspend_reason = 'locked'
+                and suspension_in_effect(suspended_at, suspended_until)) as locked,
             (select count(*)::int from account_household
               where role <> 'owner' and not suspension_in_effect(suspended_at, suspended_until)) as open,
             array(select h.id::text from household h
@@ -784,6 +796,7 @@ begin
               and attname = 'suspend_reason' and not attisdropped) then
     ${PAUSE_SIGN_INS};
     ${KEEP_LOCKS};
+    ${CLEAR_LAPSED};
   end if;
   if to_regclass('public.notice_request') is not null then
     -- What each household's audience was in effect: a widening whose notice

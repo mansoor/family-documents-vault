@@ -777,6 +777,51 @@ describe.skipIf(!testAdminUrl())('incoming files, in the worker', () => {
     }
   });
 
+  it('a requester paused after a restore keeps what was sent for them alone: nothing moves, the request stays open, and they are told once turned back on (5.28)', async () => {
+    const pause = (sql: string) =>
+      admin.query(
+        `update account_household set ${sql} where account_id = $1 and household_id = $2`,
+        [people.other.account, hh],
+      );
+    const r = await request({ reviewBy: 'me', requester: 'other', label: 'The lab' });
+    const waiting = await file(r, { pages: 1 });
+    const theirs = await devicesOf('other');
+    try {
+      // As a restore leaves every sign-in but the owners'.
+      await pause(`suspended_at = now(), suspended_until = null, suspend_reason = 'restored'`);
+      pushes.length = 0;
+      // The night's sweep, and a move the API queued: nothing is theirs to lose.
+      await sweepIncoming(deps);
+      await moveIncoming(deps, { household_id: hh });
+      expect(await row(waiting.id)).toMatchObject({
+        state: 'received',
+        review_by: 'me',
+        owners_only: false,
+        // Not told, and not marked told: they cannot sign in to look.
+        told_at: null,
+      });
+      const [req] = (
+        await admin.query<Record<string, unknown>>(
+          'select review_by, closed_at, moved_to_owners_at from upload_request where id = $1',
+          [r],
+        )
+      ).rows;
+      expect(req).toMatchObject({ review_by: 'me', closed_at: null, moved_to_owners_at: null });
+      for (const d of theirs) expect(pushes.map((p) => p.device)).not.toContain(d);
+
+      // Turned back on by an owner: the next sweep tells them, as ever.
+      await pause('suspended_at = null, suspended_until = null, suspend_reason = null');
+      pushes.length = 0;
+      await sweepIncoming(deps);
+      expect((await row(waiting.id))?.told_at).not.toBeNull();
+      for (const d of theirs) expect(pushes.map((p) => p.device)).toContain(d);
+    } finally {
+      await pause(
+        'suspended_at = null, suspended_until = null, suspend_reason = null, suspend_note = null',
+      );
+    }
+  });
+
   it('not accepted in 30 days: purged, object and row', async () => {
     const r = await request({ reviewBy: 'adults', requester: 'owner', label: 'Jane, accountant' });
     const old = await file(r, { receivedAt: days(31), pages: 2 });

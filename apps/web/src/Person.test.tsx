@@ -1276,7 +1276,8 @@ describe('locking a sign-in (5.28)', () => {
     ).toBeInTheDocument();
     expect(factsOf(region).Paused).toBe(whenWords(since));
     expect(within(region).queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
-    expect(within(region).queryByRole('button', { name: 'Lock sign-in' })).not.toBeInTheDocument();
+    // It may be locked instead (the 5.28 review): see the next test.
+    expect(within(region).getByRole('button', { name: 'Lock sign-in' })).toBeInTheDocument();
     await expectAccessible();
 
     state.accountStepUp = true;
@@ -1289,6 +1290,40 @@ describe('locking a sign-in (5.28)', () => {
     ).toHaveLength(2);
     expect(state.calls.some((c) => c.url.endsWith('/lock'))).toBe(false);
     expect(within(region).queryByText(/paused after the restore/)).not.toBeInTheDocument();
+  });
+
+  it('a sign-in paused after a restore may be locked instead: the dialog says the lock takes the pause’s place (the 5.28 review)', async () => {
+    const { state, region } = await showCard({
+      accounts: {
+        'm-1': card({
+          devices: [],
+          suspension: { reason: 'restored', since, until: null, note: null, by: null },
+        }),
+      },
+    });
+    expect(
+      within(region).getByRole('button', { name: 'Lock sign-in' }),
+    ).toHaveAccessibleDescription(
+      'Locking keeps Tess out until it is unlocked, with a note and an end of its own, in place of the pause.',
+    );
+    const { dialog } = await openLock(region);
+    const effects = within(within(dialog).getByRole('list', { name: 'What locking does' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(effects[0]).toBe(
+      'The lock takes the place of the pause after the restore: once it is unlocked, Tess can sign in again.',
+    );
+    await expectAccessible();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lock sign-in' }));
+    const said = await within(region).findByText('Tess’s sign-in is locked.');
+    await waitFor(() => expect(said).toHaveFocus());
+    expect(
+      state.calls.filter((c) => c.method === 'POST' && c.url === '/api/v1/members/m-1/lock'),
+    ).toHaveLength(1);
+    // Locked now, not paused: Unlock ends it, and nothing of the pause is left.
+    expect(within(region).getByRole('button', { name: 'Unlock' })).toBeInTheDocument();
+    expect(within(region).queryByText(/paused after the restore/)).not.toBeInTheDocument();
+    expect(within(region).queryByRole('button', { name: 'Turn back on' })).not.toBeInTheDocument();
   });
 
   it('a refusal is said: in the dialog, which stays open, or on the card', async () => {
@@ -1402,5 +1437,57 @@ describe('locking a sign-in (5.28)', () => {
     expect(requestState({ ...request, paused_reason: 'restored' }, true).words).toBe(
       'Paused after a restore',
     );
+    // Its requester's sign-in waiting after a restore is not a lock (the 5.28
+    // review)…
+    expect(requestState({ ...request, paused_reason: 'sign_in_paused' }, true).words).toBe(
+      'Paused until the sign-in of Sara is turned back on after the restore.',
+    );
+    // … and to anybody the vault gives no reason, it is paused, and that is all.
+    const plain = requestState({ ...request, paused_reason: null }, false);
+    expect(plain.words).toBe('Paused for now');
+    expect(plain.words).not.toMatch(/lock|restore/i);
+  });
+
+  it('After a restore says when a link it turned on still waits for its maker’s sign-in (the 5.28 review)', async () => {
+    const link = {
+      id: 'sh-1',
+      document_id: 'doc-1',
+      document_title: 'Sara’s payslip',
+      recipient_label: 'the bank',
+      created_by_name: 'Sara',
+      created_at: since,
+      expires_at: new Date(Date.now() + 5 * 864e5).toISOString(),
+      has_pin: false,
+      open_count: 0,
+      last_opened_at: null,
+      state: 'paused',
+      flow: 'v2',
+      paused_at: since,
+      paused_reason: 'restored',
+      summary: 'Shared with the bank. Paused after a restore.',
+      maker_paused: true,
+    };
+    const state = fresh({
+      members: [ME, TESS],
+      shares: [
+        { ...link },
+        { ...link, id: 'sh-2', maker_paused: false, document_title: 'The lease' },
+      ],
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/settings/after-restore');
+    render(<App />);
+    await screen.findByText('Sara’s payslip');
+    const row = (title: string) => screen.getByText(title).closest('li') as HTMLElement;
+    state.accountStepUp = false;
+    fireEvent.click(within(row('Sara’s payslip')).getByRole('button', { name: 'Turn back on' }));
+    const waits = await screen.findByText(
+      'The link to “Sara’s payslip” is turned back on. It works once Sara can sign in again: turn their sign-in back on too.',
+    );
+    await waitFor(() => expect(waits).toHaveFocus());
+    fireEvent.click(within(row('The lease')).getByRole('button', { name: 'Turn back on' }));
+    const works = await screen.findByText('The link to “The lease” works again.');
+    await waitFor(() => expect(works).toHaveFocus());
   });
 });

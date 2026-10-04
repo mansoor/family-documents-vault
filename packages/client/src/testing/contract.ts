@@ -1509,6 +1509,10 @@ export const contractScenarios: Scenario[] = [
         code: 'owner_notice_required',
         message: `${firstName} is an owner, and one owner's sign-in is never locked by another. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
       });
+      // An end without its seconds is not one the vault reads (the 5.28 review).
+      expect(
+        await refusal(api.lockMember(token, saraId, { until: '2030-01-01T07:00Z' })),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
       // An end that is not in the future, or more than a year off.
       const at = (ms: number) => new Date(Date.now() + ms).toISOString();
       expect(await refusal(api.lockMember(token, saraId, { until: at(-60_000) }))).toMatchObject({

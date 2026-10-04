@@ -1591,7 +1591,9 @@ export function installFakeApi(state: FakeState) {
       // One paused only because its maker's sign-in is locked (5.28) is not
       // the restore's: it opens again with the unlock.
       const restored = (x: Record<string, unknown>) =>
-        x.state === 'paused' && x.paused_reason !== 'locked';
+        x.state === 'paused' &&
+        x.paused_reason !== 'locked' &&
+        x.paused_reason !== 'sign_in_paused';
       return json({
         links: state.shares.filter((x) => restored(x) && (owner || mine(x))),
         // 5.21: the paused requests the reader may decide about — an owner,
@@ -1628,7 +1630,14 @@ export function installFakeApi(state: FakeState) {
       if (!link || link.state !== 'paused') {
         return refuse(404, 'not_found', 'That paused link does not exist.');
       }
-      Object.assign(link, { state: 'active', paused_at: null, paused_reason: null });
+      // A link whose maker's sign-in still waits after the restore (5.28,
+      // `maker_paused` in a test's state): turned on, and paused by them.
+      Object.assign(
+        link,
+        link.maker_paused === true
+          ? { state: 'paused', paused_reason: 'sign_in_paused' }
+          : { state: 'active', paused_at: null, paused_reason: null },
+      );
       return json(link);
     }
     // Asking for documents (5.22, the API of 5.21): owners and adults; a

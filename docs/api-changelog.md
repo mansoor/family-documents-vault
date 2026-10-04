@@ -2868,13 +2868,18 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       documents stop answering — `404 link_not_valid` to whoever holds one,
       as any link that has stopped, and a page open with one stops at its
       next request — and answer again, as they were, once the lock ends;
-      with `end_links` they are taken back instead (a `share.revoked` or
-      `upload_request.revoked` line each), and stay so; a wider audience for
+      with `end_links` those still live are taken back instead (a
+      `share.revoked` or `upload_request.revoked` line each), and stay so —
+      one that has run out, or locked itself after ten wrong tries, is left
+      as it ended, with no line; a wider audience for
       identity details still waiting is withdrawn (5.26: an
       `identity.audience_changed` line with `detail.withdrawn`). Once it
       commits, what was sent for them alone to review moves to the owners
-      (`incoming.move`, 5.23), and its request closes. The person is emailed,
-      with nothing secret and not the note; the other owners are told.
+      (`incoming.move`, 5.23), and its request closes — a lock alone does
+      that: a pause after a restore takes nobody's right to review away, and
+      what was sent for them waits, untold, until they are turned back on.
+      The person is emailed, with nothing secret and not the note; the other
+      owners are told.
     - **Added:** `DELETE /api/v1/members/{id}/lock` — the lock ends now:
       `204`. Asked and refused as a lock is; somebody not locked (never,
       past its end, or paused after a restore) is `409 not_locked`. Their
@@ -2913,19 +2918,27 @@ member_cannot_be_told`, while anybody with a sign-in — of any role — is
       locked or paused after a restore, as for a switched-off account.
     - **Changed:** `POST /members/{id}/role` making a locked or paused person
       an owner is `409 locked`: unlock them, or turn them back on, first.
-    - **Changed:** `ShareView.paused_reason` and
-      `UploadRequestView.paused_reason` gain `locked`, with `state: "paused"`,
-      for a link or a request whose maker's sign-in is locked or paused: it
-      works again by itself once they can sign in, and no owner turns it on
-      — `GET /after-restore` lists only a restore's pauses, and `POST
-/shares/{id}/resume` on one is `404`. Treat a reason never heard of as
-      paused.
+    - **Changed:** a link or a request whose maker's sign-in is locked or
+      paused after a restore has `state: "paused"`: it works again by itself
+      once they can sign in, and no owner turns it on — `GET /after-restore`
+      lists only a restore's own pauses, and `POST /shares/{id}/resume` on
+      one is `404`. Why is said to an owner and to its maker alone:
+      `ShareView.paused_reason` and `UploadRequestView.paused_reason` gain
+      `locked` (their sign-in is locked) and `sign_in_paused` (it waits after
+      a restore), with `paused_at` when that began. Anybody else is given
+      `paused_reason: null` and `paused_at: null`, and a link's `summary`
+      says only that it is paused: a lock is the owners' and the person's to
+      know (A51). A link or request turned back on after a restore whose
+      maker still waits answers `state: "paused"`, `sign_in_paused`. Treat a
+      reason never heard of as paused.
     - **Changed: a restore pauses every sign-in but the owners'** (A55). A
       backup cannot know of a lock made after it, nor of a sign-in taken away
       since; so after a restore each person but the owners waits, `reason:
-"restored"`, for an owner to turn their sign-in back on. A lock the backup
-      holds stays a lock, and loses any end of its own (it may have been made
-      longer since); one past its end is paused like the rest. A backup from
+"restored"`, for an owner to turn their sign-in back on. A lock in force
+      the backup holds, on somebody who is no owner, stays a lock, and loses
+      any end of its own (it may have been made longer since); one past its
+      end is over — paused like the rest, or, on somebody since made an owner,
+      cleared away — and an owner's is left as it is. A backup from
       before 0051 is brought up to date, then paused. The report says how
       many wait (`signInsPaused`) and how many locks it kept (`locksKept`),
       and the command line says why. The restore fails, closed, if any
@@ -2942,6 +2955,9 @@ display_name, role, paused_at }]`, every sign-in a restore paused, for an
     - Alerts, reminders and digests go to nobody whose sign-in is locked or
       paused, as to nobody switched off; only what is about their own sign-in
       — the lock, and its end — reaches them.
+    - Somebody made an owner whose lock ran out by itself has what was left
+      of it cleared, whoever makes them one: an owner is never unlocked, and
+      a restore would otherwise have found it.
     - The activity log: **new** `member.locked` ("Mansoor locked Sara’s
       sign-in until 5 October at 07:00, and ended their links for good") with
       `detail.until`, `detail.end_links` and how many sessions, invitations,

@@ -254,13 +254,19 @@ export class LockService {
         .where('used_at', 'is', null)
         .execute();
 
-      // 4. Their links: paused by the lock itself (0051), or taken back.
+      // 4. Their links: paused by the lock itself (0051), or taken back —
+      // those still live. One that has run out, or locked itself after ten
+      // wrong tries, is left as it is, as a collection's end leaves it
+      // (the 5.28 review, E528-4): its history stays true, and no line says
+      // a dead link was taken back.
       const links = endLinks
         ? await trx
             .updateTable('share_link')
             .set({ revoked_at: now, revoked_by: p.accountId, code_email: null })
             .where('created_by', '=', target.account_id)
             .where('revoked_at', 'is', null)
+            .where('expires_at', '>', now)
+            .where('attempts', '<', 10)
             .returning(['id', 'document_id', 'collection_id', 'permission'])
             .execute()
         : [];

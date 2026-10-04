@@ -79,14 +79,23 @@ export function requestState(
     case 'active':
       return { words: `Working until ${at}`, tone: 'ok' };
     case 'paused':
-      // 5.28: whoever asked has their sign-in locked. Nobody turns it back
-      // on: it opens again, by itself, once they are unlocked.
+      // 5.28: whoever asked has their sign-in locked, or waiting after a
+      // restore. Nobody turns the request on: it opens again with them.
+      // Said so only to an owner and to whoever asked; anybody else is
+      // given no reason, and told it is paused (the 5.28 review).
       if (r.paused_reason === 'locked') {
         return {
           words: `Paused while the sign-in of ${r.requested_by_name ?? 'whoever asked'} is locked. It works again once they are unlocked.`,
           tone: 'warn',
         };
       }
+      if (r.paused_reason === 'sign_in_paused') {
+        return {
+          words: `Paused until the sign-in of ${r.requested_by_name ?? 'whoever asked'} is turned back on after the restore.`,
+          tone: 'warn',
+        };
+      }
+      if (r.paused_reason !== 'restored') return { words: 'Paused for now', tone: 'warn' };
       return {
         words: owner
           ? 'Paused after a restore'

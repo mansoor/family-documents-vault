@@ -1227,6 +1227,42 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     );
   });
 
+  it('accept while the requester is paused after a restore: a pause takes nothing away, and it is filed (the 5.28 review)', async () => {
+    await stepUp(owner);
+    const rhea = await h.join(owner, {
+      name: 'Rhea',
+      email: `rhea-${randomUUID()}@example.test`,
+      role: 'adult',
+    });
+    const { files } = await arrive(rhea, {}, [{ name: 'p.pdf', bytes: PDF('p') }]);
+    const f = files[0] as DropFile;
+    await ready(f.id);
+    const pool = createPool(h.adminUrl, 1);
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      await client.query(
+        `update account_household set suspended_at = now(), suspend_reason = 'restored'
+          where member_id = $1 and household_id = $2`,
+        [rhea.member_id, household],
+      );
+      const filing = accept(rhea, f.id, { title: 'P' });
+      expect(await soon(filing)).toBe('held');
+      await client.query('commit');
+      const answered = await filing;
+      expect(answered.statusCode, answered.body).toBe(201);
+    } finally {
+      client.release();
+      await pool.end();
+    }
+    expect((await fileRow(f.id))?.state).toBe('accepted');
+    await admin(
+      `update account_household set suspended_at = null, suspend_reason = null
+        where member_id = $1 and household_id = $2`,
+      [rhea.member_id, household],
+    );
+  });
+
   it('accept while its request is taken back: both are done', async () => {
     const { request, files } = await arrive(adult, {}, [{ name: 'c.pdf', bytes: PDF('c') }]);
     const file = files[0] as DropFile;

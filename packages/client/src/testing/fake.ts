@@ -2496,7 +2496,7 @@ export function createFakeVault(): {
         links: [],
         upload_requests: can(me.role, 'upload_request.create')
           ? state.uploadRequests.filter(
-              (r) => r.state === 'paused' && r.paused_reason !== 'locked' && (owner || r.mine),
+              (r) => r.state === 'paused' && r.paused_reason === 'restored' && (owner || r.mine),
             )
           : [],
         sign_ins: signIns,
@@ -2669,8 +2669,12 @@ export function createFakeVault(): {
   return { fetch, state, pauseSignIns };
 }
 
-/** A moment as the real vault takes one for a lock's end: ISO, with its offset (5.28). */
-const ISO_MOMENT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+/**
+ * A moment as the real vault takes one for a lock's end: ISO, with its
+ * seconds and its offset (5.28; zod's datetime({ offset: true })). One
+ * without seconds is refused there, and so here (the 5.28 review, R528-5).
+ */
+const ISO_MOMENT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
  * POST /members/{id}/lock's body as the real vault reads it (5.28): nothing

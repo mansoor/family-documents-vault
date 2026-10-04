@@ -655,30 +655,36 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
             </ul>
           )}
           <p className="muted">Only owners can see this.</p>
-          {caps?.features.member_admin === true && !suspended && (
-            <>
-              <p id="lock-about" className="muted">
-                Locking signs {props.name} out everywhere at once, and keeps them out until it is
-                unlocked.
-              </p>
-              <Button
-                ref={lockButton}
-                kind="quiet"
-                danger
-                describedBy="lock-about"
-                onClick={() => {
-                  setSaid(null);
-                  setLocking(true);
-                }}
-              >
-                Lock sign-in
-              </Button>
-            </>
-          )}
+          {/* A sign-in a restore paused may be locked as well (the 5.28
+              review): a lock the backup lost is put back without turning
+              them on first, and the lock takes the pause's place. */}
+          {caps?.features.member_admin === true &&
+            (!suspended || suspended.reason === 'restored') && (
+              <>
+                <p id="lock-about" className="muted">
+                  {suspended
+                    ? `Locking keeps ${props.name} out until it is unlocked, with a note and an end of its own, in place of the pause.`
+                    : `Locking signs ${props.name} out everywhere at once, and keeps them out until it is unlocked.`}
+                </p>
+                <Button
+                  ref={lockButton}
+                  kind="quiet"
+                  danger
+                  describedBy="lock-about"
+                  onClick={() => {
+                    setSaid(null);
+                    setLocking(true);
+                  }}
+                >
+                  Lock sign-in
+                </Button>
+              </>
+            )}
           {locking && (
             <LockDialog
               member={props.member}
               name={props.name}
+              replacesPause={suspended?.reason === 'restored'}
               offlineDays={card.max_offline_days}
               otherOwners={props.otherOwners}
               timezone={tz}
@@ -758,6 +764,8 @@ export function lockEndProblem(at: Date | null, now = Date.now()): string | null
 function LockDialog(props: {
   member: Member;
   name: string;
+  /** Their sign-in waits after a restore: the lock takes the pause's place (the 5.28 review). */
+  replacesPause?: boolean;
   /** How long a phone keeps its offline copies (FDV_OFFLINE_MAX_DAYS); unsaid by an older vault. */
   offlineDays: number | undefined;
   otherOwners: boolean;
@@ -832,6 +840,9 @@ function LockDialog(props: {
           Lock {name}’s sign-in
         </h2>
         <ul className="lock-effects" aria-label="What locking does">
+          {props.replacesPause && (
+            <li>{`The lock takes the place of the pause after the restore: once it is unlocked, ${name} can sign in again.`}</li>
+          )}
           <li>
             {endWords
               ? `${name} can’t sign in until ${endWords}, unless an owner unlocks it sooner.`

@@ -10,7 +10,7 @@ import {
   INCOMING_KEEP_DAYS,
   incomingWords,
   PREVIEW_MAX_PAGES,
-  suspensionInEffect,
+  lockInEffect,
   type PushMessage,
 } from '@fdv/shared';
 import { adapterFromRow, deleteAll, StorageError, type StorageAdapter } from '@fdv/storage';
@@ -186,7 +186,18 @@ export async function tellWaiting(
       .where('submitted_at', 'is not', null)
       .where('scan_state', 'in', ['unscanned', 'clean'])
       .where('preview_state', 'in', ['ready', 'unsupported', 'failed'])
-      .where('told_at', 'is', null);
+      .where('told_at', 'is', null)
+      // Not one for somebody alone whose sign-in waits — locked, or paused
+      // after a restore (5.28): they could not be told, and it would be
+      // marked told all the same. Taken once they can sign in again (a lock
+      // moves it to the owners, who are told then).
+      .where(
+        sql<boolean>`not (review_by = 'me' and exists (
+          select 1 from account_household a
+           where a.household_id = incoming_file.household_id
+             and a.member_id = incoming_file.requester_member_id
+             and suspension_in_effect(a.suspended_at, a.suspended_until)))`,
+      );
     if (requestId) q = q.where('request_id', '=', requestId);
     return q.returning('id').execute();
   });
@@ -484,8 +495,11 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
               .whereRef('a.household_id', '=', 'r.household_id')
               .whereRef('a.member_id', '=', 'r.requester_member_id')
               .where('a.role', 'in', ['owner', 'adult'])
-              // 5.28: locked, or paused after a restore, reviews nothing.
-              .where(sql<boolean>`not suspension_in_effect(a.suspended_at, a.suspended_until)`),
+              // 5.28: locked by an owner, reviews nothing. A pause after a
+              // restore takes nothing away: the files wait for them (A55).
+              .where(
+                sql<boolean>`not (a.suspend_reason = 'locked' and suspension_in_effect(a.suspended_at, a.suspended_until))`,
+              ),
           ),
         ),
       )
@@ -521,19 +535,16 @@ export async function moveIncoming(deps: IncomingDeps, job: IncomingMoveJob): Pr
       // Who asked, as they are now, held: a role changing waits for this.
       const asker = await trx
         .selectFrom('account_household')
-        .select(['role', 'suspended_at', 'suspended_until'])
+        .select(['role', 'suspended_at', 'suspended_until', 'suspend_reason'])
         .where('account_id', '=', r.created_by)
         .where('household_id', '=', hh)
         .where('member_id', '=', r.requester_member_id)
         .forShare()
         .executeTakeFirst();
-      // Still able to review: an owner or an adult whose sign-in is not
-      // locked, nor paused after a restore (5.28).
-      if (
-        asker &&
-        (asker.role === 'owner' || asker.role === 'adult') &&
-        !suspensionInEffect(asker)
-      ) {
+      // Still able to review: an owner or an adult whose sign-in an owner has
+      // not locked (5.28). Paused after a restore, they still are: what was
+      // sent for them waits until an owner turns them back on.
+      if (asker && (asker.role === 'owner' || asker.role === 'adult') && !lockInEffect(asker)) {
         return [];
       }
       const held = await trx

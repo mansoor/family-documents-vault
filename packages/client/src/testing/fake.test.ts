@@ -621,6 +621,9 @@ describe('the fake vault, locked and paused sign-ins (5.28)', () => {
     for (const body of [
       { bogus: 1 },
       { until: '2026-10-05T07:00' },
+      // Without its seconds, as the real vault refuses it (the 5.28 review, R528-5).
+      { until: '2026-10-05T23:58Z' },
+      { until: '2026-10-05T07:00+09:00' },
       { note: 'x'.repeat(501) },
       { end_links: 'yes' },
     ]) {

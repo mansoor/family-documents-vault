@@ -99,8 +99,12 @@ end $$;
 -- a restore). An owner signed in does not lock another owner (A50): ask
 -- them to become an adult first, with its seven days' notice. And nobody
 -- whose sign-in is suspended is made an owner, by anybody signed in: an
--- owner unlocks them first. The owner floor (above) still judges every
--- path at commit, the vault's own included.
+-- owner unlocks them first. Somebody made an owner whose lock has run out
+-- by itself — nothing is written when it does — has what is left of it
+-- cleared, whoever makes them one: a lock's columns never reach an owner,
+-- where nobody could clear them (an owner is never unlocked) and a restore
+-- would find them. The owner floor (above) still judges every path at
+-- commit, the vault's own included.
 create function account_household_suspension() returns trigger
   language plpgsql set search_path = pg_catalog, public, pg_temp as $$
 begin
@@ -126,6 +130,15 @@ begin
      and app_actor() is not null and app_actor() <> 'system' then
     raise exception 'somebody whose sign-in is locked or paused is not made an owner'
       using errcode = 'check_violation';
+  end if;
+  if new.role = 'owner' and old.role is distinct from 'owner'
+     and new.suspended_at is not null
+     and not suspension_in_effect(new.suspended_at, new.suspended_until) then
+    new.suspended_at := null;
+    new.suspended_by := null;
+    new.suspended_until := null;
+    new.suspend_reason := null;
+    new.suspend_note := null;
   end if;
   return new;
 end $$;
@@ -225,7 +238,9 @@ create or replace function app_live_upload_request() returns uuid
         and not suspension_in_effect(asker.suspended_at, asker.suspended_until) $$;
 
 -- A lock that ends their links for good ends their requests too (A51): each
--- still open is taken back by the owner locking them, its address cleared
+-- still live — not closed, not run out, not locked by ten wrong tries; one
+-- that has ended already is left as it is — is taken back by the owner
+-- locking them, its address cleared
 -- (upload_request_forgets_address, 0044), and its sessions and codes ended.
 -- With the owner's rights, as upload_requests_close_lost() asks: a
 -- review-by-me request is its requester's alone, so the owner may not see
@@ -242,6 +257,8 @@ create function upload_requests_end_for_lock(p_account uuid) returns setof uuid
           and r.created_by = p_account
           and r.revoked_at is null
           and r.closed_at is null
+          and r.expires_at > now()
+          and r.attempts < 10
           and app_actor() = 'account'
           and app_role() = 'owner'
           and exists (select 1 from account_household a
