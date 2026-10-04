@@ -565,6 +565,9 @@ export class AuthService {
     const parsed = parseRefreshToken(refreshToken);
     if (!parsed) throw sessionEnded('malformed refresh token', 'malformed');
     const presented = hashRefreshToken(refreshToken);
+    // The session the token names, if the vault made it; none for one from before 5.30.
+    const named = sessionOfToken(this.familyKey, parsed);
+    const legacy = named === null;
 
     // Until the token matches a session, whoever presents it is nobody yet.
     const scope = { householdId: parsed.householdId, actor: ANONYMOUS };
@@ -648,6 +651,14 @@ export class AuthService {
             : {
                 refresh_hash: hashRefreshToken(next),
                 prev_refresh_hash: presented,
+                // A token from before 5.30 names no session, so once it is
+                // no longer the one just replaced nothing would know it.
+                // Kept with the tokens a grace touched: presented again,
+                // however many refreshes later, it ends the session (the
+                // 5.30 review, T530-01).
+                ...(legacy
+                  ? { grace_hashes: [...session.grace_hashes, presented].slice(-GRACE_HASHES_KEPT) }
+                  : {}),
                 grace_used_at: null,
                 rotated_at: now,
                 last_used_at: now,
@@ -688,12 +699,7 @@ export class AuthService {
     // A token that ended a session is proof of reuse; one that matches
     // nothing (garbage, a restored backup's, one long retired, one whose
     // tag is not the vault's) is only no longer valid.
-    const why = await this.endSpent(
-      parsed.householdId,
-      presented,
-      sessionOfToken(this.familyKey, parsed),
-      meta,
-    );
+    const why = await this.endSpent(parsed.householdId, presented, named, meta);
     throw sessionEnded('unknown or reused refresh token', why);
   }
 

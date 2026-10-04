@@ -523,6 +523,57 @@ describe.skipIf(!testAdminUrl())(
       expect(preview.statusCode).toBe(404);
     });
 
+    it('only live requests are counted as closed: one run out or locked is closed, unsaid (the 5.30 review, S530-2)', async () => {
+      const zed = await person('adult', 'Zed');
+      const live = await askFor(zed);
+      const ranOut = await askFor(zed);
+      const lockedOut = await askFor(zed);
+      await withSystem(h.db, owner.household_id, async (trx) => {
+        await trx
+          .updateTable('upload_request')
+          .set({ expires_at: new Date(Date.now() - 7 * 864e5) })
+          .where('id', '=', ranOut.request.id)
+          .execute();
+        await trx
+          .updateTable('upload_request')
+          .set({ attempts: 10 })
+          .where('id', '=', lockedOut.request.id)
+          .execute();
+      });
+      await fresh(owner);
+      const changed = await setRole(owner, zed, 'teen');
+      expect(changed.statusCode, changed.body).toBe(200);
+      const result = json<RoleChangeResult>(changed);
+      expect(result.effects).toEqual([{ effect: 'requests_closed', count: 1 }]);
+      expect(result.message).toBe('Zed is now a teen. Their request to send documents closed.');
+      expect((await auditRows('member.requests_closed', zed.member_id)).at(-1)?.detail).toEqual({
+        requests: 1,
+      });
+      // All three are closed, as before; only the live one has a line.
+      const ids = [live, ranOut, lockedOut].map((r) => r.request.id);
+      const rows = await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('upload_request')
+          .select(['id', 'closed_reason'])
+          .where('id', 'in', ids)
+          .execute(),
+      );
+      expect(rows.map((r) => r.closed_reason)).toEqual([
+        'requester_lost_right',
+        'requester_lost_right',
+        'requester_lost_right',
+      ]);
+      const lines = await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('audit_event')
+          .select('object_id')
+          .where('action', '=', 'upload_request.closed')
+          .where('object_id', 'in', ids)
+          .execute(),
+      );
+      expect(lines.map((l) => l.object_id)).toEqual([live.request.id]);
+    });
+
     it("a teen and a second adult see no line about a sign-out-everywhere, nor about a role change's effects", async () => {
       const uma = await person('adult', 'Uma');
       const vic = await person('adult', 'Vic');
@@ -646,6 +697,37 @@ describe.skipIf(!testAdminUrl())(
         expect(out2.statusCode, out2.body).toBe(200);
         expect(refreshed2.statusCode).toBe(401);
         expect(error(refreshed2)).toMatchObject({ code: 'session_ended', reason: 'revoked' });
+      });
+
+      it('a private document of theirs, written as their sessions end: refused as that session’s end (5.29’s FDV01, reason revoked)', async () => {
+        // Something private, written by a session that sign out everywhere
+        // ended while it waited for the person's membership, gains nothing:
+        // the database refuses it (0052), and the answer says the session
+        // ended, and why — signed out, `revoked`.
+        const rae = await person('adult', 'Rae');
+        await fresh(owner);
+        const [out, wrote] = await race(
+          {
+            sql: 'select account_id from account_household where member_id = $1 for update',
+            id: rae.member_id,
+          },
+          () => signOut(owner, rae),
+          () =>
+            h.app.inject({
+              method: 'POST',
+              url: '/api/v1/documents',
+              headers: h.as(rae),
+              payload: {
+                title: 'Diary',
+                type_key: 'utility_bill',
+                owner_member_id: rae.member_id,
+                visibility: 'private',
+              },
+            }),
+        );
+        expect(out.statusCode, out.body).toBe(200);
+        expect(wrote.statusCode, wrote.body).toBe(401);
+        expect(error(wrote)).toMatchObject({ code: 'session_ended', reason: 'revoked' });
       });
 
       it('a lock: a role change and a lock each see the other', async () => {

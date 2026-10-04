@@ -82,6 +82,27 @@ const captureBody = documentBody
   })
   .strict();
 
+/**
+ * How long the rest of an upload over the size limit is read to nowhere,
+ * once its 413 has gone (nginx's lingering close): then the connection ends.
+ */
+export const UPLOAD_LINGER_MS = 5_000;
+
+/**
+ * An upload refused for its size (5.30 review, X530-3): once the answer has
+ * gone, a client still sending is given a few seconds, and then the
+ * connection is closed. Closed at once, the answer would be lost with it.
+ */
+function cutOff(req: FastifyRequest, reply: FastifyReply): void {
+  const socket = req.raw.socket;
+  reply.raw.once('finish', () => {
+    if (req.raw.complete) return;
+    const timer = setTimeout(() => socket.destroy(), UPLOAD_LINGER_MS);
+    timer.unref();
+    req.raw.once('end', () => clearTimeout(timer));
+  });
+}
+
 /** A part's text, up to a limit: the rest is read to nowhere and refused. */
 async function smallText(stream: NodeJS.ReadableStream, limit: number): Promise<string> {
   const chunks: Buffer[] = [];
@@ -409,11 +430,18 @@ export function registerDocuments(
    * A refusal before the bytes were read (the key is taken, the document is
    * not there) still reads them, to nowhere, so the connection is left able
    * to carry the answer and the next request.
+   *
+   * An upload over the size limit is read so for a few seconds only (the
+   * 5.30 review, X530-3): long enough for the client to take the 413, then
+   * the connection is closed, so nobody can go on sending for as long as
+   * they like — as nginx's cap stopped it, before the TLS overlay sent the
+   * API's requests to the API itself.
    */
   const drained =
-    (file: { file: NodeJS.ReadableStream }) =>
+    (req: FastifyRequest, reply: FastifyReply, file: { file: NodeJS.ReadableStream }) =>
     (err: unknown): never => {
       file.file.resume();
+      if (err instanceof ApiError && err.status === 413) cutOff(req, reply);
       throw err;
     };
 
@@ -436,7 +464,7 @@ export function registerDocuments(
           },
           metaOf(req),
         )
-        .catch(drained(file));
+        .catch(drained(req, reply, file));
       replayed(reply, file, was);
       return reply.status(201).send(version);
     },
@@ -533,7 +561,7 @@ export function registerDocuments(
         metaOf(req),
         metadata,
       )
-      .catch(drained(theFile));
+      .catch(drained(req, reply, theFile));
     replayed(reply, theFile, done.replayed);
     return reply.status(201).send({
       document_id: done.document_id,

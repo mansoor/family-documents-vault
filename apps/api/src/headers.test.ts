@@ -225,6 +225,24 @@ describe('the address a request came from', () => {
     }
   });
 
+  it("under the TLS overlay the API's requests are bounded as nginx bounded them (the 5.30 review, X530-3)", async () => {
+    for (const file of ['Caddyfile.internal', 'Caddyfile.public']) {
+      const caddy = (await readFile(root(`docker/caddy/${file}`), 'utf8')).replace(
+        /^\s*#.*$/gm,
+        '',
+      );
+      // The global options: the first block, before the site's.
+      const global = /^\{([\s\S]*?)^\}/m.exec(caddy)?.[1] ?? '';
+      const timeouts = /servers \{\s*timeouts \{([^}]*)\}\s*\}/.exec(global)?.[1] ?? '';
+      expect(timeouts, file).toMatch(/^\s*read_header 10s$/m);
+      expect(timeouts, file).toMatch(/^\s*idle 2m$/m);
+      // Long enough for FDV_MAX_UPLOAD_BYTES (100 MB) at about 1.5 Mbit/s, and bounded.
+      const body = /^\s*read_body (\d+)m$/m.exec(timeouts)?.[1];
+      expect(Number(body), file).toBeGreaterThanOrEqual(10);
+      expect(Number(body), file).toBeLessThanOrEqual(60);
+    }
+  });
+
   it(':8080 answers this machine only under the TLS overlay, and the network otherwise', async () => {
     const service = (compose: string, name: string) =>
       new RegExp(`\\n {2}${name}:\\n([\\s\\S]*?)\\n(?=\\S| {2}\\S)`).exec(compose)?.[1] ?? '';

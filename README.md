@@ -117,12 +117,18 @@ compares addresses. So the vault is careful about whose word it takes for an add
   it was reached from, and takes no caller's word for one either.
 - **The API** believes `X-Forwarded-For` only from the networks its own container is on —
   in the compose setup, nginx and Caddy (`FDV_TRUST_PROXY=network`, the default) — never
-  from a device on your LAN; and an entry that is not an address is not believed at all.
+  from a device on your LAN, and only the one address that proxy wrote last; an entry
+  that is not an address is not believed at all.
 
 `FDV_TRUST_PROXY=private` believes any private address, as the vault did before. A
 reverse proxy of your own in front of `:8080` is recorded as its own address, since nginx
 takes nobody's word; use the TLS overlay for a certificate, or put your proxy in front of
-the API on the vault's own network.
+the API on the vault's own network. Such a proxy must **overwrite** `X-Forwarded-For` with
+the address it was reached from (Caddy and Traefik do by default; nginx with
+`proxy_set_header X-Forwarded-For $remote_addr`), not add to what the caller sent: the API
+takes only the last address, and nothing a caller wrote should reach it. On Docker
+Desktop, every device can reach the vault as the Docker network's gateway, and so be
+recorded as that one address.
 
 ### Links for people outside the family
 
@@ -317,7 +323,7 @@ Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/
 - **Two-step sign-in** with an authenticator app (Google Authenticator, Authy, 1Password…) is set up in Settings and is required for owners. Sign-in then asks for the six-digit code after the password.
 - Passwords are hashed with Argon2id. Sign-in answers with a 15-minute access token and a refresh token that rotates on every use.
 - **A session lasts 30 days from when it was last used, and 180 days at most** from the sign-in: a device used every week stays signed in for half a year, then asks once for the password. This is the same for browsers and the phone app.
-- A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device holding an older kind of token is given one at its next refresh.)
+- A refresh token presented twice is treated as stolen and that device is signed out — with one exception, for answers that never arrive (a phone on a network that loses them, a browser page reloaded while it was refreshing): the token just replaced may be presented once more, within 30 seconds, by the same client — the same app installation, or the same browser from the same address. Anyone else presenting it, or presenting it later, ends the session. Every refresh token names the session it belongs to, so this holds for any token the vault ever gave that session, however many refreshes ago: somebody who copied a token and used it, and its successor, before you did is caught when yours comes in, and you are when theirs does. (A device that still holds a token from before this kind is given one of the new kind at its next refresh, and the vault remembers the old token from then on, however many refreshes later; tokens it had replaced before the upgrade are remembered only as before.)
 - **Sign out everywhere.** An owner can sign somebody out of every device at once from their page (**People → their name → Account**), with a passkey or a code from an authenticator app — for a lost phone, or a password somebody else knows. Another owner too, who is told by email; anybody it is about is emailed. Their sign-in stays as it was: they sign in again with their own password. To keep them out, lock their sign-in instead.
 - When a session ends, the app is told why — it expired, it was signed out, its token was used twice, or the person was taken out of the household — so it can say so in plain words.
 - Every signed-in device is listed under the household name; any of them can be signed out from another.

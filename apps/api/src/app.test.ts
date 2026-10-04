@@ -280,8 +280,9 @@ describe('whose X-Forwarded-For is believed (5.30)', () => {
     peer: string,
     forwarded: string | null,
     over: Partial<ApiConfig> = {},
+    networks: string[] = COMPOSE,
   ): Promise<{ meta: string | null | undefined; status: number }> => {
-    const built = await make(undefined, over, undefined, COMPOSE);
+    const built = await make(undefined, over, undefined, networks);
     let meta: string | null | undefined;
     built.get('/spy', (req) => {
       meta = metaOf(req).ip;
@@ -313,11 +314,20 @@ describe('whose X-Forwarded-For is believed (5.30)', () => {
   });
 
   it('through Caddy, which writes the address it was reached from: that one', async () => {
-    // Caddy to the API itself (docker/caddy), or through nginx on the network too.
+    // Caddy to the API itself (docker/caddy).
     expect((await seen(CADDY, PHONE)).meta).toBe(PHONE);
-    expect((await seen(NGINX, `${PHONE}, ${CADDY}`)).meta).toBe(PHONE);
     // An IPv4 peer as an IPv6 socket names it is the same peer.
     expect((await seen(`::ffff:${NGINX}`, PHONE)).meta).toBe(PHONE);
+  });
+
+  it('a proxy on the network is believed for one hop: the address it wrote last (the 5.30 review, X530-1)', async () => {
+    // The network's gateway is on it too, and Docker Desktop and
+    // docker-proxy hand on outside connections from there: a proxy of one's
+    // own that adds to what a caller wrote passes on a forged address behind it.
+    const owners = ['172.19.0.5/16', '127.0.0.1/8', '::1/128'];
+    const forged = await seen('172.19.0.9', '203.0.113.7, 172.19.0.1', {}, owners);
+    expect(forged.meta).toBe('172.19.0.1');
+    expect((await seen(NGINX, `${PHONE}, ${CADDY}`)).meta).toBe(CADDY);
   });
 
   it('a forged non-address in X-Forwarded-For is ignored, not a 500', async () => {

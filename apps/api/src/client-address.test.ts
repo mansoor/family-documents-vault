@@ -58,8 +58,16 @@ describe('the networks the API is on', () => {
 
 describe('which proxies a mode believes', () => {
   const networks = () => ['172.18.0.3/16'];
-  it('network: the ones the API is on; private: every private range; all; none', () => {
-    expect(trustProxyFor('network', networks)).toEqual(['172.18.0.3/16']);
+  it('network: a peer on the networks the API is on, for one hop; private: every private range; all; none', () => {
+    const network = trustProxyFor('network', networks) as (a: string, hop: number) => boolean;
+    expect(typeof network).toBe('function');
+    expect(network('172.18.0.5', 0)).toBe(true);
+    expect(network('::ffff:172.18.0.5', 0)).toBe(true);
+    // The gateway is on the network, and is the peer's only: never the next hop.
+    expect(network('172.18.0.1', 1)).toBe(false);
+    expect(network('172.18.0.5', 1)).toBe(false);
+    expect(network('192.168.1.50', 0)).toBe(false);
+    expect(network('<script>', 0)).toBe(false);
     expect(trustProxyFor('private', networks)).toEqual(
       expect.arrayContaining(['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']),
     );

@@ -191,4 +191,23 @@ describe.skipIf(!testAdminUrl())('token families (5.30)', () => {
     expect(why(await refresh(legacy)).reason).toBe('reused');
     expect(why(await refresh(moved.refresh_token)).reason).toBe('reused');
   });
+
+  it('a token from before families, spent twice by a thief before the owner presents it, ends the session as reused (the 5.30 review, T530-01)', async () => {
+    const t = await signIn();
+    const sid = sessionOf(t);
+    const legacy = `${t.household_id}.${randomBytes(32).toString('base64url')}`;
+    await admin.query('update session set refresh_hash = $1 where id = $2', [
+      createHash('sha256').update(legacy).digest(),
+      sid,
+    ]);
+    // The thief refreshes the copied token, and then its successor.
+    const thief1 = await refreshed(legacy);
+    const thief2 = await refreshed(thief1.refresh_token);
+    // The owner's device, idle since before the upgrade, presents it now.
+    const owner = await refresh(legacy);
+    expect(owner.statusCode).toBe(401);
+    expect(why(owner)).toMatchObject({ code: 'session_ended', reason: 'reused' });
+    expect(await revokedReason(sid)).toBe('refresh token reuse');
+    expect(why(await refresh(thief2.refresh_token)).reason).toBe('reused');
+  });
 });

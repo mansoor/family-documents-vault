@@ -3168,7 +3168,10 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       session holds.
     - **Changed:** a role change that takes away `upload_request.create`
       closed their requests already (A39); it now says how many, and a line
-      says so.
+      says so. Only live ones are counted, and have an `upload_request.closed`
+      line: one that had run out, or locked itself after ten wrong tries, is
+      closed too, with no line, as for any change that takes asking away
+      (0053 narrows what `upload_requests_close_lost()` returns).
     - **Changed: token families.** Every refresh token names its session:
       `household.session.secret`, the secret 16 random bytes and 16 of an
       HMAC under a key derived from the master key. Any token the vault made
@@ -3180,19 +3183,28 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       arrived is unchanged. A token that names a session but whose tag is
       not the vault's ends nothing (`revoked`). Treat refresh tokens as
       opaque, as ever: a token from before (`household.secret`) still
-      refreshes, and is answered with one of a family. A spent token of a
-      session that has ended says why it ended, as the token just replaced
-      always did.
+      refreshes, and is answered with one of a family; the vault keeps it
+      with the tokens a grace touched, so it too ends the session if it is
+      ever presented again. A spent token of a session that has ended says
+      why it ended, as the token just replaced always did.
     - **Changed: trusted proxies.** `FDV_TRUST_PROXY` gains `network`, the
       new default: `X-Forwarded-For` is believed only from the networks the
       API's own container is on (nginx and Caddy in the compose setup),
-      never from a device on the LAN. `private` (the old default, every
+      never from a device on the LAN, and only the one address that peer
+      wrote last: a proxy of one's own must overwrite the header, not add to
+      it. `private` (the old default, every
       private address), `all` and `none` stay. nginx passes on the address a
       request came from and nothing the caller wrote; the TLS overlay's
       Caddy sends `/api/*`, `/healthz` and `/readyz` to the API itself, and
-      binds `:8080` to `127.0.0.1`. An `X-Forwarded-For` entry that is not an
+      binds `:8080` to `127.0.0.1`; there Caddy bounds a request's headers (10
+      seconds), its whole body (30 minutes) and an idle connection (2
+      minutes), as nginx did. An `X-Forwarded-For` entry that is not an
       address is not believed — the address recorded is the last good one —
       where it was a `500`.
+    - **Changed:** an upload over the size limit (`POST /documents/{id}/versions`,
+      `POST /capture`) is answered `413 too_large` as before, and if the
+      client is still sending five seconds later the connection is closed;
+      until now the rest was read to nowhere for as long as it came.
     - The activity log: **new** `member.signed_out_everywhere` ("Mansoor
       signed Sara out everywhere"; oneself, "… signed out of every other
       device") with `detail.sessions` (and `detail.self`), notable;

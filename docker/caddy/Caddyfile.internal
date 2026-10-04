@@ -16,6 +16,19 @@
 	# No public CA is contacted in this mode. Plain http:// is answered
 	# with a redirect to https://, so nobody has to remember the scheme.
 	admin off
+	# What nginx bounded on :8080 is bounded here (the 5.30 review, X530-3),
+	# as the API's requests now come to it straight from Caddy: a request's
+	# headers within 10 seconds; the whole of it, an upload as large as
+	# FDV_MAX_UPLOAD_BYTES (100 MB unless raised) on a slow home connection
+	# included, within 30 minutes; a connection left idle, 2 minutes. The
+	# API cuts off an upload over its limit itself.
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30m
+			idle 2m
+		}
+	}
 }
 
 {$FDV_HOSTNAME:vault.local} {
