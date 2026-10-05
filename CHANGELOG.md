@@ -6,6 +6,29 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.34] - 2026-10-05 — iteration 5.32
+
+Limiting what a viewer can see, enforced by the database. The screens for setting limits come in the next release.
+
+### Added
+
+- **A viewer's access can be limited** to the documents of certain people, certain kinds of document, or certain Everyone collections. An owner can also include adults-only documents, and documents that belong to no one.
+  - A limited viewer always sees their own documents, never anyone else's Only me documents, and nothing of anyone else's when nothing is named.
+  - The limits can end on a date. Once they end, the viewer sees nothing until an owner looks again.
+- The limits belong to the person, so taking their sign-in away and giving it back keeps them, and an owner is asked to confirm them again.
+- After a restore, the screen that lists the sign-ins to turn back on shows each limited viewer's limits.
+
+### Changed
+
+- The database itself keeps a limited viewer inside their limits. Everything follows them: documents and their files, pages, text, reminders, links, collections, people, kinds, activity lines, sessions and exports.
+- A limited person can only be a viewer. To give them another role, an owner removes their limits first.
+- A share link lends no more than its maker may see now. A link made by someone whose access was later limited is paused for anything outside their limits.
+- Deleting a kind or person that limits named narrows what the viewer sees; it never widens it.
+
+### Fixed
+
+- Document lists no longer read each document's versions one by one.
+
 ## [0.5.33] - 2026-10-04 — iteration 5.30
 
 Role changes reach every device; sign out everywhere.
