@@ -169,6 +169,10 @@ export function registerAuth(
       // 5.33: what an owner has limited this viewer to, in their own words;
       // null for anybody not restricted.
       restriction: restrictions ? await restrictions.mine(p) : null,
+      // 5.34: a guest from outside the family — a viewer, always limited —
+      // and when their sign-in ends (A28).
+      kind: p.guest ? 'guest' : 'family',
+      access_expires_at: p.accessExpiresAt?.toISOString() ?? null,
     };
   });
 

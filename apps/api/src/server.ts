@@ -24,6 +24,7 @@ import { HouseholdService } from './household/service.js';
 import { IdentityService } from './household/identity.js';
 import { LockService } from './household/locks.js';
 import { RestrictionService } from './household/restrictions.js';
+import { GuestService } from './household/guests.js';
 import { OwnerResetService } from './household/owner-resets.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
@@ -221,6 +222,8 @@ async function main(): Promise<void> {
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
     restrictions: new RestrictionService(db, alert),
+    // 5.34: a guest's sign-in renewed by an owner (A28).
+    guests: new GuestService(db),
     resets,
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
       enqueue,

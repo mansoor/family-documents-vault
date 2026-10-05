@@ -106,6 +106,17 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {/* Guests (5.34): who outside the family has a sign-in, until when. */}
+        {caps?.features.guests && session.info?.role === 'owner' && (
+          <li>
+            <Link to="/settings/guests" className="rowbtn">
+              <span className="doc-title">People outside the family</span>
+              <span className="muted">
+                Guests with a sign-in: what they can see, and until when
+              </span>
+            </Link>
+          </li>
+        )}
         {mayShare && (
           <li>
             <Link to="/settings/sharing" className="rowbtn">

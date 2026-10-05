@@ -1812,6 +1812,113 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it("notices a guest's guards gone, the accounts' rule gone, and a backup where a guest is not one (0056)", async () => {
+    // The guards: each by name, on its table, firing.
+    for (const [table, trigger] of [
+      ['member', 'member_kind_fixed'],
+      ['document', 'document_owner_not_guest'],
+      ['account_household', 'account_household_guest'],
+      ['account_household', 'account_household_guest_limited'],
+      ['access_restriction', 'access_restriction_guest_kept'],
+      ['member_identity', 'member_identity_not_guest'],
+      ['scope_key', 'scope_key_not_guest'],
+    ]) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    // Whose accounts somebody signed in reads.
+    const { rows: rules } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = 'account_reach'`,
+    );
+    const qual = (rules[0] as { qual: string }).qual;
+    await sql(vault.adminUrl, 'drop policy account_reach on public.account');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/no rule says .*account_reach/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy account_reach on public.account as restrictive using (${qual})`,
+      );
+    }
+
+    // A backup loads past the guards: what it holds is asked.
+    const { rows: hhs } = await sql(vault.adminUrl, 'select id from household limit 1');
+    const hh = (hhs[0] as { id: string }).id;
+    const guest = randomUUID();
+    const account = randomUUID();
+    await sql(
+      vault.adminUrl,
+      `insert into member (id, household_id, display_name, kind) values ($1, $2, 'Gwen', 'guest')`,
+      [guest, hh],
+    );
+    try {
+      // A guest owning a document.
+      await sql(
+        vault.adminUrl,
+        'alter table public.document disable trigger document_owner_not_guest',
+      );
+      try {
+        await sql(
+          vault.adminUrl,
+          `insert into document (household_id, title, owner_member_id) values ($1, 'Hers', $2)`,
+          [hh, guest],
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.document enable trigger document_owner_not_guest',
+        );
+      }
+      await expect(checkRestored(target())).rejects.toThrow(/a guest owns 1 documents/);
+      await sql(vault.adminUrl, 'delete from document where owner_member_id = $1', [guest]);
+      // A guest signed in with no restriction.
+      await sql(vault.adminUrl, 'insert into account (id, email) values ($1, $2)', [
+        account,
+        `gwen-${account}@example.test`,
+      ]);
+      await sql(
+        vault.adminUrl,
+        `insert into account_household (account_id, household_id, member_id, role, access_expires_at)
+         values ($1, $2, $3, 'viewer', now() + interval '10 days')`,
+        [account, hh, guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(
+        /1 guests could sign in with no restriction/,
+      );
+      // Limited, and with an end: a guest, as they should be.
+      await sql(
+        vault.adminUrl,
+        'insert into access_restriction (member_id, household_id) values ($1, $2)',
+        [guest, hh],
+      );
+      expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      // A sign-in of the family's with an end.
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '1 day'
+          where member_id <> $1 and role = 'owner'`,
+        [guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(/sign-ins of the family have an end/);
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = null where member_id <> $1`,
+        [guest],
+      );
+    } finally {
+      await sql(vault.adminUrl, 'delete from member where id = $1', [guest]);
+      await sql(vault.adminUrl, 'delete from account where id = $1', [account]);
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {

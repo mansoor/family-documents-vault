@@ -8,6 +8,7 @@ import {
   suspensionInEffect,
   type MemberAccount,
   type MemberAccountDevice,
+  type MemberKind,
   type ResetPath,
   type Role,
 } from '@fdv/shared';
@@ -129,7 +130,17 @@ export interface MemberView {
    * alone, who read every restriction (0054); null for no limits.
    */
   restriction?: { summary: string } | null;
+  /**
+   * Of the family, or a guest from outside it (5.34). The family's list
+   * names a guest only to themselves; an owner lists the guests on their own.
+   */
+  kind: MemberKind;
+  /** When a guest's sign-in ends (A28): to an owner and the guest; null otherwise. */
+  access_expires_at: string | null;
 }
+
+/** Which people GET /members lists (5.34): the family, or, for an owner, the guests. */
+export type MembersOf = 'family' | 'guests' | 'everybody';
 
 export class HouseholdService {
   constructor(
@@ -244,7 +255,16 @@ export class HouseholdService {
     return this.profile(p);
   }
 
-  async members(p: Principal): Promise<MemberView[]> {
+  /**
+   * The people GET /members lists (5.34): the family — a guest is never
+   * among them, but for themselves, to themselves (A27, D4); or, for an
+   * owner, the guests alone (`?kind=guest`), each with their limits and when
+   * their sign-in ends. Anybody else asking for the guests is refused.
+   */
+  async members(p: Principal, of: MembersOf = 'family'): Promise<MemberView[]> {
+    if (of !== 'family' && p.role !== 'owner') {
+      throw new ApiError(403, 'forbidden', 'Only an owner sees the people outside the family.');
+    }
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await trx
         .selectFrom('member')
@@ -262,8 +282,16 @@ export class HouseholdService {
           'member.colour',
           'member.former_account_id',
           'member.version',
+          'member.kind',
           'account_household.role',
+          'account_household.access_expires_at',
         ])
+        .$if(of === 'family', (q) =>
+          q.where((eb) =>
+            eb.or([eb('member.kind', '=', 'family'), eb('member.id', '=', p.memberId)]),
+          ),
+        )
+        .$if(of === 'guests', (q) => q.where('member.kind', '=', 'guest'))
         .orderBy('member.created_at')
         .execute();
       const counts = await trx
@@ -323,14 +351,26 @@ export class HouseholdService {
             { id: r.id, role: r.role },
           ),
           ...(limits ? { restriction: limits.get(r.id) ?? null } : {}),
+          kind: r.kind,
+          // A guest's end: to an owner, and to the guest themselves.
+          access_expires_at:
+            r.kind === 'guest' && (p.role === 'owner' || r.id === p.memberId)
+              ? (r.access_expires_at?.toISOString() ?? null)
+              : null,
         };
       });
     });
   }
 
-  /** One person, as `members` gives them; 404 when the caller is not given them. */
+  /**
+   * One person, as `members` gives them; 404 when the caller is not given
+   * them. An owner is given a guest too (5.34), whom the family's list
+   * leaves out.
+   */
   async member(p: Principal, id: string): Promise<MemberView> {
-    const found = (await this.members(p)).find((m) => m.id === id.toLowerCase());
+    const found = (await this.members(p, p.role === 'owner' ? 'everybody' : 'family')).find(
+      (m) => m.id === id.toLowerCase(),
+    );
     if (!found) throw new ApiError(404, 'not_found', 'That person is not in the family.');
     return found;
   }
@@ -563,6 +603,8 @@ export class HouseholdService {
           'account_household.suspended_until',
           'account_household.suspend_reason',
           'account_household.suspend_note',
+          'account_household.access_expires_at',
+          'member.kind',
           'account.email',
           'account.totp_confirmed_at',
         ])
@@ -653,6 +695,9 @@ export class HouseholdService {
             : null,
         max_offline_days: this.maxOfflineDays,
         ...(this.resetPath ? { reset_path: resetPath ?? null } : {}),
+        // A guest's sign-in, and when it ends (5.34, A28).
+        kind: row.kind,
+        access_expires_at: row.access_expires_at?.toISOString() ?? null,
       };
     });
   }

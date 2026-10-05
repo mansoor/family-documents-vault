@@ -2,6 +2,7 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   ACCESS_GRANT_MAX,
   can,
+  GUEST_ALWAYS_LIMITED,
   mayBeRestricted,
   onlyEveryone,
   restrictionSummary,
@@ -251,8 +252,15 @@ export async function checkGrant(
   const types = [...new Set(grant.types ?? [])];
   const asked = [...new Set((grant.collections ?? []).map((c) => c.toLowerCase()))];
   let collections = asked;
+  // People of the family: a guest owns no document, so is nobody's way in
+  // (5.34), and is not offered.
   if (people.length > 0) {
-    const found = await trx.selectFrom('member').select('id').where('id', 'in', people).execute();
+    const found = await trx
+      .selectFrom('member')
+      .select('id')
+      .where('id', 'in', people)
+      .where('kind', '=', 'family')
+      .execute();
     if (found.length !== people.length) throw invalid('Choose people from the family.', 'people');
   }
   if (types.length > 0) {
@@ -588,7 +596,9 @@ export class RestrictionService {
    * DELETE /members/{id}/access: their limits taken off, and with them any
    * confirmation still waiting (`reconfirm_since`). Owners only. Somebody
    * with none: nothing to do, and nothing logged. A viewer with no limits
-   * sees every family document but the Adults only ones.
+   * sees every family document but the Adults only ones. A guest is always
+   * limited (5.34): `409 guest_always_limited`, whether or not they can sign
+   * in, and the database refuses it too while they can (0056).
    */
   async remove(p: Principal, memberId: string, meta: RequestMeta): Promise<{ removed: boolean }> {
     requireCapability(p, 'role.change');
@@ -597,11 +607,14 @@ export class RestrictionService {
       await holdHousehold(trx);
       const person = await trx
         .selectFrom('member')
-        .select(['id'])
+        .select(['id', 'kind'])
         .where('id', '=', memberId)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!person) throw notFound();
+      if (person.kind === 'guest') {
+        throw new ApiError(409, 'guest_always_limited', GUEST_ALWAYS_LIMITED);
+      }
       await trx
         .selectFrom('account_household')
         .select(['account_id'])
@@ -882,6 +895,9 @@ export class RestrictionService {
           limits_types: r.limits_types,
         },
         hh.timezone,
+        Date.now(),
+        // A guest owns nothing (5.34): "and your own" is not theirs.
+        { own: !p.guest },
       );
       return {
         summary,

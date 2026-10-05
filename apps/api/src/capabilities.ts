@@ -1,4 +1,10 @@
-import { API_VERSION, PRODUCT_ID, type Capabilities, type Edition } from '@fdv/shared';
+import {
+  API_VERSION,
+  GUEST_MAX_DAYS,
+  PRODUCT_ID,
+  type Capabilities,
+  type Edition,
+} from '@fdv/shared';
 
 export interface CapabilityConfig {
   serverVersion: string;
@@ -111,6 +117,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.33: an owner limits what a viewer can see (A56-A59), and an
       // invitation for a viewer carries its limits (A27).
       access_restrictions: true,
+      // 5.34: someone outside the family with a sign-in of their own: a
+      // viewer, always limited, ending within a year (D4, A28).
+      guests: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,
@@ -118,6 +127,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       max_storage_bytes: null,
       // 5.18 review: a client offers only ends the vault will take.
       share_max_days: config.shareMaxDays ?? 90,
+      // 5.34 (A28): a guest's sign-in ends within this many days.
+      guest_max_days: GUEST_MAX_DAYS,
     },
     deprecations: DEPRECATIONS,
     branding: { display_name: config.displayName },

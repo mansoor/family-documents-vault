@@ -3444,6 +3444,130 @@ forbidden` ("Only an owner can invite a viewer who sees every family
       `removeMemberAccess`, `previewAccess`, and `invite`'s `restriction`;
       the fake keeps limits, counts them by the vault's rule, and tells a
       restricted viewer on `/me`.
+  - Someone outside the family (5.34, `features.guests`; D4, A27, A28,
+    A34, A54). A guest is an attorney or an accountant with a sign-in of
+    their own: on the wire a **viewer** (`role: "viewer"`) with `kind:
+"guest"`, so an older phone treats them as one; always limited; their
+    sign-in ends on a day within a year, which an owner renews; never shown
+    among the family.
+    - **Added:** an invitation takes `kind` (`family`, the default, or
+      `guest`), `access_expires_at` and `relationship` (somebody new's
+      relationship to the family; for a guest what they are to it,
+      "attorney", 60 characters at most). A guest's invitation is a viewer's
+      (`422` otherwise), always with `restriction` (`422`, "A guest is
+      always limited to what they are given. Choose what they can see."),
+      and with `access_expires_at` in the future and within
+      `limits.guest_max_days` (366) days (`422`); nobody else's has an end
+      (`422`). An existing person invited as a guest must be one (`409
+not_a_guest`), and a guest invited as one of the family is `409
+guest`. An adult may invite a guest limited to what the adult sees,
+      never with Adults only documents (A27, `403 forbidden`). Accepting
+      gives the sign-in its end, and its limits in the same transaction.
+      Accepting one whose end has passed is `409 access_ended`. The
+      invitation list's items and the invitation preview (`POST
+/invitations/lookup`) gain `kind` and `access_expires_at`.
+    - **Changed (stricter owner invitations):** an owner's invitation that
+      decides what a viewer sees — a viewer who sees every family document
+      (no `restriction`), Adults only documents for a viewer or a guest
+      (`include_adults_only`), or limits that would replace limits already
+      set on that person (the 5.33 review, S533-02) — is an owner power
+      (A54), asked as `PUT /members/{id}/access` is: an owner with neither
+      two-step sign-in nor a passkey `403 totp_required_for_owner` ("Turn on
+      two-step sign-in to limit what a viewer can see."), any other without
+      a passkey or a code within five minutes `403 step_up_required`
+      (`limit_access`), never the password. It is asked after the body's
+      shape and the guest's and adult's refusals, before anything else. A
+      guest or a viewer limited to what the owner sees, with no Adults only
+      documents, asks only the ordinary step-up (`change_people`), as an
+      adult's does.
+    - **Added:** `GET /me` gains `kind` and `access_expires_at` (a guest's
+      end; null for the family). A guest's `restriction` is never null.
+    - **Changed:** `GET /members` lists the family: a guest is never among
+      them, to anybody, but for a guest themselves, to themselves. Each
+      person gains `kind` and `access_expires_at` (a guest's end, to an
+      owner and to the guest). `GET /members?kind=guest` lists the people
+      outside the family, with their `restriction` and end, for owners
+      alone (anybody else `403 forbidden`). `GET /members/{id}/account`
+      gains `kind` and `access_expires_at`, and a guest's `access`.
+    - **Added:** `POST /api/v1/members/{id}/renew` with `{ access_expires_at
+}` renews a guest's sign-in, sooner or later, within a year, and
+      answers `{ member_id, access_expires_at }`. Refused in this order:
+      anybody but an owner `403 forbidden`; a body of the wrong shape `422`;
+      an owner power with **new** step-up action `renew_guest` (`403
+totp_required_for_owner`, "Turn on two-step sign-in to renew a guest's
+      sign-in."; `403 step_up_required`; `FACTOR_STEP_UPS` lists it); an end
+      not in the future, or more than a year away, `422`; nobody with a
+      sign-in `404`; somebody of the family `409 not_a_guest`. Logged as
+      `member.access_renewed` ("Mansoor renewed the sign-in of Guest — Jane
+      Smith, attorney until 4 January 2027"), notable, for the owners, the
+      guest and whoever did it.
+    - **Added:** a guest's sign-in past its end stops: every session of
+      theirs answers `401 session_ended` with the **new** reason
+      `access_ended` (a refresh too), so every client, an older one too,
+      goes back to its sign-in; signing in again is refused, once the
+      password (and code) are right, `403 access_ended`, with the day it
+      ended on the household's clock ("Your access to this family vault
+      ended Monday 5 October at 09:00 (Europe/London). Ask whoever invited
+      you to renew it."). The database gives an ended guest nothing either,
+      and the worker sends them no digest and no alert.
+    - **Added:** `POST /members/{id}/sign-in` (giving a sign-in back) takes
+      `access_expires_at`: a guest's comes back as a viewer's only (`409
+guest`), always with a new end (`422` without one), asked as renewing
+      is (`renew_guest`); nobody else's takes one (`422`). Their limits stay,
+      and the owners are asked to confirm them again (5.32).
+    - **Changed:** a guest is a viewer and nothing else: `POST
+/members/{id}/role` for a guest is `409 guest` ("Jane Smith is from
+      outside the family: a guest is always a viewer, limited to what they
+      are given."). `DELETE /members/{id}/access` for a guest is `409
+guest_always_limited`. A guest owns no document, by any path — made,
+      changed or handed over (`POST`/`PATCH /documents`), captured, a file
+      sent in filed as theirs: `422 validation_failed` ("A guest owns no
+      documents. Choose someone in the family.", `detail:
+"owner_member_id"`). A guest is nobody's way in to a viewer's limits
+      (`422`, "Choose people from the family."), has no identity record (`GET
+/members/{id}/identity` `404`, their own too; never told of a widening,
+      A34) and no member key, is given no suggestions, and never holds a
+      widening of who sees identity details back.
+    - **Changed (hardening, R532-04's remainder):** somebody signed in reads
+      their own account and those of the household's sign-ins (and of its
+      people whose sign-in was taken away), never another household's. No
+      route answers differently.
+    - With no member key, a guest's sign-in, refresh, password change (with
+      the current password, or after a passkey or a code) and a reset by
+      either path an owner starts all work; their reset's path is
+      `handover` unless the vault has a mail server (5.29: only an unexpired
+      export of theirs could stand in the way, and a viewer makes none).
+      `POST /exports` is `403` (adults only, as for every viewer) and `POST
+/offline/grant` is `403` ("People outside the family can't keep
+      documents on a phone."), as for every viewer.
+    - The activity log names a guest as one: "Guest — Jane Smith, attorney"
+      (their name, and their relationship to the family when there is one),
+      whether they did it or it is about them. `invitation.created` for a
+      guest says "… invited jane@example.com to sign in as a guest until 4
+      November 2026"; `member.added` "… added Jane Smith as a guest from
+      outside the family".
+    - The database: 0056 adds `member.kind` (`family` or `guest`, fixed once
+      made), `account_household.access_expires_at` (a guest's alone, always
+      set, within a year) and `invitation.kind` and
+      `.access_expires_at`; guards that a guest owns no document (SQLSTATE
+      `FDV04`), is a viewer (`FDV03`), never signs in without a restriction
+      nor loses it while signed in (both as the transaction commits), and
+      has no identity details and no member key; `app_restricted()` is true
+      for every guest, so a guest whose restriction row is missing sees
+      nothing; a guest's grant gives nothing past their end; and the
+      `account_reach` rule above. The restore check knows each, and fails a
+      backup in which a guest owns a document, signs in unrestricted or
+      without an end, or has a member key or identity details.
+    - `@fdv/shared`: `MemberKind`, `GUEST_MAX_DAYS`, `GUEST_DEFAULT_DAYS`,
+      `GUEST_DESCRIPTION_MAX`, `guestLabel`, `guestEndProblem`,
+      `guestAccessEnded`, `guestAccessEndedWords`, `GUEST_ONLY_VIEWER`,
+      `GUEST_ALWAYS_LIMITED`, `GUEST_OWNS_NOTHING`, `GuestRenewal`, `kind`
+      and `access_expires_at` on `Me`, `Member`, `MemberAccount`,
+      `Invitation` and `InvitationPreview`, `features.guests` and
+      `limits.guest_max_days`. `@fdv/client`: `guests`, `renewGuest`,
+      `restoreSignIn`'s end, and `invite`'s `kind`, `access_expires_at` and
+      `relationship`; the fake keeps guests and invitations, refuses as the
+      vault does, and ends a guest's sign-in at its end.
 
 ## Deprecations in effect
 

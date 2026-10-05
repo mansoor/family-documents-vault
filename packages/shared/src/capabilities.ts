@@ -180,6 +180,15 @@ export interface CapabilityFeatures {
    * they can see. Absent from older vaults, which limit nobody this way.
    */
   access_restrictions?: boolean;
+  /**
+   * Someone outside the family with a sign-in of their own (5.34, D4, A28):
+   * an invitation with `kind: 'guest'` — always a viewer's, always limited,
+   * with `access_expires_at` within a year (`limits.guest_max_days`). A guest
+   * is `role: 'viewer'` and `kind: 'guest'` on /me and GET /members; owners
+   * list them with GET /members?kind=guest and renew them with POST
+   * /members/{id}/renew (`renew_guest`). Absent from older vaults.
+   */
+  guests?: boolean;
 }
 
 export interface CapabilityLimits {
@@ -194,6 +203,8 @@ export interface CapabilityLimits {
    * Absent from older vaults, which take 90.
    */
   share_max_days?: number;
+  /** The longest a guest's sign-in lasts before an owner renews it, in days (5.34, A28). */
+  guest_max_days?: number;
 }
 
 export interface Deprecation {

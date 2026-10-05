@@ -194,7 +194,18 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
 
     // ---------------------------------------------------------- people
     case 'member.added':
-      return line(`${who} added ${nameOf(detail, 'display_name')} to the family`);
+      // A guest (5.34) is never said to be of the family.
+      return detail.kind === 'guest'
+        ? line(`${who} added ${nameOf(detail, 'display_name')} as a guest from outside the family`)
+        : line(`${who} added ${nameOf(detail, 'display_name')} to the family`);
+    // A guest's sign-in renewed (5.34, A28): until when, on the household's clock.
+    case 'member.access_renewed': {
+      const until = text(detail.access_expires_at);
+      return line(
+        `${who} renewed the sign-in of ${personOf(e)}${until ? ` until ${dayWords(until, e.timezone)}` : ''}`,
+        true,
+      );
+    }
     case 'member.role_changed':
       return line(
         `${who} changed what ${e.object_title ?? 'somebody'} can do: ${roleWords(detail.to)}`,
@@ -352,8 +363,17 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)
         : line(`${who} took back the record that ${personOf(e)} has passed away`, true);
-    case 'invitation.created':
+    case 'invitation.created': {
+      // A guest's (5.34): from outside the family, until a day.
+      if (detail.kind === 'guest') {
+        const until = text(detail.access_expires_at);
+        return line(
+          `${who} invited ${nameOf(detail, 'email')} to sign in as a guest${until ? ` until ${dayWords(until, e.timezone)}` : ''}`,
+          true,
+        );
+      }
       return line(`${who} invited ${nameOf(detail, 'email')} to sign in`, true);
+    }
     case 'invitation.accepted':
       return line(`${nameOf(detail, 'email')} accepted their invitation and can now sign in`, true);
     case 'invitation.revoked':

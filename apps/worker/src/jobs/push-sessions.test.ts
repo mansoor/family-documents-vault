@@ -158,6 +158,59 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
     }
   });
 
+  it("a guest's sign-in past its end is pushed nothing but of its own sign-in (5.34)", async () => {
+    const deps = { app: db, vapid, smtpKey, baseUrl: 'x', log: () => undefined };
+    // Somebody outside the family, limited, whose sign-in ended a minute ago
+    // (written as the owning role: nobody signed in may set it so).
+    const g = await admin.query<{ id: string }>(
+      "insert into member (household_id, display_name, kind) values ($1, 'Gwen', 'guest') returning id",
+      [hh],
+    );
+    const guest = g.rows[0]?.id as string;
+    const a = await admin.query<{ id: string }>(
+      "insert into account (email) values ('gwen-sessions-534@example.test') returning id",
+    );
+    const gwen = a.rows[0]?.id as string;
+    await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
+      guest,
+      hh,
+    ]);
+    await admin.query(
+      `insert into account_household (account_id, household_id, member_id, role, access_expires_at)
+       values ($1, $2, $3, 'viewer', now() + interval '10 days')`,
+      [gwen, hh, guest],
+    );
+    const s = await admin.query<{ id: string }>(
+      `insert into session (account_id, household_id, refresh_hash, expires_at)
+       values ($1, $2, $3, now() + interval '30 days') returning id`,
+      [gwen, hh, randomBytes(32)],
+    );
+    await admin.query(
+      `insert into device (household_id, account_id, endpoint, p256dh, auth, session_id)
+       values ($1, $2, $3, 'k', 'a', $4)`,
+      [hh, gwen, `https://push.example.test/${hh}/gwen-phone`, s.rows[0]?.id],
+    );
+    const alert = { household_id: hh, account_ids: [gwen], subject: 'A new device', body: 'b' };
+    // Still running: told.
+    let endpoints = pushedTo();
+    await sendAlert(deps, alert);
+    expect(endpoints).toEqual(['gwen-phone']);
+    vi.restoreAllMocks();
+    // Ended: nothing, but of her own sign-in.
+    await admin.query(
+      `update account_household set access_expires_at = now() - interval '1 minute'
+        where account_id = $1`,
+      [gwen],
+    );
+    endpoints = pushedTo();
+    await sendAlert(deps, alert);
+    expect(endpoints).toEqual([]);
+    vi.restoreAllMocks();
+    endpoints = pushedTo();
+    await sendAlert(deps, { ...alert, own_sign_in: true });
+    expect(endpoints).toEqual(['gwen-phone']);
+  });
+
   it('once every sign-in has ended, nothing is sent anywhere', async () => {
     await withSystem(db, hh, (trx) =>
       trx.updateTable('session').set({ revoked_at: new Date() }).execute(),

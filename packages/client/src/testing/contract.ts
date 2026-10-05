@@ -1965,6 +1965,107 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'an owner invites someone outside the family: a guest is a viewer, always limited, never among the family, with an end an owner renews (5.34)',
+    run: async (api, ctx) => {
+      const caps = await api.capabilities();
+      expect(caps.features.guests).toBe(true);
+      expect(caps.limits.guest_max_days).toBe(366);
+      const first = await signIn(api, ctx);
+      const sixth = { email: 'sixth-owner@example.test', password: 'the sixth owner’s password' };
+      const sixthId = await ctx.addSignIn(first.access_token, {
+        name: 'Sixth Owner',
+        role: 'owner',
+        ...sixth,
+      });
+      const owner = await signInAs(api, sixth.email, sixth.password);
+      await ctx.ownerTwoStep(owner.access_token);
+      const day = 24 * 60 * 60 * 1000;
+      const at = (days: number) =>
+        new Date(Math.floor(Date.now() / 1000) * 1000 + days * day).toISOString();
+      const grant = { people: [sixthId], types: ['bank_statement'] };
+      const asked = {
+        display_name: 'Jane Smith',
+        relationship: 'attorney',
+        email: 'guest-attorney@example.test',
+        role: 'viewer' as const,
+        kind: 'guest' as const,
+        restriction: grant,
+        access_expires_at: at(30),
+      };
+
+      // A guest is a viewer, always limited, with an end within a year.
+      const unlimited = { ...asked, restriction: null };
+      expect(await refusal(api.invite(owner.access_token, unlimited))).toMatchObject({
+        status: 422,
+        code: 'validation_failed',
+      });
+      expect(
+        await refusal(api.invite(owner.access_token, { ...asked, access_expires_at: at(400) })),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+      expect(
+        await refusal(api.invite(owner.access_token, { ...asked, role: 'adult' })),
+      ).toMatchObject({ status: 422, code: 'validation_failed' });
+
+      const made = await api.invite(owner.access_token, asked);
+      expect(made.invitation).toMatchObject({
+        kind: 'guest',
+        role: 'viewer',
+        limited: true,
+        access_expires_at: asked.access_expires_at,
+      });
+      const guest = await api.acceptInvitationLink(made.link_token, {
+        code: made.code,
+        password: 'the attorney’s own password',
+      });
+      expect(guest.role).toBe('viewer');
+      const me = await api.me(guest.access_token);
+      expect(me).toMatchObject({
+        role: 'viewer',
+        kind: 'guest',
+        access_expires_at: asked.access_expires_at,
+      });
+      // What she can see, in her words: nothing "of her own", a guest owns nothing.
+      expect(me.restriction?.summary).toMatch(/^You can see: .+ documents for Sixth Owner\.$/);
+
+      // Never among the family: an owner lists them apart.
+      const family = (await api.members(owner.access_token)).items;
+      expect(family.some((m) => m.id === guest.member_id)).toBe(false);
+      expect(family.every((m) => (m.kind ?? 'family') === 'family')).toBe(true);
+      const outside = (await api.guests(owner.access_token)).items;
+      expect(outside.map((m) => m.id)).toEqual([guest.member_id]);
+      expect(outside[0]).toMatchObject({
+        display_name: 'Jane Smith',
+        kind: 'guest',
+        access_expires_at: asked.access_expires_at,
+      });
+      // The guest sees themselves as one; nobody but an owner lists the guests.
+      const theirs = (await api.members(guest.access_token)).items;
+      expect(theirs.find((m) => m.id === guest.member_id)?.kind).toBe('guest');
+      expect(await refusal(api.guests(guest.access_token))).toMatchObject({ status: 403 });
+
+      // A viewer and nothing else; limited for good.
+      expect(
+        await refusal(api.setRole(owner.access_token, guest.member_id, 'adult')),
+      ).toMatchObject({ status: 409, code: 'guest' });
+      expect(
+        await refusal(api.removeMemberAccess(owner.access_token, guest.member_id)),
+      ).toMatchObject({ status: 409, code: 'guest_always_limited' });
+
+      // Renewed by an owner, within a year; only a guest's sign-in has an end.
+      expect(
+        await refusal(api.renewGuest(owner.access_token, guest.member_id, at(400))),
+      ).toMatchObject({ status: 422 });
+      expect(await refusal(api.renewGuest(owner.access_token, sixthId, at(60)))).toMatchObject({
+        status: 409,
+        code: 'not_a_guest',
+      });
+      const sixty = at(60);
+      const renewed = await api.renewGuest(owner.access_token, guest.member_id, sixty);
+      expect(renewed).toEqual({ member_id: guest.member_id, access_expires_at: sixty });
+      expect((await api.me(guest.access_token)).access_expires_at).toBe(sixty);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

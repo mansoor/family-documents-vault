@@ -20,6 +20,8 @@ type GeneratedTimestamp = ColumnType<Date, Date | string | undefined, Date | str
 type GeneratedJson = ColumnType<unknown, string | undefined, string>;
 
 export type Role = 'owner' | 'adult' | 'teen' | 'viewer';
+/** Of the family, or a guest from outside it (0056, 5.34): fixed once the person is made. */
+export type MemberKind = 'family' | 'guest';
 export type Visibility = 'household' | 'adults' | 'private';
 export type DatePrecision = 'day' | 'month' | 'year';
 /** Who a collection of documents is for (0036). */
@@ -80,6 +82,12 @@ export interface Schema {
     /** When those last changed, and by whom: null until they do (0046). */
     updated_at: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
     updated_by: Generated<string | null>;
+    /**
+     * Of the family, or a guest from outside it (0056, 5.34): never changed
+     * once made. A guest owns no document, has no member key and no identity
+     * details, and is always restricted.
+     */
+    kind: Generated<MemberKind>;
   };
 
   /**
@@ -181,6 +189,15 @@ export interface Schema {
     suspended_until: Timestamp | null;
     suspend_reason: 'locked' | 'restored' | null;
     suspend_note: string | null;
+    /**
+     * A guest's sign-in ends then (0056, 5.34, A28): within a year, renewed
+     * by an owner. Null for everybody of the family, always set for a guest.
+     */
+    access_expires_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
   };
 
   credential: {
@@ -297,6 +314,14 @@ export interface Schema {
      * written as JSON text, read back as the object. Null for none.
      */
     restriction: ColumnType<unknown, string | null | undefined, string | null>;
+    /** A guest's invitation (0056, 5.34): always a viewer's, limited, with an end. */
+    kind: Generated<MemberKind>;
+    /** When the guest's sign-in will end, once accepted; null for the family's. */
+    access_expires_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
   };
 
   private_notice: {

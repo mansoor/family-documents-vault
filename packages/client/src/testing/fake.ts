@@ -19,6 +19,12 @@ import {
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
+  GUEST_ALWAYS_LIMITED,
+  GUEST_MAX_DAYS,
+  GUEST_ONLY_VIEWER,
+  guestAccessEnded,
+  guestAccessEndedWords,
+  guestEndProblem,
   IDENTITY_AUDIENCES,
   IDENTITY_EDIT_REFUSAL,
   IDENTITY_NOTICE_HOURS,
@@ -77,8 +83,10 @@ import {
   type IdentityPart,
   type IdentityPartView,
   type IssuerSuggestions,
+  type Invitation,
   type MemberAccess,
   type MemberAccount,
+  type MemberKind,
   type MemberSuspension,
   type MyRestriction,
   type OfflineGrant,
@@ -165,7 +173,20 @@ export interface FakeVaultState {
     is_deceased?: boolean;
     version?: number;
     can_edit?: boolean;
+    /**
+     * Of the family, or a guest from outside it (5.34): a guest is left out
+     * of GET /members but for themselves, and an owner lists them with
+     * `?kind=guest`. Their sign-in ends at `access_expires_at`.
+     */
+    kind?: MemberKind;
+    access_expires_at?: string | null;
   }>;
+  /**
+   * Invitations (5.34): what POST /invitations makes and POST
+   * /invitations/accept spends — the person made at once (a guest never
+   * among the family), their sign-in, role, limits and end once accepted.
+   */
+  invitations: FakeInvitation[];
   /**
    * The owner's view of each person's sign-in (5.25), by member id: what
    * GET /members/{id}/account answers an owner with two-step sign-in. The
@@ -290,6 +311,15 @@ export interface FakeVaultState {
 }
 
 /** A viewer's limits, as the fake keeps them (5.33): the flags always said. */
+/** An invitation as the fake keeps it (5.34): its secrets in the clear, as only a fake may. */
+export interface FakeInvitation {
+  view: Invitation;
+  token: string;
+  code: string;
+  restriction: AccessGrant | null;
+  by_owner: boolean;
+}
+
 export interface FakeRestriction extends AccessGrant {
   limits_people: boolean;
   limits_types: boolean;
@@ -590,6 +620,7 @@ export function createFakeVault(): {
     })),
     attributes: FAKE_ATTRIBUTES.map((a) => ({ ...a })),
     members: [{ id: 'fake-member', display_name: 'Fake Owner', role: 'owner', is_me: true }],
+    invitations: [],
     photosOnTheirWay: new Map(),
     memberAccounts: new Map(),
     ownerTwoStep: false,
@@ -780,6 +811,13 @@ export function createFakeVault(): {
     if (state.operatorMail) return 'mail';
     return state.keepsPrivate.includes(memberId) ? 'operator' : 'handover';
   };
+  /** A guest's sign-in past its end (5.34, A28): it signs nobody in, and its sessions answer nothing. */
+  const guestEndOf = (memberId: string): string | null => {
+    const m = state.members.find((x) => x.id === memberId);
+    return m?.kind === 'guest' && guestAccessEnded(m.access_expires_at)
+      ? (m.access_expires_at as string)
+      : null;
+  };
   /** Everybody with a sign-in: the fake's own person, and each of `members` with a role. */
   const withSignIn = () => [
     ME,
@@ -876,6 +914,9 @@ export function createFakeVault(): {
           expires_at: r.expires_at,
         },
         state.timezone,
+        Date.now(),
+        // A guest owns nothing (5.34).
+        { own: state.members.find((m) => m.id === memberId)?.kind !== 'guest' },
       ),
       people,
       types,
@@ -1028,6 +1069,206 @@ export function createFakeVault(): {
     }
   };
 
+  /**
+   * POST /invitations (5.34), refused as the real vault refuses, in its
+   * order: who may invite for the role; a guest's own rules (a viewer,
+   * limited, an end within a year); an adult's viewer limited, without
+   * Adults only documents (A27); an owner's decision about what a viewer
+   * sees asks for two-step sign-in; an address already signed in with.
+   */
+  const invite = (who: { memberId: string; role: Role }, b: Record<string, unknown>) => {
+    const role = String(b.role) as Role;
+    if (!['owner', 'adult', 'teen', 'viewer'].includes(role)) {
+      return fail(422, 'validation_failed', 'Invalid option: expected one of the roles');
+    }
+    const capability =
+      role === 'owner' || role === 'adult' ? 'member.invite_adult' : 'member.invite';
+    if (!can(who.role, capability)) return fail(403, 'forbidden', refusalFor(capability));
+    const kind: MemberKind = b.kind === 'guest' ? 'guest' : 'family';
+    const shaped =
+      b.restriction && typeof b.restriction === 'object'
+        ? grantShape(b.restriction as Record<string, unknown>)
+        : null;
+    if (shaped && isResponse(shaped)) return shaped;
+    const end = typeof b.access_expires_at === 'string' ? b.access_expires_at : null;
+    if (kind === 'guest') {
+      if (role !== 'viewer') {
+        return fail(422, 'validation_failed', 'A guest is always a viewer.', 'role');
+      }
+      if (!shaped) {
+        return fail(
+          422,
+          'validation_failed',
+          'A guest is always limited to what they are given. Choose what they can see.',
+          'restriction',
+        );
+      }
+      const problem = end ? guestEndProblem(new Date(end)) : 'Choose the day their access ends.';
+      if (problem) return fail(422, 'validation_failed', problem, 'access_expires_at');
+    } else if (end) {
+      return fail(
+        422,
+        'validation_failed',
+        'Only a guest’s access ends on a day. Somebody of the family keeps theirs.',
+        'access_expires_at',
+      );
+    }
+    if (shaped && role !== 'viewer') {
+      return fail(422, 'validation_failed', 'Only a viewer can be limited to some documents.');
+    }
+    if (role === 'viewer' && who.role !== 'owner') {
+      if (!shaped) {
+        return fail(
+          403,
+          'forbidden',
+          'Only an owner can invite a viewer who sees every family document. Choose what they can see.',
+        );
+      }
+      if (shaped.include_adults_only) {
+        return fail(403, 'forbidden', 'Only an owner can let a viewer see Adults only documents.');
+      }
+    }
+    // An owner's decision (A27, D6, A54): a passkey or a code.
+    if (role === 'viewer' && (!shaped || shaped.include_adults_only) && !state.ownerTwoStep) {
+      return fail(
+        403,
+        'totp_required_for_owner',
+        'Turn on two-step sign-in to limit what a viewer can see.',
+      );
+    }
+    const email = typeof b.email === 'string' ? b.email.toLowerCase() : '';
+    if (email === state.email || state.signIns.some((x) => x.email.toLowerCase() === email)) {
+      return fail(
+        409,
+        'email_in_use',
+        'That email address already has a sign-in here. They can sign in with it instead.',
+      );
+    }
+    const checked = shaped ? checkedGrant(shaped) : null;
+    if (checked && isResponse(checked)) return checked;
+    let member =
+      typeof b.member_id === 'string' ? state.members.find((m) => m.id === b.member_id) : undefined;
+    if (typeof b.member_id === 'string') {
+      if (!member) return fail(404, 'not_found', 'That person is not in the family.');
+      if (member.role) return fail(409, 'already_signed_in', 'That person already has a sign-in.');
+      if ((member.kind ?? 'family') !== kind) {
+        return kind === 'guest'
+          ? fail(
+              409,
+              'not_a_guest',
+              `${member.display_name} is of the family. A guest is somebody from outside it: invite them by their name.`,
+            )
+          : fail(
+              409,
+              'guest',
+              `${member.display_name} is from outside the family. Invite them as a guest.`,
+            );
+      }
+      // Limits replacing those already set (S533-02): a passkey or a code.
+      if (checked && state.restrictions.has(member.id) && !state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to limit what a viewer can see.',
+        );
+      }
+    } else {
+      member = {
+        id: next('member'),
+        display_name: typeof b.display_name === 'string' ? b.display_name : '',
+        role: '',
+        is_me: false,
+        kind,
+        relationship: typeof b.relationship === 'string' ? b.relationship : null,
+      };
+      state.members.push(member);
+    }
+    const view: Invitation = {
+      id: next('invitation'),
+      member_id: member.id,
+      display_name: member.display_name,
+      email,
+      role,
+      invited_by: state.members.find((m) => m.id === who.memberId)?.display_name ?? null,
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      state: 'pending',
+      attempts_left: 5,
+      limited: checked !== null,
+      kind,
+      access_expires_at: end ? new Date(end).toISOString() : null,
+    };
+    const token = next('invitation-token');
+    const code = 'ABCD-EFGH';
+    state.invitations.push({
+      view,
+      token,
+      code,
+      restriction: checked,
+      by_owner: who.role === 'owner',
+    });
+    return ok({ invitation: view, link_token: token, code }, 201);
+  };
+
+  /** POST /invitations/accept (5.34): the link, the code and a password of their own. */
+  const acceptInvitation = (b: Record<string, unknown>, installation: string | null) => {
+    const found = state.invitations.find((i) => i.token === b.token && i.view.state === 'pending');
+    if (!found) {
+      return fail(
+        404,
+        'invitation_not_valid',
+        'That invitation link is not valid any more. Ask whoever invited you to send a new one.',
+      );
+    }
+    const typed = (typeof b.code === 'string' ? b.code : '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    if (typed !== found.code.replace(/[^A-Z0-9]/g, '')) {
+      return fail(401, 'invitation_code_wrong', 'That code is not right.');
+    }
+    const v = found.view;
+    if (v.kind === 'guest' && guestAccessEnded(v.access_expires_at)) {
+      return fail(
+        409,
+        'access_ended',
+        'The access this invitation gives has already ended. Ask whoever invited you for a new one.',
+      );
+    }
+    const email = typeof b.email === 'string' ? b.email.toLowerCase() : v.email;
+    if (email === state.email || state.signIns.some((x) => x.email.toLowerCase() === email)) {
+      return fail(
+        409,
+        'email_taken',
+        'That address already has a sign-in here. Choose another one.',
+      );
+    }
+    const member = state.members.find((m) => m.id === v.member_id);
+    if (!member)
+      return fail(404, 'invitation_not_valid', 'That invitation link is not valid any more.');
+    member.role = v.role;
+    if (v.kind === 'guest') member.access_expires_at = v.access_expires_at ?? null;
+    const had = state.restrictions.get(member.id);
+    if (found.restriction && (!had || found.by_owner)) {
+      state.restrictions.set(member.id, {
+        ...found.restriction,
+        include_adults_only: found.by_owner && found.restriction.include_adults_only,
+        limits_people:
+          found.restriction.limits_people === true || found.restriction.people.length > 0,
+        limits_types: found.restriction.limits_types === true || found.restriction.types.length > 0,
+        reconfirm_since: null,
+        private_confirmed: false,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    state.signIns.push({
+      member_id: member.id,
+      email,
+      password: typeof b.password === 'string' ? b.password : '',
+    });
+    v.state = 'accepted';
+    return ok(open(installation, member.id), 201);
+  };
+
   const fetch: FetchLike = async (url, init) => {
     const path = url.replace(/^[a-z]+:\/\/[^/]+/i, '').split('?')[0] as string;
     state.calls.push({ method: init.method, path });
@@ -1043,6 +1284,8 @@ export function createFakeVault(): {
       // Locked, or paused after a restore (5.28): a session a lock did not
       // end — a test's own suspension — answers nothing while it lasts.
       if (suspensionOf(whoOf(s).memberId)) return ended('suspended');
+      // A guest's sign-in past its end (5.34): as the real vault, `access_ended`.
+      if (guestEndOf(whoOf(s).memberId)) return ended('access_ended');
       return s;
     };
 
@@ -1097,12 +1340,15 @@ export function createFakeVault(): {
           sign_out_everywhere: true,
           // What a viewer can see, limited by an owner (5.33).
           access_restrictions: true,
+          // Someone outside the family (5.34).
+          guests: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
           max_members: null,
           max_storage_bytes: null,
           share_max_days: 90,
+          guest_max_days: GUEST_MAX_DAYS,
         },
         deprecations: [],
         branding: { display_name: 'A fake family' },
@@ -1131,6 +1377,11 @@ export function createFakeVault(): {
       // Locked, or paused after a restore: said only now the password is right.
       const held = suspensionOf(other ? other.member_id : ME);
       if (held) return membershipSuspended(held, state.timezone);
+      // A guest's sign-in past its end (5.34): said only now, with the day.
+      const end = other ? guestEndOf(other.member_id) : null;
+      if (end) {
+        return fail(403, 'access_ended', guestAccessEndedWords(end, state.timezone));
+      }
       return ok(open(init.headers['x-fdv-installation'] ?? null, other?.member_id));
     }
     if (path === '/api/v1/auth/refresh' && init.method === 'POST') {
@@ -1187,6 +1438,7 @@ export function createFakeVault(): {
       if (!current) return ended('revoked');
       if (current.revoked) return ended(current.endedBecause ?? 'revoked');
       if (suspensionOf(whoOf(current).memberId)) return ended('suspended');
+      if (guestEndOf(whoOf(current).memberId)) return ended('access_ended');
       current.spent = [...(current.spent ?? []), current.refresh];
       current.previous = current.refresh;
       current.refresh = next('refresh');
@@ -1216,6 +1468,10 @@ export function createFakeVault(): {
         handover_since: null,
         // 5.33: what an owner has limited this viewer to.
         restriction: who.role === 'viewer' ? myRestriction(who.memberId) : null,
+        // 5.34: a guest, and when their sign-in ends.
+        kind: state.members.find((m) => m.id === who.memberId)?.kind ?? 'family',
+        access_expires_at:
+          state.members.find((m) => m.id === who.memberId)?.access_expires_at ?? null,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {
@@ -2553,7 +2809,105 @@ export function createFakeVault(): {
         if (m) Object.assign(m, { photo: { id: photoId }, photo_status: null });
       }
       state.photosOnTheirWay.clear();
-      return ok({ items: state.members.map(memberAnswer) });
+      // The family (5.34): a guest only to themselves. An owner's
+      // `?kind=guest`: the guests alone.
+      const me = whoOf(s);
+      if (param(url, 'kind') === 'guest') {
+        if (me.role !== 'owner') {
+          return fail(403, 'forbidden', 'Only an owner sees the people outside the family.');
+        }
+        return ok({
+          items: state.members.filter((m) => m.kind === 'guest').map(memberAnswer),
+        });
+      }
+      return ok({
+        items: state.members
+          .filter((m) => m.kind !== 'guest' || m.id === me.memberId)
+          .map(memberAnswer),
+      });
+    }
+    // Invitations (5.34): the rules the real vault keeps for a guest, and
+    // for an owner's decision about what a viewer sees.
+    if (path === '/api/v1/invitations' && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'member.invite')) {
+        return fail(403, 'forbidden', refusalFor('member.invite'));
+      }
+      return ok({ items: state.invitations.map((i) => i.view) });
+    }
+    if (path === '/api/v1/invitations' && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      return invite(whoOf(s), body);
+    }
+    if (path === '/api/v1/invitations/accept' && init.method === 'POST') {
+      return acceptInvitation(body, init.headers['x-fdv-installation'] ?? null);
+    }
+    // A guest's sign-in renewed (5.34, A28), refused in the real vault's order.
+    const renewAt = /^\/api\/v1\/members\/([^/]+)\/renew$/.exec(path);
+    if (renewAt && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'role.change')) {
+        return fail(403, 'forbidden', refusalFor('role.change'));
+      }
+      const keys = Object.keys(body);
+      if (
+        typeof body.access_expires_at !== 'string' ||
+        keys.some((k) => k !== 'access_expires_at')
+      ) {
+        return fail(422, 'validation_failed', 'Say when their access ends.', 'access_expires_at');
+      }
+      if (!state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to renew a guest's sign-in.",
+        );
+      }
+      const problem = guestEndProblem(new Date(body.access_expires_at));
+      if (problem) return fail(422, 'validation_failed', problem, 'access_expires_at');
+      const m = state.members.find((x) => x.id === decodeURIComponent(renewAt[1] as string));
+      if (!m || !m.role) return fail(404, 'not_found', 'They have no sign-in to renew.');
+      if (m.kind !== 'guest') {
+        return fail(
+          409,
+          'not_a_guest',
+          `${m.display_name} is of the family: their sign-in has no end to renew.`,
+        );
+      }
+      m.access_expires_at = new Date(body.access_expires_at).toISOString();
+      return ok({ member_id: m.id, access_expires_at: m.access_expires_at });
+    }
+    // A change of role (5.34's rule only, beside a plain change): a guest is
+    // a viewer and nothing else.
+    const roleAt = /^\/api\/v1\/members\/([^/]+)\/role$/.exec(path);
+    if (roleAt && init.method === 'POST') {
+      const s = session();
+      if (!('id' in s)) return s;
+      if (!can(whoOf(s).role, 'role.change')) {
+        return fail(403, 'forbidden', refusalFor('role.change'));
+      }
+      const m = state.members.find((x) => x.id === decodeURIComponent(roleAt[1] as string));
+      if (!m || !m.role) return fail(404, 'not_found', 'That sign-in does not exist.');
+      const to = String(body.role) as Role;
+      if (m.role === to) {
+        return ok({
+          applied: false,
+          role: to,
+          message: `${m.display_name} is already that.`,
+          effects: [],
+        });
+      }
+      if (m.kind === 'guest') return fail(409, 'guest', GUEST_ONLY_VIEWER(m.display_name));
+      m.role = to;
+      return ok({
+        applied: true,
+        role: to,
+        message: `${m.display_name}'s role changed.`,
+        effects: [],
+      });
     }
     // A person's photo (0.5.19), as the vault takes one: the crop first, then
     // the picture, and nothing else; a photo, by what it says it is.
@@ -3025,6 +3379,10 @@ export function createFakeVault(): {
       const theirs = id as string;
       if (!known(theirs)) return fail(404, 'not_found', 'That person is not in the family.');
       if (init.method === 'DELETE') {
+        // A guest is always limited (5.34).
+        if (state.members.find((m) => m.id === theirs)?.kind === 'guest') {
+          return fail(409, 'guest_always_limited', GUEST_ALWAYS_LIMITED);
+        }
         state.restrictions.delete(theirs);
         return empty();
       }
@@ -3387,6 +3745,9 @@ function documentView(
 function memberAnswer(m: FakeVaultState['members'][number]) {
   return {
     ...m,
+    // Of the family, or a guest, and a guest's end (5.34).
+    kind: m.kind ?? 'family',
+    access_expires_at: m.access_expires_at ?? null,
     date_of_birth: m.date_of_birth ?? null,
     relationship: m.relationship ?? null,
     is_deceased: m.is_deceased ?? false,
@@ -3469,7 +3830,9 @@ const fail = (status: number, code: string, message: string, detail?: string) =>
  * A session that has ended, and why, as the real vault says it (0.4.11):
  * since 5.28 `suspended`, its person's sign-in locked or paused.
  */
-const ended = (reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended') =>
+const ended = (
+  reason: 'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended' | 'access_ended',
+) =>
   respond(401, {
     error: {
       code: 'session_ended',

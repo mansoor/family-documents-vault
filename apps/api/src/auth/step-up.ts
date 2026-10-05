@@ -39,7 +39,8 @@ export type StepUpAction =
   | 'open_identity'
   | 'reveal_identity'
   | 'identity_audience'
-  | 'limit_access';
+  | 'limit_access'
+  | 'renew_guest';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -82,8 +83,14 @@ const WHY: Record<StepUpAction, string> = {
   // Who reads other people's identity details (5.26, A34, A54).
   identity_audience: 'to change who can see identity details',
   // What a viewer can see, limited, changed or let go (5.33): an owner
-  // power (A54), so a passkey or a code, never the password.
+  // power (A54), so a passkey or a code, never the password. Since 5.34 an
+  // owner's invitation that decides it asks the same: a viewer who sees
+  // every family document, Adults only documents for a viewer or a guest,
+  // limits that replace those set on the person.
   limit_access: 'to limit what a viewer can see',
+  // A guest's sign-in renewed, or given back with a new end (5.34, A28):
+  // an owner power too.
+  renew_guest: "to renew a guest's sign-in",
 };
 
 /**

@@ -1,4 +1,5 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
+import type { MemberKind } from './guests.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
 import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrictions.js';
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
@@ -60,6 +61,14 @@ export interface Me {
    * null for anybody not restricted. Absent from older vaults.
    */
   restriction?: MyRestriction | null;
+  /**
+   * Of the family, or a guest from outside it (5.34): a guest is a viewer
+   * (`role`), always limited (`restriction`), whose sign-in ends at
+   * `access_expires_at`. Absent from older vaults: of the family.
+   */
+  kind?: MemberKind;
+  /** When a guest's sign-in ends (A28); null for the family. Absent from older vaults. */
+  access_expires_at?: string | null;
 }
 
 /** That an owner made a hand-over link for this sign-in (5.29): who, and when. */
@@ -214,6 +223,18 @@ export interface Member {
    * else, and from older vaults.
    */
   restriction?: RestrictionSummary | null;
+  /**
+   * Of the family, or a guest from outside it (5.34). GET /members lists
+   * the family alone (and a guest themselves, to themselves); an owner
+   * lists the guests with `?kind=guest`. Absent from older vaults: of the
+   * family.
+   */
+  kind?: MemberKind;
+  /**
+   * When a guest's sign-in ends (A28): to an owner, and to the guest. Null
+   * for the family, and for a guest with no sign-in. Absent from older vaults.
+   */
+  access_expires_at?: string | null;
 }
 
 /**
@@ -278,6 +299,19 @@ export interface MemberAccount {
    * and for anybody else. Absent from older vaults.
    */
   access?: MemberAccess | null;
+  /** Of the family, or a guest (5.34). Absent from older vaults: of the family. */
+  kind?: MemberKind;
+  /** When a guest's sign-in ends (A28); null for the family. Absent from older vaults. */
+  access_expires_at?: string | null;
+}
+
+/**
+ * POST /members/{id}/renew (5.34, A28): a guest's sign-in, renewed by an
+ * owner to end at `access_expires_at` — in the future, within a year.
+ */
+export interface GuestRenewal {
+  member_id: string;
+  access_expires_at: string;
 }
 
 /**
@@ -454,6 +488,10 @@ export interface Invitation {
   attempts_left: number;
   /** A viewer's invitation that limits what they will see once they accept (5.33). Absent from older vaults. */
   limited?: boolean;
+  /** A guest's invitation (5.34): always a viewer's, limited, with an end. Absent from older vaults. */
+  kind?: MemberKind;
+  /** When the guest's sign-in will end once accepted; null for the family's. */
+  access_expires_at?: string | null;
 }
 
 /**
@@ -474,6 +512,9 @@ export interface InvitationPreview {
   role_label: string;
   invited_by: string | null;
   expires_at: string;
+  /** A guest's (5.34): from outside the family, until `access_expires_at`. Absent from older vaults. */
+  kind?: MemberKind;
+  access_expires_at?: string | null;
 }
 
 export interface ResetPreview {
@@ -988,13 +1029,18 @@ export interface StepUpState {
  * owner `403 totp_required_for_owner`, anybody else `403
  * two_step_required`. A client asking for one of these offers no password
  * field. Since 5.33, limiting what a viewer can see (`limit_access`), an
- * owner power too.
+ * owner power too — and since 5.34 an owner's invitation that decides it: a
+ * viewer who sees every family document, Adults only documents for a viewer
+ * or a guest, or limits that replace those already set on that person.
  */
 export const FACTOR_STEP_UPS: readonly string[] = [
   'manage_sign_ins',
   'open_identity',
   'identity_audience',
   'limit_access',
+  // Since 5.34: renewing a guest's sign-in, or giving one back with a new
+  // end (A28) — an owner power too.
+  'renew_guest',
 ];
 
 /**

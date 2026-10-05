@@ -4,6 +4,7 @@ import {
   canSee,
   canSeeCollection,
   describeEvents,
+  guestLabel,
   type ActivityEvent,
   type ActivityLine,
 } from '@fdv/shared';
@@ -295,6 +296,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['access.restricted', ownersThePersonAndTheActor],
   ['access.changed', ownersThePersonAndTheActor],
   ['access.removed', ownersThePersonAndTheActor],
+  // 5.34: a guest's sign-in renewed (A28): for the owners, the guest and
+  // whoever did it.
+  ['member.access_renewed', ownersThePersonAndTheActor],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.
@@ -428,6 +432,9 @@ interface Row {
   detail: unknown;
   actor_name: string | null;
   actor_member_id: string | null;
+  /** A guest's, said as one (5.34): "Guest — Jane Smith, attorney". */
+  actor_guest: string | null;
+  member_guest: string | null;
   document_title: string | null;
   document_visibility: Visibility | null;
   document_owner: string | null;
@@ -463,6 +470,12 @@ export class AuditService {
                e.detail,
                actor_member.display_name as actor_name,
                actor_member.id           as actor_member_id,
+               -- A guest is never named as one of the family (5.34): what
+               -- they are to it is said with their name.
+               case when actor_member.kind = 'guest'
+                    then coalesce(actor_member.relationship, '') end as actor_guest,
+               case when object_member.kind = 'guest'
+                    then coalesce(object_member.relationship, '') end as member_guest,
                d.title                   as document_title,
                -- The live row while there is one; removed for good, its
                -- tombstone (5.24); neither, nobody (the rule fails closed).
@@ -524,13 +537,20 @@ export class AuditService {
           id: Number(r.id),
           at: r.at.toISOString(),
           action: r.action,
-          actor: r.actor_name,
+          actor:
+            r.actor_name !== null && r.actor_guest !== null
+              ? guestLabel(r.actor_name, r.actor_guest)
+              : r.actor_name,
           actor_id: r.actor_account_id,
           actor_member_id: r.actor_member_id,
           actor_label: r.actor_label,
           object_type: r.object_type,
           object_id: r.object_id,
-          object_title: r.document_title ?? r.member_name,
+          object_title:
+            r.document_title ??
+            (r.member_name !== null && r.member_guest !== null
+              ? guestLabel(r.member_name, r.member_guest)
+              : r.member_name),
           collection_name: r.collection_name,
           detail: (r.detail ?? {}) as Record<string, unknown>,
           timezone: household?.timezone ?? null,

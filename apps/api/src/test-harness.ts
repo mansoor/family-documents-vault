@@ -16,7 +16,7 @@ import type { FastifyInstance } from 'fastify';
 import { Kysely, PostgresDialect, type LogEvent } from 'kysely';
 import { buildApp } from './app.js';
 import { AuthService, type Tokens } from './auth/service.js';
-import { TotpService } from './auth/totp.js';
+import { codeFor, TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
@@ -33,6 +33,7 @@ import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { LockService } from './household/locks.js';
 import { RestrictionService } from './household/restrictions.js';
+import { GuestService } from './household/guests.js';
 import { OwnerResetService } from './household/owner-resets.js';
 import {
   SHARE_CODE_KEY_PURPOSE,
@@ -93,6 +94,13 @@ export interface Harness {
    * teen and a viewer to try things with.
    */
   join(owner: Tokens, who: JoinRequest): Promise<Tokens>;
+  /**
+   * Somebody who may decide what takes a passkey or a code (A54): their
+   * two-step sign-in turned on (once), and each of their sessions marked
+   * as having just given a code. For the tests whose owner invites a viewer
+   * who sees every family document (5.34) but which are not about asking.
+   */
+  decider(t: Tokens): Promise<void>;
   /**
    * DNS as the vault sees it when a push address is registered (4.13): a
    * host here resolves to these addresses; any other fails to resolve,
@@ -228,6 +236,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
   );
   const invitations = new InvitationService(db, keys, auth);
   let joined = 1;
+  /** The owning role, for `join`'s viewers: made when first asked for. */
+  let admin: ReturnType<typeof createPool> | null = null;
   const stepUp = new StepUpService(db, passkeys, totp);
   // As if the operator had set FDV_SMTP_URL, unless the test said not
   // (operatorMail: false); passwords.test.ts also builds one without it.
@@ -322,6 +332,8 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
     restrictions: new RestrictionService(db, alert),
+    // 5.34: a guest's sign-in renewed by an owner (A28).
+    guests: new GuestService(db),
     resets,
     suggestions: new SuggestionService(db),
     logger: opts.logger ?? false,
@@ -337,6 +349,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     dns,
     async close() {
       await app.close();
+      await admin?.end();
       await db.destroy();
       await tdb.drop();
       await rm(vaultDir, { recursive: true, force: true });
@@ -357,15 +370,62 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       return res.json<Tokens>();
     },
     as: (t) => ({ authorization: `Bearer ${t.access_token}` }),
+    async decider(t) {
+      admin ??= createPool(tdb.adminUrl, 1);
+      const { rows } = await admin.query<{ account_id: string; on: boolean }>(
+        `select a.account_id, c.totp_confirmed_at is not null as on
+           from account_household a join account c on c.id = a.account_id
+          where a.member_id = $1`,
+        [t.member_id],
+      );
+      const markFresh = () =>
+        admin?.query(
+          `update session set verified_at = now(), factor_verified_at = now()
+            where account_id = $1 and revoked_at is null`,
+          [rows[0]?.account_id],
+        );
+      await markFresh();
+      if (rows[0] && !rows[0].on) {
+        const enrol = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/totp/enrol',
+          headers: { authorization: `Bearer ${t.access_token}` },
+        });
+        if (enrol.statusCode >= 300) throw new Error(`two-step failed: ${enrol.body}`);
+        const confirmed = await app.inject({
+          method: 'POST',
+          url: '/api/v1/auth/totp/confirm',
+          headers: { authorization: `Bearer ${t.access_token}` },
+          payload: { code: codeFor(enrol.json<{ secret: string }>().secret) },
+        });
+        if (confirmed.statusCode >= 300) throw new Error(`two-step failed: ${confirmed.body}`);
+      }
+      await markFresh();
+    },
     async join(owner, who) {
+      // A viewer who sees every family document is an owner's decision,
+      // taken with a passkey or a code (5.34, A27, A54) — which
+      // invitations.test.ts and guests.test.ts try. The tests that only need
+      // such a viewer are not about that decision: the invitation is made
+      // for a teen, and the owning role makes it a viewer's before it is
+      // accepted, through the real accept.
+      const viewer = who.role === 'viewer';
       const invited = await app.inject({
         method: 'POST',
         url: '/api/v1/invitations',
         headers: { authorization: `Bearer ${owner.access_token}` },
-        payload: { display_name: who.name, email: who.email, role: who.role },
+        payload: { display_name: who.name, email: who.email, role: viewer ? 'teen' : who.role },
       });
       if (invited.statusCode !== 201) throw new Error(`invite failed: ${invited.body}`);
-      const { link_token, code } = invited.json<{ link_token: string; code: string }>();
+      const { link_token, code, invitation } = invited.json<{
+        link_token: string;
+        code: string;
+        invitation: { id: string };
+      }>();
+      if (viewer) {
+        admin ??= createPool(tdb.adminUrl, 1);
+        await admin.query("update invitation set role = 'viewer' where id = $1", [invitation.id]);
+      }
       const accepted = await app.inject({
         method: 'POST',
         url: `/api/v1/invitations/${link_token}/accept`,

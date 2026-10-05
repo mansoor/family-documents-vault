@@ -232,7 +232,14 @@ export interface NamedGrant {
  * people and the kinds together; a collection separately; nothing at all
  * once it has ended.
  */
-export function youCanSee(r: NamedGrant, timezone: string, now: number = Date.now()): string {
+export function youCanSee(
+  r: NamedGrant,
+  timezone: string,
+  now: number = Date.now(),
+  /** A guest owns nothing (5.34): their own is not said. */
+  opts: { own?: boolean } = {},
+): string {
+  const own = opts.own !== false;
   const until = r.expires_at === null ? null : new Date(r.expires_at);
   if (until && until.getTime() <= now) {
     return 'An owner limited what you can see, and it has ended: you see nothing for now.';
@@ -260,6 +267,10 @@ export function youCanSee(r: NamedGrant, timezone: string, now: number = Date.no
     parts.push(r.collections.length === 1 ? `the collection ${names}` : `the collections ${names}`);
   }
   const ends = until ? ` Until ${shareEndWords(until, timezone)}.` : '';
-  if (parts.length === 0) return `You can see: only your own documents.${ends}`;
-  return `You can see: ${listed([...parts, 'your own'])}.${ends}`;
+  if (parts.length === 0) {
+    return own
+      ? `You can see: only your own documents.${ends}`
+      : `You can see: nothing yet. Ask whoever invited you.${ends}`;
+  }
+  return `You can see: ${listed(own ? [...parts, 'your own'] : parts)}.${ends}`;
 }

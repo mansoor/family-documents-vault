@@ -109,6 +109,8 @@ export class SuggestionService {
         .select(['id', 'display_name', 'date_of_birth', 'is_deceased'])
         .where('household_id', '=', p.householdId)
         .where('is_deceased', '=', false)
+        // The family's: nothing is suggested for a guest (5.34).
+        .where('kind', '=', 'family')
         .orderBy('created_at')
         .execute();
 

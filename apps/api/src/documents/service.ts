@@ -1950,7 +1950,13 @@ export class DocumentService {
   ): Promise<Record<string, never>> {
     // Through the claim's own transaction: a second connection taken while
     // holding one could empty the pool under enough captures at once.
-    const members = await trx.selectFrom('member').select('id').execute();
+    // Whose it may be: somebody of the family — a guest owns no document
+    // (5.34), and the database refuses one too (0056).
+    const members = await trx
+      .selectFrom('member')
+      .select('id')
+      .where('kind', '=', 'family')
+      .execute();
     // The household's own types and the built-ins, as it has them; hidden
     // ones too, since a phone queues a scan against the list it had. Not
     // one deleted while others' documents still use it (0035): that is

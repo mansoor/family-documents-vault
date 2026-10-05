@@ -103,6 +103,11 @@ export function LimitsPicker(props: {
   memberId: string | null;
   /** An owner may give Adults only documents. */
   owner: boolean;
+  /**
+   * A guest's (5.34): their sign-in has its own end, so the limits have
+   * none of their own to choose.
+   */
+  endless?: boolean;
 }) {
   const { authVersion, withToken, caps } = useApp();
   const hasCollections = caps?.features.collections === true;
@@ -277,19 +282,23 @@ export function LimitsPicker(props: {
             onChange={(on) => props.onChange({ ...v, include_adults_only: on })}
           />
         )}
-        <div className="field">
-          <label htmlFor={id('until')}>Until (optional)</label>
-          <input
-            id={id('until')}
-            type="date"
-            value={dayOf(v.expires_at, timezone)}
-            onChange={(e) => props.onChange({ ...v, expires_at: endOf(e.target.value, timezone) })}
-            aria-describedby={id('until-note')}
-          />
-          <span id={id('until-note')} className="muted">
-            {`After this day, on the family’s clock (${timezone}), they see nothing at all.`}
-          </span>
-        </div>
+        {!props.endless && (
+          <div className="field">
+            <label htmlFor={id('until')}>Until (optional)</label>
+            <input
+              id={id('until')}
+              type="date"
+              value={dayOf(v.expires_at, timezone)}
+              onChange={(e) =>
+                props.onChange({ ...v, expires_at: endOf(e.target.value, timezone) })
+              }
+              aria-describedby={id('until-note')}
+            />
+            <span id={id('until-note')} className="muted">
+              {`After this day, on the family’s clock (${timezone}), they see nothing at all.`}
+            </span>
+          </div>
+        )}
       </fieldset>
       <p className="notice limits-count" role="status" aria-live="polite">
         {count ? previewWords(count) : ''}
@@ -309,6 +318,8 @@ export function ViewerLimits(props: {
   member: Member;
   name: string;
   access: MemberAccess | null;
+  /** A guest (5.34): always limited, so their limits are changed, never taken off. */
+  guest?: boolean;
   onChanged: (access: MemberAccess | null, said: string) => void;
 }) {
   const { guarded } = useApp();
@@ -460,7 +471,7 @@ export function ViewerLimits(props: {
             >
               {a ? 'Change what they can see' : 'Limit what they can see'}
             </Button>
-            {a && (
+            {a && !props.guest && (
               <Button
                 ref={offButton}
                 kind="quiet"
