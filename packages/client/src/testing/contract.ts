@@ -2,6 +2,7 @@ import {
   CATEGORY_LABELS,
   CORE_FIELDS,
   COLLECTION_HINT_TEENS,
+  onlyEveryone,
   reminderOf,
   reminderSentence,
   shareEndWords,
@@ -1789,6 +1790,120 @@ export const contractScenarios: Scenario[] = [
       });
       expect(await refusal(api.refresh(thief2.refresh_token))).toMatchObject({ reason: 'reused' });
       expect(await refusal(api.me(thief2.access_token))).toMatchObject({ reason: 'reused' });
+    },
+  },
+  {
+    name: 'an owner limits what a viewer can see: the preview counts it as the vault will give it, only a collection for Everyone, the viewer is told on /me, and the limits come off (5.33)',
+    run: async (api, ctx) => {
+      expect((await api.capabilities()).features.access_restrictions).toBe(true);
+      const first = await signIn(api, ctx);
+      const vera = { email: 'limited-viewer@example.test', password: 'the viewer’s own password' };
+      const veraId = await ctx.addSignIn(first.access_token, {
+        name: 'Vera',
+        role: 'viewer',
+        ...vera,
+      });
+      const ravi = { email: 'granted-adult@example.test', password: 'the adult’s own password' };
+      const raviId = await ctx.addSignIn(first.access_token, {
+        name: 'Ravi',
+        role: 'adult',
+        ...ravi,
+      });
+      const fifth = { email: 'fifth-owner@example.test', password: 'the fifth owner’s password' };
+      await ctx.addSignIn(first.access_token, { name: 'Fifth Owner', role: 'owner', ...fifth });
+      const owner = await signInAs(api, fifth.email, fifth.password);
+      await ctx.ownerTwoStep(owner.access_token);
+
+      // Ravi's statement and bill, an Adults only statement of his; Vera's own bill.
+      const doc = (type_key: string, member: string, visibility: 'household' | 'adults') =>
+        api.createDocument(owner.access_token, {
+          title: `Limits ${type_key} ${visibility}`,
+          type_key,
+          owner_member_id: member,
+          visibility,
+        });
+      await doc('bank_statement', raviId, 'household');
+      const bill = await doc('utility_bill', raviId, 'household');
+      await doc('bank_statement', raviId, 'adults');
+      await doc('utility_bill', veraId, 'household');
+      const broker = await api.createCollection(owner.access_token, {
+        name: 'For the broker',
+        audience: 'everyone',
+      });
+      await api.addToCollection(owner.access_token, broker.id, [bill.id]);
+      const teens = await api.createCollection(owner.access_token, {
+        name: 'Teen papers',
+        audience: 'teens',
+      });
+
+      // Who may: an owner, of a viewer, with collections for Everyone.
+      const asAdult = await signInAs(api, ravi.email, ravi.password);
+      expect(
+        await refusal(api.setMemberAccess(asAdult.access_token, veraId, { people: [raviId] })),
+      ).toMatchObject({ status: 403, code: 'forbidden' });
+      expect(
+        await refusal(api.setMemberAccess(owner.access_token, raviId, { people: [veraId] })),
+      ).toMatchObject({ status: 409, code: 'not_a_viewer' });
+      expect(
+        await refusal(api.setMemberAccess(owner.access_token, veraId, { collections: [teens.id] })),
+      ).toMatchObject({
+        status: 422,
+        message: onlyEveryone('Teen papers', 'teens'),
+      });
+
+      // Counted before it is saved: Ravi's statement, and her own bill...
+      const grant = { people: [raviId], types: ['bank_statement'] };
+      expect(await api.previewAccess(owner.access_token, veraId, grant)).toEqual({
+        documents: 2,
+        keeps_private: false,
+      });
+      // ...his Adults only one too, when an owner allows it (D6)...
+      expect(
+        (
+          await api.previewAccess(owner.access_token, veraId, {
+            ...grant,
+            include_adults_only: true,
+          })
+        ).documents,
+      ).toBe(3);
+      // ...and the broker's collection, a separate way in (A56).
+      const given = { ...grant, collections: [broker.id] };
+      expect((await api.previewAccess(owner.access_token, veraId, given)).documents).toBe(3);
+      // For somebody not yet in the family, nothing of their own.
+      expect((await api.previewAccess(owner.access_token, null, given)).documents).toBe(2);
+
+      const limited = await api.setMemberAccess(owner.access_token, veraId, given);
+      expect(limited).toMatchObject({
+        member_id: veraId,
+        people: [raviId],
+        types: ['bank_statement'],
+        collections: [broker.id],
+        include_adults_only: false,
+        include_no_person_docs: false,
+        expires_at: null,
+        reconfirm_since: null,
+        private_confirmed: false,
+        summary: "Restricted: sees 1 person's documents of 1 kind and 1 collection.",
+      });
+      // She is told, in her words, on her next request.
+      const asVera = await signInAs(api, vera.email, vera.password);
+      const told = (await api.me(asVera.access_token)).restriction;
+      expect(told).toMatchObject({
+        people: [{ id: raviId, display_name: 'Ravi' }],
+        types: [{ key: 'bank_statement' }],
+        collections: [{ id: broker.id, name: 'For the broker' }],
+      });
+      expect(told?.summary).toMatch(
+        /^You can see: .+ documents for Ravi, the collection “For the broker” and your own\.$/,
+      );
+      // Nobody else is limited.
+      expect((await api.me(owner.access_token)).restriction ?? null).toBeNull();
+
+      // Taken off: she is told nothing more, and sees as any viewer does.
+      await api.removeMemberAccess(owner.access_token, veraId);
+      expect((await api.me(asVera.access_token)).restriction ?? null).toBeNull();
+      // Nothing to take off is no refusal.
+      await api.removeMemberAccess(owner.access_token, veraId);
     },
   },
   {

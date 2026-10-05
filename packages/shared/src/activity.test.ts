@@ -170,6 +170,44 @@ describe('the activity log, in sentences', () => {
     );
   });
 
+  it('says a viewer was limited, changed, confirmed or let go — never what it gives (5.33)', () => {
+    const said = (action: string, detail: Record<string, unknown> = {}) =>
+      describeEvent(
+        ev({
+          action,
+          actor: 'Mansoor',
+          object_type: 'member',
+          object_id: 'm-val',
+          object_title: 'Val',
+          detail,
+          timezone: 'UTC',
+        }),
+      );
+    expect(said('access.restricted', { people: 1, types: 2, collections: 0 })).toMatchObject({
+      text: 'Mansoor limited what Val can see',
+      notable: true,
+    });
+    expect(
+      said('access.restricted', {
+        expires_at: '2026-11-01T10:00:00Z',
+        include_adults_only: true,
+        via: 'invitation',
+      })?.text,
+    ).toBe(
+      'Mansoor limited what Val can see until 1 November at 10:00 (Adults only documents included), as they accepted their invitation',
+    );
+    expect(said('access.changed', { changed: true })?.text).toBe(
+      'Mansoor changed what Val can see',
+    );
+    expect(said('access.changed', { changed: false, reconfirmed: true })?.text).toBe(
+      'Mansoor confirmed what Val can see',
+    );
+    expect(said('access.changed', { changed: true, reconfirmed: true })?.text).toBe(
+      'Mansoor changed what Val can see',
+    );
+    expect(said('access.removed')?.text).toBe('Mansoor took the limits off what Val can see');
+  });
+
   it('says whose photo was added, changed or removed, and never anything of the picture (5.17c)', () => {
     const aisha = { object_type: 'member', object_id: 'm-aisha', object_title: 'Aisha' };
     const photo = (action: string, actorMember: string, detail: Record<string, unknown> = {}) =>

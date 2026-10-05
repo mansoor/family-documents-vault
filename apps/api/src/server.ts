@@ -23,6 +23,7 @@ import { SuggestionService } from './suggestions/service.js';
 import { HouseholdService } from './household/service.js';
 import { IdentityService } from './household/identity.js';
 import { LockService } from './household/locks.js';
+import { RestrictionService } from './household/restrictions.js';
 import { OwnerResetService } from './household/owner-resets.js';
 import { PhotoService } from './household/photos.js';
 import { InvitationService } from './household/invitations.js';
@@ -215,10 +216,11 @@ async function main(): Promise<void> {
     ),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
     // 5.26: a wider audience is told by the operator's mail server alone.
-    identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
+    identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL), push),
     invitations: new InvitationService(db, keys, auth),
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
+    restrictions: new RestrictionService(db, alert),
     resets,
     shares: new ShareService(db, keys, vaults, alert, config.FDV_PUBLIC_URL ?? null, {
       enqueue,

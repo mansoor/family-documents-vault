@@ -1,31 +1,53 @@
-import { withPrincipal, type Db } from '@fdv/db';
-import { restrictionSummary, type RestrictionSummary } from '@fdv/shared';
+import { appendAudit, withPrincipal, type Db } from '@fdv/db';
+import {
+  ACCESS_GRANT_MAX,
+  can,
+  mayBeRestricted,
+  onlyEveryone,
+  restrictionSummary,
+  youCanSee,
+  type AccessGrant,
+  type AccessPreview,
+  type MemberAccess,
+  type MyRestriction,
+  type RestrictionSummary,
+} from '@fdv/shared';
 import { sql } from 'kysely';
+import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
-import type { Principal } from '../auth/service.js';
+import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 
 /**
- * Limiting what a viewer sees (5.32, A56–A59): the service half.
+ * Limiting what a viewer sees (5.32, 5.33, A56–A59): the service half.
  *
  * The database keeps the rule (0054): what a restricted viewer is given,
  * everywhere. Here is what an owner restricting somebody must be asked
- * first. There is no route yet — 5.33 adds `PUT /members/{id}/access`,
- * which calls `restrict` — and the tests call it directly.
+ * first, and what the screens read (5.33):
  *
- *  - Only owners restrict (`role.change`), and only a viewer, or somebody
- *    with no sign-in (A58); the database refuses anybody else's too.
+ *  - Only owners restrict (`role.change`; the routes add the owner power,
+ *    A54), and only a viewer, or somebody with no sign-in (A58); the
+ *    database refuses anybody else's too.
  *  - Restricting somebody who keeps Only me documents asks the owner to
  *    confirm (`confirm_private`), and the person is told (A59). Otherwise an
  *    owner could make an adult a viewer, restrict them, and cut them off
  *    like a lock, with none of 5.28's guard rails or alerts. They still see
  *    their own Only me documents; the database refuses the restriction
  *    without the owner's confirmation.
+ *  - Only a collection for Everyone is given (A17): any other is refused
+ *    with a sentence (422), and the database refuses it too (0055).
  *
  * A restriction is the person's, not their sign-in's: taking the sign-in
  * away leaves it, and giving it back asks the owners to confirm it again
- * (`reconfirm_since`, 0054), which 5.33's screens read.
+ * (`reconfirm_since`, 0054). Confirming is putting the same grant: every
+ * write here clears it, and taking the limits off removes it with them.
+ *
+ * The order every write here takes its locks in, as a role change does:
+ * the household (FOR SHARE), the person, their sign-in (FOR NO KEY
+ * UPDATE), their restriction (FOR UPDATE), the collections it names (FOR
+ * SHARE, as each is named, 0055's trigger) before any grant of theirs is
+ * taken away; and the activity log's lock last (appendAudit).
  */
 
 /** What a restriction grants: whose documents, of which kinds, which collections. */
@@ -36,6 +58,16 @@ export interface RestrictionGrant {
   include_adults_only?: boolean | undefined;
   include_no_person_docs?: boolean | undefined;
   expires_at?: Date | null | undefined;
+}
+
+/** A grant once checked (`checkGrant`): every part said, each unique. */
+export interface CheckedGrant {
+  people: string[];
+  types: string[];
+  collections: string[];
+  include_adults_only: boolean;
+  include_no_person_docs: boolean;
+  expires_at: Date | null;
 }
 
 /** What `restrict` did. */
@@ -50,6 +82,69 @@ export interface Restricted {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const notFound = () => new ApiError(404, 'not_found', 'That person is not in the family.');
+
+/** The fields of a grant, as PUT /members/{id}/access, the preview and an invitation take them. */
+const grantFields = {
+  people: z
+    .array(z.string().uuid('Choose people from the family.'))
+    .max(ACCESS_GRANT_MAX.people, `Choose ${ACCESS_GRANT_MAX.people} people at most.`)
+    .optional(),
+  types: z
+    .array(z.string().trim().min(1).max(64))
+    .max(ACCESS_GRANT_MAX.types, `Choose ${ACCESS_GRANT_MAX.types} kinds at most.`)
+    .optional(),
+  collections: z
+    .array(z.string().uuid('Choose collections of the family.'))
+    .max(
+      ACCESS_GRANT_MAX.collections,
+      `Choose ${ACCESS_GRANT_MAX.collections} collections at most.`,
+    )
+    .optional(),
+  include_adults_only: z.boolean().optional(),
+  include_no_person_docs: z.boolean().optional(),
+  expires_at: z.string().datetime({ offset: true }).nullable().optional(),
+};
+
+/** A grant: an invitation's `restriction`, and the preview's (as a query, below). */
+export const accessGrantBody = z.object(grantFields).strict();
+
+/** PUT /members/{id}/access: the grant, and the owner's confirmation (A59) when asked for it. */
+export const accessPutBody = z
+  .object({ ...grantFields, confirm_private: z.boolean().optional() })
+  .strict();
+
+/** A list in a query string: `people=a,b`. Empty is none. */
+const listOf = (v: unknown): unknown =>
+  typeof v === 'string' ? v.split(',').filter((x) => x.trim() !== '') : v;
+/** A flag in a query string: `true` or `false`. */
+const flagOf = (v: unknown): unknown => (v === 'true' ? true : v === 'false' ? false : v);
+
+/**
+ * GET /members/{id}/access/preview: the same grant, in the query string —
+ * lists comma-separated, flags `true` or `false`.
+ */
+export const accessPreviewQuery = z
+  .object({
+    people: z.preprocess(listOf, grantFields.people),
+    types: z.preprocess(listOf, grantFields.types),
+    collections: z.preprocess(listOf, grantFields.collections),
+    include_adults_only: z.preprocess(flagOf, grantFields.include_adults_only),
+    include_no_person_docs: z.preprocess(flagOf, grantFields.include_no_person_docs),
+    expires_at: z.preprocess((v) => (v === '' ? null : v), grantFields.expires_at),
+  })
+  .strict();
+
+/** A grant as the body said it, with its end as a date. */
+export function grantOf(body: z.infer<typeof accessGrantBody>): RestrictionGrant {
+  return {
+    people: body.people ?? [],
+    types: body.types ?? [],
+    collections: body.collections ?? [],
+    include_adults_only: body.include_adults_only ?? false,
+    include_no_person_docs: body.include_no_person_docs ?? false,
+    expires_at: body.expires_at ? new Date(body.expires_at) : null,
+  };
+}
 
 /** Said to an owner restricting somebody who keeps Only me documents (A59). */
 export const CONFIRM_PRIVATE = (name: string) =>
@@ -67,6 +162,12 @@ export const LIMITS_FIRST = (name: string | null) =>
 /** `409 restricted`, for a role but viewer's asked for somebody restricted. */
 export const restrictedRefusal = (name: string | null) =>
   new ApiError(409, 'restricted', LIMITS_FIRST(name));
+
+/**
+ * Said of a collection that is not for Everyone (A17): only an Everyone
+ * collection is ever given to a viewer. The one sentence, in @fdv/shared.
+ */
+export const ONLY_EVERYONE = onlyEveryone;
 
 /**
  * Whether somebody has a restriction: asked by an owner before a change of
@@ -87,6 +188,218 @@ export async function isRestricted(trx: Db, memberId: string): Promise<boolean> 
 export const ONLY_VIEWERS = (name: string) =>
   `Only a viewer can be limited to some documents. ${name} is not a viewer.`;
 
+/**
+ * The household, held FOR SHARE, as a role change holds it (co-owners.ts
+ * holdHousehold, written again here: that module reads this one).
+ */
+const holdHousehold = (trx: Db) =>
+  sql`select 1 from household where id = app_household() for share`.execute(trx);
+
+const invalid = (message: string, field: string) =>
+  new ApiError(422, 'validation_failed', message, { detail: field });
+
+/**
+ * A grant checked as the caller sees the family (5.33): an end in the
+ * future; the people, kinds and collections it names each one the caller
+ * may see; a collection for Everyone, and not deleted (A17). Unique, and
+ * as the database spells them.
+ */
+export async function checkGrant(
+  trx: Db,
+  grant: RestrictionGrant,
+  now: number = Date.now(),
+): Promise<CheckedGrant> {
+  if (grant.expires_at && grant.expires_at.getTime() <= now) {
+    throw invalid('Choose an end in the future, or none.', 'expires_at');
+  }
+  const people = [...new Set((grant.people ?? []).map((p) => p.toLowerCase()))];
+  const types = [...new Set(grant.types ?? [])];
+  const collections = [...new Set((grant.collections ?? []).map((c) => c.toLowerCase()))];
+  if (people.length > 0) {
+    const found = await trx.selectFrom('member').select('id').where('id', 'in', people).execute();
+    if (found.length !== people.length) throw invalid('Choose people from the family.', 'people');
+  }
+  if (types.length > 0) {
+    const found = await trx
+      .selectFrom('document_type')
+      .select('key')
+      .where('key', 'in', types)
+      .execute();
+    if (found.length !== types.length) {
+      throw invalid('Choose kinds of document the family has.', 'types');
+    }
+  }
+  if (collections.length > 0) {
+    const found = await trx
+      .selectFrom('doc_collection')
+      .select(['id', 'name', 'audience'])
+      .where('id', 'in', collections)
+      .where('deleted_at', 'is', null)
+      .orderBy('id')
+      .execute();
+    if (found.length !== collections.length) {
+      throw invalid('Choose collections of the family.', 'collections');
+    }
+    const narrower = found.find((c) => c.audience !== 'everyone');
+    if (narrower) throw invalid(ONLY_EVERYONE(narrower.name, narrower.audience), 'collections');
+  }
+  return {
+    people,
+    types,
+    collections,
+    include_adults_only: grant.include_adults_only ?? false,
+    include_no_person_docs: grant.include_no_person_docs ?? false,
+    expires_at: grant.expires_at ?? null,
+  };
+}
+
+/** What the activity log says of a grant: how many of each, never which. */
+function grantDetail(g: CheckedGrant): Record<string, unknown> {
+  return {
+    people: g.people.length,
+    types: g.types.length,
+    collections: g.collections.length,
+    include_adults_only: g.include_adults_only,
+    include_no_person_docs: g.include_no_person_docs,
+    ...(g.expires_at ? { expires_at: g.expires_at.toISOString() } : {}),
+  };
+}
+
+/**
+ * A person's restriction made exactly `grant`, in the caller's transaction:
+ * the row (inserted or changed, `reconfirm_since` cleared), then the people,
+ * kinds and collections it names. A collection is named before any is taken
+ * away, so that each is held (FOR SHARE, 0055) before a grant row is: a
+ * change of a collection's audience at the same moment, which holds the
+ * collection and then drops its grants, waits for this, or this for it,
+ * and never both. Row-level security turns a write it refuses into nothing
+ * written: each is counted.
+ */
+export async function writeGrant(
+  trx: Db,
+  householdId: string,
+  memberId: string,
+  grant: CheckedGrant,
+  opts: {
+    exists: boolean;
+    confirmPrivate?: boolean;
+    /**
+     * Whether it names people, or kinds, at all, when that is more than the
+     * rows left say: an invitation's limits, some deleted before it was
+     * accepted, still name them (and give none of those).
+     */
+    limits?: { people: boolean; types: boolean };
+  },
+): Promise<void> {
+  const values = {
+    include_adults_only: grant.include_adults_only,
+    include_no_person_docs: grant.include_no_person_docs,
+    expires_at: grant.expires_at,
+    // Whether people, or kinds, are named at all: kept apart from the rows
+    // naming them, so that one deleted since narrows, and the last one gone
+    // gives nothing (the 5.32 review, R532-01).
+    limits_people: opts.limits?.people === true || grant.people.length > 0,
+    limits_types: opts.limits?.types === true || grant.types.length > 0,
+    ...(opts.confirmPrivate ? { private_confirmed_at: new Date() } : {}),
+  };
+  const written = opts.exists
+    ? await trx
+        .updateTable('access_restriction')
+        .set({ ...values, reconfirm_since: null })
+        .where('member_id', '=', memberId)
+        .executeTakeFirst()
+        .then((r) => Number(r.numUpdatedRows))
+    : await trx
+        .insertInto('access_restriction')
+        .values({ member_id: memberId, household_id: householdId, ...values })
+        .executeTakeFirst()
+        .then((r) => Number(r.numInsertedOrUpdatedRows ?? 0n));
+  if (written !== 1) throw notFound();
+
+  // The collections first: each named, and so held, before any is taken away.
+  if (grant.collections.length > 0) {
+    try {
+      await trx
+        .insertInto('access_restriction_collection')
+        .values(
+          grant.collections.map((c) => ({
+            restricted_member_id: memberId,
+            household_id: householdId,
+            collection_id: c,
+          })),
+        )
+        .onConflict((oc) => oc.columns(['restricted_member_id', 'collection_id']).doNothing())
+        .execute();
+    } catch (err) {
+      // Changed away from Everyone, or deleted, since it was checked (0055).
+      if ((err as { code?: string }).code === '23514') {
+        throw invalid(
+          'A collection you chose is no longer for Everyone in the family. Choose again.',
+          'collections',
+        );
+      }
+      throw err;
+    }
+  }
+  let gone = trx
+    .deleteFrom('access_restriction_collection')
+    .where('restricted_member_id', '=', memberId);
+  if (grant.collections.length > 0) gone = gone.where('collection_id', 'not in', grant.collections);
+  await gone.execute();
+
+  await trx
+    .deleteFrom('access_restriction_member')
+    .where('restricted_member_id', '=', memberId)
+    .execute();
+  await trx
+    .deleteFrom('access_restriction_type')
+    .where('restricted_member_id', '=', memberId)
+    .execute();
+  const wrote = async (
+    n: Promise<{ numInsertedOrUpdatedRows: bigint | undefined }>,
+    want: number,
+  ) => {
+    if (Number((await n).numInsertedOrUpdatedRows ?? 0n) !== want) throw notFound();
+  };
+  if (grant.people.length > 0) {
+    await wrote(
+      trx
+        .insertInto('access_restriction_member')
+        .values(
+          grant.people.map((m) => ({
+            restricted_member_id: memberId,
+            household_id: householdId,
+            member_id: m,
+          })),
+        )
+        .executeTakeFirst(),
+      grant.people.length,
+    );
+  }
+  if (grant.types.length > 0) {
+    await wrote(
+      trx
+        .insertInto('access_restriction_type')
+        .values(
+          grant.types.map((t) => ({
+            restricted_member_id: memberId,
+            household_id: householdId,
+            type_key: t,
+          })),
+        )
+        .executeTakeFirst(),
+      grant.types.length,
+    );
+  }
+  // Exactly the collections asked for, as the rules let the caller see them.
+  const now = await trx
+    .selectFrom('access_restriction_collection')
+    .select('collection_id')
+    .where('restricted_member_id', '=', memberId)
+    .execute();
+  if (now.length !== grant.collections.length) throw notFound();
+}
+
 export class RestrictionService {
   constructor(
     private readonly db: Db,
@@ -96,21 +409,26 @@ export class RestrictionService {
 
   /**
    * Restricts somebody, or changes their restriction, to exactly `grant`
-   * (5.33's PUT /members/{id}/access will call this). Owners only. Somebody
-   * who keeps Only me documents is restricted only with `confirmPrivate`,
-   * and is then told; without it, `409 confirm_private` and nothing changes.
+   * (PUT /members/{id}/access). Owners only. Somebody who keeps Only me
+   * documents is restricted only with `confirmPrivate`, and is then told;
+   * without it, `409 confirm_private` and nothing changes. A collection not
+   * for Everyone is `422` (A17). The same grant again confirms it after
+   * their sign-in was given back (`reconfirm_since` cleared).
    */
   async restrict(
     p: Principal,
     memberId: string,
     grant: RestrictionGrant,
-    opts: { confirmPrivate?: boolean } = {},
+    opts: { confirmPrivate?: boolean; meta?: RequestMeta } = {},
   ): Promise<Restricted> {
     requireCapability(p, 'role.change');
     if (!UUID.test(memberId)) throw notFound();
     let tell: { accountId: string; household: string } | null = null;
     const done = await withPrincipal(this.db, p, async (trx) => {
-      // The person, held: their sign-in, if any, cannot change under us.
+      // 1. The household, as a role change holds it: a change of role at
+      // the same moment either lands first, and is seen, or waits.
+      await holdHousehold(trx);
+      // 2. The person, held, then their sign-in, if any: neither changes under us.
       const person = await trx
         .selectFrom('member')
         .select(['id', 'display_name'])
@@ -127,6 +445,21 @@ export class RestrictionService {
       if (signIn && signIn.role !== 'viewer') {
         throw new ApiError(409, 'not_a_viewer', ONLY_VIEWERS(person.display_name));
       }
+      // 3. Their restriction, held.
+      const existing = await trx
+        .selectFrom('access_restriction')
+        .select([
+          'member_id',
+          'private_confirmed_at',
+          'reconfirm_since',
+          'include_adults_only',
+          'include_no_person_docs',
+          'expires_at',
+        ])
+        .where('member_id', '=', person.id)
+        .forUpdate()
+        .executeTakeFirst();
+      const checked = await checkGrant(trx, grant);
       // Whether they keep Only me documents, in the Trash too: the database
       // asks the same, and refuses the restriction without a confirmation.
       const keeps = await trx
@@ -136,42 +469,43 @@ export class RestrictionService {
         .where('visibility', '=', 'private')
         .executeTakeFirstOrThrow();
       const keepsPrivate = keeps.n > 0;
-      const existing = await trx
-        .selectFrom('access_restriction')
-        .select(['member_id', 'private_confirmed_at'])
-        .where('member_id', '=', person.id)
-        .executeTakeFirst();
       // Asked once: a restriction already confirmed is changed without asking again.
       const confirmed = existing?.private_confirmed_at != null;
       if (keepsPrivate && !confirmed && !opts.confirmPrivate) {
         throw new ApiError(409, 'confirm_private', CONFIRM_PRIVATE(person.display_name));
       }
-      const values = {
-        include_adults_only: grant.include_adults_only ?? false,
-        include_no_person_docs: grant.include_no_person_docs ?? false,
-        expires_at: grant.expires_at ?? null,
-        // Whether people, or kinds, are named at all: kept apart from the
-        // rows naming them, so that one deleted since narrows, and the last
-        // one gone gives nothing (the 5.32 review, R532-01).
-        limits_people: (grant.people ?? []).length > 0,
-        limits_types: (grant.types ?? []).length > 0,
-        ...(keepsPrivate && !confirmed ? { private_confirmed_at: new Date() } : {}),
-      };
-      const written = existing
-        ? await trx
-            .updateTable('access_restriction')
-            .set({ ...values, reconfirm_since: null })
-            .where('member_id', '=', person.id)
-            .executeTakeFirst()
-            .then((r) => Number(r.numUpdatedRows))
-        : await trx
-            .insertInto('access_restriction')
-            .values({ member_id: person.id, household_id: p.householdId, ...values })
-            .executeTakeFirst()
-            .then((r) => Number(r.numInsertedOrUpdatedRows ?? 0n));
-      // Row-level security turns a write it refuses into nothing written.
-      if (written !== 1) throw notFound();
-      await this.replace(trx, p.householdId, person.id, grant);
+      const before = existing ? await this.named(trx, person.id) : null;
+      await writeGrant(trx, p.householdId, person.id, checked, {
+        exists: existing !== undefined,
+        confirmPrivate: keepsPrivate && !confirmed,
+      });
+      // 4. The log, last: made, changed, or the same again — confirmed.
+      const changed =
+        !existing ||
+        !before ||
+        existing.include_adults_only !== checked.include_adults_only ||
+        existing.include_no_person_docs !== checked.include_no_person_docs ||
+        (existing.expires_at?.getTime() ?? null) !== (checked.expires_at?.getTime() ?? null) ||
+        !sameSet(before.people, checked.people) ||
+        !sameSet(before.types, checked.types) ||
+        !sameSet(before.collections, checked.collections);
+      const reconfirmed = existing?.reconfirm_since != null;
+      if (!existing || changed || reconfirmed) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: existing ? 'access.changed' : 'access.restricted',
+          objectType: 'member',
+          objectId: person.id,
+          detail: {
+            ...grantDetail(checked),
+            ...(existing ? { changed } : {}),
+            ...(reconfirmed ? { reconfirmed: true } : {}),
+            ...(keepsPrivate && !confirmed ? { confirmed_private: true } : {}),
+          },
+          ip: opts.meta?.ip ?? null,
+        });
+      }
       if (keepsPrivate && !confirmed && signIn) {
         tell = { accountId: signIn.account_id, household: p.householdId };
       }
@@ -199,86 +533,291 @@ export class RestrictionService {
     return done;
   }
 
-  /** The people, kinds and collections named: exactly the grant, each written as asked. */
-  private async replace(
-    trx: Db,
-    householdId: string,
-    restricted: string,
-    grant: RestrictionGrant,
-  ): Promise<void> {
-    await trx
-      .deleteFrom('access_restriction_member')
-      .where('restricted_member_id', '=', restricted)
-      .execute();
-    await trx
-      .deleteFrom('access_restriction_type')
-      .where('restricted_member_id', '=', restricted)
-      .execute();
-    await trx
-      .deleteFrom('access_restriction_collection')
-      .where('restricted_member_id', '=', restricted)
-      .execute();
-    const people = [...new Set(grant.people ?? [])];
-    const types = [...new Set(grant.types ?? [])];
-    const collections = [...new Set(grant.collections ?? [])];
-    const wrote = async (
-      n: Promise<{ numInsertedOrUpdatedRows: bigint | undefined }>,
-      want: number,
-    ) => {
-      if (Number((await n).numInsertedOrUpdatedRows ?? 0n) !== want) throw notFound();
+  /**
+   * DELETE /members/{id}/access: their limits taken off, and with them any
+   * confirmation still waiting (`reconfirm_since`). Owners only. Somebody
+   * with none: nothing to do, and nothing logged. A viewer with no limits
+   * sees every family document but the Adults only ones.
+   */
+  async remove(p: Principal, memberId: string, meta: RequestMeta): Promise<{ removed: boolean }> {
+    requireCapability(p, 'role.change');
+    if (!UUID.test(memberId)) throw notFound();
+    return withPrincipal(this.db, p, async (trx) => {
+      await holdHousehold(trx);
+      const person = await trx
+        .selectFrom('member')
+        .select(['id'])
+        .where('id', '=', memberId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!person) throw notFound();
+      await trx
+        .selectFrom('account_household')
+        .select(['account_id'])
+        .where('member_id', '=', person.id)
+        .forNoKeyUpdate()
+        .execute();
+      const existing = await trx
+        .selectFrom('access_restriction')
+        .select(['member_id'])
+        .where('member_id', '=', person.id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!existing) return { removed: false };
+      const gone = await trx
+        .deleteFrom('access_restriction')
+        .where('member_id', '=', person.id)
+        .executeTakeFirst();
+      // A rule that quietly removed nothing removed nothing.
+      if (Number(gone.numDeletedRows) !== 1) throw notFound();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'access.removed',
+        objectType: 'member',
+        objectId: person.id,
+        ip: meta.ip ?? null,
+      });
+      return { removed: true };
+    });
+  }
+
+  /**
+   * Somebody's limits as an owner sees them (5.33): null for somebody with
+   * none. Owners only — anybody else reads no restriction but their own,
+   * and is answered as if there were none to read.
+   */
+  async access(p: Principal, memberId: string, trx?: Db): Promise<MemberAccess | null> {
+    if (p.role !== 'owner' || !UUID.test(memberId)) return null;
+    const read = async (t: Db): Promise<MemberAccess | null> => {
+      const r = await t
+        .selectFrom('access_restriction')
+        .select([
+          'member_id',
+          'include_adults_only',
+          'include_no_person_docs',
+          'expires_at',
+          'reconfirm_since',
+          'private_confirmed_at',
+          'updated_at',
+        ])
+        .where('member_id', '=', memberId)
+        .executeTakeFirst();
+      if (!r) return null;
+      const named = await this.named(t, r.member_id);
+      const summaries = await restrictionSummaries(t, p.householdId, [r.member_id]);
+      return {
+        member_id: r.member_id,
+        people: named.people,
+        types: named.types,
+        collections: named.collections,
+        include_adults_only: r.include_adults_only,
+        include_no_person_docs: r.include_no_person_docs,
+        expires_at: r.expires_at?.toISOString() ?? null,
+        summary: summaries.get(r.member_id)?.summary ?? '',
+        reconfirm_since: r.reconfirm_since?.toISOString() ?? null,
+        private_confirmed: r.private_confirmed_at !== null,
+        updated_at: r.updated_at.toISOString(),
+      };
     };
-    if (people.length) {
-      await wrote(
-        trx
-          .insertInto('access_restriction_member')
-          .values(
-            people.map((m) => ({
-              restricted_member_id: restricted,
-              household_id: householdId,
-              member_id: m,
-            })),
-          )
-          .executeTakeFirst(),
-        people.length,
-      );
+    return trx ? read(trx) : withPrincipal(this.db, p, read);
+  }
+
+  /** The people, kinds and collections a restriction names, as ids and keys. */
+  private async named(
+    trx: Db,
+    memberId: string,
+  ): Promise<Pick<AccessGrant, 'people' | 'types' | 'collections'>> {
+    const [people, types, collections] = await Promise.all([
+      trx
+        .selectFrom('access_restriction_member')
+        .select('member_id')
+        .where('restricted_member_id', '=', memberId)
+        .orderBy('member_id')
+        .execute(),
+      trx
+        .selectFrom('access_restriction_type')
+        .select('type_key')
+        .where('restricted_member_id', '=', memberId)
+        .orderBy('type_key')
+        .execute(),
+      trx
+        .selectFrom('access_restriction_collection')
+        .select('collection_id')
+        .where('restricted_member_id', '=', memberId)
+        .orderBy('collection_id')
+        .execute(),
+    ]);
+    return {
+      people: people.map((r) => r.member_id),
+      types: types.map((r) => r.type_key),
+      collections: collections.map((r) => r.collection_id),
+    };
+  }
+
+  /**
+   * "They will see 14 documents" (GET /members/{id}/access/preview): a grant
+   * not yet saved, counted by the rule itself — 0054's doc_in_grant(),
+   * handed the grant as a value — over the household's documents out of
+   * the Trash, as the caller is given them. What the person then sees, but
+   * for their own Only me documents, which no one else is told the number
+   * of (`keeps_private` says there are some). For somebody not yet in the
+   * family (an invitation), `memberId` is null: they own nothing yet.
+   *
+   * An owner's; or an adult's, inviting a viewer, without Adults only
+   * documents (A27) — everything else such a grant gives, an adult sees.
+   */
+  async preview(
+    p: Principal,
+    memberId: string | null,
+    grant: RestrictionGrant,
+  ): Promise<AccessPreview> {
+    if (p.role !== 'owner') {
+      if (!can(p.role, 'member.invite')) {
+        throw new ApiError(403, 'forbidden', 'Only an owner can limit what someone can see.');
+      }
+      if (grant.include_adults_only) throw adultsOnlyRefusal();
     }
-    if (types.length) {
-      await wrote(
+    if (memberId !== null && !UUID.test(memberId)) throw notFound();
+    return withPrincipal(this.db, p, async (trx) => {
+      if (memberId !== null) {
+        const person = await trx
+          .selectFrom('member')
+          .select('id')
+          .where('id', '=', memberId)
+          .executeTakeFirst();
+        if (!person) throw notFound();
+      }
+      const g = await checkGrant(trx, grant);
+      const counted = await sql<{ n: number }>`
+        select count(*)::int as n
+          from document d
+         where d.deleted_at is null
+           and d.visibility in ('household', 'adults')
+           and doc_in_grant(
+                 row(${g.expires_at === null}::boolean or ${g.expires_at}::timestamptz > now(),
+                     ${memberId}::uuid,
+                     ${g.include_adults_only}::boolean,
+                     ${g.include_no_person_docs}::boolean,
+                     ${g.people.length > 0}::boolean,
+                     ${g.types.length > 0}::boolean,
+                     ${g.people}::uuid[],
+                     ${g.types}::text[],
+                     array(select i.document_id
+                             from doc_collection_item i
+                             join doc_collection c on c.id = i.collection_id
+                            where i.collection_id = any(${g.collections}::uuid[])
+                              and c.deleted_at is null
+                              and c.audience = 'everyone'))::access_grant,
+                 d.id, d.visibility, d.owner_member_id, d.type_key)`.execute(trx);
+      // Whether they keep Only me documents: an owner's question alone, who
+      // is asked to confirm it before they are limited (A59).
+      const keeps =
+        memberId !== null && p.role === 'owner'
+          ? await trx
+              .selectFrom('document')
+              .select('id')
+              .where('owner_member_id', '=', memberId)
+              .where('visibility', '=', 'private')
+              .executeTakeFirst()
+          : undefined;
+      return { documents: counted.rows[0]?.n ?? 0, keeps_private: keeps !== undefined };
+    });
+  }
+
+  /**
+   * `/me.restriction` (5.33): what a restricted viewer is given, in their own
+   * words, read as themselves — the people, kinds and collections the
+   * database gives them to read (0054), so one deleted since, or a
+   * collection no longer for Everyone, is not named. Null for anybody not
+   * restricted: only a viewer ever is (A58).
+   */
+  async mine(p: Principal): Promise<MyRestriction | null> {
+    if (!mayBeRestricted(p.role)) return null;
+    return withPrincipal(this.db, p, async (trx) => {
+      const r = await trx
+        .selectFrom('access_restriction')
+        .select([
+          'include_adults_only',
+          'include_no_person_docs',
+          'expires_at',
+          'limits_people',
+          'limits_types',
+        ])
+        .where('member_id', '=', p.memberId)
+        .executeTakeFirst();
+      if (!r) return null;
+      const [people, types, collections, hh] = await Promise.all([
         trx
-          .insertInto('access_restriction_type')
-          .values(
-            types.map((t) => ({
-              restricted_member_id: restricted,
-              household_id: householdId,
-              type_key: t,
-            })),
-          )
-          .executeTakeFirst(),
-        types.length,
-      );
-    }
-    if (collections.length) {
-      await wrote(
+          .selectFrom('access_restriction_member as g')
+          .innerJoin('member as m', 'm.id', 'g.member_id')
+          .select(['m.id', 'm.display_name'])
+          .where('g.restricted_member_id', '=', p.memberId)
+          .orderBy('m.display_name')
+          .orderBy('m.id')
+          .execute(),
         trx
-          .insertInto('access_restriction_collection')
-          .values(
-            collections.map((c) => ({
-              restricted_member_id: restricted,
-              household_id: householdId,
-              collection_id: c,
-            })),
-          )
-          .executeTakeFirst(),
-        collections.length,
+          .selectFrom('access_restriction_type as g')
+          .innerJoin('document_type as t', 't.key', 'g.type_key')
+          .select(['t.key', sql<string>`coalesce(t.short_label, t.label)`.as('label')])
+          .where('g.restricted_member_id', '=', p.memberId)
+          .orderBy('t.sort_order')
+          .orderBy('t.key')
+          .execute(),
+        trx
+          .selectFrom('access_restriction_collection as g')
+          .innerJoin('doc_collection as c', 'c.id', 'g.collection_id')
+          .select(['c.id', 'c.name'])
+          .where('g.restricted_member_id', '=', p.memberId)
+          .where('c.deleted_at', 'is', null)
+          .where('c.audience', '=', 'everyone')
+          .orderBy('c.name')
+          .orderBy('c.id')
+          .execute(),
+        trx
+          .selectFrom('household')
+          .select('timezone')
+          .where('id', '=', p.householdId)
+          .executeTakeFirstOrThrow(),
+      ]);
+      const summary = youCanSee(
+        {
+          people,
+          types,
+          collections,
+          include_no_person_docs: r.include_no_person_docs,
+          expires_at: r.expires_at,
+          limits_people: r.limits_people,
+          limits_types: r.limits_types,
+        },
+        hh.timezone,
       );
-    }
+      return {
+        summary,
+        people: people.map((m) => ({ id: m.id, display_name: m.display_name })),
+        types: types.map((t) => ({ key: t.key, label: t.label })),
+        collections: collections.map((c) => ({ id: c.id, name: c.name })),
+        include_adults_only: r.include_adults_only,
+        include_no_person_docs: r.include_no_person_docs,
+        expires_at: r.expires_at?.toISOString() ?? null,
+      };
+    });
   }
 }
 
+const sameSet = (a: string[], b: string[]) =>
+  a.length === b.length && [...a].sort().join(',') === [...b].sort().join(',');
+
+/** Said to an adult asking for Adults only documents for a viewer (A27, D6). */
+export const ADULTS_ONLY_OWNERS = 'Only an owner can let a viewer see Adults only documents.';
+
+const adultsOnlyRefusal = () => new ApiError(403, 'forbidden', ADULTS_ONLY_OWNERS);
+
 /**
  * Each of these people's restriction, in a sentence, for an owner (A55's
- * "After a restore"): null for somebody with none. Read in the owner's own
- * transaction: an owner reads every restriction of the household (0054).
+ * "After a restore", and the family's list, 5.33): null for somebody with
+ * none. Read in the owner's own transaction: an owner reads every
+ * restriction of the household (0054).
  */
 export async function restrictionSummaries(
   trx: Db,

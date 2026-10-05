@@ -32,6 +32,7 @@ import { IdentityService } from './household/identity.js';
 import { InvitationService } from './household/invitations.js';
 import { CoOwnerService } from './household/co-owners.js';
 import { LockService } from './household/locks.js';
+import { RestrictionService } from './household/restrictions.js';
 import { OwnerResetService } from './household/owner-resets.js';
 import {
   SHARE_CODE_KEY_PURPOSE,
@@ -316,10 +317,11 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       resets.pathFor(trx, target),
     ),
     photos: new PhotoService(db, keys, vaults, enqueue, config.FDV_MAX_UPLOAD_BYTES),
-    identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL)),
+    identity: new IdentityService(db, keys, alert, Boolean(config.FDV_SMTP_URL), push),
     invitations,
     coOwners: new CoOwnerService(db, alert, push, enqueue),
     locks: new LockService(db, alert, push, enqueue),
+    restrictions: new RestrictionService(db, alert),
     resets,
     suggestions: new SuggestionService(db),
     logger: opts.logger ?? false,

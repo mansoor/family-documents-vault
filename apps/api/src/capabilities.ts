@@ -108,6 +108,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.30: an owner signs somebody out everywhere, a co-owner too (A53);
       // a role change says what else it did.
       sign_out_everywhere: true,
+      // 5.33: an owner limits what a viewer can see (A56-A59), and an
+      // invitation for a viewer carries its limits (A27).
+      access_restrictions: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

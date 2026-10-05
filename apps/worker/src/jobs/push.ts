@@ -4,6 +4,7 @@ import { isIP, type LookupFunction } from 'node:net';
 import { appendAudit, withSystem, type Db } from '@fdv/db';
 import {
   incomingWords,
+  NOTICE_WORDS,
   isLoopbackName,
   isPrivateAddress,
   PUSH_TTL_SECONDS,
@@ -311,13 +312,23 @@ export function isPushJob(v: unknown): v is PushJob {
 /** A web browser gets a notification it can show; a phone, only the word. */
 export function payloadFor(kind: 'web_push' | 'unified_push', m: PushMessage): string {
   if (kind === 'unified_push') return unifiedPayload(m);
-  const words: Record<Exclude<PushMessage['type'], 'incoming'>, string> = {
+  const words: Record<Exclude<PushMessage['type'], 'incoming' | 'notice'>, string> = {
     digest: 'You have reminders today.',
     new_device: 'Your account was used on a new device.',
     owner_change: 'Something changed about who owns your family vault.',
     session_ended: 'You were signed out.',
     test: 'Notifications work on this device.',
   };
+  if (m.type === 'notice') {
+    // 5.33 (5.26's notice): that something about their details is changing,
+    // and nothing of what; a tap opens Home, which says what (IdentityNotice).
+    return JSON.stringify({
+      title: 'Family Document Vault',
+      body: NOTICE_WORDS,
+      tag: pushTopic(m.type),
+      url: '/',
+    });
+  }
   if (m.type === 'incoming') {
     return JSON.stringify({
       title: 'Family Document Vault',

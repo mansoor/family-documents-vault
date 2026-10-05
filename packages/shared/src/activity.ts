@@ -332,6 +332,22 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
             `${who} changed ${possessive(personOf(e))} role, so their ${what} to send documents closed`,
           );
     }
+    // What a viewer can see, limited by an owner (5.33): to the owners, the
+    // person and whoever did it. Never what it gives — whose, which kinds,
+    // which collections — only that it was made, changed or taken off.
+    case 'access.restricted': {
+      const until = text(detail.expires_at);
+      const end = until ? ` until ${dayWords(until, e.timezone)}` : '';
+      const adults = detail.include_adults_only === true ? ' (Adults only documents included)' : '';
+      const how = detail.via === 'invitation' ? ', as they accepted their invitation' : '';
+      return line(`${who} limited what ${personOf(e)} can see${end}${adults}${how}`, true);
+    }
+    case 'access.changed':
+      return detail.reconfirmed === true && detail.changed !== true
+        ? line(`${who} confirmed what ${personOf(e)} can see`, true)
+        : line(`${who} changed what ${personOf(e)} can see`, true);
+    case 'access.removed':
+      return line(`${who} took the limits off what ${personOf(e)} can see`, true);
     case 'member.deceased':
       return detail.deceased === true
         ? line(`${who} recorded that ${personOf(e)} has passed away`, true)

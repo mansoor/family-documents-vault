@@ -3303,6 +3303,111 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       `AdultsGrant`, `canSee`'s `seesAdults`, `restrictionSummary`,
       `RestrictionCounts`, `RestrictionSummary`, `PausedSignIn.restriction`
       and `ShareView.paused_reason`'s `limited`.
+  - Limit what a viewer can see (5.33, `features.access_restrictions`; D6,
+    A17, A27, A29, A56–A59). Older phones simply see fewer documents.
+    - **Added:** `PUT /api/v1/members/{id}/access` with `{ people[],
+types[], collections[], include_adults_only, include_no_person_docs,
+expires_at, confirm_private? }` (each optional; a list left out is none,
+      a flag false, the end none) limits a viewer to exactly that grant, or
+      changes their limits, and answers `MemberAccess`: the grant, `summary`
+      (the sentence `restrictionSummary` makes), `reconfirm_since`,
+      `private_confirmed` and `updated_at`. `DELETE` takes the limits off
+      (`204`, also when there were none); the viewer then sees every family
+      document but the Adults only ones. Both are owners only (`403
+forbidden`) and an owner power (A54), with **new** step-up action
+      `limit_access`: an owner with neither two-step sign-in nor a passkey is
+      refused it outright (`403 totp_required_for_owner`, "Turn on two-step
+      sign-in to limit what a viewer can see."), and any other is asked for a
+      passkey or a code within five minutes, never the password
+      (`step_up_required`, `limit_access`; `FACTOR_STEP_UPS` lists it). What
+      is sent is checked first (`422`: people, kinds and collections of the
+      family; an end in the future), then the step-up, then whom: nobody of
+      the family `404`, anybody but a viewer (or somebody with no sign-in)
+      `409 not_a_viewer`, somebody who keeps Only me documents `409
+confirm_private` until it is sent again with `confirm_private: true` —
+      they are then told by email (A59), once. Putting the same grant again
+      after their sign-in was given back confirms it (`reconfirm_since`
+      becomes null); taking the limits off clears it too. A change applies
+      from the viewer's next request.
+    - **Added:** only a collection for Everyone may be granted (A17): any
+      other, or a deleted one, is `422 validation_failed` with a sentence
+      ("“Teen papers” is for Teens and up, so it cannot be given to a viewer.
+      Only a collection for Everyone in the family can be."; `onlyEveryone`
+      in `@fdv/shared`). A collection whose audience changes away from
+      Everyone leaves every grant in the same transaction, and does not come
+      back by itself if it is made Everyone again.
+    - **Added:** `GET /api/v1/members/{id}/access/preview` counts a grant not
+      yet saved — `?people=a,b&types=x,y&collections=c&include_adults_only=true&include_no_person_docs=false&expires_at=…`
+      (lists comma-separated) — by the rule itself, and answers `{ documents,
+keeps_private }`: what they would then see out of the Trash, but for
+      their own Only me documents, whose number is told to nobody else
+      (`keeps_private` says there are some; to an owner alone).
+      `GET /api/v1/access/preview` counts for somebody not yet in the family,
+      who owns nothing. An owner's, or an adult's (who may invite a viewer)
+      without Adults only documents (`403`); anybody else `403`.
+    - **Added:** `GET /me` gains `restriction`: for a restricted viewer, `{
+summary, people[{ id, display_name }], types[{ key, label }],
+collections[{ id, name }], include_adults_only, include_no_person_docs,
+expires_at }`, in their own words ("You can see: Tax return documents for
+      Ahmed, the collection “For the accountant” and your own."), naming
+      only what the vault gives them now; `null` for anybody else.
+    - **Added:** `GET /members` gains `restriction: { summary } | null` on
+      each person, for owners alone; absent for anybody else. `GET
+/members/{id}/account` gains `access`: a viewer's `MemberAccess`, or
+      `null`.
+    - **Added:** an invitation (`POST /invitations`, `POST
+/members/{id}/invite`) takes `restriction`, a grant as above, for a
+      viewer only (`422` otherwise), checked as the inviter sees the family.
+      Accepting it applies it in the same transaction that makes the
+      sign-in, so the viewer is never unrestricted for a moment; what it
+      names that was deleted since (or a collection no longer for Everyone)
+      is left out. An owner's replaces limits an owner set before on that
+      person; an adult's leaves them, for the owners to confirm. The
+      invitation list's items gain `limited`.
+    - **Changed:** an adult inviting a viewer must give `restriction` — an
+      unrestricted viewer invitation from an adult is refused `403
+forbidden` ("Only an owner can invite a viewer who sees every family
+      document. Choose what they can see.") — and may not include Adults
+      only documents (`403 forbidden`, A27). Owners may still invite an
+      unrestricted viewer.
+    - **Added:** `POST /collections/{id}/items` answers `warnings`: one
+      sentence for each viewer given the collection who will now see what
+      was put in ("Jane (viewer) will be able to see this.", "… these.", "…
+      2 of these."); absent when there is nobody.
+    - The activity log: **new** `access.restricted` ("Mansoor limited what
+      Val can see", with an end and Adults only said; "…, as they accepted
+      their invitation" for an invitation's, as its inviter),
+      `access.changed` ("… changed what Val can see"; "… confirmed what Val
+      can see" when the same limits were put again after a sign-in was given
+      back) and `access.removed` ("… took the limits off what Val can
+      see"), notable, each for the owners, the person and whoever did it.
+      They say how many people, kinds and collections, never which.
+    - **Added: push** `{ v: 1, type: "notice" }` (5.26's notice, a follow-up
+      from 5.31): everybody told of a widening of who sees identity details
+      is pushed the word and nothing else — not whose details, who asked or
+      from when — on each of their devices whose sign-in has not ended,
+      beside the notice in the app and the operator's mail, whether or not
+      there is a mail server. A browser is told "Something about your
+      details is changing. Open the vault to see what." Phones since app
+      0.2.2 show it; an older one shows nothing. TTL a day, Topic
+      `fdv-notice`.
+    - The database: 0055 adds `invitation.restriction` (jsonb, a viewer's
+      invitation's alone); `access_restriction_collection_everyone` (a
+      collection named in a grant is for Everyone and not deleted, held FOR
+      SHARE while it is named) and `doc_collection_leaves_grants` (made for
+      fewer, it leaves every grant), both known to the restore check; and
+      `collection_viewers_given(collection, documents[])`, which says to
+      somebody signed in, not restricted, which viewers given a collection
+      would see which of these documents.
+    - `@fdv/shared`: `AccessGrant`, `ACCESS_GRANT_MAX`, `MemberAccess`,
+      `AccessPreview`, `MyRestriction`, `NamedGrant`, `youCanSee`,
+      `onlyEveryone`, `NOTICE_WORDS`, `Me.restriction`,
+      `Member.restriction`, `MemberAccount.access`, `Invitation.limited`,
+      `CollectionDetail.warnings`, `PushMessage`'s `notice` and
+      `features.access_restrictions`. `@fdv/client`: `setMemberAccess`,
+      `removeMemberAccess`, `previewAccess`, and `invite`'s `restriction`;
+      the fake keeps limits, counts them by the vault's rule, and tells a
+      restricted viewer on `/me`.
 
 ## Deprecations in effect
 

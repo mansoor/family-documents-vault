@@ -605,8 +605,9 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
     expect(wait).toBeGreaterThan(72 * 3600_000 - 60_000);
     expect(wait).toBeLessThanOrEqual(72 * 3600_000 + 1000);
     // Everybody with a sign-in is told (the 5.26 review): in the app, which
-    // shows it waiting to each of them; and by the operator's mail server,
-    // never by push. Not the owner asking.
+    // shows it waiting to each of them; and by the operator's mail server.
+    // Not the owner asking. Their devices hear the word `notice` alone
+    // (5.33, identity-notice.test.ts): nobody here has one.
     for (const who of [sara, adam, teen, viewer, second]) {
       expect(json<IdentityAudienceView>(await audience(who))).toMatchObject({
         audience: 'owners_and_self',

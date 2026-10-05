@@ -535,7 +535,7 @@ describe('collections on the web (5.15)', () => {
     expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
   });
 
-  it('a viewer sees no Collections entry, and nothing about collections anywhere', async () => {
+  it('a viewer given no collection sees no Collections entry, and nothing about collections anywhere', async () => {
     const state = at(
       '/',
       { documents: [{ ...PASSPORT }], collections: [{ ...HOLIDAY }] },
@@ -556,8 +556,12 @@ describe('collections on the web (5.15)', () => {
     reopen(state, '/search');
     expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument();
-    // Never asked for: a viewer's collections are not the family's to show.
-    expect(state.calls.some((c) => c.url.includes('/collections'))).toBe(false);
+    // A viewer's Home asks only for the collections given to them, and any
+    // they made before they were a viewer (5.33, U515-11) — here none; a
+    // document's collections are never asked for.
+    expect(
+      state.calls.filter((c) => c.url.includes('/collections')).map((c) => [c.method, c.url]),
+    ).toEqual([['GET', '/api/v1/collections']]);
   });
 
   it('a vault from before collections offers none', async () => {

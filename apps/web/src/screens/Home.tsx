@@ -126,6 +126,16 @@ export function HomeScreen() {
         <ResetNoticeStrip notice={data.me.reset_notice} onSeen={() => void reload()} />
       )}
       <RemovalNotice items={data?.removals ?? []} memberId={data?.me.member_id} />
+      {/* A restricted viewer is told what they can see (5.33); an owner, of
+          viewers who see every family document (A29). */}
+      {data?.me.restriction && (
+        <p className="attention attention-calm limits-told" role="status">
+          {data.me.restriction.summary}
+        </p>
+      )}
+      {caps?.features.access_restrictions === true && (
+        <UnlimitedViewers members={data?.members ?? []} />
+      )}
       <AttentionStrip items={data?.attention ?? []} />
       <MissingStrip items={data?.suggestions ?? []} />
 
@@ -182,9 +192,15 @@ export function HomeScreen() {
       </section>
 
       {/* The way to the family's collections (5.15): only where the vault has
-          them, and for those who make them. A viewer is given none. */}
-      {collectionsOffered(caps, storedRole()) && (
+          them, and for those who make them. A viewer is given only those
+          granted to them, and any they made before they were a viewer
+          (5.33, U515-11): shown when there are some. */}
+      {collectionsOffered(caps, storedRole()) ? (
         <CollectionsOnHome version={changes} quiet={error !== null} />
+      ) : (
+        caps?.features.collections === true && (
+          <CollectionsOnHome version={changes} quiet={error !== null} onlyGiven />
+        )
       )}
 
       <section aria-labelledby="recent-h">
@@ -205,6 +221,30 @@ export function HomeScreen() {
       </section>
       <BottomNav />
     </main>
+  );
+}
+
+/**
+ * Viewers who see every family document (A29, 5.33): said to owners, who
+ * alone are told who is limited, with the way to each one's card. Nothing
+ * for anybody else, nor once every viewer is limited.
+ */
+export function UnlimitedViewers(props: { members: Member[] }) {
+  // `restriction` is told to owners alone: absent, this is nobody's to know.
+  const open = props.members.filter(
+    (m) => m.role === 'viewer' && m.has_account && m.restriction === null,
+  );
+  if (open.length === 0) return null;
+  const first = open[0] as Member;
+  return (
+    <Link to={`/people/${first.id}`} className="attention attention-warn">
+      <strong>Viewers can see every family document — restrict them?</strong>
+      <span className="muted">
+        {open.map((m) => m.display_name).join(', ')}{' '}
+        {open.length === 1 ? 'is a viewer' : 'are viewers'} with no limits. Choose what each can
+        see, on their page.
+      </span>
+    </Link>
   );
 }
 

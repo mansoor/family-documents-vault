@@ -17,6 +17,7 @@ import type { StepUpService } from '../auth/step-up.js';
 import { ApiError } from '../errors.js';
 import { allows, requireCapability } from '../authz.js';
 import { photoFields } from './photos.js';
+import { restrictionSummaries } from './restrictions.js';
 
 /**
  * The household's people and its profile — what the first-run wizard
@@ -123,6 +124,11 @@ export interface MemberView {
   version: number | null;
   /** Whether the caller may change their name, date of birth and relationship (A66). */
   can_edit: boolean;
+  /**
+   * What an owner has limited them to, in a sentence (5.33): told to owners
+   * alone, who read every restriction (0054); null for no limits.
+   */
+  restriction?: { summary: string } | null;
 }
 
 export class HouseholdService {
@@ -281,6 +287,16 @@ export class HouseholdService {
       // their own (5.3; relationships since 5.17c, the first release that
       // sets one).
       const family = allows(p, 'family.details');
+      // Who is limited, and to what, in a sentence (5.33): the owners'
+      // alone, who read every restriction; nobody else is told.
+      const limits =
+        p.role === 'owner'
+          ? await restrictionSummaries(
+              trx,
+              p.householdId,
+              rows.map((r) => r.id),
+            )
+          : null;
       return rows.map((r) => {
         const own = family || r.id === p.memberId;
         const photo = photos.get(r.id);
@@ -306,6 +322,7 @@ export class HouseholdService {
             { role: p.role, memberId: p.memberId },
             { id: r.id, role: r.role },
           ),
+          ...(limits ? { restriction: limits.get(r.id) ?? null } : {}),
         };
       });
     });

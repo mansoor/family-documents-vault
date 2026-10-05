@@ -982,6 +982,18 @@ const GUARDS = [
     table: 'account_household',
     fn: 'account_household_restricted_role',
   },
+  // Only a collection for Everyone is named in a grant, and one made for
+  // fewer people leaves every grant as it changes (0055, A17).
+  {
+    name: 'access_restriction_collection_everyone',
+    table: 'access_restriction_collection',
+    fn: 'access_restriction_collection_everyone',
+  },
+  {
+    name: 'doc_collection_leaves_grants',
+    table: 'doc_collection',
+    fn: 'doc_collection_leaves_grants',
+  },
 ];
 
 /**

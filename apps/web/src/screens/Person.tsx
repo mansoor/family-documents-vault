@@ -38,6 +38,7 @@ import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
+import { ViewerLimits } from '../access.js';
 import { IdentityCard } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
@@ -681,6 +682,22 @@ function AccountCard(props: { member: Member; name: string; otherOwners: boolean
             <dt>Last signed in</dt>
             <dd>{card.last_signed_in_at ? whenWords(card.last_signed_in_at) : 'Never'}</dd>
           </dl>
+          {/* A viewer's limits (5.33): what they can see, to change, with the
+              same confirmation the card was opened with. */}
+          {caps?.features.access_restrictions === true && card.role === 'viewer' && (
+            <ViewerLimits
+              member={props.member}
+              name={props.name}
+              access={card.access ?? null}
+              onChanged={(access, words) => {
+                flushSync(() => {
+                  setCard((was) => (was ? { ...was, access } : was));
+                  setSaid(words);
+                });
+                status.current?.focus();
+              }}
+            />
+          )}
           <h3 className="section-h">Signed in on</h3>
           {card.devices.length === 0 ? (
             <p className="muted">No device at the moment.</p>

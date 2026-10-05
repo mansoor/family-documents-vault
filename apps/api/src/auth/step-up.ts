@@ -38,7 +38,8 @@ export type StepUpAction =
   | 'manage_sign_ins'
   | 'open_identity'
   | 'reveal_identity'
-  | 'identity_audience';
+  | 'identity_audience'
+  | 'limit_access';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -80,6 +81,9 @@ const WHY: Record<StepUpAction, string> = {
   reveal_identity: 'to see your identity numbers',
   // Who reads other people's identity details (5.26, A34, A54).
   identity_audience: 'to change who can see identity details',
+  // What a viewer can see, limited, changed or let go (5.33): an owner
+  // power (A54), so a passkey or a code, never the password.
+  limit_access: 'to limit what a viewer can see',
 };
 
 /**

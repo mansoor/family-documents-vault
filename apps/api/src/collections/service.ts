@@ -10,6 +10,7 @@ import {
   COLLECTION_NAME_MAX,
   collectionItemHint,
   inCollectionAudience,
+  mayBeRestricted,
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionDetail,
@@ -96,18 +97,24 @@ const COLLECTION_COLUMNS = [
 /**
  * "This caller may see collection `l`", as SQL: `canSeeCollection` for every audience
  * there is, and not deleted. Its maker always may; Only me, its maker
- * alone. An audience it does not name is nobody's.
+ * alone. An audience it does not name is nobody's. And a viewer, a
+ * collection for Everyone an owner has given them (A17, 5.33): the
+ * database's own answer (0054's app_granted_collections(), nothing for a
+ * viewer with no limits), which its rule for a restricted reader asks too.
  */
 export const seenCollection = (p: Principal) => {
   const maker = sql<boolean>`coalesce(l.owner_member_id = ${p.memberId}::uuid, false)`;
-  return sql<boolean>`(l.deleted_at is null and case l.audience ${sql.join(
+  const granted = mayBeRestricted(p.role)
+    ? sql<boolean>`or (l.audience = 'everyone' and l.id in (select app_granted_collections()))`
+    : sql<boolean>``;
+  return sql<boolean>`(l.deleted_at is null and (case l.audience ${sql.join(
     COLLECTION_AUDIENCES.map((a) =>
       a === 'only_me'
         ? sql`when ${sql.lit(a)} then ${maker}`
         : sql`when ${sql.lit(a)} then ${sql.lit(inCollectionAudience(p.role, a))} or ${maker}`,
     ),
     sql` `,
-  )} else false end)`;
+  )} else false end ${granted}))`;
 };
 
 /** The caller made this collection. */
@@ -207,6 +214,12 @@ function audienceFor(p: Principal, audience: CollectionAudience): CollectionAudi
     throw new ApiError(403, 'forbidden', 'Only an adult can make a collection for the adults.');
   }
   return audience;
+}
+
+/** "Jane (viewer) will be able to see this" (5.33): of what was just put in a collection. */
+export function viewerWillSee(name: string, sees: number, added: number): string {
+  const what = added === 1 ? 'this' : sees === added ? 'these' : `${sees} of these`;
+  return `${name} (viewer) will be able to see ${what}.`;
 }
 
 export class CollectionService {
@@ -435,7 +448,7 @@ export class CollectionService {
     meta: RequestMeta,
   ): Promise<CollectionDetail> {
     requireCapability(p, 'collection.manage');
-    const collectionId = await withPrincipal(this.db, p, async (trx) => {
+    const { collectionId, warnings } = await withPrincipal(this.db, p, async (trx) => {
       const collection = await this.mine(trx, p, id);
       const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
       if (asked.length === 0)
@@ -475,6 +488,7 @@ export class CollectionService {
         .where('collection_id', '=', collection.id)
         .executeTakeFirst();
       let position = Number(last?.position ?? 0);
+      const addedIds: string[] = [];
       for (const { id: documentId, visibility } of ordered) {
         const added = await trx
           .insertInto('doc_collection_item')
@@ -490,6 +504,7 @@ export class CollectionService {
           .executeTakeFirst();
         if (!added) continue;
         position += 1;
+        addedIds.push(documentId);
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
@@ -533,10 +548,27 @@ export class CollectionService {
           });
         }
       }
-      return collection.id;
+      // Who else will now see them (5.33): a viewer the collection is given
+      // to, by their grant as it now is (0055) — "Jane (viewer) will be able
+      // to see this". Only for a collection for Everyone: no other is given.
+      const viewers =
+        addedIds.length > 0 && collection.audience === 'everyone'
+          ? (
+              await sql<{ display_name: string; documents: number }>`
+                select display_name, documents
+                  from collection_viewers_given(${collection.id}::uuid, ${addedIds}::uuid[])`.execute(
+                trx,
+              )
+            ).rows
+          : [];
+      return {
+        collectionId: collection.id,
+        warnings: viewers.map((v) => viewerWillSee(v.display_name, v.documents, addedIds.length)),
+      };
     });
     // Read afresh, the change made and let go.
-    return this.get(p, collectionId);
+    const now = await this.get(p, collectionId);
+    return warnings.length > 0 ? { ...now, warnings } : now;
   }
 
   /**

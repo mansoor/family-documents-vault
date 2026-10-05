@@ -32,6 +32,12 @@ import {
   identityWriteBody,
   type IdentityService,
 } from './identity.js';
+import {
+  accessPreviewQuery,
+  accessPutBody,
+  grantOf,
+  type RestrictionService,
+} from './restrictions.js';
 
 /**
  * A person's photo (5.17c). No step-up — a photo decides nobody's access —
@@ -280,6 +286,61 @@ export function registerOwnerResets(
   );
 }
 
+/**
+ * What a viewer can see, limited by an owner (5.33, D6, A56–A59). Changing
+ * it is an owner power (A54): owners only (anybody else `403`), what is
+ * sent checked first (`422`), then a passkey or a code within five minutes
+ * (`limit_access`) — an owner with neither is refused it — then whom it is
+ * about (`404`, `409 not_a_viewer`, `409 confirm_private`). Confirming it
+ * after their sign-in was given back is putting the same grant again.
+ *
+ * The preview counts a grant not yet saved: an owner's, or an adult's
+ * inviting a viewer (A27). `/access/preview`, with no person, is for
+ * somebody not yet in the family.
+ */
+export function registerAccess(
+  app: FastifyInstance,
+  restrictions: RestrictionService,
+  stepUp: StepUpService,
+): void {
+  const auth = { preHandler: app.requireAuth };
+  const owners = { preHandler: [app.requireAuth, needs('role.change')] };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+
+  app.put('/api/v1/members/:id/access', owners, async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    const { confirm_private, ...body } = parse(accessPutBody, req.body ?? {});
+    await stepUp.requireOwnerPower(p, 'limit_access');
+    const done = await restrictions.restrict(p, id, grantOf(body), {
+      confirmPrivate: confirm_private === true,
+      meta: metaOf(req),
+    });
+    return restrictions.access(p, done.member_id);
+  });
+
+  app.delete('/api/v1/members/:id/access', owners, async (req, reply) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    await stepUp.requireOwnerPower(p, 'limit_access');
+    await restrictions.remove(p, id, metaOf(req));
+    return reply.status(204).send();
+  });
+
+  app.get('/api/v1/members/:id/access/preview', auth, async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    const query = parse(accessPreviewQuery, req.query ?? {});
+    return restrictions.preview(p, id, grantOf(query));
+  });
+
+  app.get('/api/v1/access/preview', auth, async (req) => {
+    const query = parse(accessPreviewQuery, req.query ?? {});
+    return restrictions.preview(principal(req), null, grantOf(query));
+  });
+}
+
 export function registerHousehold(
   app: FastifyInstance,
   household: HouseholdService,
@@ -287,6 +348,7 @@ export function registerHousehold(
   invitations?: InvitationService,
   coOwners?: CoOwnerService,
   photos?: PhotoService,
+  restrictions?: RestrictionService,
 ): void {
   const auth = { preHandler: app.requireAuth };
   const guard = (c: Capability) => ({ preHandler: [app.requireAuth, needs(c)] });
@@ -343,7 +405,13 @@ export function registerHousehold(
       if (p.role !== 'owner') throw notFound();
       const id = params(idParam, req).id;
       await stepUp.requireOwnerPower(p, 'manage_sign_ins');
-      return household.account(p, id, metaOf(req));
+      const account = await household.account(p, id, metaOf(req));
+      // A viewer's limits (5.33): what the card changes, with the same step-up.
+      if (!restrictions) return account;
+      return {
+        ...account,
+        access: account.role === 'viewer' ? await restrictions.access(p, account.member_id) : null,
+      };
     });
   }
 

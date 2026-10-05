@@ -37,6 +37,7 @@ import {
 import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AlertRequest } from '../alert-job.js';
+import type { PushRequest, PushTarget } from '../push-job.js';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
@@ -66,6 +67,9 @@ import { ApiError, notFound } from '../errors.js';
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** "Something about your details is changing" (5.33): the word, and nothing else. */
+export const NOTICE_PUSH = { v: 1, type: 'notice' } as const;
 
 const blankIsNone = (v: string | null | undefined) => (v === '' ? null : v);
 /** Text of a field, trimmed; blank is none. */
@@ -256,6 +260,11 @@ export class IdentityService {
     private readonly alert: (a: AlertRequest) => Promise<void>,
     /** Whether the operator's mail server is set (FDV_SMTP_URL): told by mail only then. */
     private readonly operatorMail: boolean,
+    /**
+     * What the worker pushes (`push.send`): the word `notice` to the phones
+     * and browsers of everybody told of a widening (5.33), and nothing else.
+     */
+    private readonly push: (r: PushRequest) => Promise<void> = async () => undefined,
   ) {}
 
   // ------------------------------------------------------------- reading
@@ -800,6 +809,39 @@ export class IdentityService {
         },
         ip: meta.ip,
       });
+      // Their phones and browsers too (5.33): the word `notice`, and nothing
+      // of whose details, who asked or from when — a lock screen is no place
+      // for it; the app asks the vault once it is open. Every device of
+      // theirs that can be pushed to, whose sign-in has not ended; queued
+      // here, in this transaction, as the mail is: a failed enqueue rolls
+      // the notice back, and asking again tries again.
+      if (told.length > 0) {
+        const devices = await trx
+          .selectFrom('device')
+          .select(['id', 'kind', 'endpoint', 'p256dh', 'auth'])
+          .where(
+            'account_id',
+            'in',
+            told.map((a) => a.account_id),
+          )
+          .where('kind', 'in', ['web_push', 'unified_push'])
+          .where('failed_at', 'is', null)
+          .where(
+            sql<boolean>`(device.session_id is null or exists (
+              select 1 from session s
+               where s.id = device.session_id and s.revoked_at is null and s.expires_at > now()))`,
+          )
+          .orderBy('id')
+          .execute();
+        const targets: PushTarget[] = devices.flatMap((d) =>
+          d.p256dh && d.auth && (d.kind === 'web_push' || d.kind === 'unified_push')
+            ? [{ id: d.id, kind: d.kind, endpoint: d.endpoint, p256dh: d.p256dh, auth: d.auth }]
+            : [],
+        );
+        if (targets.length > 0) {
+          await this.push({ householdId: p.householdId, message: NOTICE_PUSH, targets });
+        }
+      }
       if (told.length > 0 && this.operatorMail) {
         // Nothing of anybody's details: who will see them, and from when, on
         // the household's clock. Queued last, as co-owners.ts queues its

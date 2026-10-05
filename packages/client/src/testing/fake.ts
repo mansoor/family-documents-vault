@@ -33,6 +33,9 @@ import {
   LOCK_NOTE_MAX,
   maskIdentity,
   mergeIdentityWrite,
+  onlyEveryone,
+  restrictionSummary,
+  youCanSee,
   revealIdentity,
   libraryHasName,
   missingFields,
@@ -51,6 +54,8 @@ import {
   TYPE_IN_USE,
   TYPE_LABEL_MAX,
   UNSEEN_DOCUMENTS,
+  type AccessGrant,
+  type AccessPreview,
   type Capabilities,
   type CaptureMetadata,
   type CollectionAudience,
@@ -72,8 +77,10 @@ import {
   type IdentityPart,
   type IdentityPartView,
   type IssuerSuggestions,
+  type MemberAccess,
   type MemberAccount,
   type MemberSuspension,
+  type MyRestriction,
   type OfflineGrant,
   type OfflineItem,
   type PausedSignIn,
@@ -204,6 +211,13 @@ export interface FakeVaultState {
   /** The household's clock (5.28): the end of a lock is said in it. UTC, as a new vault's. */
   timezone: string;
   /**
+   * What an owner has limited each viewer to (5.33), by member id: what PUT
+   * and DELETE /members/{id}/access write, what the preview counts by the
+   * real vault's rule, and what GET /me tells the viewer. The fake's lists
+   * of documents are not narrowed by it: a phone is (5.36).
+   */
+  restrictions: Map<string, FakeRestriction>;
+  /**
    * Whether whoever runs the vault gave it a mail server (FDV_SMTP_URL),
    * as the contract's real vault has: a reset an owner starts (5.29) then
    * goes by it, `mail`. Without one, `handover` for somebody who keeps
@@ -273,6 +287,13 @@ export interface FakeVaultState {
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
   offline: boolean;
+}
+
+/** A viewer's limits, as the fake keeps them (5.33). */
+export interface FakeRestriction extends AccessGrant {
+  reconfirm_since: string | null;
+  private_confirmed: boolean;
+  updated_at: string;
 }
 
 /** A file sent in, as the fake keeps one (0.5.23): its view, and what it is. */
@@ -577,6 +598,7 @@ export function createFakeVault(): {
     signIns: [],
     suspensions: new Map(),
     timezone: 'UTC',
+    restrictions: new Map(),
     operatorMail: true,
     keepsPrivate: [],
     resetNotices: new Map(),
@@ -762,6 +784,136 @@ export function createFakeVault(): {
     ...state.members.filter((m) => m.id !== ME && Boolean(m.role)).map((m) => m.id),
   ];
 
+  // ----------------------------------------------- a viewer's limits (5.33)
+
+  /** The documents of the collections a grant gives: for Everyone, and not deleted (A17). */
+  const collectionDocuments = (g: AccessGrant) =>
+    new Set(
+      state.collections
+        .filter((c) => g.collections.includes(c.id) && !c.deleted && c.audience === 'everyone')
+        .flatMap((c) => c.items.map((i) => i.document_id)),
+    );
+  /** The real vault's rule (0054's doc_in_grant), for one document. */
+  const grantGives = (
+    memberId: string | null,
+    g: AccessGrant,
+    d: FakeDocument,
+    inCollections: Set<string>,
+  ): boolean => {
+    if (g.expires_at !== null && Date.parse(g.expires_at) <= Date.now()) return false;
+    const visibility = d.visibility ?? 'household';
+    const owner = d.owner_member_id ?? null;
+    const ceiling =
+      visibility === 'household' ||
+      (visibility === 'adults' && g.include_adults_only) ||
+      (visibility === 'private' && owner !== null && owner === memberId);
+    if (!ceiling) return false;
+    if (owner !== null && owner === memberId) return true;
+    const limitsPeople = g.people.length > 0;
+    const limitsTypes = g.types.length > 0;
+    const byPerson =
+      owner === null
+        ? g.include_no_person_docs
+        : limitsPeople
+          ? g.people.includes(owner)
+          : limitsTypes;
+    if (byPerson && (!limitsTypes || g.types.includes(d.type_key ?? ''))) return true;
+    return (owner !== null || g.include_no_person_docs) && inCollections.has(d.id);
+  };
+  /** Somebody's limits as an owner is shown them. */
+  const accessView = (memberId: string): MemberAccess | null => {
+    const r = state.restrictions.get(memberId);
+    if (!r) return null;
+    const { reconfirm_since, private_confirmed, updated_at, ...grant } = r;
+    return {
+      member_id: memberId,
+      ...grant,
+      summary: restrictionSummary(
+        {
+          people: grant.people.length,
+          types: grant.types.length,
+          collections: state.collections.filter(
+            (c) => grant.collections.includes(c.id) && !c.deleted && c.audience === 'everyone',
+          ).length,
+          include_adults_only: grant.include_adults_only,
+          include_no_person_docs: grant.include_no_person_docs,
+          expires_at: grant.expires_at,
+        },
+        state.timezone,
+      ),
+      reconfirm_since,
+      private_confirmed,
+      updated_at,
+    };
+  };
+  /** What a restricted viewer is told on GET /me: names they are given. */
+  const myRestriction = (memberId: string): MyRestriction | null => {
+    const r = state.restrictions.get(memberId);
+    if (!r) return null;
+    const people = state.members
+      .filter((m) => r.people.includes(m.id))
+      .map((m) => ({ id: m.id, display_name: m.display_name }));
+    const types = state.types
+      .filter((t) => r.types.includes(t.key))
+      .map((t) => ({ key: t.key, label: t.short_label ?? t.label }));
+    const collections = state.collections
+      .filter((c) => r.collections.includes(c.id) && !c.deleted && c.audience === 'everyone')
+      .map((c) => ({ id: c.id, name: c.name }));
+    return {
+      summary: youCanSee(
+        {
+          people,
+          types,
+          collections,
+          include_no_person_docs: r.include_no_person_docs,
+          expires_at: r.expires_at,
+        },
+        state.timezone,
+      ),
+      people,
+      types,
+      collections,
+      include_adults_only: r.include_adults_only,
+      include_no_person_docs: r.include_no_person_docs,
+      expires_at: r.expires_at,
+    };
+  };
+  /**
+   * A grant as the real vault checks it (5.33): the people, kinds and
+   * collections of the family, a collection for Everyone (A17), an end in
+   * the future. A refusal, or the grant tidied.
+   */
+  const checkedGrant = (b: Record<string, unknown>): AccessGrant | ResponseLike => {
+    const list = (v: unknown) =>
+      Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string'))] : [];
+    const g: AccessGrant = {
+      people: list(b.people),
+      types: list(b.types),
+      collections: list(b.collections),
+      include_adults_only: b.include_adults_only === true,
+      include_no_person_docs: b.include_no_person_docs === true,
+      expires_at: typeof b.expires_at === 'string' ? b.expires_at : null,
+    };
+    if (g.expires_at !== null && Date.parse(g.expires_at) <= Date.now()) {
+      return fail(422, 'validation_failed', 'Choose an end in the future, or none.', 'expires_at');
+    }
+    if (g.people.some((id) => id !== ME && !state.members.some((m) => m.id === id))) {
+      return fail(422, 'validation_failed', 'Choose people from the family.', 'people');
+    }
+    if (g.types.some((key) => !state.types.some((t) => t.key === key))) {
+      return fail(422, 'validation_failed', 'Choose kinds of document the family has.', 'types');
+    }
+    for (const id of g.collections) {
+      const c = state.collections.find((x) => x.id === id && !x.deleted);
+      if (!c)
+        return fail(422, 'validation_failed', 'Choose collections of the family.', 'collections');
+      if (c.audience !== 'everyone') {
+        return fail(422, 'validation_failed', onlyEveryone(c.name, c.audience), 'collections');
+      }
+    }
+    return g;
+  };
+
   const tokensFor = (s: FakeSession): Tokens => {
     const access = next('access');
     state.access.set(access, s.id);
@@ -883,6 +1035,8 @@ export function createFakeVault(): {
           member_admin: true,
           // Signing somebody out everywhere (5.30).
           sign_out_everywhere: true,
+          // What a viewer can see, limited by an owner (5.33).
+          access_restrictions: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1000,6 +1154,8 @@ export function createFakeVault(): {
         // 5.29: an owner made a link to hand over for this sign-in.
         reset_notice: state.resetNotices.get(who.memberId) ?? null,
         handover_since: null,
+        // 5.33: what an owner has limited this viewer to.
+        restriction: who.role === 'viewer' ? myRestriction(who.memberId) : null,
       });
     }
     if (path === '/api/v1/me/reset-notice' && init.method === 'DELETE') {
@@ -2698,6 +2854,101 @@ export function createFakeVault(): {
         sign_ins: signIns,
       });
     }
+    // What a viewer can see (5.33), as the real vault answers: who may (403),
+    // what is sent (422), the owner power (A54), then whom (404, 409).
+    const accessAt = /^\/api\/v1\/members\/([^/]+)\/access(\/preview)?$/.exec(path);
+    if (accessAt || path === '/api/v1/access/preview') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const me = whoOf(s);
+      const id = accessAt ? decodeURIComponent(accessAt[1] as string) : null;
+      const known = (x: string) => x === ME || state.members.some((m) => m.id === x);
+      if (!accessAt || accessAt[2] !== undefined) {
+        if (init.method !== 'GET') return fail(404, 'not_found', 'Not here.');
+        const query = Object.fromEntries(
+          ['people', 'types', 'collections'].map((k) => [
+            k,
+            (param(url, k) ?? '').split(',').filter(Boolean),
+          ]),
+        ) as Record<string, unknown>;
+        const asked = checkedGrant({
+          ...query,
+          include_adults_only: param(url, 'include_adults_only') === 'true',
+          include_no_person_docs: param(url, 'include_no_person_docs') === 'true',
+          expires_at: param(url, 'expires_at') || null,
+        });
+        if (me.role !== 'owner') {
+          if (!can(me.role, 'member.invite')) {
+            return fail(403, 'forbidden', 'Only an owner can limit what someone can see.');
+          }
+          if (!isResponse(asked) && asked.include_adults_only) {
+            return fail(
+              403,
+              'forbidden',
+              'Only an owner can let a viewer see Adults only documents.',
+            );
+          }
+        }
+        if (id !== null && !known(id))
+          return fail(404, 'not_found', 'That person is not in the family.');
+        if (isResponse(asked)) return asked;
+        const inCollections = collectionDocuments(asked);
+        const counted: AccessPreview = {
+          documents: state.documents.filter(
+            (d) =>
+              !d.deleted_at &&
+              (d.visibility ?? 'household') !== 'private' &&
+              grantGives(id, asked, d, inCollections),
+          ).length,
+          keeps_private: id !== null && me.role === 'owner' && state.keepsPrivate.includes(id),
+        };
+        return ok(counted);
+      }
+      if (init.method !== 'PUT' && init.method !== 'DELETE') {
+        return fail(404, 'not_found', 'Not here.');
+      }
+      if (!can(me.role, 'role.change')) return fail(403, 'forbidden', refusalFor('role.change'));
+      const asked = init.method === 'PUT' ? checkedGrant(body) : null;
+      if (asked && isResponse(asked)) return asked;
+      if (!state.ownerTwoStep) {
+        return fail(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to limit what a viewer can see.',
+        );
+      }
+      const theirs = id as string;
+      if (!known(theirs)) return fail(404, 'not_found', 'That person is not in the family.');
+      if (init.method === 'DELETE') {
+        state.restrictions.delete(theirs);
+        return empty();
+      }
+      const role = roleOfMember(theirs);
+      const name = state.members.find((m) => m.id === theirs)?.display_name ?? 'They';
+      if (role && role !== 'viewer') {
+        return fail(
+          409,
+          'not_a_viewer',
+          `Only a viewer can be limited to some documents. ${name} is not a viewer.`,
+        );
+      }
+      const was = state.restrictions.get(theirs);
+      const keeps = state.keepsPrivate.includes(theirs);
+      if (keeps && !was?.private_confirmed && body.confirm_private !== true) {
+        return fail(
+          409,
+          'confirm_private',
+          `${name} keeps documents only they can see. Limited, they still see those, and nothing else of the family’s that you do not give them. Confirm to go ahead: they will be told.`,
+        );
+      }
+      state.restrictions.set(theirs, {
+        ...(asked as AccessGrant),
+        reconfirm_since: null,
+        private_confirmed: keeps || (was?.private_confirmed ?? false),
+        updated_at: new Date().toISOString(),
+      });
+      return ok(accessView(theirs));
+    }
     const identityAt = /^\/api\/v1\/members\/([^/]+)\/identity(\/reveal)?$/.exec(path);
     if (identityAt) {
       const s = session();
@@ -2815,6 +3066,8 @@ export function createFakeVault(): {
           max_offline_days: FAKE_OFFLINE_MAX_DAYS,
           // Which way a reset an owner starts would go (5.29).
           reset_path: resetPathOf(m.id),
+          // A viewer's limits (5.33).
+          access: card.role === 'viewer' ? accessView(m.id) : null,
         });
       }
       if (init.method !== 'PATCH') return fail(404, 'not_found', 'Not here.');

@@ -958,8 +958,10 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     const shown = json<MemberAccount>(res);
     // 5.28: whether their sign-in is locked, and how long a phone keeps its
     // copies offline — a setting of the vault's, not of theirs. 5.29: which
-    // way a reset an owner starts would go, never why.
+    // way a reset an owner starts would go, never why. 5.33: a viewer's
+    // limits, none for an adult.
     expect(Object.keys(shown).sort()).toEqual([
+      'access',
       'devices',
       'email',
       'last_signed_in_at',
@@ -972,6 +974,7 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
       'two_step',
     ]);
     expect(shown.suspension).toBeNull();
+    expect(shown.access).toBeNull();
     expect(shown).toMatchObject({
       member_id: adult.member_id,
       role: 'adult',
