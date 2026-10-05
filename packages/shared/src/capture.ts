@@ -6,6 +6,7 @@ import {
   type TypeField,
   type Visibility,
 } from './documents.js';
+import { NOTES_MAX } from './notes.js';
 import { can, type Role } from './roles.js';
 import { issuerNoun, monthYear } from './titles.js';
 
@@ -193,7 +194,7 @@ const LIMITS = [
   ['identifier', 200],
   ['issued_by', 200],
   ['physical_location', 500],
-  ['notes', 10_000],
+  ['notes', NOTES_MAX],
 ] as const;
 
 /**

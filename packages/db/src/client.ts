@@ -863,6 +863,17 @@ export interface Schema {
       Date | string | null
     >;
     purge_requested_by: ColumnType<string | null, string | null | undefined, string | null>;
+    /**
+     * When its note's words last changed, and whose sign-in changed them
+     * (0057, 5.35): set by the API only when the words change. Somebody
+     * signed in stamps as themselves, now; the database refuses otherwise.
+     */
+    notes_updated_at: ColumnType<
+      Date | null,
+      Date | string | null | undefined,
+      Date | string | null
+    >;
+    notes_updated_by: ColumnType<string | null, string | null | undefined, string | null>;
   };
 
   /**

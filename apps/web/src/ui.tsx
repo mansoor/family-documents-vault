@@ -2,6 +2,7 @@ import { avatarColour, can, graphemesOf, statusTone, type Status } from '@fdv/sh
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -522,7 +523,13 @@ export function useSheetFocus(
   },
 ) {
   const latest = useRef(opts);
-  useEffect(() => {
+  // Copied as the render is committed, before anything else can happen: a
+  // key pressed the moment `busy` turns false must read false. Copied in a
+  // passive effect, as it was until 5.35, it could run after that key — the
+  // browser may handle input before passive effects are flushed — and an
+  // Escape right after an action finished read busy and left the sheet
+  // open (a flaky Collections test under load).
+  useLayoutEffect(() => {
     latest.current = opts;
   });
   useEffect(() => {

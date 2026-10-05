@@ -2043,3 +2043,118 @@ fieldset.identity-section {
 .list li.guest > p {
   margin: 0;
 }
+
+/* A document's note (5.35): drawn from its tree, never HTML. A long address
+   breaks anywhere rather than pushing the page sideways at 320 px. */
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.notes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.notes-head .section-h {
+  margin: 0;
+}
+.note {
+  overflow-wrap: anywhere;
+}
+.note > :first-child {
+  margin-top: 0;
+}
+.note > :last-child {
+  margin-bottom: 0;
+}
+.note p,
+.note ul,
+.note ol {
+  margin: 0 0 10px;
+}
+.note ul,
+.note ol {
+  padding-left: 24px;
+}
+.note .note-h {
+  font-size: 18px;
+  margin: 14px 0 6px;
+}
+.note a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.note a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.note-address {
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+.note ul.note-checklist {
+  list-style: none;
+  padding-left: 0;
+}
+.note-check .note-box {
+  display: inline-block;
+  width: 1.4em;
+}
+.note-stamp {
+  font-size: 14px;
+  margin: 0;
+}
+.note-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.note-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.note-tool {
+  padding: 0 12px;
+  font-size: 14px;
+}
+.note-input {
+  font: inherit;
+  font-size: 16px;
+  min-height: calc(var(--tap) * 4);
+  padding: 10px 14px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--ink);
+  resize: vertical;
+  width: 100%;
+}
+.note-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.note-preview {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-m);
+  padding: 10px 14px;
+  background: var(--surface);
+}
+.note-help,
+.note-count {
+  font-size: 14px;
+  margin: 0;
+}
+.note-conflict {
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  padding: 10px 14px;
+  border-radius: var(--radius-s);
+}
+.note-conflict > p:first-child {
+  margin-top: 0;
+}

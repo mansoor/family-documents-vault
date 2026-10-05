@@ -193,7 +193,9 @@ export function SettingsScreen() {
       </section>
       <Passkeys />
       <TwoStep />
-      <ExportSection />
+      {/* Only to whoever may export (5.35): a viewer, a guest or a teen
+          asking would be refused. */}
+      {can(storedRole(), 'export.request') && <ExportSection />}
       <Button kind="quiet" onClick={() => void signOut()}>
         Sign out
       </Button>

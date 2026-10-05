@@ -231,6 +231,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['document.purge_requested', BY_TYPE],
   ['document.purged', BY_TYPE],
   ['document.updated', BY_TYPE],
+  // 5.35: its note added, changed or taken off — never what it says: the
+  // document's line, for whoever may see the document.
+  ['document.notes_changed', BY_TYPE],
   ['document.version_added', BY_TYPE],
   ['document.downloaded', BY_TYPE],
   ['document.viewed', BY_TYPE],

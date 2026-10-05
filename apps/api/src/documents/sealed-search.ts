@@ -1,7 +1,7 @@
 import { openPrivate, type PrivateValues, type ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
 import { withPrincipal, type Db } from '@fdv/db';
-import { matchText, parseQuery, type DateValue } from '@fdv/shared';
+import { matchText, notesPlainText, parseQuery, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
@@ -198,7 +198,8 @@ export class SealedSearchService {
  * A document's own words, in the order the first pass shows them: title,
  * issuer, number, details, notes, tags, where the original is kept. The
  * details as fdv_details_text (0032) indexes a visible document's: each
- * text, choice and number, and a date's date — not its precision.
+ * text, choice and number, and a date's date — not its precision. Its note
+ * as plain text, as the first pass's snippet shows one (5.35).
  */
 function ownWords(row: SealedRow, values: PrivateValues): string {
   const details = Object.values(values.extra).flatMap((v) => {
@@ -211,7 +212,7 @@ function ownWords(row: SealedRow, values: PrivateValues): string {
     row.issued_by,
     row.identifier,
     details.join(' '),
-    values.notes,
+    notesPlainText(values.notes),
     row.tags.join(' '),
     row.physical_location,
   ]

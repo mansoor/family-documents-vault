@@ -70,6 +70,29 @@ describe('the pages a link opens', () => {
     }
   });
 
+  it('the app itself runs scripts from the vault only, and nothing inline (5.35)', async () => {
+    const conf = await readFile(root('docker/nginx.conf'), 'utf8');
+    const csp = added(nginxBlock(conf, 'location / {'), 'Content-Security-Policy');
+    expect(csp).not.toBeNull();
+    const directives = new Map(
+      (csp as string).split(';').map((d) => {
+        const [name, ...values] = d.trim().split(/\s+/);
+        return [name, values.join(' ')] as const;
+      }),
+    );
+    expect(directives.get('script-src')).toBe("'self'");
+    expect(directives.get('object-src')).toBe("'none'");
+    expect(directives.get('base-uri')).toBe("'none'");
+    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
+    // And the page it serves has no script of its own to allow: one module, by address.
+    const shell = await readFile(root('apps/web/index.html'), 'utf8');
+    const scripts = [...shell.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+    expect(scripts.map((s) => [/\bsrc="([^"]+)"/.exec(s[1] ?? '')?.[1], s[2]?.trim()])).toEqual([
+      ['/src/main.tsx', ''],
+    ]);
+    expect(shell).not.toMatch(/\son[a-z]+=/i);
+  });
+
   it('the vault behind a TLS site keeps the pages’ own referrer policy', async () => {
     // Caddy sets its Referrer-Policy only where the page has none (`?`):
     // otherwise same-origin would replace the share pages' no-referrer.
