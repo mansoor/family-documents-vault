@@ -227,6 +227,9 @@ export async function membersWhoCannotBeTold(trx: Db): Promise<string[]> {
       'account_household.suspended_at',
       'account_household.suspended_until',
     ])
+    // A guest is never in an identity audience and keeps no identity
+    // details (5.34, A34): nothing a widening changes is theirs to be told.
+    .where('member.kind', '=', 'family')
     .orderBy('member.display_name')
     .execute();
   return rows
@@ -286,6 +289,9 @@ export class IdentityService {
       .selectFrom('member')
       .select(['id'])
       .where('id', '=', requested)
+      // A guest keeps no identity details (5.34, A34): nobody's record,
+      // their own neither. The database refuses one too (0056).
+      .where('kind', '=', 'family')
       .executeTakeFirst();
     if (!row) throw notFound();
     const audience = await this.audienceNow(trx);
@@ -794,8 +800,11 @@ export class IdentityService {
       // mark fields Only me before then. Not the owner asking.
       const told = await trx
         .selectFrom('account_household')
-        .select(['account_id'])
-        .where('account_id', '!=', p.accountId)
+        .innerJoin('member', 'member.id', 'account_household.member_id')
+        .select(['account_household.account_id'])
+        .where('account_household.account_id', '!=', p.accountId)
+        // Not a guest (5.34, A34): nothing a widening changes is theirs.
+        .where('member.kind', '=', 'family')
         .execute();
       await appendAudit(trx, {
         householdId: p.householdId,

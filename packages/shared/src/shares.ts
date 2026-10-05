@@ -352,15 +352,19 @@ const MONTHS = [
 ];
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-/** "Friday 3 October at 17:00", on the household's clock. */
+/**
+ * "Friday 3 October at 17:00", on the household's clock. With `year`,
+ * "Friday 3 October 2026 at 17:00": for a guest's end (5.34), which can be
+ * a year away or long past.
+ */
 export function shareEndWords(
   at: Date,
   timezone: string,
-  opts: { weekday?: boolean } = {},
+  opts: { weekday?: boolean; year?: boolean } = {},
 ): string {
   const p = zonedParts(at, timezone);
-  const [, month = 1, day = 1] = p.date.split('-').map(Number);
-  const onDay = `${day} ${MONTHS[month - 1] ?? ''}`;
+  const [year, month = 1, day = 1] = p.date.split('-').map(Number);
+  const onDay = `${day} ${MONTHS[month - 1] ?? ''}${opts.year ? ` ${year}` : ''}`;
   return `${opts.weekday === false ? '' : `${WEEKDAYS[p.weekday] ?? ''} `}${onDay} at ${p.time}`;
 }
 

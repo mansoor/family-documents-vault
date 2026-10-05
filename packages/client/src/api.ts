@@ -30,6 +30,7 @@ import type {
   DocumentTypeView,
   DocumentView,
   ExportRow,
+  GuestRenewal,
   IncomingAccepted,
   IncomingAcceptInput,
   IncomingFileView,
@@ -46,6 +47,7 @@ import type {
   MemberAccess,
   MemberAccount,
   MemberEdit,
+  MemberKind,
   MemberLock,
   MemberSuspension,
   MfaChallenge,
@@ -266,7 +268,37 @@ export function createApi(http: Http) {
     profile: (token: string) => request<Profile>('/api/v1/profile', { token }),
     updateProfile: (token: string, body: Partial<Profile>) =>
       request<Profile>('/api/v1/profile', { method: 'PUT', body, token }),
+    /** The family: a guest is never among them (5.34), but for a guest themselves. */
     members: (token: string) => request<{ items: Member[] }>('/api/v1/members', { token }),
+    /**
+     * The people outside the family (5.34, when `features.guests`): each
+     * guest, with their limits (`restriction`) and when their sign-in ends
+     * (`access_expires_at`). Owners only (`403 forbidden`).
+     */
+    guests: (token: string) =>
+      request<{ items: Member[] }>('/api/v1/members?kind=guest', { token }),
+    /**
+     * A guest's sign-in renewed (5.34, A28): to end at `accessExpiresAt`, in
+     * the future and within a year (`limits.guest_max_days`, else `422`).
+     * Owners only (`403 forbidden`), an owner power: `403
+     * totp_required_for_owner`, or `step_up_required` with `renew_guest` (a
+     * passkey or a code). Nobody with a sign-in `404`; somebody of the family
+     * `409 not_a_guest`.
+     */
+    /**
+     * A guest who never signed in, removed (5.34's review): their
+     * invitations and limits with them. Owners only (`403`), asked as
+     * taking a sign-in away is (`change_people`). Somebody who has had a
+     * sign-in `409 had_sign_in`; somebody of the family `409 not_a_guest`.
+     */
+    removeGuest: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}`, { method: 'DELETE', token }),
+    renewGuest: (token: string, memberId: string, accessExpiresAt: string) =>
+      request<GuestRenewal>(`/api/v1/members/${enc(memberId)}/renew`, {
+        method: 'POST',
+        body: { access_expires_at: accessExpiresAt },
+        token,
+      }),
     addMember: (
       token: string,
       body: { display_name: string; date_of_birth?: string | null; relationship?: string | null },
@@ -281,11 +313,21 @@ export function createApi(http: Http) {
       request<RoleChangeResult>('/api/v1/me/step-down', { method: 'POST', body: { role }, token }),
     removeSignIn: (token: string, memberId: string) =>
       request<void>(`/api/v1/members/${memberId}/sign-in`, { method: 'DELETE', token }),
-    restoreSignIn: (token: string, memberId: string, role: 'adult' | 'teen' | 'viewer') =>
+    /**
+     * Gives a sign-in back to the account that had it. A guest's (5.34) comes
+     * back as a viewer's with a new end, `accessExpiresAt` — which asks, as
+     * renewing does, for a passkey or a code (`renew_guest`).
+     */
+    restoreSignIn: (
+      token: string,
+      memberId: string,
+      role: 'adult' | 'teen' | 'viewer',
+      accessExpiresAt?: string,
+    ) =>
       request<{ message: string }>(`/api/v1/members/${memberId}/sign-in`, {
         method: 'POST',
         token,
-        body: { role },
+        body: { role, ...(accessExpiresAt ? { access_expires_at: accessExpiresAt } : {}) },
       }),
     /**
      * A person's photo (0.5.19, when `features.member_photos`): the picture,
@@ -518,6 +560,15 @@ export function createApi(http: Http) {
      * An invitation (SHR-02). For a viewer, `restriction` limits what they
      * will see from the moment they accept (5.33): an adult inviting a viewer
      * must give one, without Adults only documents (`403 forbidden`, A27).
+     *
+     * Someone outside the family (5.34, when `features.guests`): `kind:
+     * 'guest'`, always `role: 'viewer'`, always a `restriction`, and
+     * `access_expires_at` within a year (else `422`); `relationship` says
+     * what they are to the family ("attorney"). An owner's invitation that
+     * decides what a viewer sees — none of `restriction` (a viewer who sees
+     * every family document), `include_adults_only`, or limits replacing
+     * those already set on the person — asks for a passkey or a code: `403
+     * totp_required_for_owner`, or `step_up_required` with `limit_access`.
      */
     invite: (
       token: string,
@@ -527,6 +578,9 @@ export function createApi(http: Http) {
         email: string;
         role: Role;
         restriction?: Partial<AccessGrant> | null;
+        kind?: MemberKind;
+        access_expires_at?: string;
+        relationship?: string | null;
       },
     ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
     revokeInvitation: (token: string, id: string) =>

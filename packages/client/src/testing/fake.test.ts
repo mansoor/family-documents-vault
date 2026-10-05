@@ -57,6 +57,11 @@ describe('the fake vault keeps the contract', () => {
     ownerTwoStep: async () => {
       vault.state.ownerTwoStep = true;
     },
+    // A guest's sign-in ended a minute ago (5.34).
+    endGuestAccess: async (memberId) => {
+      const m = vault.state.members.find((x) => x.id === memberId);
+      if (m) m.access_expires_at = new Date(Date.now() - 60_000).toISOString();
+    },
   };
   for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
 });
@@ -300,6 +305,123 @@ describe('the fake vault, for somebody who is not an owner', () => {
 });
 
 /** Asking to be sent documents (0.5.21), as the real vault answers it. */
+describe('the fake vault, people outside the family (5.34)', () => {
+  it('refuses as the vault does: an adult re-inviting somebody limited is asked nothing more, but never keeps an owner’s Adults only grant; a guest who never signed in is removed', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    // Somebody of the family with no sign-in yet, limited by an owner.
+    vault.state.members.push({ id: 'lena', display_name: 'Lena', role: null, is_me: false });
+    const limited = {
+      people: ['fake-member'],
+      types: [],
+      collections: [],
+      include_adults_only: false,
+      include_no_person_docs: false,
+      expires_at: null,
+      limits_people: true,
+      limits_types: false,
+      reconfirm_since: null,
+      private_confirmed: false,
+      updated_at: new Date().toISOString(),
+    };
+    vault.state.restrictions.set('lena', limited);
+    // An adult (no two-step sign-in): an adult's limits never replace an
+    // owner's, so nothing more is asked (the vault's S533-02 is an owner's).
+    vault.state.role = 'adult';
+    const asked = {
+      member_id: 'lena',
+      email: 'lena@example.test',
+      role: 'viewer' as const,
+      restriction: { people: ['fake-member'] },
+    };
+    const lenaInvite = await api.invite(token, asked);
+    expect(lenaInvite.invitation.member_id).toBe('lena');
+    // Given Adults only by an owner: an adult's invitation is refused.
+    vault.state.restrictions.set('lena', { ...limited, include_adults_only: true });
+    expect(
+      await refusal(api.invite(token, { ...asked, email: 'lena2@example.test' })),
+    ).toMatchObject({ status: 403, code: 'forbidden' });
+    // And the adult's made before it, accepted now: refused, and nothing of
+    // it kept — she has no sign-in, and an owner may invite her (N534W-02).
+    expect(
+      await refusal(
+        api.acceptInvitationLink(lenaInvite.link_token, {
+          code: lenaInvite.code,
+          password: 'lena’s own password',
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: 'owner_needed' });
+    expect(vault.state.members.find((m) => m.id === 'lena')?.role).toBeNull();
+    expect(vault.state.signIns.some((s) => s.member_id === 'lena')).toBe(false);
+    // A guest who never signed in: an owner removes them; an adult may not.
+    vault.state.role = 'owner';
+    vault.state.ownerTwoStep = true;
+    const made = await api.invite(token, {
+      display_name: 'Rex',
+      email: 'rex@example.test',
+      role: 'viewer',
+      kind: 'guest',
+      restriction: { people: ['fake-member'] },
+      access_expires_at: new Date(Date.now() + 30 * 864e5).toISOString(),
+    });
+    const rex = made.invitation.member_id;
+    vault.state.role = 'adult';
+    expect(await refusal(api.removeGuest(token, rex))).toMatchObject({ status: 403 });
+    vault.state.role = 'owner';
+    await api.removeGuest(token, rex);
+    expect((await api.guests(token)).items.map((m) => m.id)).not.toContain(rex);
+    expect(await refusal(api.removeGuest(token, 'fake-member'))).toMatchObject({
+      status: 409,
+      code: 'not_a_guest',
+    });
+    // A guest who has had a sign-in, since taken away: never invited again
+    // as themselves, nor removed (S534-01).
+    const gilInvite = {
+      display_name: 'Gil',
+      email: 'gil@example.test',
+      role: 'viewer' as const,
+      kind: 'guest' as const,
+      restriction: { people: ['fake-member'] },
+      access_expires_at: new Date(Date.now() + 30 * 864e5).toISOString(),
+    };
+    const gilMade = await api.invite(token, gilInvite);
+    await api.acceptInvitationLink(gilMade.link_token, {
+      code: gilMade.code,
+      password: 'gil’s own password',
+    });
+    const gil = gilMade.invitation.member_id;
+    const held = vault.state.members.find((m) => m.id === gil);
+    if (held) held.role = null;
+    expect(
+      await refusal(
+        api.invite(token, {
+          member_id: gil,
+          email: 'gil2@example.test',
+          role: 'viewer',
+          kind: 'guest',
+          restriction: gilInvite.restriction,
+          access_expires_at: gilInvite.access_expires_at,
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: 'had_sign_in' });
+    expect(await refusal(api.removeGuest(token, gil))).toMatchObject({
+      status: 409,
+      code: 'had_sign_in',
+    });
+    // Lena, refused above, is somebody an owner may still invite.
+    expect(
+      (await api.invite(token, { ...asked, email: 'lena3@example.test' })).invitation.member_id,
+    ).toBe('lena');
+  });
+});
+
 describe('the fake vault, asking to be sent documents', () => {
   it('an owner asks; a teen is told there is nothing here', async () => {
     const vault = createFakeVault();

@@ -959,11 +959,14 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     // 5.28: whether their sign-in is locked, and how long a phone keeps its
     // copies offline — a setting of the vault's, not of theirs. 5.29: which
     // way a reset an owner starts would go, never why. 5.33: a viewer's
-    // limits, none for an adult.
+    // limits, none for an adult. 5.34: of the family, or a guest, and a
+    // guest's end, none for the family.
     expect(Object.keys(shown).sort()).toEqual([
       'access',
+      'access_expires_at',
       'devices',
       'email',
+      'kind',
       'last_signed_in_at',
       'max_offline_days',
       'member_id',
@@ -975,6 +978,7 @@ describe.skipIf(!testAdminUrl())("the owner's view of a sign-in (5.25, A54)", ()
     ]);
     expect(shown.suspension).toBeNull();
     expect(shown.access).toBeNull();
+    expect(shown).toMatchObject({ kind: 'family', access_expires_at: null });
     expect(shown).toMatchObject({
       member_id: adult.member_id,
       role: 'adult',

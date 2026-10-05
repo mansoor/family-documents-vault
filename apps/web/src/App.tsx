@@ -9,6 +9,7 @@ import { ActivityScreen } from './screens/Activity.js';
 import { AskForDocumentsScreen } from './screens/AskForDocuments.js';
 import { AfterRestoreScreen } from './screens/AfterRestore.js';
 import { FamilyScreen } from './screens/Family.js';
+import { GuestsScreen } from './guests.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { IncomingFileScreen, IncomingScreen } from './screens/Incoming.js';
@@ -255,6 +256,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <FamilyScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/guests"
+            element={
+              <Gate need="signed-in">
+                <GuestsScreen />
               </Gate>
             }
           />

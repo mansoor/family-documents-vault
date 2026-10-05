@@ -10,7 +10,7 @@ import {
   sealBytes,
   unwrapKey,
 } from '@fdv/crypto';
-import { withSystem } from '@fdv/db';
+import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { Tokens } from '@fdv/shared';
 import { LocalAdapter } from '@fdv/storage';
@@ -200,6 +200,20 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
       const { secret } = await api.totpEnrol(token);
       await api.totpConfirm(token, codeFor(secret));
       await api.stepUp(token, { code: codeFor(secret) });
+    },
+    // A guest's sign-in ended a minute ago (5.34), as the owning role: nobody
+    // signed in may set an end in the past.
+    endGuestAccess: async (memberId) => {
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        await admin.query(
+          `update account_household set access_expires_at = now() - interval '1 minute'
+            where member_id = $1`,
+          [memberId],
+        );
+      } finally {
+        await admin.end();
+      }
     },
   };
 

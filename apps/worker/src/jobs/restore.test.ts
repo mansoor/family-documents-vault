@@ -35,6 +35,7 @@ import {
   createTestDatabase,
   privilegeSnapshot,
   testAdminUrl,
+  zoneShortOfAYear,
   type TestDatabase,
 } from '@fdv/db/testing';
 import { readAll } from '@fdv/storage';
@@ -1649,6 +1650,9 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         'session',
         'share_session',
         'suggestion_dismissal',
+        // Where files are kept, and the mail server (0056, the 5.34 review).
+        'smtp_settings',
+        'vault',
       ].sort(),
     );
     for (const r of rules) {
@@ -1812,6 +1816,181 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
+
+  it("notices a guest's guards gone, the accounts' rule gone, and a backup where a guest is not one (0056)", async () => {
+    // The guards: each by name, on its table, firing.
+    for (const [table, trigger] of [
+      ['member', 'member_kind_fixed'],
+      ['document', 'document_owner_not_guest'],
+      ['account_household', 'account_household_guest'],
+      ['account_household', 'account_household_guest_limited'],
+      ['access_restriction', 'access_restriction_guest_kept'],
+      ['member_identity', 'member_identity_not_guest'],
+      ['scope_key', 'scope_key_not_guest'],
+    ]) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        await expect(checkRestored(target()), trigger).rejects.toThrow(
+          /guard the vault relies on is missing/,
+        );
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    // Whose accounts somebody signed in reads.
+    const { rows: rules } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = 'account_reach'`,
+    );
+    const qual = (rules[0] as { qual: string }).qual;
+    await sql(vault.adminUrl, 'drop policy account_reach on public.account');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/no rule says .*account_reach/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy account_reach on public.account as restrictive using (${qual})`,
+      );
+    }
+    // Who removes somebody (the 5.34 review): a guest who never signed in, by an owner.
+    const { rows: removal } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = 'member_remove_actor'`,
+    );
+    const removalQual = (removal[0] as { qual: string }).qual;
+    await sql(vault.adminUrl, 'drop policy member_remove_actor on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/no rule says .*member_remove_actor/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_remove_actor on public.member as restrictive for delete using (${removalQual})`,
+      );
+    }
+    // What a limited caller is not told: the mail server, and the places
+    // files are kept but those holding what they are given (the 5.34 review).
+    for (const [table, name] of [
+      ['smtp_settings', 'smtp_settings_restricted'],
+      ['vault', 'vault_restricted'],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = $1`,
+        [name],
+      );
+      const kept = (rows[0] as { qual: string }).qual;
+      await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(
+          new RegExp(`no rule keeps a restricted viewer to their grant on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.${table} as restrictive using (${kept})`,
+        );
+      }
+    }
+
+    // A backup loads past the guards: what it holds is asked.
+    const { rows: hhs } = await sql(vault.adminUrl, 'select id from household limit 1');
+    const hh = (hhs[0] as { id: string }).id;
+    const guest = randomUUID();
+    const account = randomUUID();
+    await sql(
+      vault.adminUrl,
+      `insert into member (id, household_id, display_name, kind) values ($1, $2, 'Gwen', 'guest')`,
+      [guest, hh],
+    );
+    try {
+      // A guest owning a document.
+      await sql(
+        vault.adminUrl,
+        'alter table public.document disable trigger document_owner_not_guest',
+      );
+      try {
+        await sql(
+          vault.adminUrl,
+          `insert into document (household_id, title, owner_member_id) values ($1, 'Hers', $2)`,
+          [hh, guest],
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          'alter table public.document enable trigger document_owner_not_guest',
+        );
+      }
+      await expect(checkRestored(target())).rejects.toThrow(/a guest owns 1 documents/);
+      await sql(vault.adminUrl, 'delete from document where owner_member_id = $1', [guest]);
+      // A guest signed in with no restriction.
+      await sql(vault.adminUrl, 'insert into account (id, email) values ($1, $2)', [
+        account,
+        `gwen-${account}@example.test`,
+      ]);
+      await sql(
+        vault.adminUrl,
+        `insert into account_household (account_id, household_id, member_id, role, access_expires_at)
+         values ($1, $2, $3, 'viewer', now() + interval '10 days')`,
+        [account, hh, guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(
+        /1 guests could sign in with no restriction/,
+      );
+      // Limited, and with an end: a guest, as they should be.
+      await sql(
+        vault.adminUrl,
+        'insert into access_restriction (member_id, household_id) values ($1, $2)',
+        [guest, hh],
+      );
+      expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      // An end more than a year away (the 5.34 review, S534-07): no backup
+      // the vault wrote holds one.
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '400 days'
+          where member_id = $1`,
+        [guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(
+        /1 guests' sign-ins end more than a year away/,
+      );
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '8784 hours' - interval '1 minute'
+          where member_id = $1`,
+        [guest],
+      );
+      expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      // Counted as the vault counts it, in hours, on whatever clock the
+      // database keeps: in a zone 366 of whose days are an hour short (L534-06).
+      const zone = await zoneShortOfAYear(vault.adminUrl);
+      await sql(vault.adminUrl, `alter database "${vault.name}" set timezone = '${zone}'`);
+      try {
+        expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      } finally {
+        await sql(vault.adminUrl, `alter database "${vault.name}" reset timezone`);
+      }
+      // A sign-in of the family's with an end.
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '1 day'
+          where member_id <> $1 and role = 'owner'`,
+        [guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(/sign-ins of the family have an end/);
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = null where member_id <> $1`,
+        [guest],
+      );
+    } finally {
+      await sql(vault.adminUrl, 'delete from member where id = $1', [guest]);
+      await sql(vault.adminUrl, 'delete from account where id = $1', [account]);
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+    // About twenty round trips of the check: its siblings' time (the 5.34
+    // review, N534A-03), not the default 15 s.
+  }, 120_000);
 });
 
 describe('the connection for pg_dump and psql', () => {

@@ -27,6 +27,7 @@ import {
 import type { LockService } from './household/locks.js';
 import type { OwnerResetService } from './household/owner-resets.js';
 import { restrictedRefusal, type RestrictionService } from './household/restrictions.js';
+import type { GuestService } from './household/guests.js';
 import type { HouseholdService } from './household/service.js';
 import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
@@ -55,6 +56,7 @@ import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
 import { ownNetworks, trustProxyFor } from './client-address.js';
+import { GUEST_OWNS_NOTHING } from '@fdv/shared';
 import { ApiError, notFound, notReady } from './errors.js';
 
 /**
@@ -94,6 +96,8 @@ export interface AppDeps {
   locks: LockService;
   /** What a viewer can see, limited by an owner (5.32, 5.33). */
   restrictions: RestrictionService;
+  /** A guest's sign-in renewed by an owner (5.34, A28). */
+  guests?: GuestService;
   /** A password reset an owner starts (5.29). */
   resets: OwnerResetService;
   invitations: InvitationService;
@@ -231,6 +235,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(409).send(restrictedRefusal(null).toBody(req.id));
       return;
     }
+    // A document made, changed, handed over or filed as a guest's (0056's
+    // FDV04): a guest owns no document, by any path.
+    if (pgCode === 'FDV04') {
+      const refused = new ApiError(422, 'validation_failed', GUEST_OWNS_NOTHING, {
+        detail: 'owner_member_id',
+      });
+      void reply.status(422).send(refused.toBody(req.id));
+      return;
+    }
     if (pgCode === '22021' || pgCode === '22P05') {
       const refused = new ApiError(
         422,
@@ -351,7 +364,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
     deps.photos,
     deps.restrictions,
   );
-  registerAccess(app, deps.restrictions, deps.stepUp);
+  registerAccess(app, deps.restrictions, deps.stepUp, deps.guests);
   registerIdentity(app, deps.identity, deps.stepUp);
   registerLocks(app, deps.locks, deps.stepUp);
   registerOwnerResets(app, deps.resets, deps.stepUp);

@@ -5,10 +5,14 @@ import {
   can,
   capabilityToInvite,
   DECEASED_NO_SIGN_IN,
+  GUEST_DESCRIPTION_MAX,
+  guestAccessEnded,
+  guestEndProblem,
   mayBeRestricted,
   refusalFor,
   roleLabel,
   ROLES,
+  type MemberKind,
   type Role,
 } from '@fdv/shared';
 import argon2 from 'argon2';
@@ -72,6 +76,19 @@ const inviteFields = z
      * or none. A viewer's alone.
      */
     restriction: accessGrantBody.nullable().optional(),
+    /**
+     * Someone outside the family (5.34): a guest is always a viewer, always
+     * given a `restriction`, and their sign-in ends at `access_expires_at`,
+     * within a year (A28). The family's when left out.
+     */
+    kind: z.enum(['family', 'guest']).optional(),
+    access_expires_at: z.string().datetime({ offset: true }).optional(),
+    /**
+     * Somebody new's relationship to the family — for a guest, what they
+     * are to it: "attorney", "the family's accountant", which the activity
+     * log names them with ("Guest — Jane Smith, attorney").
+     */
+    relationship: z.string().trim().max(GUEST_DESCRIPTION_MAX).nullable().optional(),
   })
   .strict();
 
@@ -81,7 +98,11 @@ export const inviteBody = inviteFields.refine(
 );
 
 /** `POST /members/{id}/invite`, where the person is already named by the path. */
-export const inviteExistingBody = inviteFields.omit({ member_id: true, display_name: true });
+export const inviteExistingBody = inviteFields.omit({
+  member_id: true,
+  display_name: true,
+  relationship: true,
+});
 
 export const acceptBody = z.object({
   code: z.string().trim().min(1).max(32),
@@ -121,6 +142,10 @@ export interface InvitationView {
   attempts_left: number;
   /** A viewer's invitation that limits what they will see (5.33). */
   limited: boolean;
+  /** A guest's (5.34): always a viewer's, limited, with an end. */
+  kind: MemberKind;
+  /** When the guest's sign-in will end once accepted; null for the family's. */
+  access_expires_at: string | null;
 }
 
 /**
@@ -157,7 +182,46 @@ export interface InvitationPreview {
   role_label: string;
   invited_by: string | null;
   expires_at: string;
+  /** A guest's (5.34): from outside the family, until `access_expires_at`. */
+  kind: MemberKind;
+  access_expires_at: string | null;
 }
+
+/**
+ * What an invitation asks of an owner beyond the ordinary step-up (5.34,
+ * A27, A54): a passkey or a code, never the password — the route's
+ * `requireOwnerPower(p, 'limit_access')`. Asked when the invitation decides
+ * what a viewer sees as only an owner may: a viewer who sees every family
+ * document, Adults only documents for a viewer or a guest, or limits that
+ * would replace those already set on that person (the 5.33 review, S533-02).
+ */
+export interface InviteOptions {
+  ownerDecides?: () => Promise<void>;
+}
+
+/** Said to an adult inviting somebody an owner gave Adults only documents (the 5.34 review). */
+export const OWNER_GAVE_ADULTS_ONLY =
+  'An owner gave them Adults only documents, so only an owner can invite them.';
+
+/** Said to whoever accepts an adult's invitation that would keep an owner's Adults only grant. */
+export const OWNER_NEEDED =
+  'This invitation cannot be accepted as it is. Ask an owner of the family to invite you.';
+
+/** Said of a guest who has had a sign-in (the 5.34 review, S534-01). */
+export const GUEST_HAD_SIGN_IN = (name: string) =>
+  `${name} has had a sign-in here. An owner can give it back, with a new end, from People outside the family; or invite them by their name as somebody new.`;
+
+/** Whether an owner gave somebody Adults only documents (0056): asked as the vault, which reads it. */
+async function givenAdultsOnly(trx: Db, memberId: string): Promise<boolean> {
+  const r = await sql<{
+    given: boolean;
+  }>`select member_given_adults_only(${memberId}) as given`.execute(trx);
+  return r.rows[0]?.given === true;
+}
+
+/** Said of a guest's invitation that names nothing they may see (A27). */
+export const GUEST_LIMITS_REQUIRED =
+  'A guest is always limited to what they are given. Choose what they can see.';
 
 export interface CreatedInvitation {
   invitation: InvitationView;
@@ -199,14 +263,90 @@ export class InvitationService {
 
   // ------------------------------------------------------------- inviting
 
-  async create(
+  /**
+   * Whether this invitation is an owner's decision about what a viewer sees
+   * (5.34; its review, W534-02), asked before anything else so that the
+   * route asks once — for a passkey or a code, which serves the ordinary
+   * step-up too — and not the password first and the factor after. The
+   * same refusals as `create`, in its order, come first. `create` asks
+   * again, under its locks, and is what decides.
+   */
+  async asksOwnerDecision(p: Principal, input: z.infer<typeof inviteBody>): Promise<boolean> {
+    const { decides, limits } = this.validate(p, input);
+    if (decides) return true;
+    if (p.role !== 'owner' || !limits || !input.member_id) return false;
+    // Limits replacing those already set on the person (S533-02).
+    const had = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('access_restriction')
+        .select('member_id')
+        .where('member_id', '=', input.member_id as string)
+        .executeTakeFirst(),
+    );
+    return had !== undefined;
+  }
+
+  /**
+   * What an invitation asks before the database is asked anything: who may
+   * invite for the role; a guest's own rules (a viewer, limited, an end
+   * within a year); an adult's viewer limited and without Adults only
+   * documents (A27). And whether it is an owner's decision about what a
+   * viewer sees (A27, D6, A54): a viewer who sees every family document,
+   * Adults only documents for a viewer or a guest, or — the lead's decision
+   * on the 5.34 review — any guest an owner invites.
+   */
+  private validate(
     p: Principal,
     input: z.infer<typeof inviteBody>,
-    meta: RequestMeta,
-  ): Promise<CreatedInvitation> {
+  ): {
+    kind: MemberKind;
+    accessEnd: Date | null;
+    limits: z.infer<typeof accessGrantBody> | null;
+    decides: boolean;
+  } {
     const capability = capabilityToInvite(input.role);
     if (!can(p.role, capability)) {
       throw new ApiError(403, 'forbidden', refusalFor(capability));
+    }
+    // Someone outside the family (5.34): a viewer, always limited, with an
+    // end within a year (A28). Nobody of the family has an end.
+    const kind: MemberKind = input.kind ?? 'family';
+    let accessEnd: Date | null = null;
+    if (kind === 'guest') {
+      if (input.role !== 'viewer') {
+        throw new ApiError(422, 'validation_failed', 'A guest is always a viewer.', {
+          detail: 'role',
+        });
+      }
+      if (!input.restriction) {
+        throw new ApiError(422, 'validation_failed', GUEST_LIMITS_REQUIRED, {
+          detail: 'restriction',
+        });
+      }
+      if (!input.access_expires_at) {
+        throw new ApiError(422, 'validation_failed', 'Choose the day their access ends.', {
+          detail: 'access_expires_at',
+        });
+      }
+      accessEnd = new Date(input.access_expires_at);
+      const problem = guestEndProblem(accessEnd);
+      if (problem) {
+        throw new ApiError(422, 'validation_failed', problem, { detail: 'access_expires_at' });
+      }
+    } else if (input.access_expires_at) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Only a guest’s access ends on a day. Somebody of the family keeps theirs.',
+        { detail: 'access_expires_at' },
+      );
+    }
+    // Who somebody is to the family is said as they are made; after that,
+    // on their page.
+    if (input.relationship && input.member_id) {
+      throw new ApiError(422, 'validation_failed', 'Change who they are on their page.', {
+        detail: 'relationship',
+      });
     }
     // What a viewer will see (5.33): a viewer's alone; an adult's must say
     // (A27), and only an owner may give Adults only documents (D6).
@@ -225,6 +365,24 @@ export class InvitationService {
       if (!limits) throw new ApiError(403, 'forbidden', LIMITS_REQUIRED);
       if (limits.include_adults_only) throw new ApiError(403, 'forbidden', ADULTS_ONLY_OWNERS);
     }
+    const decides =
+      input.role === 'viewer' &&
+      (!limits || limits.include_adults_only || (kind === 'guest' && p.role === 'owner'));
+    return { kind, accessEnd, limits, decides };
+  }
+
+  async create(
+    p: Principal,
+    input: z.infer<typeof inviteBody>,
+    meta: RequestMeta,
+    opts: InviteOptions = {},
+  ): Promise<CreatedInvitation> {
+    const { kind, accessEnd, limits, decides } = this.validate(p, input);
+    // An owner's decision (A27, D6, A54): a viewer who sees every family
+    // document, Adults only documents for a viewer or a guest, and any guest
+    // an owner invites, ask for a passkey or a code — never the password —
+    // and an owner with neither is refused it (5.34).
+    if (decides) await opts.ownerDecides?.();
 
     // An account is global, so this is asked outside the household scope.
     const existing = await this.db
@@ -249,14 +407,24 @@ export class InvitationService {
 
     const id = await withPrincipal(this.db, p, async (trx) => {
       const memberId = input.member_id
-        ? await this.existingMember(trx, input.member_id)
-        : await this.newMember(trx, p, input.display_name as string, meta);
+        ? await this.existingMember(trx, input.member_id, kind)
+        : await this.newMember(trx, p, input.display_name as string, meta, {
+            kind,
+            relationship: input.relationship ?? null,
+          });
       // Somebody restricted is invited as a viewer or not at all (the 5.32
       // review): accepting it would give them a role their restriction never
       // stands beside, and the database refuses that as it is accepted. An
       // owner, who reads every restriction, is told now.
       if (input.member_id && !mayBeRestricted(input.role) && (await isRestricted(trx, memberId))) {
         throw restrictedRefusal(null);
+      }
+      // An adult's invitation keeps the limits an owner set on the person
+      // (limitsPlan), so it never brings back Adults only documents an owner
+      // gave them: only an owner invites them (A27, D6; the 5.34 review,
+      // S534-01). Asked again as it is accepted.
+      if (input.member_id && p.role !== 'owner' && (await givenAdultsOnly(trx, memberId))) {
+        throw new ApiError(403, 'forbidden', OWNER_GAVE_ADULTS_ONLY);
       }
       // The limits, checked as the inviter sees the family: people, kinds
       // and collections they may see, and only a collection for Everyone (A17).
@@ -272,6 +440,11 @@ export class InvitationService {
               .where('member_id', '=', memberId)
               .executeTakeFirst()
           : undefined;
+      // An owner's limits replace those already set on the person as they
+      // accept (limitsPlan): a change of what they see, asked as a PUT of
+      // their limits is — a passkey or a code (the 5.33 review, S533-02).
+      // An adult's never replace them, and an owner reads every restriction.
+      if (had && p.role === 'owner') await opts.ownerDecides?.();
       const stored: StoredLimits | null = limits
         ? await checkGrant(trx, grantOf(limits)).then((g) => ({
             people: g.people,
@@ -324,6 +497,8 @@ export class InvitationService {
           invited_by: p.accountId,
           expires_at: expiresAt,
           restriction: stored ? JSON.stringify(stored) : null,
+          kind,
+          access_expires_at: accessEnd,
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -341,6 +516,7 @@ export class InvitationService {
           role: input.role,
           member_id: memberId,
           ...(stored ? { limited: true } : {}),
+          ...(accessEnd ? { kind: 'guest', access_expires_at: accessEnd.toISOString() } : {}),
         },
         ip: meta.ip,
       });
@@ -351,15 +527,30 @@ export class InvitationService {
     return { invitation, link_token: token, code };
   }
 
-  private async existingMember(trx: Db, memberId: string): Promise<string> {
+  private async existingMember(trx: Db, memberId: string, kind: MemberKind): Promise<string> {
     const member = await trx
       .selectFrom('member')
-      .select(['id', 'display_name', 'is_deceased'])
+      .select(['id', 'display_name', 'is_deceased', 'kind'])
       .where('id', '=', memberId)
       .executeTakeFirst();
     if (!member) throw notFound('That person');
     // Nobody signs in as somebody who has passed away (5.25).
     if (member.is_deceased) throw passedAway(member.display_name);
+    // Of the family or a guest, as they were made (5.34): never the other.
+    if (member.kind === 'guest' && kind !== 'guest') {
+      throw new ApiError(
+        409,
+        'guest',
+        `${member.display_name} is from outside the family. Invite them as a guest.`,
+      );
+    }
+    if (member.kind !== 'guest' && kind === 'guest') {
+      throw new ApiError(
+        409,
+        'not_a_guest',
+        `${member.display_name} is of the family. A guest is somebody from outside it: invite them by their name.`,
+      );
+    }
     const held = await trx
       .selectFrom('account_household')
       .select(['account_id'])
@@ -401,6 +592,25 @@ export class InvitationService {
    * because an invitation made before 0.4.2 may still be waiting.
    */
   private async mustNeverHaveSignedIn(trx: Db, memberId: string, name: string): Promise<void> {
+    // A guest has no member key and owns nothing (0056), so what else says
+    // they had a sign-in: one taken away (former_account_id), or any
+    // invitation of theirs accepted (the 5.34 review, S534-01). Giving it
+    // back is an owner's, with a new end (POST /members/{id}/sign-in,
+    // renew_guest); inviting them again as somebody new is by their name.
+    const person = await trx
+      .selectFrom('member')
+      .select(['kind', 'former_account_id'])
+      .where('id', '=', memberId)
+      .executeTakeFirst();
+    const accepted = await trx
+      .selectFrom('invitation')
+      .select('id')
+      .where('member_id', '=', memberId)
+      .where('accepted_at', 'is not', null)
+      .executeTakeFirst();
+    if (person?.kind === 'guest' && (person.former_account_id !== null || accepted)) {
+      throw new ApiError(409, 'had_sign_in', GUEST_HAD_SIGN_IN(name));
+    }
     const key = await trx
       .selectFrom('scope_key')
       .select(['key_wrapped_cred'])
@@ -427,10 +637,13 @@ export class InvitationService {
     p: Principal,
     displayName: string,
     meta: RequestMeta,
+    how: { kind: MemberKind; relationship: string | null },
   ): Promise<string> {
+    // A colour of the family's: a guest is not counted among them (5.34).
     const n = await trx
       .selectFrom('member')
       .select((eb) => eb.fn.countAll<number>().as('n'))
+      .where('kind', '=', 'family')
       .executeTakeFirstOrThrow();
     const row = await trx
       .insertInto('member')
@@ -438,19 +651,29 @@ export class InvitationService {
         household_id: p.householdId,
         display_name: displayName,
         colour: Number(n.n) % 8,
+        kind: how.kind,
+        relationship: how.relationship || null,
       })
       .returning('id')
       .executeTakeFirstOrThrow();
     // Their private scope key exists from the moment they do, with no
-    // credential wrap until they choose a password (data model §8).
-    await this.keys.mintMemberKey(trx, p.householdId, row.id, null);
+    // credential wrap until they choose a password (data model §8). A
+    // guest has none (5.34): they own no document, so nothing of theirs is
+    // private, and the database refuses one for them (0056).
+    if (how.kind === 'family') {
+      await this.keys.mintMemberKey(trx, p.householdId, row.id, null);
+    }
     await appendAudit(trx, {
       householdId: p.householdId,
       actorAccountId: p.accountId,
       action: 'member.added',
       objectType: 'member',
       objectId: row.id,
-      detail: { display_name: displayName, via: 'invitation' },
+      detail: {
+        display_name: displayName,
+        via: 'invitation',
+        ...(how.kind === 'guest' ? { kind: 'guest' } : {}),
+      },
       ip: meta.ip,
     });
     return row.id;
@@ -481,6 +704,8 @@ export class InvitationService {
           'invitation.accepted_at',
           'invitation.revoked_at',
           sql<boolean>`invitation.restriction is not null`.as('limited'),
+          'invitation.kind',
+          'invitation.access_expires_at',
           'member.display_name',
           'inviter_member.display_name as invited_by',
         ])
@@ -498,6 +723,8 @@ export class InvitationService {
         state: stateOf(r),
         attempts_left: Math.max(0, MAX_ATTEMPTS - r.attempts),
         limited: r.limited,
+        kind: r.kind,
+        access_expires_at: r.access_expires_at?.toISOString() ?? null,
       }));
     });
   }
@@ -556,14 +783,17 @@ export class InvitationService {
       const row = await this.live(trx, token);
       const household = await trx
         .selectFrom('household')
-        .select(['name'])
+        .select(['name', 'timezone'])
         .where('id', '=', householdId)
         .executeTakeFirstOrThrow();
+      // Removed while this was read (a guest who never signed in, 5.34's
+      // review): the invitation went with them.
       const member = await trx
         .selectFrom('member')
         .select(['display_name'])
         .where('id', '=', row.member_id)
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!member) throw gone();
       const inviter = await trx
         .selectFrom('account_household')
         .innerJoin('member', 'member.id', 'account_household.member_id')
@@ -578,6 +808,11 @@ export class InvitationService {
         role_label: roleLabel(row.role),
         invited_by: inviter?.display_name ?? null,
         expires_at: row.expires_at.toISOString(),
+        kind: row.kind,
+        access_expires_at: row.access_expires_at?.toISOString() ?? null,
+        // The household's clock, which a guest's end is said on (the 5.34
+        // review's second round).
+        timezone: household.timezone,
       };
     });
   }
@@ -647,14 +882,28 @@ export class InvitationService {
       const invited = await this.live(trx, token);
       // The person, held: a passing recorded at the same moment (5.25) is
       // waited for, and seen — and so is the invitation it takes back.
+      // Removed meanwhile (a guest who never signed in, the 5.34 review,
+      // N534A-01): the invitation went with them, so it is the one refusal.
       const member = await trx
         .selectFrom('member')
-        .select(['display_name', 'is_deceased'])
+        .select(['display_name', 'is_deceased', 'kind'])
         .where('id', '=', invited.member_id)
         .forUpdate()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!member) throw gone();
       const row = await this.live(trx, token);
       if (member.is_deceased) throw passedAway(member.display_name);
+      // A guest's invitation is a guest's (5.34), and gives a sign-in only
+      // while what it gives has not ended.
+      if (row.kind !== member.kind) throw gone();
+      const guest = row.kind === 'guest';
+      if (guest && (!row.access_expires_at || guestAccessEnded(row.access_expires_at))) {
+        throw new ApiError(
+          409,
+          'access_ended',
+          'The access this invitation gives has already ended. Ask whoever invited you for a new one.',
+        );
+      }
       await this.mustNeverHaveSignedIn(trx, row.member_id, member.display_name);
       const passwordHash = await argon2.hash(input.password, ARGON2);
       const email = input.email ?? row.email;
@@ -687,17 +936,23 @@ export class InvitationService {
           household_id: householdId,
           member_id: row.member_id,
           role: row.role,
+          // A guest's sign-in ends then (5.34, A28).
+          access_expires_at: guest ? row.access_expires_at : null,
         })
         .execute();
       // Their limits (5.33), in this transaction: never a moment unrestricted.
+      // A guest's sign-in without them would not commit (0056).
       await this.applyLimits(trx, householdId, row, plan, meta);
       // Their private documents can now be reached with what they know,
-      // not only with what the server holds.
-      await this.keys.attachCredential(
-        trx,
-        { householdId, kind: 'member', memberId: row.member_id },
-        input.password,
-      );
+      // not only with what the server holds. A guest has no member key, and
+      // nothing private to reach (5.34).
+      if (!guest) {
+        await this.keys.attachCredential(
+          trx,
+          { householdId, kind: 'member', memberId: row.member_id },
+          input.password,
+        );
+      }
       await trx
         .updateTable('invitation')
         .set({ accepted_at: new Date(), accepted_by: account.id })
@@ -714,6 +969,7 @@ export class InvitationService {
           ...(email !== row.email ? { invited_as: row.email } : {}),
           role: row.role,
           member_id: row.member_id,
+          ...(guest ? { kind: 'guest' } : {}),
         },
         ip: meta.ip,
       });
@@ -742,11 +998,16 @@ export class InvitationService {
     if (!limits) return null;
     const existing = await trx
       .selectFrom('access_restriction')
-      .select(['member_id', 'updated_at'])
+      .select(['member_id', 'updated_at', 'include_adults_only'])
       .where('member_id', '=', row.member_id)
       .forUpdate()
       .executeTakeFirst();
     if (!existing) return { limits, exists: false };
+    // An adult's keeps what an owner set, so never Adults only documents an
+    // owner gave: asked when it was made, and again now (the 5.34 review).
+    if (!limits.by_owner && existing.include_adults_only) {
+      throw new ApiError(409, 'owner_needed', OWNER_NEEDED);
+    }
     // An adult's never replaces an owner's; an owner's only limits set
     // before the invitation was made — newer ones stay (the lead's
     // decision on the 5.33 review), and the owners are asked to confirm

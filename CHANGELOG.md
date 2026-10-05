@@ -6,6 +6,31 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.36] - 2026-10-05 — iteration 5.34
+
+Someone outside the family, such as an attorney or an accountant, can have a sign-in of their own: always limited, always with an end, and never shown among the family.
+
+### Added
+
+- **Guests.** The invite form first asks "Is this person family?". For someone from outside, it offers to share a collection with them or ask them to send documents, before giving them a sign-in.
+  - A guest always has limits on what they can see, and their access ends on a day an owner chooses, at most a year away. An owner can renew it.
+  - A guest owns no documents, has no identity details, and does not appear in People, owner pickers or suggestions.
+  - The activity log names them, for example "Guest — Jane Smith, attorney".
+  - When their access ends they are signed out, and they cannot sign in again until an owner renews it.
+- **People outside the family**, in Settings, for owners: each guest's limits and end, renewing, changing their name and description, signing them out everywhere, taking their sign-in away and giving it back, and removing a guest who never signed in.
+- A guest's Home says when their access ends, and the page they accept the invitation on gives the end date on the household's clock.
+
+### Changed
+
+- An owner's invitation for a guest, for a viewer who sees every family document, or that gives adults-only documents or replaces limits already set, now asks for a passkey or a code, never only the password.
+- An adult can invite a guest only with limits within what the adult can see, never with adults-only documents, and cannot bring back a guest whose sign-in was taken away.
+- Collection warnings say "(guest)" for a guest.
+
+### Security
+
+- Signed-in people can read only the accounts of their own household. Only owners can read the accounts of people whose sign-in was taken away.
+- Guests and limited viewers can no longer read the vault's storage and mail-server settings.
+
 ## [0.5.35] - 2026-10-05 — iteration 5.33
 
 Owners can now limit what a viewer sees, from the web.

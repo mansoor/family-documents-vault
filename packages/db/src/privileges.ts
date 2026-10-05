@@ -170,6 +170,12 @@ begin
     revoke execute on function public.collection_viewers_given(uuid, uuid[]) from public;
     grant execute on function public.collection_viewers_given(uuid, uuid[]) to fdv_app;
   end if;
+  -- Whether an owner gave somebody Adults only documents (0056, the 5.34
+  -- review): asked of an adult's invitation for them, which would keep it.
+  if to_regprocedure('public.member_given_adults_only(uuid)') is not null then
+    revoke execute on function public.member_given_adults_only(uuid) from public;
+    grant execute on function public.member_given_adults_only(uuid) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

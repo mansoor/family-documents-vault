@@ -2,6 +2,8 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
   DECEASED_NO_SIGN_IN,
+  GUEST_ONLY_VIEWER,
+  guestEndProblem,
   identityAudienceSees,
   mayBeRestricted,
   reducesSight,
@@ -123,6 +125,11 @@ export class CoOwnerService {
           message: `${target.display_name} is already ${article(to)}.`,
           effects: [],
         };
+      }
+      // A guest is a viewer and nothing else (5.34): never made one of the
+      // family's roles. The database refuses it too (0056, FDV03).
+      if (target.kind === 'guest') {
+        throw new ApiError(409, 'guest', GUEST_ONLY_VIEWER(target.display_name));
       }
       // A restriction never stands beside another role (the 5.32 review):
       // their limits come off first. The database refuses it too.
@@ -333,11 +340,31 @@ export class CoOwnerService {
    * Nothing secret changes hands, which is the point: an invitation would
    * hand a link and a code to whoever made it.
    */
+  /**
+   * Whether somebody is a guest (5.34): giving theirs back renews a guest's
+   * sign-in, which the route asks for first — a passkey or a code, which
+   * serves the ordinary step-up too — so that one confirmation is enough
+   * (the 5.34 review, N534W-01). `restoreSignIn` asks again, and decides.
+   */
+  async isGuest(p: Principal, memberId: string): Promise<boolean> {
+    requireCapability(p, 'member.remove');
+    const person = await withPrincipal(this.db, p, (trx) =>
+      trx.selectFrom('member').select('kind').where('id', '=', memberId).executeTakeFirst(),
+    );
+    return person?.kind === 'guest';
+  }
+
   async restoreSignIn(
     p: Principal,
     memberId: string,
     role: 'adult' | 'teen' | 'viewer',
     meta: RequestMeta,
+    /**
+     * A guest's sign-in is given back with a new end (5.34, A28): in the
+     * future, within a year. Nobody else's has one. The route asks for a
+     * passkey or a code when one is sent (`renew_guest`).
+     */
+    accessExpiresAt: Date | null = null,
   ): Promise<{ message: string }> {
     requireCapability(p, 'member.remove');
     return withPrincipal(this.db, p, async (trx) => {
@@ -348,11 +375,32 @@ export class CoOwnerService {
           'member.id',
           'member.display_name',
           'member.former_account_id',
+          'member.kind',
           'account.disabled_at',
         ])
         .where('member.id', '=', memberId)
         .executeTakeFirst();
       if (!member) throw notFound('That person');
+      // A guest's comes back as a viewer's, with an end (5.34); nobody else's
+      // has one.
+      if (member.kind === 'guest') {
+        if (role !== 'viewer') {
+          throw new ApiError(409, 'guest', GUEST_ONLY_VIEWER(member.display_name));
+        }
+        const problem = accessExpiresAt
+          ? guestEndProblem(accessExpiresAt)
+          : 'Choose the day their access ends.';
+        if (problem) {
+          throw new ApiError(422, 'validation_failed', problem, { detail: 'access_expires_at' });
+        }
+      } else if (accessExpiresAt) {
+        throw new ApiError(
+          422,
+          'validation_failed',
+          'Only a guest’s access ends on a day. Somebody of the family keeps theirs.',
+          { detail: 'access_expires_at' },
+        );
+      }
       // Held, and read as they are once held: nobody signs in as somebody
       // recorded as passed away (5.25), however close together the two are.
       const person = await trx
@@ -403,7 +451,13 @@ export class CoOwnerService {
       }
       await trx
         .insertInto('account_household')
-        .values({ account_id: account, household_id: p.householdId, member_id: memberId, role })
+        .values({
+          account_id: account,
+          household_id: p.householdId,
+          member_id: memberId,
+          role,
+          access_expires_at: member.kind === 'guest' ? accessExpiresAt : null,
+        })
         .execute();
       await trx
         .updateTable('member')
@@ -416,7 +470,12 @@ export class CoOwnerService {
         action: 'member.sign_in_restored',
         objectType: 'member',
         objectId: memberId,
-        detail: { role },
+        detail: {
+          role,
+          ...(member.kind === 'guest' && accessExpiresAt
+            ? { kind: 'guest', access_expires_at: accessExpiresAt.toISOString() }
+            : {}),
+        },
         ip: meta.ip,
       });
       // Limited while it was away, they are told so now, plainly and with
@@ -751,6 +810,7 @@ export class CoOwnerService {
         'account_household.suspend_reason',
         'member.display_name',
         'member.id as member_id',
+        'member.kind',
       ])
       .where('account_household.member_id', '=', memberId)
       .forNoKeyUpdate('account_household')

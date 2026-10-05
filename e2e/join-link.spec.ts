@@ -43,7 +43,15 @@ async function invite(request: APIRequestContext): Promise<{ token: string; code
   const at = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   const res = await request.post('/api/v1/invitations', {
     headers: auth,
-    data: { display_name: `Jo ${at}`, email: `jo-${at}@example.test`, role: 'viewer' },
+    // A limited viewer: since 5.34 a viewer who sees every family document
+    // is an owner's decision taken with a passkey or a code, and this
+    // owner signs in with a password alone.
+    data: {
+      display_name: `Jo ${at}`,
+      email: `jo-${at}@example.test`,
+      role: 'viewer',
+      restriction: { include_no_person_docs: true },
+    },
   });
   expect(res.ok(), await res.text()).toBe(true);
   const made = (await res.json()) as { link_token: string; code: string };

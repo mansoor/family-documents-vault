@@ -38,6 +38,7 @@ import {
   grantOf,
   type RestrictionService,
 } from './restrictions.js';
+import { renewBody, type GuestService } from './guests.js';
 
 /**
  * A person's photo (5.17c). No step-up — a photo decides nobody's access —
@@ -309,11 +310,44 @@ export function registerAccess(
   app: FastifyInstance,
   restrictions: RestrictionService,
   stepUp: StepUpService,
+  guests?: GuestService,
 ): void {
   const auth = { preHandler: app.requireAuth };
   const owners = { preHandler: [app.requireAuth, needs('role.change')] };
   const principal = (req: FastifyRequest) => req.principal as Principal;
   const idParam = z.object({ id: z.string().uuid() });
+
+  /**
+   * A guest's sign-in renewed (5.34, A28): owners only (`403 forbidden`); a
+   * body of the wrong shape `422`; an owner power (A54) — `403
+   * totp_required_for_owner`, or `step_up_required` with `renew_guest`, a
+   * passkey or a code; an end not in the future, or more than a year away,
+   * `422`; nobody with a sign-in `404`; somebody of the family `409
+   * not_a_guest`.
+   */
+  if (guests) {
+    // A guest who never signed in, removed (the 5.34 review): owners, asked
+    // as taking a sign-in away is (change_people).
+    app.delete(
+      '/api/v1/members/:id',
+      { preHandler: [app.requireAuth, needs('member.remove')] },
+      async (req, reply) => {
+        const p = principal(req);
+        const id = parse(idParam, req.params).id;
+        await stepUp.require(p, 'change_people');
+        await guests.remove(p, id, metaOf(req));
+        return reply.status(204).send();
+      },
+    );
+
+    app.post('/api/v1/members/:id/renew', owners, async (req) => {
+      const p = principal(req);
+      const id = parse(idParam, req.params).id;
+      const body = parse(renewBody, req.body ?? {});
+      await stepUp.requireOwnerPower(p, 'renew_guest');
+      return guests.renew(p, id, new Date(body.access_expires_at), metaOf(req));
+    });
+  }
 
   app.put('/api/v1/members/:id/access', owners, async (req) => {
     const p = principal(req);
@@ -369,9 +403,15 @@ export function registerHousehold(
     household.updateProfile(principal(req), parse(profileBody, req.body ?? {}), metaOf(req)),
   );
 
-  app.get('/api/v1/members', auth, async (req) => ({
-    items: await household.members(principal(req)),
-  }));
+  // The family (5.34: a guest never among them, but for themselves); an
+  // owner lists the people outside the family with ?kind=guest.
+  const membersQuery = z.object({ kind: z.enum(['family', 'guest']).optional() });
+  app.get('/api/v1/members', auth, async (req) => {
+    const { kind } = parse(membersQuery, req.query ?? {});
+    return {
+      items: await household.members(principal(req), kind === 'guest' ? 'guests' : 'family'),
+    };
+  });
   app.post('/api/v1/members', guard('member.add'), async (req, reply) => {
     // Who is in the family decides who can see what, so it asks (SEC-17).
     await stepUp?.require(principal(req), 'change_people');
@@ -418,6 +458,7 @@ export function registerHousehold(
       if (!restrictions) return account;
       return {
         ...account,
+        // A guest's too (5.34): a viewer, always limited.
         access: account.role === 'viewer' ? await restrictions.access(p, account.member_id) : null,
       };
     });
@@ -448,17 +489,33 @@ export function registerHousehold(
     });
 
     // The way back from the one above: the same account, never a new one.
+    // A guest's comes back with a new end (5.34, A28), renewed as a guest's
+    // sign-in is: with a passkey or a code (`renew_guest`).
     app.post('/api/v1/members/:id/sign-in', guard('member.remove'), async (req) => {
-      await stepUp?.require(principal(req), 'change_people');
+      const p = principal(req);
+      const id = params(idParam, req).id;
       const body = parse(
-        z.object({ role: z.enum(['adult', 'teen', 'viewer']) }).strict(),
+        z
+          .object({
+            role: z.enum(['adult', 'teen', 'viewer']),
+            access_expires_at: z.string().datetime({ offset: true }).optional(),
+          })
+          .strict(),
         req.body,
       );
+      // A guest's is asked as renewing is, and first: a passkey or a code
+      // counts for the ordinary step-up too, so one confirmation is enough
+      // (the 5.34 review, N534W-01), as an owner's invitation is asked.
+      if (stepUp && (body.access_expires_at || (await coOwners.isGuest(p, id)))) {
+        await stepUp.requireOwnerPower(p, 'renew_guest');
+      }
+      await stepUp?.require(p, 'change_people');
       return coOwners.restoreSignIn(
-        principal(req),
-        params(idParam, req).id,
+        p,
+        id,
         body.role,
         metaOf(req),
+        body.access_expires_at ? new Date(body.access_expires_at) : null,
       );
     });
 
@@ -492,24 +549,36 @@ export function registerHousehold(
     items: await invitations.list(principal(req)),
   }));
 
+  // An owner's decision about what a viewer sees (5.34, A27, D6, A54): a
+  // viewer who sees every family document, Adults only documents for a
+  // viewer or a guest, limits replacing those set on the person — asked
+  // with a passkey or a code, never the password, as limiting is.
+  const ownerDecides = (p: Principal) =>
+    stepUp ? { ownerDecides: () => stepUp.requireOwnerPower(p, 'limit_access') } : {};
+
+  // Asked once (the 5.34 review, W534-02): an owner's decision asks for a
+  // passkey or a code first, which serves the ordinary step-up too, so a
+  // browser is not asked for the password and then for a code.
+  const invite = async (p: Principal, body: z.infer<typeof inviteBody>, req: FastifyRequest) => {
+    if (stepUp && (await invitations.asksOwnerDecision(p, body))) {
+      await stepUp.requireOwnerPower(p, 'limit_access');
+    }
+    await stepUp?.require(p, 'change_people');
+    return invitations.create(p, body, metaOf(req), ownerDecides(p));
+  };
+
   app.post('/api/v1/invitations', auth, async (req, reply) => {
-    await stepUp?.require(principal(req), 'change_people');
-    const created = await invitations.create(
-      principal(req),
-      parse(inviteBody, req.body),
-      metaOf(req),
-    );
+    const created = await invite(principal(req), parse(inviteBody, req.body), req);
     return reply.status(201).send(created);
   });
 
   // The spelling the API specification uses, for an existing person.
   app.post('/api/v1/members/:id/invite', auth, async (req, reply) => {
-    await stepUp?.require(principal(req), 'change_people');
     const body = parse(inviteExistingBody, req.body);
-    const created = await invitations.create(
+    const created = await invite(
       principal(req),
       { ...body, member_id: params(idParam, req).id },
-      metaOf(req),
+      req,
     );
     return reply.status(201).send(created);
   });

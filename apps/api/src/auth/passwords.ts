@@ -202,10 +202,11 @@ export class PasswordService {
       // away each one added since, so none outlasts the person's own.
       removed = await takeAwaySinceHandover(trx, p.accountId, 'change');
       // The member key follows the password, or the person keeps their
-      // private documents and loses the way into them.
-      if (input.current_password) {
+      // private documents and loses the way into them. A guest has none
+      // (5.34): nothing of theirs is private, so nothing follows.
+      if (!p.guest && input.current_password) {
         await this.keys.rewrapCredential(trx, ref, input.current_password, input.new_password);
-      } else {
+      } else if (!p.guest) {
         await this.keys.attachCredential(trx, ref, input.new_password);
       }
       // Every other device is signed out. A password change is the thing
@@ -458,7 +459,7 @@ export class PasswordService {
       // 1. The person's membership, held.
       const held = await trx
         .selectFrom('account_household')
-        .select(['member_id', 'role'])
+        .select(['member_id', 'role', 'access_expires_at'])
         .where('account_id', '=', account.id)
         .where('household_id', '=', membership.household_id)
         .forNoKeyUpdate()
@@ -509,12 +510,16 @@ export class PasswordService {
       }
       handedOver = claimed.handover;
       // No old password to unwrap with, so the member key comes back
-      // through the master key and is given a fresh credential wrap.
-      await this.keys.attachCredential(
-        trx,
-        { householdId: membership.household_id, kind: 'member', memberId: held.member_id },
-        newPassword,
-      );
+      // through the master key and is given a fresh credential wrap. A
+      // guest has none (5.34: only a guest's sign-in has an end, 0056):
+      // nothing of theirs is private, so the reset is the password alone.
+      if (held.access_expires_at === null) {
+        await this.keys.attachCredential(
+          trx,
+          { householdId: membership.household_id, kind: 'member', memberId: held.member_id },
+          newPassword,
+        );
+      }
       // Everything signs out. Whoever asked for this could not get in, and
       // anybody who *was* in is the reason they are asking.
       await trx

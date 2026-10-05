@@ -15,6 +15,7 @@ import { api, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { collectionsOffered, CollectionsOnHome } from '../collections.js';
 import { DocActions, type RowCollection } from '../DocActions.js';
+import { accessEndWords } from '../guests.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
@@ -52,6 +53,9 @@ export function HomeScreen() {
           api.documents(t, { deleted: 'true', purge_requested: 'true', limit: 50 }),
         ],
       );
+      // A guest is told when their access ends, on the family's clock (5.34).
+      const timezone =
+        me.kind === 'guest' ? ((await api.profile(t).catch(() => null))?.timezone ?? 'UTC') : 'UTC';
       const reminded = new Set(due.items.map((r) => r.document_id));
       const attention = [
         ...due.items.map((r) => ({
@@ -73,6 +77,7 @@ export function HomeScreen() {
       ];
       return {
         me,
+        timezone,
         members: members.items,
         counts,
         recent: recent.items,
@@ -133,6 +138,10 @@ export function HomeScreen() {
       {data?.me.restriction && (
         <p className="attention attention-calm limits-told" role="status">
           {data.me.restriction.summary}
+          {/* A guest's sign-in ends (5.34, A28): they are told when. */}
+          {data.me.kind === 'guest' && data.me.access_expires_at
+            ? ` Your access to this vault ends ${accessEndWords(data.me.access_expires_at, data.timezone)}.`
+            : ''}
         </p>
       )}
       {caps?.features.access_restrictions === true && (

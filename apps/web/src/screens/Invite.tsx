@@ -3,6 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { LimitsPicker, NO_LIMITS, type Limits } from '../access.js';
 import { api, type CreatedInvitation, type Invitation, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
+import { GuestInviteForm, OutsideTheFamily } from '../guests.js';
 import { Button, Check, ErrorNote, Field, Pills } from '../ui.js';
 
 /**
@@ -19,6 +20,10 @@ import { Button, Check, ErrorNote, Field, Pills } from '../ui.js';
  * what a viewer they invite can see, every time; an owner may, and may let
  * one see every family document instead. The limits apply as the
  * invitation is accepted, so the viewer never sees more for a moment.
+ *
+ * It first asks whether the person is family (5.34). Somebody outside it
+ * is offered a link to a collection, or a request to send documents,
+ * before a sign-in of their own as a guest.
  */
 
 export function InvitePanel(props: {
@@ -72,8 +77,8 @@ export function InvitePanel(props: {
                   <strong>{i.display_name}</strong>
                   <span className="muted">
                     {' '}
-                    · {roleLabel(i.role)}
-                    {i.limited ? ' · limited' : ''} · {i.email}
+                    · {i.kind === 'guest' ? 'Guest, from outside the family' : roleLabel(i.role)}
+                    {i.kind !== 'guest' && i.limited ? ' · limited' : ''} · {i.email}
                   </span>
                 </span>
                 <Button
@@ -123,6 +128,10 @@ function InviteForm(props: {
   const [limited, setLimited] = useState(true);
   const [limits, setLimits] = useState<Limits>(NO_LIMITS);
   const owner = props.myRole === 'owner';
+  // Family, or somebody outside it (5.34): asked first of somebody new.
+  const asksFamily = caps?.features.guests === true && !props.member;
+  const [family, setFamily] = useState<'yes' | 'no' | null>(null);
+  const [guest, setGuest] = useState(false);
 
   // Only the roles this person is allowed to hand out are shown; offering
   // one that will be refused is a worse answer than not offering it.
@@ -157,63 +166,85 @@ function InviteForm(props: {
     }
   };
 
+  if (guest) {
+    return <GuestInviteForm owner={owner} onCancel={props.onCancel} onCreated={props.onCreated} />;
+  }
+
   return (
     <form onSubmit={(e) => void submit(e)} className="card stack">
       <h2 style={{ fontSize: 18 }}>Invite someone to sign in</h2>
-      {!props.member && (
-        <Field id="invite-name" label="Their name" value={name} onChange={setName} />
+      {asksFamily && (
+        <Pills
+          label="Is this person family?"
+          value={family}
+          options={[
+            { value: 'yes', label: 'Yes, family' },
+            { value: 'no', label: 'No, from outside' },
+          ]}
+          onChange={setFamily}
+        />
       )}
-      <Field
-        id="invite-email"
-        label="Their email address"
-        type="email"
-        value={email}
-        onChange={setEmail}
-        autoComplete="off"
-        hint="This becomes their sign-in. Nothing is sent to it — you pass the invitation on yourself."
-      />
-      <Pills
-        label="What they can do"
-        value={chosen}
-        options={offerable.map((r) => ({ value: r, label: roleLabel(r) }))}
-        onChange={setRole}
-      />
-      <p className="muted">{roleDescription(chosen)}</p>
-      {limitsOffered && (
-        <section className="stack" aria-labelledby="invite-limits-h">
-          <h3 id="invite-limits-h" className="section-h">
-            Limit what they can see
-          </h3>
-          {owner ? (
-            <Check
-              id="invite-limited"
-              label="Only what I choose"
-              note="Off, they see every family document but the Adults only ones."
-              checked={limited}
-              onChange={setLimited}
-            />
-          ) : (
-            <p className="muted">
-              Choose what they can see. Only an owner can invite a viewer who sees every family
-              document.
-            </p>
+      {asksFamily && family === 'no' && <OutsideTheFamily onSignIn={() => setGuest(true)} />}
+      {(!asksFamily || family === 'yes') && (
+        <>
+          {!props.member && (
+            <Field id="invite-name" label="Their name" value={name} onChange={setName} />
           )}
-          {limiting && (
-            <LimitsPicker
-              idPrefix="invite-limits"
-              value={limits}
-              onChange={setLimits}
-              memberId={props.member?.id ?? null}
-              owner={owner}
-            />
+          <Field
+            id="invite-email"
+            label="Their email address"
+            type="email"
+            value={email}
+            onChange={setEmail}
+            autoComplete="off"
+            hint="This becomes their sign-in. Nothing is sent to it — you pass the invitation on yourself."
+          />
+          <Pills
+            label="What they can do"
+            value={chosen}
+            options={offerable.map((r) => ({ value: r, label: roleLabel(r) }))}
+            onChange={setRole}
+          />
+          <p className="muted">{roleDescription(chosen)}</p>
+          {limitsOffered && (
+            <section className="stack" aria-labelledby="invite-limits-h">
+              <h3 id="invite-limits-h" className="section-h">
+                Limit what they can see
+              </h3>
+              {owner ? (
+                <Check
+                  id="invite-limited"
+                  label="Only what I choose"
+                  note="Off, they see every family document but the Adults only ones."
+                  checked={limited}
+                  onChange={setLimited}
+                />
+              ) : (
+                <p className="muted">
+                  Choose what they can see. Only an owner can invite a viewer who sees every family
+                  document.
+                </p>
+              )}
+              {limiting && (
+                <LimitsPicker
+                  idPrefix="invite-limits"
+                  value={limits}
+                  onChange={setLimits}
+                  memberId={props.member?.id ?? null}
+                  owner={owner}
+                />
+              )}
+            </section>
           )}
-        </section>
+          <ErrorNote message={error} />
+        </>
       )}
-      <ErrorNote message={error} />
       <div className="row">
-        <Button type="submit" disabled={busy || !email || (!props.member && !name)}>
-          {busy ? 'Making the invitation…' : 'Make the invitation'}
-        </Button>
+        {(!asksFamily || family === 'yes') && (
+          <Button type="submit" disabled={busy || !email || (!props.member && !name)}>
+            {busy ? 'Making the invitation…' : 'Make the invitation'}
+          </Button>
+        )}
         <Button kind="quiet" onClick={props.onCancel}>
           Cancel
         </Button>

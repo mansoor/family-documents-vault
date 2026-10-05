@@ -28,6 +28,8 @@ describe.skipIf(!testAdminUrl())('invitation and reset links the same way', () =
   afterAll(() => h.close());
 
   const invitation = async (name: string) => {
+    // A viewer who sees every family document: an owner's decision (5.34).
+    await h.decider(owner);
     const res = await h.app.inject({
       method: 'POST',
       url: '/api/v1/invitations',

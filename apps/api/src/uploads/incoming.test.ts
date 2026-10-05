@@ -374,6 +374,40 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
     expect(made).toEqual({ created_by: filer, uploaded_by: filer });
   });
 
+  it('a file sent in is never filed as a guest’s (5.34)', async () => {
+    // Somebody outside the family, with a sign-in of their own: any guest an
+    // owner invites is an owner's decision, with a code (the 5.34 review).
+    await h.decider(owner);
+    const invited = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations',
+      headers: h.as(owner),
+      payload: {
+        display_name: 'Jane Smith',
+        email: 'jane-incoming@example.test',
+        role: 'viewer',
+        kind: 'guest',
+        restriction: { people: [adult.member_id] },
+        access_expires_at: new Date(Date.now() + 30 * 864e5).toISOString(),
+      },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const guest = invited.json<{ invitation: { member_id: string } }>().invitation.member_id;
+    const { files } = await arrive(owner, {}, [{ name: 'will.pdf', bytes: PDF('guest') }]);
+    const file = files[0] as DropFile;
+    await ready(file.id);
+    const res = await accept(owner, file.id, { title: 'Will', owner_member_id: guest });
+    expect(res.statusCode, res.body).toBe(422);
+    // Whose it may be is somebody of the family, as a phone's capture asks.
+    expect(res.json<{ error: { message: string } }>().error.message).toBe(
+      'That person is not in the family.',
+    );
+    // Still waiting, and filed for somebody of the family as ever.
+    expect((await fileRow(file.id))?.document_id).toBeNull();
+    const filed = await accept(owner, file.id, { title: 'Will', owner_member_id: adult.member_id });
+    expect(filed.statusCode, filed.body).toBe(201);
+  });
+
   it("accepting into Only me wraps it under that person's key", async () => {
     const { files } = await arrive(adult, {}, [
       { name: 'payslip.jpg', bytes: JPEG, type: 'image/jpeg' },

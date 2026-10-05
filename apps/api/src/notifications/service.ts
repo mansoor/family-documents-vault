@@ -382,6 +382,11 @@ export class NotificationService {
   }
 
   async smtp(p: Principal): Promise<SmtpView> {
+    // Nothing of the family's mail server for somebody limited to what they
+    // are given (the 5.34 review); the database gives them none of it.
+    if (p.restricted) {
+      throw new ApiError(403, 'forbidden', 'Only the family can see how the vault sends email.');
+    }
     const row = await withPrincipal(this.db, p, (trx) =>
       trx
         .selectFrom('smtp_settings')

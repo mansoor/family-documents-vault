@@ -54,16 +54,18 @@ export interface Alert {
 }
 
 /**
- * Whose sign-in here is not locked, nor paused after a restore (5.28): told
- * of nothing else, as a switched-off account is not (`disabled_at`). An
- * alert about their own sign-in reaches them all the same.
+ * Whose sign-in here is not locked, nor paused after a restore (5.28), nor
+ * a guest's past its end (5.34, A28): told of nothing else, as a
+ * switched-off account is not (`disabled_at`). An alert about their own
+ * sign-in reaches them all the same.
  */
 const signsIn = (household: string, alert: Alert, column: 'account.id' | 'device.account_id') =>
   alert.own_sign_in
     ? sql<boolean>`true`
     : sql<boolean>`not exists (select 1 from account_household ah
                     where ah.account_id = ${sql.ref(column)} and ah.household_id = ${household}
-                      and suspension_in_effect(ah.suspended_at, ah.suspended_until))`;
+                      and (suspension_in_effect(ah.suspended_at, ah.suspended_until)
+                           or ah.access_expires_at <= now()))`;
 
 export interface AlertDeps {
   app: Db;

@@ -994,6 +994,29 @@ const GUARDS = [
     table: 'doc_collection',
     fn: 'doc_collection_leaves_grants',
   },
+  // A guest (0056, 5.34): of the family or a guest is fixed once made; a
+  // guest owns no document, is a viewer whose sign-in ends within a year,
+  // never signs in without a restriction nor loses it while they can, and
+  // has no identity details and no member key.
+  { name: 'member_kind_fixed', table: 'member', fn: 'member_kind_fixed' },
+  { name: 'document_owner_not_guest', table: 'document', fn: 'document_owner_not_guest' },
+  { name: 'account_household_guest', table: 'account_household', fn: 'account_household_guest' },
+  {
+    name: 'account_household_guest_limited',
+    table: 'account_household',
+    fn: 'account_household_guest_limited',
+  },
+  {
+    name: 'access_restriction_guest_kept',
+    table: 'access_restriction',
+    fn: 'access_restriction_guest_kept',
+  },
+  {
+    name: 'member_identity_not_guest',
+    table: 'member_identity',
+    fn: 'member_identity_not_guest',
+  },
+  { name: 'scope_key_not_guest', table: 'scope_key', fn: 'scope_key_not_guest' },
 ];
 
 /**
@@ -1209,6 +1232,11 @@ const RESTRICTED = [
   'notification_preference',
   'share_session',
   'export',
+  // Where files are kept, and the mail server: a restricted caller is given
+  // only the places holding what they are given, and no mail settings
+  // (0056, the 5.34 review).
+  'vault',
+  'smtp_settings',
 ];
 
 /**
@@ -1271,6 +1299,22 @@ const REQUIRED_RULES = [
     name: 'password_reset_account',
     cmd: '*',
     what: 'whose reset links somebody signed in reaches',
+  },
+  // Somebody signed in reads their own account and those of the household's
+  // sign-ins, no other household's (0056, R532-04's remainder).
+  {
+    table: 'account',
+    name: 'account_reach',
+    cmd: '*',
+    what: 'whose accounts somebody signed in reads',
+  },
+  // Nobody is removed but a guest who never signed in, by an owner (0056,
+  // the 5.34 review).
+  {
+    table: 'member',
+    name: 'member_remove_actor',
+    cmd: 'd',
+    what: 'who removes somebody from the household',
   },
   // A restriction, and what it names, are written by an owner or the vault:
   // the person reads theirs and changes none of it (0054).
@@ -1479,6 +1523,69 @@ async function probeRestrictions(
       );
     }
   }
+}
+
+/**
+ * What a guest is, held in the backup too (0056, 5.34): no document of a
+ * guest's, no sign-in of a guest's without a restriction or an end, nor
+ * with an end more than a year from now (the 5.34 review), no guest with
+ * a member key or identity details, and no sign-in of the
+ * family's with an end. The guards refuse each as it is written; a backup
+ * is loaded past them, so each is asked of what came back. A backup from
+ * before 0056 has no guests.
+ */
+async function probeGuests(admin: ReturnType<typeof createPool>, household: string): Promise<void> {
+  const exists = await admin.query<{ ok: boolean }>(
+    `select exists (select 1 from pg_attribute where attrelid = to_regclass('public.member')
+                     and attname = 'kind' and not attisdropped) as ok`,
+  );
+  if (!exists.rows[0]?.ok) return;
+  const { rows } = await admin.query<{
+    owned: number;
+    unlimited: number;
+    endless: number;
+    far: number;
+    keyed: number;
+    identified: number;
+    ended_family: number;
+  }>(
+    `select (select count(*)::int from document d join member m on m.id = d.owner_member_id
+              where d.household_id = $1 and m.kind = 'guest') as owned,
+            (select count(*)::int from account_household a join member m on m.id = a.member_id
+              where a.household_id = $1 and m.kind = 'guest'
+                and not exists (select 1 from access_restriction r
+                                 where r.member_id = a.member_id
+                                   and r.household_id = a.household_id)) as unlimited,
+            (select count(*)::int from account_household a join member m on m.id = a.member_id
+              where a.household_id = $1 and m.kind = 'guest'
+                and (a.access_expires_at is null or a.role <> 'viewer')) as endless,
+            -- An end more than a year away (A28): 366 days of 24 hours, as the
+            -- API and the guard count them, from now — which is after the
+            -- backup was made, so no backup the vault wrote is caught.
+            (select count(*)::int from account_household a join member m on m.id = a.member_id
+              where a.household_id = $1 and m.kind = 'guest'
+                and a.access_expires_at > now() + interval '8784 hours') as far,
+            (select count(*)::int from scope_key k join member m on m.id = k.member_id
+              where k.household_id = $1 and k.kind = 'member' and m.kind = 'guest') as keyed,
+            (select count(*)::int from member_identity i join member m on m.id = i.member_id
+              where i.household_id = $1 and m.kind = 'guest') as identified,
+            (select count(*)::int from account_household a join member m on m.id = a.member_id
+              where a.household_id = $1 and m.kind = 'family'
+                and a.access_expires_at is not null) as ended_family`,
+    [household],
+  );
+  const r = rows[0];
+  if (!r) return;
+  const wrong = [
+    r.owned > 0 && `a guest owns ${r.owned} documents`,
+    r.unlimited > 0 && `${r.unlimited} guests could sign in with no restriction`,
+    r.endless > 0 && `${r.endless} guests' sign-ins have no end, or are not a viewer's`,
+    r.far > 0 && `${r.far} guests' sign-ins end more than a year away`,
+    r.keyed > 0 && `${r.keyed} guests have a member key`,
+    r.identified > 0 && `${r.identified} guests have identity details`,
+    r.ended_family > 0 && `${r.ended_family} sign-ins of the family have an end`,
+  ].filter((w): w is string => typeof w === 'string');
+  if (wrong.length > 0) throw new Error(`household ${household}: ${wrong.join('; ')}`);
 }
 
 /**
@@ -1865,6 +1972,8 @@ export async function checkRestored(
       await probeIdentityWriters(admin, app, target.appUrl, h.id);
       // Each restricted person sees exactly what their restriction gives (0054).
       await probeRestrictions(admin, app, h.id);
+      // And every guest is what a guest is (0056).
+      await probeGuests(admin, h.id);
       // Somebody signed in who is no member of it — so the maker of none,
       // with no role of the family's — is given no Only me collection (0036)
       // and nobody's photo (0040).

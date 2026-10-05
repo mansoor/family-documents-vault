@@ -1,4 +1,6 @@
 import {
+  guestAccessEnded,
+  guestAccessEndedWords,
   restrictionMayWiden,
   seesAdults,
   shareEndWords,
@@ -55,10 +57,11 @@ export interface RequestMeta {
 /**
  * Why a session ended, as clients are told it (0.4.11). `suspended` since
  * 5.28: the person's sign-in was locked by an owner, or paused after a
- * restore.
+ * restore. `access_ended` since 5.34: a guest's sign-in reached its end
+ * (A28); signing in again is refused, `403 access_ended`, with the day.
  */
 export type SessionEndReason =
-  'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended';
+  'expired' | 'revoked' | 'reused' | 'removed' | 'malformed' | 'suspended' | 'access_ended';
 
 /** Sign in once, and a session lasts at most this long however much it is used. */
 export const SESSION_MAX_MS = 180 * 24 * 60 * 60 * 1000;
@@ -89,6 +92,19 @@ export interface Principal {
    * by `canSee` and every SQL copy of the visibility rule — never the role.
    */
   seesAdults: boolean;
+  /**
+   * A guest from outside the family (5.34): a viewer, always restricted,
+   * whose sign-in ends at `accessExpiresAt` — read from their sign-in on
+   * every request, as the role is. Absent for the family.
+   */
+  guest?: boolean;
+  accessExpiresAt?: Date | null;
+  /**
+   * Limited by an owner (5.32), or a guest: the database narrows them
+   * (app_restricted()); the API refuses them the household's storage and
+   * mail settings too (the 5.34 review). Absent for anybody else.
+   */
+  restricted?: boolean;
 }
 
 export interface SetupInput {
@@ -103,6 +119,17 @@ const invalidCredentials = () =>
 
 const sessionEnded = (why: string, reason: SessionEndReason) =>
   new ApiError(401, 'session_ended', 'Please sign in again.', { detail: why, reason });
+
+/**
+ * A guest's sign-in past its end (5.34, A28), refused once who it is has
+ * been proven, as a lock is: `403 access_ended`, with the day it ended on
+ * the household's clock.
+ */
+export function guestAccessEndedRefusal(end: Date, timezone: string): ApiError {
+  return new ApiError(403, 'access_ended', guestAccessEndedWords(end, timezone), {
+    reason: 'access_ended',
+  });
+}
 
 /** What a session's end is answered with when it ended while a request waited (5.29). */
 export const endedMeanwhile = (revokedReason: string | null) =>
@@ -372,7 +399,14 @@ export class AuthService {
       // it made; or this waits for the lock, and is refused.
       const held = await trx
         .selectFrom('account_household')
-        .select(['member_id', 'role', 'suspended_at', 'suspended_until', 'suspend_reason'])
+        .select([
+          'member_id',
+          'role',
+          'suspended_at',
+          'suspended_until',
+          'suspend_reason',
+          'access_expires_at',
+        ])
         .where('account_id', '=', account.id)
         .where('household_id', '=', m.household_id)
         .forShare()
@@ -416,6 +450,12 @@ export class AuthService {
       if (suspensionInEffect(held)) {
         const hh = await trx.selectFrom('household').select(['timezone']).executeTakeFirstOrThrow();
         throw membershipSuspended(held.suspend_reason, held.suspended_until, hh.timezone);
+      }
+      // A guest's sign-in past its end (5.34, A28): refused, now that who it
+      // is has been proven, and only now, with the day it ended.
+      if (held.access_expires_at && guestAccessEnded(held.access_expires_at)) {
+        const hh = await trx.selectFrom('household').select(['timezone']).executeTakeFirstOrThrow();
+        throw guestAccessEndedRefusal(held.access_expires_at, hh.timezone);
       }
       const p = { ...asked, memberId: held.member_id, role: held.role };
       await appendAudit(trx, {
@@ -629,7 +669,7 @@ export class AuthService {
 
       const membership = await trx
         .selectFrom('account_household')
-        .select(['member_id', 'role', 'suspended_at', 'suspended_until'])
+        .select(['member_id', 'role', 'suspended_at', 'suspended_until', 'access_expires_at'])
         .where('account_id', '=', session.account_id)
         .where('household_id', '=', session.household_id)
         .executeTakeFirst();
@@ -637,6 +677,10 @@ export class AuthService {
       // Locked, or paused after a restore (5.28): no new token.
       if (suspensionInEffect(membership)) {
         throw sessionEnded('membership suspended', 'suspended');
+      }
+      // A guest's sign-in past its end (5.34): no new token either.
+      if (guestAccessEnded(membership.access_expires_at)) {
+        throw sessionEnded('guest access ended', 'access_ended');
       }
 
       // A session from before 5.30 is given a token of a family here, and is one from now on.
@@ -807,6 +851,7 @@ export class AuthService {
           'account_household.member_id',
           'account_household.suspended_at',
           'account_household.suspended_until',
+          'account_household.access_expires_at',
         ])
         .where('session.id', '=', claims.sid)
         .where('session.revoked_at', 'is', null)
@@ -817,6 +862,14 @@ export class AuthService {
     // and any that did not (opened at that very moment, or written by hand)
     // answers nothing.
     if (suspensionInEffect(open)) throw sessionEnded('membership suspended', 'suspended');
+    // A guest's sign-in past its end (5.34, A28): every session of theirs
+    // answers nothing from that moment, as a lock's does — `401
+    // session_ended`, reason `access_ended`, so every client, an older one
+    // too, goes back to its sign-in, where the person is told why. Only a
+    // guest's sign-in has an end (0056).
+    if (guestAccessEnded(open.access_expires_at)) {
+      throw sessionEnded('guest access ended', 'access_ended');
+    }
     const who = {
       accountId: claims.sub,
       sessionId: claims.sid,
@@ -824,7 +877,17 @@ export class AuthService {
       memberId: open.member_id,
       role: open.role,
     };
-    return { ...who, seesAdults: await this.seesAdultsOf(who) };
+    const sight = await this.sightOf(who);
+    return {
+      ...who,
+      seesAdults: sight.seesAdults,
+      ...(open.access_expires_at
+        ? { guest: true, accessExpiresAt: new Date(open.access_expires_at) }
+        : {}),
+      // Limited by an owner, or a guest (always limited): told nothing of
+      // where files are kept nor of the mail server (the 5.34 review).
+      ...(sight.restricted || open.access_expires_at ? { restricted: true } : {}),
+    };
   }
 
   /**
@@ -833,8 +896,12 @@ export class AuthService {
    * (D6), so only a viewer's is read — as the person themselves, who reads
    * their own.
    */
-  private async seesAdultsOf(who: Omit<Principal, 'seesAdults'>): Promise<boolean> {
-    if (!restrictionMayWiden(who.role)) return seesAdults(who.role, null);
+  private async sightOf(
+    who: Omit<Principal, 'seesAdults'>,
+  ): Promise<{ seesAdults: boolean; restricted: boolean }> {
+    if (!restrictionMayWiden(who.role)) {
+      return { seesAdults: seesAdults(who.role, null), restricted: false };
+    }
     const restriction = await withPrincipal(this.db, who, (trx) =>
       trx
         .selectFrom('access_restriction')
@@ -842,7 +909,10 @@ export class AuthService {
         .where('member_id', '=', who.memberId)
         .executeTakeFirst(),
     );
-    return seesAdults(who.role, restriction ?? null);
+    return {
+      seesAdults: seesAdults(who.role, restriction ?? null),
+      restricted: restriction !== undefined,
+    };
   }
 
   /** Why a session that no longer authenticates ended, for the 401. */

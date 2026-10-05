@@ -23,6 +23,7 @@ import {
   collectionShareItem,
   COLLECTION_SHARE_REASONS,
   inCollectionAudience,
+  guestEndProblem,
   LOCK_MAX_DAYS,
   LOCK_NOTE_MAX,
   maskEmail,
@@ -462,6 +463,20 @@ export interface FakeState {
   accessRestrictions?: boolean;
   /** GET /me's `restriction` (5.33): what an owner limited me to. */
   myRestriction?: MyRestriction | null;
+  /**
+   * 5.34: GET /me's `kind` and `access_expires_at` (left out: of the
+   * family), and the people outside the family, as GET /members?kind=guest
+   * answers an owner. Each renewal (POST /members/{id}/renew) arrives in
+   * `renewals`.
+   */
+  myKind?: 'family' | 'guest';
+  myAccessEnd?: string | null;
+  guests?: Array<Record<string, unknown> & { id: string }>;
+  renewals?: Array<{ member_id: string; access_expires_at: string }>;
+  /** What an invitation link's preview says over the usual one (5.34: a guest's). */
+  invitationPreview?: Record<string, unknown>;
+  /** Whom DELETE /members/{id}/sessions signed out everywhere, in order. */
+  signedOut?: string[];
   /** People who keep Only me documents (5.33): limiting them asks the owner first. */
   keepsPrivate?: string[];
   /** Every PUT and DELETE /members/{id}/access that arrived, in order (5.33). */
@@ -776,6 +791,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.incoming ? { upload_requests: true } : {}),
           ...(state.identities ? { member_identity: true } : {}),
           ...(state.accessRestrictions !== false ? { access_restrictions: true } : {}),
+          // Someone outside the family (5.34): said when a test gives guests.
+          ...(state.guests ? { guests: true } : {}),
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -827,6 +844,8 @@ export function installFakeApi(state: FakeState) {
         reset_notice: state.resetNotice ?? null,
         handover_since: state.handoverSince ?? null,
         restriction: state.myRestriction ?? null,
+        kind: state.myKind ?? 'family',
+        access_expires_at: state.myAccessEnd ?? null,
       });
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;
@@ -959,6 +978,43 @@ export function installFakeApi(state: FakeState) {
         country: null,
         answered_at: null,
       });
+    }
+    // The people outside the family (5.34): an owner's to list.
+    if (path === '/api/v1/members' && method === 'GET' && query.get('kind') === 'guest') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner sees the people outside the family.');
+      }
+      return json({ items: state.guests ?? [] });
+    }
+    // A guest's sign-in renewed (5.34), refused in the vault's order.
+    const renewAt = /^\/api\/v1\/members\/([^/]+)\/renew$/.exec(path);
+    if (renewAt && method === 'POST') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can change what someone is allowed to do.');
+      }
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          "Turn on two-step sign-in to renew a guest's sign-in.",
+        );
+      }
+      if (state.accountStepUp) {
+        return refuse(
+          403,
+          'step_up_required',
+          "Please confirm it is you to renew a guest's sign-in.",
+          {
+            action: 'renew_guest',
+          },
+        );
+      }
+      const b = body as { access_expires_at: string };
+      const g = (state.guests ?? []).find((x) => x.id === renewAt[1]);
+      if (!g) return refuse(404, 'not_found', 'They have no sign-in to renew.');
+      g.access_expires_at = b.access_expires_at;
+      (state.renewals ??= []).push({ member_id: g.id, access_expires_at: b.access_expires_at });
+      return json({ member_id: g.id, access_expires_at: b.access_expires_at });
     }
     if (path === '/api/v1/members' && method === 'GET') {
       // The worker, as far as this vault has one (5.17c): a photo on its
@@ -1461,6 +1517,7 @@ export function installFakeApi(state: FakeState) {
       const id = outAt[1] as string;
       const card = state.accounts?.[id];
       if (!card) return refuse(404, 'not_found', 'They have no sign-in to sign out.');
+      (state.signedOut ??= []).push(id);
       const ended = card.devices.length;
       card.devices = [];
       return json({ member_id: id, sessions_ended: ended });
@@ -1480,8 +1537,34 @@ export function installFakeApi(state: FakeState) {
         state.memberAdmin === false ? card : { suspension: null, max_offline_days: 90, ...card },
       );
     }
+    // A guest who never signed in, removed (the 5.34 review): owners only,
+    // and nobody who has had a sign-in. Their invitations go with them.
+    if (memberAt && !memberAt[2] && method === 'DELETE') {
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can remove someone.');
+      }
+      const g = (state.guests ?? []).find((x) => x.id === memberAt[1]);
+      if (!g) {
+        return state.members.some((x) => x.id === memberAt[1])
+          ? refuse(409, 'not_a_guest', 'They are of the family, and stay in it.')
+          : refuse(404, 'not_found', 'That person is not here.');
+      }
+      if (g.has_account || g.sign_in_removed) {
+        return refuse(
+          409,
+          'had_sign_in',
+          `${String(g.display_name)} has had a sign-in here. Take it away instead; an owner can give it back.`,
+        );
+      }
+      state.guests = (state.guests ?? []).filter((x) => x.id !== g.id);
+      state.invitations = state.invitations.filter((i) => i.member_id !== g.id);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (memberAt && !memberAt[2] && method === 'PATCH') {
-      const m = state.members.find((x) => x.id === memberAt[1]);
+      // A guest's details too (the 5.34 review), from People outside the family.
+      const m =
+        state.members.find((x) => x.id === memberAt[1]) ??
+        (state.guests ?? []).find((x) => x.id === memberAt[1]);
       if (!m) return refuse(404, 'not_found', 'That person is not in the family.');
       const b = body as Record<string, unknown>;
       const headers = (init?.headers ?? {}) as Record<string, string>;
@@ -2455,18 +2538,61 @@ export function installFakeApi(state: FakeState) {
     }
     if (path.endsWith('/sign-in') && method === 'DELETE') {
       const memberId = path.split('/')[4] as string;
-      const target = state.members.find((m) => m.id === memberId);
+      // A guest's too (the 5.34 review), from People outside the family.
+      const target =
+        state.members.find((m) => m.id === memberId) ??
+        (state.guests ?? []).find((m) => m.id === memberId);
       if (target) {
         target.has_account = false;
         target.role = null;
         target.sign_in_removed = true;
+        if (target.kind === 'guest') target.access_expires_at = null;
       }
       return Promise.resolve(new Response(null, { status: 204 }));
     }
     if (path.endsWith('/sign-in') && method === 'POST') {
       const memberId = path.split('/')[4] as string;
-      const target = state.members.find((m) => m.id === memberId);
-      const { role } = body as { role: string };
+      const target =
+        state.members.find((m) => m.id === memberId) ??
+        (state.guests ?? []).find((m) => m.id === memberId);
+      const { role, access_expires_at: end } = body as {
+        role: string;
+        access_expires_at?: string;
+      };
+      // A guest's comes back with a new end, asked as renewing is (5.34) —
+      // and first, before the ordinary step-up, as the vault asks them (the
+      // 5.34 review's second round).
+      const guest = target?.kind === 'guest';
+      if (guest || end) {
+        if (state.twoStep === false) {
+          return refuse(
+            403,
+            'totp_required_for_owner',
+            "Turn on two-step sign-in to renew a guest's sign-in.",
+          );
+        }
+        if (state.accountStepUp) {
+          return refuse(
+            403,
+            'step_up_required',
+            "Please confirm it is you to renew a guest's sign-in.",
+            { action: 'renew_guest' },
+          );
+        }
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change who is in the family.',
+          { action: 'change_people' },
+        );
+      }
+      if (target?.kind === 'guest') {
+        const problem = end ? guestEndProblem(new Date(end)) : 'Choose the day their access ends.';
+        if (problem) return refuse(422, 'validation_failed', problem);
+        target.access_expires_at = end;
+      }
       if (target) {
         target.has_account = true;
         target.role = role;
@@ -2485,7 +2611,58 @@ export function installFakeApi(state: FakeState) {
         email: string;
         role: string;
         restriction?: AccessGrant | null;
+        kind?: 'family' | 'guest';
+        access_expires_at?: string;
+        relationship?: string | null;
       };
+      // An owner's decision about what a viewer sees comes first, with a
+      // passkey or a code (A54; the 5.34 review: every guest an owner
+      // invites), then the ordinary step-up, as the vault asks them.
+      const owner = storedRole() === 'owner';
+      if (
+        owner &&
+        (b.kind === 'guest' ||
+          (b.role === 'viewer' && !b.restriction) ||
+          b.restriction?.include_adults_only === true)
+      ) {
+        if (state.twoStep === false) {
+          return refuse(
+            403,
+            'totp_required_for_owner',
+            'Turn on two-step sign-in to limit what a viewer can see.',
+          );
+        }
+        if (state.accountStepUp) {
+          return refuse(
+            403,
+            'step_up_required',
+            'Please confirm it is you to limit what a viewer can see.',
+            { action: 'limit_access' },
+          );
+        }
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change who is in the family.',
+          { action: 'change_people' },
+        );
+      }
+      if (b.kind === 'guest') {
+        const problem = b.access_expires_at
+          ? guestEndProblem(new Date(b.access_expires_at))
+          : 'Choose the day their access ends.';
+        if (problem) return refuse(422, 'validation_failed', problem);
+      }
+      // A guest is always limited (5.34).
+      if (b.kind === 'guest' && !b.restriction) {
+        return refuse(
+          422,
+          'validation_failed',
+          'A guest is always limited to what they are given. Choose what they can see.',
+        );
+      }
       // An adult's viewer comes with limits (5.33, A27).
       if (b.role === 'viewer' && storedRole() !== 'owner' && !b.restriction) {
         return refuse(
@@ -2495,6 +2672,10 @@ export function installFakeApi(state: FakeState) {
         );
       }
       const invitation = {
+        kind: b.kind ?? 'family',
+        access_expires_at: b.access_expires_at ?? null,
+        relationship: b.relationship ?? null,
+        restriction: b.restriction ?? null,
         limited: Boolean(b.restriction),
         id: `inv-${state.invitations.length}`,
         member_id: b.member_id ?? `m-${state.members.length}`,
@@ -2557,6 +2738,7 @@ export function installFakeApi(state: FakeState) {
         role_label: 'Adult',
         invited_by: 'Mansoor Seikh',
         expires_at: new Date(Date.now() + 7 * 864e5).toISOString(),
+        ...state.invitationPreview,
       });
     }
     if (path.startsWith('/api/v1/invitations/') && method === 'DELETE') {

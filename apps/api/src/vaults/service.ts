@@ -82,6 +82,13 @@ export class VaultService {
   }
 
   async list(p: Principal): Promise<VaultView[]> {
+    // Somebody limited to what they are given — a guest, a limited viewer —
+    // is told nothing of where the family's files are kept (the 5.34
+    // review); the database gives them only the places holding what they
+    // are given, which a download reads.
+    if (p.restricted) {
+      throw new ApiError(403, 'forbidden', 'Only the family can see where its files are kept.');
+    }
     return withPrincipal(this.db, p, async (trx) => {
       const hh = await trx
         .selectFrom('household')

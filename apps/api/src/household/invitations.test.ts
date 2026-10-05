@@ -31,8 +31,17 @@ describe.skipIf(!testAdminUrl())('invitations', () => {
   let nth = 0;
   const peer = () => ({ remoteAddress: `10.9.${Math.floor(++nth / 200)}.${nth % 200}` });
 
-  const invite = (body: Record<string, unknown>, as: Tokens = owner) =>
-    h.app.inject({ method: 'POST', url: '/api/v1/invitations', headers: h.as(as), payload: body });
+  // A viewer who sees every family document is an owner's decision, asked
+  // with a passkey or a code (5.34, guests.test.ts): this owner has given one.
+  const invite = async (body: Record<string, unknown>, as: Tokens = owner) => {
+    if (as === owner) await h.decider(owner);
+    return h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations',
+      headers: h.as(as),
+      payload: body,
+    });
+  };
 
   const accept = (token: string, body: Record<string, unknown>) =>
     h.app.inject({

@@ -109,6 +109,15 @@ describe('what a restricted viewer can see, in their words (5.33)', () => {
     ).toBe('You can see: Will documents that belong to no one and your own.');
   });
 
+  it('a guest owns nothing, so is never told "and your own" (5.34)', () => {
+    const guest = (r: Partial<NamedGrant>) =>
+      youCanSee({ ...none, ...r }, 'UTC', Date.parse('2026-10-04T12:00:00Z'), { own: false });
+    expect(guest({ people: [{ display_name: 'Ahmed' }], types: [{ label: 'Tax return' }] })).toBe(
+      'You can see: Tax return documents for Ahmed.',
+    );
+    expect(guest({})).toBe('You can see: nothing yet. Ask whoever invited you.');
+  });
+
   it('says when it ends, and that it has', () => {
     expect(see({ people: [{ display_name: 'Ahmed' }], expires_at: '2026-10-05T09:00:00Z' })).toBe(
       'You can see: documents for Ahmed and your own. Until Monday 5 October at 09:00.',

@@ -106,6 +106,8 @@ describe.skipIf(!testAdminUrl())('what a viewer is not told (5.3)', () => {
       payload: { display_name: 'Grandpa', date_of_birth: '1950-02-03' },
     });
     expect(added.statusCode, added.body).toBe(201);
+    // A viewer who sees every family document: an owner's decision (5.34).
+    await h.decider(owner);
     const invited = await h.app.inject({
       method: 'POST',
       url: `/api/v1/members/${json<{ id: string }>(added).id}/invite`,
@@ -152,6 +154,7 @@ describe.skipIf(!testAdminUrl())('what a viewer is not told (5.3)', () => {
   });
 
   it('the invitation preview never shows the whole address before the code', async () => {
+    await h.decider(owner);
     const invited = await h.app.inject({
       method: 'POST',
       url: '/api/v1/invitations',
