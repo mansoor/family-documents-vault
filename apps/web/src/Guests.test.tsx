@@ -1,3 +1,4 @@
+import { guestEndWords } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -536,6 +537,124 @@ describe('someone outside the family (5.34)', () => {
     await expectAccessible();
   });
 
+  it("giving a guest's sign-in back asks once, for a code, when both step-ups are due (N534W-01)", async () => {
+    const PAT = {
+      ...JANE,
+      id: 'g-5',
+      display_name: 'Pat Lowe',
+      relationship: 'surveyor',
+      has_account: false,
+      role: null,
+      sign_in_removed: true,
+      access_expires_at: null,
+    };
+    const state = at('/settings/guests', {
+      members: [ME, AISHA],
+      guests: [PAT],
+      stepUpNeeded: true,
+      accountStepUp: true,
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Give their sign-in back' }));
+    const later = new Date(Date.now() + 30 * DAY).toISOString().slice(0, 10);
+    fireEvent.change(screen.getByLabelText('Pat Lowe’s access ends'), {
+      target: { value: later },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
+    const ask = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(ask).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    fireEvent.change(within(ask).getByLabelText('Code from your authenticator app'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
+    await screen.findByText(/^Pat Lowe can sign in again, until /);
+    expect(
+      state.calls.filter((c) => c.url === '/api/v1/auth/step-up' && c.method === 'POST'),
+    ).toHaveLength(1);
+    expect(screen.queryByText(/Please confirm it is you/)).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Just checking it is you' })).toBeNull();
+  });
+
+  it('what a guest can see closes with their sign-in, and its Close never drops focus (N534W-03)', async () => {
+    const end = new Date(Date.now() + 10 * DAY).toISOString();
+    const NED = {
+      ...JANE,
+      id: 'g-3',
+      display_name: 'Ned Hale',
+      relationship: null,
+      has_account: false,
+      role: null,
+      sign_in_removed: false,
+      access_expires_at: null,
+      version: 1,
+    };
+    const state = at('/settings/guests', {
+      members: [ME, AISHA],
+      guests: [JANE, NED],
+      accounts: { 'g-1': cardOf('g-1', end, ['m-0']) },
+    });
+    const janeRow = async () =>
+      (await screen.findByRole('heading', { name: /^Jane Smith/ })).closest('li') as HTMLElement;
+    // Open, then the row's buttons replaced by the renewal's day: Close
+    // hands focus to her name, not the page.
+    fireEvent.click(within(await janeRow()).getByRole('button', { name: 'What they can see' }));
+    await screen.findByRole('region', { name: 'What Jane Smith can see' });
+    fireEvent.click(within(await janeRow()).getByRole('button', { name: 'Renew their access' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close what they can see' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /^Jane Smith/ })).toHaveFocus());
+    fireEvent.click(within(await janeRow()).getByRole('button', { name: 'Cancel' }));
+
+    // Open, then her sign-in taken away: it closes.
+    fireEvent.click(
+      await within(await janeRow()).findByRole('button', { name: 'What they can see' }),
+    );
+    await screen.findByRole('region', { name: 'What Jane Smith can see' });
+    fireEvent.click(
+      within(await janeRow()).getByRole('button', { name: 'Take their sign-in away' }),
+    );
+    const away = await screen.findByRole('alertdialog', {
+      name: 'Take Jane Smith’s sign-in away?',
+    });
+    fireEvent.click(within(away).getByRole('button', { name: 'Take it away' }));
+    await screen.findByText(/^Jane Smith’s sign-in is taken away\./);
+    expect(screen.queryByRole('region', { name: 'What Jane Smith can see' })).toBeNull();
+
+    // Open, and her sign-in taken away elsewhere, the list read again: given
+    // back here, it closes too — the vault asks the owners to confirm it now.
+    const jane = state.guests?.find((g) => g.id === 'g-1');
+    if (jane) Object.assign(jane, { has_account: true, sign_in_removed: false });
+    const nedRow = (await screen.findByRole('heading', { name: /^Ned Hale/ })).closest(
+      'li',
+    ) as HTMLElement;
+    fireEvent.click(within(nedRow).getByRole('button', { name: 'Change their details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Ned Hale’s details are saved.');
+    fireEvent.click(
+      await within(await janeRow()).findByRole('button', { name: 'What they can see' }),
+    );
+    await screen.findByRole('region', { name: 'What Jane Smith can see' });
+    if (jane) Object.assign(jane, { has_account: false, sign_in_removed: true });
+    fireEvent.click(
+      within(
+        (await screen.findByRole('heading', { name: /^Ned Hale/ })).closest('li') as HTMLElement,
+      ).getByRole('button', { name: 'Change their details' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(screen.getAllByText('Ned Hale’s details are saved.')).toHaveLength(1),
+    );
+    fireEvent.click(
+      await within(await janeRow()).findByRole('button', { name: 'Give their sign-in back' }),
+    );
+    expect(screen.getByRole('region', { name: 'What Jane Smith can see' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Jane Smith’s access ends'), {
+      target: { value: new Date(Date.now() + 30 * DAY).toISOString().slice(0, 10) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
+    await screen.findByText(/^Jane Smith can sign in again, until /);
+    expect(screen.queryByRole('region', { name: 'What Jane Smith can see' })).toBeNull();
+    await expectAccessible();
+  });
+
   it("an ended guest's access says so, and nobody but an owner is offered the list", async () => {
     at('/settings/guests', {
       members: [ME],
@@ -544,6 +663,16 @@ describe('someone outside the family (5.34)', () => {
     expect(
       await screen.findByText(/^Their access ended .+\. Renew it to let them back in\.$/),
     ).toHaveTextContent(WITH_YEAR);
+    // Nobody to sign out once it has ended (the lead's decision); renewing,
+    // and taking it away, still offered.
+    expect(screen.queryByRole('button', { name: 'Sign them out everywhere' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Renew their access' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Take their sign-in away' })).toBeInTheDocument();
+    cleanup();
+    at('/settings/guests', { members: [ME], guests: [JANE] });
+    expect(
+      await screen.findByRole('button', { name: 'Sign them out everywhere' }),
+    ).toBeInTheDocument();
     cleanup();
     at('/settings', { members: [{ ...ME, role: 'adult' }], guests: [] }, 'adult');
     await screen.findByRole('heading', { name: 'Settings' });
@@ -585,6 +714,8 @@ describe('someone outside the family (5.34)', () => {
       role: 'viewer',
       role_label: 'Viewer',
       display_name: 'Jane Smith',
+      // The household's clock, which is said (the review's second round).
+      timezone: 'Pacific/Auckland',
     };
     installFakeApi(fresh({ invitationPreview: preview }));
     window.history.replaceState({}, '', '/join#link-secret-0123456789abcdef');
@@ -592,9 +723,11 @@ describe('someone outside the family (5.34)', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'A guest’s sign-in to The Seikh family' });
     expect(screen.getByText(/a guest from outside the family\./)).toBeInTheDocument();
-    expect(
-      screen.getByText(/^You will see only what they choose to give you, until /),
-    ).toHaveTextContent(WITH_YEAR);
+    const until = screen.getByText(/^You will see only what they choose to give you, until /);
+    expect(until).toHaveTextContent(WITH_YEAR);
+    expect(until).toHaveTextContent(
+      `until ${guestEndWords(end, 'Pacific/Auckland')} (Pacific/Auckland).`,
+    );
     // Nothing of their own, and nothing said of the family's members.
     expect(screen.queryByText(/private documents/)).toBeNull();
     expect(screen.queryByText(/Can open and download/)).toBeNull();

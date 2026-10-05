@@ -515,6 +515,11 @@ export interface InvitationPreview {
   /** A guest's (5.34): from outside the family, until `access_expires_at`. Absent from older vaults. */
   kind?: MemberKind;
   access_expires_at?: string | null;
+  /**
+   * The household's time zone (IANA), which a guest's end is said on (5.34).
+   * Absent from older vaults: say it on the browser's clock, and name it.
+   */
+  timezone?: string;
 }
 
 export interface ResetPreview {

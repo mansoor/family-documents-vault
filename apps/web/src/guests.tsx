@@ -446,6 +446,8 @@ function GuestRow(props: {
   const signOutButton = useRef<HTMLButtonElement>(null);
   const takeAwayButton = useRef<HTMLButtonElement>(null);
   const removeButton = useRef<HTMLButtonElement>(null);
+  // Where focus goes when what held it has gone (N534W-03).
+  const heading = useRef<HTMLHeadingElement>(null);
   const dayField = useRef<HTMLDivElement>(null);
   const nameField = useRef<HTMLDivElement>(null);
   const dated = doing === 'renew' || doing === 'giveBack';
@@ -506,7 +508,12 @@ function GuestRow(props: {
     // Given back as a viewer's (a guest is nothing else), with its new end.
     const done = await run((t) => api.restoreSignIn(t, g.id, 'viewer', end));
     if (!done) return;
-    flushSync(() => setDoing(null));
+    // What they can see is read again when it is next opened: the vault now
+    // asks the owners to confirm it (N534W-03).
+    flushSync(() => {
+      setDoing(null);
+      setAccess(undefined);
+    });
     await props.onChanged(
       `${g.display_name} can sign in again, until ${accessEndWords(end, props.timezone)}. What they can see is as it was.`,
     );
@@ -535,7 +542,11 @@ function GuestRow(props: {
       return true;
     });
     if (done === null) return;
-    flushSync(() => setDoing(null));
+    flushSync(() => {
+      setDoing(null);
+      // Their sign-in gone, so is what it was shown with (N534W-03).
+      if (what === 'takeAway') setAccess(undefined);
+    });
     await props.onChanged(
       what === 'signOut'
         ? `${g.display_name} is signed out everywhere. They can sign in again until their access ends.`
@@ -555,7 +566,7 @@ function GuestRow(props: {
 
   return (
     <li className="stack guest">
-      <h2 className="guest-name">
+      <h2 ref={heading} tabIndex={-1} className="guest-name">
         {g.display_name}
         {g.relationship ? <span className="muted">{` · ${g.relationship}`}</span> : null}
       </h2>
@@ -657,11 +668,15 @@ function GuestRow(props: {
             >
               Change their details
             </Button>
-            {signedIn && caps?.features.sign_out_everywhere === true && (
-              <Button ref={signOutButton} kind="quiet" onClick={() => setDoing('signOut')}>
-                Sign them out everywhere
-              </Button>
-            )}
+            {/* Nobody to sign out once their access has ended (the lead's
+                decision, the review's second round). */}
+            {signedIn &&
+              !guestAccessEnded(g.access_expires_at) &&
+              caps?.features.sign_out_everywhere === true && (
+                <Button ref={signOutButton} kind="quiet" onClick={() => setDoing('signOut')}>
+                  Sign them out everywhere
+                </Button>
+              )}
             {signedIn && (
               <Button ref={takeAwayButton} kind="quiet" danger onClick={() => setDoing('takeAway')}>
                 Take their sign-in away
@@ -693,7 +708,8 @@ function GuestRow(props: {
             kind="quiet"
             onClick={() => {
               flushSync(() => setAccess(undefined));
-              limitsButton.current?.focus();
+              // The button that opened it, if it is there; else their name.
+              (limitsButton.current ?? heading.current)?.focus();
             }}
           >
             Close what they can see

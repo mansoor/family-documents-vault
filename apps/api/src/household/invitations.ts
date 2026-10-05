@@ -783,14 +783,17 @@ export class InvitationService {
       const row = await this.live(trx, token);
       const household = await trx
         .selectFrom('household')
-        .select(['name'])
+        .select(['name', 'timezone'])
         .where('id', '=', householdId)
         .executeTakeFirstOrThrow();
+      // Removed while this was read (a guest who never signed in, 5.34's
+      // review): the invitation went with them.
       const member = await trx
         .selectFrom('member')
         .select(['display_name'])
         .where('id', '=', row.member_id)
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!member) throw gone();
       const inviter = await trx
         .selectFrom('account_household')
         .innerJoin('member', 'member.id', 'account_household.member_id')
@@ -807,6 +810,9 @@ export class InvitationService {
         expires_at: row.expires_at.toISOString(),
         kind: row.kind,
         access_expires_at: row.access_expires_at?.toISOString() ?? null,
+        // The household's clock, which a guest's end is said on (the 5.34
+        // review's second round).
+        timezone: household.timezone,
       };
     });
   }
@@ -876,12 +882,15 @@ export class InvitationService {
       const invited = await this.live(trx, token);
       // The person, held: a passing recorded at the same moment (5.25) is
       // waited for, and seen — and so is the invitation it takes back.
+      // Removed meanwhile (a guest who never signed in, the 5.34 review,
+      // N534A-01): the invitation went with them, so it is the one refusal.
       const member = await trx
         .selectFrom('member')
         .select(['display_name', 'is_deceased', 'kind'])
         .where('id', '=', invited.member_id)
         .forUpdate()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!member) throw gone();
       const row = await this.live(trx, token);
       if (member.is_deceased) throw passedAway(member.display_name);
       // A guest's invitation is a guest's (5.34), and gives a sign-in only

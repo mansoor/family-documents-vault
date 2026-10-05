@@ -341,12 +341,25 @@ describe('the fake vault, people outside the family (5.34)', () => {
       role: 'viewer' as const,
       restriction: { people: ['fake-member'] },
     };
-    expect((await api.invite(token, asked)).invitation.member_id).toBe('lena');
+    const lenaInvite = await api.invite(token, asked);
+    expect(lenaInvite.invitation.member_id).toBe('lena');
     // Given Adults only by an owner: an adult's invitation is refused.
     vault.state.restrictions.set('lena', { ...limited, include_adults_only: true });
     expect(
       await refusal(api.invite(token, { ...asked, email: 'lena2@example.test' })),
     ).toMatchObject({ status: 403, code: 'forbidden' });
+    // And the adult's made before it, accepted now: refused, and nothing of
+    // it kept — she has no sign-in, and an owner may invite her (N534W-02).
+    expect(
+      await refusal(
+        api.acceptInvitationLink(lenaInvite.link_token, {
+          code: lenaInvite.code,
+          password: 'lena’s own password',
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: 'owner_needed' });
+    expect(vault.state.members.find((m) => m.id === 'lena')?.role).toBeNull();
+    expect(vault.state.signIns.some((s) => s.member_id === 'lena')).toBe(false);
     // A guest who never signed in: an owner removes them; an adult may not.
     vault.state.role = 'owner';
     vault.state.ownerTwoStep = true;
@@ -402,6 +415,10 @@ describe('the fake vault, people outside the family (5.34)', () => {
       status: 409,
       code: 'had_sign_in',
     });
+    // Lena, refused above, is somebody an owner may still invite.
+    expect(
+      (await api.invite(token, { ...asked, email: 'lena3@example.test' })).invitation.member_id,
+    ).toBe('lena');
   });
 });
 

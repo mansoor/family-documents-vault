@@ -1270,8 +1270,8 @@ export function createFakeVault(): {
     const member = state.members.find((m) => m.id === v.member_id);
     if (!member)
       return fail(404, 'invitation_not_valid', 'That invitation link is not valid any more.');
-    member.role = v.role;
-    if (v.kind === 'guest') member.access_expires_at = v.access_expires_at ?? null;
+    // Every refusal before anything changes, as the vault's one transaction
+    // undoes them all (the 5.34 review's second round, N534W-02).
     const had = state.restrictions.get(member.id);
     // An adult's keeps what an owner set, so never Adults only documents an
     // owner gave since (the 5.34 review): asked again now.
@@ -1282,6 +1282,8 @@ export function createFakeVault(): {
         'This invitation cannot be accepted as it is. Ask an owner of the family to invite you.',
       );
     }
+    member.role = v.role;
+    if (v.kind === 'guest') member.access_expires_at = v.access_expires_at ?? null;
     if (found.restriction && (!had || found.by_owner)) {
       state.restrictions.set(member.id, {
         ...found.restriction,

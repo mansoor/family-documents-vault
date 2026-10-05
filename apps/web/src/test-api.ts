@@ -2559,8 +2559,11 @@ export function installFakeApi(state: FakeState) {
         role: string;
         access_expires_at?: string;
       };
-      // A guest's comes back with a new end, asked as renewing is (5.34).
-      if (target?.kind === 'guest') {
+      // A guest's comes back with a new end, asked as renewing is (5.34) —
+      // and first, before the ordinary step-up, as the vault asks them (the
+      // 5.34 review's second round).
+      const guest = target?.kind === 'guest';
+      if (guest || end) {
         if (state.twoStep === false) {
           return refuse(
             403,
@@ -2576,6 +2579,16 @@ export function installFakeApi(state: FakeState) {
             { action: 'renew_guest' },
           );
         }
+      }
+      if (state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change who is in the family.',
+          { action: 'change_people' },
+        );
+      }
+      if (target?.kind === 'guest') {
         const problem = end ? guestEndProblem(new Date(end)) : 'Choose the day their access ends.';
         if (problem) return refuse(422, 'validation_failed', problem);
         target.access_expires_at = end;

@@ -5,6 +5,7 @@ import {
   GUEST_OWNS_NOTHING,
   type ActivityLine,
   type DocumentView,
+  type InvitationPreview,
   type Me,
   type Member,
   type MemberAccount,
@@ -905,6 +906,95 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
     expect(none?.vaults).toBe(0);
   });
 
+  it('an invitation accepted while its guest is removed is refused as one no longer valid, never a 500 (N534A-01)', async () => {
+    await fresh(owner);
+    const pending = await invite(owner, guestInvite({ display_name: 'Rory' }));
+    expect(pending.statusCode, pending.body).toBe(201);
+    const rory = json<{ invitation: { member_id: string } }>(pending).invitation.member_id;
+    const lockWaits = async () =>
+      (
+        await admin.query<{ n: number }>(
+          `select count(*)::int as n from pg_stat_activity
+            where wait_event_type = 'Lock' and datname = current_database()`,
+        )
+      ).rows[0]?.n ?? 0;
+    const queued = async (n: number) => {
+      for (let i = 0; i < 400 && (await lockWaits()) < n; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(await lockWaits()).toBeGreaterThanOrEqual(n);
+    };
+    // The person held, so that the removal and the acceptance queue on them:
+    // the removal first, the acceptance behind it.
+    const holder = await admin.connect();
+    let removing: Promise<Res> | undefined;
+    let accepting: Promise<Res> | undefined;
+    try {
+      await holder.query('begin');
+      await holder.query('select 1 from member where id = $1 for update', [rory]);
+      removing = h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${rory}`,
+        headers: h.as(owner),
+      });
+      await queued(1);
+      accepting = accept(pending, 'rory’s own password');
+      await queued(2);
+    } finally {
+      await holder.query('commit');
+      holder.release();
+    }
+    const [removed, accepted] = await Promise.all([removing, accepting]);
+    expect(removed?.statusCode, removed?.body).toBe(204);
+    expect(accepted?.statusCode, accepted?.body).toBe(404);
+    expect(accepted && error(accepted).code).toBe('invitation_not_valid');
+
+    // The preview too: an invitation whose person is gone (left behind here
+    // as the owning role, its cascade switched off) is no longer valid.
+    await fresh(owner);
+    const orphaned = await invite(owner, guestInvite({ display_name: 'Ora' }));
+    const ora = json<{ invitation: { member_id: string } }>(orphaned).invitation.member_id;
+    const { link_token: oraLink } = json<{ link_token: string }>(orphaned);
+    // While she is there, the preview says when her access ends, and on
+    // whose clock: the household's (the second round of the review).
+    const before = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations/lookup',
+      payload: { token: oraLink },
+      ...peer(),
+    });
+    expect(before.statusCode, before.body).toBe(200);
+    const zone = (
+      await admin.query<{ timezone: string }>('select timezone from household where id = $1', [hh])
+    ).rows[0]?.timezone;
+    expect(json<InvitationPreview>(before)).toMatchObject({
+      kind: 'guest',
+      access_expires_at: expect.stringMatching(/^\d{4}-/) as unknown,
+      timezone: zone,
+    });
+    const raw = await admin.connect();
+    try {
+      await raw.query('begin');
+      await raw.query(`set local session_replication_role = replica`);
+      await raw.query('delete from member where id = $1', [ora]);
+      await raw.query('commit');
+    } finally {
+      raw.release();
+    }
+    try {
+      const looked = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/invitations/lookup',
+        payload: { token: oraLink },
+        ...peer(),
+      });
+      expect(looked.statusCode, looked.body).toBe(404);
+      expect(error(looked).code).toBe('invitation_not_valid');
+    } finally {
+      await admin.query('delete from invitation where member_id = $1', [ora]);
+    }
+  });
+
   it('a guest who never signed in is removed by an owner; anybody who has had a sign-in is kept (W534-03)', async () => {
     await fresh(owner);
     const pending = await invite(owner, guestInvite({ display_name: 'Rex' }));
@@ -1303,7 +1393,30 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
       code: 'step_up_required',
       action: 'renew_guest',
     });
-    await fresh(owner);
+    // Nothing given for a while: asked for the code first — never the
+    // password, then a code — and that one answer serves (N534W-01).
+    await admin.query(
+      `update session set verified_at = now() - interval '1 hour',
+              factor_verified_at = now() - interval '1 hour'
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    expect(error(await back({ role: 'viewer', access_expires_at: inDays(30) }))).toMatchObject({
+      code: 'step_up_required',
+      action: 'renew_guest',
+    });
+    // A guest's asks the same with no end sent, before saying one is needed.
+    expect(error(await back({ role: 'viewer' }))).toMatchObject({
+      code: 'step_up_required',
+      action: 'renew_guest',
+    });
+    const byCode = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/step-up',
+      headers: h.as(owner),
+      payload: { code: codeFor(ownerSecret) },
+    });
+    expect(byCode.statusCode, byCode.body).toBe(200);
     const given = await back({ role: 'viewer', access_expires_at: inDays(30) });
     expect(given.statusCode, given.body).toBe(200);
     // Still limited, and the owners asked to confirm it again.

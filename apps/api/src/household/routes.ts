@@ -493,7 +493,7 @@ export function registerHousehold(
     // sign-in is: with a passkey or a code (`renew_guest`).
     app.post('/api/v1/members/:id/sign-in', guard('member.remove'), async (req) => {
       const p = principal(req);
-      await stepUp?.require(p, 'change_people');
+      const id = params(idParam, req).id;
       const body = parse(
         z
           .object({
@@ -503,10 +503,16 @@ export function registerHousehold(
           .strict(),
         req.body,
       );
-      if (body.access_expires_at) await stepUp?.requireOwnerPower(p, 'renew_guest');
+      // A guest's is asked as renewing is, and first: a passkey or a code
+      // counts for the ordinary step-up too, so one confirmation is enough
+      // (the 5.34 review, N534W-01), as an owner's invitation is asked.
+      if (stepUp && (body.access_expires_at || (await coOwners.isGuest(p, id)))) {
+        await stepUp.requireOwnerPower(p, 'renew_guest');
+      }
+      await stepUp?.require(p, 'change_people');
       return coOwners.restoreSignIn(
         p,
-        params(idParam, req).id,
+        id,
         body.role,
         metaOf(req),
         body.access_expires_at ? new Date(body.access_expires_at) : null,

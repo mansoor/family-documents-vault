@@ -3465,7 +3465,9 @@ guest`. An adult may invite a guest limited to what the adult sees,
       gives the sign-in its end, and its limits in the same transaction.
       Accepting one whose end has passed is `409 access_ended`. The
       invitation list's items and the invitation preview (`POST
-/invitations/lookup`) gain `kind` and `access_expires_at`.
+/invitations/lookup`) gain `kind` and `access_expires_at`; the preview
+      also gains `timezone`, the household's, which a guest's end is said
+      on (the review's second round).
     - **Changed (the 5.34 review):** a guest who has had a sign-in here — a
       sign-in now, one taken away, or an invitation accepted once — is
       never invited again as themselves: `409 had_sign_in` ("Jane Smith has
@@ -3475,9 +3477,13 @@ guest`. An adult may invite a guest limited to what the adult sees,
       adult's invitation of somebody an owner gave Adults only documents is
       `403 forbidden` ("An owner gave them Adults only documents, so only an
       owner can invite them."). Both are checked again as the invitation is
-      accepted, under its locks: what changed since is `409 owner_needed`
-      ("This invitation cannot be accepted as it is. Ask an owner of the
-      family to invite you."), and nothing is made.
+      accepted, under its locks, and nothing is made: a guest who has had a
+      sign-in here meanwhile is `409 had_sign_in`; an adult's invitation of
+      somebody an owner has given Adults only documents since is `409
+owner_needed` ("This invitation cannot be accepted as it is. Ask an
+      owner of the family to invite you."). An invitation whose guest an
+      owner removed meanwhile is `404 invitation_not_valid`, its preview
+      too.
     - **Changed (stricter owner invitations):** an owner's invitation that
       decides what a viewer sees — **any guest**, a viewer who sees every
       family document (no `restriction`), Adults only documents for a
@@ -3527,7 +3533,11 @@ totp_required_for_owner`, "Turn on two-step sign-in to renew a guest's
       `access_expires_at`: a guest's comes back as a viewer's only (`409
 guest`), always with a new end (`422` without one), asked as renewing
       is (`renew_guest`); nobody else's takes one (`422`). Their limits stay,
-      and the owners are asked to confirm them again (5.32).
+      and the owners are asked to confirm them again (5.32). For a guest, or
+      with an end, the passkey or code is asked **before** the ordinary
+      step-up (`change_people`), which it counts for too: one confirmation
+      (the review's second round). The body's shape is checked before
+      either.
     - **Added (the 5.34 review):** `DELETE /api/v1/members/{id}` removes a
       guest who never signed in, with their invitations and limits: `204`.
       Owners only (`403 forbidden`), asked as taking a sign-in away is

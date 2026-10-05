@@ -1988,7 +1988,9 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       await sql(vault.adminUrl, 'delete from account where id = $1', [account]);
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
-  });
+    // About twenty round trips of the check: its siblings' time (the 5.34
+    // review, N534A-03), not the default 15 s.
+  }, 120_000);
 });
 
 describe('the connection for pg_dump and psql', () => {

@@ -131,8 +131,9 @@ export function JoinScreen() {
   }
 
   const guest = preview.kind === 'guest';
-  // On this browser's clock, named: the page knows no other before sign-in.
-  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  // On the household's clock, named (the review's second round); a vault from
+  // before says none, so then this browser's.
+  const zone = preview.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
   const end = guest && preview.access_expires_at ? preview.access_expires_at : null;
   const ended = end !== null && guestAccessEnded(end);
   const endWords = end ? `${guestEndWords(end, zone)} (${zone})` : '';

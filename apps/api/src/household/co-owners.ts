@@ -340,6 +340,20 @@ export class CoOwnerService {
    * Nothing secret changes hands, which is the point: an invitation would
    * hand a link and a code to whoever made it.
    */
+  /**
+   * Whether somebody is a guest (5.34): giving theirs back renews a guest's
+   * sign-in, which the route asks for first — a passkey or a code, which
+   * serves the ordinary step-up too — so that one confirmation is enough
+   * (the 5.34 review, N534W-01). `restoreSignIn` asks again, and decides.
+   */
+  async isGuest(p: Principal, memberId: string): Promise<boolean> {
+    requireCapability(p, 'member.remove');
+    const person = await withPrincipal(this.db, p, (trx) =>
+      trx.selectFrom('member').select('kind').where('id', '=', memberId).executeTakeFirst(),
+    );
+    return person?.kind === 'guest';
+  }
+
   async restoreSignIn(
     p: Principal,
     memberId: string,
