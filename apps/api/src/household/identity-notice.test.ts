@@ -145,7 +145,7 @@ describe.skipIf(!testAdminUrl())('a widening, pushed as a notice (5.33)', () => 
     });
   }
 
-  it('the push is queued last, after the mail: a notice whose mail cannot be queued is not asked, and nothing is pushed (L533-07)', async () => {
+  it('the mail is queued last in the transaction and the push after it commits: a notice whose mail cannot be queued is not asked, and nothing is pushed (L533-07, N533A-02)', async () => {
     const { h, owner } = await family(true);
     const me = await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) });
     const p: Principal = {
@@ -185,15 +185,39 @@ describe.skipIf(!testAdminUrl())('a widening, pushed as a notice (5.33)', () => 
     // Rolled back: no notice, and no push for it.
     expect(queued).toEqual([]);
     expect(await waiting()).toBe(0);
+    // The push waits for the notice to commit: whoever it wakes finds it.
+    const seenByThePush: Array<number | undefined> = [];
     const up = new IdentityService(
       h.db,
       keys,
       async () => void queued.push('mail'),
       true,
-      async () => void queued.push('push'),
+      async () => {
+        queued.push('push');
+        seenByThePush.push(await waiting());
+      },
     );
     await up.setAudience(p, 'adults', { ip: null });
     expect(queued).toEqual(['mail', 'push']);
+    expect(seenByThePush).toEqual([1]);
+    expect(await waiting()).toBe(1);
+
+    // A push that cannot be queued leaves the notice standing, and its one
+    // mail (the 5.33 second round, N533A-02).
+    expect((await up.setAudience(p, 'owners_and_self', { ip: null })).pending).toBeNull();
+    const mails: string[] = [];
+    const pushDown = new IdentityService(
+      h.db,
+      keys,
+      async () => void mails.push('mail'),
+      true,
+      async () => {
+        throw new Error('the push queue is down');
+      },
+    );
+    const asked = await pushDown.setAudience(p, 'family', { ip: null });
+    expect(asked.pending?.to).toBe('family');
+    expect(mails).toEqual(['mail']);
     expect(await waiting()).toBe(1);
   });
 });

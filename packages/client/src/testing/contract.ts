@@ -1922,6 +1922,41 @@ export const contractScenarios: Scenario[] = [
       // Nobody else is limited.
       expect((await api.me(owner.access_token)).restriction ?? null).toBeNull();
 
+      // A kind named and deleted since (R532-01; the 5.33 second round): the
+      // card names no kind and still limits by kind; put back as shown, it
+      // is the same, and nothing more is given.
+      const boat = await api.createDocumentType(owner.access_token, {
+        label: 'Contract boat papers',
+        category: 'other',
+      });
+      await api.setMemberAccess(owner.access_token, veraId, {
+        people: [raviId],
+        types: [boat.key],
+      });
+      await api.deleteDocumentType(owner.access_token, boat.key);
+      const card = (await api.memberAccount(owner.access_token, veraId)).access;
+      expect(card).toMatchObject({
+        people: [raviId],
+        types: [],
+        limits_people: true,
+        limits_types: true,
+      });
+      if (!card) throw new Error('her limits went with the kind');
+      const asShown = {
+        people: card.people,
+        types: card.types,
+        collections: card.collections,
+        include_adults_only: card.include_adults_only,
+        include_no_person_docs: card.include_no_person_docs,
+        expires_at: card.expires_at,
+        limits_people: card.limits_people,
+        limits_types: card.limits_types,
+      };
+      const putBack = await api.setMemberAccess(owner.access_token, veraId, asShown);
+      expect(putBack).toMatchObject({ types: [], limits_types: true, summary: card.summary });
+      // Her own bill, and nothing of Ravi's.
+      expect((await api.previewAccess(owner.access_token, veraId, asShown)).documents).toBe(1);
+
       // Taken off: she is told nothing more, and sees as any viewer does.
       await api.removeMemberAccess(owner.access_token, veraId);
       expect((await api.me(asVera.access_token)).restriction ?? null).toBeNull();

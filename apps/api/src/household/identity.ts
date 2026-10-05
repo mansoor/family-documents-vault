@@ -656,7 +656,8 @@ export class IdentityService {
    *    operator's mail server, where there is one — and may mark fields Only
    *    me meanwhile. The mail is queued last, after the line in the log, in
    *    this transaction: a failed enqueue rolls the notice back, and asking
-   *    again tries again (the 5.26 review). Asked again for the same, the
+   *    again tries again (the 5.26 review). Their devices are pushed the word
+   *    `notice` once it has committed, as best effort (5.33). Asked again for the same, the
    *    clock does not start again; for another, the one waiting is
    *    withdrawn and the new one waits its own 72 hours. Refused while
    *    anybody with a sign-in cannot sign in to be told.
@@ -678,7 +679,8 @@ export class IdentityService {
     meta: RequestMeta,
   ): Promise<IdentityAudienceView> {
     requireCapability(p, 'identity.audience');
-    await withPrincipal(this.db, p, async (trx) => {
+    // The devices to push the notice to, once it has committed (below).
+    const pushTo = await withPrincipal(this.db, p, async (trx): Promise<PushTarget[]> => {
       const household = await trx
         .selectFrom('household')
         .select(['identity_audience', 'timezone'])
@@ -728,7 +730,7 @@ export class IdentityService {
       };
 
       if (identityAudienceRank(to) <= identityAudienceRank(current)) {
-        if (to === current && !pending) return null;
+        if (to === current && !pending) return [];
         await withdraw();
         if (to !== current) {
           await trx
@@ -767,11 +769,11 @@ export class IdentityService {
           },
           ip: meta.ip,
         });
-        return null;
+        return [];
       }
 
       // Wider: only after everybody with a sign-in has been told.
-      if (pending?.subject === to) return null;
+      if (pending?.subject === to) return [];
       const cannot = await membersWhoCannotBeTold(trx);
       if (cannot.length > 0) {
         throw new ApiError(409, 'member_cannot_be_told', MEMBER_CANNOT_BE_TOLD(cannot));
@@ -813,7 +815,7 @@ export class IdentityService {
       // of whose details, who asked or from when — a lock screen is no place
       // for it; the app asks the vault once it is open. Every device of
       // theirs that can be pushed to, whose sign-in has not ended: found
-      // here, and queued last of all, after the mail (below).
+      // here, and pushed once the notice has committed (below).
       let targets: PushTarget[] = [];
       if (told.length > 0) {
         const devices = await trx
@@ -841,10 +843,11 @@ export class IdentityService {
       }
       if (told.length > 0 && this.operatorMail) {
         // Nothing of anybody's details: who will see them, and from when, on
-        // the household's clock. Queued last, as co-owners.ts queues its
-        // notice: the queue is not this transaction's, so a failed enqueue
-        // rolls the notice back, and only a failure after it (the commit
-        // itself) could leave a mail with no notice behind it.
+        // the household's clock. The last thing queued in this transaction,
+        // as co-owners.ts queues its notice: the queue is not this
+        // transaction's, so a failed enqueue rolls the notice back, and only
+        // a failure after it (the commit itself) could leave a mail with no
+        // notice behind it. The push waits for the commit.
         const when = `${shareEndWords(notice.notice_until, household.timezone)} (${household.timezone})`;
         await this.alert({
           householdId: p.householdId,
@@ -859,16 +862,20 @@ export class IdentityService {
           operatorMail: true,
         });
       }
-      // The push, last (the 5.33 review, L533-07): inside the transaction,
-      // after the mail. Neither queue is this transaction's, so a failure
-      // of anything before it — the mail's enqueue among them — rolls the
-      // notice back with nothing pushed; a failed enqueue of the push rolls
-      // it back too, and asking again tries again.
-      if (targets.length > 0) {
-        await this.push({ householdId: p.householdId, message: NOTICE_PUSH, targets });
-      }
-      return null;
+      return targets;
     });
+    // The push, once the notice has committed (the 5.33 review, N533A-02),
+    // as removeSignIn tells phones after its commit: a notice rolled back
+    // pushes nothing, and a push that cannot be queued leaves the notice,
+    // and its mail, standing. Best effort: the word alone, and the app and
+    // the mail say the rest.
+    if (pushTo.length > 0) {
+      await this.push({ householdId: p.householdId, message: NOTICE_PUSH, targets: pushTo }).catch(
+        (err: unknown) => {
+          console.error('[queue] the identity notice push was not queued:', (err as Error).message);
+        },
+      );
+    }
     return this.audience(p);
   }
 }

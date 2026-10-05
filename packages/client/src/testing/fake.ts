@@ -1973,6 +1973,12 @@ export function createFakeVault(): {
         }
         if (used.length > 0) return fail(409, 'type_in_use', TYPE_IN_USE);
         state.types.splice(state.types.indexOf(t), 1);
+        // Out of every restriction that named it, as the real vault's rows
+        // go with it (0054): limits_types stays as it was, so limits that
+        // named only it give nothing by kind (R532-01, the 5.33 review).
+        for (const r of state.restrictions.values()) {
+          r.types = r.types.filter((k) => k !== t.key);
+        }
         return empty();
       }
       if ((action === '/archive' || action === '/restore') && init.method === 'POST') {

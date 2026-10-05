@@ -44,6 +44,8 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
   let sara: Tokens;
   let val: Tokens;
   let hh = '';
+  /** The owner's authenticator, for a real step-up by code. */
+  let ownerSecret = '';
   let everyone = '';
   let teens = '';
   let nth = 0;
@@ -175,6 +177,7 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
       headers: h.as(owner),
     });
     const secret = json<{ secret: string }>(enrol).secret;
+    ownerSecret = secret;
     const confirmed = await h.app.inject({
       method: 'POST',
       url: '/api/v1/auth/totp/confirm',
@@ -1073,6 +1076,16 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     const card = (await accountCard(owner, vic.member_id)).access as MemberAccess;
     expect(card).toMatchObject({ types: [], limits_types: true, limits_people: true });
     expect(card.summary).toContain('Every kind it named has been deleted');
+    // The count, with the flags left out, is what a PUT would keep: nothing.
+    await fresh(owner);
+    expect(
+      (
+        await preview(owner, vic.member_id, {
+          people: ahmed.member_id,
+          include_adults_only: 'true',
+        })
+      ).documents,
+    ).toBe(0);
     // "Keep these limits", after a sign-in given back: exactly what is shown.
     await admin.query(
       'update access_restriction set reconfirm_since = now() where member_id = $1',
@@ -1184,23 +1197,54 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
   });
 
   it('whether somebody keeps Only me documents is told only to an owner who just gave a code, and only of somebody who could be limited (S533-05)', async () => {
-    // The second owner: a password alone, and no step-up at all.
-    await admin.query(
-      `update session set verified_at = null, factor_verified_at = null
-        where account_id = (select account_id from account_household where member_id = $1)`,
-      [second.member_id],
-    );
+    // Its own: somebody with no sign-in yet, who keeps an Only me document.
+    await fresh(owner);
+    const pia = json<{ id: string }>(
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/members',
+        headers: h.as(owner),
+        payload: { display_name: 'Pia' },
+      }),
+    ).id;
+    const hers = await make('piaPrivate', {
+      type_key: 'utility_bill',
+      visibility: 'household',
+      owner_member_id: pia,
+    });
+    await admin.query(`update document set visibility = 'private' where id = $1`, [hers]);
     const raw = (who: Tokens, member: string) =>
       h.app.inject({ url: `/api/v1/members/${member}/access/preview`, headers: h.as(who) });
-    const wesId = (
-      await admin.query<{ owner_member_id: string }>(
-        'select owner_member_id from document where id = $1',
-        [docs.wesPrivate],
-      )
-    ).rows[0]?.owner_member_id as string;
-    const counted = await raw(second, wesId);
+    const stepUp = async (who: Tokens, payload: Record<string, string>) => {
+      const res = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/step-up',
+        headers: h.as(who),
+        payload,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+    };
+    const nothingFresh = (who: Tokens) =>
+      admin.query(
+        `update session set verified_at = null, factor_verified_at = null
+          where account_id = (select account_id from account_household where member_id = $1)`,
+        [who.member_id],
+      );
+
+    // The second owner: a password alone, and no step-up at all.
+    await nothingFresh(second);
+    const counted = await raw(second, pia);
     expect(counted.statusCode, counted.body).toBe(200);
     expect(json<Record<string, unknown>>(counted)).not.toHaveProperty('keeps_private');
+    // An owner with a code: a password just given is not a code.
+    await nothingFresh(owner);
+    await stepUp(owner, { password: 'correct horse battery' });
+    const byPassword = await raw(owner, pia);
+    expect(byPassword.statusCode, byPassword.body).toBe(200);
+    expect(json<Record<string, unknown>>(byPassword)).not.toHaveProperty('keeps_private');
+    // A code just given is.
+    await stepUp(owner, { code: codeFor(ownerSecret) });
+    expect((await preview(owner, pia, {})).keeps_private).toBe(true);
     // Nobody but a viewer, or somebody with no sign-in, is counted at all.
     for (const who of [ahmed.member_id, second.member_id]) {
       await fresh(owner);
@@ -1208,8 +1252,6 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
       expect(refused.statusCode).toBe(409);
       expect(error(refused).code).toBe('not_a_viewer');
     }
-    await fresh(owner);
-    expect((await preview(owner, wesId, {})).keeps_private).toBe(true);
   });
 
   it('a sign-in given back to somebody limited tells them so; anybody else, nothing of it (L533-03)', async () => {
@@ -1262,6 +1304,16 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     );
     const card = (await accountCard(owner, xan.member_id)).access as MemberAccess;
     expect(card.summary).toMatch(/^Restricted, and ended /);
+    // Counted as kept: ended, so nothing — never refused.
+    await fresh(owner);
+    expect(
+      (
+        await preview(owner, xan.member_id, {
+          people: ahmed.member_id,
+          expires_at: card.expires_at as string,
+        })
+      ).documents,
+    ).toBe(0);
     await fresh(owner);
     const kept = await put(owner, xan.member_id, keepOf(card));
     expect(kept.statusCode, kept.body).toBe(200);
@@ -1334,5 +1386,54 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     // And the owners are asked to confirm them, as for any sign-in given to
     // somebody limited.
     expect((await restrictionRow(kim))?.reconfirm_since).toBeInstanceOf(Date);
+  });
+
+  it("an owner's invitation with the flags left out keeps them, as a PUT does: a kind deleted since still narrows (N533A-01)", async () => {
+    await fresh(owner);
+    const ola = json<{ id: string }>(
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/members',
+        headers: h.as(owner),
+        payload: { display_name: 'Ola' },
+      }),
+    ).id;
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: h.as(owner),
+      payload: { label: 'Kayak papers', category: 'other' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const kayak = json<{ key: string }>(made).key;
+    await fresh(owner);
+    expect((await put(owner, ola, { people: [ahmed.member_id], types: [kayak] })).statusCode).toBe(
+      200,
+    );
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/document-types/${kayak}`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    // Newer than the limits, it replaces them; its kinds left unsaid, they
+    // stay limited — and the owner's count said as much.
+    await fresh(owner);
+    expect((await preview(owner, ola, { people: ahmed.member_id })).documents).toBe(0);
+    const invited = await invite(owner, {
+      member_id: ola,
+      email: 'ola-533@example.test',
+      role: 'viewer',
+      restriction: { people: [ahmed.member_id] },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const accepted = await accept(invited);
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    expect(await seenBy(json<Tokens>(accepted))).toEqual([]);
+    const row = await admin.query<{ limits_types: boolean }>(
+      'select limits_types from access_restriction where member_id = $1',
+      [ola],
+    );
+    expect(row.rows).toEqual([{ limits_types: true }]);
   });
 });

@@ -407,8 +407,14 @@ describe('what a viewer can see (5.33)', () => {
     // In the editor it is said again, and given up only by asking.
     fireEvent.click(within(limits).getByRole('button', { name: 'Change what they can see' }));
     expect(await within(limits).findByText(KINDS_GONE)).toBeInTheDocument();
-    fireEvent.click(within(limits).getByRole('button', { name: 'Give every kind instead' }));
+    const giveUp = within(limits).getByRole('button', { name: 'Give every kind instead' });
+    giveUp.focus();
+    fireEvent.click(giveUp);
     expect(within(limits).queryByText(KINDS_GONE)).toBeNull();
+    // The button went with its warning; the focus stays in the editor, on
+    // its set's legend, never the page (N533W-01).
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+    expect(document.activeElement).toHaveTextContent('Which kinds');
     fireEvent.click(within(limits).getByRole('button', { name: 'Save these limits' }));
     await screen.findByText(/limits are saved/);
     expect(state.accessWrites?.at(-1)?.body).toMatchObject({ types: [], limits_types: false });

@@ -8,7 +8,14 @@ import {
   type DocumentTypeView,
   type MemberAccess,
 } from '@fdv/shared';
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type RefObject,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -156,6 +163,15 @@ export function LimitsPicker(props: {
     });
   };
   const gone = namedAllGone(v);
+  // Where focus goes when a "Give … instead" button, pressed, leaves with
+  // its warning: the legend of its own set, which stays (the 5.33 second
+  // round, N533W-01), never the page itself.
+  const peopleLegend = useRef<HTMLLegendElement>(null);
+  const kindsLegend = useRef<HTMLLegendElement>(null);
+  const giveUp = (change: Partial<Limits>, to: RefObject<HTMLLegendElement | null>) => {
+    flushSync(() => props.onChange({ ...v, ...change }));
+    to.current?.focus();
+  };
   const people = (data?.members ?? []).filter((m: Member) => m.id !== props.memberId);
   // A hidden kind already chosen is shown, so that it can be taken away.
   const kinds = (data?.types ?? []).filter(
@@ -170,14 +186,16 @@ export function LimitsPicker(props: {
     <div className="stack limits">
       <ErrorNote message={error} />
       <fieldset className="limits-set">
-        <legend className="field-label">Whose documents</legend>
+        <legend ref={peopleLegend} tabIndex={-1} className="field-label">
+          Whose documents
+        </legend>
         <p className="muted" id={id('people-about')}>
           None chosen: anybody’s, of the kinds below.
         </p>
         {gone.people && (
           <div className="stack">
             <p className="status status-warn">{PEOPLE_GONE}</p>
-            <Button kind="quiet" onClick={() => props.onChange({ ...v, limits_people: false })}>
+            <Button kind="quiet" onClick={() => giveUp({ limits_people: false }, peopleLegend)}>
               Give anybody’s instead
             </Button>
           </div>
@@ -195,12 +213,14 @@ export function LimitsPicker(props: {
         </div>
       </fieldset>
       <fieldset className="limits-set">
-        <legend className="field-label">Which kinds</legend>
+        <legend ref={kindsLegend} tabIndex={-1} className="field-label">
+          Which kinds
+        </legend>
         <p className="muted">None chosen: every kind of the people chosen.</p>
         {gone.types && (
           <div className="stack">
             <p className="status status-warn">{KINDS_GONE}</p>
-            <Button kind="quiet" onClick={() => props.onChange({ ...v, limits_types: false })}>
+            <Button kind="quiet" onClick={() => giveUp({ limits_types: false }, kindsLegend)}>
               Give every kind instead
             </Button>
           </div>

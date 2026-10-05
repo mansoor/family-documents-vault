@@ -3378,7 +3378,9 @@ expires_at }`, in their own words ("You can see: Tax return documents for
       Accepting it applies it in the same transaction that makes the
       sign-in, so the viewer is never unrestricted for a moment; what it
       names that was deleted since (or a collection no longer for Everyone)
-      is left out, and what it named still narrows. An owner's replaces
+      is left out, and what it named still narrows. Its `limits_people` and
+      `limits_types` follow the rule a PUT does: left out with an empty list,
+      they keep what the person's limits say now. An owner's replaces
       limits set on that person before the invitation was made; limits set
       after it, or any already there for an adult's, stay, and the owners
       are asked to confirm them. The invitation list's items gain `limited`.
@@ -3415,8 +3417,10 @@ forbidden` ("Only an owner can invite a viewer who sees every family
       is pushed the word and nothing else — not whose details, who asked or
       from when — on each of their devices whose sign-in has not ended,
       beside the notice in the app and the operator's mail, whether or not
-      there is a mail server: queued last, after the mail, so a notice that
-      is not asked pushes nothing. A browser is told "Something about your
+      there is a mail server: pushed once the notice has committed, as best
+      effort, so a notice that is not asked pushes nothing, and a push that
+      cannot be queued leaves the notice and its mail standing. A browser is
+      told "Something about your
       details is changing. Open the vault to see what." Phones since app
       0.2.2 show it; an older one shows nothing. TTL a day, Topic
       `fdv-notice`.

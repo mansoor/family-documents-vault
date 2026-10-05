@@ -260,6 +260,18 @@ export class InvitationService {
       }
       // The limits, checked as the inviter sees the family: people, kinds
       // and collections they may see, and only a collection for Everyone (A17).
+      // Whether people, and kinds, are named follows the rule a PUT and the
+      // preview follow: an empty list keeps what the person's limits say now
+      // (which an owner reads; anybody else, none), unless the body says
+      // otherwise (the 5.33 second round, N533A-01).
+      const had =
+        limits && input.member_id
+          ? await trx
+              .selectFrom('access_restriction')
+              .select(['limits_people', 'limits_types'])
+              .where('member_id', '=', memberId)
+              .executeTakeFirst()
+          : undefined;
       const stored: StoredLimits | null = limits
         ? await checkGrant(trx, grantOf(limits)).then((g) => ({
             people: g.people,
@@ -269,8 +281,8 @@ export class InvitationService {
             include_no_person_docs: g.include_no_person_docs,
             expires_at: g.expires_at?.toISOString() ?? null,
             by_owner: p.role === 'owner',
-            limits_people: limitsAfter(g.people, g.limits_people, undefined),
-            limits_types: limitsAfter(g.types, g.limits_types, undefined),
+            limits_people: limitsAfter(g.people, g.limits_people, had?.limits_people),
+            limits_types: limitsAfter(g.types, g.limits_types, had?.limits_types),
           }))
         : null;
 
