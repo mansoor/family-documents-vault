@@ -50,6 +50,7 @@ import {
   maskEmail,
   PREVIEW_MAX_PAGES,
   readShareCode,
+  seesAdults,
   SHARE_CODE_CANNOT_SEND,
   SHARE_CODE_MINUTES,
   SHARE_CODE_SENDS,
@@ -77,6 +78,18 @@ import {
   type ShareProtection,
   type ShareSecretKind,
 } from '@fdv/shared';
+
+/**
+ * Whose sight a link lends (5.32): its maker's, by their role — as the
+ * database's own copy asks (app_shared_document(), app_link_documents()). A
+ * restriction never widens what a link lends: only a viewer can be given
+ * Adults only documents by one, and a viewer makes no links.
+ */
+const sharerOf = (role: Role, memberId: string) => ({
+  role,
+  memberId,
+  seesAdults: seesAdults(role, null),
+});
 
 /**
  * Share links (SHR-05).
@@ -282,9 +295,11 @@ export interface ShareView {
    * working again once they are unlocked, or waiting after a restore,
    * working again once it is turned back on. Anybody else is told only that
    * it is paused: a lock is the owners' and the person's to know (A51).
+   * Since 5.32, `limited`: its maker's access is limited to some documents,
+   * and it lends nothing outside what they may see now.
    */
   paused_at: string | null;
-  paused_reason: 'restored' | 'locked' | 'sign_in_paused' | null;
+  paused_reason: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
   /** What it gives (5.18): the pages, drawn with whom it is for, or the file. */
   permission: SharePermission;
   max_opens: number | null;
@@ -888,7 +903,7 @@ export class ShareService {
         .executeTakeFirst();
       // Nobody sends out what they cannot see. For a private document that
       // means nobody but its owner, however senior they are: it is theirs.
-      if (!doc || !canSee({ role: p.role, memberId: p.memberId }, doc)) {
+      if (!doc || !canSee(p, doc)) {
         throw notFound('That document');
       }
       const newest = await trx
@@ -1437,6 +1452,8 @@ export class ShareService {
           'account_household.suspended_at as maker_suspended_at',
           'account_household.suspended_until as maker_suspended_until',
           'account_household.suspend_reason as maker_suspend_reason',
+          // 5.32: whether its maker, restricted since, still lends it.
+          sql<boolean>`share_link_lends(share_link.id)`.as('maker_lends'),
         ])
         .orderBy('share_link.created_at', 'desc')
         .execute();
@@ -1444,7 +1461,7 @@ export class ShareService {
         .selectFrom('household')
         .select('timezone')
         .executeTakeFirstOrThrow();
-      const reader = { role: p.role, memberId: p.memberId };
+      const reader = p;
       // What each collection's link was made with, and has followed: the
       // reader must be able to see every one of them, or it is not theirs
       // to know about. (What it was made without, left out, is not.)
@@ -1484,18 +1501,32 @@ export class ShareService {
           suspended_at: r.maker_suspended_at,
           suspended_until: r.maker_suspended_until,
         });
+        // 5.32: a link lends no more than its maker may see now: one whose
+        // maker is restricted since, to something outside their grant, is
+        // paused by it, and says so as a lock does.
+        const makerLimited = !r.maker_lends;
         const stored = stateOf(r);
-        const state = stored === 'active' && makerPaused ? 'paused' : stored;
-        const byMaker = r.paused_reason === null && state === 'paused' && makerPaused;
+        const state = stored === 'active' && (makerPaused || makerLimited) ? 'paused' : stored;
+        const byMaker =
+          r.paused_reason === null && state === 'paused' && (makerPaused || makerLimited);
         const told = p.role === 'owner' || r.created_by === p.accountId;
         const pausedReason = byMaker
           ? told
-            ? r.maker_suspend_reason === 'locked'
-              ? ('locked' as const)
-              : ('sign_in_paused' as const)
+            ? makerPaused
+              ? r.maker_suspend_reason === 'locked'
+                ? ('locked' as const)
+                : ('sign_in_paused' as const)
+              : ('limited' as const)
             : null
           : r.paused_reason;
-        const pausedAt = byMaker ? (told ? r.maker_suspended_at : null) : r.paused_at;
+        const pausedAt =
+          byMaker && makerPaused
+            ? told
+              ? r.maker_suspended_at
+              : null
+            : byMaker
+              ? null
+              : r.paused_at;
         views.push({
           id: r.id,
           document_id: r.document_id,
@@ -1627,7 +1658,7 @@ export class ShareService {
   async revoke(p: Principal, id: string, meta: RequestMeta): Promise<void> {
     requireCapability(p, 'document.share');
     const revoked = await withPrincipal(this.db, p, async (trx) => {
-      const reader = { role: p.role, memberId: p.memberId };
+      const reader = p;
       // A link to a document the caller cannot see is not there for them.
       const target = await trx
         .selectFrom('share_link')
@@ -2888,8 +2919,17 @@ export class ShareService {
     // again. The database asks the same (app_shared_document() and
     // app_live_share(), 0051).
     if (suspensionInEffect(membership)) throw gone();
+    // 5.32: a link lends no more than its maker may see now. A maker
+    // restricted since lends only what their grant gives: a document outside
+    // it, or any collection, lends nothing. The database asks the same
+    // (maker_lends(), in app_shared_document(), app_live_share() and
+    // app_link_documents(), 0054).
+    const lends = await sql<{ lends: boolean }>`select share_link_lends(${row.id}::uuid) as lends`
+      .execute(trx)
+      .then((r) => r.rows[0]?.lends ?? false);
+    if (!lends) throw gone();
     const maker = { role: membership.role, member_id: membership.member_id };
-    const sharer = { role: maker.role, memberId: maker.member_id };
+    const sharer = sharerOf(maker.role, maker.member_id);
     if (row.document_id !== null) {
       // A document moved to the trash stops being shared, without anybody
       // having to remember the link exists.
@@ -2976,7 +3016,7 @@ export class ShareService {
       .orderBy('i.position')
       .orderBy('i.document_id')
       .execute();
-    const sharer = { role: link.maker.role, memberId: link.maker.member_id };
+    const sharer = sharerOf(link.maker.role, link.maker.member_id);
     return rows
       .filter((d) => {
         const kind = snapshot.get(d.id);
@@ -3077,7 +3117,7 @@ function summarise(
     secret_kind?: SecretKind | null;
     code_email?: string | null;
     this_device_only?: boolean;
-    paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | null;
+    paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
   },
   state: ShareView['state'],
   timezone: string,
@@ -3120,6 +3160,10 @@ function summarise(
       }
       if (r.paused_reason === 'sign_in_paused') {
         return `${who}, ${opened}. Paused until the sign-in of whoever made it is turned back on after the restore; it would stop working on ${end}.`;
+      }
+      // 5.32: its maker's access is limited since; it lends nothing outside it.
+      if (r.paused_reason === 'limited') {
+        return `${who}, ${opened}. Paused: the access of whoever made it is limited, and it gives nothing outside what they may see now. It would stop working on ${end}.`;
       }
       if (r.paused_reason === 'restored') {
         return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;

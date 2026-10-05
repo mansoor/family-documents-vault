@@ -812,6 +812,7 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
       householdId: owner.household_id,
       memberId: owner.member_id,
       role: 'owner',
+      seesAdults: true,
     };
     const waitingNotices = async () => {
       const pool = admin();

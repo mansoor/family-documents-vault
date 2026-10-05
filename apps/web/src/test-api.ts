@@ -311,6 +311,11 @@ export interface FakeState {
    */
   twoStep?: boolean;
   accounts?: Record<string, MemberAccount>;
+  /**
+   * A restricted viewer's restriction in a sentence, by member (5.32): what
+   * "After a restore" shows beside a paused sign-in.
+   */
+  restrictions?: Record<string, string>;
   accountStepUp?: boolean;
   /**
    * `features.member_admin` (5.28): an owner locks and unlocks a sign-in,
@@ -1715,6 +1720,9 @@ export function installFakeApi(state: FakeState) {
                       ),
                       role: a.role,
                       paused_at: a.suspension?.since ?? '',
+                      restriction: state.restrictions?.[a.member_id]
+                        ? { summary: state.restrictions[a.member_id] as string }
+                        : null,
                     }))
                     .sort((x, y) => x.display_name.localeCompare(y.display_name))
                 : [],

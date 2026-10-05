@@ -990,6 +990,7 @@ describe.skipIf(!testAdminUrl())(
           householdId: t.owner.household_id,
           memberId: t.owner.member_id,
           role: 'owner' as const,
+          seesAdults: true,
         };
         expect((await resets.start(owner, di.member_id, {}, {})).path).toBe('mail');
         const url = mailed.find((a) => typeof a.url === 'string')?.url as string;

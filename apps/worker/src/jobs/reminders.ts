@@ -1,4 +1,4 @@
-import { reminderWords, withSystem, type Db } from '@fdv/db';
+import { readAs, reminderWords, withSystem, type Db, type Role } from '@fdv/db';
 import {
   aboutDate,
   addDays,
@@ -10,6 +10,7 @@ import {
   missingFields,
   reminderAbout,
   reminderLabel,
+  seesAdults,
   withSealed,
   type DateValue,
   type RequiredRules,
@@ -34,7 +35,10 @@ import type pg from 'pg';
  * documents that person may see, by the same rule the API applies to every
  * list (`canSee` in `@fdv/shared`). Until 0.4.2 the household got one copy
  * with every title in it, which put private and adults-only titles on
- * other people's lock screens and in their inboxes.
+ * other people's lock screens and in their inboxes. And since 5.32 each copy
+ * is cut inside that person's own scope too (`readAs`): the database gives
+ * a restricted viewer only the reminders of what they were granted, whatever
+ * this file asks.
  *
  * `refreshStatus` (nightly): materialises status_cache for fast list
  * filtering. Never authoritative — status is computed on read.
@@ -134,21 +138,27 @@ interface Due extends Omit<DigestItem, 'private'> {
  * end is over, and they hear again.
  */
 function people(trx: Db) {
-  return trx
-    .selectFrom('account_household')
-    .innerJoin('account', 'account.id', 'account_household.account_id')
-    .select([
-      'account_household.account_id',
-      'account_household.member_id',
-      'account_household.role',
-      'account.email',
-    ])
-    .where('account.disabled_at', 'is', null)
-    .where(
-      sql<boolean>`not suspension_in_effect(account_household.suspended_at, account_household.suspended_until)`,
-    )
-    .orderBy('account_household.joined_at')
-    .execute();
+  return (
+    trx
+      .selectFrom('account_household')
+      .innerJoin('account', 'account.id', 'account_household.account_id')
+      // What a restriction lets a viewer see of the Adults only (5.32).
+      .leftJoin('access_restriction', 'access_restriction.member_id', 'account_household.member_id')
+      .select([
+        'account_household.account_id',
+        'account_household.member_id',
+        'account_household.role',
+        'account.email',
+        'access_restriction.include_adults_only',
+        'access_restriction.expires_at',
+      ])
+      .where('account.disabled_at', 'is', null)
+      .where(
+        sql<boolean>`not suspension_in_effect(account_household.suspended_at, account_household.suspended_until)`,
+      )
+      .orderBy('account_household.joined_at')
+      .execute()
+  );
 }
 
 /**
@@ -167,8 +177,19 @@ async function sendToEach(
 ): Promise<Map<string, Set<string>>> {
   const reached = new Map<string, Set<string>>();
   for (const person of await people(trx)) {
-    const viewer = { role: person.role, memberId: person.member_id };
-    const mine = due.filter((r) => canSee(viewer, r));
+    const viewer = {
+      role: person.role,
+      memberId: person.member_id,
+      seesAdults: seesAdults(
+        person.role,
+        person.include_adults_only === null
+          ? null
+          : { include_adults_only: person.include_adults_only, expires_at: person.expires_at },
+      ),
+    };
+    // The reminders the database gives this person, asked as them (5.32).
+    const theirs = await givenTo(trx, person, due);
+    const mine = due.filter((r) => theirs.has(r.reminder_id) && canSee(viewer, r));
     if (mine.length === 0) continue;
     const channels = await notifier.digest({
       ...base,
@@ -192,6 +213,34 @@ async function sendToEach(
     }
   }
   return reached;
+}
+
+/**
+ * Of these reminders, the ones the database gives this person, asked in
+ * their own scope inside the vault's transaction (`readAs`): a restricted
+ * viewer is given only those of the documents they were granted (0054).
+ */
+async function givenTo(
+  trx: Db,
+  person: { account_id: string; member_id: string; role: Role },
+  due: Due[],
+): Promise<Set<string>> {
+  if (due.length === 0) return new Set();
+  const rows = await readAs(
+    trx,
+    { accountId: person.account_id, memberId: person.member_id, role: person.role },
+    (as) =>
+      as
+        .selectFrom('reminder')
+        .select('reminder.id')
+        .where(
+          'reminder.id',
+          'in',
+          due.map((r) => r.reminder_id),
+        )
+        .execute(),
+  );
+  return new Set(rows.map((r) => r.id));
 }
 
 const union = (reached: Map<string, Set<string>>) =>

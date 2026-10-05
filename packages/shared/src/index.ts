@@ -12,6 +12,7 @@ export * from './push.js';
 export * from './titles.js';
 export * from './documents.js';
 export * from './reminders.js';
+export * from './restrictions.js';
 export * from './roles.js';
 export * from './shares.js';
 export * from './suggestions.js';

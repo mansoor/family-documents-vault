@@ -15,6 +15,7 @@ import {
   mayKeepOffline,
   ROLES,
   rolesWith,
+  seesAdults,
   type CollectionDetail,
   type CollectionView,
   type DocumentView,
@@ -23,6 +24,7 @@ import {
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
+import type { MemberView } from './household/service.js';
 import { createHarness, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
@@ -378,6 +380,182 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
     });
   });
 
+  /**
+   * One answer to "may they see Adults only documents" (5.32, D6): worked out
+   * once for each sign-in, and handed to every copy. Three viewers: one an
+   * owner's restriction lets see Adults only documents, one it does not, and
+   * one with no restriction at all, who stays without. Each restriction
+   * names everybody who owns a parity document, so what the database gives
+   * them is the ceiling itself, and every copy must agree with `canSee`
+   * handed the flag.
+   */
+  describe('a restricted viewer, with and without Adults only documents (5.32)', () => {
+    const restricted = {} as Record<'allowed' | 'not', Tokens>;
+    const viewers: Array<[string, () => Tokens, boolean]> = [
+      ['a restricted viewer allowed Adults only documents', () => restricted.allowed, true],
+      ['a restricted viewer not allowed them', () => restricted.not, false],
+      ['an unrestricted viewer', () => people.viewer, false],
+    ];
+
+    beforeAll(async () => {
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        for (const [which, adults] of [
+          ['allowed', true],
+          ['not', false],
+        ] as const) {
+          const t = await h.join(people.owner, {
+            name: `Restricted ${which}`,
+            email: `parity-restricted-${which}@example.test`,
+            role: 'viewer',
+          });
+          restricted[which] = t;
+          await admin.query(
+            `insert into access_restriction (member_id, household_id, include_adults_only)
+             values ($1, $2, $3)`,
+            [t.member_id, t.household_id, adults],
+          );
+          for (const m of [people.owner.member_id, people.adult.member_id]) {
+            await admin.query(
+              `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+               values ($1, $2, $3)`,
+              [t.member_id, t.household_id, m],
+            );
+          }
+        }
+      } finally {
+        await admin.end();
+      }
+    });
+
+    /** What `canSee` gives a viewer handed this flag, of the parity documents. */
+    const expectedFor = (t: Tokens, adults: boolean) =>
+      docs
+        .filter((d) => canSee({ role: 'viewer', memberId: t.member_id, seesAdults: adults }, d))
+        .map((d) => d.id)
+        .sort();
+    const parity = (ids: string[]) => ids.filter((id) => docs.some((d) => d.id === id)).sort();
+
+    it('seesAdults hands each of them the flag: a restriction allowing it, and nothing else', () => {
+      const now = Date.now();
+      expect(seesAdults('viewer', { include_adults_only: true, expires_at: null }, now)).toBe(true);
+      expect(seesAdults('viewer', { include_adults_only: false, expires_at: null }, now)).toBe(
+        false,
+      );
+      expect(seesAdults('viewer', null, now)).toBe(false);
+      // Past its end, nothing; and never a teen, whatever is left on them.
+      expect(
+        seesAdults('viewer', { include_adults_only: true, expires_at: new Date(now - 1) }, now),
+      ).toBe(false);
+      expect(seesAdults('teen', { include_adults_only: true, expires_at: null }, now)).toBe(false);
+      for (const role of ROLES) {
+        expect(seesAdults(role, null, now), role).toBe(can(role, 'document.see_adults'));
+      }
+    });
+
+    it.each(viewers)('the document list agrees with canSee for %s', async (_, who, adults) => {
+      const res = await h.app.inject({ url: '/api/v1/documents?limit=200', headers: h.as(who()) });
+      expect(parity(res.json<{ items: DocumentView[] }>().items.map((d) => d.id))).toEqual(
+        expectedFor(who(), adults),
+      );
+    });
+
+    it.each(viewers)('the reminder list agrees with canSee for %s', async (_, who, adults) => {
+      const res = await h.app.inject({ url: '/api/v1/reminders?state=all', headers: h.as(who()) });
+      const ids = res
+        .json<{ items: Array<{ document_id: string }> }>()
+        .items.map((r) => r.document_id);
+      expect([...new Set(parity(ids))]).toEqual(expectedFor(who(), adults));
+    });
+
+    it.each(viewers)('search agrees with canSee for %s', async (_, who, adults) => {
+      const res = await h.app.inject({ url: '/api/v1/search?q=parity', headers: h.as(who()) });
+      expect(res.statusCode, res.body).toBe(200);
+      const ids = res
+        .json<{ items: Array<{ document_id: string }> }>()
+        .items.map((r) => r.document_id);
+      expect(parity(ids)).toEqual(expectedFor(who(), adults));
+    });
+
+    it.each(viewers)('the tag list agrees with canSee for %s', async (_, who, adults) => {
+      const res = await h.app.inject({ url: '/api/v1/tags?q=parity', headers: h.as(who()) });
+      const tags = res.json<{ items: Array<{ tag: string }> }>().items.map((t) => t.tag);
+      expect(parity(docs.filter((d) => tags.includes(d.tag)).map((d) => d.id))).toEqual(
+        expectedFor(who(), adults),
+      );
+    });
+
+    it.each(viewers)('the issuer list agrees with canSee for %s', async (_, who, adults) => {
+      const res = await h.app.inject({
+        url: '/api/v1/issuers?q=Parity%20issuer',
+        headers: h.as(who()),
+      });
+      const issuers = res
+        .json<{ items: Array<{ issued_by: string }> }>()
+        .items.map((i) => i.issued_by);
+      expect(
+        parity(docs.filter((d) => issuers.includes(`Parity issuer ${d.tag}`)).map((d) => d.id)),
+      ).toEqual(expectedFor(who(), adults));
+    });
+
+    it.each(viewers)('the pages endpoint agrees with canSee for %s', async (_, who, adults) => {
+      const seen: string[] = [];
+      for (const d of docs) {
+        const res = await h.app.inject({
+          url: `/api/v1/versions/${d.version_id}/pages/1`,
+          headers: h.as(who()),
+        });
+        if (res.json<{ error: { code: string } }>().error.code !== 'not_found') seen.push(d.id);
+      }
+      expect(seen.sort()).toEqual(expectedFor(who(), adults));
+    });
+
+    it.each(viewers)(
+      "the people list's counts agree with canSee for %s",
+      async (_, who, adults) => {
+        const res = await h.app.inject({ url: '/api/v1/members', headers: h.as(who()) });
+        const members = res.json<{ items: MemberView[] }>().items;
+        for (const owner of [people.owner, people.adult]) {
+          const shown = members.find((m) => m.id === owner.member_id)?.document_count ?? 0;
+          expect(shown, owner.member_id).toBe(
+            docs.filter(
+              (d) =>
+                d.owner_member_id === owner.member_id &&
+                canSee({ role: 'viewer', memberId: who().member_id, seesAdults: adults }, d),
+            ).length,
+          );
+        }
+      },
+    );
+
+    it.each(viewers)(
+      'links, collections and the offline set stay empty for %s, as for any viewer',
+      async (_, who) => {
+        const shares = await h.app.inject({ url: '/api/v1/shares', headers: h.as(who()) });
+        const shared = shares.statusCode === 200 ? shares.json<{ items: unknown[] }>().items : [];
+        expect(shared).toEqual([]);
+        const lists = await h.app.inject({ url: '/api/v1/collections', headers: h.as(who()) });
+        expect(lists.json<{ items: CollectionView[] }>().items).toEqual([]);
+        const offline = await h.app.inject({
+          url: '/api/v1/offline/essentials',
+          headers: h.as(who()),
+        });
+        const items = offline.statusCode === 200 ? offline.json<{ items: unknown[] }>().items : [];
+        expect(items).toEqual([]);
+      },
+    );
+
+    it('the rule is not vacuous: allowed, they see Adults only documents; not, and unrestricted, they do not', () => {
+      const adultsOnly = docs.filter((d) => d.visibility === 'adults').map((d) => d.id);
+      expect(adultsOnly.length).toBeGreaterThan(0);
+      for (const id of adultsOnly) {
+        expect(expectedFor(restricted.allowed, true)).toContain(id);
+        expect(expectedFor(restricted.not, false)).not.toContain(id);
+        expect(expectedFor(people.viewer, false)).not.toContain(id);
+      }
+    });
+  });
+
   it('the rule is not vacuous: every role is refused something here', () => {
     for (const role of roles) expect(expected(role).length, role).toBeLessThan(docs.length);
     // And the two adults each see exactly one private document: their own.
@@ -505,9 +683,15 @@ describe.skipIf(!testAdminUrl())('the visibility rule has one meaning everywhere
       // That somebody has passed away: an owner's, or the vault's; anybody
       // else signed in is refused outright, though they may change the rest.
       const passing = 'is_deceased = true';
-      expect(await ask({ actor: 'account', role: 'owner', member: 'x' }, unsigned, passing)).toBe(
-        1,
-      );
+      // (An owner who is nobody in particular: since 0054 every caller's
+      // member is read as an id, to ask whether they are restricted.)
+      expect(
+        await ask(
+          { actor: 'account', role: 'owner', member: '00000000-0000-4000-8000-000000000000' },
+          unsigned,
+          passing,
+        ),
+      ).toBe(1);
       expect(await ask({ actor: 'system' }, unsigned, passing)).toBe(1);
       expect(
         await ask(

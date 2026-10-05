@@ -320,9 +320,7 @@ export class IdentityService {
       .select(['id', 'visibility', 'owner_member_id'])
       .where('id', 'in', ids)
       .execute();
-    return new Set(
-      docs.filter((d) => canSee({ role: p.role, memberId: p.memberId }, d)).map((d) => d.id),
-    );
+    return new Set(docs.filter((d) => canSee(p, d)).map((d) => d.id));
   }
 
   /** The record as the caller is shown it. */

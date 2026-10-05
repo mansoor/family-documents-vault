@@ -1422,6 +1422,31 @@ describe('locking a sign-in (5.28)', () => {
       await expectAccessible();
     });
 
+    it("a restricted viewer's restriction is shown beside the role, to confirm with it (5.32, A55)", async () => {
+      installFakeApi(
+        fresh({
+          members: [ME, TESS, VIC],
+          accounts: { 'm-1': paused('m-1', 'teen'), 'm-4': paused('m-4', 'viewer') },
+          restrictions: { 'm-4': "Restricted: sees 1 person's documents of 2 kinds." },
+        }),
+      );
+      signedIn();
+      at('/settings/after-restore');
+      render(<App />);
+      const list = await screen.findByRole('list', { name: 'Paused sign-ins' });
+      expect(
+        within(list)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent),
+      ).toEqual([
+        'TessRole: TeenTurn back on',
+        "VicRole: ViewerRestricted: sees 1 person's documents of 2 kinds.Turn back on",
+      ]);
+      // Read-only here: nothing offers to change it (5.33 does).
+      expect(within(list).getAllByRole('button')).toHaveLength(2);
+      await expectAccessible();
+    });
+
     it('nobody but an owner is shown one', async () => {
       installFakeApi(
         fresh({ members: [ME, TESS, VIC], accounts: { 'm-1': paused('m-1', 'teen') } }),

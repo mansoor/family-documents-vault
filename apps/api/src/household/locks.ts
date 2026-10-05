@@ -22,6 +22,7 @@ import { ApiError } from '../errors.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 import { INCOMING_MOVE_JOB } from '../uploads/incoming.js';
 import { holdHousehold } from './co-owners.js';
+import { restrictionSummaries } from './restrictions.js';
 
 /**
  * Locking a sign-in (5.28, A50–A52).
@@ -648,7 +649,8 @@ export class LockService {
    * The sign-ins a restore paused (A55), for "After a restore": an owner's
    * to turn back on, one tap each. Anybody else, none: their own is not
    * theirs to decide, and they are not signed in to ask. Each with its role,
-   * shown to confirm; 5.33 adds a viewer's restriction beside it.
+   * shown to confirm, and a restricted viewer's restriction in a sentence
+   * (5.32), read-only: 5.33 gives owners the screens to change it.
    */
   async paused(p: Principal): Promise<PausedSignIn[]> {
     if (!can(p.role, 'restore.review')) return [];
@@ -666,11 +668,17 @@ export class LockService {
         .orderBy('member.display_name')
         .orderBy('account_household.member_id')
         .execute();
+      const restrictions = await restrictionSummaries(
+        trx,
+        p.householdId,
+        rows.map((r) => r.member_id),
+      );
       return rows.map((r) => ({
         member_id: r.member_id,
         display_name: r.display_name,
         role: r.role,
         paused_at: (r.suspended_at as Date).toISOString(),
+        restriction: restrictions.get(r.member_id) ?? null,
       }));
     });
   }

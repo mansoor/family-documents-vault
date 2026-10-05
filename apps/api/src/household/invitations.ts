@@ -5,6 +5,7 @@ import {
   can,
   capabilityToInvite,
   DECEASED_NO_SIGN_IN,
+  mayBeRestricted,
   refusalFor,
   roleLabel,
   ROLES,
@@ -15,6 +16,7 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AuthService, Principal, RequestMeta, Tokens } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
+import { isRestricted, restrictedRefusal } from './restrictions.js';
 
 /**
  * Invitations (SHR-02) — a link and a code.
@@ -189,6 +191,13 @@ export class InvitationService {
       const memberId = input.member_id
         ? await this.existingMember(trx, input.member_id)
         : await this.newMember(trx, p, input.display_name as string, meta);
+      // Somebody restricted is invited as a viewer or not at all (the 5.32
+      // review): accepting it would give them a role their restriction never
+      // stands beside, and the database refuses that as it is accepted. An
+      // owner, who reads every restriction, is told now.
+      if (input.member_id && !mayBeRestricted(input.role) && (await isRestricted(trx, memberId))) {
+        throw restrictedRefusal(null);
+      }
 
       // Replacing a live invitation is what "send another one" means; the
       // partial unique index would otherwise refuse the insert. But only its

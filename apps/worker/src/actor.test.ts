@@ -165,6 +165,10 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
       dialect: new PostgresDialect({ pool: createPool(tdb.appUrl, 3) }),
       log(event) {
         if (event.level !== 'query' || !event.query.sql.includes("set_config('app.actor'")) return;
+        // Reading as one person inside the vault's own transaction (readAs,
+        // 5.32) narrows what a job reads, and opens no scope of its own:
+        // readAs refuses to run anywhere but in the vault's.
+        if (event.query.sql.includes('/* fdv:read-as */')) return;
         const [household, actor] = event.query.parameters;
         opened.push({ household, actor });
       },

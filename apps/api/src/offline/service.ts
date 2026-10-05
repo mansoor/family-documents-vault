@@ -256,7 +256,7 @@ export class OfflineService {
           .executeTakeFirst();
         // Nothing is written about a document the person cannot see: not
         // a line in anybody's log, not a receipt that says it exists.
-        if (!row || p.role === 'viewer' || !canSee({ role: p.role, memberId: p.memberId }, row)) {
+        if (!row || p.role === 'viewer' || !canSee(p, row)) {
           result.dropped += 1;
           continue;
         }

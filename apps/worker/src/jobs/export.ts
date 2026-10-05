@@ -16,7 +16,7 @@ import {
   type PrivateValues,
   type ScopeKeys,
 } from '@fdv/crypto';
-import { withSystem, type Db } from '@fdv/db';
+import { readAs, withSystem, type Db } from '@fdv/db';
 import {
   can,
   canSeeIdentity,
@@ -27,6 +27,7 @@ import {
   IDENTITY_LISTS,
   identityFilled,
   maskIdentity,
+  seesAdults,
   wellFormedDate,
   type DateValue,
   type IdentityFields,
@@ -173,30 +174,48 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .where('account_id', '=', exp.requested_by)
         .where('household_id', '=', hh)
         .executeTakeFirstOrThrow();
-      const adultsOk = requester.role === 'owner' || requester.role === 'adult';
-      const docs = await trx
-        .selectFrom('document')
-        .selectAll()
-        .where('deleted_at', 'is', null)
-        .where((eb) =>
-          eb.or([
-            eb('visibility', '=', 'household'),
-            ...(adultsOk ? [eb('visibility', '=', 'adults')] : []),
-            eb.and([
-              eb('visibility', '=', 'private'),
-              eb('owner_member_id', '=', requester.member_id),
+      // Who may see Adults only documents, as the API works it out (5.32):
+      // the role's answer, or a viewer's restriction's.
+      const restriction = await trx
+        .selectFrom('access_restriction')
+        .select(['include_adults_only', 'expires_at'])
+        .where('member_id', '=', requester.member_id)
+        .executeTakeFirst();
+      const adultsOk = seesAdults(requester.role, restriction ?? null);
+      // Read as the requester themselves (5.32): a restriction of theirs
+      // narrows the documents, and the people, as it narrows every list.
+      const as = {
+        accountId: exp.requested_by,
+        memberId: requester.member_id,
+        role: requester.role,
+      };
+      const docs = await readAs(trx, as, (mine) =>
+        mine
+          .selectFrom('document')
+          .selectAll()
+          .where('deleted_at', 'is', null)
+          .where((eb) =>
+            eb.or([
+              eb('visibility', '=', 'household'),
+              ...(adultsOk ? [eb('visibility', '=', 'adults')] : []),
+              eb.and([
+                eb('visibility', '=', 'private'),
+                eb('owner_member_id', '=', requester.member_id),
+              ]),
             ]),
-          ]),
-        )
-        .orderBy('category')
-        .orderBy('title')
-        .execute();
-      const members = await trx
-        .selectFrom('member')
-        .select(['id', 'display_name'])
-        .orderBy('display_name')
-        .orderBy('id')
-        .execute();
+          )
+          .orderBy('category')
+          .orderBy('title')
+          .execute(),
+      );
+      const members = await readAs(trx, as, (mine) =>
+        mine
+          .selectFrom('member')
+          .select(['id', 'display_name'])
+          .orderBy('display_name')
+          .orderBy('id')
+          .execute(),
+      );
       // What each detail is called: by its type as the household has it,
       // hidden ones too, or else by the attribute library (0.5.7).
       const types = await trx
@@ -230,7 +249,13 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .select('active_vault_id')
         .where('id', '=', hh)
         .executeTakeFirstOrThrow();
-      const people = await peopleFor(deps, trx, hh, requester, members);
+      const people = await peopleFor(
+        deps,
+        trx,
+        hh,
+        { ...requester, account_id: exp.requested_by },
+        members,
+      );
       return {
         docs,
         members,
@@ -683,17 +708,19 @@ function identityLines(
 }
 
 /**
- * What the requester may have of the people (5.27), read as the vault
- * itself: whose identity details they may read now — canSeeIdentity, under
- * the audience in effect, the database's own identity_audience_now() — each
- * part opened; and whose photo they may see (A68: the roles of
- * family.details, or their own).
+ * What the requester may have of the people (5.27): whose identity details
+ * they may read now — canSeeIdentity, under the audience in effect, the
+ * database's own identity_audience_now() — each part opened; and whose photo
+ * they may see (A68: the roles of family.details, or their own). The rows are
+ * read as the requester themselves (readAs, the 5.32 review), so that the
+ * database's own rules — a restriction's included — decide them as for any
+ * request of theirs; the keys that open them, as the vault.
  */
 async function peopleFor(
   deps: ExportDeps,
   trx: Db,
   hh: string,
-  requester: { member_id: string; role: Parameters<typeof can>[0] },
+  requester: { member_id: string; role: Parameters<typeof can>[0]; account_id: string },
   members: ReadonlyArray<{ id: string }>,
 ): Promise<{
   identities: Map<string, Partial<Record<IdentityPart, IdentityFields>>>;
@@ -704,12 +731,15 @@ async function peopleFor(
     (await sql<{ a: string | null }>`select identity_audience_now() as a`.execute(trx)).rows[0]
       ?.a ?? 'owners_and_self';
   const readable = members.filter((m) => canSeeIdentity(viewer, m, audience)).map((m) => m.id);
+  const as = {
+    accountId: requester.account_id,
+    memberId: requester.member_id,
+    role: requester.role,
+  };
   const rows = readable.length
-    ? await trx
-        .selectFrom('member_identity')
-        .selectAll()
-        .where('member_id', 'in', readable)
-        .execute()
+    ? await readAs(trx, as, (mine) =>
+        mine.selectFrom('member_identity').selectAll().where('member_id', 'in', readable).execute(),
+      )
     : [];
   const identities = new Map<string, Partial<Record<IdentityPart, IdentityFields>>>();
   for (const r of rows) {
@@ -724,11 +754,13 @@ async function peopleFor(
   }
   const photos = new Map<string, Buffer>();
   const family = can(requester.role, 'family.details');
-  const ready = await trx
-    .selectFrom('member_photo')
-    .select(['id', 'member_id', 'sealed'])
-    .where('state', '=', 'ready')
-    .execute();
+  const ready = await readAs(trx, as, (mine) =>
+    mine
+      .selectFrom('member_photo')
+      .select(['id', 'member_id', 'sealed'])
+      .where('state', '=', 'ready')
+      .execute(),
+  );
   const mayHave = ready.filter(
     (p) => p.sealed !== null && (family || p.member_id === requester.member_id),
   );

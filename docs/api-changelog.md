@@ -3220,6 +3220,89 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       `features.sign_out_everywhere`. `@fdv/client`: `signOutEverywhere`;
       the fake signs people out everywhere, and ends a session when any token
       it has spent is presented again.
+  - The restriction, enforced by the database (5.32, D6, A56–A59). No route
+    changes yet: 5.33 adds `PUT`/`DELETE /members/{id}/access` and the
+    screens. Older phones simply see fewer documents.
+    - **Added:** `GET /api/v1/after-restore`'s `sign_ins[]` gain
+      `restriction`: `{ summary }`, a restricted viewer's restriction in a
+      sentence ("Restricted: sees 1 person's documents of 2 kinds and 1
+      collection. Adults-only documents included."), shown to confirm beside
+      the role (A55); `null` for somebody with none. It counts only
+      collections that grant something (for Everyone, not deleted), and says
+      so when every kind, or every person, it named has been deleted since
+      ("… so it gives no documents by person or kind"). Absent from older
+      vaults.
+    - **Changed:** a restricted viewer is given, by every route, only what
+      their restriction grants — the database narrows each table, so a list,
+      a count, a search, a page, a file, a reminder, a link or a digest that
+      does not ask still cannot reach outside it. Within the ceiling (the
+      household's documents; Adults only ones when an owner allows it, D6;
+      their own Only me ones; never somebody else's Only me): their own
+      documents, those of the people named and the kinds named together
+      (A56), and those in a granted collection while it is for Everyone and
+      not deleted; a document of nobody's only with the checkbox (A57).
+      Deleting a person or a kind that is named only narrows: once every one
+      named is gone, that part gives nothing. Nothing at all once the
+      restriction's end date has passed. People: themselves, those named,
+      and the owners of what they can see, and what hangs off a person
+      follows them (sign-ins, their accounts, invitations, keys, dismissed
+      suggestions); sessions, devices, known devices and notification
+      settings only their own; no collection but those granted and their
+      own; identity details, their own only; none of the household's
+      answers; kinds of document, the built-ins and those granted or in use
+      on what they can see; exports, their own; a link's sessions as the
+      link is given; lines of the activity log about a document, a reminder,
+      a person, a kind or a collection as that is given, and any other only
+      their own.
+    - **Changed:** who may see Adults only documents is worked out once for
+      each sign-in (`seesAdults`): the role's `document.see_adults`, or a
+      viewer whose restriction an owner lets include them. Every copy of the
+      visibility rule — the document list, search, tags, issuers, reminders,
+      collections, suggestions, counts, links, the digest and the export —
+      reads it. An unrestricted viewer sees no Adults only document, as
+      before.
+    - **Changed:** a restriction stands only beside a viewer's role (A58).
+      Changing a restricted person's role to anything else, giving their
+      sign-in back as anything else, or inviting them as anything else is
+      refused with **new** `409 restricted` ("… access is limited to some
+      documents. Remove their limits first."), and accepting such an
+      invitation is refused the same way.
+    - **Changed:** a link lends no more than its maker may see now. A link
+      made by somebody restricted since gives only what their restriction
+      gives (a document outside it, or a collection, gives nothing: `404` as
+      for any link that has stopped). To an owner and to its maker,
+      `GET /shares` lists it as `paused` with **new** `paused_reason:
+"limited"` ("Paused: the access of whoever made it is limited, and it
+      gives nothing outside what they may see now."); anybody else is told
+      it is paused. Treat a reason never heard of as paused, as before.
+    - The database: 0054 adds `access_restriction`, keyed on the person (not
+      on their sign-in: taking it away and giving it back keeps it, and asks
+      the owners to confirm it again, `reconfirm_since`), with
+      `include_adults_only`, `include_no_person_docs`, `limits_people`,
+      `limits_types`, `expires_at`, `created_by`, `updated_at` and
+      `private_confirmed_at`; and `access_restriction_member`, `_type` and
+      `_collection`. Owners read and write them, the person reads their own;
+      a new one is for a viewer only, one for somebody who keeps Only me
+      documents needs `private_confirmed_at` (A59), and nobody restricted is
+      given another role (`account_household_restricted_role`, SQLSTATE
+      `FDV02`). `app_restricted()`, `app_grant()` (the caller's grant, read
+      once a statement), `app_granted_documents()`, `app_granted_people()`,
+      `app_granted_collections()` and `app_granted_types()` answer with the
+      owner's rights; `doc_in_grant()` is the rule itself, a pure function
+      of a grant and a document, with no rights of its own. A restrictive
+      rule on every table a document's rows hang from, and on the family's
+      own, asks them. `app_grant_of()` and `maker_lends()` read anybody's
+      grant and are granted to nobody; `share_link_lends()` answers whether a
+      link's maker still lends what it was made for, and
+      `app_shared_document()`, `app_live_share()` and `app_link_documents()`
+      (now 0054's) ask `maker_lends()`. The restore check knows the new rules
+      and triggers, fails if any is missing or if the application role can
+      run `app_grant_of()`, and asks each restricted person's documents as
+      them.
+    - `@fdv/shared`: `seesAdults`, `restrictionMayWiden`, `mayBeRestricted`,
+      `AdultsGrant`, `canSee`'s `seesAdults`, `restrictionSummary`,
+      `RestrictionCounts`, `RestrictionSummary`, `PausedSignIn.restriction`
+      and `ShareView.paused_reason`'s `limited`.
 
 ## Deprecations in effect
 

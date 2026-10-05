@@ -759,7 +759,7 @@ export class CollectionService {
     const named = can(p.role, 'document.share');
     const unseen = new Set<string>();
     if (named && links.length) {
-      const reader = { role: p.role, memberId: p.memberId };
+      const reader = p;
       // Removed for good since, as its tombstone says, too (5.24).
       const items = await madeWith(
         trx,

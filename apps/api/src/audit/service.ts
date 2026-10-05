@@ -36,6 +36,8 @@ const PAGE = 50;
 export interface Reader {
   role: Role;
   memberId: string;
+  /** Whether they may see Adults only documents (5.32): the Principal's own answer. */
+  seesAdults: boolean;
   /** Their sign-in: a link they made is theirs to read of (5.19 review). */
   accountId?: string;
 }

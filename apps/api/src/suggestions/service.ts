@@ -185,7 +185,7 @@ export class SuggestionService {
     trx: Db,
     p: Principal,
   ): Promise<{ household: Map<string, number>; perMember: Map<string, number> }> {
-    const adultsOk = allows(p, 'document.see_adults');
+    const adultsOk = p.seesAdults;
     const rows = await sql<{ type_key: string; owner_member_id: string | null; n: string }>`
       select type_key, owner_member_id, count(*) as n
         from document

@@ -1,4 +1,10 @@
-import { shareEndWords, suspensionInEffect, type Tokens } from '@fdv/shared';
+import {
+  restrictionMayWiden,
+  seesAdults,
+  shareEndWords,
+  suspensionInEffect,
+  type Tokens,
+} from '@fdv/shared';
 import { createHash, randomUUID } from 'node:crypto';
 import type { ScopeKeys } from '@fdv/crypto';
 import { ANONYMOUS, appendAudit, withPrincipal, withScope, type Db, type Role } from '@fdv/db';
@@ -76,6 +82,13 @@ export interface Principal {
   householdId: string;
   memberId: string;
   role: Role;
+  /**
+   * Whether they may see documents marked Adults only (5.32, D6): their
+   * role's `document.see_adults`, or a viewer an owner's restriction lets
+   * see them (`seesAdults` in @fdv/shared). Worked out once, here, and read
+   * by `canSee` and every SQL copy of the visibility rule — never the role.
+   */
+  seesAdults: boolean;
 }
 
 export interface SetupInput {
@@ -423,7 +436,7 @@ export class AuthService {
    */
   private async openSession(
     trx: Db,
-    p: Omit<Principal, 'sessionId'>,
+    p: Omit<Principal, 'sessionId' | 'seesAdults'>,
     meta: RequestMeta,
     method = 'password',
   ): Promise<Tokens> {
@@ -475,7 +488,7 @@ export class AuthService {
    */
   private async noteDevice(
     trx: Db,
-    p: Omit<Principal, 'sessionId'>,
+    p: Omit<Principal, 'sessionId' | 'seesAdults'>,
     meta: RequestMeta,
   ): Promise<void> {
     const agent = meta.userAgent ?? 'unknown';
@@ -516,7 +529,11 @@ export class AuthService {
     });
   }
 
-  private async tokens(p: Principal, refresh: string, refreshExpiresAt: Date): Promise<Tokens> {
+  private async tokens(
+    p: Omit<Principal, 'seesAdults'>,
+    refresh: string,
+    refreshExpiresAt: Date,
+  ): Promise<Tokens> {
     const claims: AccessClaims = {
       sub: p.accountId,
       sid: p.sessionId,
@@ -800,13 +817,32 @@ export class AuthService {
     // and any that did not (opened at that very moment, or written by hand)
     // answers nothing.
     if (suspensionInEffect(open)) throw sessionEnded('membership suspended', 'suspended');
-    return {
+    const who = {
       accountId: claims.sub,
       sessionId: claims.sid,
       householdId: claims.hid,
       memberId: open.member_id,
       role: open.role,
     };
+    return { ...who, seesAdults: await this.seesAdultsOf(who) };
+  }
+
+  /**
+   * Whether somebody signed in may see Adults only documents (5.32): asked
+   * once, here, for every request. Only a viewer's restriction can let them
+   * (D6), so only a viewer's is read — as the person themselves, who reads
+   * their own.
+   */
+  private async seesAdultsOf(who: Omit<Principal, 'seesAdults'>): Promise<boolean> {
+    if (!restrictionMayWiden(who.role)) return seesAdults(who.role, null);
+    const restriction = await withPrincipal(this.db, who, (trx) =>
+      trx
+        .selectFrom('access_restriction')
+        .select(['include_adults_only', 'expires_at'])
+        .where('member_id', '=', who.memberId)
+        .executeTakeFirst(),
+    );
+    return seesAdults(who.role, restriction ?? null);
   }
 
   /** Why a session that no longer authenticates ended, for the 401. */

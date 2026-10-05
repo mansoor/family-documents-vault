@@ -1018,4 +1018,71 @@ describe.skipIf(!testAdminUrl())('export.build job', () => {
     ]);
     expect(index.people.map((p) => p.name)).toContain('Child Photo');
   }, 120_000);
+
+  it("a restricted requester's export is read as them: only what their restriction gives (5.32)", async () => {
+    // Sana, an adult since the sealed notes' test, with a restriction left
+    // on her that grants nothing (her sign-in given back as an adult, say):
+    // it fails closed, and so does her export.
+    const sana = await admin.query<{ id: string }>(
+      "select id from account where email = 's@x.test'",
+    );
+    const sanaAccount = sana.rows[0]?.id as string;
+    const titles = async () =>
+      (await exported(sanaAccount)).index.documents.map((d) => d.title).sort();
+    expect(await titles()).toContain("Mansoor's passport");
+    await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
+      otherMember,
+      hh,
+    ]);
+    try {
+      const after = await titles();
+      // Her own, within the ceiling: no Adults only one, since none is allowed.
+      const own = await admin.query<{ title: string }>(
+        `select title from document
+          where owner_member_id = $1 and deleted_at is null and visibility <> 'adults'`,
+        [otherMember],
+      );
+      expect(after).toEqual(own.rows.map((r) => r.title).sort());
+      expect(after).not.toContain("Mansoor's passport");
+      expect(after.length).toBeGreaterThan(0);
+    } finally {
+      await admin.query('delete from access_restriction where member_id = $1', [otherMember]);
+    }
+  }, 60_000);
+
+  it("a restricted requester's export reads identity details as them: their own only (the 5.32 review)", async () => {
+    // Rita, an adult with a restriction left on her (an operator's hand: no
+    // route gives an adult one), given the owner's documents; the household
+    // lets adults read one another's shared identity details.
+    const rita = await person('Rita', 'adult');
+    await putIdentity(ownerMember, { shared: { given_name: 'Mansoor' } });
+    await admin.query(`update household set identity_audience = 'adults' where id = $1`, [hh]);
+    try {
+      // Unrestricted, an adult's export holds the owner's shared record.
+      expect(identityFiles(await exported(rita.account as string))).toContain(
+        'identity/Mansoor.json',
+      );
+      await admin.query(
+        `insert into access_restriction (member_id, household_id, limits_people)
+         values ($1, $2, true)`,
+        [rita.id, hh],
+      );
+      await admin.query(
+        `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+         values ($1, $2, $3)`,
+        [rita.id, hh, ownerMember],
+      );
+      // Restricted, it is read as her: identity details her own only, even of
+      // somebody whose documents she is given.
+      const x = await exported(rita.account as string);
+      expect(identityFiles(x)).toEqual([]);
+      expect(x.all.includes(Buffer.from('"given_name": "Mansoor"'))).toBe(false);
+    } finally {
+      await admin.query('delete from access_restriction where member_id = $1', [rita.id]);
+      await admin.query(
+        `update household set identity_audience = 'owners_and_self' where id = $1`,
+        [hh],
+      );
+    }
+  }, 60_000);
 });

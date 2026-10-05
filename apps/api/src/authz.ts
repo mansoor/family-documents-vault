@@ -17,8 +17,15 @@ export function requireCapability(p: Principal, capability: Capability): void {
   }
 }
 
-/** For the places where the answer is a filter rather than a refusal. */
-export function allows(p: Principal, capability: Capability): boolean {
+/**
+ * For the places where the answer is a filter rather than a refusal. Not
+ * for Adults only documents: who sees them is `p.seesAdults` (5.32), worked
+ * out once with their restriction, never the role alone.
+ */
+export function allows(
+  p: Principal,
+  capability: Exclude<Capability, 'document.see_adults'>,
+): boolean {
   return can(p.role, capability);
 }
 

@@ -32,7 +32,8 @@ import { linkTarget, RequestRow, requestTarget, turnedBackOnWords } from './Shar
  * And the people whose sign-ins wait (5.28, A55): a restore pauses every
  * sign-in but the owners', and each role is as the backup had it, so an
  * owner sees it beside the name before turning the sign-in back on, one tap
- * each (a passkey or a code first, as for every power over a sign-in).
+ * each (a passkey or a code first, as for every power over a sign-in). A
+ * restricted viewer's restriction is shown with it, in a sentence (5.32).
  */
 export function AfterRestoreScreen() {
   const { caps, guarded, withToken, authVersion } = useApp();
@@ -203,9 +204,15 @@ export function AfterRestoreScreen() {
               <li key={s.member_id} className="place">
                 <div className="place-title">{s.display_name}</div>
                 <div className="muted">Role: {roleLabel(s.role)}</div>
-                {/* 5.33: a viewer's restriction goes here, beside the role,
-                    to be confirmed with it. The restriction itself arrives
-                    in 5.32 and 5.33; until then there is nothing to show. */}
+                {/* A restricted viewer's restriction, beside the role, to be
+                    confirmed with it (A55, 5.32): read from the vault, and
+                    read-only here; 5.33 gives owners the screens to change
+                    it. A vault from before 5.32 sends none. */}
+                {s.restriction && (
+                  <div className="muted" data-testid="paused-restriction">
+                    {s.restriction.summary}
+                  </div>
+                )}
                 <div className="row">
                   {/* aria-disabled while one is on its way, not disabled:
                       "confirm it is you" gives focus back to it. */}
