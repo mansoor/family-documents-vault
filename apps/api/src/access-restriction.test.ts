@@ -585,6 +585,18 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     }
   };
 
+  /** Val's restriction in a sentence, as an owner's After a restore says it. */
+  const summaryOfVal = async () => {
+    const ownerAccount = await accountOf(owner);
+    return (
+      await withPrincipal(
+        h.db,
+        { householdId: hh, accountId: ownerAccount, memberId: owner.member_id, role: 'owner' },
+        (trx) => restrictionSummaries(trx, hh, [val.member_id]),
+      )
+    ).get(val.member_id)?.summary;
+  };
+
   it('promoting a restricted viewer is refused, by the API and by the database; their limits come off first', async () => {
     await usual();
     await fresh(owner);
@@ -741,6 +753,10 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     ).toBe(0);
     // Still nothing of Ahmed's: "these kinds only", with none left, is none.
     expect(await asVal('select id from document')).toEqual(own);
+    // And After a restore says so, not "1 person's documents" (N532T-01).
+    expect(await summaryOfVal()).toBe(
+      'Restricted: sees nothing of anyone else’s. Every kind it named has been deleted, so it gives no documents by person or kind.',
+    );
 
     // A kind only Ahmed's Only me document uses: an owner's delete keeps it,
     // marked deleted, for him (0035); filed under another kind, his last
@@ -791,6 +807,58 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     expect(await asVal('select id from document')).toEqual(own);
     await admin.query('delete from document where id = $1', [ledgerDoc]);
     await usual();
+  });
+
+  it('a sign-in of another role moved onto a restricted person is refused (N532G-1)', async () => {
+    // Ray, with no sign-in, restricted; Ahmed's adult sign-in, and Uma's
+    // viewer one, re-pointed onto Ray by an owner's statement.
+    const ray = (
+      await admin.query<{ id: string }>(
+        `insert into member (household_id, display_name) values ($1, 'Ray') returning id`,
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
+      ray,
+      hh,
+    ]);
+    const ownerAccount = await accountOf(owner);
+    const asOwner = { member: owner.member_id, account: ownerAccount, role: 'owner' };
+    try {
+      expect(
+        await tryAs(asOwner, 'update account_household set member_id = $1 where member_id = $2', [
+          ray,
+          ahmed.member_id,
+        ]),
+      ).toBe('FDV02');
+      // A viewer's may go there; the owners are then asked to confirm the
+      // restriction again.
+      const c = await app.connect();
+      try {
+        await c.query('begin');
+        await c.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                  set_config('app.account_id', $2, true), set_config('app.member_id', $3, true),
+                  set_config('app.role', 'owner', true)`,
+          [hh, ownerAccount, owner.member_id],
+        );
+        const moved = await c.query(
+          'update account_household set member_id = $1 where member_id = $2',
+          [ray, uma.member_id],
+        );
+        expect(moved.rowCount).toBe(1);
+        const flagged = await c.query<{ reconfirm_since: Date | null }>(
+          'select reconfirm_since from access_restriction where member_id = $1',
+          [ray],
+        );
+        expect(flagged.rows[0]?.reconfirm_since).toBeInstanceOf(Date);
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        c.release();
+      }
+    } finally {
+      await admin.query('delete from member where id = $1', [ray]);
+    }
   });
 
   it('deleting a granted person narrows', async () => {

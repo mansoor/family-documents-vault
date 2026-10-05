@@ -88,8 +88,8 @@
 -- Restrictions are for viewers (A58; guests are viewers too, 5.34), and a
 -- restriction never stands beside another role: a new one for anybody
 -- signed in with another role is refused, and so is any role but viewer —
--- a change, a sign-in given back, an invitation accepted — for somebody
--- restricted. Their limits come off first.
+-- a change, a sign-in given back, an invitation accepted, a sign-in moved
+-- onto them — for somebody restricted. Their limits come off first.
 --
 -- Restricting somebody who keeps Only me documents asks an owner to confirm
 -- (A59), and the person is told (the service, household/restrictions.ts):
@@ -378,31 +378,35 @@ end $$;
 create trigger access_restriction_type_household before insert or update on access_restriction_type
   for each row execute function access_restriction_type_household();
 
--- A restricted person's sign-in given back: the restriction stays (it is
--- the person's) and asks the owners to confirm it again. With the owner's
--- rights: an owner giving it back is not who writes the flag, the vault is.
+-- A restricted person's sign-in given back, or a sign-in moved onto them:
+-- the restriction stays (it is the person's) and asks the owners to confirm
+-- it again. With the owner's rights: an owner giving it back is not who
+-- writes the flag, the vault is.
 create function account_household_restriction_reconfirm() returns trigger
   language plpgsql security definer
   set search_path = pg_catalog, public, pg_temp as $$
 begin
-  update access_restriction
-     set reconfirm_since = now()
-   where member_id = new.member_id
-     and household_id = new.household_id;
+  if tg_op = 'INSERT' or new.member_id is distinct from old.member_id then
+    update access_restriction
+       set reconfirm_since = now()
+     where member_id = new.member_id
+       and household_id = new.household_id;
+  end if;
   return null;
 end $$;
 
 create trigger account_household_restriction_reconfirm
-  after insert on account_household
+  after insert or update of member_id on account_household
   for each row execute function account_household_restriction_reconfirm();
 
 -- A restriction never stands beside a role but viewer's (A58; the 5.32
 -- review): nobody restricted is made an adult, a teen or an owner — by a
--- change of role, a sign-in given back, an invitation accepted — until an
--- owner has taken their limits off. Whoever asks but the owning role (a
--- restore, a migration). Its own SQLSTATE, FDV02, which the API answers as
--- `409 restricted`. With the owner's rights: the caller may not read the
--- restriction it asks about (an invitation accepted, an adult's request).
+-- change of role, a sign-in given back, an invitation accepted, or a sign-in
+-- of another role moved onto them — until an owner has taken their limits
+-- off. Whoever asks but the owning role (a restore, a migration). Its own
+-- SQLSTATE, FDV02, which the API answers as `409 restricted`. With the
+-- owner's rights: the caller may not read the restriction it asks about (an
+-- invitation accepted, an adult's request).
 create function account_household_restricted_role() returns trigger
   language plpgsql security definer
   set search_path = pg_catalog, public, pg_temp as $$
@@ -411,7 +415,9 @@ begin
     return new;
   end if;
   if new.role is distinct from 'viewer'
-     and (tg_op = 'INSERT' or new.role is distinct from old.role)
+     and (tg_op = 'INSERT'
+          or new.role is distinct from old.role
+          or new.member_id is distinct from old.member_id)
      and exists (select 1 from access_restriction r
                   where r.member_id = new.member_id
                     and r.household_id = new.household_id) then
@@ -422,7 +428,7 @@ begin
 end $$;
 
 create trigger account_household_restricted_role
-  before insert or update of role on account_household
+  before insert or update of role, member_id on account_household
   for each row execute function account_household_restricted_role();
 
 -- ------------------------------------------------------------ the helpers

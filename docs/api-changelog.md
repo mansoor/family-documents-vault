@@ -3228,8 +3228,10 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
       sentence ("Restricted: sees 1 person's documents of 2 kinds and 1
       collection. Adults-only documents included."), shown to confirm beside
       the role (A55); `null` for somebody with none. It counts only
-      collections that grant something (for Everyone, not deleted). Absent
-      from older vaults.
+      collections that grant something (for Everyone, not deleted), and says
+      so when every kind, or every person, it named has been deleted since
+      ("… so it gives no documents by person or kind"). Absent from older
+      vaults.
     - **Changed:** a restricted viewer is given, by every route, only what
       their restriction grants — the database narrows each table, so a list,
       a count, a search, a page, a file, a reminder, a link or a digest that

@@ -300,6 +300,8 @@ export async function restrictionSummaries(
       'r.include_adults_only',
       'r.include_no_person_docs',
       'r.expires_at',
+      'r.limits_people',
+      'r.limits_types',
       sql<number>`(select count(*)::int from access_restriction_member m
                     where m.restricted_member_id = r.member_id)`.as('people'),
       sql<number>`(select count(*)::int from access_restriction_type t
