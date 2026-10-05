@@ -199,6 +199,26 @@ export interface InviteOptions {
   ownerDecides?: () => Promise<void>;
 }
 
+/** Said to an adult inviting somebody an owner gave Adults only documents (the 5.34 review). */
+export const OWNER_GAVE_ADULTS_ONLY =
+  'An owner gave them Adults only documents, so only an owner can invite them.';
+
+/** Said to whoever accepts an adult's invitation that would keep an owner's Adults only grant. */
+export const OWNER_NEEDED =
+  'This invitation cannot be accepted as it is. Ask an owner of the family to invite you.';
+
+/** Said of a guest who has had a sign-in (the 5.34 review, S534-01). */
+export const GUEST_HAD_SIGN_IN = (name: string) =>
+  `${name} has had a sign-in here. An owner can give it back, with a new end, from People outside the family; or invite them by their name as somebody new.`;
+
+/** Whether an owner gave somebody Adults only documents (0056): asked as the vault, which reads it. */
+async function givenAdultsOnly(trx: Db, memberId: string): Promise<boolean> {
+  const r = await sql<{
+    given: boolean;
+  }>`select member_given_adults_only(${memberId}) as given`.execute(trx);
+  return r.rows[0]?.given === true;
+}
+
 /** Said of a guest's invitation that names nothing they may see (A27). */
 export const GUEST_LIMITS_REQUIRED =
   'A guest is always limited to what they are given. Choose what they can see.';
@@ -243,12 +263,47 @@ export class InvitationService {
 
   // ------------------------------------------------------------- inviting
 
-  async create(
+  /**
+   * Whether this invitation is an owner's decision about what a viewer sees
+   * (5.34; its review, W534-02), asked before anything else so that the
+   * route asks once — for a passkey or a code, which serves the ordinary
+   * step-up too — and not the password first and the factor after. The
+   * same refusals as `create`, in its order, come first. `create` asks
+   * again, under its locks, and is what decides.
+   */
+  async asksOwnerDecision(p: Principal, input: z.infer<typeof inviteBody>): Promise<boolean> {
+    const { decides, limits } = this.validate(p, input);
+    if (decides) return true;
+    if (p.role !== 'owner' || !limits || !input.member_id) return false;
+    // Limits replacing those already set on the person (S533-02).
+    const had = await withPrincipal(this.db, p, (trx) =>
+      trx
+        .selectFrom('access_restriction')
+        .select('member_id')
+        .where('member_id', '=', input.member_id as string)
+        .executeTakeFirst(),
+    );
+    return had !== undefined;
+  }
+
+  /**
+   * What an invitation asks before the database is asked anything: who may
+   * invite for the role; a guest's own rules (a viewer, limited, an end
+   * within a year); an adult's viewer limited and without Adults only
+   * documents (A27). And whether it is an owner's decision about what a
+   * viewer sees (A27, D6, A54): a viewer who sees every family document,
+   * Adults only documents for a viewer or a guest, or — the lead's decision
+   * on the 5.34 review — any guest an owner invites.
+   */
+  private validate(
     p: Principal,
     input: z.infer<typeof inviteBody>,
-    meta: RequestMeta,
-    opts: InviteOptions = {},
-  ): Promise<CreatedInvitation> {
+  ): {
+    kind: MemberKind;
+    accessEnd: Date | null;
+    limits: z.infer<typeof accessGrantBody> | null;
+    decides: boolean;
+  } {
     const capability = capabilityToInvite(input.role);
     if (!can(p.role, capability)) {
       throw new ApiError(403, 'forbidden', refusalFor(capability));
@@ -310,13 +365,24 @@ export class InvitationService {
       if (!limits) throw new ApiError(403, 'forbidden', LIMITS_REQUIRED);
       if (limits.include_adults_only) throw new ApiError(403, 'forbidden', ADULTS_ONLY_OWNERS);
     }
+    const decides =
+      input.role === 'viewer' &&
+      (!limits || limits.include_adults_only || (kind === 'guest' && p.role === 'owner'));
+    return { kind, accessEnd, limits, decides };
+  }
+
+  async create(
+    p: Principal,
+    input: z.infer<typeof inviteBody>,
+    meta: RequestMeta,
+    opts: InviteOptions = {},
+  ): Promise<CreatedInvitation> {
+    const { kind, accessEnd, limits, decides } = this.validate(p, input);
     // An owner's decision (A27, D6, A54): a viewer who sees every family
-    // document, or Adults only documents for a viewer or a guest, asks for a
-    // passkey or a code — never the password — and an owner with neither is
-    // refused it (5.34).
-    if (input.role === 'viewer' && (!limits || limits.include_adults_only)) {
-      await opts.ownerDecides?.();
-    }
+    // document, Adults only documents for a viewer or a guest, and any guest
+    // an owner invites, ask for a passkey or a code — never the password —
+    // and an owner with neither is refused it (5.34).
+    if (decides) await opts.ownerDecides?.();
 
     // An account is global, so this is asked outside the household scope.
     const existing = await this.db
@@ -352,6 +418,13 @@ export class InvitationService {
       // owner, who reads every restriction, is told now.
       if (input.member_id && !mayBeRestricted(input.role) && (await isRestricted(trx, memberId))) {
         throw restrictedRefusal(null);
+      }
+      // An adult's invitation keeps the limits an owner set on the person
+      // (limitsPlan), so it never brings back Adults only documents an owner
+      // gave them: only an owner invites them (A27, D6; the 5.34 review,
+      // S534-01). Asked again as it is accepted.
+      if (input.member_id && p.role !== 'owner' && (await givenAdultsOnly(trx, memberId))) {
+        throw new ApiError(403, 'forbidden', OWNER_GAVE_ADULTS_ONLY);
       }
       // The limits, checked as the inviter sees the family: people, kinds
       // and collections they may see, and only a collection for Everyone (A17).
@@ -519,6 +592,25 @@ export class InvitationService {
    * because an invitation made before 0.4.2 may still be waiting.
    */
   private async mustNeverHaveSignedIn(trx: Db, memberId: string, name: string): Promise<void> {
+    // A guest has no member key and owns nothing (0056), so what else says
+    // they had a sign-in: one taken away (former_account_id), or any
+    // invitation of theirs accepted (the 5.34 review, S534-01). Giving it
+    // back is an owner's, with a new end (POST /members/{id}/sign-in,
+    // renew_guest); inviting them again as somebody new is by their name.
+    const person = await trx
+      .selectFrom('member')
+      .select(['kind', 'former_account_id'])
+      .where('id', '=', memberId)
+      .executeTakeFirst();
+    const accepted = await trx
+      .selectFrom('invitation')
+      .select('id')
+      .where('member_id', '=', memberId)
+      .where('accepted_at', 'is not', null)
+      .executeTakeFirst();
+    if (person?.kind === 'guest' && (person.former_account_id !== null || accepted)) {
+      throw new ApiError(409, 'had_sign_in', GUEST_HAD_SIGN_IN(name));
+    }
     const key = await trx
       .selectFrom('scope_key')
       .select(['key_wrapped_cred'])
@@ -897,11 +989,16 @@ export class InvitationService {
     if (!limits) return null;
     const existing = await trx
       .selectFrom('access_restriction')
-      .select(['member_id', 'updated_at'])
+      .select(['member_id', 'updated_at', 'include_adults_only'])
       .where('member_id', '=', row.member_id)
       .forUpdate()
       .executeTakeFirst();
     if (!existing) return { limits, exists: false };
+    // An adult's keeps what an owner set, so never Adults only documents an
+    // owner gave: asked when it was made, and again now (the 5.34 review).
+    if (!limits.by_owner && existing.include_adults_only) {
+      throw new ApiError(409, 'owner_needed', OWNER_NEEDED);
+    }
     // An adult's never replaces an owner's; an owner's only limits set
     // before the invitation was made — newer ones stay (the lead's
     // decision on the 5.33 review), and the owners are asked to confirm

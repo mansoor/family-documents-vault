@@ -4,19 +4,19 @@ import {
   GUEST_DESCRIPTION_MAX,
   guestAccessEnded,
   guestEndProblem,
-  shareEndWords,
+  guestEndWords,
   zonedParts,
   type MemberAccess,
   type Role,
 } from '@fdv/shared';
-import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { Link } from 'react-router';
 import { dayOf, endOf, LimitsPicker, NO_LIMITS, ViewerLimits, type Limits } from './access.js';
 import { api, type CreatedInvitation, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
-import { BottomNav, Button, ErrorNote, Field, TopBar } from './ui.js';
+import { BottomNav, Button, ConfirmDialog, ErrorNote, Field, TopBar } from './ui.js';
 
 /**
  * Someone outside the family (5.34, D4, A27, A28): an attorney, an
@@ -25,14 +25,16 @@ import { BottomNav, Button, ErrorNote, Field, TopBar } from './ui.js';
  * first. Somebody who must come back gets a sign-in as a guest: a viewer,
  * limited to what they are given, until a day within a year, never shown
  * among the family. Owners see them here apart, with their limits and end,
- * and renew them.
+ * and renew them, take their sign-in away, or give it back.
  */
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** "Monday 4 January at 23:59" on the household's clock, or nothing. */
-export const accessEndWords = (iso: string, timezone: string) =>
-  shareEndWords(new Date(iso), timezone);
+/**
+ * "Monday 4 January 2027 at 23:59" on the household's clock: with its year
+ * (the 5.34 review, W534-05), for a guest's end may be a year away, or past.
+ */
+export const accessEndWords = (iso: string, timezone: string) => guestEndWords(iso, timezone);
 
 /** What a guest's sign-in says of its end: until when, or that it has ended. */
 export function guestEndLine(iso: string | null | undefined, timezone: string): string {
@@ -260,8 +262,12 @@ export function GuestInviteForm(props: {
 
 /**
  * People outside the family (Settings, owners, 5.34): each guest, what they
- * can see, and when their access ends — to renew, or to change what they
- * see (each asked with a passkey or a code, A54).
+ * can see, and when their access ends. And what an owner does with a
+ * guest's sign-in (the 5.34 review, W534-03): renew it, change what they
+ * see, sign them out everywhere, take it away, give it back with a new end,
+ * correct their name and what they are to the family, and remove a guest
+ * who never signed in. Each is asked as the vault asks: a passkey or a code
+ * for an owner power (A54), the ordinary step-up otherwise.
  */
 export function GuestsScreen() {
   const { authVersion } = useApp();
@@ -280,6 +286,14 @@ export function GuestsScreen() {
     [authVersion],
   );
   const [said, setSaid] = useState<string | null>(null);
+  const status = useRef<HTMLParagraphElement>(null);
+  /** Says what was done; and, unless a control stays to hold it, focus goes to what is said. */
+  const sayAndReload = async (words: string, focus = true) => {
+    flushSync(() => setSaid(words));
+    if (focus) status.current?.focus();
+    await reload();
+  };
+  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
 
   return (
     <main className="page page-top has-nav">
@@ -289,7 +303,7 @@ export function GuestsScreen() {
         never shown among the family.
       </p>
       <ErrorNote message={error} />
-      <p className="notice" role="status" aria-live="polite">
+      <p ref={status} className="notice" role="status" aria-live="polite" tabIndex={-1}>
         {said ?? ''}
       </p>
       {data && data.guests.length === 0 && data.waiting.length === 0 && (
@@ -297,15 +311,7 @@ export function GuestsScreen() {
       )}
       <ul className="list guests">
         {(data?.guests ?? []).map((g) => (
-          <GuestRow
-            key={g.id}
-            guest={g}
-            timezone={timezone}
-            onChanged={async (words) => {
-              setSaid(words);
-              await reload();
-            }}
-          />
+          <GuestRow key={g.id} guest={g} timezone={timezone} onChanged={sayAndReload} />
         ))}
       </ul>
       {(data?.waiting.length ?? 0) > 0 && (
@@ -313,20 +319,43 @@ export function GuestsScreen() {
           <h2 id="guests-waiting-h" className="section-h">
             Invited, not yet accepted
           </h2>
-          <ul className="list">
+          <ul className="list guests">
             {data?.waiting.map((i) => (
               <li key={i.id} className="stack guest">
-                <strong>{i.display_name}</strong>
-                <span className="muted">
+                <h3 className="guest-name">{i.display_name}</h3>
+                <p className="muted">
                   {i.email}
                   {i.access_expires_at
-                    ? ` · until ${accessEndWords(i.access_expires_at, timezone)}`
+                    ? guestAccessEnded(i.access_expires_at)
+                      ? ` · their access ended ${accessEndWords(i.access_expires_at, timezone)}, before they accepted`
+                      : ` · until ${accessEndWords(i.access_expires_at, timezone)}`
                     : ''}
-                </span>
+                </p>
+                <div className="row">
+                  <Button
+                    kind="quiet"
+                    danger
+                    onClick={() => setRemoving({ id: i.member_id, name: i.display_name })}
+                  >
+                    Cancel and remove
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>
         </section>
+      )}
+      {removing && (
+        <RemoveGuest
+          id={removing.id}
+          name={removing.name}
+          invited
+          onCancel={() => setRemoving(null)}
+          onDone={async (words) => {
+            flushSync(() => setRemoving(null));
+            await sayAndReload(words);
+          }}
+        />
       )}
       <Link to="/people" className="btn btn-quiet">
         Invite someone from People
@@ -336,56 +365,182 @@ export function GuestsScreen() {
   );
 }
 
-/** One guest: who, what they can see, their end; renew, or change what they see. */
-function GuestRow(props: {
-  guest: Member;
-  timezone: string;
-  onChanged: (said: string) => Promise<void>;
+/**
+ * "Remove Jane Smith?": a guest who never signed in, with their invitation
+ * and what they were to be given — or an invitation not yet accepted,
+ * cancelled, and the guest with it.
+ */
+function RemoveGuest(props: {
+  id: string;
+  name: string;
+  invited?: boolean;
+  returnFocus?: RefObject<HTMLElement | null>;
+  onCancel: () => void;
+  onDone: (said: string) => Promise<void>;
 }) {
   const { guarded } = useApp();
-  const g = props.guest;
-  const [renewing, setRenewing] = useState<string | null>(null);
-  const [access, setAccess] = useState<MemberAccess | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const renewButton = useRef<HTMLButtonElement>(null);
-  const renewField = useRef<HTMLDivElement>(null);
-  const open = renewing !== null;
-  useLayoutEffect(() => {
-    if (open) renewField.current?.querySelector('input')?.focus();
-  }, [open]);
-  const signedIn = Boolean(g.access_expires_at);
-  // From their end if it is still to come, from today if not: ninety days on, within a year.
-  const suggested = () => {
-    const from = Math.max(Date.now(), Date.parse(g.access_expires_at ?? '') || 0);
-    const at = Math.min(from + GUEST_DEFAULT_DAYS * DAY, Date.now() + 365 * DAY);
-    return dayOf(new Date(at).toISOString(), props.timezone);
-  };
-
-  const renew = async (e: FormEvent) => {
-    e.preventDefault();
-    const end = renewing ? endOf(renewing, props.timezone) : null;
-    const problem = end ? guestEndProblem(new Date(end)) : 'Choose the day their access ends.';
-    if (problem || !end) {
-      setError(problem);
-      return;
-    }
+  const confirm = async () => {
     setBusy(true);
     setError(null);
     try {
-      const done = await guarded((t) => api.renewGuest(t, g.id, end));
-      if (!done) return;
-      // Back to the button that opened it, as the field goes.
-      flushSync(() => setRenewing(null));
-      renewButton.current?.focus();
-      await props.onChanged(
-        `${g.display_name}’s access now ends ${accessEndWords(done.access_expires_at, props.timezone)}.`,
+      const done = await guarded(async (t) => {
+        await api.removeGuest(t, props.id);
+        return true;
+      });
+      if (done === null) return;
+      await props.onDone(
+        props.invited
+          ? `${props.name}’s invitation is cancelled, and they are removed.`
+          : `${props.name} is removed.`,
       );
     } catch (err) {
       setError(describeError(err));
     } finally {
       setBusy(false);
     }
+  };
+  return (
+    <ConfirmDialog
+      title={props.invited ? `Cancel ${props.name}’s invitation?` : `Remove ${props.name}?`}
+      confirmLabel={props.invited ? 'Cancel it and remove them' : 'Remove them'}
+      busyLabel="Removing…"
+      danger
+      busy={busy}
+      {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
+      onConfirm={() => void confirm()}
+      onCancel={props.onCancel}
+    >
+      <p>
+        {props.invited
+          ? `The invitation stops working, and ${props.name} goes, with what they were to be given. You can invite them again whenever you like.`
+          : `${props.name} never signed in. They go, with what they were to be given.`}
+      </p>
+      <ErrorNote message={error} />
+    </ConfirmDialog>
+  );
+}
+
+/** What a guest's row is doing: a day being chosen, details being changed, or a question asked first. */
+type Doing = 'renew' | 'giveBack' | 'edit' | 'signOut' | 'takeAway' | 'remove' | null;
+
+/** One guest: who, what they can see, their end, and what an owner does with their sign-in. */
+function GuestRow(props: {
+  guest: Member;
+  timezone: string;
+  onChanged: (said: string, focus?: boolean) => Promise<void>;
+}) {
+  const { caps, guarded } = useApp();
+  const g = props.guest;
+  const [doing, setDoing] = useState<Doing>(null);
+  const [day, setDay] = useState('');
+  const [name, setName] = useState(g.display_name);
+  const [about, setAbout] = useState(g.relationship ?? '');
+  const [access, setAccess] = useState<MemberAccess | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dayButton = useRef<HTMLButtonElement>(null);
+  const limitsButton = useRef<HTMLButtonElement>(null);
+  const editButton = useRef<HTMLButtonElement>(null);
+  const signOutButton = useRef<HTMLButtonElement>(null);
+  const takeAwayButton = useRef<HTMLButtonElement>(null);
+  const removeButton = useRef<HTMLButtonElement>(null);
+  const dayField = useRef<HTMLDivElement>(null);
+  const nameField = useRef<HTMLDivElement>(null);
+  const dated = doing === 'renew' || doing === 'giveBack';
+  useLayoutEffect(() => {
+    if (dated) dayField.current?.querySelector('input')?.focus();
+    if (doing === 'edit') nameField.current?.querySelector('input')?.focus();
+  }, [dated, doing]);
+  const signedIn = g.has_account;
+  const removed = !signedIn && g.sign_in_removed === true;
+  const never = !signedIn && !removed;
+  // From their end if it is still to come, from today if not: ninety days on, within a year.
+  const suggested = () => {
+    const from = Math.max(Date.now(), Date.parse(g.access_expires_at ?? '') || 0);
+    const at = Math.min(from + GUEST_DEFAULT_DAYS * DAY, Date.now() + 365 * DAY);
+    return dayOf(new Date(at).toISOString(), props.timezone);
+  };
+  /** Closes what is open, focus back to the button that opened it. */
+  const closeTo = (back: RefObject<HTMLButtonElement | null>) => {
+    flushSync(() => {
+      setDoing(null);
+      setError(null);
+    });
+    back.current?.focus();
+  };
+  /** Runs an action, asked as the vault asks: what it answered, or null (cancelled, or refused and said). */
+  const run = async <T,>(fn: (t: string) => Promise<T>): Promise<T | null> => {
+    setBusy(true);
+    setError(null);
+    try {
+      return await guarded(fn);
+    } catch (err) {
+      setError(describeError(err));
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDay = async (e: FormEvent) => {
+    e.preventDefault();
+    const end = day ? endOf(day, props.timezone) : null;
+    const problem = end ? guestEndProblem(new Date(end)) : 'Choose the day their access ends.';
+    if (problem || !end) {
+      setError(problem);
+      return;
+    }
+    if (doing === 'renew') {
+      const done = await run((t) => api.renewGuest(t, g.id, end));
+      if (!done) return;
+      // Back to the button that opened it, as the field goes.
+      closeTo(dayButton);
+      await props.onChanged(
+        `${g.display_name}’s access now ends ${accessEndWords(done.access_expires_at, props.timezone)}.`,
+        false,
+      );
+      return;
+    }
+    // Given back as a viewer's (a guest is nothing else), with its new end.
+    const done = await run((t) => api.restoreSignIn(t, g.id, 'viewer', end));
+    if (!done) return;
+    flushSync(() => setDoing(null));
+    await props.onChanged(
+      `${g.display_name} can sign in again, until ${accessEndWords(end, props.timezone)}. What they can see is as it was.`,
+    );
+  };
+
+  const saveDetails = async (e: FormEvent) => {
+    e.preventDefault();
+    const done = await run((t) =>
+      api.updateMember(
+        t,
+        g.id,
+        { display_name: name.trim(), relationship: about.trim() || null },
+        g.version ?? null,
+      ),
+    );
+    if (!done) return;
+    closeTo(editButton);
+    await props.onChanged(`${done.display_name}’s details are saved.`, false);
+  };
+
+  /** Asked first, then done: signing out everywhere, or taking the sign-in away. */
+  const confirmed = async (what: 'signOut' | 'takeAway') => {
+    const done = await run(async (t) => {
+      if (what === 'signOut') await api.signOutEverywhere(t, g.id);
+      else await api.removeSignIn(t, g.id);
+      return true;
+    });
+    if (done === null) return;
+    flushSync(() => setDoing(null));
+    await props.onChanged(
+      what === 'signOut'
+        ? `${g.display_name} is signed out everywhere. They can sign in again until their access ends.`
+        : `${g.display_name}’s sign-in is taken away. What they can see stays, for if you give it back.`,
+    );
   };
 
   const openLimits = async () => {
@@ -406,62 +561,184 @@ function GuestRow(props: {
       </h2>
       <p className="muted">{g.restriction?.summary ?? 'Limited to what they are given.'}</p>
       <p className={signedIn && guestAccessEnded(g.access_expires_at) ? 'status status-warn' : ''}>
-        {guestEndLine(g.access_expires_at, props.timezone)}
+        {signedIn
+          ? guestEndLine(g.access_expires_at, props.timezone)
+          : removed
+            ? 'Their sign-in was taken away. You can give it back, with a new end.'
+            : 'They never signed in: their invitation was cancelled, or ran out.'}
       </p>
-      {renewing !== null ? (
-        <form className="stack" onSubmit={(e) => void renew(e)}>
-          <div ref={renewField}>
+
+      {dated ? (
+        <form className="stack" onSubmit={(e) => void submitDay(e)}>
+          <div ref={dayField}>
             <EndDay
-              id={`renew-${g.id}`}
+              id={`ends-${g.id}`}
               label={`${g.display_name}’s access ends`}
-              value={renewing}
+              value={day}
               timezone={props.timezone}
-              onChange={setRenewing}
+              onChange={setDay}
             />
           </div>
           <ErrorNote message={error} />
           <div className="row">
             <Button type="submit" disabled={busy}>
-              {busy ? 'Renewing…' : 'Renew'}
+              {busy ? 'Saving…' : doing === 'renew' ? 'Renew' : 'Give it back'}
             </Button>
-            <Button
-              kind="quiet"
-              onClick={() => {
-                setRenewing(null);
-                setError(null);
-                renewButton.current?.focus();
-              }}
-            >
+            <Button kind="quiet" onClick={() => closeTo(dayButton)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : doing === 'edit' ? (
+        <form className="stack" onSubmit={(e) => void saveDetails(e)}>
+          <div ref={nameField}>
+            <Field id={`name-${g.id}`} label="Their name" value={name} onChange={setName} />
+          </div>
+          <Field
+            id={`about-${g.id}`}
+            label="What they are to the family (optional)"
+            value={about}
+            required={false}
+            onChange={setAbout}
+            maxLength={GUEST_DESCRIPTION_MAX}
+            hint="The activity log names them with it."
+          />
+          <ErrorNote message={error} />
+          <div className="row">
+            <Button type="submit" disabled={busy || !name.trim()}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button kind="quiet" onClick={() => closeTo(editButton)}>
               Cancel
             </Button>
           </div>
         </form>
       ) : (
         <>
-          <ErrorNote message={error} />
-          {signedIn && (
-            <div className="row">
-              <Button ref={renewButton} kind="quiet" onClick={() => setRenewing(suggested())}>
+          <ErrorNote message={doing === null ? error : null} />
+          <div className="row guest-actions">
+            {signedIn && (
+              <Button
+                ref={dayButton}
+                kind="quiet"
+                onClick={() => {
+                  setDay(suggested());
+                  setDoing('renew');
+                }}
+              >
                 Renew their access
               </Button>
-              {access === undefined && (
-                <Button kind="quiet" onClick={() => void openLimits()}>
-                  What they can see
-                </Button>
-              )}
-            </div>
-          )}
+            )}
+            {removed && (
+              <Button
+                ref={dayButton}
+                kind="quiet"
+                onClick={() => {
+                  setDay(suggested());
+                  setDoing('giveBack');
+                }}
+              >
+                Give their sign-in back
+              </Button>
+            )}
+            {signedIn && access === undefined && (
+              <Button ref={limitsButton} kind="quiet" onClick={() => void openLimits()}>
+                What they can see
+              </Button>
+            )}
+            <Button
+              ref={editButton}
+              kind="quiet"
+              onClick={() => {
+                setName(g.display_name);
+                setAbout(g.relationship ?? '');
+                setDoing('edit');
+              }}
+            >
+              Change their details
+            </Button>
+            {signedIn && caps?.features.sign_out_everywhere === true && (
+              <Button ref={signOutButton} kind="quiet" onClick={() => setDoing('signOut')}>
+                Sign them out everywhere
+              </Button>
+            )}
+            {signedIn && (
+              <Button ref={takeAwayButton} kind="quiet" danger onClick={() => setDoing('takeAway')}>
+                Take their sign-in away
+              </Button>
+            )}
+            {never && (
+              <Button ref={removeButton} kind="quiet" danger onClick={() => setDoing('remove')}>
+                Remove them
+              </Button>
+            )}
+          </div>
         </>
       )}
+
       {access !== undefined && (
-        <ViewerLimits
-          member={g}
+        <div className="stack">
+          <ViewerLimits
+            member={g}
+            name={g.display_name}
+            access={access}
+            guest
+            focusOnShow
+            onChanged={(now, words) => {
+              setAccess(now);
+              void props.onChanged(words);
+            }}
+          />
+          <Button
+            kind="quiet"
+            onClick={() => {
+              flushSync(() => setAccess(undefined));
+              limitsButton.current?.focus();
+            }}
+          >
+            Close what they can see
+          </Button>
+        </div>
+      )}
+
+      {doing === 'signOut' && (
+        <ConfirmDialog
+          title={`Sign ${g.display_name} out everywhere?`}
+          confirmLabel="Sign them out"
+          busyLabel="Signing out…"
+          busy={busy}
+          returnFocus={signOutButton}
+          onConfirm={() => void confirmed('signOut')}
+          onCancel={() => setDoing(null)}
+        >
+          <p>{`Every device ${g.display_name} is signed in on is signed out now. They can sign in again with their own password until their access ends.`}</p>
+          <ErrorNote message={error} />
+        </ConfirmDialog>
+      )}
+      {doing === 'takeAway' && (
+        <ConfirmDialog
+          title={`Take ${g.display_name}’s sign-in away?`}
+          confirmLabel="Take it away"
+          busyLabel="Taking it away…"
+          danger
+          busy={busy}
+          returnFocus={takeAwayButton}
+          onConfirm={() => void confirmed('takeAway')}
+          onCancel={() => setDoing(null)}
+        >
+          <p>{`${g.display_name} is signed out everywhere and cannot sign in. You can give it back later, with a new end.`}</p>
+          <ErrorNote message={error} />
+        </ConfirmDialog>
+      )}
+      {doing === 'remove' && (
+        <RemoveGuest
+          id={g.id}
           name={g.display_name}
-          access={access}
-          guest
-          onChanged={(now, words) => {
-            setAccess(now);
-            void props.onChanged(words);
+          returnFocus={removeButton}
+          onCancel={() => setDoing(null)}
+          onDone={async (words) => {
+            flushSync(() => setDoing(null));
+            await props.onChanged(words);
           }}
         />
       )}

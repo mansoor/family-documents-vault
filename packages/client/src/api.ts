@@ -285,6 +285,14 @@ export function createApi(http: Http) {
      * passkey or a code). Nobody with a sign-in `404`; somebody of the family
      * `409 not_a_guest`.
      */
+    /**
+     * A guest who never signed in, removed (5.34's review): their
+     * invitations and limits with them. Owners only (`403`), asked as
+     * taking a sign-in away is (`change_people`). Somebody who has had a
+     * sign-in `409 had_sign_in`; somebody of the family `409 not_a_guest`.
+     */
+    removeGuest: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}`, { method: 'DELETE', token }),
     renewGuest: (token: string, memberId: string, accessExpiresAt: string) =>
       request<GuestRenewal>(`/api/v1/members/${enc(memberId)}/renew`, {
         method: 'POST',

@@ -38,10 +38,13 @@
 --     closed.
 --
 -- And, from the 5.32 review (R532-04's remainder): somebody signed in reads
--- their own account and the accounts of the household's sign-ins (and of
--- its people whose sign-in was taken away, to give it back) — no longer
--- every account of the instance. A restricted caller keeps 0054's narrower
--- rule beside it.
+-- their own account and the accounts of the household's sign-ins (and an
+-- owner those of its people whose sign-in was taken away, to give it back)
+-- — no longer every account of the instance. A restricted caller keeps
+-- 0054's narrower rule beside it; and since outsiders now sign in, a
+-- restricted caller (every guest, every limited viewer) reads none of the
+-- household's mail settings, and no place files are kept but those that
+-- hold what they are given (the 5.34 review).
 --
 -- Every function here that runs with the owner's rights puts pg_temp last
 -- in its path.
@@ -133,8 +136,10 @@ begin
       raise exception 'a guest''s sign-in ends on a day'
         using errcode = 'check_violation';
     end if;
+    -- 366 days of 24 hours, as the API counts them (GUEST_MAX_DAYS): one
+    -- arithmetic, so neither can disagree with the other.
     if (tg_op = 'INSERT' or new.access_expires_at is distinct from old.access_expires_at)
-       and new.access_expires_at > now() + interval '366 days' then
+       and new.access_expires_at > now() + interval '8784 hours' then
       raise exception 'a guest''s sign-in ends within a year'
         using errcode = 'check_violation';
     end if;
@@ -301,20 +306,75 @@ revoke execute on function app_grant_of(uuid) from public;
 
 -- ------------------------------------------------------ whose accounts
 
--- Somebody signed in reads their own account, those of the household's
--- sign-ins, and those its people had before their sign-in was taken away
--- (to give one back, co-owners.ts) — no other household's (R532-04's
--- remainder). A restricted caller is narrower still (0054). Every other
--- caller is as it was: a sign-in page, a reset and the vault itself read an
--- account by its address or id, and a link or an upload link reads none
--- (0042, 0044).
+-- Somebody signed in reads their own account and those of the household's
+-- sign-ins — no other household's (R532-04's remainder) — and an owner also
+-- those its people had before their sign-in was taken away, to give one
+-- back (co-owners.ts restoreSignIn, an owner's alone; the 5.34 review). A
+-- restricted caller is narrower still (0054). Every other caller is as it
+-- was: a sign-in page, a reset and the vault itself read an account by its
+-- address or id, and a link or an upload link reads none (0042, 0044).
 create policy account_reach on account as restrictive
   using (case app_actor()
            when 'account' then coalesce(id = app_account(), false)
                                or id in (select a.account_id from account_household a
                                           where a.household_id = app_household())
-                               or id in (select m.former_account_id from member m
-                                          where m.household_id = app_household()
-                                            and m.former_account_id is not null)
+                               or (coalesce(app_role() = 'owner', false)
+                                   and id in (select m.former_account_id from member m
+                                               where m.household_id = app_household()
+                                                 and m.former_account_id is not null))
            else true
          end);
+
+-- --------------------------------------- what a restricted caller is not told
+
+-- Where the household's files are kept, and its mail server (the 5.34
+-- review): a restricted caller — every guest, every limited viewer — is
+-- given no mail settings at all, and of the places files are kept only
+-- those that hold a version they are given (a download reads its version's
+-- place, as them). Nobody else is narrowed here: the vault itself sends
+-- the mail.
+create policy smtp_settings_restricted on smtp_settings as restrictive
+  using (not (select app_restricted()));
+
+create policy vault_restricted on vault as restrictive
+  using (not (select app_restricted())
+         or id in (select v.vault_id from document_version v));
+
+-- ------------------------------------------------------ removing a guest
+
+-- Nobody is removed from the household but a guest who never signed in —
+-- invited, and the invitation cancelled, expired or never accepted — and
+-- only by an owner (the 5.34 review). Anybody who has had a sign-in is
+-- kept: their sign-in is taken away, or given back, instead. The vault
+-- itself as ever. A caller who says nothing removes nobody.
+create policy member_remove_actor on member as restrictive for delete
+  using (case app_actor()
+           when 'account' then coalesce(app_role() = 'owner', false)
+                               and kind = 'guest'
+                               and former_account_id is null
+                               and not exists (select 1 from account_household a
+                                                where a.member_id = member.id)
+                               and not exists (select 1 from invitation i
+                                                where i.member_id = member.id
+                                                  and i.accepted_at is not null)
+           when 'system' then true
+           else false
+         end);
+
+-- ------------------------------------- an adult inviting somebody limited
+
+-- Whether an owner gave somebody Adults only documents (the 5.34 review,
+-- S534-01): an invitation an adult makes for them would keep that grant
+-- (an adult's limits never replace an owner's), so it is refused. With the
+-- owner's rights: an adult reads no restriction but their own. Somebody
+-- signed in asks; anybody else is answered no.
+create function member_given_adults_only(p_member uuid) returns boolean
+  language sql stable security definer
+  set search_path = pg_catalog, public, pg_temp as
+$$ select coalesce(app_actor() = 'account', false)
+      and exists (select 1 from access_restriction r
+                   where r.member_id = p_member
+                     and r.household_id = app_household()
+                     and r.include_adults_only) $$;
+revoke execute on function member_given_adults_only(uuid) from public;
+grant execute on function member_given_adults_only(uuid) to fdv_app;

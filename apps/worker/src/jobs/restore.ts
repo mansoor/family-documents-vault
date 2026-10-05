@@ -1232,6 +1232,11 @@ const RESTRICTED = [
   'notification_preference',
   'share_session',
   'export',
+  // Where files are kept, and the mail server: a restricted caller is given
+  // only the places holding what they are given, and no mail settings
+  // (0056, the 5.34 review).
+  'vault',
+  'smtp_settings',
 ];
 
 /**
@@ -1302,6 +1307,14 @@ const REQUIRED_RULES = [
     name: 'account_reach',
     cmd: '*',
     what: 'whose accounts somebody signed in reads',
+  },
+  // Nobody is removed but a guest who never signed in, by an owner (0056,
+  // the 5.34 review).
+  {
+    table: 'member',
+    name: 'member_remove_actor',
+    cmd: 'd',
+    what: 'who removes somebody from the household',
   },
   // A restriction, and what it names, are written by an owner or the vault:
   // the person reads theirs and changes none of it (0054).
@@ -1514,8 +1527,9 @@ async function probeRestrictions(
 
 /**
  * What a guest is, held in the backup too (0056, 5.34): no document of a
- * guest's, no sign-in of a guest's without a restriction or an end, no
- * guest with a member key or identity details, and no sign-in of the
+ * guest's, no sign-in of a guest's without a restriction or an end, nor
+ * with an end more than a year from now (the 5.34 review), no guest with
+ * a member key or identity details, and no sign-in of the
  * family's with an end. The guards refuse each as it is written; a backup
  * is loaded past them, so each is asked of what came back. A backup from
  * before 0056 has no guests.
@@ -1530,6 +1544,7 @@ async function probeGuests(admin: ReturnType<typeof createPool>, household: stri
     owned: number;
     unlimited: number;
     endless: number;
+    far: number;
     keyed: number;
     identified: number;
     ended_family: number;
@@ -1544,6 +1559,12 @@ async function probeGuests(admin: ReturnType<typeof createPool>, household: stri
             (select count(*)::int from account_household a join member m on m.id = a.member_id
               where a.household_id = $1 and m.kind = 'guest'
                 and (a.access_expires_at is null or a.role <> 'viewer')) as endless,
+            -- An end more than a year away (A28): 366 days of 24 hours, as the
+            -- API and the guard count them, from now — which is after the
+            -- backup was made, so no backup the vault wrote is caught.
+            (select count(*)::int from account_household a join member m on m.id = a.member_id
+              where a.household_id = $1 and m.kind = 'guest'
+                and a.access_expires_at > now() + interval '8784 hours') as far,
             (select count(*)::int from scope_key k join member m on m.id = k.member_id
               where k.household_id = $1 and k.kind = 'member' and m.kind = 'guest') as keyed,
             (select count(*)::int from member_identity i join member m on m.id = i.member_id
@@ -1559,6 +1580,7 @@ async function probeGuests(admin: ReturnType<typeof createPool>, household: stri
     r.owned > 0 && `a guest owns ${r.owned} documents`,
     r.unlimited > 0 && `${r.unlimited} guests could sign in with no restriction`,
     r.endless > 0 && `${r.endless} guests' sign-ins have no end, or are not a viewer's`,
+    r.far > 0 && `${r.far} guests' sign-ins end more than a year away`,
     r.keyed > 0 && `${r.keyed} guests have a member key`,
     r.identified > 0 && `${r.identified} guests have identity details`,
     r.ended_family > 0 && `${r.ended_family} sign-ins of the family have an end`,

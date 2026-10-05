@@ -74,6 +74,13 @@ export interface ContractContext {
    * so a scenario asks it for an owner nothing after it signs in as.
    */
   ownerTwoStep: (token: string) => Promise<void>;
+  /**
+   * A guest's sign-in, ended a minute ago (5.34): the real API's run writes
+   * it as the owning role (nobody signed in may set an end in the past);
+   * the fake's moves its guest's end. Optional: a context from before 5.34
+   * has none, and its scenarios never ask.
+   */
+  endGuestAccess?: (memberId: string) => Promise<void>;
 }
 
 export interface Scenario {
@@ -2063,6 +2070,23 @@ export const contractScenarios: Scenario[] = [
       const renewed = await api.renewGuest(owner.access_token, guest.member_id, sixty);
       expect(renewed).toEqual({ member_id: guest.member_id, access_expires_at: sixty });
       expect((await api.me(guest.access_token)).access_expires_at).toBe(sixty);
+
+      // Past its end (A28): every session answers nothing, `access_ended`,
+      // a refresh too; signing in is refused once the password is right,
+      // with the day — and renewed, she is in again.
+      if (!ctx.endGuestAccess) throw new Error('the contract needs endGuestAccess');
+      await ctx.endGuestAccess(guest.member_id);
+      const over = await refusal(api.me(guest.access_token));
+      expect(over).toMatchObject({ status: 401, code: 'session_ended', reason: 'access_ended' });
+      expect(isSessionOver(over)).toBe(true);
+      const refreshed = await refusal(api.refresh(guest.refresh_token));
+      expect(refreshed).toMatchObject({ status: 401, reason: 'access_ended' });
+      const password = 'the attorney’s own password';
+      const ended = await refusal(api.signIn('guest-attorney@example.test', password));
+      expect(ended).toMatchObject({ status: 403, code: 'access_ended', reason: 'access_ended' });
+      expect(ended.message).toMatch(/^Your access to this family vault ended .+ \d{4} at /);
+      await api.renewGuest(owner.access_token, guest.member_id, at(30));
+      await signInAs(api, 'guest-attorney@example.test', password);
     },
   },
   {

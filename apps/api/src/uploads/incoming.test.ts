@@ -375,7 +375,9 @@ describe.skipIf(!testAdminUrl())('incoming: look before it is filed', () => {
   });
 
   it('a file sent in is never filed as a guest’s (5.34)', async () => {
-    // Somebody outside the family, with a sign-in of their own.
+    // Somebody outside the family, with a sign-in of their own: any guest an
+    // owner invites is an owner's decision, with a code (the 5.34 review).
+    await h.decider(owner);
     const invited = await h.app.inject({
       method: 'POST',
       url: '/api/v1/invitations',

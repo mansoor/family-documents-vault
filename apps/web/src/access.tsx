@@ -10,6 +10,7 @@ import {
 } from '@fdv/shared';
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -185,7 +186,10 @@ export function LimitsPicker(props: {
   const everyone = (data?.collections ?? []).filter(
     (c: CollectionView) => c.audience === 'everyone',
   );
-  const id = (s: string) => `${props.idPrefix}-${s}`;
+  // Unique on the page, whatever the prefix (the 5.34 review, W534-01): two
+  // guests' editors open at once never share a label's target.
+  const uid = useId();
+  const id = (s: string) => `${props.idPrefix}-${uid}-${s}`;
 
   return (
     <div className="stack limits">
@@ -318,11 +322,26 @@ export function ViewerLimits(props: {
   member: Member;
   name: string;
   access: MemberAccess | null;
-  /** A guest (5.34): always limited, so their limits are changed, never taken off. */
+  /**
+   * A guest (5.34): always limited, so their limits are changed, never taken
+   * off; and their sign-in's end is the only one, so the limits have none.
+   */
   guest?: boolean;
+  /** Focus its heading as it is shown (opened from a guest's row, W534-04). */
+  focusOnShow?: boolean;
   onChanged: (access: MemberAccess | null, said: string) => void;
 }) {
   const { guarded } = useApp();
+  // Every id its own (W534-01): several guests' cards may be open at once.
+  const uid = useId();
+  const headingId = `limits-h-${uid}`;
+  const editHeadingId = `limits-edit-h-${uid}`;
+  const shownHeading = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    if (props.focusOnShow) shownHeading.current?.focus();
+    // Only as it is shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [editing, setEditing] = useState<Limits | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -406,13 +425,14 @@ export function ViewerLimits(props: {
   };
 
   return (
-    <section className="stack viewer-limits" aria-labelledby="limits-h">
-      <h3 id="limits-h" className="section-h">
-        What they can see
+    <section className="stack viewer-limits" aria-labelledby={headingId}>
+      <h3 id={headingId} ref={shownHeading} tabIndex={-1} className="section-h">
+        {/* Named for a guest: several guests' may be open at once (W534-01). */}
+        {props.guest ? `What ${props.name} can see` : 'What they can see'}
       </h3>
       {editing ? (
-        <form className="stack" onSubmit={submit} aria-labelledby="limits-edit-h">
-          <h4 id="limits-edit-h" ref={editorHeading} tabIndex={-1} className="limits-edit-h">
+        <form className="stack" onSubmit={submit} aria-labelledby={editHeadingId}>
+          <h4 id={editHeadingId} ref={editorHeading} tabIndex={-1} className="limits-edit-h">
             {`Choose what ${props.name} can see`}
           </h4>
           <LimitsPicker
@@ -421,6 +441,7 @@ export function ViewerLimits(props: {
             onChange={setEditing}
             memberId={props.member.id}
             owner
+            endless={props.guest === true}
           />
           <ErrorNote message={error} />
           <div className="row">

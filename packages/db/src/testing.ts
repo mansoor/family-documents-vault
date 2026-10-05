@@ -207,6 +207,56 @@ async function newDatabase(
   };
 }
 
+/**
+ * A made-up time zone (POSIX rules) in which, from now, the clocks go
+ * forward twice within 366 days and back once, so that 366 days on its
+ * calendar are 8783 hours, not 366 × 24 (the 5.34 review, L534-06). For a
+ * test that a bound is counted as the vault counts it, in hours, and not in
+ * days of whatever zone a database runs in. Which spelling of the rule
+ * gives two within the 366 days depends on the date — a day of the year
+ * with or without 29 February, a weekday of the month — so the database at
+ * `url` is asked; none would be a test that proves nothing, so it throws.
+ */
+export async function zoneShortOfAYear(url: string, now = new Date()): Promise<string> {
+  // The first going forward an hour from now; back half a year on.
+  const at = new Date(now.getTime() + 60 * 60 * 1000);
+  const time = `${at.getUTCHours()}:${String(at.getUTCMinutes()).padStart(2, '0')}`;
+  const year = at.getUTCFullYear();
+  const month = at.getUTCMonth() + 1;
+  const day = at.getUTCDate();
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const counted = Math.floor((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86_400_000);
+  const julian = counted + 1 - (leap && month > 2 ? 1 : 0);
+  const back = `J${((julian + 181) % 365) + 1}/${time}`;
+  const starts = [
+    `M${month}.${Math.min(5, Math.ceil(day / 7))}.${at.getUTCDay()}/${time}`,
+    `${counted}/${time}`,
+    ...(month === 2 && day === 29 ? [] : [`J${julian}/${time}`]),
+  ];
+  const c = new pg.Client({ connectionString: url });
+  await c.connect();
+  try {
+    for (const start of starts) {
+      const zone = `XST0XDT,${start},${back}`;
+      await c.query('begin');
+      try {
+        await c.query(`select set_config('timezone', $1, true)`, [zone]);
+        const { rows } = await c.query<{ short: boolean }>(
+          `select now() + interval '366 days' = now() + interval '8783 hours' as short`,
+        );
+        if (rows[0]?.short) return zone;
+      } finally {
+        await c.query('rollback');
+      }
+    }
+  } finally {
+    await c.end();
+  }
+  throw new Error(
+    `No made-up zone puts two clock changes forward within 366 days of ${now.toISOString()}`,
+  );
+}
+
 /** How long a dropped test database's own connections are given to close. */
 export const DROP_SETTLE_MS = 5_000;
 

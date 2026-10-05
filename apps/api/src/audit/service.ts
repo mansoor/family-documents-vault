@@ -299,6 +299,9 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // 5.34: a guest's sign-in renewed (A28): for the owners, the guest and
   // whoever did it.
   ['member.access_renewed', ownersThePersonAndTheActor],
+  // A guest who never signed in, removed (the 5.34 review): for the owners
+  // and whoever did it; the person is gone.
+  ['member.removed', ownersThePersonAndTheActor],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.

@@ -160,7 +160,8 @@ export interface FakeVaultState {
   members: Array<{
     id: string;
     display_name: string;
-    role: string;
+    /** Null for somebody with no sign-in (yet). */
+    role: string | null;
     is_me: boolean;
     /** Their photo, once made (0.5.19). */
     photo?: { id: string } | null;
@@ -1128,8 +1129,20 @@ export function createFakeVault(): {
         return fail(403, 'forbidden', 'Only an owner can let a viewer see Adults only documents.');
       }
     }
-    // An owner's decision (A27, D6, A54): a passkey or a code.
-    if (role === 'viewer' && (!shaped || shaped.include_adults_only) && !state.ownerTwoStep) {
+    // An owner's decision (A27, D6, A54): a viewer who sees every family
+    // document, Adults only documents, any guest an owner invites (the 5.34
+    // review), or an owner's limits replacing those already set (S533-02):
+    // a passkey or a code, asked before anything else of the vault.
+    const replaces =
+      who.role === 'owner' &&
+      shaped !== null &&
+      typeof b.member_id === 'string' &&
+      state.restrictions.has(b.member_id);
+    const decides =
+      (role === 'viewer' &&
+        (!shaped || shaped.include_adults_only || (kind === 'guest' && who.role === 'owner'))) ||
+      replaces;
+    if (decides && !state.ownerTwoStep) {
       return fail(
         403,
         'totp_required_for_owner',
@@ -1164,19 +1177,31 @@ export function createFakeVault(): {
               `${member.display_name} is from outside the family. Invite them as a guest.`,
             );
       }
-      // Limits replacing those already set (S533-02): a passkey or a code.
-      if (checked && state.restrictions.has(member.id) && !state.ownerTwoStep) {
+      // A guest who has had a sign-in is given it back by an owner, never
+      // invited again as the same person (the 5.34 review).
+      const accepted = state.invitations.some(
+        (i) => i.view.member_id === member?.id && i.view.state === 'accepted',
+      );
+      if (kind === 'guest' && accepted) {
+        return fail(
+          409,
+          'had_sign_in',
+          `${member.display_name} has had a sign-in here. An owner can give it back, with a new end, from People outside the family; or invite them by their name as somebody new.`,
+        );
+      }
+      // An adult's invitation keeps an owner's limits: never Adults only ones.
+      if (who.role !== 'owner' && state.restrictions.get(member.id)?.include_adults_only) {
         return fail(
           403,
-          'totp_required_for_owner',
-          'Turn on two-step sign-in to limit what a viewer can see.',
+          'forbidden',
+          'An owner gave them Adults only documents, so only an owner can invite them.',
         );
       }
     } else {
       member = {
         id: next('member'),
         display_name: typeof b.display_name === 'string' ? b.display_name : '',
-        role: '',
+        role: null,
         is_me: false,
         kind,
         relationship: typeof b.relationship === 'string' ? b.relationship : null,
@@ -1248,6 +1273,15 @@ export function createFakeVault(): {
     member.role = v.role;
     if (v.kind === 'guest') member.access_expires_at = v.access_expires_at ?? null;
     const had = state.restrictions.get(member.id);
+    // An adult's keeps what an owner set, so never Adults only documents an
+    // owner gave since (the 5.34 review): asked again now.
+    if (had && !found.by_owner && had.include_adults_only) {
+      return fail(
+        409,
+        'owner_needed',
+        'This invitation cannot be accepted as it is. Ask an owner of the family to invite you.',
+      );
+    }
     if (found.restriction && (!had || found.by_owner)) {
       state.restrictions.set(member.id, {
         ...found.restriction,
@@ -1380,7 +1414,16 @@ export function createFakeVault(): {
       // A guest's sign-in past its end (5.34): said only now, with the day.
       const end = other ? guestEndOf(other.member_id) : null;
       if (end) {
-        return fail(403, 'access_ended', guestAccessEndedWords(end, state.timezone));
+        // With its reason, as the real vault says it.
+        return respond(403, {
+          error: {
+            code: 'access_ended',
+            message: guestAccessEndedWords(end, state.timezone),
+            reason: 'access_ended',
+            retriable: false,
+            request_id: 'fake',
+          },
+        });
       }
       return ok(open(init.headers['x-fdv-installation'] ?? null, other?.member_id));
     }
@@ -3517,6 +3560,9 @@ export function createFakeVault(): {
                 passkeys: 0,
                 last_signed_in_at: null,
                 devices: [],
+                // Of the family, or a guest, and a guest's end (5.34).
+                kind: m.kind ?? 'family',
+                access_expires_at: m.access_expires_at ?? null,
               }
             : undefined);
         if (!card || !m) return fail(404, 'not_found', 'They have no sign-in to show.');
@@ -3530,6 +3576,28 @@ export function createFakeVault(): {
           // A viewer's limits (5.33).
           access: card.role === 'viewer' ? accessView(m.id) : null,
         });
+      }
+      // A guest who never signed in, removed by an owner (the 5.34 review).
+      if (init.method === 'DELETE') {
+        if (whoOf(s).role !== 'owner') return fail(403, 'forbidden', refusalFor('member.remove'));
+        if (!m) return fail(404, 'not_found', 'That person is not here.');
+        if (m.kind !== 'guest') {
+          return fail(409, 'not_a_guest', `${m.display_name} is of the family, and stays in it.`);
+        }
+        const accepted = state.invitations.some(
+          (i) => i.view.member_id === m.id && i.view.state === 'accepted',
+        );
+        if (m.role || accepted) {
+          return fail(
+            409,
+            'had_sign_in',
+            `${m.display_name} has had a sign-in here. Take it away instead; an owner can give it back.`,
+          );
+        }
+        state.members = state.members.filter((x) => x.id !== m.id);
+        state.invitations = state.invitations.filter((i) => i.view.member_id !== m.id);
+        state.restrictions.delete(m.id);
+        return empty();
       }
       if (init.method !== 'PATCH') return fail(404, 'not_found', 'Not here.');
       if (!m) return fail(404, 'not_found', 'That person is not in the family.');

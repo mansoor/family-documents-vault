@@ -65,11 +65,18 @@ export function guestAccessEnded(
 }
 
 /**
+ * A guest's end in words (the 5.34 review): with its year, on the
+ * household's clock — "Friday 4 December 2026 at 23:59".
+ */
+export const guestEndWords = (end: Date | string, timezone: string) =>
+  shareEndWords(new Date(end), timezone, { year: true });
+
+/**
  * Said to somebody whose guest sign-in has ended, once they have proven who
  * they are (`403 access_ended`): until when it ran, on the household's clock.
  */
 export const guestAccessEndedWords = (end: Date | string, timezone: string) =>
-  `Your access to this family vault ended ${shareEndWords(new Date(end), timezone)} (${timezone}). Ask whoever invited you to renew it.`;
+  `Your access to this family vault ended ${guestEndWords(end, timezone)} (${timezone}). Ask whoever invited you to renew it.`;
 
 /** Said of a guest given any role but viewer (409 `guest`). */
 export const GUEST_ONLY_VIEWER = (name: string | null) =>

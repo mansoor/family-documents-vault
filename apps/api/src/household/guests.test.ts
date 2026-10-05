@@ -1,5 +1,5 @@
 import { createPool } from '@fdv/db';
-import { testAdminUrl } from '@fdv/db/testing';
+import { testAdminUrl, zoneShortOfAYear } from '@fdv/db/testing';
 import {
   GUEST_ALWAYS_LIMITED,
   GUEST_OWNS_NOTHING,
@@ -10,6 +10,7 @@ import {
   type MemberAccount,
   type SuggestionView,
 } from '@fdv/shared';
+import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from '../auth/totp.js';
@@ -160,11 +161,15 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
       client.release();
     }
   };
-  /** A statement as somebody signed in, committed: what it changed, or the error's code. */
+  /**
+   * A statement as somebody signed in, committed: what it changed, or the
+   * error's code. In `zone`, the session's time zone, when one is given.
+   */
   const writeAs = async (
     who: { member: string; role: string; account?: string },
     text: string,
     args: unknown[] = [],
+    zone?: string,
   ): Promise<number | string> => {
     const client = await app.connect();
     try {
@@ -175,6 +180,7 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
                 set_config('app.account_id', $4, true)`,
         [hh, who.member, who.role, who.account ?? ''],
       );
+      if (zone) await client.query(`select set_config('timezone', $1, true)`, [zone]);
       const n = (await client.query(text, args)).rowCount ?? 0;
       await client.query('commit');
       return n;
@@ -280,7 +286,10 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
     const lines = await activity(owner);
     expect(
       lines.some((l) =>
-        /^Owner invited jane-534@example\.test to sign in as a guest until /.test(l),
+        // With the year (the 5.34 review): it may be a year away.
+        /^Owner invited jane-534@example\.test to sign in as a guest until \d{1,2} \w+ \d{4} at \d{2}:\d{2}$/.test(
+          l,
+        ),
       ),
     ).toBe(true);
     expect(lines).toContain('Owner added Jane Smith as a guest from outside the family');
@@ -586,11 +595,380 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
       const made = await invite(owner, payload);
       expect(made.statusCode, made.body).toBe(201);
     }
-    // A guest limited to what an owner sees, with no Adults only documents,
-    // is no such decision: the ordinary step-up, as an adult's.
-    await passwordOnly(second);
+    // Any guest an owner invites is an owner's decision (the lead, on the
+    // 5.34 review): a guest limited to what the owner sees too.
+    await fresh(second);
     const plain = await invite(second, guestInvite());
-    expect(plain.statusCode, plain.body).toBe(201);
+    expect(plain.statusCode).toBe(403);
+    expect(error(plain).code).toBe('totp_required_for_owner');
+    await passwordOnly(owner);
+    expect(error(await invite(owner, guestInvite()))).toMatchObject({
+      code: 'step_up_required',
+      action: 'limit_access',
+    });
+    // An adult's guest is no owner's decision: the ordinary step-up.
+    await passwordOnly(ahmed);
+    const adults = await invite(ahmed, guestInvite({ restriction: { people: [ahmed.member_id] } }));
+    expect(adults.statusCode, adults.body).toBe(201);
+    // Nor is a limited viewer of the family an owner invites (W534-10): the
+    // password, just given, is enough.
+    await passwordOnly(second);
+    const family = await invite(second, {
+      display_name: 'Lou',
+      email: `limited-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'viewer',
+      restriction: { people: [ahmed.member_id] },
+    });
+    expect(family.statusCode, family.body).toBe(201);
+  });
+
+  it('an owner deciding what a guest sees is asked once, for a passkey or a code, never the password first (W534-02)', async () => {
+    // Nothing given for a while: neither the password nor a code is fresh.
+    await admin.query(
+      `update session set verified_at = now() - interval '1 hour',
+              factor_verified_at = now() - interval '1 hour'
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    // Asked for a code first — not the password, then a code.
+    const asked = await invite(owner, guestInvite());
+    expect(asked.statusCode).toBe(403);
+    expect(error(asked)).toMatchObject({ code: 'step_up_required', action: 'limit_access' });
+    const byCode = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/step-up',
+      headers: h.as(owner),
+      payload: { code: codeFor(ownerSecret) },
+    });
+    expect(byCode.statusCode, byCode.body).toBe(200);
+    // And that one answer serves: made, nothing more asked.
+    const made = await invite(owner, guestInvite());
+    expect(made.statusCode, made.body).toBe(201);
+    // A family invitation with nothing to decide still asks the password
+    // first, as before.
+    await admin.query(
+      `update session set verified_at = now() - interval '1 hour',
+              factor_verified_at = now() - interval '1 hour'
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    const plain = await invite(owner, {
+      display_name: 'Ivo',
+      email: `ivo-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'adult',
+    });
+    expect(error(plain)).toMatchObject({ code: 'step_up_required', action: 'change_people' });
+  });
+
+  it('an adult cannot re-invite a removed guest, nor keep an owner’s Adults only grant (S534-01)', async () => {
+    // A guest an owner gave Adults only documents, whose sign-in an owner
+    // then took away.
+    const ann = await guest(
+      {
+        display_name: 'Ann',
+        email: 'ann-534@example.test',
+        restriction: { people: [ahmed.member_id], include_adults_only: true },
+      },
+      'ann’s password',
+    );
+    expect(await seenBy(ann)).toEqual([docs.ahmedTax, docs.ahmedWill].sort());
+    await fresh(owner);
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${ann.member_id}/sign-in`,
+      headers: h.as(owner),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    const again = {
+      email: `ann-again-${randomUUID().slice(0, 8)}@example.test`,
+      role: 'viewer',
+      kind: 'guest',
+      restriction: { people: [ahmed.member_id], types: ['tax_return'] },
+      access_expires_at: inDays(360),
+    };
+    // An adult, the same person: refused — giving it back is an owner's.
+    await fresh(ahmed);
+    const byAdult = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${ann.member_id}/invite`,
+      headers: h.as(ahmed),
+      payload: again,
+    });
+    expect(byAdult.statusCode).toBe(409);
+    expect(error(byAdult).code).toBe('had_sign_in');
+    expect(error(byAdult).message).toMatch(
+      /^Ann has had a sign-in here\. An owner can give it back/,
+    );
+    // An owner too: they give it back, with a new end (renew_guest).
+    await fresh(owner);
+    const byOwner = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${ann.member_id}/invite`,
+      headers: h.as(owner),
+      payload: again,
+    });
+    expect(error(byOwner).code).toBe('had_sign_in');
+    // As somebody new, by her name: a new person, with the adult's limits.
+    await fresh(ahmed);
+    const anew = await invite(
+      ahmed,
+      guestInvite({
+        display_name: 'Ann',
+        restriction: { people: [ahmed.member_id], types: ['tax_return'] },
+      }),
+    );
+    expect(anew.statusCode, anew.body).toBe(201);
+    const fresher = json<{ invitation: { member_id: string } }>(anew).invitation.member_id;
+    expect(fresher).not.toBe(ann.member_id);
+    const accepted = json<Tokens>(await accept(anew, 'ann’s new password'));
+    expect(await seenBy(accepted)).toEqual([docs.ahmedTax]);
+
+    // Somebody of the family who never signed in, given Adults only by an
+    // owner: an adult's invitation would keep it, so it is refused...
+    await fresh(owner);
+    const added = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/members',
+      headers: h.as(owner),
+      payload: { display_name: 'Mona' },
+    });
+    const mona = json<Member>(added).id;
+    await fresh(owner);
+    expect(
+      (
+        await h.app.inject({
+          method: 'PUT',
+          url: `/api/v1/members/${mona}/access`,
+          headers: h.as(owner),
+          payload: { people: [ahmed.member_id], include_adults_only: true },
+        })
+      ).statusCode,
+    ).toBe(200);
+    await fresh(ahmed);
+    const asked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${mona}/invite`,
+      headers: h.as(ahmed),
+      payload: {
+        email: `mona-${randomUUID().slice(0, 8)}@example.test`,
+        role: 'viewer',
+        restriction: { people: [ahmed.member_id] },
+      },
+    });
+    expect(asked.statusCode).toBe(403);
+    expect(error(asked).message).toBe(
+      'An owner gave them Adults only documents, so only an owner can invite them.',
+    );
+    // ...and asked again as it is accepted: given after it was made.
+    await fresh(owner);
+    await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${mona}/access`,
+      headers: h.as(owner),
+      payload: { people: [ahmed.member_id] },
+    });
+    await fresh(ahmed);
+    const made = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${mona}/invite`,
+      headers: h.as(ahmed),
+      payload: {
+        email: `mona-${randomUUID().slice(0, 8)}@example.test`,
+        role: 'viewer',
+        restriction: { people: [ahmed.member_id] },
+      },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    await fresh(owner);
+    await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${mona}/access`,
+      headers: h.as(owner),
+      payload: { people: [ahmed.member_id], include_adults_only: true },
+    });
+    const late = await accept(made, 'mona’s password');
+    expect(late.statusCode).toBe(409);
+    expect(error(late).code).toBe('owner_needed');
+    expect(
+      (await admin.query('select 1 from account_household where member_id = $1', [mona])).rowCount,
+    ).toBe(0);
+
+    // And a guest invitation accepted meanwhile elsewhere: asked as accepted.
+    await fresh(owner);
+    const pending = await invite(owner, guestInvite({ display_name: 'Pia' }));
+    const pia = json<{ invitation: { member_id: string } }>(pending).invitation.member_id;
+    await admin.query('update member set former_account_id = $2 where id = $1', [
+      pia,
+      await accountOf(owner),
+    ]);
+    const blocked = await accept(pending, 'pia’s password');
+    expect(blocked.statusCode).toBe(409);
+    expect(error(blocked).code).toBe('had_sign_in');
+    await admin.query('update member set former_account_id = null where id = $1', [pia]);
+  });
+
+  it('a guest is named as one where a collection says who will see what is put in it (W534-08)', async () => {
+    await fresh(owner);
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/collections',
+      headers: h.as(owner),
+      payload: { name: 'For the attorney', audience: 'everyone' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const collection = json<{ id: string }>(made).id;
+    await fresh(owner);
+    const given = await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${jane.member_id}/access`,
+      headers: h.as(owner),
+      payload: { people: [ahmed.member_id], types: ['tax_return'], collections: [collection] },
+    });
+    expect(given.statusCode, given.body).toBe(200);
+    const added = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/collections/${collection}/items`,
+      headers: h.as(owner),
+      payload: { document_ids: [docs.saraBill] },
+    });
+    expect(added.statusCode, added.body).toBe(200);
+    expect(json<{ warnings?: string[] }>(added).warnings).toContain(
+      'Jane Smith (guest) will be able to see this.',
+    );
+    await fresh(owner);
+    await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${jane.member_id}/access`,
+      headers: h.as(owner),
+      payload: { people: [ahmed.member_id], types: ['tax_return'] },
+    });
+  });
+
+  it('a limited caller is told nothing of where files are kept or of the mail server (S534-06)', async () => {
+    // A file of Ahmed's tax return, which Jane is given.
+    const form = new FormData();
+    form.append('file', PDF, { filename: 'tax.pdf', contentType: 'application/pdf' });
+    const up = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/documents/${docs.ahmedTax}/versions`,
+      headers: { ...h.as(owner), ...form.getHeaders(), 'idempotency-key': randomUUID() },
+      payload: form.getBuffer(),
+    });
+    expect(up.statusCode, up.body).toBe(201);
+    const version = json<{ id: string }>(up).id;
+    await admin.query(
+      `insert into smtp_settings (household_id, host, port, secure, from_email, status)
+       values ($1, 'mail.example.test', 587, false, 'family@example.test', 'ok')
+       on conflict (household_id) do nothing`,
+      [hh],
+    );
+    const viewer = await h.join(owner, {
+      name: 'Val',
+      email: 'val-534@example.test',
+      role: 'viewer',
+    });
+    await fresh(owner);
+    await h.app.inject({
+      method: 'PUT',
+      url: `/api/v1/members/${viewer.member_id}/access`,
+      headers: h.as(owner),
+      payload: { people: [sara.member_id] },
+    });
+    for (const who of [jane, viewer]) {
+      for (const url of ['/api/v1/vaults', '/api/v1/notifications/smtp']) {
+        const res = await h.app.inject({ url, headers: h.as(who) });
+        expect(res.statusCode, `${url}`).toBe(403);
+      }
+    }
+    for (const url of ['/api/v1/vaults', '/api/v1/notifications/smtp']) {
+      expect((await h.app.inject({ url, headers: h.as(owner) })).statusCode).toBe(200);
+    }
+    // The database: no mail settings; only the place holding what she is
+    // given — which her download reads.
+    const [row] = await asThem<{ smtp: number; vaults: number; all: number }>(
+      { member: jane.member_id, role: 'viewer', account: await accountOf(jane) },
+      `select (select count(*)::int from smtp_settings) as smtp,
+              (select count(*)::int from vault) as vaults,
+              (select count(distinct v.vault_id)::int from document_version v) as all`,
+    );
+    expect(row).toEqual({ smtp: 0, vaults: 1, all: 1 });
+    const content = await h.app.inject({
+      url: `/api/v1/versions/${version}/content`,
+      headers: h.as(jane),
+    });
+    expect(content.statusCode, content.body).toBe(200);
+    // Somebody limited, given nothing with a file: no place at all.
+    const [none] = await asThem<{ vaults: number }>(
+      { member: viewer.member_id, role: 'viewer', account: await accountOf(viewer) },
+      'select count(*)::int as vaults from vault',
+    );
+    expect(none?.vaults).toBe(0);
+  });
+
+  it('a guest who never signed in is removed by an owner; anybody who has had a sign-in is kept (W534-03)', async () => {
+    await fresh(owner);
+    const pending = await invite(owner, guestInvite({ display_name: 'Rex' }));
+    expect(pending.statusCode, pending.body).toBe(201);
+    const rex = json<{ invitation: { member_id: string } }>(pending).invitation.member_id;
+    const remove = (who: Tokens, member: string) =>
+      h.app.inject({ method: 'DELETE', url: `/api/v1/members/${member}`, headers: h.as(who) });
+    await fresh(ahmed);
+    expect((await remove(ahmed, rex)).statusCode).toBe(403);
+    await fresh(owner);
+    expect(error(await remove(owner, jane.member_id)).code).toBe('had_sign_in');
+    expect(error(await remove(owner, sara.member_id)).code).toBe('not_a_guest');
+    expect((await remove(owner, rex)).statusCode).toBe(204);
+    expect((await admin.query('select 1 from member where id = $1', [rex])).rowCount).toBe(0);
+    expect(
+      (await admin.query('select 1 from invitation where member_id = $1', [rex])).rowCount,
+    ).toBe(0);
+    expect(await activity(owner)).toContain('Owner removed Rex, a guest who never signed in');
+    // The database too: an adult removes nobody; nor an owner anybody else.
+    expect(
+      await writeAs(
+        { member: ahmed.member_id, role: 'adult', account: await accountOf(ahmed) },
+        'delete from member where id = $1',
+        [sara.member_id],
+      ),
+    ).toBe(0);
+    expect(
+      await writeAs(await ownerActor(), 'delete from member where id = $1', [jane.member_id]),
+    ).toBe(0);
+  });
+
+  it('an owner corrects a guest and signs them out everywhere, as People outside the family does (W534-03)', async () => {
+    const kim = await guest({ display_name: 'Kim', relationship: 'notary' });
+    await fresh(owner);
+    const read = await h.app.inject({ url: '/api/v1/members?kind=guest', headers: h.as(owner) });
+    const before = json<{ items: Array<{ id: string; version: number }> }>(read).items.find(
+      (m) => m.id === kim.member_id,
+    );
+    const edited = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/members/${kim.member_id}`,
+      headers: { ...h.as(owner), 'if-match': `"${before?.version}"` },
+      payload: { display_name: 'Kim Lee', relationship: 'the family’s notary' },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(json<{ display_name: string; relationship: string }>(edited)).toMatchObject({
+      display_name: 'Kim Lee',
+      relationship: 'the family’s notary',
+    });
+    const out = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/members/${kim.member_id}/sessions`,
+      headers: h.as(owner),
+    });
+    expect(out.statusCode, out.body).toBe(200);
+    expect(json<{ sessions_ended: number }>(out).sessions_ended).toBeGreaterThan(0);
+    expect((await h.app.inject({ url: '/api/v1/me', headers: h.as(kim) })).statusCode).toBe(401);
+    // Their sign-in stays: they are still listed with it.
+    const after = await h.app.inject({ url: '/api/v1/members?kind=guest', headers: h.as(owner) });
+    expect(
+      json<{ items: Array<{ id: string; has_account: boolean }> }>(after).items.find(
+        (m) => m.id === kim.member_id,
+      )?.has_account,
+    ).toBe(true);
   });
 
   it("an owner's invitation whose limits would replace limits already set asks for a passkey or a code (S533-02)", async () => {
@@ -755,7 +1133,7 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
     // And the log names her as a guest, never as one of the family.
     const lines = await activity(owner);
     expect(lines.find((l) => l.startsWith('Owner renewed the sign-in of'))).toMatch(
-      /^Owner renewed the sign-in of Guest — Jane Smith, attorney until /,
+      /^Owner renewed the sign-in of Guest — Jane Smith, attorney until \d{1,2} \w+ \d{4} at \d{2}:\d{2}$/,
     );
   });
 
@@ -845,6 +1223,30 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
         [jane.member_id],
       ),
     ).toBe('23514');
+    // A year as the API counts it — 366 days of 24 hours — to the minute,
+    // whatever the database's clock: in a zone whose clocks go forward twice
+    // within the year, 366 of its days are an hour short (L534-06).
+    const zone = await zoneShortOfAYear(h.adminUrl);
+    expect(
+      await writeAs(
+        actor,
+        `update account_household
+            set access_expires_at = now() + interval '8784 hours' + interval '1 minute'
+          where member_id = $1`,
+        [jane.member_id],
+        zone,
+      ),
+    ).toBe('23514');
+    expect(
+      await writeAs(
+        actor,
+        `update account_household
+            set access_expires_at = now() + interval '8784 hours' - interval '1 minute'
+          where member_id = $1`,
+        [jane.member_id],
+        zone,
+      ),
+    ).toBe(1);
     expect(
       await writeAs(
         actor,
@@ -1033,13 +1435,32 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
     expect(ids).toContain(ahmedAccount);
     expect(ids).toContain(await accountOf(owner));
     expect(ids).not.toContain(strangerAccount);
-    // Exactly the household's sign-ins, and those whose sign-in was taken away.
-    const expected = await admin.query<{ id: string }>(
-      `select account_id as id from account_household where household_id = $1
-       union select former_account_id from member where household_id = $1 and former_account_id is not null`,
-      [hh],
+    // Exactly the household's sign-ins; an owner also those whose sign-in
+    // was taken away, to give one back — an adult and a teen not (S534-04).
+    const signIns = (
+      await admin.query<{ id: string }>(
+        'select account_id as id from account_household where household_id = $1',
+        [hh],
+      )
+    ).rows.map((r) => r.id);
+    const formers = (
+      await admin.query<{ id: string }>(
+        'select former_account_id as id from member where household_id = $1 and former_account_id is not null',
+        [hh],
+      )
+    ).rows.map((r) => r.id);
+    expect(formers.length).toBeGreaterThan(0);
+    expect(ids.sort()).toEqual([...signIns].sort());
+    const teen = await h.join(owner, { name: 'Tia', email: 'tia-534@example.test', role: 'teen' });
+    const teens = await asThem<{ id: string }>(
+      { member: teen.member_id, role: 'teen', account: await accountOf(teen) },
+      'select id from account',
     );
-    expect(ids.sort()).toEqual(expected.rows.map((r) => r.id).sort());
+    for (const f of formers) expect(teens.map((r) => r.id)).not.toContain(f);
+    const owners = await asThem<{ id: string }>(await ownerActor(), 'select id from account');
+    expect(owners.map((r) => r.id).sort()).toEqual(
+      [...new Set([...signIns, await accountOf(teen), ...formers])].sort(),
+    );
     // The paths that read an account as somebody signed in still work: the
     // owner's card on a sign-in, two-step sign-in's own row, a password change.
     await fresh(owner);

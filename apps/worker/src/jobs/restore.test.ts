@@ -35,6 +35,7 @@ import {
   createTestDatabase,
   privilegeSnapshot,
   testAdminUrl,
+  zoneShortOfAYear,
   type TestDatabase,
 } from '@fdv/db/testing';
 import { readAll } from '@fdv/storage';
@@ -1649,6 +1650,9 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         'session',
         'share_session',
         'suggestion_dismissal',
+        // Where files are kept, and the mail server (0056, the 5.34 review).
+        'smtp_settings',
+        'vault',
       ].sort(),
     );
     for (const r of rules) {
@@ -1848,6 +1852,45 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         `create policy account_reach on public.account as restrictive using (${qual})`,
       );
     }
+    // Who removes somebody (the 5.34 review): a guest who never signed in, by an owner.
+    const { rows: removal } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = 'member_remove_actor'`,
+    );
+    const removalQual = (removal[0] as { qual: string }).qual;
+    await sql(vault.adminUrl, 'drop policy member_remove_actor on public.member');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/no rule says .*member_remove_actor/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy member_remove_actor on public.member as restrictive for delete using (${removalQual})`,
+      );
+    }
+    // What a limited caller is not told: the mail server, and the places
+    // files are kept but those holding what they are given (the 5.34 review).
+    for (const [table, name] of [
+      ['smtp_settings', 'smtp_settings_restricted'],
+      ['vault', 'vault_restricted'],
+    ] as const) {
+      const { rows } = await sql(
+        vault.adminUrl,
+        `select pg_get_expr(polqual, polrelid) as qual from pg_policy where polname = $1`,
+        [name],
+      );
+      const kept = (rows[0] as { qual: string }).qual;
+      await sql(vault.adminUrl, `drop policy ${name} on public.${table}`);
+      try {
+        await expect(checkRestored(target()), name).rejects.toThrow(
+          new RegExp(`no rule keeps a restricted viewer to their grant on ${table}`),
+        );
+      } finally {
+        await sql(
+          vault.adminUrl,
+          `create policy ${name} on public.${table} as restrictive using (${kept})`,
+        );
+      }
+    }
 
     // A backup loads past the guards: what it holds is asked.
     const { rows: hhs } = await sql(vault.adminUrl, 'select id from household limit 1');
@@ -1900,6 +1943,33 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         [guest, hh],
       );
       expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      // An end more than a year away (the 5.34 review, S534-07): no backup
+      // the vault wrote holds one.
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '400 days'
+          where member_id = $1`,
+        [guest],
+      );
+      await expect(checkRestored(target())).rejects.toThrow(
+        /1 guests' sign-ins end more than a year away/,
+      );
+      await sql(
+        vault.adminUrl,
+        `update account_household set access_expires_at = now() + interval '8784 hours' - interval '1 minute'
+          where member_id = $1`,
+        [guest],
+      );
+      expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      // Counted as the vault counts it, in hours, on whatever clock the
+      // database keeps: in a zone 366 of whose days are an hour short (L534-06).
+      const zone = await zoneShortOfAYear(vault.adminUrl);
+      await sql(vault.adminUrl, `alter database "${vault.name}" set timezone = '${zone}'`);
+      try {
+        expect(await checkRestored(target())).toMatchObject({ households: 1 });
+      } finally {
+        await sql(vault.adminUrl, `alter database "${vault.name}" reset timezone`);
+      }
       // A sign-in of the family's with an end.
       await sql(
         vault.adminUrl,

@@ -326,6 +326,20 @@ export function registerAccess(
    * not_a_guest`.
    */
   if (guests) {
+    // A guest who never signed in, removed (the 5.34 review): owners, asked
+    // as taking a sign-in away is (change_people).
+    app.delete(
+      '/api/v1/members/:id',
+      { preHandler: [app.requireAuth, needs('member.remove')] },
+      async (req, reply) => {
+        const p = principal(req);
+        const id = parse(idParam, req.params).id;
+        await stepUp.require(p, 'change_people');
+        await guests.remove(p, id, metaOf(req));
+        return reply.status(204).send();
+      },
+    );
+
     app.post('/api/v1/members/:id/renew', owners, async (req) => {
       const p = principal(req);
       const id = parse(idParam, req.params).id;
@@ -536,28 +550,29 @@ export function registerHousehold(
   const ownerDecides = (p: Principal) =>
     stepUp ? { ownerDecides: () => stepUp.requireOwnerPower(p, 'limit_access') } : {};
 
-  app.post('/api/v1/invitations', auth, async (req, reply) => {
-    const p = principal(req);
+  // Asked once (the 5.34 review, W534-02): an owner's decision asks for a
+  // passkey or a code first, which serves the ordinary step-up too, so a
+  // browser is not asked for the password and then for a code.
+  const invite = async (p: Principal, body: z.infer<typeof inviteBody>, req: FastifyRequest) => {
+    if (stepUp && (await invitations.asksOwnerDecision(p, body))) {
+      await stepUp.requireOwnerPower(p, 'limit_access');
+    }
     await stepUp?.require(p, 'change_people');
-    const created = await invitations.create(
-      p,
-      parse(inviteBody, req.body),
-      metaOf(req),
-      ownerDecides(p),
-    );
+    return invitations.create(p, body, metaOf(req), ownerDecides(p));
+  };
+
+  app.post('/api/v1/invitations', auth, async (req, reply) => {
+    const created = await invite(principal(req), parse(inviteBody, req.body), req);
     return reply.status(201).send(created);
   });
 
   // The spelling the API specification uses, for an existing person.
   app.post('/api/v1/members/:id/invite', auth, async (req, reply) => {
-    const p = principal(req);
-    await stepUp?.require(p, 'change_people');
     const body = parse(inviteExistingBody, req.body);
-    const created = await invitations.create(
-      p,
+    const created = await invite(
+      principal(req),
       { ...body, member_id: params(idParam, req).id },
-      metaOf(req),
-      ownerDecides(p),
+      req,
     );
     return reply.status(201).send(created);
   });

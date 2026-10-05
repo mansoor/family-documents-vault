@@ -217,9 +217,15 @@ function audienceFor(p: Principal, audience: CollectionAudience): CollectionAudi
 }
 
 /** "Jane (viewer) will be able to see this" (5.33): of what was just put in a collection. */
-export function viewerWillSee(name: string, sees: number, added: number): string {
+export function viewerWillSee(
+  name: string,
+  sees: number,
+  added: number,
+  kind: 'family' | 'guest' = 'family',
+): string {
   const what = added === 1 ? 'this' : sees === added ? 'these' : `${sees} of these`;
-  return `${name} (viewer) will be able to see ${what}.`;
+  // Somebody from outside the family is said to be one (the 5.34 review).
+  return `${name} (${kind === 'guest' ? 'guest' : 'viewer'}) will be able to see ${what}.`;
 }
 
 export class CollectionService {
@@ -554,16 +560,18 @@ export class CollectionService {
       const viewers =
         addedIds.length > 0 && collection.audience === 'everyone'
           ? (
-              await sql<{ display_name: string; documents: number }>`
-                select display_name, documents
-                  from collection_viewers_given(${collection.id}::uuid, ${addedIds}::uuid[])`.execute(
-                trx,
-              )
+              await sql<{ display_name: string; documents: number; kind: 'family' | 'guest' }>`
+                select g.display_name, g.documents, m.kind
+                  from collection_viewers_given(${collection.id}::uuid, ${addedIds}::uuid[]) g
+                  join member m on m.id = g.member_id
+                 order by g.display_name, g.member_id`.execute(trx)
             ).rows
           : [];
       return {
         collectionId: collection.id,
-        warnings: viewers.map((v) => viewerWillSee(v.display_name, v.documents, addedIds.length)),
+        warnings: viewers.map((v) =>
+          viewerWillSee(v.display_name, v.documents, addedIds.length, v.kind),
+        ),
       };
     });
     // Read afresh, the change made and let go.

@@ -198,11 +198,18 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return detail.kind === 'guest'
         ? line(`${who} added ${nameOf(detail, 'display_name')} as a guest from outside the family`)
         : line(`${who} added ${nameOf(detail, 'display_name')} to the family`);
+    // A guest who never signed in, removed (the 5.34 review): by the name
+    // they had, as the person is gone.
+    case 'member.removed':
+      return line(
+        `${who} removed ${nameOf(detail, 'display_name')}, a guest who never signed in`,
+        true,
+      );
     // A guest's sign-in renewed (5.34, A28): until when, on the household's clock.
     case 'member.access_renewed': {
       const until = text(detail.access_expires_at);
       return line(
-        `${who} renewed the sign-in of ${personOf(e)}${until ? ` until ${dayWords(until, e.timezone)}` : ''}`,
+        `${who} renewed the sign-in of ${personOf(e)}${until ? ` until ${dayWords(until, e.timezone, true)}` : ''}`,
         true,
       );
     }
@@ -368,7 +375,7 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       if (detail.kind === 'guest') {
         const until = text(detail.access_expires_at);
         return line(
-          `${who} invited ${nameOf(detail, 'email')} to sign in as a guest${until ? ` until ${dayWords(until, e.timezone)}` : ''}`,
+          `${who} invited ${nameOf(detail, 'email')} to sign in as a guest${until ? ` until ${dayWords(until, e.timezone, true)}` : ''}`,
           true,
         );
       }
@@ -659,13 +666,13 @@ function audienceWords(audience: unknown): string {
 }
 
 /** "5 October at 14:00": a moment, on the household's clock (the 5.26 review). */
-function dayWords(iso: string, timezone: string | null | undefined): string {
+function dayWords(iso: string, timezone: string | null | undefined, year = false): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return 'later';
   try {
-    return shareEndWords(at, timezone || 'UTC', { weekday: false });
+    return shareEndWords(at, timezone || 'UTC', { weekday: false, year });
   } catch {
-    return shareEndWords(at, 'UTC', { weekday: false });
+    return shareEndWords(at, 'UTC', { weekday: false, year });
   }
 }
 

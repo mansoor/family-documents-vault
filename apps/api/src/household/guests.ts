@@ -96,4 +96,68 @@ export class GuestService {
       return { member_id: person.id, access_expires_at: end.toISOString() };
     });
   }
+
+  /**
+   * DELETE /members/{id} (the 5.34 review, W534-03): a guest who never
+   * signed in — invited, and the invitation cancelled, expired or never
+   * accepted — removed, with their invitations and limits. Owners only
+   * (`member.remove`). Anybody who has had a sign-in is kept (409
+   * `had_sign_in`): their sign-in is taken away, or given back, instead;
+   * nobody of the family is removed this way (409 `not_a_guest`). The
+   * database refuses any other removal too (0056, member_remove_actor).
+   * Locks in a role change's order: the household, the person, the log.
+   */
+  async remove(p: Principal, memberId: string, meta: RequestMeta): Promise<void> {
+    requireCapability(p, 'member.remove');
+    if (!UUID.test(memberId)) throw gone();
+    await withPrincipal(this.db, p, async (trx) => {
+      await sql`select 1 from household where id = app_household() for share`.execute(trx);
+      const person = await trx
+        .selectFrom('member')
+        .select(['id', 'display_name', 'kind', 'former_account_id'])
+        .where('id', '=', memberId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!person) throw gone();
+      if (person.kind !== 'guest') {
+        throw new ApiError(
+          409,
+          'not_a_guest',
+          `${person.display_name} is of the family, and stays in it.`,
+        );
+      }
+      const signIn = await trx
+        .selectFrom('account_household')
+        .select('account_id')
+        .where('member_id', '=', person.id)
+        .executeTakeFirst();
+      const accepted = await trx
+        .selectFrom('invitation')
+        .select('id')
+        .where('member_id', '=', person.id)
+        .where('accepted_at', 'is not', null)
+        .executeTakeFirst();
+      if (signIn || person.former_account_id !== null || accepted) {
+        throw new ApiError(
+          409,
+          'had_sign_in',
+          `${person.display_name} has had a sign-in here. Take it away instead; an owner can give it back.`,
+        );
+      }
+      const removed = await trx.deleteFrom('member').where('id', '=', person.id).executeTakeFirst();
+      // A rule that quietly removed nothing removed nothing.
+      if (Number(removed.numDeletedRows) !== 1) throw gone();
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'member.removed',
+        objectType: 'member',
+        objectId: person.id,
+        detail: { display_name: person.display_name, kind: 'guest' },
+        ip: meta.ip,
+      });
+    });
+  }
 }
+
+const gone = () => new ApiError(404, 'not_found', 'That person is not here.');

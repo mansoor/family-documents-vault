@@ -99,6 +99,12 @@ export interface Principal {
    */
   guest?: boolean;
   accessExpiresAt?: Date | null;
+  /**
+   * Limited by an owner (5.32), or a guest: the database narrows them
+   * (app_restricted()); the API refuses them the household's storage and
+   * mail settings too (the 5.34 review). Absent for anybody else.
+   */
+  restricted?: boolean;
 }
 
 export interface SetupInput {
@@ -871,12 +877,16 @@ export class AuthService {
       memberId: open.member_id,
       role: open.role,
     };
+    const sight = await this.sightOf(who);
     return {
       ...who,
-      seesAdults: await this.seesAdultsOf(who),
+      seesAdults: sight.seesAdults,
       ...(open.access_expires_at
         ? { guest: true, accessExpiresAt: new Date(open.access_expires_at) }
         : {}),
+      // Limited by an owner, or a guest (always limited): told nothing of
+      // where files are kept nor of the mail server (the 5.34 review).
+      ...(sight.restricted || open.access_expires_at ? { restricted: true } : {}),
     };
   }
 
@@ -886,8 +896,12 @@ export class AuthService {
    * (D6), so only a viewer's is read — as the person themselves, who reads
    * their own.
    */
-  private async seesAdultsOf(who: Omit<Principal, 'seesAdults'>): Promise<boolean> {
-    if (!restrictionMayWiden(who.role)) return seesAdults(who.role, null);
+  private async sightOf(
+    who: Omit<Principal, 'seesAdults'>,
+  ): Promise<{ seesAdults: boolean; restricted: boolean }> {
+    if (!restrictionMayWiden(who.role)) {
+      return { seesAdults: seesAdults(who.role, null), restricted: false };
+    }
     const restriction = await withPrincipal(this.db, who, (trx) =>
       trx
         .selectFrom('access_restriction')
@@ -895,7 +909,10 @@ export class AuthService {
         .where('member_id', '=', who.memberId)
         .executeTakeFirst(),
     );
-    return seesAdults(who.role, restriction ?? null);
+    return {
+      seesAdults: seesAdults(who.role, restriction ?? null),
+      restricted: restriction !== undefined,
+    };
   }
 
   /** Why a session that no longer authenticates ended, for the 401. */

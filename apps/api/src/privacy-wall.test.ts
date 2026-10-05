@@ -2447,7 +2447,10 @@ for (const attacker of ['restricted', 'guest'] as const)
         granted = json<DocumentView>(mine).id;
         if (attacker === 'guest') {
           // Somebody outside the family, invited as a guest given the same
-          // (5.34): limited from the moment they accept, with an end.
+          // (5.34): limited from the moment they accept, with an end. Any
+          // guest an owner invites is an owner's decision, with a code (the
+          // 5.34 review).
+          await h.decider(owner);
           const invited = await h.app.inject({
             method: 'POST',
             url: '/api/v1/invitations',
