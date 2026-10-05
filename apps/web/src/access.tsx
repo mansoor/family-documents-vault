@@ -1,11 +1,14 @@
 import {
+  namedAllGone,
+  zonedParts,
+  zonedTime,
   type AccessGrant,
   type AccessPreview,
   type CollectionView,
   type DocumentTypeView,
   type MemberAccess,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { api, ApiRequestError, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
@@ -32,9 +35,16 @@ export const NO_LIMITS: Limits = {
   include_adults_only: false,
   include_no_person_docs: false,
   expires_at: null,
+  limits_people: false,
+  limits_types: false,
 };
 
-/** The limits as a viewer's card holds them, to change. */
+/**
+ * The limits as a viewer's card holds them, to change or keep: the flags
+ * too, so that a person or a kind named and deleted since still limits
+ * when they are sent back, and nothing widens by being kept (R532-01, the
+ * 5.33 review).
+ */
 export const limitsOf = (a: MemberAccess): Limits => ({
   people: a.people,
   types: a.types,
@@ -42,7 +52,15 @@ export const limitsOf = (a: MemberAccess): Limits => ({
   include_adults_only: a.include_adults_only,
   include_no_person_docs: a.include_no_person_docs,
   expires_at: a.expires_at,
+  limits_people: a.limits_people,
+  limits_types: a.limits_types,
 });
+
+/** Said when every kind, or every person, the limits named has been deleted since. */
+export const KINDS_GONE =
+  'Every kind these limits named has been deleted. They stay limited to those kinds, so they give nothing by person or kind until you choose others.';
+export const PEOPLE_GONE =
+  'Everyone these limits named has been removed. They stay limited to those people, so they give none of anybody’s documents by person until you choose others.';
 
 /** "14 documents" */
 const documentsWord = (n: number) => `${n} document${n === 1 ? '' : 's'}`;
@@ -53,15 +71,16 @@ export function previewWords(p: AccessPreview): string {
   return `They will see ${documentsWord(p.documents)}${own}.`;
 }
 
-/** The day an end is chosen as, from what the vault keeps: the browser's day. */
-const dayOf = (iso: string | null) => {
-  if (!iso) return '';
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-/** The end of that day, on this device's clock: the moment the vault keeps. */
-const endOf = (day: string) => (day ? new Date(`${day}T23:59:00`).toISOString() : null);
+/**
+ * The day an end is chosen as, from what the vault keeps: the family's day,
+ * on the household's clock, as the vault says it (the 5.33 review,
+ * L533-08).
+ */
+export const dayOf = (iso: string | null, timezone: string) =>
+  iso ? zonedParts(new Date(iso), timezone).date : '';
+/** The end of that day, on the household's clock: the moment the vault keeps. */
+export const endOf = (day: string, timezone: string) =>
+  day ? (zonedTime(day, '23:59', timezone)?.toISOString() ?? null) : null;
 
 /**
  * People, kinds of document and collections to give a viewer, and the
@@ -82,16 +101,24 @@ export function LimitsPicker(props: {
   const hasCollections = caps?.features.collections === true;
   const { data, error } = useLoad(
     async (t) => {
-      const [members, types, collections] = await Promise.all([
+      const [members, types, collections, profile] = await Promise.all([
         api.members(t),
         api.documentTypes(t),
         // A vault from before collections has none to give.
         hasCollections ? api.collections(t) : Promise.resolve({ items: [] as CollectionView[] }),
+        // The household's clock, which an end is chosen and said on.
+        api.profile(t).catch(() => null),
       ]);
-      return { members: members.items, types: types.items, collections: collections.items };
+      return {
+        members: members.items,
+        types: types.items,
+        collections: collections.items,
+        timezone: profile?.timezone ?? 'UTC',
+      };
     },
     [authVersion, hasCollections],
   );
+  const timezone = data?.timezone ?? 'UTC';
   const [count, setCount] = useState<AccessPreview | null>(null);
   const [countError, setCountError] = useState<string | null>(null);
   const v = props.value;
@@ -117,13 +144,23 @@ export function LimitsPicker(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, withToken]);
 
-  const toggle = (list: 'people' | 'types' | 'collections', id: string, on: boolean) =>
+  // A choice made here says whether people, or kinds, are named at all: an
+  // empty list chosen here is "none chosen" (any), said in so many words.
+  const toggle = (list: 'people' | 'types' | 'collections', id: string, on: boolean) => {
+    const now = on ? [...v[list], id] : v[list].filter((x) => x !== id);
     props.onChange({
       ...v,
-      [list]: on ? [...v[list], id] : v[list].filter((x) => x !== id),
+      [list]: now,
+      ...(list === 'people' ? { limits_people: now.length > 0 } : {}),
+      ...(list === 'types' ? { limits_types: now.length > 0 } : {}),
     });
+  };
+  const gone = namedAllGone(v);
   const people = (data?.members ?? []).filter((m: Member) => m.id !== props.memberId);
-  const kinds = (data?.types ?? []).filter((t: DocumentTypeView) => !t.hidden);
+  // A hidden kind already chosen is shown, so that it can be taken away.
+  const kinds = (data?.types ?? []).filter(
+    (t: DocumentTypeView) => !t.hidden || v.types.includes(t.key),
+  );
   const everyone = (data?.collections ?? []).filter(
     (c: CollectionView) => c.audience === 'everyone',
   );
@@ -137,6 +174,14 @@ export function LimitsPicker(props: {
         <p className="muted" id={id('people-about')}>
           None chosen: anybody’s, of the kinds below.
         </p>
+        {gone.people && (
+          <div className="stack">
+            <p className="status status-warn">{PEOPLE_GONE}</p>
+            <Button kind="quiet" onClick={() => props.onChange({ ...v, limits_people: false })}>
+              Give anybody’s instead
+            </Button>
+          </div>
+        )}
         <div className="limits-list">
           {people.map((m) => (
             <Check
@@ -152,6 +197,14 @@ export function LimitsPicker(props: {
       <fieldset className="limits-set">
         <legend className="field-label">Which kinds</legend>
         <p className="muted">None chosen: every kind of the people chosen.</p>
+        {gone.types && (
+          <div className="stack">
+            <p className="status status-warn">{KINDS_GONE}</p>
+            <Button kind="quiet" onClick={() => props.onChange({ ...v, limits_types: false })}>
+              Give every kind instead
+            </Button>
+          </div>
+        )}
         <div className="limits-list limits-kinds">
           {kinds.map((t) => (
             <Check
@@ -209,12 +262,12 @@ export function LimitsPicker(props: {
           <input
             id={id('until')}
             type="date"
-            value={dayOf(v.expires_at)}
-            onChange={(e) => props.onChange({ ...v, expires_at: endOf(e.target.value) })}
+            value={dayOf(v.expires_at, timezone)}
+            onChange={(e) => props.onChange({ ...v, expires_at: endOf(e.target.value, timezone) })}
             aria-describedby={id('until-note')}
           />
           <span id={id('until-note')} className="muted">
-            After this day they see nothing at all.
+            {`After this day, on the family’s clock (${timezone}), they see nothing at all.`}
           </span>
         </div>
       </fieldset>
@@ -246,7 +299,23 @@ export function ViewerLimits(props: {
   const [takingOff, setTakingOff] = useState(false);
   const changeButton = useRef<HTMLButtonElement>(null);
   const offButton = useRef<HTMLButtonElement>(null);
+  const saveButton = useRef<HTMLButtonElement>(null);
+  const editorHeading = useRef<HTMLHeadingElement>(null);
   const a = props.access;
+  // Focus follows the editor (the 5.33 review, W533-04): into it as it
+  // opens, and back to the button that opened it as it closes unsaved.
+  const wasEditing = useRef(false);
+  useLayoutEffect(() => {
+    if (editing && !wasEditing.current) editorHeading.current?.focus();
+    wasEditing.current = editing !== null;
+  }, [editing]);
+  const cancel = () => {
+    flushSync(() => {
+      setEditing(null);
+      setError(null);
+    });
+    changeButton.current?.focus();
+  };
 
   const save = async (limits: Limits, confirmPrivate: boolean, said: string) => {
     if (busy) return;
@@ -296,7 +365,7 @@ export function ViewerLimits(props: {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (editing) {
+    if (editing && !busy) {
       void save(
         editing,
         false,
@@ -311,7 +380,10 @@ export function ViewerLimits(props: {
         What they can see
       </h3>
       {editing ? (
-        <form className="stack" onSubmit={submit}>
+        <form className="stack" onSubmit={submit} aria-labelledby="limits-edit-h">
+          <h4 id="limits-edit-h" ref={editorHeading} tabIndex={-1} className="limits-edit-h">
+            {`Choose what ${props.name} can see`}
+          </h4>
           <LimitsPicker
             idPrefix="limits"
             value={editing}
@@ -321,16 +393,12 @@ export function ViewerLimits(props: {
           />
           <ErrorNote message={error} />
           <div className="row">
-            <Button type="submit" disabled={busy}>
+            {/* aria-disabled, not disabled: it keeps the focus while it
+                saves, for the confirmation to hand back to. */}
+            <button ref={saveButton} type="submit" className="btn btn-primary" aria-disabled={busy}>
               {busy ? 'Saving…' : 'Save these limits'}
-            </Button>
-            <Button
-              kind="quiet"
-              onClick={() => {
-                setEditing(null);
-                setError(null);
-              }}
-            >
+            </button>
+            <Button kind="quiet" onClick={cancel}>
               Cancel
             </Button>
           </div>
@@ -347,6 +415,9 @@ export function ViewerLimits(props: {
               ? a.summary
               : `${props.name} can see every family document but the Adults only ones.`}
           </p>
+          {/* Named, and deleted since (R532-01): still limited by them. */}
+          {a && namedAllGone(a).types && <p className="status status-warn">{KINDS_GONE}</p>}
+          {a && namedAllGone(a).people && <p className="status status-warn">{PEOPLE_GONE}</p>}
           <ErrorNote message={error} />
           <div className="row">
             {a?.reconfirm_since && (
@@ -390,6 +461,7 @@ export function ViewerLimits(props: {
           confirmLabel="Limit them"
           busyLabel="Saving…"
           busy={busy}
+          returnFocus={saveButton}
           onConfirm={() =>
             void save(editing, true, `${props.name}’s limits are saved, and they have been told.`)
           }

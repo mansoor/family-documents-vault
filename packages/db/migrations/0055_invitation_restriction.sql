@@ -11,11 +11,12 @@
 --
 -- Only a collection for Everyone is given to a viewer (A17). 0054's rule
 -- already gives nothing of a collection for anybody narrower, or deleted;
--- from here a collection for anybody narrower is never named in a grant at
--- all. Naming one is refused (a collection for Everyone, not deleted, held
--- FOR SHARE while it is named, so a change of its audience at the same
--- moment waits, or is waited for and seen), and one whose audience changes
--- away from Everyone leaves every grant in the same transaction.
+-- from here such a collection is never named in a grant at all. Naming one
+-- is refused (a collection for Everyone, not deleted, held FOR SHARE while
+-- it is named, so a change of its audience at the same moment waits, or is
+-- waited for and seen), and one whose audience changes away from Everyone,
+-- or that is deleted, leaves every grant in the same transaction — and is
+-- not given again should it ever come back (the 5.33 review, L533-02).
 --
 -- And the one question an adult or a teen putting a document in a
 -- collection may ask of the grants: which viewers given that collection
@@ -63,10 +64,12 @@ create trigger access_restriction_collection_everyone
   before insert or update on access_restriction_collection
   for each row execute function access_restriction_collection_everyone();
 
--- A collection made for anybody narrower than Everyone leaves every grant,
--- in the transaction that changes it, whoever changes it (its maker may be
--- an adult or a teen, who read no grant): 0054's rule would give nothing of
--- it, and now nothing names it either.
+-- A collection made for anybody narrower than Everyone, or deleted, leaves
+-- every grant, in the transaction that changes it, whoever changes it (its
+-- maker may be an adult or a teen, who read no grant): 0054's rule would
+-- give nothing of it, and now nothing names it either. Otherwise a deleted
+-- one stayed named, and every save of the viewer's limits naming it was
+-- refused (the 5.33 review, L533-02).
 create function doc_collection_leaves_grants() returns trigger
   language plpgsql security definer
   set search_path = pg_catalog, public, pg_temp as $$
@@ -78,10 +81,18 @@ begin
 end $$;
 
 create trigger doc_collection_leaves_grants
-  after update of audience on doc_collection
+  after update of audience, deleted_at on doc_collection
   for each row
-  when (old.audience = 'everyone' and new.audience is distinct from 'everyone')
+  when ((old.audience = 'everyone' and new.audience is distinct from 'everyone')
+        or (old.deleted_at is null and new.deleted_at is not null))
   execute function doc_collection_leaves_grants();
+
+-- And what 5.32 left named: a collection deleted, or for anybody narrower,
+-- gives nothing and is named no more.
+delete from access_restriction_collection g
+ using doc_collection c
+ where c.id = g.collection_id
+   and (c.deleted_at is not null or c.audience is distinct from 'everyone');
 
 -- ------------------------------------------------------- who will see it
 

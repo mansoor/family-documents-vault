@@ -3307,44 +3307,61 @@ totp_required_for_owner` for an owner with neither two-step sign-in nor a
     A17, A27, A29, A56–A59). Older phones simply see fewer documents.
     - **Added:** `PUT /api/v1/members/{id}/access` with `{ people[],
 types[], collections[], include_adults_only, include_no_person_docs,
-expires_at, confirm_private? }` (each optional; a list left out is none,
-      a flag false, the end none) limits a viewer to exactly that grant, or
-      changes their limits, and answers `MemberAccess`: the grant, `summary`
-      (the sentence `restrictionSummary` makes), `reconfirm_since`,
-      `private_confirmed` and `updated_at`. `DELETE` takes the limits off
-      (`204`, also when there were none); the viewer then sees every family
-      document but the Adults only ones. Both are owners only (`403
-forbidden`) and an owner power (A54), with **new** step-up action
-      `limit_access`: an owner with neither two-step sign-in nor a passkey is
-      refused it outright (`403 totp_required_for_owner`, "Turn on two-step
-      sign-in to limit what a viewer can see."), and any other is asked for a
-      passkey or a code within five minutes, never the password
-      (`step_up_required`, `limit_access`; `FACTOR_STEP_UPS` lists it). What
-      is sent is checked first (`422`: people, kinds and collections of the
-      family; an end in the future), then the step-up, then whom: nobody of
-      the family `404`, anybody but a viewer (or somebody with no sign-in)
-      `409 not_a_viewer`, somebody who keeps Only me documents `409
-confirm_private` until it is sent again with `confirm_private: true` —
-      they are then told by email (A59), once. Putting the same grant again
-      after their sign-in was given back confirms it (`reconfirm_since`
-      becomes null); taking the limits off clears it too. A change applies
-      from the viewer's next request.
+expires_at, limits_people?, limits_types?, confirm_private? }` (each
+      optional; a list left out is none, a checkbox false, the end none)
+      limits a viewer to that grant, or changes their limits, and answers
+      `MemberAccess`: the grant, `limits_people` and `limits_types`,
+      `summary` (the sentence `restrictionSummary` makes), `reconfirm_since`,
+      `private_confirmed` and `updated_at`. `limits_people` and
+      `limits_types` say whether it names people, or kinds, at all: true
+      whenever one is named, and still true once every one it named has been
+      deleted — then it gives nothing by person or kind (R532-01). Send them
+      back as `MemberAccess` gave them. An empty list never clears one by
+      itself: left out, it stays as it is; only `false` lets an empty list
+      mean anybody's, or any kind. `DELETE` takes the limits off (`204`, also
+      when there were none); the viewer then sees every family document but
+      the Adults only ones. Both are owners only and an owner power (A54),
+      with **new** step-up action `limit_access`. A PUT is refused in this
+      order: anybody but an owner `403 forbidden`; a body of the wrong shape
+      `422`; an owner with neither two-step sign-in nor a passkey `403
+totp_required_for_owner` ("Turn on two-step sign-in to limit what a
+      viewer can see."), and any other without a passkey or a code within five
+      minutes `403 step_up_required` (`limit_access`; `FACTOR_STEP_UPS` lists
+      it), never the password; nobody of the family `404`; anybody but a
+      viewer (or somebody with no sign-in) `409 not_a_viewer`; what the grant
+      names `422` (people, kinds and collections of the family, a collection
+      for Everyone, an end in the future); somebody who keeps Only me
+      documents `409 confirm_private` until it is sent again with
+      `confirm_private: true` — they are then told by email (A59), once, or,
+      with no sign-in then, when their sign-in is given back. Putting the
+      same grant again after their sign-in was given back confirms it
+      (`reconfirm_since` becomes null) — its end too, even one that has
+      passed, which stays ended; a new end in the past is refused. Taking the
+      limits off clears it too. A change applies from the viewer's next
+      request. A change that lets a flag go, as any widening, is logged as
+      `access.changed`, never as a confirmation.
     - **Added:** only a collection for Everyone may be granted (A17): any
-      other, or a deleted one, is `422 validation_failed` with a sentence
-      ("“Teen papers” is for Teens and up, so it cannot be given to a viewer.
-      Only a collection for Everyone in the family can be."; `onlyEveryone`
-      in `@fdv/shared`). A collection whose audience changes away from
-      Everyone leaves every grant in the same transaction, and does not come
-      back by itself if it is made Everyone again.
+      other is `422 validation_failed` with a sentence ("“Teen papers” is for
+      Teens and up, so it cannot be given to a viewer. Only a collection for
+      Everyone in the family can be."; `onlyEveryone` in `@fdv/shared`). A
+      collection whose audience changes away from Everyone, or that is
+      deleted, leaves every grant in the same transaction, and is not given
+      again by itself should it be made Everyone, or brought back. A deleted
+      collection sent in a grant is left out, not refused; `MemberAccess`
+      names only collections that still grant.
     - **Added:** `GET /api/v1/members/{id}/access/preview` counts a grant not
       yet saved — `?people=a,b&types=x,y&collections=c&include_adults_only=true&include_no_person_docs=false&expires_at=…`
-      (lists comma-separated) — by the rule itself, and answers `{ documents,
-keeps_private }`: what they would then see out of the Trash, but for
-      their own Only me documents, whose number is told to nobody else
-      (`keeps_private` says there are some; to an owner alone).
-      `GET /api/v1/access/preview` counts for somebody not yet in the family,
-      who owns nothing. An owner's, or an adult's (who may invite a viewer)
-      without Adults only documents (`403`); anybody else `403`.
+      (lists comma-separated; `limits_people` and `limits_types` too) — by
+      the rule itself, as a PUT would write it, and answers `{ documents,
+keeps_private? }`: what they would then see out of the Trash, but for
+      their own Only me documents, whose number is told to nobody else.
+      `keeps_private` says there are some, and is there only for an owner
+      whose session gave a passkey or a code within five minutes. Only
+      somebody who could be limited is counted: anybody else `409
+not_a_viewer`. `GET /api/v1/access/preview` counts for somebody not yet
+      in the family, who owns nothing. An owner's, or an adult's (who may
+      invite a viewer) without Adults only documents (`403`); anybody else
+      `403`.
     - **Added:** `GET /me` gains `restriction`: for a restricted viewer, `{
 summary, people[{ id, display_name }], types[{ key, label }],
 collections[{ id, name }], include_adults_only, include_no_person_docs,
@@ -3361,15 +3378,26 @@ expires_at }`, in their own words ("You can see: Tax return documents for
       Accepting it applies it in the same transaction that makes the
       sign-in, so the viewer is never unrestricted for a moment; what it
       names that was deleted since (or a collection no longer for Everyone)
-      is left out. An owner's replaces limits an owner set before on that
-      person; an adult's leaves them, for the owners to confirm. The
-      invitation list's items gain `limited`.
+      is left out, and what it named still narrows. An owner's replaces
+      limits set on that person before the invitation was made; limits set
+      after it, or any already there for an adult's, stay, and the owners
+      are asked to confirm them. The invitation list's items gain `limited`.
     - **Changed:** an adult inviting a viewer must give `restriction` — an
       unrestricted viewer invitation from an adult is refused `403
 forbidden` ("Only an owner can invite a viewer who sees every family
       document. Choose what they can see.") — and may not include Adults
       only documents (`403 forbidden`, A27). Owners may still invite an
       unrestricted viewer.
+    - **Changed:** a restricted viewer's `GET /collections` and `GET
+/collections/{id}` (and `GET /documents/{id}/collections`) give the
+      collections for Everyone granted to them, with the documents in them
+      they are given (A17, U515-11); until now a viewer was given only
+      collections they had made. A viewer with no limits is given none, as
+      before.
+    - **Changed:** a sign-in given back to somebody whose limits were set
+      while it was away says so in its email: "An owner has limited what you
+      can see in the vault: only the documents they have given you, and your
+      own." — nothing of what is given.
     - **Added:** `POST /collections/{id}/items` answers `warnings`: one
       sentence for each viewer given the collection who will now see what
       was put in ("Jane (viewer) will be able to see this.", "… these.", "…
@@ -3387,7 +3415,8 @@ forbidden` ("Only an owner can invite a viewer who sees every family
       is pushed the word and nothing else — not whose details, who asked or
       from when — on each of their devices whose sign-in has not ended,
       beside the notice in the app and the operator's mail, whether or not
-      there is a mail server. A browser is told "Something about your
+      there is a mail server: queued last, after the mail, so a notice that
+      is not asked pushes nothing. A browser is told "Something about your
       details is changing. Open the vault to see what." Phones since app
       0.2.2 show it; an older one shows nothing. TTL a day, Topic
       `fdv-notice`.
@@ -3395,11 +3424,14 @@ forbidden` ("Only an owner can invite a viewer who sees every family
       invitation's alone); `access_restriction_collection_everyone` (a
       collection named in a grant is for Everyone and not deleted, held FOR
       SHARE while it is named) and `doc_collection_leaves_grants` (made for
-      fewer, it leaves every grant), both known to the restore check; and
+      fewer, or deleted, it leaves every grant), both known to the restore
+      check; it also removes any grant naming a collection deleted, or not
+      for Everyone, before it; and
       `collection_viewers_given(collection, documents[])`, which says to
       somebody signed in, not restricted, which viewers given a collection
       would see which of these documents.
-    - `@fdv/shared`: `AccessGrant`, `ACCESS_GRANT_MAX`, `MemberAccess`,
+    - `@fdv/shared`: `AccessGrant` (with `limits_people`, `limits_types`),
+      `namedAllGone`, `ACCESS_GRANT_MAX`, `MemberAccess`,
       `AccessPreview`, `MyRestriction`, `NamedGrant`, `youCanSee`,
       `onlyEveryone`, `NOTICE_WORDS`, `Me.restriction`,
       `Member.restriction`, `MemberAccount.access`, `Invitation.limited`,

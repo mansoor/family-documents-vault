@@ -58,6 +58,13 @@ export interface RestrictionGrant {
   include_adults_only?: boolean | undefined;
   include_no_person_docs?: boolean | undefined;
   expires_at?: Date | null | undefined;
+  /**
+   * Whether it names people, or kinds, at all, as the caller said it: left
+   * out, an empty list keeps what the restriction says now (the 5.33
+   * review); `false` lets an empty list mean "anybody's" or "any kind".
+   */
+  limits_people?: boolean | undefined;
+  limits_types?: boolean | undefined;
 }
 
 /** A grant once checked (`checkGrant`): every part said, each unique. */
@@ -68,7 +75,20 @@ export interface CheckedGrant {
   include_adults_only: boolean;
   include_no_person_docs: boolean;
   expires_at: Date | null;
+  /** As the caller said them, or left out (`RestrictionGrant`). */
+  limits_people?: boolean | undefined;
+  limits_types?: boolean | undefined;
 }
+
+/**
+ * Whether a restriction names people, or kinds, once written: whenever any
+ * is named; otherwise as the caller says, and when they say nothing, as it
+ * says now. An empty list never clears it by itself: a person or a kind
+ * named and deleted since leaves the list empty and the restriction still
+ * limited by them, giving nothing that way (R532-01, the 5.33 review).
+ */
+export const limitsAfter = (named: string[], said: boolean | undefined, had: boolean | undefined) =>
+  named.length > 0 || (said ?? had ?? false);
 
 /** What `restrict` did. */
 export interface Restricted {
@@ -103,6 +123,10 @@ const grantFields = {
   include_adults_only: z.boolean().optional(),
   include_no_person_docs: z.boolean().optional(),
   expires_at: z.string().datetime({ offset: true }).nullable().optional(),
+  // Whether people, or kinds, are named at all (the 5.33 review): what GET
+  // gives, sent back as it came.
+  limits_people: z.boolean().optional(),
+  limits_types: z.boolean().optional(),
 };
 
 /** A grant: an invitation's `restriction`, and the preview's (as a query, below). */
@@ -131,6 +155,8 @@ export const accessPreviewQuery = z
     include_adults_only: z.preprocess(flagOf, grantFields.include_adults_only),
     include_no_person_docs: z.preprocess(flagOf, grantFields.include_no_person_docs),
     expires_at: z.preprocess((v) => (v === '' ? null : v), grantFields.expires_at),
+    limits_people: z.preprocess(flagOf, grantFields.limits_people),
+    limits_types: z.preprocess(flagOf, grantFields.limits_types),
   })
   .strict();
 
@@ -143,6 +169,8 @@ export function grantOf(body: z.infer<typeof accessGrantBody>): RestrictionGrant
     include_adults_only: body.include_adults_only ?? false,
     include_no_person_docs: body.include_no_person_docs ?? false,
     expires_at: body.expires_at ? new Date(body.expires_at) : null,
+    limits_people: body.limits_people,
+    limits_types: body.limits_types,
   };
 }
 
@@ -200,21 +228,29 @@ const invalid = (message: string, field: string) =>
 
 /**
  * A grant checked as the caller sees the family (5.33): an end in the
- * future; the people, kinds and collections it names each one the caller
- * may see; a collection for Everyone, and not deleted (A17). Unique, and
- * as the database spells them.
+ * future — or the one the restriction has now, ended or not, so that
+ * confirming an ended restriction keeps it ended (the 5.33 review,
+ * L533-05); the people, kinds and collections it names each one the caller
+ * may see; a collection for Everyone (A17). A collection deleted since it
+ * was named is left out, never refused: it gives nothing, and refusing it
+ * would leave limits nobody could save (L533-02). Unique, and as the
+ * database spells them.
  */
 export async function checkGrant(
   trx: Db,
   grant: RestrictionGrant,
-  now: number = Date.now(),
+  opts: { now?: number; storedEnd?: Date | null } = {},
 ): Promise<CheckedGrant> {
-  if (grant.expires_at && grant.expires_at.getTime() <= now) {
+  const now = opts.now ?? Date.now();
+  const end = grant.expires_at ?? null;
+  const unchanged = end !== null && opts.storedEnd?.getTime() === end.getTime();
+  if (end && end.getTime() <= now && !unchanged) {
     throw invalid('Choose an end in the future, or none.', 'expires_at');
   }
   const people = [...new Set((grant.people ?? []).map((p) => p.toLowerCase()))];
   const types = [...new Set(grant.types ?? [])];
-  const collections = [...new Set((grant.collections ?? []).map((c) => c.toLowerCase()))];
+  const asked = [...new Set((grant.collections ?? []).map((c) => c.toLowerCase()))];
+  let collections = asked;
   if (people.length > 0) {
     const found = await trx.selectFrom('member').select('id').where('id', 'in', people).execute();
     if (found.length !== people.length) throw invalid('Choose people from the family.', 'people');
@@ -229,19 +265,20 @@ export async function checkGrant(
       throw invalid('Choose kinds of document the family has.', 'types');
     }
   }
-  if (collections.length > 0) {
+  if (asked.length > 0) {
     const found = await trx
       .selectFrom('doc_collection')
-      .select(['id', 'name', 'audience'])
-      .where('id', 'in', collections)
-      .where('deleted_at', 'is', null)
+      .select(['id', 'name', 'audience', 'deleted_at'])
+      .where('id', 'in', asked)
       .orderBy('id')
       .execute();
-    if (found.length !== collections.length) {
+    if (found.length !== asked.length) {
       throw invalid('Choose collections of the family.', 'collections');
     }
-    const narrower = found.find((c) => c.audience !== 'everyone');
+    const live = found.filter((c) => c.deleted_at === null);
+    const narrower = live.find((c) => c.audience !== 'everyone');
     if (narrower) throw invalid(ONLY_EVERYONE(narrower.name, narrower.audience), 'collections');
+    collections = live.map((c) => c.id);
   }
   return {
     people,
@@ -249,7 +286,9 @@ export async function checkGrant(
     collections,
     include_adults_only: grant.include_adults_only ?? false,
     include_no_person_docs: grant.include_no_person_docs ?? false,
-    expires_at: grant.expires_at ?? null,
+    expires_at: end,
+    limits_people: grant.limits_people,
+    limits_types: grant.limits_types,
   };
 }
 
@@ -284,22 +323,20 @@ export async function writeGrant(
     exists: boolean;
     confirmPrivate?: boolean;
     /**
-     * Whether it names people, or kinds, at all, when that is more than the
-     * rows left say: an invitation's limits, some deleted before it was
-     * accepted, still name them (and give none of those).
+     * Whether it names people, or kinds, at all (`limitsAfter`): kept apart
+     * from the rows naming them, so that one deleted since narrows, and the
+     * last one gone gives nothing (the 5.32 review, R532-01) — and a save
+     * of what is shown never widens it (the 5.33 review).
      */
-    limits?: { people: boolean; types: boolean };
+    limits: { people: boolean; types: boolean };
   },
 ): Promise<void> {
   const values = {
     include_adults_only: grant.include_adults_only,
     include_no_person_docs: grant.include_no_person_docs,
     expires_at: grant.expires_at,
-    // Whether people, or kinds, are named at all: kept apart from the rows
-    // naming them, so that one deleted since narrows, and the last one gone
-    // gives nothing (the 5.32 review, R532-01).
-    limits_people: opts.limits?.people === true || grant.people.length > 0,
-    limits_types: opts.limits?.types === true || grant.types.length > 0,
+    limits_people: opts.limits.people || grant.people.length > 0,
+    limits_types: opts.limits.types || grant.types.length > 0,
     ...(opts.confirmPrivate ? { private_confirmed_at: new Date() } : {}),
   };
   const written = opts.exists
@@ -455,11 +492,19 @@ export class RestrictionService {
           'include_adults_only',
           'include_no_person_docs',
           'expires_at',
+          'limits_people',
+          'limits_types',
         ])
         .where('member_id', '=', person.id)
         .forUpdate()
         .executeTakeFirst();
-      const checked = await checkGrant(trx, grant);
+      const checked = await checkGrant(trx, grant, { storedEnd: existing?.expires_at ?? null });
+      // Whether it names people, and kinds, once written: an empty list keeps
+      // what it says now unless the caller says otherwise (the 5.33 review).
+      const limits = {
+        people: limitsAfter(checked.people, checked.limits_people, existing?.limits_people),
+        types: limitsAfter(checked.types, checked.limits_types, existing?.limits_types),
+      };
       // Whether they keep Only me documents, in the Trash too: the database
       // asks the same, and refuses the restriction without a confirmation.
       const keeps = await trx
@@ -478,6 +523,7 @@ export class RestrictionService {
       await writeGrant(trx, p.householdId, person.id, checked, {
         exists: existing !== undefined,
         confirmPrivate: keepsPrivate && !confirmed,
+        limits,
       });
       // 4. The log, last: made, changed, or the same again — confirmed.
       const changed =
@@ -486,6 +532,9 @@ export class RestrictionService {
         existing.include_adults_only !== checked.include_adults_only ||
         existing.include_no_person_docs !== checked.include_no_person_docs ||
         (existing.expires_at?.getTime() ?? null) !== (checked.expires_at?.getTime() ?? null) ||
+        // A flag let go widens as much as a person or a kind added.
+        existing.limits_people !== limits.people ||
+        existing.limits_types !== limits.types ||
         !sameSet(before.people, checked.people) ||
         !sameSet(before.types, checked.types) ||
         !sameSet(before.collections, checked.collections);
@@ -499,6 +548,8 @@ export class RestrictionService {
           objectId: person.id,
           detail: {
             ...grantDetail(checked),
+            ...(limits.people && checked.people.length === 0 ? { limits_people: true } : {}),
+            ...(limits.types && checked.types.length === 0 ? { limits_types: true } : {}),
             ...(existing ? { changed } : {}),
             ...(reconfirmed ? { reconfirmed: true } : {}),
             ...(keepsPrivate && !confirmed ? { confirmed_private: true } : {}),
@@ -600,6 +651,8 @@ export class RestrictionService {
           'reconfirm_since',
           'private_confirmed_at',
           'updated_at',
+          'limits_people',
+          'limits_types',
         ])
         .where('member_id', '=', memberId)
         .executeTakeFirst();
@@ -614,6 +667,8 @@ export class RestrictionService {
         include_adults_only: r.include_adults_only,
         include_no_person_docs: r.include_no_person_docs,
         expires_at: r.expires_at?.toISOString() ?? null,
+        limits_people: r.limits_people,
+        limits_types: r.limits_types,
         summary: summaries.get(r.member_id)?.summary ?? '',
         reconfirm_since: r.reconfirm_since?.toISOString() ?? null,
         private_confirmed: r.private_confirmed_at !== null,
@@ -641,11 +696,17 @@ export class RestrictionService {
         .where('restricted_member_id', '=', memberId)
         .orderBy('type_key')
         .execute(),
+      // Only those that still grant (for Everyone, not deleted), as the rule
+      // and the summary count them: a row left from before is never shown,
+      // so never sent back to be refused (the 5.33 review, L533-02).
       trx
-        .selectFrom('access_restriction_collection')
-        .select('collection_id')
-        .where('restricted_member_id', '=', memberId)
-        .orderBy('collection_id')
+        .selectFrom('access_restriction_collection as g')
+        .innerJoin('doc_collection as c', 'c.id', 'g.collection_id')
+        .select('g.collection_id')
+        .where('g.restricted_member_id', '=', memberId)
+        .where('c.deleted_at', 'is', null)
+        .where('c.audience', '=', 'everyone')
+        .orderBy('g.collection_id')
         .execute(),
     ]);
     return {
@@ -671,6 +732,14 @@ export class RestrictionService {
     p: Principal,
     memberId: string | null,
     grant: RestrictionGrant,
+    opts: {
+      /**
+       * Whether `keeps_private` may be said: an owner whose session gave a
+       * passkey or a code within the last five minutes (the route asks;
+       * the 5.33 review, S533-05). Otherwise it is left out.
+       */
+      tellPrivate?: boolean;
+    } = {},
   ): Promise<AccessPreview> {
     if (p.role !== 'owner') {
       if (!can(p.role, 'member.invite')) {
@@ -680,15 +749,37 @@ export class RestrictionService {
     }
     if (memberId !== null && !UUID.test(memberId)) throw notFound();
     return withPrincipal(this.db, p, async (trx) => {
+      let had:
+        { expires_at: Date | null; limits_people: boolean; limits_types: boolean } | undefined;
       if (memberId !== null) {
         const person = await trx
           .selectFrom('member')
-          .select('id')
+          .select(['id', 'display_name'])
           .where('id', '=', memberId)
           .executeTakeFirst();
         if (!person) throw notFound();
+        // Only somebody who could be limited (A58): a viewer, or somebody
+        // with no sign-in yet. Anybody else is refused as a PUT would be,
+        // and nothing is counted of them (the 5.33 review, S533-05).
+        const signIn = await trx
+          .selectFrom('account_household')
+          .select('role')
+          .where('member_id', '=', person.id)
+          .executeTakeFirst();
+        if (signIn && signIn.role !== 'viewer') {
+          throw new ApiError(409, 'not_a_viewer', ONLY_VIEWERS(person.display_name));
+        }
+        // Their limits now, which an owner reads (0054): a PUT keeps their
+        // flags, and their end, as the preview counts them.
+        had = await trx
+          .selectFrom('access_restriction')
+          .select(['expires_at', 'limits_people', 'limits_types'])
+          .where('member_id', '=', person.id)
+          .executeTakeFirst();
       }
-      const g = await checkGrant(trx, grant);
+      const g = await checkGrant(trx, grant, { storedEnd: had?.expires_at ?? null });
+      const limitsPeople = limitsAfter(g.people, g.limits_people, had?.limits_people);
+      const limitsTypes = limitsAfter(g.types, g.limits_types, had?.limits_types);
       const counted = await sql<{ n: number }>`
         select count(*)::int as n
           from document d
@@ -699,8 +790,8 @@ export class RestrictionService {
                      ${memberId}::uuid,
                      ${g.include_adults_only}::boolean,
                      ${g.include_no_person_docs}::boolean,
-                     ${g.people.length > 0}::boolean,
-                     ${g.types.length > 0}::boolean,
+                     ${limitsPeople}::boolean,
+                     ${limitsTypes}::boolean,
                      ${g.people}::uuid[],
                      ${g.types}::text[],
                      array(select i.document_id
@@ -710,18 +801,18 @@ export class RestrictionService {
                               and c.deleted_at is null
                               and c.audience = 'everyone'))::access_grant,
                  d.id, d.visibility, d.owner_member_id, d.type_key)`.execute(trx);
+      const documents = counted.rows[0]?.n ?? 0;
       // Whether they keep Only me documents: an owner's question alone, who
-      // is asked to confirm it before they are limited (A59).
-      const keeps =
-        memberId !== null && p.role === 'owner'
-          ? await trx
-              .selectFrom('document')
-              .select('id')
-              .where('owner_member_id', '=', memberId)
-              .where('visibility', '=', 'private')
-              .executeTakeFirst()
-          : undefined;
-      return { documents: counted.rows[0]?.n ?? 0, keeps_private: keeps !== undefined };
+      // is asked to confirm it before they are limited (A59), and only once
+      // they have given a passkey or a code (S533-05).
+      if (memberId === null || p.role !== 'owner' || !opts.tellPrivate) return { documents };
+      const keeps = await trx
+        .selectFrom('document')
+        .select('id')
+        .where('owner_member_id', '=', memberId)
+        .where('visibility', '=', 'private')
+        .executeTakeFirst();
+      return { documents, keeps_private: keeps !== undefined };
     });
   }
 

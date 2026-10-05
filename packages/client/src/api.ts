@@ -402,7 +402,9 @@ export function createApi(http: Http) {
      * not_a_viewer`. Somebody who keeps Only me documents: `409
      * confirm_private`, until sent again with `confirm_private: true` — they
      * are told. Putting the same limits again confirms them after their
-     * sign-in was given back (`reconfirm_since`).
+     * sign-in was given back (`reconfirm_since`): send what `MemberAccess`
+     * gave, `limits_people` and `limits_types` too — an empty list with the
+     * flag set still limits, and gives nothing that way.
      */
     setMemberAccess: (
       token: string,
@@ -433,6 +435,8 @@ export function createApi(http: Http) {
             include_adults_only: grant.include_adults_only,
             include_no_person_docs: grant.include_no_person_docs,
             expires_at: grant.expires_at,
+            limits_people: grant.limits_people,
+            limits_types: grant.limits_types,
           },
         )}`,
         { token },

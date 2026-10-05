@@ -1841,8 +1841,17 @@ export const contractScenarios: Scenario[] = [
       expect(
         await refusal(api.setMemberAccess(asAdult.access_token, veraId, { people: [raviId] })),
       ).toMatchObject({ status: 403, code: 'forbidden' });
+      // In one order (the 5.33 review): whom, before what the grant names —
+      // nobody of the family 404, anybody but a viewer 409, then 422.
       expect(
-        await refusal(api.setMemberAccess(owner.access_token, raviId, { people: [veraId] })),
+        await refusal(
+          api.setMemberAccess(owner.access_token, '00000000-0000-4000-8000-000000000533', {
+            collections: [teens.id],
+          }),
+        ),
+      ).toMatchObject({ status: 404, code: 'not_found' });
+      expect(
+        await refusal(api.setMemberAccess(owner.access_token, raviId, { collections: [teens.id] })),
       ).toMatchObject({ status: 409, code: 'not_a_viewer' });
       expect(
         await refusal(api.setMemberAccess(owner.access_token, veraId, { collections: [teens.id] })),
@@ -1881,10 +1890,24 @@ export const contractScenarios: Scenario[] = [
         include_adults_only: false,
         include_no_person_docs: false,
         expires_at: null,
+        limits_people: true,
+        limits_types: true,
         reconfirm_since: null,
         private_confirmed: false,
         summary: "Restricted: sees 1 person's documents of 1 kind and 1 collection.",
       });
+      // Kept as shown — the flags too — it is the same, and nothing widens.
+      const kept = await api.setMemberAccess(owner.access_token, veraId, {
+        people: limited.people,
+        types: limited.types,
+        collections: limited.collections,
+        include_adults_only: limited.include_adults_only,
+        include_no_person_docs: limited.include_no_person_docs,
+        expires_at: limited.expires_at,
+        limits_people: limited.limits_people,
+        limits_types: limited.limits_types,
+      });
+      expect(kept.summary).toBe(limited.summary);
       // She is told, in her words, on her next request.
       const asVera = await signInAs(api, vera.email, vera.password);
       const told = (await api.me(asVera.access_token)).restriction;

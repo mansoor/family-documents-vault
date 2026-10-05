@@ -1,9 +1,12 @@
+import { randomUUID } from 'node:crypto';
+import { EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, describe, expect, it } from 'vitest';
 import { codeFor } from '../auth/totp.js';
-import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import type { Principal, Tokens } from '../auth/service.js';
+import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { IdentityService } from './identity.js';
 
 /**
  * Who sees identity details, to be widened (5.26's notice): since 5.33 the
@@ -141,4 +144,56 @@ describe.skipIf(!testAdminUrl())('a widening, pushed as a notice (5.33)', () => 
       expect(h.jobs.slice(since).filter((j) => j.name === 'push.send')).toHaveLength(1);
     });
   }
+
+  it('the push is queued last, after the mail: a notice whose mail cannot be queued is not asked, and nothing is pushed (L533-07)', async () => {
+    const { h, owner } = await family(true);
+    const me = await h.app.inject({ url: '/api/v1/me', headers: h.as(owner) });
+    const p: Principal = {
+      accountId: me.json<{ account_id: string }>().account_id,
+      sessionId: randomUUID(),
+      householdId: owner.household_id,
+      memberId: owner.member_id,
+      role: 'owner',
+      seesAdults: true,
+    };
+    const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+    const queued: string[] = [];
+    const waiting = async () => {
+      const admin = createPool(h.adminUrl, 1);
+      try {
+        return (
+          await admin.query<{ n: number }>(
+            `select count(*)::int as n from notice_request
+              where household_id = $1 and completed_at is null and withdrawn_at is null`,
+            [owner.household_id],
+          )
+        ).rows[0]?.n;
+      } finally {
+        await admin.end();
+      }
+    };
+    const down = new IdentityService(
+      h.db,
+      keys,
+      async () => {
+        throw new Error('the queue is down');
+      },
+      true,
+      async () => void queued.push('push'),
+    );
+    await expect(down.setAudience(p, 'adults', { ip: null })).rejects.toThrow(/queue is down/);
+    // Rolled back: no notice, and no push for it.
+    expect(queued).toEqual([]);
+    expect(await waiting()).toBe(0);
+    const up = new IdentityService(
+      h.db,
+      keys,
+      async () => void queued.push('mail'),
+      true,
+      async () => void queued.push('push'),
+    );
+    await up.setAudience(p, 'adults', { ip: null });
+    expect(queued).toEqual(['mail', 'push']);
+    expect(await waiting()).toBe(1);
+  });
 });

@@ -115,7 +115,28 @@ export interface AccessGrant {
   include_adults_only: boolean;
   include_no_person_docs: boolean;
   expires_at: string | null;
+  /**
+   * Whether it names people, or kinds, at all (0054): true whenever any is
+   * named, and still true once every one it named has been deleted — then
+   * it gives nothing by person or kind, never "anybody's" or "every kind"
+   * (R532-01, the 5.33 review). `MemberAccess` always says them; send them
+   * back as they came. A PUT that leaves one out keeps it as it is when its
+   * list is empty; only an explicit `false` lets an empty list mean "any".
+   */
+  limits_people?: boolean;
+  limits_types?: boolean;
 }
+
+/**
+ * Every person, or every kind, a grant named has been deleted since: it
+ * still limits by them, and gives nothing that way (R532-01).
+ */
+export const namedAllGone = (
+  g: Pick<AccessGrant, 'people' | 'types' | 'limits_people' | 'limits_types'>,
+) => ({
+  people: g.limits_people === true && g.people.length === 0,
+  types: g.limits_types === true && g.types.length === 0,
+});
 
 /** How many of each an `AccessGrant` may name. */
 export const ACCESS_GRANT_MAX = { people: 100, types: 200, collections: 100 } as const;
@@ -139,12 +160,16 @@ export const onlyEveryone = (name: string, audience: string): string =>
  */
 export interface MemberAccess extends AccessGrant {
   member_id: string;
+  /** Always said here (the 5.33 review): send them back as they came. */
+  limits_people: boolean;
+  limits_types: boolean;
   /** `restrictionSummary`'s sentence: "Restricted: sees 1 person's documents of 2 kinds." */
   summary: string;
   /**
    * Their sign-in was given back, or moved onto them, since an owner last
    * confirmed these limits (0054): an owner confirms them again by putting
-   * the same grant. Null when nothing waits.
+   * the same grant — its end too, even one that has passed. Null when
+   * nothing waits.
    */
   reconfirm_since: string | null;
   /** They keep Only me documents, and an owner confirmed limiting them anyway (A59). */
@@ -163,8 +188,12 @@ export interface AccessPreview {
    * is told.
    */
   documents: number;
-  /** They keep Only me documents, which they go on seeing too (A59). */
-  keeps_private: boolean;
+  /**
+   * They keep Only me documents, which they go on seeing too (A59). Told
+   * only to an owner whose session gave a passkey or a code within the last
+   * five minutes (the 5.33 review); absent otherwise.
+   */
+  keeps_private?: boolean;
 }
 
 /**

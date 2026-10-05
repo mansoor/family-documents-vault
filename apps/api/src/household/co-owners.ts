@@ -419,12 +419,18 @@ export class CoOwnerService {
         detail: { role },
         ip: meta.ip,
       });
+      // Limited while it was away, they are told so now, plainly and with
+      // nothing of what is given (A59; the 5.33 review, L533-03): nobody
+      // could be told while there was no sign-in to tell.
+      const limited = await isRestricted(trx, memberId);
       await this.alert({
         pushType: 'owner_change',
         householdId: p.householdId,
         accountIds: [account],
         subject: 'You can sign in to your family vault again',
-        body: 'Your sign-in has been given back. Use the same email and password as before; your own documents are as you left them.',
+        body:
+          'Your sign-in has been given back. Use the same email and password as before; your own documents are as you left them.' +
+          (limited ? ` ${LIMITED_WORDS}` : ''),
         emailOnly: true,
       });
       return {
@@ -936,6 +942,10 @@ function formatDay(iso: string): string {
  * role changes do not wait for each other. Taken first, before any row, as
  * setAudience takes it first; the activity log's lock comes last in both.
  */
+/** Said to somebody whose sign-in is given back with limits on it (5.33): nothing of what is given. */
+export const LIMITED_WORDS =
+  'An owner has limited what you can see in the vault: only the documents they have given you, and your own.';
+
 export async function holdHousehold(trx: Db): Promise<void> {
   await sql`select 1 from household where id = app_household() for share`.execute(trx);
 }

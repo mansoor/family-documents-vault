@@ -812,9 +812,9 @@ export class IdentityService {
       // Their phones and browsers too (5.33): the word `notice`, and nothing
       // of whose details, who asked or from when — a lock screen is no place
       // for it; the app asks the vault once it is open. Every device of
-      // theirs that can be pushed to, whose sign-in has not ended; queued
-      // here, in this transaction, as the mail is: a failed enqueue rolls
-      // the notice back, and asking again tries again.
+      // theirs that can be pushed to, whose sign-in has not ended: found
+      // here, and queued last of all, after the mail (below).
+      let targets: PushTarget[] = [];
       if (told.length > 0) {
         const devices = await trx
           .selectFrom('device')
@@ -833,14 +833,11 @@ export class IdentityService {
           )
           .orderBy('id')
           .execute();
-        const targets: PushTarget[] = devices.flatMap((d) =>
+        targets = devices.flatMap((d) =>
           d.p256dh && d.auth && (d.kind === 'web_push' || d.kind === 'unified_push')
             ? [{ id: d.id, kind: d.kind, endpoint: d.endpoint, p256dh: d.p256dh, auth: d.auth }]
             : [],
         );
-        if (targets.length > 0) {
-          await this.push({ householdId: p.householdId, message: NOTICE_PUSH, targets });
-        }
       }
       if (told.length > 0 && this.operatorMail) {
         // Nothing of anybody's details: who will see them, and from when, on
@@ -861,6 +858,14 @@ export class IdentityService {
           emailOnly: true,
           operatorMail: true,
         });
+      }
+      // The push, last (the 5.33 review, L533-07): inside the transaction,
+      // after the mail. Neither queue is this transaction's, so a failure
+      // of anything before it — the mail's enqueue among them — rolls the
+      // notice back with nothing pushed; a failed enqueue of the push rolls
+      // it back too, and asking again tries again.
+      if (targets.length > 0) {
+        await this.push({ householdId: p.householdId, message: NOTICE_PUSH, targets });
       }
       return null;
     });

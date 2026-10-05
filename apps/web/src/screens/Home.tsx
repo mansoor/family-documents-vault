@@ -114,8 +114,10 @@ export function HomeScreen() {
       </header>
       <ErrorNote message={error} />
 
+      {/* A link, never a status: role="status" took its name away (the 5.33
+          review). */}
       {data?.me.totp_required && (
-        <Link to="/settings" className="attention" role="status">
+        <Link to="/settings" className="attention">
           <strong>Switch on two-step sign-in</strong>
           <span className="muted">Owners must. It takes a minute, in Settings.</span>
         </Link>
@@ -175,7 +177,10 @@ export function HomeScreen() {
         </h2>
         {categories.length === 0 ? (
           <p className="muted">
-            Nothing filed yet. Add your first document and it will appear here.
+            {/* Somebody who files nothing is not asked to (the 5.33 review). */}
+            {can(storedRole(), 'document.add')
+              ? 'Nothing filed yet. Add your first document and it will appear here.'
+              : 'Nothing here for you yet.'}
           </p>
         ) : (
           <div className="tiles">
@@ -297,21 +302,26 @@ function AttentionStrip({
       </div>
     );
   }
+  // The count is still heard as it changes: the link sits in a status,
+  // and keeps its own name (role="status" on the link took it away; the
+  // 5.33 review).
   return (
-    <Link to="/reminders" className="attention" role="status">
-      <strong>
-        {items.length} thing{items.length === 1 ? '' : 's'} need{items.length === 1 ? 's' : ''}{' '}
-        attention
-      </strong>
-      <ul>
-        {items.slice(0, 3).map((d) => (
-          <li key={d.id}>
-            <span>{d.title}</span>
-            <span className={`status status-${d.tone}`}>{d.label}</span>
-          </li>
-        ))}
-      </ul>
-    </Link>
+    <div role="status">
+      <Link to="/reminders" className="attention">
+        <strong>
+          {items.length} thing{items.length === 1 ? '' : 's'} need
+          {items.length === 1 ? 's' : ''} attention
+        </strong>
+        <ul>
+          {items.slice(0, 3).map((d) => (
+            <li key={d.id}>
+              <span>{d.title}</span>
+              <span className={`status status-${d.tone}`}>{d.label}</span>
+            </li>
+          ))}
+        </ul>
+      </Link>
+    </div>
   );
 }
 

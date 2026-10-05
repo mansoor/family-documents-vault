@@ -22,6 +22,7 @@ import {
   checkGrant,
   grantOf,
   isRestricted,
+  limitsAfter,
   restrictedRefusal,
   writeGrant,
 } from './restrictions.js';
@@ -135,7 +136,13 @@ interface StoredLimits {
   include_no_person_docs: boolean;
   expires_at: string | null;
   by_owner: boolean;
+  /** Whether it names people, or kinds, at all (the 5.33 review); absent before, as the lists say. */
+  limits_people?: boolean;
+  limits_types?: boolean;
 }
+
+/** What accepting does with an invitation's limits, decided before the sign-in is made. */
+type LimitsPlan = { limits: StoredLimits; exists: boolean } | null;
 
 /** Said to an adult inviting a viewer with no limits (A27). */
 export const LIMITS_REQUIRED =
@@ -262,6 +269,8 @@ export class InvitationService {
             include_no_person_docs: g.include_no_person_docs,
             expires_at: g.expires_at?.toISOString() ?? null,
             by_owner: p.role === 'owner',
+            limits_people: limitsAfter(g.people, g.limits_people, undefined),
+            limits_types: limitsAfter(g.types, g.limits_types, undefined),
           }))
         : null;
 
@@ -654,6 +663,11 @@ export class InvitationService {
         .values({ email, password_hash: passwordHash })
         .returning('id')
         .executeTakeFirstOrThrow();
+      // Whether the invitation's limits are to be applied, decided on the
+      // restriction as it is before the sign-in exists (which asks the
+      // owners to confirm any it finds, 0054), and held: the person, then
+      // their restriction, then the sign-in, then the log.
+      const plan = await this.limitsPlan(trx, row);
       await trx
         .insertInto('account_household')
         .values({
@@ -664,7 +678,7 @@ export class InvitationService {
         })
         .execute();
       // Their limits (5.33), in this transaction: never a moment unrestricted.
-      await this.applyLimits(trx, householdId, row, meta);
+      await this.applyLimits(trx, householdId, row, plan, meta);
       // Their private documents can now be reached with what they know,
       // not only with what the server holds.
       await this.keys.attachCredential(
@@ -703,25 +717,42 @@ export class InvitationService {
    * unrestricted for a moment. What it names is what is still there — a
    * person, kind or collection deleted since, or a collection no longer for
    * Everyone, is left out, and gives nothing (named, the rest still narrow).
-   * An owner's replaces limits an owner set before; an adult's never does:
-   * those stay, and ask the owners to confirm them (0054's reconfirm).
-   * Logged as made by whoever invited them.
+   * An owner's replaces limits set before the invitation was made; limits
+   * set after it, or any already there for an adult's, stay, and ask the
+   * owners to confirm them (0054's reconfirm). Logged as made by whoever
+   * invited them.
    */
-  private async applyLimits(
+  private async limitsPlan(
     trx: Db,
-    householdId: string,
-    row: { member_id: string; invited_by: string; restriction: unknown },
-    meta: RequestMeta,
-  ): Promise<void> {
+    row: { member_id: string; restriction: unknown; created_at: Date },
+  ): Promise<LimitsPlan> {
     const limits = row.restriction as StoredLimits | null;
-    if (!limits) return;
+    if (!limits) return null;
     const existing = await trx
       .selectFrom('access_restriction')
-      .select('member_id')
+      .select(['member_id', 'updated_at'])
       .where('member_id', '=', row.member_id)
       .forUpdate()
       .executeTakeFirst();
-    if (existing && !limits.by_owner) return;
+    if (!existing) return { limits, exists: false };
+    // An adult's never replaces an owner's; an owner's only limits set
+    // before the invitation was made — newer ones stay (the lead's
+    // decision on the 5.33 review), and the owners are asked to confirm
+    // them as for any sign-in given to somebody limited (0054).
+    if (!limits.by_owner || existing.updated_at.getTime() >= row.created_at.getTime()) return null;
+    return { limits, exists: true };
+  }
+
+  private async applyLimits(
+    trx: Db,
+    householdId: string,
+    row: { member_id: string; invited_by: string },
+    plan: LimitsPlan,
+    meta: RequestMeta,
+  ): Promise<void> {
+    if (!plan) return;
+    const { limits } = plan;
+    const existing = plan.exists ? { member_id: row.member_id } : undefined;
     const people =
       limits.people.length > 0
         ? await trx.selectFrom('member').select('id').where('id', 'in', limits.people).execute()
@@ -755,7 +786,11 @@ export class InvitationService {
     };
     await writeGrant(trx, householdId, row.member_id, grant, {
       exists: existing !== undefined,
-      limits: { people: limits.people.length > 0, types: limits.types.length > 0 },
+      // As the invitation named them: some deleted since still narrow.
+      limits: {
+        people: limits.limits_people ?? limits.people.length > 0,
+        types: limits.limits_types ?? limits.types.length > 0,
+      },
     });
     await appendAudit(trx, {
       householdId,

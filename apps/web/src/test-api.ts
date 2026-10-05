@@ -1413,6 +1413,12 @@ export function installFakeApi(state: FakeState) {
           `${name} keeps documents only they can see. Limited, they still see those, and nothing else of the family’s that you do not give them. Confirm to go ahead: they will be told.`,
         );
       }
+      // As the vault keeps the flags: an empty list leaves them as they are
+      // unless the body says otherwise (the 5.33 review).
+      const flag = (named: string[], said: boolean | undefined, had: boolean | undefined) =>
+        named.length > 0 || (said ?? had ?? false);
+      const limitsPeople = flag(b.people ?? [], b.limits_people, was?.limits_people);
+      const limitsTypes = flag(b.types ?? [], b.limits_types, was?.limits_types);
       const access: MemberAccess = {
         member_id: theirs,
         people: b.people ?? [],
@@ -1421,6 +1427,8 @@ export function installFakeApi(state: FakeState) {
         include_adults_only: b.include_adults_only ?? false,
         include_no_person_docs: b.include_no_person_docs ?? false,
         expires_at: b.expires_at ?? null,
+        limits_people: limitsPeople,
+        limits_types: limitsTypes,
         summary: restrictionSummary(
           {
             people: b.people?.length ?? 0,
@@ -1429,6 +1437,8 @@ export function installFakeApi(state: FakeState) {
             include_adults_only: b.include_adults_only ?? false,
             include_no_person_docs: b.include_no_person_docs ?? false,
             expires_at: b.expires_at ?? null,
+            limits_people: limitsPeople,
+            limits_types: limitsTypes,
           },
           state.timezone ?? 'UTC',
         ),

@@ -791,6 +791,12 @@ fieldset.limits-set {
   min-height: 1.4em;
 }
 
+/* Where focus goes as the editor opens (5.33 review, W533-04). */
+.limits-edit-h {
+  font-size: 16px;
+  margin: 0;
+}
+
 .preview {
   background: var(--surface);
   border: 1px solid var(--border);

@@ -288,15 +288,22 @@ export function registerOwnerResets(
 
 /**
  * What a viewer can see, limited by an owner (5.33, D6, A56–A59). Changing
- * it is an owner power (A54): owners only (anybody else `403`), what is
- * sent checked first (`422`), then a passkey or a code within five minutes
- * (`limit_access`) — an owner with neither is refused it — then whom it is
- * about (`404`, `409 not_a_viewer`, `409 confirm_private`). Confirming it
- * after their sign-in was given back is putting the same grant again.
+ * it is an owner power (A54). Refused in this order, by the fake vault and
+ * the api-changelog too (the 5.33 review, L533-06): anybody but an owner
+ * `403 forbidden`; a body of the wrong shape `422`; no passkey or code
+ * within five minutes `403` (`totp_required_for_owner`, `step_up_required`
+ * with `limit_access`); nobody of the family `404`; anybody but a viewer
+ * `409 not_a_viewer`; what the grant names `422` (people, kinds,
+ * collections of the family, a collection for Everyone, an end in the
+ * future or the one it has); somebody who keeps Only me documents `409
+ * confirm_private`. Confirming it after their sign-in was given back is
+ * putting the same grant again.
  *
  * The preview counts a grant not yet saved: an owner's, or an adult's
  * inviting a viewer (A27). `/access/preview`, with no person, is for
- * somebody not yet in the family.
+ * somebody not yet in the family. Whether somebody keeps Only me documents
+ * is said only to an owner who gave a passkey or a code within five
+ * minutes (S533-05).
  */
 export function registerAccess(
   app: FastifyInstance,
@@ -332,7 +339,8 @@ export function registerAccess(
     const p = principal(req);
     const id = parse(idParam, req.params).id;
     const query = parse(accessPreviewQuery, req.query ?? {});
-    return restrictions.preview(p, id, grantOf(query));
+    const tellPrivate = p.role === 'owner' && (await stepUp.factorFresh(p));
+    return restrictions.preview(p, id, grantOf(query), { tellPrivate });
   });
 
   app.get('/api/v1/access/preview', auth, async (req) => {

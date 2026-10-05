@@ -183,6 +183,16 @@ export class StepUpService {
     await this.require(p, action);
   }
 
+  /**
+   * Whether this session gave a passkey or a code within the last five
+   * minutes, without asking for one: for what an answer may say only then
+   * (5.33's preview, whether somebody keeps Only me documents).
+   */
+  async factorFresh(p: Principal): Promise<boolean> {
+    const at = (await this.verifiedAt(p, undefined, true))?.getTime() ?? 0;
+    return Date.now() - at <= STEP_UP_WINDOW_MS;
+  }
+
   /** How long this session stays fresh, for the client to avoid asking twice. */
   async freshness(p: Principal): Promise<{ verified_at: string | null; expires_in: number }> {
     const at = await this.verifiedAt(p);

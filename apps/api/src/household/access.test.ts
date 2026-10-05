@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from '../auth/totp.js';
 import type { Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
+import { LIMITED_WORDS } from './co-owners.js';
 import { LIMITS_REQUIRED } from './invitations.js';
 import { ADULTS_ONLY_OWNERS, CONFIRM_PRIVATE, ONLY_EVERYONE } from './restrictions.js';
 
@@ -408,7 +409,16 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
       // Nothing but their own.
       {},
     ];
-    for (const q of grants) {
+    for (const given of grants) {
+      // Exactly this grant, as the web sends one: whether people and kinds
+      // are named at all, said (an empty list left unsaid keeps what the
+      // restriction says now; the 5.33 review).
+      const q: Record<string, string> = {
+        ...given,
+        limits_people: String(Boolean(given.people)),
+        limits_types: String(Boolean(given.types)),
+      };
+      await fresh(owner);
       const counted = await preview(owner, val.member_id, q);
       expect(counted.keeps_private).toBe(false);
       await fresh(owner);
@@ -418,6 +428,8 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
         collections: q.collections ? q.collections.split(',') : [],
         include_adults_only: q.include_adults_only === 'true',
         include_no_person_docs: q.include_no_person_docs === 'true',
+        limits_people: q.limits_people === 'true',
+        limits_types: q.limits_types === 'true',
       };
       const res = await put(owner, val.member_id, body);
       expect(res.statusCode, res.body).toBe(200);
@@ -468,8 +480,14 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     expect(await seenBy(val)).toEqual(named('ahmedTax', 'valOwn'));
     await fresh(owner);
     expect(
-      (await put(owner, val.member_id, { people: [sara.member_id], include_adults_only: true }))
-        .statusCode,
+      (
+        await put(owner, val.member_id, {
+          people: [sara.member_id],
+          include_adults_only: true,
+          // No longer by kind: said, as an empty list alone keeps it (the 5.33 review).
+          limits_types: false,
+        })
+      ).statusCode,
     ).toBe(200);
     expect(await seenBy(val)).toEqual(named('saraTax', 'saraBill', 'valOwn'));
     // With Adults only allowed (D6), the next request sees Ahmed's too once
@@ -663,10 +681,11 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
       owner_member_id: wes.member_id,
     });
     await admin.query(`update document set visibility = 'private' where id = $1`, [theirs]);
+    await fresh(owner);
     expect((await preview(owner, wes.member_id, {})).keeps_private).toBe(true);
     // An owner's to know, who is asked before limiting them: an adult counting
     // for an invitation is not told.
-    expect((await preview(sara, wes.member_id, {})).keeps_private).toBe(false);
+    expect((await preview(sara, wes.member_id, {})).keeps_private).toBeUndefined();
     await fresh(owner);
     const asked = await put(owner, wes.member_id, { people: [ahmed.member_id] });
     expect(asked.statusCode).toBe(409);
@@ -1000,5 +1019,320 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     for (const id of [ahmed.member_id, sara.member_id, everyone, 'tax_return']) {
       expect(log).not.toContain(id);
     }
+  });
+
+  // ------------------------------------------------------ the review round
+
+  /** What the card shows, as "Keep these limits" sends it back. */
+  const keepOf = (a: MemberAccess) => ({
+    people: a.people,
+    types: a.types,
+    collections: a.collections,
+    include_adults_only: a.include_adults_only,
+    include_no_person_docs: a.include_no_person_docs,
+    expires_at: a.expires_at,
+    limits_people: a.limits_people,
+    limits_types: a.limits_types,
+  });
+  /** A new viewer, joined through an owner's invitation. */
+  const viewerNamed = async (name: string) => {
+    await fresh(owner);
+    return h.join(owner, {
+      name,
+      email: `${name.toLowerCase()}-533r@example.test`,
+      role: 'viewer',
+    });
+  };
+
+  it('a kind named and deleted since keeps narrowing: putting back what the card shows widens nothing (R532-01, the 5.33 review)', async () => {
+    const vic = await viewerNamed('Vic');
+    await fresh(owner);
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: h.as(owner),
+      payload: { label: 'Boat papers', category: 'other' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const boat = json<{ key: string }>(made).key;
+    await fresh(owner);
+    const limited = await put(owner, vic.member_id, {
+      people: [ahmed.member_id],
+      types: [boat],
+      include_adults_only: true,
+    });
+    expect(limited.statusCode, limited.body).toBe(200);
+    expect(await seenBy(vic)).toEqual([]);
+    // An adult deletes the kind, unused: the restriction still names kinds.
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/document-types/${boat}`,
+      headers: h.as(ahmed),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    const card = (await accountCard(owner, vic.member_id)).access as MemberAccess;
+    expect(card).toMatchObject({ types: [], limits_types: true, limits_people: true });
+    expect(card.summary).toContain('Every kind it named has been deleted');
+    // "Keep these limits", after a sign-in given back: exactly what is shown.
+    await admin.query(
+      'update access_restriction set reconfirm_since = now() where member_id = $1',
+      [vic.member_id],
+    );
+    await fresh(owner);
+    const kept = await put(owner, vic.member_id, keepOf(card));
+    expect(kept.statusCode, kept.body).toBe(200);
+    expect(json<MemberAccess>(kept)).toMatchObject({ limits_types: true, reconfirm_since: null });
+    expect(await seenBy(vic)).toEqual([]);
+    // A client that leaves the flags out keeps them too, and nothing is said.
+    const lines = (await activity(owner)).length;
+    await fresh(owner);
+    const older = await put(owner, vic.member_id, {
+      people: [ahmed.member_id],
+      include_adults_only: true,
+    });
+    expect(older.statusCode, older.body).toBe(200);
+    expect(json<MemberAccess>(older).limits_types).toBe(true);
+    expect(await seenBy(vic)).toEqual([]);
+    expect((await activity(owner)).length).toBe(lines);
+    // Only an explicit false lets "none chosen" mean every kind — and that
+    // widening is logged as a change, never a confirmation.
+    await fresh(owner);
+    const widened = await put(owner, vic.member_id, {
+      people: [ahmed.member_id],
+      include_adults_only: true,
+      limits_types: false,
+    });
+    expect(widened.statusCode, widened.body).toBe(200);
+    expect(await seenBy(vic)).toEqual(named('ahmedTax', 'ahmedWill', 'ahmedAdults'));
+    const said = await activity(owner);
+    expect(said[0]).toBe('Owner changed what Vic can see');
+    expect(said).toContain('Owner confirmed what Vic can see');
+  });
+
+  it('a granted collection deleted leaves every grant: keeping the limits works, and brought back it gives nothing (L533-02)', async () => {
+    const wyn = await viewerNamed('Wyn');
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/collections',
+      headers: h.as(owner),
+      payload: { name: 'Tax season', audience: 'everyone' },
+    });
+    const season = json<CollectionDetail>(made).id;
+    await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/collections/${season}/items`,
+      headers: h.as(owner),
+      payload: { document_ids: [docs.ahmedTax] },
+    });
+    await fresh(owner);
+    expect(
+      (await put(owner, wyn.member_id, { people: [sara.member_id], collections: [season] }))
+        .statusCode,
+    ).toBe(200);
+    expect(await seenBy(wyn)).toEqual(named('saraTax', 'saraBill', 'ahmedTax'));
+    // Deleted: it leaves the grant in the same transaction.
+    const gone = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/collections/${season}`,
+      headers: h.as(owner),
+    });
+    expect(gone.statusCode, gone.body).toBe(204);
+    const rows = await admin.query(
+      'select 1 from access_restriction_collection where collection_id = $1',
+      [season],
+    );
+    expect(rows.rows).toEqual([]);
+    const card = (await accountCard(owner, wyn.member_id)).access as MemberAccess;
+    expect(card.collections).toEqual([]);
+    // Confirming, after a sign-in given back, is not refused.
+    await admin.query(
+      'update access_restriction set reconfirm_since = now() where member_id = $1',
+      [wyn.member_id],
+    );
+    await fresh(owner);
+    const kept = await put(owner, wyn.member_id, keepOf(card));
+    expect(kept.statusCode, kept.body).toBe(200);
+    expect(json<MemberAccess>(kept).reconfirm_since).toBeNull();
+    // Brought back, it is not given again by itself.
+    await admin.query('update doc_collection set deleted_at = null where id = $1', [season]);
+    expect(await seenBy(wyn)).toEqual(named('saraTax', 'saraBill'));
+    // A row left from before, written past every rule, is never shown, and
+    // never refuses a save or a count: a deleted collection is left out.
+    await admin.query('update doc_collection set deleted_at = now() where id = $1', [season]);
+    await admin.query(
+      `insert into access_restriction_collection (restricted_member_id, household_id, collection_id)
+       values ($1, $2, $3)`,
+      [wyn.member_id, hh, season],
+    );
+    const stale = (await accountCard(owner, wyn.member_id)).access as MemberAccess;
+    expect(stale.collections).toEqual([]);
+    await fresh(owner);
+    expect(
+      (await preview(owner, wyn.member_id, { people: sara.member_id, collections: season }))
+        .documents,
+    ).toBe(2);
+    const saved = await put(owner, wyn.member_id, { ...keepOf(stale), collections: [season] });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(json<MemberAccess>(saved).collections).toEqual([]);
+    expect(
+      (
+        await admin.query('select 1 from access_restriction_collection where collection_id = $1', [
+          season,
+        ])
+      ).rows,
+    ).toEqual([]);
+  });
+
+  it('whether somebody keeps Only me documents is told only to an owner who just gave a code, and only of somebody who could be limited (S533-05)', async () => {
+    // The second owner: a password alone, and no step-up at all.
+    await admin.query(
+      `update session set verified_at = null, factor_verified_at = null
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [second.member_id],
+    );
+    const raw = (who: Tokens, member: string) =>
+      h.app.inject({ url: `/api/v1/members/${member}/access/preview`, headers: h.as(who) });
+    const wesId = (
+      await admin.query<{ owner_member_id: string }>(
+        'select owner_member_id from document where id = $1',
+        [docs.wesPrivate],
+      )
+    ).rows[0]?.owner_member_id as string;
+    const counted = await raw(second, wesId);
+    expect(counted.statusCode, counted.body).toBe(200);
+    expect(json<Record<string, unknown>>(counted)).not.toHaveProperty('keeps_private');
+    // Nobody but a viewer, or somebody with no sign-in, is counted at all.
+    for (const who of [ahmed.member_id, second.member_id]) {
+      await fresh(owner);
+      const refused = await raw(owner, who);
+      expect(refused.statusCode).toBe(409);
+      expect(error(refused).code).toBe('not_a_viewer');
+    }
+    await fresh(owner);
+    expect((await preview(owner, wesId, {})).keeps_private).toBe(true);
+  });
+
+  it('a sign-in given back to somebody limited tells them so; anybody else, nothing of it (L533-03)', async () => {
+    const zed = await viewerNamed('Zed');
+    const yan = await viewerNamed('Yan');
+    await fresh(owner);
+    expect((await put(owner, zed.member_id, { people: [ahmed.member_id] })).statusCode).toBe(200);
+    const givenBack = async (who: Tokens) => {
+      await fresh(owner);
+      const away = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${who.member_id}/sign-in`,
+        headers: h.as(owner),
+      });
+      expect(away.statusCode, away.body).toBe(204);
+      const since = h.jobs.length;
+      const back = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${who.member_id}/sign-in`,
+        headers: h.as(owner),
+        payload: { role: 'viewer' },
+      });
+      expect(back.statusCode, back.body).toBe(200);
+      const told = h.jobs.slice(since).filter((j) => j.name === 'alert.send');
+      expect(told).toHaveLength(1);
+      return String(told[0]?.data.body);
+    };
+    const toZed = await givenBack(zed);
+    expect(toZed).toContain(LIMITED_WORDS);
+    // Nothing of what is given.
+    expect(toZed).not.toContain('Ahmed');
+    expect(await givenBack(yan)).not.toContain(LIMITED_WORDS);
+  });
+
+  it('an ended restriction waiting for confirmation is kept as it is, ended; a new end in the past is still refused (L533-05)', async () => {
+    const xan = await viewerNamed('Xan');
+    await fresh(owner);
+    expect(
+      (
+        await put(owner, xan.member_id, {
+          people: [ahmed.member_id],
+          expires_at: new Date(Date.now() + 3600_000).toISOString(),
+        })
+      ).statusCode,
+    ).toBe(200);
+    await admin.query(
+      `update access_restriction set expires_at = now() - interval '1 day', reconfirm_since = now()
+        where member_id = $1`,
+      [xan.member_id],
+    );
+    const card = (await accountCard(owner, xan.member_id)).access as MemberAccess;
+    expect(card.summary).toMatch(/^Restricted, and ended /);
+    await fresh(owner);
+    const kept = await put(owner, xan.member_id, keepOf(card));
+    expect(kept.statusCode, kept.body).toBe(200);
+    expect(json<MemberAccess>(kept)).toMatchObject({
+      expires_at: card.expires_at,
+      reconfirm_since: null,
+    });
+    expect(await seenBy(xan)).toEqual([]);
+    await fresh(owner);
+    const moved = await put(owner, xan.member_id, {
+      ...keepOf(card),
+      expires_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    });
+    expect(moved.statusCode).toBe(422);
+    expect(error(moved).detail).toBe('expires_at');
+  });
+
+  it('PUT /members/{id}/access refuses in one order: who, the shape, the step-up, whom, what it names (L533-06)', async () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const nobody = '00000000-0000-4000-8000-000000000009';
+    // Anybody but an owner, whatever they send.
+    await fresh(ahmed);
+    const adult = await put(ahmed, nobody, { people: 'nobody' });
+    expect([adult.statusCode, error(adult).code]).toEqual([403, 'forbidden']);
+    // The shape, before the step-up.
+    await admin.query(
+      `update session set factor_verified_at = null
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [owner.member_id],
+    );
+    const shape = await put(owner, nobody, { people: 'nobody' });
+    expect([shape.statusCode, error(shape).code]).toEqual([422, 'validation_failed']);
+    // The step-up, before whom and what the grant names.
+    const asked = await put(owner, nobody, { expires_at: past, collections: [teens] });
+    expect([asked.statusCode, error(asked).code]).toEqual([403, 'step_up_required']);
+    await fresh(owner);
+    // Whom: nobody of the family, then anybody but a viewer.
+    const missing = await put(owner, nobody, { expires_at: past, collections: [teens] });
+    expect([missing.statusCode, error(missing).code]).toEqual([404, 'not_found']);
+    const adultOne = await put(owner, ahmed.member_id, { expires_at: past, collections: [teens] });
+    expect([adultOne.statusCode, error(adultOne).code]).toEqual([409, 'not_a_viewer']);
+    // Then what it names.
+    const named422 = await put(owner, val.member_id, { expires_at: past, collections: [teens] });
+    expect([named422.statusCode, error(named422).code]).toEqual([422, 'validation_failed']);
+  });
+
+  it("an owner's invitation leaves limits an owner set after it was made (the lead's decision on the 5.33 review)", async () => {
+    await fresh(owner);
+    const kim = json<{ id: string }>(
+      await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/members',
+        headers: h.as(owner),
+        payload: { display_name: 'Kim' },
+      }),
+    ).id;
+    const invited = await invite(owner, {
+      member_id: kim,
+      email: 'kim-533@example.test',
+      role: 'viewer',
+      restriction: { people: [sara.member_id] },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    // Limits an owner sets after the invitation was made: newer, they stay.
+    await fresh(owner);
+    expect((await put(owner, kim, { people: [ahmed.member_id] })).statusCode).toBe(200);
+    const accepted = await accept(invited);
+    expect(accepted.statusCode, accepted.body).toBe(201);
+    expect(await seenBy(json<Tokens>(accepted))).toEqual(named('ahmedTax', 'ahmedWill'));
+    // And the owners are asked to confirm them, as for any sign-in given to
+    // somebody limited.
+    expect((await restrictionRow(kim))?.reconfirm_since).toBeInstanceOf(Date);
   });
 });

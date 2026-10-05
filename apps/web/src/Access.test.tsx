@@ -1,7 +1,8 @@
-import type { MemberAccess, MemberAccount } from '@fdv/shared';
+import { zonedTime, type MemberAccess, type MemberAccount } from '@fdv/shared';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import axe from 'axe-core';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { KINDS_GONE } from './access.js';
 import { App } from './App.js';
 import {
   AISHA,
@@ -60,6 +61,8 @@ const LIMITED: MemberAccess = {
   include_adults_only: false,
   include_no_person_docs: false,
   expires_at: null,
+  limits_people: true,
+  limits_types: false,
   summary: "Restricted: sees 1 person's documents.",
   reconfirm_since: null,
   private_confirmed: false,
@@ -128,6 +131,8 @@ describe('what a viewer can see (5.33)', () => {
           include_adults_only: false,
           include_no_person_docs: false,
           expires_at: null,
+          limits_people: true,
+          limits_types: false,
         },
       ],
       [
@@ -139,6 +144,8 @@ describe('what a viewer can see (5.33)', () => {
           include_adults_only: false,
           include_no_person_docs: false,
           expires_at: null,
+          limits_people: true,
+          limits_types: false,
           confirm_private: true,
         },
       ],
@@ -335,5 +342,130 @@ describe('what a viewer can see (5.33)', () => {
         "“Mansoor's passport” is in “For the accountant” now. Val (viewer) will be able to see this.",
       ),
     ).toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------- the review round
+
+  it('focus goes into the editor as it opens, and back to its button on Cancel or a confirmation cancelled (W533-04)', async () => {
+    at('/people/m-3', {
+      members: [ME, AISHA, VAL],
+      documents: [PASSPORT, HERS],
+      accounts: { 'm-3': card() },
+      keepsPrivate: ['m-3'],
+    });
+    const limits = await openCard();
+    fireEvent.click(within(limits).getByRole('button', { name: 'Limit what they can see' }));
+    await waitFor(() =>
+      expect(
+        within(limits).getByRole('heading', { name: 'Choose what Val can see' }),
+      ).toHaveFocus(),
+    );
+    fireEvent.click(within(limits).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(within(limits).getByRole('button', { name: 'Limit what they can see' })).toHaveFocus(),
+    );
+    // Saving asks first for somebody with Only me documents; cancelled, the
+    // focus goes back to Save.
+    fireEvent.click(within(limits).getByRole('button', { name: 'Limit what they can see' }));
+    fireEvent.click(await within(limits).findByLabelText('Aisha'));
+    const save = within(limits).getByRole('button', { name: 'Save these limits' });
+    save.focus();
+    fireEvent.click(save);
+    const ask = await screen.findByRole('alertdialog', { name: 'Limit what Val can see?' });
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(within(limits).getByRole('button', { name: 'Save these limits' })).toHaveFocus(),
+    );
+  });
+
+  it('a kind named and deleted since is said on the card, kept as it is, and given up only when asked (R532-01)', async () => {
+    const gone: MemberAccess = {
+      ...LIMITED,
+      types: [],
+      limits_types: true,
+      summary:
+        'Restricted: sees nothing of anyone else’s. Every kind it named has been deleted, so it gives no documents by person or kind.',
+      reconfirm_since: new Date().toISOString(),
+    };
+    const state = at('/people/m-3', {
+      members: [ME, AISHA, VAL],
+      documents: [PASSPORT, HERS],
+      accounts: { 'm-3': card(gone) },
+    });
+    const limits = await openCard();
+    expect(within(limits).getByText(KINDS_GONE)).toBeInTheDocument();
+    await expectAccessible();
+    fireEvent.click(within(limits).getByRole('button', { name: 'Keep these limits' }));
+    expect(await screen.findByText('Val’s limits are confirmed.')).toBeInTheDocument();
+    // Sent back as shown: still limited by kind, with none left.
+    expect(state.accessWrites?.[0]?.body).toMatchObject({
+      people: ['m-0'],
+      types: [],
+      limits_people: true,
+      limits_types: true,
+    });
+    // In the editor it is said again, and given up only by asking.
+    fireEvent.click(within(limits).getByRole('button', { name: 'Change what they can see' }));
+    expect(await within(limits).findByText(KINDS_GONE)).toBeInTheDocument();
+    fireEvent.click(within(limits).getByRole('button', { name: 'Give every kind instead' }));
+    expect(within(limits).queryByText(KINDS_GONE)).toBeNull();
+    fireEvent.click(within(limits).getByRole('button', { name: 'Save these limits' }));
+    await screen.findByText(/limits are saved/);
+    expect(state.accessWrites?.at(-1)?.body).toMatchObject({ types: [], limits_types: false });
+  });
+
+  it('the end is chosen and shown on the family’s clock, and an edit leaves it where it was (L533-08)', async () => {
+    const zone = 'Pacific/Kiritimati';
+    // 11:00 on 9 June UTC is already 10 June in Kiritimati (UTC+14).
+    const ending = { ...LIMITED, expires_at: '2030-06-09T11:00:00.000Z' };
+    const state = at('/people/m-3', {
+      members: [ME, AISHA, VAL],
+      documents: [PASSPORT, HERS],
+      accounts: { 'm-3': card(ending) },
+      timezone: zone,
+    });
+    const limits = await openCard();
+    fireEvent.click(within(limits).getByRole('button', { name: 'Change what they can see' }));
+    const until = await within(limits).findByLabelText('Until (optional)');
+    await waitFor(() => expect(until).toHaveValue('2030-06-10'));
+    expect(
+      within(limits).getByText(
+        `After this day, on the family’s clock (${zone}), they see nothing at all.`,
+      ),
+    ).toBeInTheDocument();
+    // Ticking somebody else leaves the end as it was.
+    fireEvent.click(await within(limits).findByLabelText('Mansoor Seikh'));
+    fireEvent.click(within(limits).getByRole('button', { name: 'Save these limits' }));
+    await screen.findByText(/limits are saved/);
+    expect(state.accessWrites?.at(-1)?.body).toMatchObject({
+      expires_at: '2030-06-09T11:00:00.000Z',
+    });
+    // A day chosen is the end of that day on the household's clock.
+    fireEvent.click(within(limits).getByRole('button', { name: 'Change what they can see' }));
+    fireEvent.change(await within(limits).findByLabelText('Until (optional)'), {
+      target: { value: '2030-07-01' },
+    });
+    fireEvent.click(within(limits).getByRole('button', { name: 'Save these limits' }));
+    await waitFor(() =>
+      expect(state.accessWrites?.at(-1)?.body).toMatchObject({
+        expires_at: zonedTime('2030-07-01', '23:59', zone)?.toISOString(),
+      }),
+    );
+  });
+
+  it('Home: what needs attention is a link with its name, in a status; nobody who files nothing is asked to (W533-07, W533-10)', async () => {
+    const expired = {
+      ...PASSPORT,
+      status: { value: 'expired', label: 'Expired' },
+    };
+    at('/', { members: [ME], documents: [expired] });
+    const link = await screen.findByRole('link', { name: /1 thing needs attention/ });
+    expect(link.closest('[role="status"]')).not.toBeNull();
+    await expectAccessible();
+    cleanup();
+    // A viewer with nothing given: no invitation to file.
+    at('/', { members: [{ ...ME, role: 'viewer' }], documents: [] }, 'viewer');
+    expect(await screen.findByText('Nothing here for you yet.')).toBeInTheDocument();
+    expect(screen.queryByText(/Add your first document/)).toBeNull();
   });
 });
