@@ -872,9 +872,9 @@ function Missing(props: {
   const [showHidden, setShowHidden] = useState(false);
   if (props.items.length === 0 && props.hidden.length === 0) {
     // Only an answered "no" is an invitation to answer; a viewer's null is not.
-    // The questions are the first-run wizard's "A few quick questions",
-    // which /setup still asks of whoever may answer them (5.35): Settings
-    // has none. Anybody else is told who can.
+    // The questions, on their own, with any answers already given, and back
+    // here (5.35): Settings has none, and the first-run wizard goes on to
+    // things only a new vault asks. Anybody else is told who can.
     return props.profileAnswered !== false ? null : (
       <section aria-labelledby="missing-h">
         <h2 id="missing-h" className="section-h">
@@ -883,7 +883,7 @@ function Missing(props: {
         {can(storedRole(), 'profile.edit') ? (
           <p className="muted">
             Answer a few questions about your household and this is where we will tell you what is
-            not here yet. <Link to="/setup">Answer the questions</Link>
+            not here yet. <Link to="/household-questions">Answer the questions</Link>
           </p>
         ) : (
           <p className="muted">

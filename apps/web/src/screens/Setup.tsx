@@ -1,9 +1,10 @@
 import { initialsFor } from '@fdv/shared';
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
-import { api, type Member, type Profile } from '../api.js';
+import { api, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
-import { Avatar, Button, ErrorNote, Field, Logo, Pills } from '../ui.js';
+import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
+import { Avatar, Button, ErrorNote, Field, Logo } from '../ui.js';
 
 /**
  * First run, four boards: account → a few quick questions → who is in
@@ -62,24 +63,14 @@ export function SetupScreen() {
   };
 
   // --- profile
-  const [home, setHome] = useState<'own' | 'rent' | null>(null);
-  const [vehicles, setVehicles] = useState<'0' | '1' | '2' | '3' | null>(null);
-  const [also, setAlso] = useState<Set<'children' | 'pets' | 'business' | 'rental'>>(new Set());
-  const [country, setCountry] = useState('US');
+  const [answers, setAnswers] = useState(() => answersFrom(null));
+  const { home, vehicles } = answers;
 
   const saveProfile = async () => {
     setBusy(true);
     setError(null);
     try {
-      const body: Partial<Profile> = { country };
-      if (home) {
-        body.owns_home = home === 'own';
-        body.rents_home = home === 'rent';
-      }
-      if (vehicles) body.vehicle_count = Number(vehicles);
-      body.has_pets = also.has('pets');
-      body.has_business = also.has('business');
-      await withToken((t) => api.updateProfile(t, body));
+      await withToken((t) => api.updateProfile(t, answersBody(answers)));
       setStep('household');
     } catch (err) {
       setError(describeError(err));
@@ -114,14 +105,6 @@ export function SetupScreen() {
       setBusy(false);
     }
   };
-
-  const toggle = (k: 'children' | 'pets' | 'business' | 'rental') =>
-    setAlso((s) => {
-      const n = new Set(s);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
 
   if (step === 'account') {
     return (
@@ -188,56 +171,7 @@ export function SetupScreen() {
           </p>
         </div>
         <div className="stack">
-          <Pills
-            label="Your home"
-            value={home}
-            onChange={setHome}
-            options={[
-              { value: 'own', label: 'We own it' },
-              { value: 'rent', label: 'We rent' },
-            ]}
-          />
-          <Pills
-            label="Vehicles"
-            value={vehicles}
-            onChange={setVehicles}
-            options={[
-              { value: '0', label: 'None' },
-              { value: '1', label: '1' },
-              { value: '2', label: '2' },
-              { value: '3', label: '3+' },
-            ]}
-          />
-          <div className="field" role="group" aria-label="Also in the household">
-            <span className="field-label">Also in the household</span>
-            <div className="pills">
-              {(
-                [
-                  ['children', 'Children'],
-                  ['pets', 'Pets'],
-                  ['business', 'A business'],
-                  ['rental', 'Rental property'],
-                ] as const
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className={`pill${also.has(k) ? ' pill-on' : ''}`}
-                  aria-pressed={also.has(k)}
-                  onClick={() => toggle(k)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <Field
-            id="country"
-            label="Where you live (country code)"
-            value={country}
-            onChange={(v) => setCountry(v.toUpperCase().slice(0, 2))}
-            hint="Sets which document types we suggest. US, GB, IN…"
-          />
+          <HouseholdAnswerFields value={answers} onChange={setAnswers} />
           <ErrorNote message={error} />
           <Button onClick={() => void saveProfile()} disabled={busy}>
             Next

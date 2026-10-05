@@ -283,6 +283,80 @@ describe('notes you can write (5.35)', () => {
     expect(noteLinkAllowed('HTTPS://A.EXAMPLE')).toBe(true);
   });
 
+  it('a link whose address could show as somewhere it does not go stays text (the 5.35 review, X535-02)', () => {
+    /** Each link's address, and its words when it has any. */
+    const linksIn = (note: string, withWords = false) => {
+      const found: string[] = [];
+      const walk = (nodes: NoteInline[]) => {
+        for (const n of nodes) {
+          if (n.type === 'link') {
+            found.push(
+              withWords
+                ? `${noteTreeText({ blocks: [{ type: 'paragraph', blankBefore: 0, children: n.children }] })} -> ${n.href}`
+                : n.href,
+            );
+          }
+          if ('children' in n) walk(n.children);
+        }
+      };
+      for (const b of parseNotes(note).blocks) {
+        if (b.type === 'list') b.items.forEach((i) => walk(i.children));
+        else walk(b.children);
+      }
+      return found;
+    };
+    // Every invisible or direction-changing character: bidi overrides,
+    // embeddings, marks and isolates, zero-width spaces and joiners, the
+    // soft hyphen, the word joiner and BOM, a language tag (outside the BMP),
+    // and line and paragraph separators.
+    const unseen = [
+      ...'\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u200e\u200f',
+      ...'\u200b\u200c\u200d\u00ad\u2060\ufeff\u061c\u2028\u2029\u0085',
+      String.fromCodePoint(0xe0001),
+    ];
+    for (const c of unseen) {
+      const code = c.codePointAt(0)?.toString(16) ?? '';
+      // Never a link with those words: at most the address written out
+      // before the character, which goes where it shows.
+      expect(linksIn(`[bank](https://bank.example/${c}x)`, true), code).toEqual([
+        ' -> https://bank.example/',
+      ]);
+      expect(linksIn(`[bank](mailto:a${c}@bank.example)`), code).toEqual([]);
+      expect(noteLinkAllowed(`https://bank.example/${c}x`), code).toBe(false);
+      // Written out, the address ends where it begins: before the character.
+      expect(linksIn(`see https://bank.example${c}moc.live`), code).toEqual([
+        'https://bank.example',
+      ]);
+    }
+    // The review's own: an override that shows evil.com as bank.com.
+    expect(linksIn('[bank.com](https://\u202emoc.knab@evil.com)')).toEqual([]);
+    expect(linksIn('https://\u202emoc.knab@evil.com')).toEqual([]);
+
+    // A name before the host, which could pass for it: never a link.
+    for (const note of [
+      '[bank](https://bank.example@evil.example)',
+      '[bank](https://bank.example:443@evil.example/pay)',
+      'https://bank.example@evil.example/pay',
+      'http://user:pass@evil.example',
+    ]) {
+      expect(linksIn(note), note).toEqual([]);
+      expect(notesPlainText(note), note).toBe(note);
+    }
+    // An @ after the host is the path's, and an email's address is its own.
+    expect(linksIn('https://evil.example/@bank and [mail](mailto:tax@bank.example)')).toEqual([
+      'https://evil.example/@bank',
+      'mailto:tax@bank.example',
+    ]);
+    // No host at all is no link.
+    expect(noteLinkAllowed('https:///path')).toBe(false);
+    expect(noteLinkAllowed('https://?q=1')).toBe(false);
+    // A host in another script is a link; whoever draws it shows it as the
+    // browser will reach it (punycode), as the web's own test holds.
+    expect(linksIn('https://p\u0430ypal.example/login')).toEqual([
+      'https://p\u0430ypal.example/login',
+    ]);
+  });
+
   it('plain text round-trips unchanged', () => {
     for (const note of [
       'Spare key under the geranium pot by the back door',
@@ -424,6 +498,16 @@ describe('notes you can write (5.35)', () => {
       'checklist lines': fill('- [ ] *a\n'),
       'heading marks': fill('#'),
       'one long line of underscores in words': fill('a_'),
+      // The 5.35 review (X535-01): a paragraph of many lines, and one item
+      // carried on over many lines, were copied once a line.
+      'one paragraph of many lines': fill('a\n'),
+      'one item carried on over many lines': `- a\n${fill(' b\n')}`,
+      // And (X535-02) addresses refused for a name before the host, or for
+      // a character that could hide where they go.
+      'addresses with a name before the host': fill('https://a@b/'),
+      'addresses each with an unseen character': fill('https://a\u200b'),
+      'bracketed addresses with an unseen character': fill('[a](https://a\u202e)'),
+      'addresses outside the BMP': fill(`https://a${String.fromCodePoint(0xe0001)}`),
     };
     for (const [what, input] of Object.entries(inputs)) {
       const started = Date.now();
@@ -433,6 +517,23 @@ describe('notes you can write (5.35)', () => {
       expect(plain.length, what).toBeGreaterThan(0);
       // Linear work is a few milliseconds here; backtracking would be minutes.
       expect(took, `${what}: ${took.toFixed(0)} ms`).toBeLessThan(2_000);
+    }
+  });
+
+  it('reads a note as long as a vault keeps, of many lines, in a few milliseconds (the 5.35 review, X535-01)', () => {
+    // As the vault reads them: once a search hit, once each of a member's
+    // Only me documents in their private search. Twenty in a row.
+    for (const [what, note] of [
+      ['one paragraph of many lines', 'a\n'.repeat(NOTES_MAX / 2)],
+      ['one item carried on over many lines', `- a\n${' b\n'.repeat((NOTES_MAX - 4) / 3)}`],
+      ['short lines of words', 'ab\n'.repeat(NOTES_MAX / 3)],
+    ] as const) {
+      expect(note.length, what).toBeLessThanOrEqual(NOTES_MAX);
+      const started = Date.now();
+      for (let n = 0; n < 20; n++) expect(notesPlainText(note).length, what).toBeGreaterThan(0);
+      const took = Date.now() - started;
+      // A few milliseconds each; copied once a line, over a hundred.
+      expect(took, `${what}: ${took} ms for 20`).toBeLessThan(1_000);
     }
   });
 });

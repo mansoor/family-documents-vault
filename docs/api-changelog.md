@@ -3655,9 +3655,14 @@ guest_always_limited`. A guest owns no document, by any path — made,
       `+ `), numbered (`1. `) and checklist (`- [ ] `, `- [x] `) items, one
       level deep; level-3 headings (`### `); links, `[words](address)` or an
       address written out, to `https:`, `http:` or `mailto:` only, drawn
-      with their address. Anything else — HTML, images, tables, other
-      headings, a `javascript:` or `data:` link — is text, exactly as
-      written.
+      with their address as the browser will reach it (a host in another
+      script as punycode). Anything else — HTML, images, tables, other
+      headings, a `javascript:` or `data:` link, and a link whose address
+      could show as somewhere it does not go: one with a control, format
+      (Unicode Cf: bidi overrides, zero-width characters, the soft hyphen)
+      or line-separator character in it, or a name before its host
+      (`https://bank.example@evil.example`) — is text, exactly as written.
+      The parser is linear in a note's length, a note of many lines too.
     - The database: 0057 adds `document.notes_updated_at` and
       `.notes_updated_by` (a sign-in; its name comes off if the sign-in is
       removed, the moment stays), and a guard that somebody signed in

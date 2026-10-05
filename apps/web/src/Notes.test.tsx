@@ -103,7 +103,7 @@ describe('notes you can write, on the web (5.35)', () => {
     expect(links.map((a) => a.getAttribute('target'))).toEqual(['_blank', null, '_blank']);
     // Each shown with its address, so its words cannot pass for somewhere else.
     expect(section).toHaveTextContent('the council (https://council.example/pay)');
-    expect(section).toHaveTextContent('the office (tax@example.com)');
+    expect(section).toHaveTextContent('the office (mailto:tax@example.com)');
     // Anywhere else is not a link at all.
     expect(section).toHaveTextContent(
       'Never [this](javascript:alert(1)) nor [that](data:text/html,<b>x</b>).',
@@ -184,14 +184,18 @@ describe('notes you can write, on the web (5.35)', () => {
     Object.assign(state.documents[0] as object, theirs);
 
     fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
-    const said = await within(section).findByRole('alert');
+    const said = await within(section).findByRole('group', { name: /changed this note/ });
     expect(said).toHaveTextContent('Sarah changed this note while you were writing.');
     expect(said).toHaveTextContent('Theirs: renew in March');
+    // Focus on what says so, and no plain Save left to press twice.
+    await waitFor(() => expect(within(said).getByText(/changed this note/)).toHaveFocus());
+    expect(within(section).queryByRole('button', { name: 'Save note' })).not.toBeInTheDocument();
     expect(box).toHaveValue('Mine: renew in February');
     expect((state.documents[0] as { notes: string }).notes).toBe('Theirs: renew in March');
+    await expectAccessible();
 
-    // Saving again is saving over theirs, knowingly: from the copy now there.
-    fireEvent.click(within(section).getByRole('button', { name: 'Save note' }));
+    // Saving over theirs is a choice of its own: from the copy now there.
+    fireEvent.click(within(said).getByRole('button', { name: 'Save mine over theirs' }));
     await waitFor(() => expect(within(section).queryByRole('textbox')).not.toBeInTheDocument());
     const patches = state.calls.filter((c) => c.method === 'PATCH');
     expect(patches.map((c) => c.headers?.['if-match'])).toEqual(['"abc"', '"theirs"']);
@@ -217,8 +221,8 @@ describe('notes you can write, on the web (5.35)', () => {
       shown.unmount();
       // And one kept from before it was made Adults only or Only me is forgotten.
       sessionStorage.setItem(
-        'fdv.note-draft.doc-1',
-        JSON.stringify({ text: 'From before', etag: '"abc"' }),
+        'fdv.note-draft.hh.me.doc-1',
+        JSON.stringify({ text: 'From before', baseText: '', baseEtag: '"abc"', baseStamp: null }),
       );
       shown = await reopen(state);
       await notes();
@@ -235,8 +239,8 @@ describe('notes you can write, on the web (5.35)', () => {
     fireEvent.change(within(section).getByRole('textbox', { name: 'Notes' }), {
       target: { value: 'Half-written' },
     });
-    expect(kept()).toEqual(['fdv.note-draft.doc-1']);
-    expect(localStorage.getItem('fdv.note-draft.doc-1')).toBeNull();
+    // Kept for whoever wrote it, in their household (the 5.35 review, W535-07).
+    expect(kept()).toEqual(['fdv.note-draft.hh.me.doc-1']);
     shown.unmount();
     await reopen(state);
     section = await notes();
@@ -314,11 +318,11 @@ describe('notes you can write, on the web (5.35)', () => {
       start: 4,
       end: 8,
     });
-    expect(formatNote('', 0, 0, 'italic')).toEqual({ text: '**', start: 1, end: 1 });
+    expect(formatNote('', 0, 0, 'italic')).toEqual({ text: '*italic*', start: 1, end: 7 });
     expect(formatNote('see the rota', 4, 12, 'link')).toEqual({
-      text: 'see [the rota](https://)',
+      text: 'see [the rota](https://example.com)',
       start: 15,
-      end: 23,
+      end: 34,
     });
     expect(formatNote('one\ntwo\nthree', 1, 6, 'numbered').text).toBe('1. one\n2. two\nthree');
     expect(formatNote('one\ntwo', 5, 5, 'list').text).toBe('one\n- two');
@@ -360,7 +364,7 @@ describe('what the 5.35 survey found', () => {
     let shown = render(<App />);
     const missing = await screen.findByRole('region', { name: 'We noticed something missing' });
     const answer = within(missing).getByRole('link', { name: 'Answer the questions' });
-    expect(answer).toHaveAttribute('href', '/setup');
+    expect(answer).toHaveAttribute('href', '/household-questions');
     expect(within(missing).queryByRole('link', { name: 'Settings' })).not.toBeInTheDocument();
     await expectAccessible();
     fireEvent.click(answer);

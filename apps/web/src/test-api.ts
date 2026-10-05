@@ -296,6 +296,8 @@ export interface FakeState {
   noteSavedAt?: string;
   /** Whether the household answered the wizard's questions, as GET /suggestions says; left out, yes. */
   profileAnswered?: boolean;
+  /** The household's answers as GET /profile gives them (5.35); left out, none. */
+  profile?: Record<string, unknown>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -981,6 +983,7 @@ export function installFakeApi(state: FakeState) {
         has_business: null,
         country: null,
         answered_at: null,
+        ...(state.profile ?? {}),
       });
     }
     // The people outside the family (5.34): an owner's to list.

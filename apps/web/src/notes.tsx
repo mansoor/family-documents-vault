@@ -1,6 +1,7 @@
 import {
   noteLinkAllowed,
   NOTES_MAX,
+  noteTreeText,
   parseNotes,
   whenExactly,
   type DocumentView,
@@ -20,7 +21,7 @@ import {
 } from 'react';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp } from './app-context.js';
-import { draftOf, forgetDraft, keepDraft } from './note-drafts.js';
+import { draftOf, forgetDraft, keepDraft, type DraftOwner, type NoteDraft } from './note-drafts.js';
 import { Button, ErrorNote } from './ui.js';
 
 /**
@@ -31,7 +32,9 @@ import { Button, ErrorNote } from './ui.js';
  * elements, and never as an HTML string: whatever somebody types — a
  * `<script>`, an image, a `javascript:` link — is shown as the characters it
  * is. A link goes only to https, http or mailto, opens with
- * `rel="noopener noreferrer"`, and shows its address beside its words.
+ * `rel="noopener noreferrer"`, and shows its address beside its words — as
+ * the browser will reach it, its host in punycode, isolated from any
+ * direction its neighbours set (the 5.35 review, X535-02).
  */
 
 // ---------------------------------------------------------------- reading
@@ -78,8 +81,24 @@ function Block({ block }: { block: NoteBlock }) {
   }
 }
 
-/** Where a link goes, as the note shows it: an email's address without its `mailto:`. */
-const addressOf = (href: string) => (/^mailto:/i.test(href) ? href.slice(7) : href);
+/**
+ * Where a link goes, as the browser will reach it: the URL parser's own
+ * form — a host in another script as punycode, anything odd percent-encoded
+ * — or null for an address it cannot open. What is shown is what is
+ * followed.
+ */
+export function noteAddress(href: string): string | null {
+  if (!noteLinkAllowed(href)) return null;
+  try {
+    return new URL(href).href;
+  } catch {
+    return null;
+  }
+}
+
+/** A link's words, as the plain text of them. */
+const wordsOf = (nodes: NoteInline[]) =>
+  noteTreeText({ blocks: [{ type: 'paragraph', blankBefore: 0, children: nodes }] });
 
 function inline(nodes: NoteInline[]): ReactNode[] {
   return nodes.map((node, i) => {
@@ -94,15 +113,26 @@ function inline(nodes: NoteInline[]): ReactNode[] {
         return <em key={i}>{inline(node.children)}</em>;
       case 'link': {
         // The parser makes no other link; asked again where it is drawn.
-        if (!noteLinkAllowed(node.href)) return <Fragment key={i}>{node.href}</Fragment>;
+        const address = noteAddress(node.href);
+        if (!address) {
+          const words = wordsOf(node.children);
+          return <Fragment key={i}>{words ? `${words} (${node.href})` : node.href}</Fragment>;
+        }
         const words = node.children.length > 0 ? inline(node.children) : null;
-        const web = /^https?:/i.test(node.href);
+        const web = /^https?:/i.test(address);
+        // Each in an isolate, so neither the words nor anything around them
+        // can reorder the address.
         return (
           <Fragment key={i}>
-            <a href={node.href} rel="noopener noreferrer" {...(web ? { target: '_blank' } : {})}>
-              {words ?? addressOf(node.href)}
+            <a href={address} rel="noopener noreferrer" {...(web ? { target: '_blank' } : {})}>
+              {words ? <bdi>{words}</bdi> : <bdi dir="ltr">{address}</bdi>}
             </a>
-            {words && <span className="note-address"> ({addressOf(node.href)})</span>}
+            {words && (
+              <span className="note-address">
+                {' ('}
+                <bdi dir="ltr">{address}</bdi>)
+              </span>
+            )}
           </Fragment>
         );
       }
@@ -114,10 +144,51 @@ function inline(nodes: NoteInline[]): ReactNode[] {
 
 export type NoteFormat = 'bold' | 'italic' | 'list' | 'numbered' | 'checklist' | 'link';
 
+/** A link's address until the person types theirs over it: one the parser takes as a link. */
+export const LINK_PLACEHOLDER = 'https://example.com';
+
+/** A list's or a heading's marker at the start of a line, and the spaces before it. */
+const BLOCK_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. |### )?/;
+/** Any list marker a line already has, which a list button replaces. */
+const LIST_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. )?/;
+
+const isWordChar = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
+
+/** The word the caret is in or beside, as its start and end; the caret itself when in none. */
+function wordAround(text: string, at: number): [number, number] {
+  let a = at;
+  let b = at;
+  while (a > 0 && isWordChar(text[a - 1])) a -= 1;
+  while (b < text.length && isWordChar(text[b])) b += 1;
+  return [a, b];
+}
+
 /**
- * What a toolbar button does to what is being written: the words chosen
- * made bold, italic or a link, or the lines chosen made a list. Answers the
- * new text and what to choose in it next.
+ * One line's part of a choice, split into what stays outside the marks —
+ * the spaces round it, and a list's or heading's marker when the part
+ * starts its line — and the words the marks go round.
+ */
+function partsOf(text: string, from: number, to: number) {
+  const part = text.slice(from, to);
+  const atLineStart = from === 0 || text[from - 1] === '\n';
+  const lead = atLineStart
+    ? (BLOCK_MARK.exec(part)?.[0] ?? '')
+    : part.slice(0, part.length - part.trimStart().length);
+  const rest = part.slice(lead.length);
+  const words = rest.trimEnd();
+  return { lead, words, trail: rest.slice(words.length) };
+}
+
+/**
+ * What a toolbar button does to what is being written, so the note reads
+ * as the button meant (the 5.35 review, W535-05): the words chosen made
+ * bold or italic — the spaces round them, and a line's list marker, left
+ * outside the marks; each line on its own, since marks do not run across
+ * lines; with `*`, which works inside a word; with nothing chosen, the word
+ * the caret is in, or a word to type over — or made a link to an address to
+ * type over; or the lines chosen made a list, any marker they had replaced
+ * and blank lines left blank. Answers the new text and what to choose in it
+ * next.
  */
 export function formatNote(
   text: string,
@@ -125,51 +196,82 @@ export function formatNote(
   end: number,
   format: NoteFormat,
 ): { text: string; start: number; end: number } {
-  const before = text.slice(0, start);
-  const chosen = text.slice(start, end);
-  const after = text.slice(end);
-  switch (format) {
-    case 'bold':
-    case 'italic': {
-      const mark = format === 'bold' ? '**' : '*';
+  let s = Math.min(start, end);
+  let e = Math.max(start, end);
+  if (format === 'bold' || format === 'italic') {
+    const mark = format === 'bold' ? '**' : '*';
+    if (s === e) [s, e] = wordAround(text, s);
+    if (s === e) {
+      // Nothing to mark: a word to type over, chosen.
+      const word = format;
       return {
-        text: `${before}${mark}${chosen}${mark}${after}`,
-        start: start + mark.length,
-        end: end + mark.length,
+        text: `${text.slice(0, s)}${mark}${word}${mark}${text.slice(e)}`,
+        start: s + mark.length,
+        end: s + mark.length + word.length,
       };
     }
-    case 'link': {
-      // The words chosen (or "link") go to an address, chosen next to type over.
-      const words = chosen || 'link';
-      const address = before.length + words.length + 3;
-      return {
-        text: `${before}[${words}](https://)${after}`,
-        start: address,
-        end: address + 'https://'.length,
-      };
+    let out = '';
+    let first: [number, number] | null = null;
+    let from = s;
+    while (from <= e) {
+      const nl = text.indexOf('\n', from);
+      const to = nl === -1 || nl > e ? e : nl;
+      const { lead, words, trail } = partsOf(text, from, to);
+      if (words) {
+        const at = s + out.length + lead.length + mark.length;
+        first ??= [at, at + words.length];
+        out += `${lead}${mark}${words}${mark}${trail}`;
+      } else {
+        out += `${lead}${trail}`;
+      }
+      if (to === e) break;
+      out += '\n';
+      from = to + 1;
     }
-    default: {
-      // Every line the choice touches, marked.
-      const from = text.lastIndexOf('\n', start - 1) + 1;
-      const found = text.indexOf('\n', Math.max(end - (end > start ? 1 : 0), start));
-      const to = found === -1 ? text.length : found;
-      const lines = text.slice(from, to).split('\n');
-      const marked = lines
-        .map((line, i) =>
-          format === 'numbered'
-            ? `${i + 1}. ${line}`
-            : format === 'checklist'
-              ? `- [ ] ${line}`
-              : `- ${line}`,
-        )
-        .join('\n');
-      return {
-        text: `${text.slice(0, from)}${marked}${text.slice(to)}`,
-        start: from + marked.length,
-        end: from + marked.length,
-      };
-    }
+    const one = !text.slice(s, e).includes('\n');
+    return {
+      text: `${text.slice(0, s)}${out}${text.slice(e)}`,
+      start: one && first ? first[0] : s,
+      end: one && first ? first[1] : s + out.length,
+    };
   }
+  if (format === 'link') {
+    // One link: the first line of what is chosen, or the word at the caret.
+    if (s === e) [s, e] = wordAround(text, s);
+    const nl = text.indexOf('\n', s);
+    if (nl !== -1 && nl < e) e = nl;
+    const { lead, words, trail } = partsOf(text, s, e);
+    // A bracket would end the link's words early: shown as the parenthesis it reads as.
+    const label = (words || 'link').replace(/\[/g, '(').replace(/\]/g, ')');
+    const linked = `${lead}[${label}](${LINK_PLACEHOLDER})${trail}`;
+    const address = s + lead.length + label.length + 3;
+    return {
+      text: `${text.slice(0, s)}${linked}${text.slice(e)}`,
+      start: address,
+      end: address + LINK_PLACEHOLDER.length,
+    };
+  }
+  // A list: every line the choice touches. Blank ones in a choice of
+  // several stay blank; a blank line the caret is on becomes an empty item.
+  const from = s === 0 ? 0 : text.lastIndexOf('\n', s - 1) + 1;
+  const last = e > s && text[e - 1] === '\n' ? e - 1 : e;
+  const found = text.indexOf('\n', last);
+  const to = found === -1 ? text.length : found;
+  const lines = text.slice(from, to).split('\n');
+  let n = 0;
+  const marked = lines
+    .map((line) => {
+      if (lines.length > 1 && line.trim() === '') return line;
+      n += 1;
+      const mark = format === 'numbered' ? `${n}. ` : format === 'checklist' ? '- [ ] ' : '- ';
+      return mark + line.replace(LIST_MARK, '');
+    })
+    .join('\n');
+  return {
+    text: `${text.slice(0, from)}${marked}${text.slice(to)}`,
+    start: from + marked.length,
+    end: from + marked.length,
+  };
 }
 
 const TOOLS: Array<{ format: NoteFormat; label: string; keys?: string }> = [
@@ -197,10 +299,47 @@ function heldNow(err: ApiRequestError): DocumentView | null {
   }
 }
 
+/** A note being written. */
+interface Editing extends NoteDraft {
+  /**
+   * The ETag a save is sent with: the base's; a newer one whose note is the
+   * one the edit began from (the document changed, not its note); or theirs,
+   * once their note has been shown. Held here only, never in a draft.
+   */
+  sendEtag: string;
+  /** Brought back from a draft kept before a reload. */
+  restored: boolean;
+  /** Their note, shown once the vault's is found to differ from the one this edit began from. */
+  theirs: DocumentView | null;
+}
+
+/** The note's words as the vault keeps them: '' for none. */
+const wordsNow = (doc: Pick<DocumentView, 'notes'>) => doc.notes ?? '';
+
+/**
+ * A draft brought back, held to the document as it is now: its note still
+ * the one the draft began from, it carries on from the document now; else
+ * their note is shown, and nothing is saved over it unasked (the 5.35
+ * review, W535-03).
+ */
+function fromDraft(doc: DocumentView, kept: NoteDraft): Editing {
+  const same = doc.etag === kept.baseEtag || wordsNow(doc) === kept.baseText;
+  return { ...kept, sendEtag: doc.etag, restored: true, theirs: same ? null : doc };
+}
+
 /**
  * A document's Notes section: the note as it reads, who last changed it and
  * when (on the household's clock), and — for whoever may change the
  * document — Add a note or Edit note.
+ *
+ * Saving is made from the note the edit began from (the 5.35 review, A535-01,
+ * W535-01, W535-03, W535-04). The document's ETag moves whenever anything
+ * of it changes — a new version, who can see it, its name — so a save the
+ * vault refuses (409) is looked at: when the note is still the one this
+ * edit began from, it is saved again, once, quietly, from the document as
+ * it is now; only when the note itself is somebody else's is it shown, with
+ * who changed it, and saving over it is a choice of its own. Either way
+ * the page is given the document as it is now.
  */
 export function NotesSection(props: {
   doc: DocumentView;
@@ -211,33 +350,62 @@ export function NotesSection(props: {
   /** The household's time zone, which "edited …" is said in. */
   timezone: string | null;
   onSaved: (doc: DocumentView) => void;
+  /** A save was refused (409): the document as the vault holds it now. */
+  onRefreshed: (doc: DocumentView) => void;
 }) {
   const { doc, mayEdit } = props;
-  const { withToken } = useApp();
+  const { withToken, session } = useApp();
+  const info = session.info;
+  const householdId = info?.household_id ?? null;
+  const memberId = info?.member_id ?? null;
+  const who: DraftOwner | null =
+    householdId && memberId ? { household_id: householdId, member_id: memberId } : null;
   const id = useId();
   // A draft kept from before a reload opens the editor with it (A32).
-  const [editing, setEditing] = useState<{ text: string; etag: string; restored: boolean } | null>(
-    () => {
-      const kept = mayEdit ? draftOf(doc) : null;
-      return kept ? { ...kept, restored: true } : null;
-    },
-  );
+  const [editing, setEditing] = useState<Editing | null>(() => {
+    const kept = mayEdit && who ? draftOf(doc, who) : null;
+    return kept ? fromDraft(doc, kept) : null;
+  });
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Saved meanwhile by somebody else: their note, shown under the draft that is kept. */
-  const [theirs, setTheirs] = useState<DocumentView | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
   const opener = useRef<HTMLButtonElement>(null);
+  const conflict = useRef<HTMLParagraphElement>(null);
   /** What to choose in the box once React has put the new text in it. */
   const choose = useRef<[number, number] | null>(null);
   /** Where focus goes once the editor has gone. */
   const back = useRef(false);
+  /** The newest the page knows of the document: what a draft is kept for. */
+  const known = useRef(doc);
 
-  // A document no longer for everyone keeps no draft (A32): draftOf forgets it.
+  // The page loaded the document again — after a new version, a change of
+  // who can see it, a detail removed — while the note was being written:
+  // still the note this edit began from, it carries on from the document
+  // now; somebody else's, it is shown (the 5.35 review, A535-01, W535-04).
+  const [seen, setSeen] = useState(doc);
+  if (seen !== doc) {
+    setSeen(doc);
+    if (editing && doc.etag !== editing.sendEtag) {
+      setEditing({
+        ...editing,
+        sendEtag: doc.etag,
+        theirs: wordsNow(doc) === editing.baseText ? editing.theirs : doc,
+      });
+    }
+  }
+
+  useLayoutEffect(() => {
+    known.current = doc;
+  });
+
+  // A document no longer for everyone keeps no draft (A32), however that
+  // is learnt: the page, or a refused save (the 5.35 review, W535-02).
   useEffect(() => {
-    if (doc.visibility !== 'household') forgetDraft(doc.id);
-  }, [doc.id, doc.visibility]);
+    if (householdId && memberId && doc.visibility !== 'household') {
+      forgetDraft(doc.id, { household_id: householdId, member_id: memberId });
+    }
+  }, [doc.id, doc.visibility, householdId, memberId]);
 
   useLayoutEffect(() => {
     const at = choose.current;
@@ -253,24 +421,49 @@ export function NotesSection(props: {
     opener.current?.focus();
   }, [editing]);
 
-  const write = (text: string, etag: string) => {
-    setEditing((e) => ({ text, etag, restored: e?.restored ?? false }));
-    keepDraft(doc, { text, etag });
+  // Somebody else's note found: focus goes to what says so.
+  const theirs = editing?.theirs ?? null;
+  useEffect(() => {
+    if (theirs) conflict.current?.focus();
+  }, [theirs]);
+
+  /** A draft of this, kept — only for a document everyone in the family sees. */
+  const persist = (e: Editing) => {
+    if (!who) return;
+    keepDraft(known.current, who, {
+      text: e.text,
+      baseText: e.baseText,
+      baseEtag: e.baseEtag,
+      baseStamp: e.baseStamp,
+    });
+  };
+
+  const write = (text: string) => {
+    if (!editing) return;
+    const next = { ...editing, text };
+    setEditing(next);
+    persist(next);
   };
 
   const start = () => {
     setError(null);
-    setTheirs(null);
     setPreview(false);
-    const text = doc.notes ?? '';
-    setEditing({ text, etag: doc.etag, restored: false });
+    const text = wordsNow(doc);
+    setEditing({
+      text,
+      baseText: text,
+      baseEtag: doc.etag,
+      baseStamp: doc.notes_updated_at ?? null,
+      sendEtag: doc.etag,
+      restored: false,
+      theirs: null,
+    });
     choose.current = [text.length, text.length];
   };
 
   const close = () => {
-    forgetDraft(doc.id);
+    if (who) forgetDraft(doc.id, who);
     setEditing(null);
-    setTheirs(null);
     setError(null);
     back.current = true;
   };
@@ -282,7 +475,7 @@ export function NotesSection(props: {
     // Over the limit, it is not done: the box would cut the note short.
     if (next.text.length > NOTES_MAX) return;
     choose.current = [next.start, next.end];
-    write(next.text, editing.etag);
+    write(next.text);
   };
 
   const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -295,31 +488,47 @@ export function NotesSection(props: {
 
   const save = async () => {
     if (!editing || busy) return;
+    const began = editing;
+    // What is sent is what the preview shows.
+    const notes = began.text.trim() || null;
     setBusy(true);
     setError(null);
+    let etag = began.sendEtag;
     try {
-      const saved = await withToken((t) =>
-        api.updateDocument(t, doc.id, { notes: editing.text.trim() || null }, editing.etag),
-      );
-      if (!saved) return;
-      close();
-      props.onSaved(saved);
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 409) {
-        // Somebody else saved first: theirs is shown, and the draft is kept.
-        // Saving again is saving over theirs, knowingly.
-        const now = heldNow(err);
-        if (now) {
-          setTheirs(now);
-          write(editing.text, now.etag);
-        } else {
-          setError(
-            'Someone else changed this document while you were writing. Your draft is still here: copy it, then reload the page to see theirs.',
-          );
+      for (let tries = 0; tries < 2; tries++) {
+        try {
+          const saved = await withToken((t) => api.updateDocument(t, doc.id, { notes }, etag));
+          if (!saved) return;
+          close();
+          props.onSaved(saved);
+          return;
+        } catch (err) {
+          if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
+          const now = heldNow(err);
+          if (!now) {
+            setError(
+              'Someone else changed this document while you were writing. Your draft is still here: copy it, then reload the page to see theirs.',
+            );
+            return;
+          }
+          // The page shows the document as it is now: Keep theirs shows
+          // theirs, and an edit begins from it. No draft is kept of a note
+          // on a document no longer for everyone (A32).
+          known.current = now;
+          props.onRefreshed(now);
+          if (who && now.visibility !== 'household') forgetDraft(doc.id, who);
+          if (wordsNow(now) !== began.baseText) {
+            setEditing((e) => e && { ...e, sendEtag: now.etag, theirs: now });
+            return;
+          }
+          // The document changed, not its note: saved again from it, once.
+          etag = now.etag;
+          setEditing((e) => e && { ...e, sendEtag: now.etag });
         }
-      } else {
-        setError(describeError(err));
       }
+      setError('This document changed again as the note was saved. Save it once more.');
+    } catch (err) {
+      setError(describeError(err));
     } finally {
       setBusy(false);
     }
@@ -332,6 +541,15 @@ export function NotesSection(props: {
         }`
       : null;
   const headingId = `${id}-h`;
+  // Named only when the note itself changed since the edit began.
+  const changedBy =
+    theirs &&
+    editing &&
+    theirs.notes_updated_at &&
+    theirs.notes_updated_at !== editing.baseStamp &&
+    theirs.notes_updated_by_name
+      ? theirs.notes_updated_by_name
+      : 'Someone else';
 
   return (
     <section aria-labelledby={headingId} className="notes">
@@ -355,17 +573,24 @@ export function NotesSection(props: {
             </p>
           )}
           {theirs && (
-            <div className="note-conflict" role="alert">
-              <p>
-                {theirs.notes_updated_by_name ?? 'Someone else'} changed this note while you were
-                writing. Your draft is still here. Theirs is below: save again to replace it with
-                yours, or cancel to keep theirs.
+            <div className="note-conflict" role="group" aria-labelledby={`${id}-conflict`}>
+              <p id={`${id}-conflict`} ref={conflict} tabIndex={-1}>
+                {changedBy} changed this note while you were writing. Your draft is still here, and
+                theirs is below.
               </p>
               {theirs.notes ? (
                 <NoteText source={theirs.notes} />
               ) : (
                 <p className="muted">They took the note off.</p>
               )}
+              <div className="row">
+                <Button onClick={() => void save()} disabled={busy}>
+                  {busy ? 'Saving…' : 'Save mine over theirs'}
+                </Button>
+                <Button kind="quiet" onClick={close} disabled={busy}>
+                  Keep theirs
+                </Button>
+              </div>
             </div>
           )}
           <div className="pills" role="group" aria-label="Write or preview">
@@ -383,8 +608,9 @@ export function NotesSection(props: {
           </div>
           {preview ? (
             <div className="note-preview" role="region" aria-label="Preview of the note">
+              {/* What Save sends: the note trimmed (the 5.35 review, W535-08). */}
               {editing.text.trim() ? (
-                <NoteText source={editing.text} />
+                <NoteText source={editing.text.trim()} />
               ) : (
                 <p className="muted">Nothing written yet.</p>
               )}
@@ -416,7 +642,7 @@ export function NotesSection(props: {
                 maxLength={NOTES_MAX}
                 aria-describedby={`${id}-help ${id}-count`}
                 onKeyDown={keys}
-                onChange={(e) => write(e.target.value, editing.etag)}
+                onChange={(e) => write(e.target.value)}
               />
               <p id={`${id}-help`} className="muted note-help">
                 **bold**, *italic*, “- ” a list, “1. ” numbered, “- [ ] ” a checklist, “### ” a
@@ -428,14 +654,17 @@ export function NotesSection(props: {
             {countOf(editing.text.length)}
           </p>
           <ErrorNote message={error} />
-          <div className="row">
-            <Button onClick={() => void save()} disabled={busy}>
-              {busy ? 'Saving…' : 'Save note'}
-            </Button>
-            <Button kind="quiet" onClick={close} disabled={busy}>
-              Cancel
-            </Button>
-          </div>
+          {/* Saving over somebody else's note is the choice above, not this. */}
+          {!theirs && (
+            <div className="row">
+              <Button onClick={() => void save()} disabled={busy}>
+                {busy ? 'Saving…' : 'Save note'}
+              </Button>
+              <Button kind="quiet" onClick={close} disabled={busy}>
+                Cancel
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </section>

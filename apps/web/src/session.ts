@@ -110,11 +110,24 @@ export class Session {
 
   /** A usable access token — or why there is not one. */
   async token(): Promise<TokenResult> {
+    const before = this.core.info;
     const r = await this.core.token();
+    const after = this.core.info;
     // A session that ended by itself — signed out on another device, taken
     // away, run out — takes its unsaved notes with it, as signing out does
     // (5.35, A32).
     if (r.kind === 'ended' || r.kind === 'signed_out') forgetDrafts();
+    // And one this tab took over from another tab, signed in there as
+    // somebody else (the 5.35 review, W535-07): nothing of the last
+    // person's stays — their unsaved notes, the photos fetched for them.
+    if (
+      before &&
+      after &&
+      (before.member_id !== after.member_id || before.household_id !== after.household_id)
+    ) {
+      forgetDrafts();
+      clearPhotos();
+    }
     return r;
   }
 

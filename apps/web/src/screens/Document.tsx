@@ -426,7 +426,10 @@ export function DocumentScreen() {
           label={word('notes', 'Notes')}
           mayEdit={mayChangeIt}
           timezone={data.timezone}
-          onSaved={(saved) => setData({ ...data, doc: saved })}
+          // As the vault holds it now, whether saved or refused (409): over
+          // whatever the page holds then, never a copy from before a reload.
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
         />
       )}
       {collectionsOffered(caps, storedRole()) && (

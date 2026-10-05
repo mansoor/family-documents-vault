@@ -16,12 +16,27 @@
  *    pass for somewhere they do not go.
  *
  * Anything else is text, exactly as written: HTML, images, tables, other
- * headings, a link to anywhere else (`javascript:`, `data:`…). The parser
- * is total — every string is a note — and linear: each line is read once,
- * a link's brackets are found through indexes made in one pass, and at
- * most `MAX_OPEN` unmatched `*` or `_` wait for a partner at a time, so no
- * input makes it backtrack. Plain text, as every note was before this,
- * comes back unchanged from `notesPlainText`.
+ * headings, a link to anywhere else (`javascript:`, `data:`…), and a link
+ * whose address could show as somewhere it does not go — one with an
+ * invisible or direction-changing character in it, or a name before its
+ * host (`https://bank.example@evil.example`).
+ *
+ * The parser is total — every string is a note — and linear in the note's
+ * length, whatever it holds:
+ *
+ *  - each line is split off and matched once, by patterns that cannot
+ *    backtrack;
+ *  - a paragraph's or an item's lines are appended to it in place, never
+ *    copied;
+ *  - a line's `[`, `]` and `)` are found through indexes made in one pass,
+ *    and the addresses `[words](address)` tries never overlap;
+ *  - a written-out address is read once: a reading that fails holds no
+ *    other address to read;
+ *  - at most `MAX_OPEN` unmatched `*` or `_` wait for a partner at a time,
+ *    and a closer takes at most three goes.
+ *
+ * Plain text, as every note was before this, comes back unchanged from
+ * `notesPlainText`.
  */
 
 /** The longest a note may be, in characters (UTF-16 units, as the vault counts). */
@@ -81,25 +96,45 @@ const INDENTED = /^[ \t]/;
 const isWhite = (c: string | undefined) => c === undefined || /\s/.test(c);
 const isWordChar = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
 
-/** A character no address has: a space, a control character, `<` or `>`. */
+/**
+ * What could make an address show as somewhere it does not go: control and
+ * format characters — right-to-left overrides and isolates, zero-width
+ * spaces and joiners, the soft hyphen, every one of Unicode's Cf — and line
+ * and paragraph separators.
+ */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** A character (one code point) no address has: a space, `<`, `>`, or one of UNSEEN. */
 function notInAnyAddress(c: string): boolean {
-  const code = c.charCodeAt(0);
-  return code <= 0x20 || code === 0x7f || c === '<' || c === '>' || /\s/.test(c);
+  return (
+    (c.codePointAt(0) ?? 0) <= 0x20 || c === '<' || c === '>' || /\s/u.test(c) || UNSEEN.test(c)
+  );
 }
 
+/** The code point at `i`, as a string of one or two units. */
+const codePointAt = (line: string, i: number) =>
+  String.fromCodePoint(line.codePointAt(i) as number);
+
+/** Where a web address's host ends: its first `/`, `?` or `#`, or its end. */
+const AUTHORITY_END = /[/?#]/;
+
 /**
- * Whether a link may go there: https or http with somewhere after the `//`,
- * or mailto with an address. Asked of every link the parser makes, and by
- * whoever draws one, before it is a link at all.
+ * Whether a link may go there: https or http with a host after the `//`
+ * and no name before it (`user@`, which could pass for the host), or
+ * mailto with an address — and in neither anything UNSEEN. Asked of every
+ * link the parser makes, and by whoever draws one, before it is a link at
+ * all.
  */
 export function noteLinkAllowed(href: string): boolean {
   const lower = href.toLowerCase();
   const scheme = ['https://', 'http://', 'mailto:'].find((s) => lower.startsWith(s));
   if (!scheme || href.length === scheme.length) return false;
-  for (let i = scheme.length; i < href.length; i++) {
-    if (notInAnyAddress(href[i] as string)) return false;
-  }
-  return true;
+  const rest = href.slice(scheme.length);
+  for (const c of rest) if (notInAnyAddress(c)) return false;
+  if (scheme === 'mailto:') return true;
+  const end = rest.search(AUTHORITY_END);
+  const authority = end === -1 ? rest : rest.slice(0, end);
+  return authority !== '' && !authority.includes('@');
 }
 
 /** A note as a tree. Any string at all is one; null or nothing is an empty note. */
@@ -190,9 +225,15 @@ function listItem(line: string): { ordered: boolean; item: NoteListItem } | null
   return null;
 }
 
-/** Two lines of one paragraph (or item): a line break between them. */
+/**
+ * Two lines of one paragraph (or item): a line break between them, added
+ * to what it already holds in place. Copied, a paragraph of many short
+ * lines cost the square of its length (the 5.35 review, X535-01).
+ */
 function joinLines(before: NoteInline[], after: NoteInline[]): NoteInline[] {
-  return [...before, { type: 'break' }, ...after];
+  before.push({ type: 'break' });
+  for (const node of after) before.push(node);
+  return before;
 }
 
 // ------------------------------------------------------------- inside a line
@@ -201,13 +242,17 @@ type Token =
   | { kind: 'node'; node: NoteInline }
   | { kind: 'delim'; ch: '*' | '_'; len: number; open: boolean; close: boolean };
 
-/** For each position, the next position at or after it where `test` holds; -1 for none. */
+/**
+ * For each position, the next position at or after it where `test` holds
+ * of the code point there; -1 for none. (A character outside the BMP is
+ * tested whole at its first unit.)
+ */
 function nextWhere(line: string, test: (c: string) => boolean): Int32Array {
   const out = new Int32Array(line.length + 1);
   let next = -1;
   out[line.length] = -1;
   for (let i = line.length - 1; i >= 0; i--) {
-    if (test(line[i] as string)) next = i;
+    if (test(codePointAt(line, i))) next = i;
     out[i] = next;
   }
   return out;
@@ -276,17 +321,33 @@ function tokens(line: string, links: boolean): Token[] {
     if (c === 'h' && links && !isWordChar(line[i - 1])) {
       const scheme = line.startsWith('https://', i) ? 8 : line.startsWith('http://', i) ? 7 : 0;
       if (scheme > 0) {
-        // Up to the first character no address has. What is read here holds
-        // none, so it fails only when nothing but a sentence's full stop or
-        // bracket follows the `//` — and then holds no other address to read.
+        // Read once, up to the first character no address has. Its host
+        // first: a name before it (`user@`) is not a link, and the host
+        // holds no `/`, so no other address to read. The rest holds nothing
+        // noteLinkAllowed refuses, so it fails only when nothing but a
+        // sentence's full stop or bracket follows the `//` — and then holds
+        // no other address either.
         let end = i + scheme;
-        while (end < n && !notInAnyAddress(line[end] as string)) end += 1;
-        const href = trimAddress(line.slice(i, end));
-        if (noteLinkAllowed(href)) {
-          flush();
-          out.push({ kind: 'node', node: { type: 'link', href, children: [] } });
-          i += href.length;
-          continue;
+        let named = false;
+        while (end < n) {
+          const ch = codePointAt(line, end);
+          if (notInAnyAddress(ch) || AUTHORITY_END.test(ch)) break;
+          if (ch === '@') named = true;
+          end += ch.length;
+        }
+        if (!named) {
+          while (end < n) {
+            const ch = codePointAt(line, end);
+            if (notInAnyAddress(ch)) break;
+            end += ch.length;
+          }
+          const href = trimAddress(line.slice(i, end));
+          if (noteLinkAllowed(href)) {
+            flush();
+            out.push({ kind: 'node', node: { type: 'link', href, children: [] } });
+            i += href.length;
+            continue;
+          }
         }
       }
     }
