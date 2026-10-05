@@ -3,6 +3,7 @@ import {
   can,
   DECEASED_NO_SIGN_IN,
   identityAudienceSees,
+  mayBeRestricted,
   reducesSight,
   roleLabel,
   ROLES,
@@ -20,6 +21,7 @@ import { requireCapability } from '../authz.js';
 import { ApiError, notFound } from '../errors.js';
 import type { AlertRequest } from '../alert-job.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
+import { isRestricted, restrictedRefusal } from './restrictions.js';
 
 /**
  * Co-owners (SHR-09, SHR-10).
@@ -121,6 +123,11 @@ export class CoOwnerService {
           message: `${target.display_name} is already ${article(to)}.`,
           effects: [],
         };
+      }
+      // A restriction never stands beside another role (the 5.32 review):
+      // their limits come off first. The database refuses it too.
+      if (!mayBeRestricted(to) && (await isRestricted(trx, target.member_id))) {
+        throw restrictedRefusal(target.display_name);
       }
       // A locked person is not made an owner (5.28): an owner's sign-in is
       // never locked, so it would be one an owner could not lock again. The
@@ -368,6 +375,11 @@ export class CoOwnerService {
           'already_signed_in',
           `${member.display_name} already has a sign-in.`,
         );
+      }
+      // Given back as anything but a viewer, a restricted person would have a
+      // role their restriction never stands beside (the 5.32 review).
+      if (!mayBeRestricted(role) && (await isRestricted(trx, member.id))) {
+        throw restrictedRefusal(member.display_name);
       }
       const account = member.former_account_id;
       if (!account || member.disabled_at) {

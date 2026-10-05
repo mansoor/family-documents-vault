@@ -156,6 +156,12 @@ begin
     grant execute on function public.app_granted_people() to fdv_app;
     grant execute on function public.app_granted_collections() to fdv_app;
     grant execute on function public.app_granted_types() to fdv_app;
+    -- Whether a link's maker lends what it was made for (the 5.32 review),
+    -- for the list of links and every open. What reads anybody's grant is
+    -- nobody's to ask: not the application role, not PUBLIC by default.
+    grant execute on function public.share_link_lends(uuid) to fdv_app;
+    revoke execute on function public.app_grant_of(uuid) from public;
+    revoke execute on function public.maker_lends(uuid, uuid, public.visibility, uuid, text) from public;
   end if;
 end $$;
 

@@ -1636,6 +1636,19 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         'share_page_failure',
         'share_session_use',
         'upload_idempotency',
+        // What hangs off a person, a link's sessions and the exports (the
+        // 5.32 review).
+        'account',
+        'account_household',
+        'device',
+        'export',
+        'invitation',
+        'known_device',
+        'notification_preference',
+        'scope_key',
+        'session',
+        'share_session',
+        'suggestion_dismissal',
       ].sort(),
     );
     for (const r of rules) {
@@ -1689,6 +1702,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         ['access_restriction', 'access_restriction_guard'],
         ['access_restriction_type', 'access_restriction_type_household'],
         ['account_household', 'account_household_restriction_reconfirm'],
+        ['account_household', 'account_household_restricted_role'],
       ]) {
         await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
         try {
@@ -1779,6 +1793,21 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     }
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   }, 120_000);
+
+  it("notices the application role able to read anybody's restriction (0054)", async () => {
+    await sql(vault.adminUrl, 'grant execute on function public.app_grant_of(uuid) to fdv_app');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /the application role can read anybody's restriction/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'revoke execute on function public.app_grant_of(uuid) from fdv_app',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {

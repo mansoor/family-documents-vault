@@ -6,7 +6,7 @@ import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from './auth/totp.js';
 import type { Principal, Tokens } from './auth/service.js';
-import { RestrictionService } from './household/restrictions.js';
+import { RestrictionService, restrictionSummaries } from './household/restrictions.js';
 import { createHarness, type Harness } from './test-harness.js';
 
 /**
@@ -107,7 +107,10 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     docs[name] = { id, version, reminder: r.rows[0]?.id as string };
   };
 
-  /** Val's restriction, written as an operator would: exactly this. */
+  /**
+   * Val's restriction, written as an operator would: exactly this, saying
+   * whether it names people and kinds at all, as RestrictionService does.
+   */
   const restrict = async (
     grant: {
       people?: string[];
@@ -121,9 +124,18 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     await admin.query('delete from access_restriction where member_id = $1', [val.member_id]);
     await admin.query(
       `insert into access_restriction
-         (member_id, household_id, include_adults_only, include_no_person_docs, expires_at)
-       values ($1, $2, $3, $4, $5)`,
-      [val.member_id, hh, grant.adults ?? false, grant.noPerson ?? false, grant.expires ?? null],
+         (member_id, household_id, include_adults_only, include_no_person_docs, expires_at,
+          limits_people, limits_types)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        val.member_id,
+        hh,
+        grant.adults ?? false,
+        grant.noPerson ?? false,
+        grant.expires ?? null,
+        (grant.people ?? []).length > 0,
+        (grant.types ?? []).length > 0,
+      ],
     );
     for (const m of grant.people ?? []) {
       await admin.query(
@@ -549,38 +561,528 @@ describe.skipIf(!testAdminUrl())('the restriction, enforced by the database (5.3
     ).toBe(1);
   });
 
-  it('a restricted viewer whose role changes stays restricted, and the owners are asked to confirm it again', async () => {
-    // Uma, restricted to nothing but her own, then made a teen.
+  /** One statement as somebody signed in: what it changed, or the error's code. */
+  const tryAs = async (
+    who: { member: string; account: string; role: string },
+    text: string,
+    args: unknown[] = [],
+  ): Promise<number | string> => {
+    const c = await app.connect();
+    try {
+      await c.query('begin');
+      await c.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                set_config('app.account_id', $2, true), set_config('app.member_id', $3, true),
+                set_config('app.role', $4, true)`,
+        [hh, who.account, who.member, who.role],
+      );
+      return (await c.query(text, args)).rowCount ?? 0;
+    } catch (err) {
+      return (err as { code?: string }).code ?? 'error';
+    } finally {
+      await c.query('rollback').catch(() => undefined);
+      c.release();
+    }
+  };
+
+  it('promoting a restricted viewer is refused, by the API and by the database; their limits come off first', async () => {
+    await usual();
+    await fresh(owner);
+    for (const role of ['teen', 'adult', 'owner']) {
+      const changed = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${val.member_id}/role`,
+        headers: h.as(owner),
+        payload: { role },
+      });
+      expect(changed.statusCode, `${role}: ${changed.body}`).toBe(409);
+      expect(json<{ error: { code: string; message: string } }>(changed).error).toMatchObject({
+        code: 'restricted',
+        message: "Val's access is limited to some documents. Remove their limits first.",
+      });
+    }
+    // And the database, whoever asks: an owner's statement, past the API.
+    const ownerAccount = await accountOf(owner);
+    expect(
+      await tryAs(
+        { member: owner.member_id, account: ownerAccount, role: 'owner' },
+        `update account_household set role = 'adult' where member_id = $1`,
+        [val.member_id],
+      ),
+    ).toBe('FDV02');
+    expect(
+      (
+        await admin.query<{ role: string }>(
+          'select role from account_household where member_id = $1',
+          [val.member_id],
+        )
+      ).rows[0]?.role,
+    ).toBe('viewer');
+    // With the limits off, the same change is made.
+    await admin.query('delete from access_restriction where member_id = $1', [val.member_id]);
+    try {
+      expect(
+        await tryAs(
+          { member: owner.member_id, account: ownerAccount, role: 'owner' },
+          `update account_household set role = 'teen' where member_id = $1`,
+          [val.member_id],
+        ),
+      ).toBe(1);
+    } finally {
+      await usual();
+    }
+  });
+
+  it('a restricted person is not invited as anything but a viewer, nor accepted as one, nor given their sign-in back as one', async () => {
+    // Mo has no sign-in yet; an owner invites them as an adult, then limits them.
+    const mo = (
+      await admin.query<{ id: string }>(
+        `insert into member (household_id, display_name) values ($1, 'Mo') returning id`,
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    await fresh(owner);
+    const invited = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/invitations',
+      headers: h.as(owner),
+      payload: { member_id: mo, email: 'mo-532@example.test', role: 'adult' },
+    });
+    expect(invited.statusCode, invited.body).toBe(201);
+    const { link_token, code } = json<{ link_token: string; code: string }>(invited);
     await admin.query('insert into access_restriction (member_id, household_id) values ($1, $2)', [
-      uma.member_id,
+      mo,
       hh,
     ]);
     try {
-      await fresh(owner);
-      const changed = await h.app.inject({
+      const accepted = await h.app.inject({
         method: 'POST',
-        url: `/api/v1/members/${uma.member_id}/role`,
-        headers: h.as(owner),
-        payload: { role: 'teen' },
+        url: `/api/v1/invitations/${link_token}/accept`,
+        payload: { code, password: PASSWORD },
+        ...peer(),
       });
-      expect(changed.statusCode, changed.body).toBe(200);
-      const row = await admin.query<{ reconfirm_since: Date | null }>(
-        'select reconfirm_since from access_restriction where member_id = $1',
-        [uma.member_id],
-      );
-      expect(row.rows[0]?.reconfirm_since).toBeInstanceOf(Date);
-      // Kept, it fails closed: as a teen she still sees nothing of anybody else's.
+      expect(accepted.statusCode, accepted.body).toBe(409);
+      expect(json<{ error: { code: string } }>(accepted).error.code).toBe('restricted');
       expect(
-        await as(
-          { member: uma.member_id, account: umaAccount, role: 'teen' },
-          'select id from document',
-        ),
-      ).toEqual([]);
+        (await admin.query('select 1 from account_household where member_id = $1', [mo])).rowCount,
+      ).toBe(0);
+      // Asked again now, the owner is told before anything is sent.
+      await fresh(owner);
+      const again = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/invitations',
+        headers: h.as(owner),
+        payload: { member_id: mo, email: 'mo-532@example.test', role: 'teen' },
+      });
+      expect(again.statusCode, again.body).toBe(409);
+      expect(json<{ error: { code: string } }>(again).error.code).toBe('restricted');
     } finally {
-      await admin.query('delete from access_restriction where member_id = $1', [uma.member_id]);
-      await admin.query(`update account_household set role = 'viewer' where member_id = $1`, [
-        uma.member_id,
-      ]);
+      await admin.query('delete from access_restriction where member_id = $1', [mo]);
+    }
+
+    // Val's sign-in taken away, then given back as an adult: refused.
+    await usual();
+    await fresh(owner);
+    expect(
+      (
+        await h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/members/${val.member_id}/sign-in`,
+          headers: h.as(owner),
+        })
+      ).statusCode,
+    ).toBe(204);
+    const asAdult = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${val.member_id}/sign-in`,
+      headers: h.as(owner),
+      payload: { role: 'adult' },
+    });
+    expect(asAdult.statusCode, asAdult.body).toBe(409);
+    expect(json<{ error: { code: string } }>(asAdult).error.code).toBe('restricted');
+    // As a viewer it comes back, still restricted.
+    const asViewer = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${val.member_id}/sign-in`,
+      headers: h.as(owner),
+      payload: { role: 'viewer' },
+    });
+    expect(asViewer.statusCode, asViewer.body).toBe(200);
+    valAccount = await accountOf(val);
+  });
+
+  it('deleting a granted kind narrows: removed unused, or dropped when its last document leaves it', async () => {
+    await fresh(owner);
+    const kind = async (label: string) => {
+      const made = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/document-types',
+        headers: h.as(owner),
+        payload: { label, category: 'tax' },
+      });
+      expect(made.statusCode, made.body).toBe(201);
+      return json<{ key: string }>(made).key;
+    };
+    const own = ids(['valOwn', 'valPrivate']);
+
+    // A kind nobody has used yet, granted, then deleted by an adult (types.remove).
+    const workpapers = await kind('Tax workpapers');
+    await restrict({ people: [ahmed.member_id], types: [workpapers] });
+    expect(await asVal('select id from document')).toEqual(own);
+    const removed = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/document-types/${workpapers}`,
+      headers: h.as(ahmed),
+    });
+    expect(removed.statusCode, removed.body).toBe(204);
+    expect(
+      (await admin.query('select 1 from access_restriction_type where type_key = $1', [workpapers]))
+        .rowCount,
+    ).toBe(0);
+    // Still nothing of Ahmed's: "these kinds only", with none left, is none.
+    expect(await asVal('select id from document')).toEqual(own);
+
+    // A kind only Ahmed's Only me document uses: an owner's delete keeps it,
+    // marked deleted, for him (0035); filed under another kind, his last
+    // document leaves it, and it is dropped then (dropDeletedType).
+    const ledger = await kind('Tax ledger');
+    const filed = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents',
+      headers: h.as(ahmed),
+      payload: {
+        title: 'Restricted ledger',
+        type_key: ledger,
+        owner_member_id: ahmed.member_id,
+        visibility: 'private',
+      },
+    });
+    expect(filed.statusCode, filed.body).toBe(201);
+    const ledgerDoc = json<DocumentView>(filed).id;
+    await restrict({ people: [ahmed.member_id], types: [ledger] });
+    expect(await asVal('select id from document')).toEqual(own);
+    await fresh(owner);
+    expect(
+      (
+        await h.app.inject({
+          method: 'DELETE',
+          url: `/api/v1/document-types/${ledger}`,
+          headers: h.as(owner),
+        })
+      ).statusCode,
+    ).toBe(204);
+    expect(
+      (
+        await admin.query('select 1 from document_type where key = $1 and deleted_at is not null', [
+          ledger,
+        ])
+      ).rowCount,
+    ).toBe(1);
+    const refiled = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/documents/${ledgerDoc}`,
+      headers: h.as(ahmed),
+      payload: { type_key: 'utility_bill' },
+    });
+    expect(refiled.statusCode, refiled.body).toBe(200);
+    expect(
+      (await admin.query('select 1 from document_type where key = $1', [ledger])).rowCount,
+    ).toBe(0);
+    expect(await asVal('select id from document')).toEqual(own);
+    await admin.query('delete from document where id = $1', [ledgerDoc]);
+    await usual();
+  });
+
+  it('deleting a granted person narrows', async () => {
+    // Zed, with no sign-in, and a tax return of theirs; Val is given Zed's tax returns.
+    const zed = (
+      await admin.query<{ id: string }>(
+        `insert into member (household_id, display_name) values ($1, 'Zed') returning id`,
+        [hh],
+      )
+    ).rows[0]?.id as string;
+    const zedTax = (
+      await admin.query<{ id: string }>(
+        `insert into document (household_id, title, owner_member_id, type_key, visibility)
+         values ($1, 'Zed tax', $2, 'tax_return', 'household') returning id`,
+        [hh, zed],
+      )
+    ).rows[0]?.id as string;
+    const own = ids(['valOwn', 'valPrivate']);
+    await restrict({ people: [zed], types: ['tax_return'] });
+    expect(await asVal('select id from document')).toEqual([...own, zedTax].sort());
+    await admin.query('delete from member where id = $1', [zed]);
+    // Not "everyone's tax returns": nobody named is left, so nobody's.
+    expect(await asVal('select id from document')).toEqual(own);
+    await admin.query('delete from document where id = $1', [zedTax]);
+    await usual();
+  });
+
+  it('a link lends no more than its maker may see now: made before a restriction, it stops lending outside it', async () => {
+    // Sam, an adult, shares two of the household's documents; an owner then
+    // makes Sam a viewer and limits Sam to Ahmed's tax returns.
+    const sam = await h.join(owner, { name: 'Sam', email: 'sam-532@example.test', role: 'adult' });
+    const share = async (doc: string) => {
+      const r = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${doc}/share`,
+        headers: h.as(sam),
+        payload: { recipient_label: 'a friend' },
+      });
+      expect(r.statusCode, r.body).toBe(201);
+      return json<{ share: { id: string }; link_token: string }>(r);
+    };
+    const outside = await share(docs.ownerTax?.id as string);
+    const inside = await share(docs.ahmedTax?.id as string);
+    const opens = async (token: string) =>
+      (
+        await h.app.inject({
+          method: 'POST',
+          url: '/api/v1/shared/unlock',
+          payload: { token },
+          ...peer(),
+        })
+      ).statusCode;
+    expect(await opens(outside.link_token)).toBe(200);
+
+    await fresh(owner);
+    const demoted = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${sam.member_id}/role`,
+      headers: h.as(owner),
+      payload: { role: 'viewer' },
+    });
+    expect(demoted.statusCode, demoted.body).toBe(200);
+    // Made a viewer, Sam still lends the household's documents by role.
+    expect(await opens(outside.link_token)).toBe(200);
+    await admin.query(
+      `insert into access_restriction (member_id, household_id, limits_people, limits_types)
+       values ($1, $2, true, true)`,
+      [sam.member_id, hh],
+    );
+    await admin.query(
+      `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+       values ($1, $2, $3)`,
+      [sam.member_id, hh, ahmed.member_id],
+    );
+    await admin.query(
+      `insert into access_restriction_type (restricted_member_id, household_id, type_key)
+       values ($1, $2, 'tax_return')`,
+      [sam.member_id, hh],
+    );
+    try {
+      // Outside the grant: not there any more, to the API and the database.
+      expect(await opens(outside.link_token)).not.toBe(200);
+      const asLink = async (shareId: string) => {
+        const c = await app.connect();
+        try {
+          await c.query('begin');
+          await c.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                    set_config('app.share_id', $2, true)`,
+            [hh, shareId],
+          );
+          return (await c.query<{ id: string }>('select id from document')).rows.map((r) => r.id);
+        } finally {
+          await c.query('rollback').catch(() => undefined);
+          c.release();
+        }
+      };
+      expect(await asLink(outside.share.id)).toEqual([]);
+      // Inside it, the link still works.
+      expect(await opens(inside.link_token)).toBe(200);
+      expect(await asLink(inside.share.id)).toEqual([docs.ahmedTax?.id]);
+      // An owner sees the one outside paused, and why; the one inside working.
+      const list = json<{
+        items: Array<{ id: string; state: string; paused_reason: string | null; summary: string }>;
+      }>(await h.app.inject({ url: '/api/v1/shares', headers: h.as(owner) })).items;
+      expect(list.find((l) => l.id === outside.share.id)).toMatchObject({
+        state: 'paused',
+        paused_reason: 'limited',
+      });
+      expect(list.find((l) => l.id === outside.share.id)?.summary).toMatch(
+        /Paused: the access of whoever made it is limited/,
+      );
+      expect(list.find((l) => l.id === inside.share.id)).toMatchObject({
+        state: 'active',
+        paused_reason: null,
+      });
+      // Past its end, a restriction lends nothing at all.
+      await admin.query(
+        `update access_restriction set expires_at = now() - interval '1 minute' where member_id = $1`,
+        [sam.member_id],
+      );
+      expect(await opens(inside.link_token)).not.toBe(200);
+      expect(await asLink(inside.share.id)).toEqual([]);
+    } finally {
+      await admin.query('delete from access_restriction where member_id = $1', [sam.member_id]);
+    }
+    // Its limits off, the link lends again (it was never written onto).
+    expect(await opens(outside.link_token)).toBe(200);
+  });
+
+  it("the activity log gives a restricted reader no line about a person, a kind or a collection they are not given, and nobody else's other lines", async () => {
+    await usual();
+    // A kind of the household's, a collection, and an invitation: lines of
+    // each, none of them Val's to know.
+    await fresh(owner);
+    const hidden = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: h.as(owner),
+      payload: { label: 'Divorce papers', category: 'legal' },
+    });
+    expect(hidden.statusCode, hidden.body).toBe(201);
+    const secretKind = json<{ key: string }>(hidden).key;
+    const other = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/collections',
+      headers: h.as(owner),
+      payload: { name: 'For the custody lawyer', audience: 'everyone' },
+    });
+    expect(other.statusCode, other.body).toBe(201);
+    const otherCollection = json<{ id: string }>(other).id;
+    const lines = async (where: string) =>
+      asVal(
+        `select coalesce(object_id::text, detail ->> 'key', action) as id from audit_event where ${where}`,
+      );
+    // The database has those lines; Val is given none of them.
+    const all = await admin.query<{ n: number }>(
+      `select count(*)::int as n from audit_event
+        where household_id = $1 and (object_id = $2 or detail ->> 'key' = $3)`,
+      [hh, otherCollection, secretKind],
+    );
+    expect(all.rows[0]?.n).toBeGreaterThan(0);
+    expect(await lines(`object_id = '${otherCollection}'`)).toEqual([]);
+    expect(await lines(`detail ->> 'key' = '${secretKind}'`)).toEqual([]);
+    // About people: only those given (Val, Ahmed, and the owner of a
+    // collection document they are given).
+    const people = new Set(await asVal('select id from member'));
+    const aboutPeople = await lines(`object_type = 'member'`);
+    expect(aboutPeople.length).toBeGreaterThan(0);
+    for (const id of aboutPeople) expect(people.has(id), id).toBe(true);
+    expect(aboutPeople).not.toContain(uma.member_id);
+    // Lines about anything else (invitations, sessions, exports, the
+    // household): only their own.
+    const others = await asVal(
+      `select actor_account_id::text as id from audit_event
+        where object_type is distinct from 'document' and object_type is distinct from 'reminder'
+          and object_type is distinct from 'member' and object_type is distinct from 'document_type'
+          and object_type is distinct from 'collection' and object_type is distinct from 'list'`,
+    );
+    for (const actor of others) expect(actor).toBe(valAccount);
+  });
+
+  it("a link's sessions follow the link, and exports are a restricted person's own only", async () => {
+    await usual();
+    // The owner's link to their own tax return (outside Val's grant), and to
+    // Ahmed's (inside it), each opened once; and an export of the owner's.
+    const opened: Record<string, string> = {};
+    for (const name of ['ownerTax', 'ahmedTax']) {
+      const made = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/documents/${docs[name]?.id}/share`,
+        headers: h.as(owner),
+        payload: { recipient_label: 'the bank' },
+      });
+      expect(made.statusCode, made.body).toBe(201);
+      const link = json<{ share: { id: string }; link_token: string }>(made);
+      const unlocked = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/shared/unlock',
+        payload: { token: link.link_token },
+        ...peer(),
+      });
+      expect(unlocked.statusCode, unlocked.body).toBe(200);
+      opened[name] = link.share.id;
+    }
+    const ownerAccount = await accountOf(owner);
+    await admin.query(
+      `insert into export (household_id, requested_by, state) values ($1, $2, 'done')`,
+      [hh, ownerAccount],
+    );
+    const sessions = await asVal('select share_id as id from share_session');
+    expect(sessions).toContain(opened.ahmedTax);
+    expect(sessions).not.toContain(opened.ownerTax);
+    expect(await asVal('select id from export')).toEqual([]);
+    // Nor changed: a session outside what they are given is not theirs to touch.
+    expect(
+      await tryAs(
+        { member: val.member_id, account: valAccount, role: 'viewer' },
+        `update share_session set last_seen_at = last_seen_at where share_id = $1`,
+        [opened.ownerTax],
+      ),
+    ).toBe(0);
+  });
+
+  it('what hangs off a person follows them: sign-ins, accounts, invitations, keys, sessions, devices and settings', async () => {
+    await usual();
+    const given = new Set(await asVal('select id from member'));
+    expect(given.has(uma.member_id)).toBe(false);
+    // Sign-ins: theirs and the people they are given.
+    const memberships = await asVal('select member_id as id from account_household');
+    expect(memberships.length).toBeGreaterThan(0);
+    for (const m of memberships) expect(given.has(m), m).toBe(true);
+    // Accounts: their own and those of the sign-ins they are given.
+    const umaAccountRow = await asVal(`select id from account where id = '${umaAccount}'`);
+    expect(umaAccountRow).toEqual([]);
+    expect(await asVal(`select id from account where id = '${valAccount}'`)).toEqual([valAccount]);
+    // Invitations: only those of people they are given.
+    const invited = await asVal('select member_id as id from invitation');
+    for (const m of invited) expect(given.has(m), m).toBe(true);
+    const allInvited = await admin.query<{ member_id: string }>(
+      'select member_id from invitation where household_id = $1',
+      [hh],
+    );
+    expect(allInvited.rows.some((r) => !given.has(r.member_id))).toBe(true);
+    // Keys: none of a member they are not given.
+    const keys = await asVal('select member_id as id from scope_key where member_id is not null');
+    for (const m of keys) expect(given.has(m), m).toBe(true);
+    // Sessions, devices, known devices, notification settings: only their own.
+    for (const table of ['session', 'device', 'known_device', 'notification_preference']) {
+      const accounts = await asVal(`select account_id as id from ${table}`);
+      for (const a of accounts) expect(a, table).toBe(valAccount);
+    }
+    const sessions = await admin.query('select 1 from session where account_id <> $1', [
+      valAccount,
+    ]);
+    expect(sessions.rowCount).toBeGreaterThan(0);
+    // And they still sign in, and are answered, as before.
+    const signedIn = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/password',
+      payload: { email: 'val-532@example.test', password: PASSWORD },
+      ...peer(),
+    });
+    expect(signedIn.statusCode, signedIn.body).toBe(200);
+    const me = await h.app.inject({ url: '/api/v1/me', headers: h.as(signedIn.json<Tokens>()) });
+    expect(me.statusCode, me.body).toBe(200);
+  });
+
+  it('After a restore counts only the collections that grant something', async () => {
+    // A granted collection taken to the Trash grants nothing, and is not counted.
+    await restrict({ collections: [collection] });
+    const ownerAccount = await accountOf(owner);
+    const summary = async () =>
+      (
+        await withPrincipal(
+          h.db,
+          {
+            householdId: hh,
+            accountId: ownerAccount,
+            memberId: owner.member_id,
+            role: 'owner',
+          },
+          (trx) => restrictionSummaries(trx, hh, [val.member_id]),
+        )
+      ).get(val.member_id)?.summary;
+    expect(await summary()).toBe('Restricted: sees 1 collection.');
+    await admin.query('update doc_collection set deleted_at = now() where id = $1', [collection]);
+    try {
+      expect(await summary()).toBe('Restricted: sees nothing of anyone else’s.');
+    } finally {
+      await admin.query('update doc_collection set deleted_at = null where id = $1', [collection]);
+      await usual();
     }
   });
 

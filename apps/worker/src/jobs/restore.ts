@@ -968,12 +968,19 @@ const GUARDS = [
     table: 'access_restriction_type',
     fn: 'access_restriction_type_household',
   },
-  // A restricted person's sign-in given back, or their role changed: the
-  // owners confirm the restriction again (0054).
+  // A restricted person's sign-in given back: the owners confirm the
+  // restriction again (0054).
   {
     name: 'account_household_restriction_reconfirm',
     table: 'account_household',
     fn: 'account_household_restriction_reconfirm',
+  },
+  // And a restriction never stands beside a role but viewer's (0054, the
+  // 5.32 review).
+  {
+    name: 'account_household_restricted_role',
+    table: 'account_household',
+    fn: 'account_household_restricted_role',
   },
 ];
 
@@ -1177,6 +1184,19 @@ const RESTRICTED = [
   'member_identity',
   'household_profile',
   'document_type',
+  // What hangs off a person, and a link's sessions and the exports (the
+  // 5.32 review).
+  'account_household',
+  'account',
+  'invitation',
+  'scope_key',
+  'suggestion_dismissal',
+  'session',
+  'device',
+  'known_device',
+  'notification_preference',
+  'share_session',
+  'export',
 ];
 
 /**
@@ -1672,6 +1692,7 @@ export async function checkRestored(
       queue: boolean;
       audit_mutable: boolean;
       tombstones_mutable: boolean;
+      grants_readable: boolean;
       tenant_tables: string[];
     }>(
       `with ours as (
@@ -1689,6 +1710,11 @@ export async function checkRestored(
               has_table_privilege('public.document_tombstone', 'update')
                 or has_table_privilege('public.document_tombstone', 'delete')
                 as tombstones_mutable,
+              -- Anybody's restriction, read whole (0054): the vault's own
+              -- rules ask it, and the application role may not.
+              case when to_regprocedure('public.app_grant_of(uuid)') is null then false
+                   else has_function_privilege(to_regprocedure('public.app_grant_of(uuid)'), 'execute')
+              end as grants_readable,
               array(select c.oid::regclass::text from pg_class c
                      join pg_namespace n on n.oid = c.relnamespace
                     where n.nspname = 'public' and c.relkind in ('r', 'p')
@@ -1709,6 +1735,9 @@ export async function checkRestored(
     if (r.privileged) throw new Error('the application role can bypass row-level security');
     if (!r.queue) throw new Error('the application role cannot use the job queue');
     if (r.audit_mutable) throw new Error('the audit log is no longer append-only');
+    if (r.grants_readable) {
+      throw new Error("the application role can read anybody's restriction (app_grant_of)");
+    }
     if (r.tombstones_mutable) {
       throw new Error("a removed document's tombstone can be changed or removed");
     }

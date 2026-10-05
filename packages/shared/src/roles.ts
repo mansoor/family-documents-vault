@@ -459,6 +459,15 @@ export function seesAdults(
  * role's, so nothing about a restriction need be read for them.
  */
 export function restrictionMayWiden(role: Role): boolean {
+  return mayBeRestricted(role);
+}
+
+/**
+ * Whether a restriction may stand beside this role (A58): a viewer's alone
+ * (guests are viewers, 5.34). Nobody restricted is given another role until
+ * an owner has taken their limits off; the database refuses it too.
+ */
+export function mayBeRestricted(role: Role): boolean {
   return role === 'viewer';
 }
 

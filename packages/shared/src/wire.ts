@@ -517,10 +517,13 @@ export interface Share {
    * no owner turns either on (`paused_at` is then when the sign-in was
    * locked or paused). Anybody else is told it is paused, with no reason
    * and no moment (null): a lock is the owners' and the person's to know.
+   * Since 5.32, `limited`, to an owner and to whoever made it: its maker's
+   * access is limited to some documents since, and it lends nothing outside
+   * what they may see now; no owner turns it on (`paused_at` is null).
    * Absent from older vaults; treat a reason never heard of as paused.
    */
   paused_at?: string | null;
-  paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | null;
+  paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
   /**
    * What it gives (5.18): `view`, the pages the vault drew for it, with
    * whom it is for across each, and never the file; `download`, the file.

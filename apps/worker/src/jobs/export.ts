@@ -249,7 +249,13 @@ export async function buildExport(deps: ExportDeps, job: ExportJob): Promise<voi
         .select('active_vault_id')
         .where('id', '=', hh)
         .executeTakeFirstOrThrow();
-      const people = await peopleFor(deps, trx, hh, requester, members);
+      const people = await peopleFor(
+        deps,
+        trx,
+        hh,
+        { ...requester, account_id: exp.requested_by },
+        members,
+      );
       return {
         docs,
         members,
@@ -702,17 +708,19 @@ function identityLines(
 }
 
 /**
- * What the requester may have of the people (5.27), read as the vault
- * itself: whose identity details they may read now — canSeeIdentity, under
- * the audience in effect, the database's own identity_audience_now() — each
- * part opened; and whose photo they may see (A68: the roles of
- * family.details, or their own).
+ * What the requester may have of the people (5.27): whose identity details
+ * they may read now — canSeeIdentity, under the audience in effect, the
+ * database's own identity_audience_now() — each part opened; and whose photo
+ * they may see (A68: the roles of family.details, or their own). The rows are
+ * read as the requester themselves (readAs, the 5.32 review), so that the
+ * database's own rules — a restriction's included — decide them as for any
+ * request of theirs; the keys that open them, as the vault.
  */
 async function peopleFor(
   deps: ExportDeps,
   trx: Db,
   hh: string,
-  requester: { member_id: string; role: Parameters<typeof can>[0] },
+  requester: { member_id: string; role: Parameters<typeof can>[0]; account_id: string },
   members: ReadonlyArray<{ id: string }>,
 ): Promise<{
   identities: Map<string, Partial<Record<IdentityPart, IdentityFields>>>;
@@ -723,12 +731,15 @@ async function peopleFor(
     (await sql<{ a: string | null }>`select identity_audience_now() as a`.execute(trx)).rows[0]
       ?.a ?? 'owners_and_self';
   const readable = members.filter((m) => canSeeIdentity(viewer, m, audience)).map((m) => m.id);
+  const as = {
+    accountId: requester.account_id,
+    memberId: requester.member_id,
+    role: requester.role,
+  };
   const rows = readable.length
-    ? await trx
-        .selectFrom('member_identity')
-        .selectAll()
-        .where('member_id', 'in', readable)
-        .execute()
+    ? await readAs(trx, as, (mine) =>
+        mine.selectFrom('member_identity').selectAll().where('member_id', 'in', readable).execute(),
+      )
     : [];
   const identities = new Map<string, Partial<Record<IdentityPart, IdentityFields>>>();
   for (const r of rows) {
@@ -743,11 +754,13 @@ async function peopleFor(
   }
   const photos = new Map<string, Buffer>();
   const family = can(requester.role, 'family.details');
-  const ready = await trx
-    .selectFrom('member_photo')
-    .select(['id', 'member_id', 'sealed'])
-    .where('state', '=', 'ready')
-    .execute();
+  const ready = await readAs(trx, as, (mine) =>
+    mine
+      .selectFrom('member_photo')
+      .select(['id', 'member_id', 'sealed'])
+      .where('state', '=', 'ready')
+      .execute(),
+  );
   const mayHave = ready.filter(
     (p) => p.sealed !== null && (family || p.member_id === requester.member_id),
   );

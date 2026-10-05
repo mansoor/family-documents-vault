@@ -981,6 +981,9 @@ export interface Schema {
     include_adults_only: Generated<boolean>;
     include_no_person_docs: Generated<boolean>;
     expires_at: Timestamp | null;
+    /** It names people, or kinds, at all: none of them left means none (R532-01). */
+    limits_people: Generated<boolean>;
+    limits_types: Generated<boolean>;
     created_by: Generated<string | null>;
     created_at: GeneratedTimestamp;
     updated_at: GeneratedTimestamp;

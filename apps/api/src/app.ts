@@ -25,6 +25,7 @@ import {
 } from './household/routes.js';
 import type { LockService } from './household/locks.js';
 import type { OwnerResetService } from './household/owner-resets.js';
+import { restrictedRefusal } from './household/restrictions.js';
 import type { HouseholdService } from './household/service.js';
 import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
@@ -218,6 +219,13 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply
         .status(401)
         .send(endedMeanwhile(typeof why === 'string' && why ? why : null).toBody(req.id));
+      return;
+    }
+    // A role but viewer's for somebody restricted (0054's own SQLSTATE,
+    // FDV02): a restriction never stands beside another role, and the
+    // routes that set one ask first; this answers whichever did not.
+    if (pgCode === 'FDV02') {
+      void reply.status(409).send(restrictedRefusal(null).toBody(req.id));
       return;
     }
     if (pgCode === '22021' || pgCode === '22P05') {

@@ -55,6 +55,34 @@ const notFound = () => new ApiError(404, 'not_found', 'That person is not in the
 export const CONFIRM_PRIVATE = (name: string) =>
   `${name} keeps documents only they can see. Limited, they still see those, and nothing else of the family’s that you do not give them. Confirm to go ahead: they will be told.`;
 
+/**
+ * Said to an owner giving somebody restricted any role but viewer (the 5.32
+ * review): a restriction never stands beside another role, so their limits
+ * come off first. The database refuses it too (0054's
+ * account_household_restricted_role, SQLSTATE FDV02).
+ */
+export const LIMITS_FIRST = (name: string | null) =>
+  `${name ?? 'Their'}${name ? "'s" : ''} access is limited to some documents. Remove their limits first.`;
+
+/** `409 restricted`, for a role but viewer's asked for somebody restricted. */
+export const restrictedRefusal = (name: string | null) =>
+  new ApiError(409, 'restricted', LIMITS_FIRST(name));
+
+/**
+ * Whether somebody has a restriction: asked by an owner before a change of
+ * role, a sign-in given back or an invitation, as the owner reads every
+ * restriction of the household (0054). Anybody else reads none but their
+ * own, and is answered by the database when it is written.
+ */
+export async function isRestricted(trx: Db, memberId: string): Promise<boolean> {
+  const row = await trx
+    .selectFrom('access_restriction')
+    .select('member_id')
+    .where('member_id', '=', memberId)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
 /** Said to an owner restricting anybody but a viewer (A58). */
 export const ONLY_VIEWERS = (name: string) =>
   `Only a viewer can be limited to some documents. ${name} is not a viewer.`;
@@ -122,6 +150,11 @@ export class RestrictionService {
         include_adults_only: grant.include_adults_only ?? false,
         include_no_person_docs: grant.include_no_person_docs ?? false,
         expires_at: grant.expires_at ?? null,
+        // Whether people, or kinds, are named at all: kept apart from the
+        // rows naming them, so that one deleted since narrows, and the last
+        // one gone gives nothing (the 5.32 review, R532-01).
+        limits_people: (grant.people ?? []).length > 0,
+        limits_types: (grant.types ?? []).length > 0,
         ...(keepsPrivate && !confirmed ? { private_confirmed_at: new Date() } : {}),
       };
       const written = existing
@@ -271,8 +304,13 @@ export async function restrictionSummaries(
                     where m.restricted_member_id = r.member_id)`.as('people'),
       sql<number>`(select count(*)::int from access_restriction_type t
                     where t.restricted_member_id = r.member_id)`.as('types'),
+      // Only those that grant anything: for Everyone, and not deleted, as
+      // the rule counts them (A17; the 5.32 review, O532-6).
       sql<number>`(select count(*)::int from access_restriction_collection g
-                    where g.restricted_member_id = r.member_id)`.as('collections'),
+                     join doc_collection c on c.id = g.collection_id
+                    where g.restricted_member_id = r.member_id
+                      and c.deleted_at is null
+                      and c.audience = 'everyone')`.as('collections'),
     ])
     .where('r.member_id', 'in', memberIds)
     .execute();

@@ -9,9 +9,8 @@
 -- and not on account_household: taking a sign-in away deletes that row
 -- (co-owners.ts removeSignIn) and giving it back inserts a new one, so a
 -- restriction hanging off it would vanish with it, and the person would come
--- back seeing everything. Given back — or their role changed — it asks the
--- owners to confirm it again (`reconfirm_since`, which 5.33's screens read
--- and clear).
+-- back seeing everything. Given back, it asks the owners to confirm it again
+-- (`reconfirm_since`, which 5.33's screens read and clear).
 --
 -- What a restricted person sees (A56–A59):
 --
@@ -29,8 +28,11 @@
 --                 true), and its grant is empty. It fails closed.
 --
 -- So an empty restriction sees nothing of anybody else's, and deleting a
--- granted collection, a person or a kind only narrows. The rows naming whom
--- and which hang off the restriction and go with it.
+-- granted collection, person or kind only narrows: whether people, or kinds,
+-- are named at all is kept on the restriction (`limits_people`,
+-- `limits_types`), apart from the rows naming them, which go with what they
+-- name. A restriction that named only kinds that are gone gives nothing but
+-- the person's own.
 --
 -- The rules. Every rule here is RESTRICTIVE: it narrows what the rules
 -- already give (0030's for each kind of caller, the household's wall), and
@@ -44,7 +46,8 @@
 -- once per row: app_grant() reads their restriction, and what it names, into
 -- one value; doc_in_grant() is the rule, written once, applied to that value
 -- and one document; app_granted_documents() is the set of the household's
--- documents it gives. A per-row lookup of the restriction cost a third of a
+-- documents it gives, found by the indexes on who a document belongs to and
+-- its kind. A per-row lookup of the restriction cost a third of a
 -- millisecond a document, and a per-row subquery on every table that hangs
 -- off a document made the planner's estimates large enough to switch on JIT
 -- for everybody; a set, asked once and hashed, costs neither.
@@ -54,26 +57,39 @@
 --                            its versions (and their page previews, 0027's
 --                            columns), its text, sealed or not, its reminders
 --                            and their deliveries, its links to other
---                            documents (both ends), its share links and their
---                            items, sessions' uses and pages, its place in
---                            collections, its phone copies, who was told it is
---                            Only me, a capture's retry guard, and a file sent
---                            in once it points at a document; and a line in
---                            the activity log about a document or a reminder
+--                            documents (both ends), its share links (and their
+--                            items, sessions and their uses, pages), its place
+--                            in collections, its phone copies, who was told it
+--                            is Only me, a capture's retry guard, and a file
+--                            sent in once it points at a document
 --   a document removed       its tombstone, by doc_in_grant() on what it keeps
 --                            (no kind, no collection: it fails closed)
 --   people                   themselves, the people granted, and the owners of
---                            the documents they are given; photos follow them
+--                            the documents they are given; and what hangs off
+--                            a person follows them: photos, sign-ins (and
+--                            their accounts), invitations, keys and dismissed
+--                            suggestions; sessions, devices, known devices
+--                            and notification settings only their own
 --   collections              granted ones, and their own
 --   identity details         their own only
 --   the household's answers  none
 --   kinds of document        the built-ins, those granted, and those of the
 --                            documents they are given
+--   exports                  their own only
+--   the activity log         a line about a document, a reminder, a person, a
+--                            kind or a collection as that is given; any other
+--                            line only their own (the 5.32 review, R532-05)
 --
--- Restrictions apply to viewers (A58; guests are viewers too, 5.34): a new
--- one for anybody signed in with another role is refused here. One left on
--- somebody whose role changed since stays, and keeps narrowing: it fails
--- closed until an owner removes it.
+-- And a link lends no more than its maker may see now (the 5.32 review,
+-- R532-03): a restricted maker's link gives only what their own grant gives
+-- (maker_lends(), asked by app_shared_document(), app_live_share() and
+-- app_link_documents()).
+--
+-- Restrictions are for viewers (A58; guests are viewers too, 5.34), and a
+-- restriction never stands beside another role: a new one for anybody
+-- signed in with another role is refused, and so is any role but viewer —
+-- a change, a sign-in given back, an invitation accepted — for somebody
+-- restricted. Their limits come off first.
 --
 -- Restricting somebody who keeps Only me documents asks an owner to confirm
 -- (A59), and the person is told (the service, household/restrictions.ts):
@@ -82,7 +98,9 @@
 -- such a restriction without `private_confirmed_at`.
 --
 -- Every function here that runs with the owner's rights puts pg_temp last in
--- its path, and is granted to the application role in privileges.ts too.
+-- its path. Those the rules ask are granted to the application role, in
+-- privileges.ts too; app_grant_of() and maker_lends(), which read anybody's
+-- grant, are granted to nobody.
 
 -- ------------------------------------------------------------- the tables
 
@@ -95,6 +113,12 @@ create table access_restriction (
   include_no_person_docs boolean not null default false,
   -- Past this, nothing is visible (5.33's "expiry leaves nothing visible").
   expires_at             timestamptz,
+  -- Whether it names people, or kinds, at all: kept apart from the rows that
+  -- name them, so that a person or a kind deleted since, whose row goes with
+  -- it, leaves "these only" meaning none of them — never "anybody's" or "any
+  -- kind" (the 5.32 review, R532-01).
+  limits_people          boolean not null default false,
+  limits_types           boolean not null default false,
   created_by             uuid references account(id) on delete set null,
   created_at             timestamptz not null default now(),
   updated_at             timestamptz not null default now(),
@@ -102,8 +126,8 @@ create table access_restriction (
   -- An owner confirmed restricting somebody who keeps Only me documents (A59).
   private_confirmed_at   timestamptz,
   private_confirmed_by   uuid references account(id) on delete set null,
-  -- Their sign-in was given back, or their role changed, since: an owner
-  -- confirms the restriction again (5.33's screens read and clear it).
+  -- Their sign-in was given back since: an owner confirms the restriction
+  -- again (5.33's screens read and clear it).
   reconfirm_since        timestamptz,
   constraint access_restriction_member_household unique (member_id, household_id),
   foreign key (member_id, household_id) references member (id, household_id) on delete cascade
@@ -354,26 +378,52 @@ end $$;
 create trigger access_restriction_type_household before insert or update on access_restriction_type
   for each row execute function access_restriction_type_household();
 
--- A restricted person's sign-in given back, or their role changed: the
--- restriction stays (it is the person's) and asks the owners to confirm it
--- again. With the owner's rights: an invitation accepted, or a sign-in given
--- back, is not a caller who may write a restriction.
+-- A restricted person's sign-in given back: the restriction stays (it is
+-- the person's) and asks the owners to confirm it again. With the owner's
+-- rights: an owner giving it back is not who writes the flag, the vault is.
 create function account_household_restriction_reconfirm() returns trigger
   language plpgsql security definer
   set search_path = pg_catalog, public, pg_temp as $$
 begin
-  if tg_op = 'INSERT' or new.role is distinct from old.role then
-    update access_restriction
-       set reconfirm_since = now()
-     where member_id = new.member_id
-       and household_id = new.household_id;
-  end if;
+  update access_restriction
+     set reconfirm_since = now()
+   where member_id = new.member_id
+     and household_id = new.household_id;
   return null;
 end $$;
 
 create trigger account_household_restriction_reconfirm
-  after insert or update of role on account_household
+  after insert on account_household
   for each row execute function account_household_restriction_reconfirm();
+
+-- A restriction never stands beside a role but viewer's (A58; the 5.32
+-- review): nobody restricted is made an adult, a teen or an owner — by a
+-- change of role, a sign-in given back, an invitation accepted — until an
+-- owner has taken their limits off. Whoever asks but the owning role (a
+-- restore, a migration). Its own SQLSTATE, FDV02, which the API answers as
+-- `409 restricted`. With the owner's rights: the caller may not read the
+-- restriction it asks about (an invitation accepted, an adult's request).
+create function account_household_restricted_role() returns trigger
+  language plpgsql security definer
+  set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if app_actor() is null then
+    return new;
+  end if;
+  if new.role is distinct from 'viewer'
+     and (tg_op = 'INSERT' or new.role is distinct from old.role)
+     and exists (select 1 from access_restriction r
+                  where r.member_id = new.member_id
+                    and r.household_id = new.household_id) then
+    raise exception 'their access is limited: an owner removes their limits first'
+      using errcode = 'FDV02';
+  end if;
+  return new;
+end $$;
+
+create trigger account_household_restricted_role
+  before insert or update of role on account_household
+  for each row execute function account_household_restricted_role();
 
 -- ------------------------------------------------------------ the helpers
 
@@ -389,29 +439,33 @@ create function app_restricted() returns boolean
 grant execute on function app_restricted() to fdv_app;
 
 -- A restriction as the rule reads it: whether it is still running, whose it
--- is, its checkboxes, the people and kinds it names, and the documents of
--- the collections it grants while each is not deleted and is for Everyone
--- (A17).
+-- is, its checkboxes, whether it names people and kinds at all, the people
+-- and kinds it names, and the documents of the collections it grants while
+-- each is not deleted and is for Everyone (A17).
 create type access_grant as (
   live                   boolean,
   member_id              uuid,
   include_adults_only    boolean,
   include_no_person_docs boolean,
+  limits_people          boolean,
+  limits_types           boolean,
   people                 uuid[],
   types                  text[],
   collection_documents   uuid[]
 );
 
--- The caller's restriction, read once: null for somebody with none. With
--- the owner's rights, since it names people and collections the caller may
--- not read.
-create function app_grant() returns access_grant
+-- Somebody's restriction in this household, read once: null for somebody
+-- with none. With the owner's rights; granted to nobody, as it reads
+-- anybody's (app_grant() is the caller's own, maker_lends() a link's maker's).
+create function app_grant_of(p_member uuid) returns access_grant
   language sql stable parallel safe security definer
   set search_path = pg_catalog, public, pg_temp as
 $$ select row(r.expires_at is null or r.expires_at > now(),
               r.member_id,
               r.include_adults_only,
               r.include_no_person_docs,
+              r.limits_people,
+              r.limits_types,
               array(select m.member_id from access_restriction_member m
                      where m.restricted_member_id = r.member_id),
               array(select t.type_key from access_restriction_type t
@@ -424,8 +478,15 @@ $$ select row(r.expires_at is null or r.expires_at > now(),
                        and c.deleted_at is null
                        and c.audience = 'everyone'))::access_grant
      from access_restriction r
-    where r.member_id = app_member()
+    where r.member_id = p_member
       and r.household_id = app_household() $$;
+revoke execute on function app_grant_of(uuid) from public;
+
+-- The caller's own restriction, read once a statement.
+create function app_grant() returns access_grant
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select app_grant_of(app_member()) $$;
 grant execute on function app_grant() to fdv_app;
 
 -- The rule, once: whether a grant gives a document. False for no grant, and
@@ -439,6 +500,10 @@ grant execute on function app_grant() to fdv_app;
 --                          person's only when kinds are; or in a granted
 --                          collection, a separate way in (A56), nobody's
 --                          again only with the checkbox.
+--
+-- People, or kinds, are named when the restriction says it limits them or
+-- when any row names one: named, and every one of them gone since, they
+-- match nothing (R532-01).
 --
 -- A pure function of what it is handed: it reads no table. In PL/pgSQL,
 -- whose one expression is evaluated without a plan of its own: a row costs a
@@ -461,10 +526,10 @@ begin
     and (p_owner = g.member_id
          or ((case
                 when p_owner is null then g.include_no_person_docs
-                when cardinality(g.people) > 0 then p_owner = any(g.people)
-                else cardinality(g.types) > 0
+                when g.limits_people or cardinality(g.people) > 0 then p_owner = any(g.people)
+                else g.limits_types or cardinality(g.types) > 0
               end)
-             and (cardinality(g.types) = 0 or p_type = any(g.types)))
+             and (not (g.limits_types or cardinality(g.types) > 0) or p_type = any(g.types)))
          or ((p_owner is not null or g.include_no_person_docs)
              and p_doc = any(g.collection_documents))),
     false);
@@ -473,16 +538,84 @@ $$;
 grant execute on function doc_in_grant(access_grant, uuid, visibility, uuid, text) to fdv_app;
 
 -- The household's documents the caller's grant gives (none without one),
--- asked once a statement and hashed by the rules below.
+-- asked once a statement and hashed by the rules below. Found the way the
+-- grant names them — their own, the people's, nobody's, the kinds' when no
+-- person is named, the collections' — each by an index, then each judged
+-- by the rule: the cost follows the grant, not the household.
 create function app_granted_documents() returns setof uuid
   language sql stable parallel safe security definer
   set search_path = pg_catalog, public, pg_temp as
-$$ with mine as materialized (select app_grant() as g)
-   select d.id
-     from mine, document d
-    where d.household_id = app_household()
-      and doc_in_grant(mine.g, d.id, d.visibility, d.owner_member_id, d.type_key) $$;
+$$ with mine as materialized (select app_grant() as g),
+   found as (
+     select d.id, d.visibility, d.owner_member_id, d.type_key
+       from mine, document d
+      where d.household_id = app_household()
+        and d.owner_member_id = (mine.g).member_id
+     union
+     select d.id, d.visibility, d.owner_member_id, d.type_key
+       from mine, document d
+      where d.household_id = app_household()
+        and d.owner_member_id = any((mine.g).people)
+     union
+     select d.id, d.visibility, d.owner_member_id, d.type_key
+       from mine, document d
+      where (mine.g).include_no_person_docs
+        and d.household_id = app_household()
+        and d.owner_member_id is null
+     union
+     select d.id, d.visibility, d.owner_member_id, d.type_key
+       from mine, document d
+      where not ((mine.g).limits_people or cardinality((mine.g).people) > 0)
+        and d.household_id = app_household()
+        and d.type_key = any((mine.g).types)
+     union
+     select d.id, d.visibility, d.owner_member_id, d.type_key
+       from mine, document d
+      where d.id = any((mine.g).collection_documents)
+        and d.household_id = app_household())
+   select found.id
+     from mine, found
+    where doc_in_grant(mine.g, found.id, found.visibility, found.owner_member_id, found.type_key) $$;
 grant execute on function app_granted_documents() to fdv_app;
+
+-- Whether a link's maker lends this document now (R532-03): anybody
+-- unrestricted lends what their role lets them; a restricted maker only what
+-- their own grant gives, and nothing once it has run out. With the owner's
+-- rights; granted to nobody: the link's rules below ask it.
+create function maker_lends(p_maker uuid, p_doc uuid, p_visibility visibility,
+                            p_owner uuid, p_type text)
+  returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+$$ select not exists (select 1 from access_restriction r
+                       where r.member_id = p_maker
+                         and r.household_id = app_household())
+          or doc_in_grant(app_grant_of(p_maker), p_doc, p_visibility, p_owner, p_type) $$;
+revoke execute on function maker_lends(uuid, uuid, visibility, uuid, text) from public;
+
+-- Whether a link of this household lends what it was made for, as far as
+-- its maker's restriction goes (R532-03): a document's, while the document
+-- is in their grant; a collection's, while they are not restricted. For
+-- the list of links, which shows one that does not as paused, and for
+-- ShareService.live(). Yes for a link it cannot find: other checks end
+-- those.
+create function share_link_lends(p_share uuid) returns boolean
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+$$ select coalesce((
+     select case
+              when s.document_id is not null then
+                (select maker_lends(m.member_id, d.id, d.visibility, d.owner_member_id, d.type_key)
+                   from document d where d.id = s.document_id)
+              else not exists (select 1 from access_restriction r
+                                where r.member_id = m.member_id
+                                  and r.household_id = s.household_id)
+            end
+       from share_link s
+       join account_household m on m.account_id = s.created_by and m.household_id = s.household_id
+      where s.id = p_share
+        and s.household_id = app_household()), true) $$;
+grant execute on function share_link_lends(uuid) to fdv_app;
 
 -- The people the caller is given: themselves; while the grant runs, those it
 -- names, and the owners of the documents it gives.
@@ -531,6 +664,109 @@ $$ with mine as materialized (select app_grant() as g)
     where d.id in (select app_granted_documents())
       and d.type_key is not null $$;
 grant execute on function app_granted_types() to fdv_app;
+
+-- ------------------------------------------------ what a link lends now
+--
+-- A link lends no more than its maker may see now (R532-03): an adult made
+-- a viewer and restricted keeps the links they made while they could see
+-- more, and those reach only what their restriction gives (maker_lends()).
+-- Each function below is the one before it, with that one check added; this
+-- migration owns them from here. ShareService.live() asks the same
+-- (share_link_lends()); change them together.
+
+-- 0051's document for a link, and its maker's grant.
+create or replace function app_shared_document() returns uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select s.document_id
+       from share_link s
+       join document d on d.id = s.document_id
+       join account_household maker
+         on maker.account_id = s.created_by and maker.household_id = s.household_id
+      where s.id = app_share()
+        and s.household_id = app_household()
+        and s.revoked_at is null
+        and s.paused_at is null
+        and s.expires_at > now()
+        and s.attempts < 10
+        and d.deleted_at is null
+        and not suspension_in_effect(maker.suspended_at, maker.suspended_until)
+        and case d.visibility
+              when 'household' then true
+              when 'adults' then maker.role in ('owner', 'adult')
+              when 'private' then d.owner_member_id = maker.member_id
+              else false
+            end
+        and maker_lends(maker.member_id, d.id, d.visibility, d.owner_member_id, d.type_key) $$;
+
+-- 0051's live link: a collection's lends nothing while its maker is
+-- restricted (a document's asks app_shared_document(), above).
+create or replace function app_live_share() returns uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select s.id
+       from share_link s
+      where s.id = app_share()
+        and s.household_id = app_household()
+        and case
+              when s.document_id is not null then app_shared_document() is not null
+              when s.collection_id is not null then exists (
+                select 1
+                  from doc_collection c
+                  join account_household maker
+                    on maker.account_id = s.created_by and maker.household_id = s.household_id
+                 where c.id = s.collection_id
+                   and c.household_id = s.household_id
+                   and s.revoked_at is null
+                   and s.paused_at is null
+                   and s.expires_at > now()
+                   and s.attempts < 10
+                   and c.deleted_at is null
+                   and c.audience in ('everyone', 'teens', 'adults')
+                   and maker.role in ('owner', 'adult')
+                   and not suspension_in_effect(maker.suspended_at, maker.suspended_until)
+                   and (collection_audience_has(maker.role, c.audience)
+                        or coalesce(c.owner_member_id = maker.member_id, false))
+                   and not exists (select 1 from access_restriction r
+                                    where r.member_id = maker.member_id
+                                      and r.household_id = s.household_id))
+              else false
+            end $$;
+
+-- 0045's documents of a link, each as its maker lends it now.
+create or replace function app_link_documents() returns setof uuid
+  language sql stable parallel safe security definer
+  set search_path = pg_catalog, public, pg_temp as
+  $$ select s.document_id
+       from share_link s
+      where s.id = app_live_share()
+        and s.document_id is not null
+     union
+     select d.id
+       from share_link s
+       join doc_collection c on c.id = s.collection_id and c.household_id = s.household_id
+       join account_household maker
+         on maker.account_id = s.created_by and maker.household_id = s.household_id
+       join share_link_item t on t.share_id = s.id and t.kind in ('ticked', 'followed')
+       join doc_collection_item i on i.collection_id = c.id and i.document_id = t.document_id
+       join document d on d.id = t.document_id and d.household_id = s.household_id
+      where s.id = app_live_share()
+        and d.deleted_at is null
+        and case d.visibility
+              when 'household' then true
+              when 'adults' then maker.role in ('owner', 'adult')
+              when 'private' then coalesce(d.owner_member_id = maker.member_id, false)
+              else false
+            end
+        and coalesce((select v.file_removed_at is null
+                         from document_version v
+                        where v.document_id = d.id
+                        order by v.version_no desc
+                        limit 1), false)
+        and (t.kind = 'ticked'
+             or (collection_audience_sees(c.audience, d.visibility::text)
+                 and collection_audience_sees(s.follow_audience, d.visibility::text)))
+        and maker_lends(maker.member_id, d.id, d.visibility, d.owner_member_id, d.type_key) $$;
 
 -- --------------------------------------------------------- the document
 
@@ -630,8 +866,26 @@ create policy audit_event_restricted on audit_event as restrictive for select
               when 'document' then object_id in (select app_granted_documents())
                                    or object_id in (select t.id from document_tombstone t)
               when 'reminder' then object_id in (select r.id from reminder r)
-              else true
+              -- About a person, a kind or a collection, as that is given
+              -- (the 5.32 review, R532-05): names, labels and recipients of
+              -- what is not given are not read here either.
+              when 'member' then object_id in (select app_granted_people())
+              when 'document_type' then (detail ->> 'key') in (select t.key from document_type t)
+              when 'collection' then object_id in (select app_granted_collections())
+              when 'list' then object_id in (select app_granted_collections())
+              -- Anything else, only what they did themselves.
+              else coalesce(actor_account_id = app_account(), false)
             end);
+
+-- A share link's sessions, as the link is given; and somebody's exports,
+-- their own only (R532-06): an owner's holds the whole archive, and the key.
+create policy share_session_restricted on share_session as restrictive
+  using (not (select app_restricted())
+         or share_id in (select s.id from share_link s));
+
+create policy export_restricted on export as restrictive
+  using (not (select app_restricted())
+         or coalesce(requested_by = app_account(), false));
 
 -- ------------------------------------------------- the rest of the family
 
@@ -665,3 +919,51 @@ create policy document_type_restricted on document_type as restrictive for selec
   using (household_id is null
          or not (select app_restricted())
          or key in (select app_granted_types()));
+
+-- What hangs off a person follows them (the 5.32 review, R532-04): the
+-- people's sign-ins (who, in which role, and any lock on them), and their
+-- invitations, keys and dismissed suggestions, as the person is given; the
+-- accounts of those sign-ins and their own; and whose sessions, devices,
+-- known devices and notification settings — only their own. Their own
+-- sign-ins in other households stay theirs to list. A caller not yet known
+-- (sign-in, a refresh, an invitation's page) names no member, so is never
+-- restricted.
+create policy account_household_restricted on account_household as restrictive
+  using (not (select app_restricted())
+         or coalesce(account_id = app_account(), false)
+         or member_id in (select app_granted_people()));
+
+create policy invitation_restricted on invitation as restrictive
+  using (not (select app_restricted())
+         or member_id in (select app_granted_people()));
+
+create policy scope_key_restricted on scope_key as restrictive
+  using (not (select app_restricted())
+         or member_id is null
+         or member_id in (select app_granted_people()));
+
+create policy suggestion_dismissal_restricted on suggestion_dismissal as restrictive
+  using (not (select app_restricted())
+         or member_id is null
+         or member_id in (select app_granted_people()));
+
+create policy account_restricted on account as restrictive
+  using (not (select app_restricted())
+         or coalesce(id = app_account(), false)
+         or id in (select ah.account_id from account_household ah));
+
+create policy session_restricted on session as restrictive
+  using (not (select app_restricted())
+         or coalesce(account_id = app_account(), false));
+
+create policy device_restricted on device as restrictive
+  using (not (select app_restricted())
+         or coalesce(account_id = app_account(), false));
+
+create policy known_device_restricted on known_device as restrictive
+  using (not (select app_restricted())
+         or coalesce(account_id = app_account(), false));
+
+create policy notification_preference_restricted on notification_preference as restrictive
+  using (not (select app_restricted())
+         or coalesce(account_id = app_account(), false));

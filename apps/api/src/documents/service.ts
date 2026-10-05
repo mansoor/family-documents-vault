@@ -389,6 +389,13 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
   or (d.visibility = 'adults' and ${p.seesAdults})
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
+/** A version as a document's view counts them: newest first. */
+interface VersionBrief {
+  id: string;
+  version_no: number;
+  file_removed_at: Date | null;
+}
+
 /** How the API hands work to the worker. The server wires pg-boss; tests collect. */
 /**
  * Puts a job on the worker's queue. `singletonKey` holds one job per key on
@@ -681,14 +688,11 @@ export class DocumentService {
     row: DocRow,
     typeOf: TypeLookup = typeLookup(trx),
     opened: PrivateValues | null = null,
+    /** Its versions, newest first, when a list has read them for the page. */
+    known?: VersionBrief[],
   ): Promise<DocumentView> {
     const type = row.type_key ? await typeOf(row.type_key) : null;
-    const versions = await trx
-      .selectFrom('document_version')
-      .select(['id', 'version_no', 'file_removed_at'])
-      .where('document_id', '=', row.id)
-      .orderBy('version_no', 'desc')
-      .execute();
+    const versions = known ?? (await this.versionsOf(trx, [row.id])).get(row.id) ?? [];
     const issued = row.issued_on
       ? {
           date: isoDate(row.issued_on) as string,
@@ -751,13 +755,43 @@ export class DocumentService {
   }
 
   /**
+   * The versions of these documents, newest first, by document: one
+   * statement for a whole page. One a document was a statement a row, and
+   * for a restricted viewer each statement works their grant out again (the
+   * 5.32 review, P532-02).
+   */
+  private async versionsOf(trx: Db, ids: string[]): Promise<Map<string, VersionBrief[]>> {
+    const found = new Map<string, VersionBrief[]>();
+    if (ids.length === 0) return found;
+    const rows = await trx
+      .selectFrom('document_version')
+      .select(['id', 'document_id', 'version_no', 'file_removed_at'])
+      .where('document_id', 'in', ids)
+      .orderBy('document_id')
+      .orderBy('version_no', 'desc')
+      .execute();
+    for (const r of rows) {
+      const of = found.get(r.document_id) ?? [];
+      of.push({ id: r.id, version_no: r.version_no, file_removed_at: r.file_removed_at });
+      found.set(r.document_id, of);
+    }
+    return found;
+  }
+
+  /**
    * Documents as every list of them gives them, for rows the caller's own
    * query has already found — the documents in a collection (5.14). An Only me
    * one's notes and details stay sealed, as in any list.
    */
   async listed(trx: Db, p: Principal, rows: DocRow[]): Promise<DocumentView[]> {
     const typeOf = typeLookup(trx);
-    return Promise.all(rows.map((r) => this.view(trx, p, r, typeOf)));
+    const versions = await this.versionsOf(
+      trx,
+      rows.map((r) => r.id),
+    );
+    return Promise.all(
+      rows.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [])),
+    );
   }
 
   // ---------------------------------------------------------------- CRUD
@@ -1120,7 +1154,13 @@ export class DocumentService {
       // An Only me document's notes and details stay sealed in a list
       // (0.5.8): `has_notes` says whether it has notes, and its status was
       // worked out when its owner last wrote them.
-      const items = await Promise.all(page.map((r) => this.view(trx, p, r, typeOf)));
+      const versions = await this.versionsOf(
+        trx,
+        page.map((r) => r.id),
+      );
+      const items = await Promise.all(
+        page.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [])),
+      );
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
       const next =
