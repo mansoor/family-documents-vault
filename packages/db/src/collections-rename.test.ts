@@ -219,6 +219,12 @@ describe.skipIf(!testAdminUrl())('migration 0039: lists are called collections',
         order by 1`,
     );
     expect(guard).toEqual([
+      // Since 0055, one made for fewer than Everyone leaves every grant (5.33, A17).
+      {
+        name: 'doc_collection_leaves_grants',
+        tbl: 'doc_collection',
+        fn: 'doc_collection_leaves_grants',
+      },
       {
         name: 'doc_collection_owner_writes',
         tbl: 'doc_collection',

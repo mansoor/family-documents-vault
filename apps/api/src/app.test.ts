@@ -56,6 +56,7 @@ async function make(
       photos: anyStub,
       identity: anyStub,
       locks: anyStub,
+      restrictions: anyStub,
       resets: anyStub,
       invitations: anyStub,
       coOwners: anyStub,

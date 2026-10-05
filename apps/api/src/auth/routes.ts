@@ -6,6 +6,7 @@ import type { AuthService, Principal, RequestMeta } from './service.js';
 import type { TotpService } from './totp.js';
 import type { PasskeyService } from './passkeys.js';
 import type { StepUpService } from './step-up.js';
+import type { RestrictionService } from '../household/restrictions.js';
 import {
   changeBody,
   completeBody,
@@ -74,6 +75,7 @@ export function registerAuth(
   passkeys?: PasskeyService,
   stepUp?: StepUpService,
   passwords?: PasswordService,
+  restrictions?: RestrictionService,
 ): void {
   app.decorateRequest('principal', null);
 
@@ -164,6 +166,9 @@ export function registerAuth(
       // And when such a link was last spent: every password change takes
       // away what was added to the sign-in since.
       handover_since: passwords ? await passwords.handoverSince(p) : null,
+      // 5.33: what an owner has limited this viewer to, in their own words;
+      // null for anybody not restricted.
+      restriction: restrictions ? await restrictions.mine(p) : null,
     };
   });
 

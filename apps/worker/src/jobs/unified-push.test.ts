@@ -14,6 +14,7 @@ import {
   createPushAgent,
   deliver,
   FAILURES_BEFORE_FAILED,
+  payloadFor,
   PUSH_RETRIES,
   sendPushJob,
   type PushDeps,
@@ -222,6 +223,34 @@ describe.skipIf(!testAdminUrl())('UnifiedPush from the worker', () => {
     const got = received[0] as Received;
     expect(open(got.body)).toEqual({ v: 1, type: 'session_ended' });
     expect(got.headers.ttl).toBe(String(7 * 24 * 3600));
+  });
+
+  it('a notice reaches a phone as the word alone, and a browser as a sentence with no details (5.33)', async () => {
+    const { counts } = await sendPushJob(pushDeps(), {
+      household_id: hh,
+      message: { v: 1, type: 'notice' },
+      targets: [
+        {
+          id: null,
+          kind: 'unified_push',
+          endpoint: `https://localhost:${port}/up/notice-phone`,
+          p256dh: phone.p256dh,
+          auth: phone.auth,
+        },
+      ],
+    });
+    expect(counts.sent).toBe(1);
+    const got = received[0] as Received;
+    expect(open(got.body)).toEqual({ v: 1, type: 'notice' });
+    expect(got.headers.topic).toBe('fdv-notice');
+    expect(got.headers.ttl).toBe(String(24 * 3600));
+    // A browser is told in words: that something is changing, never what.
+    expect(JSON.parse(payloadFor('web_push', { v: 1, type: 'notice' }))).toEqual({
+      title: 'Family Document Vault',
+      body: 'Something about your details is changing. Open the vault to see what.',
+      tag: 'fdv-notice',
+      url: '/',
+    });
   });
 
   it('a session_ended the push service did not take is tried again, later each time, then no more', async () => {

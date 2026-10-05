@@ -1,4 +1,6 @@
 import type {
+  AccessGrant,
+  AccessPreview,
   ActivityLine,
   Capabilities,
   CaptureResult,
@@ -41,6 +43,7 @@ import type {
   InvitationPreview,
   Me,
   Member,
+  MemberAccess,
   MemberAccount,
   MemberEdit,
   MemberLock,
@@ -390,6 +393,55 @@ export function createApi(http: Http) {
         token,
       }),
     /**
+     * Limits what a viewer can see to exactly `grant` (5.33, when
+     * `features.access_restrictions`; D6, A56–A59), or changes them: whose
+     * documents, of which kinds, which collections (only one for Everyone,
+     * else `422`). Owners only (`403 forbidden`), an owner power asked as a
+     * lock is (A54): `403 totp_required_for_owner`, or `step_up_required`
+     * with `limit_access` (a passkey or a code). Anybody but a viewer: `409
+     * not_a_viewer`. Somebody who keeps Only me documents: `409
+     * confirm_private`, until sent again with `confirm_private: true` — they
+     * are told. Putting the same limits again confirms them after their
+     * sign-in was given back (`reconfirm_since`): send what `MemberAccess`
+     * gave, `limits_people` and `limits_types` too — an empty list with the
+     * flag set still limits, and gives nothing that way.
+     */
+    setMemberAccess: (
+      token: string,
+      memberId: string,
+      body: Partial<AccessGrant> & { confirm_private?: boolean },
+    ) =>
+      request<MemberAccess>(`/api/v1/members/${enc(memberId)}/access`, {
+        method: 'PUT',
+        body,
+        token,
+      }),
+    /** Takes their limits off (5.33): `204`, also when there were none. Asked as `setMemberAccess`. */
+    removeMemberAccess: (token: string, memberId: string) =>
+      request<void>(`/api/v1/members/${enc(memberId)}/access`, { method: 'DELETE', token }),
+    /**
+     * "They will see 14 documents" (5.33): limits not yet saved, counted now
+     * as the vault will give them — for somebody in the family, or, with no
+     * `memberId`, somebody about to be invited. An owner's, or an adult's
+     * inviting a viewer (never with Adults only documents, `403`).
+     */
+    previewAccess: (token: string, memberId: string | null, grant: Partial<AccessGrant>) =>
+      request<AccessPreview>(
+        `${memberId ? `/api/v1/members/${enc(memberId)}/access/preview` : '/api/v1/access/preview'}${qs(
+          {
+            people: grant.people?.join(','),
+            types: grant.types?.join(','),
+            collections: grant.collections?.join(','),
+            include_adults_only: grant.include_adults_only,
+            include_no_person_docs: grant.include_no_person_docs,
+            expires_at: grant.expires_at,
+            limits_people: grant.limits_people,
+            limits_types: grant.limits_types,
+          },
+        )}`,
+        { token },
+      ),
+    /**
      * A person's identity details (5.26, when `features.member_identity`): the
      * shared part, and the Only me part for the person alone, ID numbers and
      * hidden custom fields masked (`masked` names them). Anybody not given
@@ -462,9 +514,20 @@ export function createApi(http: Http) {
     // ----------------------------------------------------------- invitations
     invitations: (token: string) =>
       request<{ items: Invitation[] }>('/api/v1/invitations', { token }),
+    /**
+     * An invitation (SHR-02). For a viewer, `restriction` limits what they
+     * will see from the moment they accept (5.33): an adult inviting a viewer
+     * must give one, without Adults only documents (`403 forbidden`, A27).
+     */
     invite: (
       token: string,
-      body: { member_id?: string; display_name?: string; email: string; role: Role },
+      body: {
+        member_id?: string;
+        display_name?: string;
+        email: string;
+        role: Role;
+        restriction?: Partial<AccessGrant> | null;
+      },
     ) => request<CreatedInvitation>('/api/v1/invitations', { method: 'POST', body, token }),
     revokeInvitation: (token: string, id: string) =>
       request<void>(`/api/v1/invitations/${id}`, { method: 'DELETE', token }),

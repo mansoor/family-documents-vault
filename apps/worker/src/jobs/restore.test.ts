@@ -1703,6 +1703,10 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
         ['access_restriction_type', 'access_restriction_type_household'],
         ['account_household', 'account_household_restriction_reconfirm'],
         ['account_household', 'account_household_restricted_role'],
+        // 0055 (5.33): only a collection for Everyone named in a grant, and
+        // one made for fewer leaving every grant.
+        ['access_restriction_collection', 'access_restriction_collection_everyone'],
+        ['doc_collection', 'doc_collection_leaves_grants'],
       ]) {
         await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
         try {

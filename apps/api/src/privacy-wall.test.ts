@@ -1744,11 +1744,12 @@ describe.skipIf(!testAdminUrl())('the privacy wall: uploads, exports and invitat
       payload: { email: 'sara@example.test', role: 'adult' },
     });
     expect(ownerInvite.statusCode).toBe(201);
+    // A viewer's, as an adult may make one: with limits (5.33, A27).
     const swapped = await h.app.inject({
       method: 'POST',
       url: `/api/v1/members/${sara}/invite`,
       headers: as(sam),
-      payload: { email: 'sam-alt@example.test', role: 'viewer' },
+      payload: { email: 'sam-alt@example.test', role: 'viewer', restriction: { people: [sara] } },
     });
     expect(swapped.statusCode).toBe(409);
     expect(json<{ error: { code: string } }>(swapped).error.code).toBe('already_invited');

@@ -171,6 +171,15 @@ export interface CapabilityFeatures {
    * ended. Absent from older vaults.
    */
   sign_out_everywhere?: boolean;
+  /**
+   * An owner limits what a viewer can see (5.33, D6, A56–A59): PUT and
+   * DELETE /members/{id}/access, an owner power (A54, `limit_access`);
+   * GET /members/{id}/access/preview counts what a grant not yet saved
+   * gives. An invitation for a viewer carries `restriction` — from an
+   * adult it must (A27). `/me.restriction` tells a restricted viewer what
+   * they can see. Absent from older vaults, which limit nobody this way.
+   */
+  access_restrictions?: boolean;
 }
 
 export interface CapabilityLimits {

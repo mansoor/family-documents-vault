@@ -20,7 +20,15 @@ export type PushMessage =
    * they are called. A phone older than 5.31 shows a type it does not know
    * as nothing.
    */
-  | { v: 1; type: 'incoming'; count: number };
+  | { v: 1; type: 'incoming'; count: number }
+  /**
+   * Something about the person's details is changing (5.33, from 5.26's
+   * notice): who can see identity details is to widen after 72 hours. The
+   * word and nothing else — not whose details, not who asked, not when;
+   * the app asks the vault once it is unlocked. Phones since app 0.2.2
+   * (5.31) show it; an older one shows nothing.
+   */
+  | { v: 1; type: 'notice' };
 
 export type PushType = PushMessage['type'];
 
@@ -32,7 +40,13 @@ export const PUSH_TTL_SECONDS: Record<PushType, number> = {
   session_ended: 7 * 24 * 3600,
   test: 24 * 3600,
   incoming: 24 * 3600,
+  // The notice runs 72 hours; a phone that hears of it a day late still
+  // has two days to look.
+  notice: 24 * 3600,
 };
+
+/** "Something about your details is changing" (5.33): as a browser is told it. */
+export const NOTICE_WORDS = 'Something about your details is changing. Open the vault to see what.';
 
 /** "Files to look at" (5.23), as a push and an email say it: a count, and nothing else. */
 export function incomingWords(count: number): string {

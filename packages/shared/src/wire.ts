@@ -1,6 +1,6 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
-import type { RestrictionSummary } from './restrictions.js';
+import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrictions.js';
 import type { CollectionAudience, Role, RoleChangeEffect } from './roles.js';
 import type { CollectionShareLock, SharePages, SharePermission } from './shares.js';
 
@@ -55,6 +55,11 @@ export interface Me {
    * Absent from older vaults.
    */
   handover_since?: string | null;
+  /**
+   * What an owner has limited this viewer to (5.33), in their own words:
+   * null for anybody not restricted. Absent from older vaults.
+   */
+  restriction?: MyRestriction | null;
 }
 
 /** That an owner made a hand-over link for this sign-in (5.29): who, and when. */
@@ -203,6 +208,12 @@ export interface Member {
    * alone to say. Absent from older vaults, which change nobody's.
    */
   can_edit?: boolean;
+  /**
+   * What an owner has limited them to, in a sentence (5.33, A56-A59): told
+   * to owners alone, null for somebody with no limits. Absent for anybody
+   * else, and from older vaults.
+   */
+  restriction?: RestrictionSummary | null;
 }
 
 /**
@@ -262,6 +273,11 @@ export interface MemberAccount {
    * paused. Absent from older vaults, which have no such reset.
    */
   reset_path?: ResetPath | null;
+  /**
+   * What a viewer is limited to (5.33): null for a viewer with no limits,
+   * and for anybody else. Absent from older vaults.
+   */
+  access?: MemberAccess | null;
 }
 
 /**
@@ -436,6 +452,8 @@ export interface Invitation {
   expires_at: string;
   state: 'pending' | 'accepted' | 'revoked' | 'expired' | 'locked';
   attempts_left: number;
+  /** A viewer's invitation that limits what they will see once they accept (5.33). Absent from older vaults. */
+  limited?: boolean;
 }
 
 /**
@@ -969,12 +987,14 @@ export interface StepUpState {
  * neither is refused outright, in the words of what they asked for: an
  * owner `403 totp_required_for_owner`, anybody else `403
  * two_step_required`. A client asking for one of these offers no password
- * field.
+ * field. Since 5.33, limiting what a viewer can see (`limit_access`), an
+ * owner power too.
  */
 export const FACTOR_STEP_UPS: readonly string[] = [
   'manage_sign_ins',
   'open_identity',
   'identity_audience',
+  'limit_access',
 ];
 
 /**

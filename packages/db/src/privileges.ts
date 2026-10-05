@@ -163,6 +163,13 @@ begin
     revoke execute on function public.app_grant_of(uuid) from public;
     revoke execute on function public.maker_lends(uuid, uuid, public.visibility, uuid, text) from public;
   end if;
+  -- Which viewers given a collection would see what is put in it (0055),
+  -- for whoever puts it there: asked by somebody signed in who is not
+  -- restricted, and nobody else's by default.
+  if to_regprocedure('public.collection_viewers_given(uuid, uuid[])') is not null then
+    revoke execute on function public.collection_viewers_given(uuid, uuid[]) from public;
+    grant execute on function public.collection_viewers_given(uuid, uuid[]) to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

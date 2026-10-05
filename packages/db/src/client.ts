@@ -292,6 +292,11 @@ export interface Schema {
     accepted_by: string | null;
     revoked_at: Timestamp | null;
     revoked_by: string | null;
+    /**
+     * A viewer's limits, applied as the invitation is accepted (0055, 5.33):
+     * written as JSON text, read back as the object. Null for none.
+     */
+    restriction: ColumnType<unknown, string | null | undefined, string | null>;
   };
 
   private_notice: {

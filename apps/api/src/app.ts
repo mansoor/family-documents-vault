@@ -18,6 +18,7 @@ import { registerDocuments } from './documents/routes.js';
 import type { SealedSearchService } from './documents/sealed-search.js';
 import type { ShareService } from './documents/shares.js';
 import {
+  registerAccess,
   registerHousehold,
   registerIdentity,
   registerLocks,
@@ -25,7 +26,7 @@ import {
 } from './household/routes.js';
 import type { LockService } from './household/locks.js';
 import type { OwnerResetService } from './household/owner-resets.js';
-import { restrictedRefusal } from './household/restrictions.js';
+import { restrictedRefusal, type RestrictionService } from './household/restrictions.js';
 import type { HouseholdService } from './household/service.js';
 import type { IdentityService } from './household/identity.js';
 import type { PhotoService } from './household/photos.js';
@@ -91,6 +92,8 @@ export interface AppDeps {
   identity: IdentityService;
   /** Locking a sign-in, and what a restore paused (5.28). */
   locks: LockService;
+  /** What a viewer can see, limited by an owner (5.32, 5.33). */
+  restrictions: RestrictionService;
   /** A password reset an owner starts (5.29). */
   resets: OwnerResetService;
   invitations: InvitationService;
@@ -329,9 +332,26 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   // rests on the order the groups happen to be registered in.
   await app.register(multipart, { limits: { fileSize: config.FDV_MAX_UPLOAD_BYTES, files: 1 } });
 
-  registerAuth(app, deps.auth, deps.totp, deps.passkeys, deps.stepUp, deps.passwords);
+  registerAuth(
+    app,
+    deps.auth,
+    deps.totp,
+    deps.passkeys,
+    deps.stepUp,
+    deps.passwords,
+    deps.restrictions,
+  );
   registerVaults(app, deps.vaults, deps.stepUp);
-  registerHousehold(app, deps.household, deps.stepUp, deps.invitations, deps.coOwners, deps.photos);
+  registerHousehold(
+    app,
+    deps.household,
+    deps.stepUp,
+    deps.invitations,
+    deps.coOwners,
+    deps.photos,
+    deps.restrictions,
+  );
+  registerAccess(app, deps.restrictions, deps.stepUp);
   registerIdentity(app, deps.identity, deps.stepUp);
   registerLocks(app, deps.locks, deps.stepUp);
   registerOwnerResets(app, deps.resets, deps.stepUp);

@@ -111,7 +111,7 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   // And out of the Trash for good (5.24): the owner's own goes at once,
   // through the app's own dialog — which starts on Cancel — and, signed in
   // a moment ago, without asking again who it is.
-  await page.getByRole('link', { name: 'Settings' }).click();
+  await page.getByRole('link', { name: 'Settings', exact: true }).click();
   await page.getByRole('link', { name: /^Trash/ }).click();
   await expect(page.getByRole('heading', { name: 'Trash' })).toBeVisible();
   const binned = page.getByRole('listitem').filter({ hasText: title });

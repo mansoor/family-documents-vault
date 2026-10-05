@@ -288,6 +288,13 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   ['member.signed_out_everywhere', ownersThePersonAndTheActor],
   ['member.offline_ended', ownersThePersonAndTheActor],
   ['member.requests_closed', ownersThePersonAndTheActor],
+  // 5.33: what a viewer can see, limited, changed or let go — by an owner,
+  // or by whoever invited them as they accepted: for the owners, the person
+  // and whoever did it (the adult who invited them among them). Never what
+  // it gives, only how many of each.
+  ['access.restricted', ownersThePersonAndTheActor],
+  ['access.changed', ownersThePersonAndTheActor],
+  ['access.removed', ownersThePersonAndTheActor],
   // 5.26: somebody's identity details looked at (once a sitting), their
   // numbers shown, changed — which fields, never a value — and who sees
   // them changed: for the owners, the person and whoever did it.

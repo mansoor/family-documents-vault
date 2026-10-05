@@ -16,7 +16,16 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import type { AuthService, Principal, RequestMeta, Tokens } from '../auth/service.js';
 import { ApiError, notFound } from '../errors.js';
-import { isRestricted, restrictedRefusal } from './restrictions.js';
+import {
+  accessGrantBody,
+  ADULTS_ONLY_OWNERS,
+  checkGrant,
+  grantOf,
+  isRestricted,
+  limitsAfter,
+  restrictedRefusal,
+  writeGrant,
+} from './restrictions.js';
 
 /**
  * Invitations (SHR-02) — a link and a code.
@@ -56,6 +65,13 @@ const inviteFields = z
     email: z.string().trim().toLowerCase().email().max(254),
     role: z.enum(ROLES),
     expires_in_days: z.number().int().min(1).max(30).optional(),
+    /**
+     * What a viewer will see once they accept (5.33): applied in the same
+     * transaction that makes their sign-in. An adult inviting a viewer must
+     * give one, without Adults only documents (A27); an owner may give one,
+     * or none. A viewer's alone.
+     */
+    restriction: accessGrantBody.nullable().optional(),
   })
   .strict();
 
@@ -103,7 +119,34 @@ export interface InvitationView {
   expires_at: string;
   state: 'pending' | 'accepted' | 'revoked' | 'expired' | 'locked';
   attempts_left: number;
+  /** A viewer's invitation that limits what they will see (5.33). */
+  limited: boolean;
 }
+
+/**
+ * An invitation's limits as kept (0055): the grant as it was checked when
+ * the invitation was made, and whether an owner made it — an owner's
+ * replaces limits an owner set before; an adult's never does.
+ */
+interface StoredLimits {
+  people: string[];
+  types: string[];
+  collections: string[];
+  include_adults_only: boolean;
+  include_no_person_docs: boolean;
+  expires_at: string | null;
+  by_owner: boolean;
+  /** Whether it names people, or kinds, at all (the 5.33 review); absent before, as the lists say. */
+  limits_people?: boolean;
+  limits_types?: boolean;
+}
+
+/** What accepting does with an invitation's limits, decided before the sign-in is made. */
+type LimitsPlan = { limits: StoredLimits; exists: boolean } | null;
+
+/** Said to an adult inviting a viewer with no limits (A27). */
+export const LIMITS_REQUIRED =
+  'Only an owner can invite a viewer who sees every family document. Choose what they can see.';
 
 /** What the invitee sees before they have signed in to anything. */
 export interface InvitationPreview {
@@ -165,6 +208,23 @@ export class InvitationService {
     if (!can(p.role, capability)) {
       throw new ApiError(403, 'forbidden', refusalFor(capability));
     }
+    // What a viewer will see (5.33): a viewer's alone; an adult's must say
+    // (A27), and only an owner may give Adults only documents (D6).
+    const limits = input.restriction ?? null;
+    if (limits && input.role !== 'viewer') {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'Only a viewer can be limited to some documents.',
+        {
+          detail: 'restriction',
+        },
+      );
+    }
+    if (input.role === 'viewer' && p.role !== 'owner') {
+      if (!limits) throw new ApiError(403, 'forbidden', LIMITS_REQUIRED);
+      if (limits.include_adults_only) throw new ApiError(403, 'forbidden', ADULTS_ONLY_OWNERS);
+    }
 
     // An account is global, so this is asked outside the household scope.
     const existing = await this.db
@@ -198,6 +258,33 @@ export class InvitationService {
       if (input.member_id && !mayBeRestricted(input.role) && (await isRestricted(trx, memberId))) {
         throw restrictedRefusal(null);
       }
+      // The limits, checked as the inviter sees the family: people, kinds
+      // and collections they may see, and only a collection for Everyone (A17).
+      // Whether people, and kinds, are named follows the rule a PUT and the
+      // preview follow: an empty list keeps what the person's limits say now
+      // (which an owner reads; anybody else, none), unless the body says
+      // otherwise (the 5.33 second round, N533A-01).
+      const had =
+        limits && input.member_id
+          ? await trx
+              .selectFrom('access_restriction')
+              .select(['limits_people', 'limits_types'])
+              .where('member_id', '=', memberId)
+              .executeTakeFirst()
+          : undefined;
+      const stored: StoredLimits | null = limits
+        ? await checkGrant(trx, grantOf(limits)).then((g) => ({
+            people: g.people,
+            types: g.types,
+            collections: g.collections,
+            include_adults_only: g.include_adults_only,
+            include_no_person_docs: g.include_no_person_docs,
+            expires_at: g.expires_at?.toISOString() ?? null,
+            by_owner: p.role === 'owner',
+            limits_people: limitsAfter(g.people, g.limits_people, had?.limits_people),
+            limits_types: limitsAfter(g.types, g.limits_types, had?.limits_types),
+          }))
+        : null;
 
       // Replacing a live invitation is what "send another one" means; the
       // partial unique index would otherwise refuse the insert. But only its
@@ -236,6 +323,7 @@ export class InvitationService {
           code_hash: codeHash,
           invited_by: p.accountId,
           expires_at: expiresAt,
+          restriction: stored ? JSON.stringify(stored) : null,
         })
         .returning('id')
         .executeTakeFirstOrThrow();
@@ -248,7 +336,12 @@ export class InvitationService {
         objectId: row.id,
         // No token, no code, no hash of either: the audit log is readable
         // by every adult, and an invitation is a way in.
-        detail: { email: input.email, role: input.role, member_id: memberId },
+        detail: {
+          email: input.email,
+          role: input.role,
+          member_id: memberId,
+          ...(stored ? { limited: true } : {}),
+        },
         ip: meta.ip,
       });
       return row.id;
@@ -387,6 +480,7 @@ export class InvitationService {
           'invitation.expires_at',
           'invitation.accepted_at',
           'invitation.revoked_at',
+          sql<boolean>`invitation.restriction is not null`.as('limited'),
           'member.display_name',
           'inviter_member.display_name as invited_by',
         ])
@@ -403,6 +497,7 @@ export class InvitationService {
         expires_at: r.expires_at.toISOString(),
         state: stateOf(r),
         attempts_left: Math.max(0, MAX_ATTEMPTS - r.attempts),
+        limited: r.limited,
       }));
     });
   }
@@ -580,6 +675,11 @@ export class InvitationService {
         .values({ email, password_hash: passwordHash })
         .returning('id')
         .executeTakeFirstOrThrow();
+      // Whether the invitation's limits are to be applied, decided on the
+      // restriction as it is before the sign-in exists (which asks the
+      // owners to confirm any it finds, 0054), and held: the person, then
+      // their restriction, then the sign-in, then the log.
+      const plan = await this.limitsPlan(trx, row);
       await trx
         .insertInto('account_household')
         .values({
@@ -589,6 +689,8 @@ export class InvitationService {
           role: row.role,
         })
         .execute();
+      // Their limits (5.33), in this transaction: never a moment unrestricted.
+      await this.applyLimits(trx, householdId, row, plan, meta);
       // Their private documents can now be reached with what they know,
       // not only with what the server holds.
       await this.keys.attachCredential(
@@ -619,6 +721,107 @@ export class InvitationService {
     });
 
     return this.auth.openSessionForAccount(accountId, meta, 'invitation');
+  }
+
+  /**
+   * An invitation's limits, applied as it is accepted (5.33), as the vault
+   * itself, in the transaction that makes the sign-in: a viewer is never
+   * unrestricted for a moment. What it names is what is still there — a
+   * person, kind or collection deleted since, or a collection no longer for
+   * Everyone, is left out, and gives nothing (named, the rest still narrow).
+   * An owner's replaces limits set before the invitation was made; limits
+   * set after it, or any already there for an adult's, stay, and ask the
+   * owners to confirm them (0054's reconfirm). Logged as made by whoever
+   * invited them.
+   */
+  private async limitsPlan(
+    trx: Db,
+    row: { member_id: string; restriction: unknown; created_at: Date },
+  ): Promise<LimitsPlan> {
+    const limits = row.restriction as StoredLimits | null;
+    if (!limits) return null;
+    const existing = await trx
+      .selectFrom('access_restriction')
+      .select(['member_id', 'updated_at'])
+      .where('member_id', '=', row.member_id)
+      .forUpdate()
+      .executeTakeFirst();
+    if (!existing) return { limits, exists: false };
+    // An adult's never replaces an owner's; an owner's only limits set
+    // before the invitation was made — newer ones stay (the lead's
+    // decision on the 5.33 review), and the owners are asked to confirm
+    // them as for any sign-in given to somebody limited (0054).
+    if (!limits.by_owner || existing.updated_at.getTime() >= row.created_at.getTime()) return null;
+    return { limits, exists: true };
+  }
+
+  private async applyLimits(
+    trx: Db,
+    householdId: string,
+    row: { member_id: string; invited_by: string },
+    plan: LimitsPlan,
+    meta: RequestMeta,
+  ): Promise<void> {
+    if (!plan) return;
+    const { limits } = plan;
+    const existing = plan.exists ? { member_id: row.member_id } : undefined;
+    const people =
+      limits.people.length > 0
+        ? await trx.selectFrom('member').select('id').where('id', 'in', limits.people).execute()
+        : [];
+    const types =
+      limits.types.length > 0
+        ? await trx
+            .selectFrom('document_type')
+            .select('key')
+            .where('key', 'in', limits.types)
+            .execute()
+        : [];
+    const collections =
+      limits.collections.length > 0
+        ? await trx
+            .selectFrom('doc_collection')
+            .select('id')
+            .where('id', 'in', limits.collections)
+            .where('deleted_at', 'is', null)
+            .where('audience', '=', 'everyone')
+            .orderBy('id')
+            .execute()
+        : [];
+    const grant = {
+      people: people.map((m) => m.id),
+      types: types.map((t) => t.key),
+      collections: collections.map((c) => c.id),
+      include_adults_only: limits.by_owner && limits.include_adults_only === true,
+      include_no_person_docs: limits.include_no_person_docs === true,
+      expires_at: limits.expires_at ? new Date(limits.expires_at) : null,
+    };
+    await writeGrant(trx, householdId, row.member_id, grant, {
+      exists: existing !== undefined,
+      // As the invitation named them: some deleted since still narrow.
+      limits: {
+        people: limits.limits_people ?? limits.people.length > 0,
+        types: limits.limits_types ?? limits.types.length > 0,
+      },
+    });
+    await appendAudit(trx, {
+      householdId,
+      actorAccountId: row.invited_by,
+      action: existing ? 'access.changed' : 'access.restricted',
+      objectType: 'member',
+      objectId: row.member_id,
+      detail: {
+        people: limits.people.length,
+        types: limits.types.length,
+        collections: limits.collections.length,
+        include_adults_only: grant.include_adults_only,
+        include_no_person_docs: grant.include_no_person_docs,
+        ...(grant.expires_at ? { expires_at: grant.expires_at.toISOString() } : {}),
+        via: 'invitation',
+        ...(existing ? { changed: true } : {}),
+      },
+      ip: meta.ip,
+    });
   }
 
   /** The invitation behind a token, or the one refusal all failures share. */

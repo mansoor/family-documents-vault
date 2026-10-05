@@ -29,11 +29,15 @@ import {
   nextReminder,
   resetCommand,
   reminderOf,
+  restrictionSummary,
   roleChangeEffects,
   dropFileName,
   uploadRequestTypes,
+  type AccessGrant,
   type DocumentTypeView,
+  type MemberAccess,
   type MemberAccount,
+  type MyRestriction,
   type OwnerResetResult,
   type ReminderProblem,
   type ResetNotice,
@@ -451,6 +455,19 @@ export interface FakeState {
   identityTooLong?: boolean | IdentityPart;
   /** People with a sign-in who cannot sign in to be told of a wider audience: 409. */
   cannotBeTold?: string[];
+  /**
+   * `features.access_restrictions` (5.33): an owner limits what a viewer can
+   * see. Left out, the vault says so; false, a vault from before.
+   */
+  accessRestrictions?: boolean;
+  /** GET /me's `restriction` (5.33): what an owner limited me to. */
+  myRestriction?: MyRestriction | null;
+  /** People who keep Only me documents (5.33): limiting them asks the owner first. */
+  keepsPrivate?: string[];
+  /** Every PUT and DELETE /members/{id}/access that arrived, in order (5.33). */
+  accessWrites?: Array<{ id: string; method: string; body: unknown }>;
+  /** What putting documents in a collection says of who else will see them (5.33). */
+  collectionWarnings?: string[];
 }
 
 export const TOKENS = {
@@ -758,6 +775,7 @@ export function installFakeApi(state: FakeState) {
           ...(state.signOutEverywhere !== false ? { sign_out_everywhere: true } : {}),
           ...(state.incoming ? { upload_requests: true } : {}),
           ...(state.identities ? { member_identity: true } : {}),
+          ...(state.accessRestrictions !== false ? { access_restrictions: true } : {}),
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -808,6 +826,7 @@ export function installFakeApi(state: FakeState) {
         totp_required: state.twoStep === false && storedRole() === 'owner',
         reset_notice: state.resetNotice ?? null,
         handover_since: state.handoverSince ?? null,
+        restriction: state.myRestriction ?? null,
       });
     if (path === '/api/v1/me/reset-notice' && method === 'DELETE') {
       state.resetNotice = null;
@@ -1305,6 +1324,130 @@ export function installFakeApi(state: FakeState) {
       }
       if (goes === 'operator') answer.command = resetCommand(card.email);
       return json(answer);
+    }
+    // What a viewer can see (5.33), refused in the vault's order: who may,
+    // what was sent, the owner power (limit_access), then the person.
+    const accessAt = /^\/api\/v1\/members\/([^/]+)\/access(\/preview)?$/.exec(path);
+    if ((accessAt || path === '/api/v1/access/preview') && state.accessRestrictions !== false) {
+      const id = accessAt ? (accessAt[1] as string) : null;
+      if (!accessAt || accessAt[2]) {
+        if (method !== 'GET') return refuse(404, 'not_found', 'Not here.');
+        const list = (k: string) => (query.get(k) ?? '').split(',').filter(Boolean);
+        const grant: AccessGrant = {
+          people: list('people'),
+          types: list('types'),
+          collections: list('collections'),
+          include_adults_only: query.get('include_adults_only') === 'true',
+          include_no_person_docs: query.get('include_no_person_docs') === 'true',
+          expires_at: query.get('expires_at'),
+        };
+        const inCollections = new Set(
+          (state.collections ?? [])
+            .filter((c) => grant.collections.includes(c.id) && c.audience === 'everyone')
+            .flatMap((c) => c.items),
+        );
+        // The vault's rule (0054), as far as these documents go.
+        const gives = (d: Record<string, unknown>) => {
+          const owner = (d.owner_member_id as string | null | undefined) ?? null;
+          const vis = typeof d.visibility === 'string' ? d.visibility : 'household';
+          if (d.deleted_at || vis === 'private') return false;
+          if (vis === 'adults' && !grant.include_adults_only) return false;
+          if (owner !== null && owner === id) return true;
+          const byPerson =
+            owner === null
+              ? grant.include_no_person_docs
+              : grant.people.length > 0
+                ? grant.people.includes(owner)
+                : grant.types.length > 0;
+          if (byPerson && (grant.types.length === 0 || grant.types.includes(String(d.type_key))))
+            return true;
+          return (
+            (owner !== null || grant.include_no_person_docs) && inCollections.has(String(d.id))
+          );
+        };
+        return json({
+          documents: state.documents.filter(gives).length,
+          keeps_private: id !== null && (state.keepsPrivate ?? []).includes(id),
+        });
+      }
+      if (method !== 'PUT' && method !== 'DELETE') return refuse(404, 'not_found', 'Not here.');
+      if (storedRole() !== 'owner') {
+        return refuse(403, 'forbidden', 'Only an owner can change what someone is allowed to do.');
+      }
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to limit what a viewer can see.',
+        );
+      }
+      if (state.accountStepUp) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to limit what a viewer can see.',
+          {
+            action: 'limit_access',
+          },
+        );
+      }
+      const theirs = id as string;
+      const card = state.accounts?.[theirs];
+      state.accessWrites = [...(state.accessWrites ?? []), { id: theirs, method, body }];
+      if (method === 'DELETE') {
+        if (card) card.access = null;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      const b = (body ?? {}) as Partial<AccessGrant> & { confirm_private?: boolean };
+      const named = state.members.find((m) => m.id === theirs)?.display_name;
+      const name = typeof named === 'string' ? named : 'They';
+      const was = card?.access ?? null;
+      if (
+        (state.keepsPrivate ?? []).includes(theirs) &&
+        !was?.private_confirmed &&
+        !b.confirm_private
+      ) {
+        return refuse(
+          409,
+          'confirm_private',
+          `${name} keeps documents only they can see. Limited, they still see those, and nothing else of the family’s that you do not give them. Confirm to go ahead: they will be told.`,
+        );
+      }
+      // As the vault keeps the flags: an empty list leaves them as they are
+      // unless the body says otherwise (the 5.33 review).
+      const flag = (named: string[], said: boolean | undefined, had: boolean | undefined) =>
+        named.length > 0 || (said ?? had ?? false);
+      const limitsPeople = flag(b.people ?? [], b.limits_people, was?.limits_people);
+      const limitsTypes = flag(b.types ?? [], b.limits_types, was?.limits_types);
+      const access: MemberAccess = {
+        member_id: theirs,
+        people: b.people ?? [],
+        types: b.types ?? [],
+        collections: b.collections ?? [],
+        include_adults_only: b.include_adults_only ?? false,
+        include_no_person_docs: b.include_no_person_docs ?? false,
+        expires_at: b.expires_at ?? null,
+        limits_people: limitsPeople,
+        limits_types: limitsTypes,
+        summary: restrictionSummary(
+          {
+            people: b.people?.length ?? 0,
+            types: b.types?.length ?? 0,
+            collections: b.collections?.length ?? 0,
+            include_adults_only: b.include_adults_only ?? false,
+            include_no_person_docs: b.include_no_person_docs ?? false,
+            expires_at: b.expires_at ?? null,
+            limits_people: limitsPeople,
+            limits_types: limitsTypes,
+          },
+          state.timezone ?? 'UTC',
+        ),
+        reconfirm_since: null,
+        private_confirmed: Boolean(b.confirm_private) || (was?.private_confirmed ?? false),
+        updated_at: new Date().toISOString(),
+      };
+      if (card) card.access = access;
+      return json(access);
     }
     // Signing somebody out everywhere (5.30), refused in the vault's order:
     // who may, the owner power, then the person. Their devices go.
@@ -2336,8 +2479,23 @@ export function installFakeApi(state: FakeState) {
     if (path === '/api/v1/invitations' && method === 'GET')
       return json({ items: state.invitations });
     if (path === '/api/v1/invitations' && method === 'POST') {
-      const b = body as { display_name?: string; member_id?: string; email: string; role: string };
+      const b = body as {
+        display_name?: string;
+        member_id?: string;
+        email: string;
+        role: string;
+        restriction?: AccessGrant | null;
+      };
+      // An adult's viewer comes with limits (5.33, A27).
+      if (b.role === 'viewer' && storedRole() !== 'owner' && !b.restriction) {
+        return refuse(
+          403,
+          'forbidden',
+          'Only an owner can invite a viewer who sees every family document. Choose what they can see.',
+        );
+      }
       const invitation = {
+        limited: Boolean(b.restriction),
         id: `inv-${state.invitations.length}`,
         member_id: b.member_id ?? `m-${state.members.length}`,
         display_name: b.display_name ?? 'Someone',
@@ -3052,7 +3210,12 @@ function answerCollections(
   const role = storedRole() as Role;
   const reader = { role, memberId: 'me' };
   const all = state.collections ?? [];
-  const seesCollection = (l: FakeCollection) => canSeeCollection(reader, l);
+  // And a viewer, the collections an owner gave them (5.33), as the vault's rule does.
+  const seesCollection = (l: FakeCollection) =>
+    canSeeCollection(reader, l) ||
+    (role === 'viewer' &&
+      l.audience === 'everyone' &&
+      (state.myRestriction?.collections ?? []).some((c) => c.id === l.id));
   const seesDoc = (d: Record<string, unknown> | undefined): d is Record<string, unknown> =>
     d !== undefined &&
     !d.deleted_at &&
@@ -3394,7 +3557,11 @@ function answerCollections(
         ...ids.filter((id, i) => !collection.items.includes(id) && ids.indexOf(id) === i),
       ],
     });
-    return json(detail(changed));
+    // Who else will now see them (5.33): a viewer the collection is given to.
+    return json({
+      ...detail(changed),
+      ...(state.collectionWarnings?.length ? { warnings: state.collectionWarnings } : {}),
+    });
   }
   if (at[3] && method === 'DELETE') {
     const id = decodeURIComponent(at[3]);

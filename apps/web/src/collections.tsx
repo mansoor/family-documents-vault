@@ -351,9 +351,13 @@ export function AddToCollection(props: {
             }
           : d,
       );
-      const said = one
-        ? `${props.what} is in “${after.name}” now.`
-        : `${props.what} added to “${after.name}”.`;
+      // And who else will now see it (5.33): a viewer the collection is given to.
+      const said = [
+        one
+          ? `${props.what} is in “${after.name}” now.`
+          : `${props.what} added to “${after.name}”.`,
+        ...(after.warnings ?? []),
+      ].join(' ');
       setNote(said);
       props.onAdded?.(said);
       // Its Add button goes: the news has the focus, so it is heard.
@@ -494,13 +498,23 @@ export function AddToCollection(props: {
  * Home has said already that the vault cannot be reached, and once is
  * enough — a screen reader would read the same alert twice.
  */
-export function CollectionsOnHome(props: { version: number; quiet: boolean }) {
+export function CollectionsOnHome(props: {
+  version: number;
+  quiet: boolean;
+  /**
+   * A viewer's (5.33, U515-11): only the collections they are given, and
+   * those they made before they were a viewer; nothing at all when there
+   * are none — they make no new ones.
+   */
+  onlyGiven?: boolean;
+}) {
   const { authVersion } = useApp();
   const { data, error } = useLoad(
     async (t) => (await api.collections(t)).items,
     [authVersion, props.version],
   );
   const none = data !== null && data.length === 0;
+  if (props.onlyGiven && (data === null || none)) return null;
   return (
     <section aria-labelledby="collections-h">
       <h2 id="collections-h" className="section-h">

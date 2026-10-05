@@ -102,6 +102,13 @@ export interface CollectionDetail extends CollectionView {
    */
   next_cursor: string | null;
   has_more: boolean;
+  /**
+   * POST /collections/{id}/items only (5.33): who else will now see what was
+   * put in — a viewer the collection is given to — one sentence each: "Jane
+   * (viewer) will be able to see this." Absent when there is nobody, and
+   * from older vaults.
+   */
+  warnings?: string[];
 }
 
 /** POST /collections (name and audience required) and PATCH /collections/{id}. */

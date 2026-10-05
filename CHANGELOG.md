@@ -6,6 +6,35 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.35] - 2026-10-05 — iteration 5.33
+
+Owners can now limit what a viewer sees, from the web.
+
+### Added
+
+- **"What they can see"** on a viewer's account card. An owner picks people, kinds of document and Everyone collections, and can include documents that belong to no one, adults-only documents, and an end date. A live count says how many documents the viewer will see before anything is saved. Changing the limits asks for a passkey or a code.
+- **Invitations can carry limits.** "Limit what they can see" on the invite form applies the limits the moment the invitation is accepted, so a new viewer is never unlimited, even for a moment.
+  - An adult inviting a viewer must limit them, and cannot include adults-only documents. Owners can still invite a viewer who sees every family document.
+- **Owners see a banner** while any viewer can see every family document, with a link to limit them.
+- **A limited viewer's Home** says what they can see, for example "You can see: Tax return documents for Ahmed and your own." Viewers also get a Collections section for the collections given to them and any they made.
+- **Adding a document to a collection that a viewer was given** says who will now see it, for example "Jane (viewer) will be able to see this."
+- When someone who keeps Only me documents is limited, an owner is asked to confirm first, and the person is told.
+- Limits that need confirming again after a sign-in is given back show "Keep these limits".
+- The activity log records when limits are set, changed or removed, for owners, the person and whoever made the change. It records counts only, never what was named.
+- The phone gets a plain notice when more people are about to see someone's identity details, beside the in-app notice and the email.
+
+### Changed
+
+- Only Everyone collections can be given to a viewer. A collection that stops being Everyone, or goes to the Trash, stops being given at once, and bringing it back does not give it again.
+- If a kind or person that limits named is deleted, the limits stay narrowed to it and the card says so. Saving the card never widens them; "Give every kind instead" does, and says so.
+- The email sent when a sign-in is given back says when an owner has limited what the person can see.
+- An owner's invitation replaces limits already set on that person only if those limits are older than the invitation. An adult's invitation never replaces them.
+
+### Fixed
+
+- Home's "N things need attention" link is a link again for screen readers, and its count is still announced.
+- Someone who cannot add documents no longer sees "Add your first document" on an empty Home; it says "Nothing here for you yet."
+
 ## [0.5.34] - 2026-10-05 — iteration 5.32
 
 Limiting what a viewer can see, enforced by the database. The screens for setting limits come in the next release.

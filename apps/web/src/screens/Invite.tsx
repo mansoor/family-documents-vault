@@ -1,8 +1,9 @@
 import { can, roleDescription, roleLabel, ROLES, type Role } from '@fdv/shared';
 import { useState, type FormEvent } from 'react';
+import { LimitsPicker, NO_LIMITS, type Limits } from '../access.js';
 import { api, type CreatedInvitation, type Invitation, type Member } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
-import { Button, ErrorNote, Field, Pills } from '../ui.js';
+import { Button, Check, ErrorNote, Field, Pills } from '../ui.js';
 
 /**
  * Inviting somebody (SHR-02), from the People screen.
@@ -13,6 +14,11 @@ import { Button, ErrorNote, Field, Pills } from '../ui.js';
  * Second, the roles offered are the ones this person may actually hand
  * out: an adult can give their child a sign-in without being able to
  * widen the circle of people who see the adults-only documents.
+ *
+ * A viewer is limited to what they are given (5.33, A27): an adult chooses
+ * what a viewer they invite can see, every time; an owner may, and may let
+ * one see every family document instead. The limits apply as the
+ * invitation is accepted, so the viewer never sees more for a moment.
  */
 
 export function InvitePanel(props: {
@@ -66,7 +72,8 @@ export function InvitePanel(props: {
                   <strong>{i.display_name}</strong>
                   <span className="muted">
                     {' '}
-                    · {roleLabel(i.role)} · {i.email}
+                    · {roleLabel(i.role)}
+                    {i.limited ? ' · limited' : ''} · {i.email}
                   </span>
                 </span>
                 <Button
@@ -106,12 +113,16 @@ function InviteForm(props: {
   onCancel: () => void;
   onCreated: (c: CreatedInvitation) => Promise<void>;
 }) {
-  const { guarded } = useApp();
+  const { guarded, caps } = useApp();
   const [name, setName] = useState(props.member?.display_name ?? '');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<Role>('adult');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What a viewer will see (5.33): limited unless an owner says otherwise.
+  const [limited, setLimited] = useState(true);
+  const [limits, setLimits] = useState<Limits>(NO_LIMITS);
+  const owner = props.myRole === 'owner';
 
   // Only the roles this person is allowed to hand out are shown; offering
   // one that will be refused is a worse answer than not offering it.
@@ -119,6 +130,9 @@ function InviteForm(props: {
     can(props.myRole, r === 'owner' || r === 'adult' ? 'member.invite_adult' : 'member.invite'),
   );
   const chosen = offerable.includes(role) ? role : (offerable[0] as Role);
+  // An adult's viewer is always limited (A27); an owner's, unless they say.
+  const limitsOffered = chosen === 'viewer' && caps?.features.access_restrictions === true;
+  const limiting = limitsOffered && (limited || !owner);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -130,6 +144,9 @@ function InviteForm(props: {
           ...(props.member ? { member_id: props.member.id } : { display_name: name }),
           email,
           role: chosen,
+          ...(limiting
+            ? { restriction: owner ? limits : { ...limits, include_adults_only: false } }
+            : {}),
         }),
       );
       if (created) await props.onCreated(created);
@@ -162,6 +179,36 @@ function InviteForm(props: {
         onChange={setRole}
       />
       <p className="muted">{roleDescription(chosen)}</p>
+      {limitsOffered && (
+        <section className="stack" aria-labelledby="invite-limits-h">
+          <h3 id="invite-limits-h" className="section-h">
+            Limit what they can see
+          </h3>
+          {owner ? (
+            <Check
+              id="invite-limited"
+              label="Only what I choose"
+              note="Off, they see every family document but the Adults only ones."
+              checked={limited}
+              onChange={setLimited}
+            />
+          ) : (
+            <p className="muted">
+              Choose what they can see. Only an owner can invite a viewer who sees every family
+              document.
+            </p>
+          )}
+          {limiting && (
+            <LimitsPicker
+              idPrefix="invite-limits"
+              value={limits}
+              onChange={setLimits}
+              memberId={props.member?.id ?? null}
+              owner={owner}
+            />
+          )}
+        </section>
+      )}
       <ErrorNote message={error} />
       <div className="row">
         <Button type="submit" disabled={busy || !email || (!props.member && !name)}>
