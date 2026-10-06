@@ -119,13 +119,9 @@ function OnlyMeSharingCard() {
 
 /** "Turned off. 3 links that sent an Only me document are paused." */
 export function changedWords(next: OnlyMeSharing): string {
-  const n = next.only_me_shareable ? (next.links_resumed ?? 0) : (next.links_paused ?? 0);
-  const links =
-    n === 1 ? '1 link that sends an Only me document' : `${n} links that send an Only me document`;
-  if (next.only_me_shareable) {
-    return n > 0 ? `Turned on. ${links} ${n === 1 ? 'works' : 'work'} again.` : 'Turned on.';
-  }
-  return n > 0
-    ? `Turned off. ${links} ${n === 1 ? 'is' : 'are'} paused, and their makers are told.`
-    : 'Turned off.';
+  // Never how many: other people's links to their Only me documents are
+  // theirs to know, and each maker is told of their own.
+  return next.only_me_shareable
+    ? 'Turned on. Links it paused work again.'
+    : 'Turned off. Any link that sent an Only me document is paused, and whoever made it is told.';
 }

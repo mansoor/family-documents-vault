@@ -1868,13 +1868,8 @@ export function installFakeApi(state: FakeState) {
         );
       }
       const next = (body as { only_me_shareable: boolean }).only_me_shareable;
-      const changed = next !== (state.onlyMeShareable !== false);
       state.onlyMeShareable = next;
-      return json({
-        only_me_shareable: next,
-        can_change: true,
-        ...(changed ? (next ? { links_resumed: 0 } : { links_paused: 2 }) : {}),
-      });
+      return json({ only_me_shareable: next, can_change: true });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     if (path.endsWith('/share') && method === 'POST') {
@@ -3228,6 +3223,32 @@ export function installFakeApi(state: FakeState) {
         // is now.
         const ask = askedToLoosen(doc, body as object);
         if (state.stepUpNeeded && ask) return stepUp(ask);
+        // Into Only me with links of one's own (5.41): which way, first —
+        // before the ETag, as the vault's visibility change comes first.
+        const { own_links: ownLinks, ...edit } = body as Record<string, unknown> & {
+          own_links?: 'end' | 'keep';
+        };
+        const own =
+          edit.visibility === 'private' && doc.visibility !== 'private'
+            ? (state.ownLinks ?? [])
+            : [];
+        if (own.length > 0) {
+          const shareable = state.onlyMeShareable !== false;
+          if (ownLinks === 'keep' && !shareable) {
+            return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+          }
+          if (!ownLinks) {
+            return refuse(
+              409,
+              'links_choice_needed',
+              own.length === 1
+                ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+                : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+              { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+            );
+          }
+          if (ownLinks === 'end') state.ownLinks = [];
+        }
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
         if (ifMatch && ifMatch !== doc.etag) {
           return json(
@@ -3244,7 +3265,7 @@ export function installFakeApi(state: FakeState) {
           );
         }
         // Details merge, and null takes one away (0.5.7).
-        const change = { ...(body as Record<string, unknown>) };
+        const change = { ...edit };
         if (change.extra && typeof change.extra === 'object') {
           const merged = { ...((doc.extra as Record<string, unknown> | undefined) ?? {}) };
           for (const [k, v] of Object.entries(change.extra)) {

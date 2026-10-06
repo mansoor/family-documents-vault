@@ -404,9 +404,13 @@ interface OwnLink {
 }
 
 /**
- * The caller's own live links that would still send this document once it
- * is Only me: a link to it, and a collection's link that ticked it (one
- * that only followed it stops by itself, as it no longer fits).
+ * The caller's own links that could send this document once it is Only me:
+ * a link to it, and a collection's link that ticked it — one that only
+ * followed it stops by itself, as it no longer fits. Not only those that
+ * send it this moment (the third round, F1 and F2): one paused, by the
+ * household's rule or by a restore, sends it again once turned back on;
+ * and a collection's link whose ticked document is out of the collection
+ * now sends it again once it is put back. Each is named, and ended or kept.
  */
 async function ownLinksServing(trx: Db, p: Principal, documentId: string): Promise<OwnLink[]> {
   const rows = await sql<OwnLink>`
@@ -415,7 +419,7 @@ async function ownLinksServing(trx: Db, p: Principal, documentId: string): Promi
       from share_link s
      where s.document_id = ${documentId}
        and s.created_by = ${p.accountId}
-       and s.revoked_at is null and s.paused_at is null
+       and s.revoked_at is null
        and s.expires_at > now() and s.attempts < 10
     union all
     select s.id, 'collection' as kind, s.recipient_label, c.name as collection_name, s.expires_at,
@@ -423,10 +427,9 @@ async function ownLinksServing(trx: Db, p: Principal, documentId: string): Promi
       from share_link s
       join share_link_item t on t.share_id = s.id and t.document_id = ${documentId}
                             and t.kind = 'ticked'
-      join doc_collection c on c.id = s.collection_id and c.deleted_at is null
-      join doc_collection_item i on i.collection_id = c.id and i.document_id = t.document_id
+      join doc_collection c on c.id = s.collection_id
      where s.created_by = ${p.accountId}
-       and s.revoked_at is null and s.paused_at is null
+       and s.revoked_at is null
        and s.expires_at > now() and s.attempts < 10
      order by expires_at, id`.execute(trx);
   return rows.rows;

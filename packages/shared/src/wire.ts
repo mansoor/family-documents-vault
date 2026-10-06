@@ -909,6 +909,12 @@ export interface DocumentInput {
    * key left out stays as it is, and null takes it away.
    */
   extra?: Record<string, unknown>;
+  /**
+   * An edit into Only me (5.41): what becomes of the person's own links that
+   * would still send it — `409 links_choice_needed` asks, while there are
+   * any. Never on a new document.
+   */
+  own_links?: 'end' | 'keep';
 }
 
 export interface Counts {
@@ -1086,15 +1092,14 @@ export const FACTOR_STEP_UPS: readonly string[] = [
  * Only me documents can be shared outside the family — on unless an owner
  * turned it off. Read by owners and adults; changed by an owner, with a
  * passkey or a code (`only_me_sharing`, A54). Turned off, every live link
- * that sent an Only me document is paused (`links_paused`), and each link's
- * maker is told; turned back on, those are on again (`links_resumed`). Each
- * count only in the answer to the change that made it.
+ * that sent an Only me document is paused, and each link's maker is told
+ * how many of theirs; turned back on, those are on again. The answer never
+ * counts them: how many links other people had to their Only me documents
+ * is theirs to know.
  */
 export interface OnlyMeSharing {
   only_me_shareable: boolean;
   can_change: boolean;
-  links_paused?: number;
-  links_resumed?: number;
 }
 
 /**

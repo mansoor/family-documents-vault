@@ -121,12 +121,97 @@ describe('making a document Only me, with links of your own', () => {
     expect(dialog).toHaveTextContent(
       'This household doesn’t share Only me documents outside the family, so they end.',
     );
+    // Once it holds the focus, it listens: the focus is given as it starts to.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() =>
       expect(screen.queryByRole('alertdialog', { name: 'Your links to this document' })).toBeNull(),
     );
     expect(visibilityCalls(state)).toEqual([{ visibility: 'private' }]);
     expect(state.documents.find((d) => d.id === 'doc-1')?.visibility).toBe('household');
+  });
+});
+
+describe('the same choice, wherever Only me is chosen (the third round)', () => {
+  const patches = (state: FakeState) =>
+    state.calls
+      .filter((c) => c.method === 'PATCH' && c.url === '/api/v1/documents/doc-1')
+      .map((c) => c.body as Record<string, unknown>);
+
+  it('the edit card asks it, and saves with the answer; put away, nothing is saved and nothing is said to have changed (W1)', async () => {
+    const state = fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1/confirm');
+    render(<App />);
+    const who = await screen.findByRole('group', { name: 'Who can see this' });
+    fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
+    const save = screen.getByRole('button', { name: 'Save to the vault' });
+    fireEvent.click(save);
+    let dialog = await screen.findByRole('alertdialog', { name: 'Your links to this document' });
+    expect(dialog).toHaveTextContent('For the attorney: ends');
+    // Put away: the card stays as typed, and says nothing changed elsewhere.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { name: 'Your links to this document' })).toBeNull(),
+    );
+    expect(screen.queryByText(/Someone else changed this document/)).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save to the vault' })).toHaveFocus(),
+    );
+    expect(state.documents[0]?.visibility).toBe('household');
+    // Saved again, and answered: End.
+    fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
+    dialog = await screen.findByRole('alertdialog', { name: 'Your links to this document' });
+    expect(within(dialog).getByRole('radio', { name: 'End these links' })).toBeChecked();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make it Only me' }));
+    await waitFor(() => expect(state.documents[0]?.visibility).toBe('private'));
+    const sent = patches(state);
+    expect(sent.at(-1)).toMatchObject({ visibility: 'private', own_links: 'end' });
+    expect(sent.slice(0, -1).every((b) => !('own_links' in b))).toBe(true);
+    expect(screen.queryByText(/Someone else changed this document/)).toBeNull();
+  });
+
+  it('from a row’s ⋯, Escape on the question puts away the question, not the sheet (W2)', async () => {
+    installFakeApi(fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY] }));
+    signedIn();
+    render(<App />);
+    const more = await screen.findByRole('button', { name: "Actions for “Mansoor's passport”" });
+    more.focus();
+    fireEvent.click(more);
+    const menu = await screen.findByRole('menu', { name: "Actions for “Mansoor's passport”" });
+    fireEvent.click(await within(menu).findByRole('menuitem', { name: 'Who can see' }));
+    const sheet = await screen.findByRole('dialog', { name: "Who can see “Mansoor's passport”" });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save' }));
+    const dialog = await screen.findByRole('alertdialog', { name: 'Your links to this document' });
+    // Once it holds the focus, it listens: the focus is given as it starts to.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog', { name: 'Your links to this document' })).toBeNull(),
+    );
+    expect(
+      screen.getByRole('dialog', { name: "Who can see “Mansoor's passport”" }),
+    ).toBeInTheDocument();
+  });
+
+  it('on the document, the question put away gives the focus back to Save (W3)', async () => {
+    installFakeApi(fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY] }));
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    const dialog = await makeItOnlyMe();
+    // Once it holds the focus, it listens: the focus is given as it starts to.
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+    );
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toHaveFocus());
   });
 });
 
@@ -150,7 +235,7 @@ describe('Settings → Household', () => {
     });
     fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
     const said = await screen.findByText(
-      'Turned off. 2 links that send an Only me document are paused, and their makers are told.',
+      'Turned off. Any link that sent an Only me document is paused, and whoever made it is told.',
     );
     await waitFor(() => expect(said).toHaveFocus());
     expect(

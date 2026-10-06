@@ -539,10 +539,12 @@ export function useSheetFocus(
       box.current ? [...box.current.querySelectorAll<HTMLElement>(FOCUSABLE)] : [];
     (latest.current.start?.current ?? inside()[0])?.focus();
     const onKey = (e: KeyboardEvent) => {
-      // Another sheet is over this one: the keys are its. (A menu is not a
-      // sheet, so it steps aside for any.)
+      // Another sheet is over this one: the keys are its — one opened inside
+      // this one too, as the question about one's links is in a row's "Who
+      // can see" sheet (the third round, W2): its Escape is its own answer.
+      // (A menu is not a sheet, so it steps aside for any.)
       const top = topSheet();
-      if (top && box.current && top !== box.current && !box.current.contains(top)) return;
+      if (top && box.current && top !== box.current) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         if (!latest.current.busy) latest.current.onEscape();

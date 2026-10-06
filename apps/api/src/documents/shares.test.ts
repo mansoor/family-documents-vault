@@ -840,12 +840,17 @@ describe.skipIf(!testAdminUrl())('share links', () => {
     const sees = async (who: Tokens, documentId: string) =>
       (await h.app.inject({ url: `/api/v1/documents/${documentId}`, headers: h.as(who) }))
         .statusCode === 200;
-    const setVisibility = (who: Tokens, documentId: string, visibility: 'household' | 'private') =>
+    const setVisibility = (
+      who: Tokens,
+      documentId: string,
+      visibility: 'household' | 'private',
+      ownLinks?: 'end' | 'keep',
+    ) =>
       h.app.inject({
         method: 'POST',
         url: `/api/v1/documents/${documentId}/visibility`,
         headers: h.as(who),
-        payload: { visibility },
+        payload: { visibility, ...(ownLinks ? { own_links: ownLinks } : {}) },
       });
 
     it("an owner revokes an adult's link, a restore brings it back, and the adult's resume gets 403", async () => {
@@ -933,6 +938,8 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(await pausedFor(owner)).toContain(link.share.id);
 
       // Sam makes the document his, then Only me: no owner can see it now.
+      // The paused link is his, and could send it again: he is asked about
+      // it (5.41, F1), and keeps it, which keeps it as it is — paused.
       const his = await h.app.inject({
         method: 'PATCH',
         url: `/api/v1/documents/${policy}`,
@@ -940,7 +947,9 @@ describe.skipIf(!testAdminUrl())('share links', () => {
         payload: { owner_member_id: sam.member_id },
       });
       expect(his.statusCode, his.body).toBe(200);
-      const onlyHis = await setVisibility(sam, policy, 'private');
+      const asked = await setVisibility(sam, policy, 'private');
+      expect([asked.statusCode, code(asked)]).toEqual([409, 'links_choice_needed']);
+      const onlyHis = await setVisibility(sam, policy, 'private', 'keep');
       expect(onlyHis.statusCode, onlyHis.body).toBe(200);
       expect(await sees(owner, policy)).toBe(false);
       expect(await pausedFor(owner)).not.toContain(link.share.id);

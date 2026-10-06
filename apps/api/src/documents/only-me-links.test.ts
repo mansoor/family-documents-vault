@@ -320,9 +320,15 @@ describe.skipIf(!testAdminUrl())('Only me documents and links outside the family
     const off = await rule(olivia, false);
     expect(off.statusCode, off.body).toBe(200);
     const answer = json<OnlyMeSharing>(off);
-    expect(answer).toMatchObject({ only_me_shareable: false, can_change: true });
-    // The will kept in the test before, and the diary: two links paused.
-    expect(answer.links_paused).toBe(2);
+    // That it is off, and nothing of Ahmed's links (F3): how many other
+    // people's links sent their Only me documents is not the owner's to learn.
+    expect(answer).toEqual({ only_me_shareable: false, can_change: true });
+    const audited = await admin.query<{ detail: Record<string, unknown> }>(
+      `select detail from audit_event where action = 'household.only_me_sharing_changed'
+        order by id desc limit 1`,
+    );
+    expect(audited.rows[0]?.detail).toEqual({ only_me_shareable: false });
+    // Ahmed is told of his own: the will kept in the test before, and the diary.
     expect(told(since, ahmedAccount)).toEqual([
       expect.stringContaining('Your links to Only me documents are paused') as string,
     ]);
@@ -384,9 +390,10 @@ describe.skipIf(!testAdminUrl())('Only me documents and links outside the family
     });
     // The line: for the owners and the adults, notable; never the teens.
     // (The harness's owner, Olivia here, is called Owner.)
-    const line = 'Owner turned off sharing Only me documents outside the family (2 links paused)';
+    const line = 'Owner turned off sharing Only me documents outside the family';
     expect(await activity(olivia)).toContain(line);
     expect(await activity(ahmed)).toContain(line);
+    expect(await activity(ahmed)).not.toMatch(/outside the family \(/);
     expect(await activity(tariq)).not.toContain(line);
 
     // On again: the paused links work again; their maker is told.
@@ -394,13 +401,13 @@ describe.skipIf(!testAdminUrl())('Only me documents and links outside the family
     await fresh(olivia);
     const on = await rule(olivia, true);
     expect(on.statusCode, on.body).toBe(200);
-    expect(json<OnlyMeSharing>(on)).toMatchObject({ only_me_shareable: true, links_resumed: 2 });
+    expect(json<OnlyMeSharing>(on)).toEqual({ only_me_shareable: true, can_change: true });
     expect(told(before, ahmedAccount)[0]).toContain('Your links to Only me documents work again');
     const back = await opened(link.link_token);
     expect(back.res.statusCode, back.res.body).toBe(200);
     expect(await given(back.cookie)).toEqual([diary]);
     expect(await activity(ahmed)).toContain(
-      'Owner turned on sharing Only me documents outside the family (2 links back on)',
+      'Owner turned on sharing Only me documents outside the family',
     );
   });
 
@@ -467,6 +474,89 @@ describe.skipIf(!testAdminUrl())('Only me documents and links outside the family
     expect((await rule(olivia, true)).statusCode).toBe(200);
     const back = await opened(link.link_token);
     expect((await given(back.cookie))?.sort()).toEqual([gym, medical].sort());
+  });
+
+  /** Ahmed's collection of `documents`, and his link to it with every one ticked. */
+  const collectionLink = async (name: string, documents: string[]) => {
+    await fresh(ahmed);
+    const made = await call(ahmed, 'POST', '/api/v1/collections', { name, audience: 'everyone' });
+    expect(made.statusCode, made.body).toBe(201);
+    const id = json<{ id: string }>(made).id;
+    const put = await call(ahmed, 'POST', `/api/v1/collections/${id}/items`, {
+      document_ids: documents,
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    await fresh(ahmed);
+    const shared = await call(ahmed, 'POST', `/api/v1/collections/${id}/shares`, {
+      document_ids: documents,
+      recipient_label: `the ${name.toLowerCase()} people`,
+    });
+    expect(shared.statusCode, shared.body).toBe(201);
+    return { id, link: json<CreatedShare>(shared) };
+  };
+
+  it('a collection’s link whose ticked document is out of the collection now is named, and ended: put back, it is never sent (F2)', async () => {
+    const letter = await make(ahmed, 'Ahmed tenancy letter');
+    const rates = await make(ahmed, 'Ahmed council tax');
+    const flat = await collectionLink('Flat', [letter, rates]);
+    // Out of the collection for now.
+    await fresh(ahmed);
+    const out = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/collections/${flat.id}/items/${letter}`,
+      headers: h.as(ahmed),
+    });
+    expect(out.statusCode, out.body).toBeLessThan(300);
+    // Asked about all the same: put back, it would go again.
+    const asked = await onlyMe(ahmed, letter);
+    expect(asked.statusCode, asked.body).toBe(409);
+    expect(
+      (JSON.parse(errorOf(asked).detail ?? '') as LinksChoiceNeeded).links.map((l) => [
+        l.kind,
+        l.collection_name,
+      ]),
+    ).toEqual([['collection', 'Flat']]);
+    const ended = await onlyMe(ahmed, letter, 'end');
+    expect(ended.statusCode, ended.body).toBe(200);
+    expect(json<VisibilityChange>(ended).links).toEqual({
+      yours: 1,
+      yours_now: 'ended',
+      others: 0,
+    });
+    // Put back in the collection: the link never sends it.
+    await fresh(ahmed);
+    const back = await call(ahmed, 'POST', `/api/v1/collections/${flat.id}/items`, {
+      document_ids: [letter],
+    });
+    expect(back.statusCode, back.body).toBe(200);
+    const reader = await opened(flat.link.link_token);
+    expect(reader.res.statusCode, reader.res.body).toBe(200);
+    expect(await given(reader.cookie)).toEqual([rates]);
+    expect((await content(reader.cookie, letter)).statusCode).toBe(404);
+  });
+
+  it('a link the rule paused is asked about, and Keep refused, as a live one is: turned back on, it never sends what was ended (F1)', async () => {
+    const scan = await make(ahmed, 'Ahmed clinic scan');
+    const pass = await make(ahmed, 'Ahmed gym pass');
+    const clinic = await collectionLink('Clinic', [scan, pass]);
+    expect((await onlyMe(ahmed, scan, 'keep')).statusCode).toBe(200);
+    await fresh(olivia);
+    expect((await rule(olivia, false)).statusCode).toBe(200);
+    // The link is paused by the rule: asked about all the same.
+    const asked = await onlyMe(ahmed, pass);
+    expect(asked.statusCode, asked.body).toBe(409);
+    const detail = JSON.parse(errorOf(asked).detail ?? '') as LinksChoiceNeeded;
+    expect(detail.keep_allowed).toBe(false);
+    expect(detail.links.map((l) => l.id)).toEqual([clinic.link.share.id]);
+    const keep = await onlyMe(ahmed, pass, 'keep');
+    expect([keep.statusCode, errorOf(keep).code]).toEqual([409, 'only_me_not_shared']);
+    expect((await onlyMe(ahmed, pass, 'end')).statusCode).toBe(200);
+    // Turned back on: the scan he kept goes; the pass he ended never does.
+    await fresh(olivia);
+    expect((await rule(olivia, true)).statusCode).toBe(200);
+    const reader = await opened(clinic.link.link_token);
+    expect(reader.res.statusCode, reader.res.body).toBe(200);
+    expect(await given(reader.cookie)).toEqual([scan]);
   });
 
   it("nobody signed in but an owner changes the household's rule, whatever they write (0061)", async () => {

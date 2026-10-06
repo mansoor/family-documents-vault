@@ -1764,12 +1764,14 @@ export class ShareService {
   /**
    * PUT /household/sharing: an owner's, with a passkey or a code (A54, the
    * route). Off, no link serves an Only me document, whoever made it: the
-   * database's own functions say so (0061), and live() and liveItems() too;
-   * every live link that sends one — a document's link to it, or a
-   * collection's that ticked it — is paused now (`only_me_not_shared`), and
-   * each link's maker is told how many of theirs. On again, those are turned
-   * back on, and each link's own checks still ask whatever else might stop
-   * it (its end, a lock, a document no longer theirs to lend).
+   * database's own functions say so (0061), and live() too; every live link
+   * that sends one — a document's link to it, or a collection's that ticked
+   * it — is paused now (`only_me_not_shared`), and each link's maker is told
+   * how many of theirs. On again, those are turned back on, and each link's
+   * own checks still ask whatever else might stop it (its end, a lock, a
+   * document no longer theirs to lend). The answer, and the activity log's
+   * line, say only that it was turned off or on: how many links other people
+   * had to their Only me documents is not the owner's to learn (F3).
    */
   async setOnlyMeSharing(
     p: Principal,
@@ -1816,17 +1818,16 @@ export class ShareService {
                                   and d.owner_member_id = maker.member_id
                                   and d.deleted_at is null))
             returning s.id, s.created_by`.execute(trx);
-      const links = moved.rows.length;
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,
         action: 'household.only_me_sharing_changed',
         objectType: 'household',
         objectId: p.householdId,
-        // How many links, never which, whom they were for, or a token.
-        detail: shareable
-          ? { only_me_shareable: true, links_resumed: links }
-          : { only_me_shareable: false, links_paused: links },
+        // That it was turned off or on, and nothing of the links: how many
+        // other people's links sent their Only me documents is theirs to
+        // know (the third round, F3), and each maker is told their own.
+        detail: { only_me_shareable: shareable },
         ip: meta.ip,
       });
       const by =
@@ -1843,7 +1844,7 @@ export class ShareService {
         if (r.created_by === p.accountId) continue;
         perMaker.set(r.created_by, (perMaker.get(r.created_by) ?? 0) + 1);
       }
-      return { links, by, perMaker };
+      return { by, perMaker };
     });
     if (done) {
       for (const [account, n] of done.perMaker) {
@@ -1864,7 +1865,6 @@ export class ShareService {
     return {
       only_me_shareable: shareable,
       can_change: true,
-      ...(done ? (shareable ? { links_resumed: done.links } : { links_paused: done.links }) : {}),
     };
   }
 

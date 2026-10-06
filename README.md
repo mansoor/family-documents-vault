@@ -356,7 +356,16 @@ first; the default is `true`. `FDV_LOCAL_VAULT_DIR` (default `/data/vault`) is w
 built-in local vault keeps encrypted files inside the containers, which is the
 `fdv_vault-data` volume. To keep the files on another disk, mount a volume or a folder of
 your own at `/data` for both `api` and `worker`, in a compose file of your own (an
-override file is enough); the backups in `/data/backups` move with it.
+override file is enough); the backups in `/data/backups` move with it. On a vault that
+already holds documents, first stop it (`docker compose stop api worker`), copy what is in
+the volume into the new folder, and give it to the containers' user (uid 1000), or every
+document already filed stops opening and new uploads and backups fail:
+
+```bash
+docker run --rm -v fdv_vault-data:/from:ro -v /mnt/big/fdv:/to alpine sh -c "cp -a /from/. /to/ && chown -R 1000:1000 /to"
+```
+
+Then add the override and start it again (`docker compose up -d`).
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -807,7 +816,7 @@ Images are version-tagged, and `latest` is the newest release (a milestone or a 
 
 0.6.0 follows 0.4.5 as the release `latest` points to (the 0.5.x tags between them were
 development builds; from one of those, the same steps apply). Its migrations (`0022` to
-`0060`) run by themselves the first time the new API starts, in one go; nothing needs
+`0061`) run by themselves the first time the new API starts, in one go; nothing needs
 doing by hand. 0.4.5 has no guard against a database a newer release has upgraded, so
 **never start the 0.4.5 images on it again**: going back means restoring the backup below
 with them.

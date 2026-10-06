@@ -5,7 +5,7 @@ import {
   type OwnLinkToEnd,
   type Visibility,
 } from '@fdv/shared';
-import { useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
@@ -54,11 +54,12 @@ export function VisibilityControl(props: {
   const { guarded, withToken } = useApp();
   const [open, setOpen] = useState(Boolean(props.onClose));
   // Into Only me with links of one's own (5.41): which, and whether they
-  // may be kept, as the vault said; and what was chosen — End, unless Keep.
-  const [ask, setAsk] = useState<
-    (LinksChoiceNeeded & { message: string; timezone: string }) | null
-  >(null);
-  const [keep, setKeep] = useState(false);
+  // may be kept, as the vault said.
+  const [ask, setAsk] = useState<LinksAsk | null>(null);
+  // Where the focus goes back to when the question is answered or put away:
+  // Save, which may hold none (it was switched off while saving; Safari
+  // never focuses a clicked button), so it is said (the third round, W3).
+  const saveButton = useRef<HTMLButtonElement>(null);
   const [choice, setChoice] = useState<Visibility>(props.current);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,12 +93,9 @@ export function VisibilityControl(props: {
       if (result.notice) setNotice(result.notice);
       else props.onClose?.();
     } catch (err) {
-      const asked = linksChoice(err);
-      if (asked && !ownLinks) {
-        // The links are listed on the household's clock.
-        const profile = await withToken((t) => api.profile(t)).catch(() => null);
-        setKeep(false);
-        setAsk({ ...asked, message: (err as Error).message, timezone: profile?.timezone ?? 'UTC' });
+      const asked = ownLinks ? null : await linksAsk(err, withToken);
+      if (asked) {
+        setAsk(asked);
       } else {
         setAsk(null);
         setError(describeError(err));
@@ -145,56 +143,20 @@ export function VisibilityControl(props: {
       <p className="muted">{choices.find((c) => c.value === choice)?.hint}</p>
       <ErrorNote message={error} />
       {ask && (
-        <ConfirmDialog
-          title="Your links to this document"
-          confirmLabel="Make it Only me"
-          busyLabel="Saving…"
+        <LinksChoiceDialog
+          ask={ask}
           busy={busy}
-          onConfirm={() => void save(keep && ask.keep_allowed ? 'keep' : 'end')}
+          returnFocus={saveButton}
+          onChoose={(ownLinks) => void save(ownLinks)}
           onCancel={() => setAsk(null)}
-        >
-          <p>{ask.message}</p>
-          <ul className="stack" aria-label="Your links to it">
-            {ask.links.map((l) => (
-              <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
-            ))}
-          </ul>
-          <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
-            <legend>What happens to them</legend>
-            <label className="row" style={{ gap: 8 }}>
-              <input
-                type="radio"
-                name="own-links"
-                checked={!keep || !ask.keep_allowed}
-                onChange={() => setKeep(false)}
-              />
-              <span>End these links</span>
-            </label>
-            {ask.keep_allowed ? (
-              <label className="row" style={{ gap: 8 }}>
-                <input
-                  type="radio"
-                  name="own-links"
-                  checked={keep}
-                  onChange={() => setKeep(true)}
-                />
-                <span>Keep them: the people they are for can still open it</span>
-              </label>
-            ) : (
-              <p>This household doesn’t share Only me documents outside the family, so they end.</p>
-            )}
-          </fieldset>
-          {ask.others > 0 && (
-            <p>
-              {ask.others === 1
-                ? 'The link someone else made to it stops.'
-                : `The ${ask.others} links others made to it stop.`}
-            </p>
-          )}
-        </ConfirmDialog>
+        />
       )}
       <div className="row">
-        <Button disabled={busy || choice === props.current} onClick={() => void save()}>
+        <Button
+          ref={saveButton}
+          disabled={busy || choice === props.current}
+          onClick={() => void save()}
+        >
           {busy ? 'Saving…' : 'Save'}
         </Button>
         {/* Not while it is being saved: it would be saved, and the notice never shown. */}
@@ -207,6 +169,85 @@ export function VisibilityControl(props: {
         </Button>
       </div>
     </section>
+  );
+}
+
+/** The question `409 links_choice_needed` asks, with its words and the household's clock. */
+export type LinksAsk = LinksChoiceNeeded & { message: string; timezone: string };
+
+/**
+ * `409 links_choice_needed`, read and made ready to ask (5.41): null for
+ * any other answer. Its links are listed on the household's clock.
+ */
+export async function linksAsk(
+  err: unknown,
+  withToken: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>,
+): Promise<LinksAsk | null> {
+  const asked = linksChoice(err);
+  if (!asked) return null;
+  const profile = await withToken((t) => api.profile(t)).catch(() => null);
+  return { ...asked, message: (err as Error).message, timezone: profile?.timezone ?? 'UTC' };
+}
+
+/**
+ * What becomes of one's own links to a document made Only me (5.41): each
+ * named, End to start with, Keep while the household lets them out. Asked
+ * by "Who can see this" and by the edit card alike.
+ */
+export function LinksChoiceDialog(props: {
+  ask: LinksAsk;
+  busy?: boolean;
+  /** Where focus goes when it is answered or put away, the browser having remembered none. */
+  returnFocus?: RefObject<HTMLElement | null>;
+  onChoose: (ownLinks: 'end' | 'keep') => void;
+  onCancel: () => void;
+}) {
+  const { ask } = props;
+  const [keep, setKeep] = useState(false);
+  return (
+    <ConfirmDialog
+      title="Your links to this document"
+      confirmLabel="Make it Only me"
+      busyLabel="Saving…"
+      busy={props.busy === true}
+      {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
+      onConfirm={() => props.onChoose(keep && ask.keep_allowed ? 'keep' : 'end')}
+      onCancel={props.onCancel}
+    >
+      <p>{ask.message}</p>
+      <ul className="stack" aria-label="Your links to it">
+        {ask.links.map((l) => (
+          <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
+        ))}
+      </ul>
+      <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend>What happens to them</legend>
+        <label className="row" style={{ gap: 8 }}>
+          <input
+            type="radio"
+            name="own-links"
+            checked={!keep || !ask.keep_allowed}
+            onChange={() => setKeep(false)}
+          />
+          <span>End these links</span>
+        </label>
+        {ask.keep_allowed ? (
+          <label className="row" style={{ gap: 8 }}>
+            <input type="radio" name="own-links" checked={keep} onChange={() => setKeep(true)} />
+            <span>Keep them: the people they are for can still open it</span>
+          </label>
+        ) : (
+          <p>This household doesn’t share Only me documents outside the family, so they end.</p>
+        )}
+      </fieldset>
+      {ask.others > 0 && (
+        <p>
+          {ask.others === 1
+            ? 'The link someone else made to it stops.'
+            : `The ${ask.others} links others made to it stop.`}
+        </p>
+      )}
+    </ConfirmDialog>
   );
 }
 

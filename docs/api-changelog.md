@@ -3886,23 +3886,27 @@ step_up_required` with `action: "only_me_sharing"`. Turned off, every
       live link that sends an Only me document — a document's link to it, or
       a collection's link that ticked it — is paused, `paused_reason:
 "only_me_not_shared"` on the link (to an owner and its maker; anybody
-      else sees it paused), the answer counts them (`links_paused`) and each
-      maker is emailed how many of theirs; turned back on, those links work
-      again (`links_resumed`), unless something else stops them. While it is
+      else sees it paused), and each maker is emailed how many of theirs;
+      turned back on, those links work again, unless something else stops
+      them. Neither the answer nor the activity log counts them: how many
+      links other people had to their Only me documents is theirs to know.
+      While it is
       off no link serves an Only me document at all, whatever its row says:
       `POST /api/v1/documents/{id}/share` to one, and `POST
 /api/v1/collections/{id}/shares` ticking one, answer `409
 only_me_not_shared`. The activity log says it, notable, to owners and
-      adults: "Olivia turned off sharing Only me documents outside the family
-      (3 links paused)". Migration 0061; a vault restored from an older
+      adults: "Olivia turned off sharing Only me documents outside the
+      family". Migration 0061; a vault restored from an older
       backup has it on, and a link it had paused waits for an owner after a
       restore, as every link does (A55).
     - **Changed:** a visibility change into Only me (`POST
 /api/v1/documents/{id}/visibility`, or `PATCH /api/v1/documents/{id}`
       with `visibility: "private"`) takes `own_links: "end" | "keep"`. With
-      live links of the caller's own that would still send the document — a
-      link to it, or a collection's link that ticked it — and no
-      `own_links`, it answers `409 links_choice_needed` and changes nothing;
+      links of the caller's own that could send the document — a link to it,
+      or a collection's link that ticked it, whether live or paused (by the
+      household's rule or a restore), and the collection's even while the
+      document is out of the collection — and no `own_links`, it answers
+      `409 links_choice_needed` and changes nothing;
       its `detail` is JSON (`LinksChoiceNeeded`): each link's `id`, `kind`,
       `recipient_label`, `collection_name`, `expires_at` and `protection` —
       never a token — `keep_allowed`, and `others`, how many links somebody

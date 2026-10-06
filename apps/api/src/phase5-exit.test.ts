@@ -1803,7 +1803,8 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     const off = await ok(
       send(olivia, 'PUT', '/api/v1/household/sharing', { only_me_shareable: false }),
     );
-    expect(json<{ links_paused: number }>(off).links_paused).toBeGreaterThanOrEqual(1);
+    // Off, and nothing of anybody's links (F3).
+    expect(json(off)).toEqual({ only_me_shareable: false, can_change: true });
     // Nothing serves it: the session open on it, a new open, the database.
     expect(await served(cookie)).toEqual({ items: false, content: false });
     expect((await unlockLink(made.link_token)).statusCode).not.toBe(200);
