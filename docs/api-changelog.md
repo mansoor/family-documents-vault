@@ -3857,7 +3857,18 @@ guest_always_limited`. A guest owns no document, by any path — made,
     - **Changed:** `POST /api/v1/devices` with a push address another sign-in
       registered answers `409 device_taken` and leaves that device as it was;
       it used to move it to the caller (and answered a limited viewer or a
-      guest `500`). An address of one's own is updated as before.
+      guest `500`). An address of one's own is updated as before. An address
+      whose sign-in has ended (signed out of nowhere: revoked, as a restore
+      does, or run out) is anybody's to take over (migration 0060): only a
+      live one of somebody else's is `409 device_taken`. A client given
+      `device_taken` may give the address up and post a new one; the web app
+      does so.
+    - **Changed:** somebody whose sign-in is given back still locked or
+      paused is emailed so, when an owner limited what they see while it was
+      away, with the words of a limited sign-in given back (L533-03); the
+      emails as a lock ends (`DELETE /api/v1/members/{id}/lock`) and as a
+      restore's pause ends (`POST /api/v1/members/{id}/resume`) carry those
+      words too, for anybody limited.
 
 ## Deprecations in effect
 

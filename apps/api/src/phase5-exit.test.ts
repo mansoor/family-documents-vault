@@ -1662,6 +1662,84 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     );
   });
 
+  it("a push address whose sign-in has ended is free again; somebody else's live one is not (C-01)", async () => {
+    const deviceOf = async (endpoint: string) =>
+      (
+        await admin.query<{ account_id: string; p256dh: string }>(
+          'select account_id, p256dh from device where endpoint = $1',
+          [endpoint],
+        )
+      ).rows;
+    const accountOf = async (t: Tokens) =>
+      (
+        await admin.query<{ account_id: string }>(
+          'select account_id from account_household where member_id = $1',
+          [t.member_id],
+        )
+      ).rows[0]?.account_id;
+    // Ahmed turns notifications on in a shared browser, then his sign-in
+    // there ends without signing out: revoked, as a restore does, or run out.
+    for (const [taker, end] of [
+      [sara, `revoked_at = now()`],
+      [jane, `expires_at = now() - interval '1 second'`],
+    ] as const) {
+      const there = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        payload: { email: 'ahmed-541@example.test', password: 'another correct horse' },
+        ...peer(),
+      });
+      expect(there.statusCode, there.body).toBe(200);
+      const shared = json<Tokens>(there);
+      const endpoint = `https://ntfy.example.test/shared${randomUUID().slice(0, 8)}`;
+      await ok(
+        send(shared, 'POST', '/api/v1/devices', {
+          kind: 'unified_push',
+          endpoint,
+          keys: { p256dh: 'ahmed-shared-p256dh', auth: 'ahmed-shared-auth' },
+        }),
+        201,
+      );
+      const sid = (
+        JSON.parse(
+          Buffer.from(shared.access_token.split('.')[1] as string, 'base64url').toString(),
+        ) as {
+          sid: string;
+        }
+      ).sid;
+      // Still live: still his.
+      const refused = await send(taker, 'POST', '/api/v1/devices', {
+        kind: 'unified_push',
+        endpoint,
+        keys: { p256dh: 'taker-p256dh', auth: 'taker-auth' },
+      });
+      expect([refused.statusCode, codeOf(refused)]).toEqual([409, 'device_taken']);
+      await admin.query(`update session set ${end} where id = $1`, [sid]);
+      // Ended: Sara (an adult), and Jane (a guest, limited), take it over.
+      await ok(
+        send(taker, 'POST', '/api/v1/devices', {
+          kind: 'unified_push',
+          endpoint,
+          keys: { p256dh: 'taker-p256dh', auth: 'taker-auth' },
+        }),
+        201,
+      );
+      expect(await deviceOf(endpoint)).toEqual([
+        { account_id: await accountOf(taker), p256dh: 'taker-p256dh' },
+      ]);
+    }
+    // Ahmed's own, live, is never taken over, by anybody.
+    const live = await send(sara, 'POST', '/api/v1/devices', {
+      kind: 'unified_push',
+      endpoint: ids.deviceEndpoint,
+      keys: { p256dh: 'sara-p256dh', auth: 'sara-auth' },
+    });
+    expect([live.statusCode, codeOf(live)]).toEqual([409, 'device_taken']);
+    expect(await deviceOf(ids.deviceEndpoint as string)).toEqual([
+      { account_id: await accountOf(ahmed), p256dh: 'ahmed-p256dh' },
+    ]);
+  });
+
   it('a locked member and a guest whose sign-in ended cannot sign in again, nor refresh', async () => {
     const signIn = (email: string, password: string) =>
       h.app.inject({

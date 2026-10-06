@@ -457,7 +457,9 @@ describe('someone outside the family (5.34)', () => {
       target: { value: '123456' },
     });
     fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
-    const back = await screen.findByText(/^Jane Smith can sign in again, until /);
+    const back = await screen.findByText(
+      /^Jane Smith can sign in again with their own password\. Their access ends /,
+    );
     expect(back).toHaveTextContent(WITH_YEAR);
     await waitFor(() => expect(back).toHaveFocus());
     const given = state.calls.filter(
@@ -566,12 +568,45 @@ describe('someone outside the family (5.34)', () => {
       target: { value: '123456' },
     });
     fireEvent.click(within(ask).getByRole('button', { name: 'Confirm' }));
-    await screen.findByText(/^Pat Lowe can sign in again, until /);
+    await screen.findByText(
+      /^Pat Lowe can sign in again with their own password\. Their access ends /,
+    );
     expect(
       state.calls.filter((c) => c.url === '/api/v1/auth/step-up' && c.method === 'POST'),
     ).toHaveLength(1);
     expect(screen.queryByText(/Please confirm it is you/)).toBeNull();
     expect(screen.queryByRole('dialog', { name: 'Just checking it is you' })).toBeNull();
+  });
+
+  it("a guest's sign-in given back still paused, or still locked, is said as the vault says it: never that they can sign in (C-03)", async () => {
+    for (const [kept, words] of [
+      ['restored', 'still paused after the restore: an owner turns it back on'],
+      ['locked', 'still locked: an owner unlocks it'],
+    ] as const) {
+      const SAM = {
+        ...JANE,
+        id: 'g-6',
+        display_name: 'Sam Hale',
+        relationship: null,
+        has_account: false,
+        role: null,
+        sign_in_removed: true,
+        access_expires_at: null,
+      };
+      at('/settings/guests', { members: [ME, AISHA], guests: [SAM], signInKept: kept });
+      fireEvent.click(await screen.findByRole('button', { name: 'Give their sign-in back' }));
+      const later = new Date(Date.now() + 30 * DAY).toISOString().slice(0, 10);
+      fireEvent.change(screen.getByLabelText('Sam Hale’s access ends'), {
+        target: { value: later },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
+      const said = await screen.findByText(
+        new RegExp(`^Sam Hale's sign-in is back, as a viewer, and ${words}\\. Their access ends `),
+      );
+      await waitFor(() => expect(said).toHaveFocus());
+      expect(screen.queryByText(/can sign in again/)).toBeNull();
+      cleanup();
+    }
   });
 
   it('what a guest can see closes with their sign-in, and its Close never drops focus (N534W-03)', async () => {
@@ -650,7 +685,9 @@ describe('someone outside the family (5.34)', () => {
       target: { value: new Date(Date.now() + 30 * DAY).toISOString().slice(0, 10) },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Give it back' }));
-    await screen.findByText(/^Jane Smith can sign in again, until /);
+    await screen.findByText(
+      /^Jane Smith can sign in again with their own password\. Their access ends /,
+    );
     expect(screen.queryByRole('region', { name: 'What Jane Smith can see' })).toBeNull();
     await expectAccessible();
   });

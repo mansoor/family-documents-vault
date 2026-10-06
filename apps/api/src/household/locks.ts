@@ -21,8 +21,8 @@ import { SHARE_PAGES_PRUNE_JOB } from '../documents/shares.js';
 import { ApiError } from '../errors.js';
 import { endDevices, SESSION_ENDED, type PushRequest, type PushTarget } from '../push-job.js';
 import { INCOMING_MOVE_JOB } from '../uploads/incoming.js';
-import { holdHousehold } from './co-owners.js';
-import { restrictionSummaries } from './restrictions.js';
+import { holdHousehold, LIMITED_WORDS } from './co-owners.js';
+import { isRestricted, restrictionSummaries } from './restrictions.js';
 
 /**
  * Locking a sign-in (5.28, A50–A52).
@@ -462,11 +462,16 @@ export class LockService {
       });
       const hh = await this.household(trx);
       const by = await this.nameOf(trx, p);
+      // Limited, they are told so as they come back (L533-03; the Phase 5
+      // exit's second round, C-02): perhaps limited while locked.
+      const limited = await isRestricted(trx, target.member_id);
       await this.alert({
         householdId: p.householdId,
         accountIds: [target.account_id],
         subject: `Your sign-in to ${hh.name} is unlocked`,
-        body: `${by} unlocked your sign-in. You can sign in again with your own password, as before.`,
+        body:
+          `${by} unlocked your sign-in. You can sign in again with your own password, as before.` +
+          (limited ? ` ${LIMITED_WORDS}` : ''),
         emailOnly: true,
         ownSignIn: true,
       });
@@ -510,11 +515,14 @@ export class LockService {
         ip: meta.ip,
       });
       const hh = await this.household(trx);
+      const limited = await isRestricted(trx, target.member_id);
       await this.alert({
         householdId: p.householdId,
         accountIds: [target.account_id],
         subject: `You can sign in to ${hh.name} again`,
-        body: 'The vault was restored from a backup, and an owner has turned your sign-in back on. Sign in with your own password, as before.',
+        body:
+          'The vault was restored from a backup, and an owner has turned your sign-in back on. Sign in with your own password, as before.' +
+          (limited ? ` ${LIMITED_WORDS}` : ''),
         emailOnly: true,
         ownSignIn: true,
       });

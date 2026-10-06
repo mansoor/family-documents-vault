@@ -200,8 +200,10 @@ second lock.
 
 A link can say more than who it is for:
 
-- **Until when**: a date and a time on your household's clock (Settings → Household), with
-  Tonight, Friday 5 pm and In a week one tap away. At least five minutes ahead, and at
+- **Until when**: a date and a time on your household's clock, with Tonight, Friday 5 pm
+  and In a week one tap away. That clock is UTC unless the household's time zone has been
+  set through the API (`PUT /api/v1/profile` with `{"timezone": "Europe/London"}`, any IANA
+  name, as an owner); the web app has no setting for it. At least five minutes ahead, and at
   most `FDV_SHARE_MAX_DAYS` (90 unless you shorten it; the share sheet offers nothing
   longer): a link always ends.
 - **View, or view and download.** A link to view shows the document's pages, each drawn
@@ -316,7 +318,6 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_MAX_UPLOAD_BYTES`                          | `104857600`                               | Largest single file the vault accepts (100 MB).                                                                                                                                                                         |
 | `FDV_OFFLINE_MAX_DAYS`                          | `90`                                      | How many days a phone may show the Essentials it keeps without reaching the vault (1 to 365). See [Essentials on a phone](#essentials-on-a-phone).                                                                      |
 | `FDV_RATE_LIMIT_PER_MINUTE`                     | `300`                                     | How many requests one address may make in a minute, beyond the tighter limits on signing in and opening links (60 to 100000). Raise it when many devices share one address.                                             |
-| `FDV_LOCAL_VAULT_DIR`                           | `/data/vault`                             | Where the built-in local vault keeps encrypted files. In Docker this is the `fdv_vault-data` volume.                                                                                                                    |
 | `FDV_DISPLAY_NAME`                              | `Our family vault`                        | What your family calls the vault. Shown on every screen.                                                                                                                                                                |
 | `FDV_PORT`                                      | `8080`                                    | The port the web app listens on.                                                                                                                                                                                        |
 | `LOG_LEVEL`                                     | `info`                                    | `fatal`, `error`, `warn`, `info`, `debug` or `trace`.                                                                                                                                                                   |
@@ -345,12 +346,17 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_VAPID_PUBLIC_KEY`, `FDV_VAPID_PRIVATE_KEY` | generated                                 | The keys notifications are signed with. `gen-env` makes them; changing them silences every device until it turns notifications on again.                                                                                |
 | `FDV_VAPID_SUBJECT`                             | `mailto:vault@example.invalid`            | The contact push services are given for those keys.                                                                                                                                                                     |
 
-Two more are read by the API and worker images, but `docker-compose.yml` does not pass
-them from `.env`: they are for running the images some other way. `FDV_MASTER_KEY_FILE`
-names a file holding the master key, read in place of `FDV_MASTER_KEY` (a Docker secret,
-say); the compose file requires `FDV_MASTER_KEY` itself, so using a key file means a
-compose file of your own. `FDV_RUN_MIGRATIONS=false` leaves the API's start without
-migrating, for when something else migrates the database first; the default is `true`.
+Three more are read by the API and worker images, but `docker-compose.yml` does not pass
+them from `.env`, so setting them there changes nothing: they are for running the images
+some other way. `FDV_MASTER_KEY_FILE` names a file holding the master key, read in place
+of `FDV_MASTER_KEY` (a Docker secret, say); the compose file requires `FDV_MASTER_KEY`
+itself, so using a key file means a compose file of your own. `FDV_RUN_MIGRATIONS=false`
+leaves the API's start without migrating, for when something else migrates the database
+first; the default is `true`. `FDV_LOCAL_VAULT_DIR` (default `/data/vault`) is where the
+built-in local vault keeps encrypted files inside the containers, which is the
+`fdv_vault-data` volume. To keep the files on another disk, mount a volume or a folder of
+your own at `/data` for both `api` and `worker`, in a compose file of your own (an
+override file is enough); the backups in `/data/backups` move with it.
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -801,7 +807,7 @@ Images are version-tagged, and `latest` is the newest release (a milestone or a 
 
 0.6.0 follows 0.4.5 as the release `latest` points to (the 0.5.x tags between them were
 development builds; from one of those, the same steps apply). Its migrations (`0022` to
-`0059`) run by themselves the first time the new API starts, in one go; nothing needs
+`0060`) run by themselves the first time the new API starts, in one go; nothing needs
 doing by hand. 0.4.5 has no guard against a database a newer release has upgraded, so
 **never start the 0.4.5 images on it again**: going back means restoring the backup below
 with them.
@@ -816,7 +822,21 @@ with them.
    (`fdv-<time>.sql.enc`); `docker compose cp worker:/data/backups ./backups` copies the
    folder out.
 
-2. **Bring the files beside `.env` up to the release.** The images are not all of it:
+2. **Read the two changes that can break a 0.4.5 setup, and prepare for them first.**
+   - **With the TLS overlay, `:8080` now answers this machine only** (it is bound to
+     `127.0.0.1`). A device that still opens `http://<the server's address>:8080` beside
+     the Caddy name stops reaching the vault: give it the `https://` address instead, or
+     run without the overlay.
+   - **Whose address is believed changed.** `FDV_TRUST_PROXY` now defaults to `network`,
+     and the web container's nginx passes on the address a request came from, never what
+     a caller wrote in `X-Forwarded-For`. With a reverse proxy of your own in front of
+     `:8080`, every device is now recorded as the proxy, and shares one sign-in limit with
+     every other: use the TLS overlay for the certificate instead, or put your proxy on the
+     vault's own network in front of the API, as [Who is asking](#who-is-asking) says.
+     `FDV_TRUST_PROXY=private` does not bring the old behaviour back for a proxy in front of
+     `:8080`.
+
+3. **Bring the files beside `.env` up to the release.** The images are not all of it:
    `docker-compose.yml`, `docker-compose.tls.yml` and the `docker/` folder (the Caddy
    files) come from your folder, and 0.4.5's would leave the new settings unpassed and the
    TLS overlay as it was. In a clone (your `.env` is not in git, and stays):
@@ -832,7 +852,7 @@ with them.
    `docker compose` command from here on takes `--profile public-only` too, with the
    overlay's `-f` files.
 
-3. **Rehearse the restore.** `docker compose exec worker sh scripts/restore-drill.sh`
+4. **Rehearse the restore.** `docker compose exec worker sh scripts/restore-drill.sh`
    restores the newest backup into a scratch database beside yours, checks it, and drops
    it. To rehearse the upgrade itself, do the same with the new images in a project of its
    own, which shares nothing with your vault but the backup file and `.env`:
@@ -848,7 +868,7 @@ with them.
    rehearsal (it would send real reminders from restored data), and only ever use
    `down -v` with `-p fdvrehearse`.
 
-4. **Upgrade.** Set `FDV_VERSION=0.6.0` in `.env`, then:
+5. **Upgrade.** Set `FDV_VERSION=0.6.0` in `.env`, then:
 
    ```bash
    docker compose pull
@@ -858,19 +878,16 @@ with them.
    Give every command the same `-f` files (and `--profile`) you always use. The API
    migrates the database as it starts, and the worker and the web app wait for it.
 
-5. **Two changes that can break a 0.4.5 setup.**
-   - **With the TLS overlay, `:8080` now answers this machine only** (it is bound to
-     `127.0.0.1`). A device that still opens `http://<the server's address>:8080` beside
-     the Caddy name stops reaching the vault: give it the `https://` address instead, or
-     run without the overlay.
-   - **Whose address is believed changed.** `FDV_TRUST_PROXY` now defaults to `network`,
-     and the web container's nginx passes on the address a request came from, never what
-     a caller wrote in `X-Forwarded-For`. With a reverse proxy of your own in front of
-     `:8080`, every device is now recorded as the proxy, and shares one sign-in limit with
-     every other: use the TLS overlay for the certificate instead, or put your proxy on the
-     vault's own network in front of the API, as [Who is asking](#who-is-asking) says.
-     `FDV_TRUST_PROXY=private` does not bring the old behaviour back for a proxy in front of
-     `:8080`.
+   With the TLS overlay, start Caddy again too. It reads its Caddyfile only when its
+   container starts, and `up -d` leaves a container whose own definition has not changed
+   as it is, still serving 0.4.5's Caddyfile:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --force-recreate caddy
+   ```
+
+   With the public-only site, add `--profile public-only` and name `caddy-public` after
+   `caddy`.
 
 6. **What to look at afterwards.** Every document, person and setting is as it was. What
    is new needs no setting, with three exceptions worth a minute: `FDV_SMTP_URL` (a mail

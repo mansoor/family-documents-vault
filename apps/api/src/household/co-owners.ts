@@ -544,6 +544,24 @@ export class CoOwnerService {
           .where('role', '=', 'owner')
           .where('account_id', '!=', p.accountId)
           .execute();
+        // Limited while it was away, they are told so now (L533-03), with
+        // why they cannot sign in yet: an alert about their own sign-in
+        // reaches them while it is locked or paused (the Phase 5 exit's
+        // second round, C-02).
+        if (await isRestricted(trx, memberId)) {
+          await this.alert({
+            householdId: p.householdId,
+            accountIds: [account],
+            subject: `Your sign-in to your family vault is back, and still ${still}`,
+            body:
+              (kept === 'locked'
+                ? 'Your sign-in has been given back, but it stays locked until an owner unlocks it.'
+                : 'Your sign-in has been given back, but it stays paused after the restore until an owner turns it back on.') +
+              ` ${LIMITED_WORDS}`,
+            emailOnly: true,
+            ownSignIn: true,
+          });
+        }
         if (owners.length > 0) {
           await this.alert({
             pushType: 'owner_change',

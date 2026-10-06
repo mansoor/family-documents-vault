@@ -217,6 +217,11 @@ export class NotificationService {
           .where('endpoint', '!=', input.endpoint)
           .execute();
       }
+      // Somebody else's, whose sign-in has ended (signed out of nowhere, a
+      // restore, the idle end): never pushed to again, so free for whoever
+      // signs in on this browser or phone now (0060; the Phase 5 exit's
+      // second round, C-01). Somebody else's still live stays theirs: 409.
+      await sql`select device_release_stale(${input.endpoint})`.execute(trx);
       const row = await trx
         .insertInto('device')
         .values({

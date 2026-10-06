@@ -459,6 +459,11 @@ export interface FakeState {
     string,
     Partial<Record<IdentityPart, { fields: IdentityFields; version: number }>>
   >;
+  /**
+   * A sign-in given back comes back still locked, or still paused after a
+   * restore (0059): the vault's answer says so.
+   */
+  signInKept?: 'locked' | 'restored';
   /** Who reads other people's shared identity details (A34); left out, the narrowest. */
   identityAudience?: IdentityAudience;
   /** A wider audience waiting its 72 hours. */
@@ -2631,6 +2636,15 @@ export function installFakeApi(state: FakeState) {
         target.has_account = true;
         target.role = role;
         target.sign_in_removed = false;
+      }
+      // Given back still locked, or still paused after a restore (0059).
+      if (state.signInKept) {
+        return json({
+          message:
+            state.signInKept === 'locked'
+              ? `${String(target?.display_name)}'s sign-in is back, as a viewer, and still locked: an owner unlocks it.`
+              : `${String(target?.display_name)}'s sign-in is back, as a viewer, and still paused after the restore: an owner turns it back on.`,
+        });
       }
       return json({
         message: `${String(target?.display_name)} can sign in again with their own password.`,

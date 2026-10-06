@@ -336,7 +336,9 @@ async function main() {
       owner_member_id: me.member_id,
       visibility: 'household',
       issued_by: 'Example Mutual',
-      expires: { date: day(25), precision: 'day' },
+      // Past its 45-day lead: nothing is due at seeding, so the household's
+      // one daily digest is left for the demonstration's own reminders.
+      expires: { date: day(60), precision: 'day' },
     },
     [
       'MOTOR INSURANCE CERTIFICATE',

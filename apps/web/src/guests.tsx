@@ -514,8 +514,11 @@ function GuestRow(props: {
       setDoing(null);
       setAccess(undefined);
     });
+    // In the vault's words: given back still locked, or still paused after
+    // a restore, they cannot sign in yet, and the vault says so (the Phase 5
+    // exit's second round, C-03).
     await props.onChanged(
-      `${g.display_name} can sign in again, until ${accessEndWords(end, props.timezone)}. What they can see is as it was.`,
+      `${done.message} Their access ends ${accessEndWords(end, props.timezone)}. What they can see is as it was.`,
     );
   };
 
