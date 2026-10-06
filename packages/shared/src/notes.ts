@@ -30,8 +30,11 @@
  *    copied;
  *  - a line's `[`, `]` and `)` are found through indexes made in one pass,
  *    and the addresses `[words](address)` tries never overlap;
- *  - a written-out address is read once: a reading that fails holds no
- *    other address to read;
+ *  - a written-out address is read once, its host first: one with no host
+ *    (`https:///`, `https://?`) or a name before it is refused there, and
+ *    its host holds no `/`, so no other address; one with a host is read
+ *    on to its end, and fails only when nothing but a sentence's full stop
+ *    or bracket follows the `//` — which holds no other address either;
  *  - at most `MAX_OPEN` unmatched `*` or `_` wait for a partner at a time,
  *    and a closer takes at most three goes.
  *
@@ -322,11 +325,14 @@ function tokens(line: string, links: boolean): Token[] {
       const scheme = line.startsWith('https://', i) ? 8 : line.startsWith('http://', i) ? 7 : 0;
       if (scheme > 0) {
         // Read once, up to the first character no address has. Its host
-        // first: a name before it (`user@`) is not a link, and the host
-        // holds no `/`, so no other address to read. The rest holds nothing
-        // noteLinkAllowed refuses, so it fails only when nothing but a
-        // sentence's full stop or bracket follows the `//` — and then holds
-        // no other address either.
+        // first: none at all (`https:///`, `https://?`), or a name before it
+        // (`user@`), is not a link — refused here, before the rest is read
+        // (the second round, N535P-01: read, each `https:///` of a run of
+        // them read the rest of the run again). The host holds no `/`, so
+        // no other address to read. The rest holds nothing noteLinkAllowed
+        // refuses, so it fails only when nothing but a sentence's full stop
+        // or bracket follows the `//` — and then holds no other address
+        // either.
         let end = i + scheme;
         let named = false;
         while (end < n) {
@@ -335,7 +341,7 @@ function tokens(line: string, links: boolean): Token[] {
           if (ch === '@') named = true;
           end += ch.length;
         }
-        if (!named) {
+        if (!named && end > i + scheme) {
           while (end < n) {
             const ch = codePointAt(line, end);
             if (notInAnyAddress(ch)) break;

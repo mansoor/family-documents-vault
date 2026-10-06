@@ -375,6 +375,46 @@ describe('the toolbar’s marks read as the button meant (the 5.35 review, W535-
     // Indented, as pasted: the item is the words.
     expect(after('   milk', 0, 0, 'list')).toEqual(['ul[milk]']);
   });
+
+  it('Bold or Italic pressed again takes the mark off (the second round, N535W-01)', () => {
+    // Bold twice: the words, still chosen, lose the marks they were given.
+    const bold = formatNote('Spare key', 0, 5, 'bold');
+    expect(bold).toEqual({ text: '**Spare** key', start: 2, end: 7 });
+    expect(formatNote(bold.text, bold.start, bold.end, 'bold')).toEqual({
+      text: 'Spare key',
+      start: 0,
+      end: 5,
+    });
+    // Italic twice.
+    const italic = formatNote('Spare key', 0, 5, 'italic');
+    expect(shape(italic.text)).toEqual(['p(em(Spare) key)']);
+    expect(formatNote(italic.text, italic.start, italic.end, 'italic').text).toBe('Spare key');
+    // Bold with the caret inside a bold word, or with its marks chosen too.
+    expect(formatNote('**Spare** key', 4, 4, 'bold').text).toBe('Spare key');
+    expect(formatNote('**Spare** key', 0, 9, 'bold').text).toBe('Spare key');
+    // A `**` is bold, never italic: Italic on a bold word makes it both, and
+    // pressed again leaves it bold; Bold on both leaves it italic.
+    const both = formatNote('**Spare** key', 4, 4, 'italic');
+    expect(shape(both.text)).toEqual(['p(em(strong(Spare)) key)']);
+    expect(formatNote(both.text, both.start, both.end, 'italic').text).toBe('**Spare** key');
+    expect(formatNote(both.text, both.start, both.end, 'bold').text).toBe('*Spare* key');
+    // Several lines, all bold: all lose it. Some: the rest gain it.
+    expect(formatNote('**one**\n**two**', 0, 15, 'bold').text).toBe('one\ntwo');
+    expect(formatNote('**one**\ntwo', 0, 11, 'bold').text).toBe('**one**\n**two**');
+    // Never a run of four, which reads as asterisks: part of a bold run is left as it is.
+    expect(formatNote('**Spare key**', 2, 7, 'bold').text).toBe('**Spare key**');
+  });
+
+  it('Checklist keeps a box as it is: done stays done (the second round, N535W-03)', () => {
+    expect(after('- [x] a\nb', 0, 9, 'checklist')).toEqual(['ul[[x]a|[ ]b]']);
+    expect(formatNote('- [x] paid\n- [ ] send\n- book', 0, 27, 'checklist').text).toBe(
+      '- [x] paid\n- [ ] send\n- [ ] book',
+    );
+    expect(formatNote('1. call\n- [x] paid', 0, 18, 'checklist').text).toBe(
+      '- [ ] call\n- [x] paid',
+    );
+    expect(formatNote('- [x] paid', 0, 0, 'checklist').text).toBe('- [x] paid');
+  });
 });
 
 describe('a link’s address, as the browser will reach it (the 5.35 review, X535-02)', () => {

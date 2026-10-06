@@ -151,6 +151,8 @@ export const LINK_PLACEHOLDER = 'https://example.com';
 const BLOCK_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. |### )?/;
 /** Any list marker a line already has, which a list button replaces. */
 const LIST_MARK = /^[ \t]*(?:[-*+] \[[ xX]\] |[-*+] |\d{1,9}\. )?/;
+/** A checklist item's marker and box, which Checklist keeps as it is. */
+const CHECKBOX_MARK = /^[ \t]*[-*+] \[[ xX]\] /;
 
 const isWordChar = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
 
@@ -179,16 +181,33 @@ function partsOf(text: string, from: number, to: number) {
   return { lead, words, trail: rest.slice(words.length) };
 }
 
+/** How many `*` run back from `at` (exclusive), and forward from `at`. */
+function starsBefore(text: string, at: number): number {
+  let n = 0;
+  while (at - n > 0 && text[at - n - 1] === '*') n += 1;
+  return n;
+}
+function starsFrom(text: string, at: number): number {
+  let n = 0;
+  while (text[at + n] === '*') n += 1;
+  return n;
+}
+
 /**
  * What a toolbar button does to what is being written, so the note reads
  * as the button meant (the 5.35 review, W535-05): the words chosen made
  * bold or italic — the spaces round them, and a line's list marker, left
  * outside the marks; each line on its own, since marks do not run across
  * lines; with `*`, which works inside a word; with nothing chosen, the word
- * the caret is in, or a word to type over — or made a link to an address to
- * type over; or the lines chosen made a list, any marker they had replaced
- * and blank lines left blank. Answers the new text and what to choose in it
- * next.
+ * the caret is in, or a word to type over. Words that have the mark
+ * already — written in the choice, or just round it — have it taken off
+ * instead, as pressing Bold again does in any editor (the second round,
+ * N535W-01); a `**` is bold, never italic, and `***` is both. A mark that
+ * would make a run of more than three, which reads as asterisks, is not
+ * made. Or the words made a link to an address to type over; or the lines
+ * chosen made a list, any marker they had replaced (a checklist's box kept
+ * as it is, done or not: N535W-03) and blank lines left blank. Answers the
+ * new text and what to choose in it next.
  */
 export function formatNote(
   text: string,
@@ -199,7 +218,8 @@ export function formatNote(
   let s = Math.min(start, end);
   let e = Math.max(start, end);
   if (format === 'bold' || format === 'italic') {
-    const mark = format === 'bold' ? '**' : '*';
+    const size = format === 'bold' ? 2 : 1;
+    const mark = '*'.repeat(size);
     if (s === e) [s, e] = wordAround(text, s);
     if (s === e) {
       // Nothing to mark: a word to type over, chosen.
@@ -210,30 +230,61 @@ export function formatNote(
         end: s + mark.length + word.length,
       };
     }
-    let out = '';
-    let first: [number, number] | null = null;
+    // Each line's words, and the `*` round them: written in the choice,
+    // and just outside it.
+    const parts: Array<{ from: number; to: number; core: string; a: number; b: number }> = [];
     let from = s;
-    while (from <= e) {
+    for (;;) {
       const nl = text.indexOf('\n', from);
       const to = nl === -1 || nl > e ? e : nl;
-      const { lead, words, trail } = partsOf(text, from, to);
-      if (words) {
-        const at = s + out.length + lead.length + mark.length;
-        first ??= [at, at + words.length];
-        out += `${lead}${mark}${words}${mark}${trail}`;
-      } else {
-        out += `${lead}${trail}`;
+      const { lead, words } = partsOf(text, from, to);
+      const wordsAt = from + lead.length;
+      const wordsEnd = wordsAt + words.length;
+      const inA = starsFrom(words, 0);
+      const inB = inA < words.length ? starsBefore(words, words.length) : 0;
+      const core = words.slice(inA, words.length - inB);
+      if (core) {
+        const outA = starsBefore(text, wordsAt);
+        const outB = starsFrom(text, wordsEnd);
+        parts.push({
+          from: wordsAt - outA,
+          to: wordsEnd + outB,
+          core,
+          a: outA + inA,
+          b: inB + outB,
+        });
       }
       if (to === e) break;
-      out += '\n';
       from = to + 1;
     }
-    const one = !text.slice(s, e).includes('\n');
-    return {
-      text: `${text.slice(0, s)}${out}${text.slice(e)}`,
-      start: one && first ? first[0] : s,
-      end: one && first ? first[1] : s + out.length,
+    if (parts.length === 0) return { text, start: s, end: e };
+    // Bold is two `*` or three; italic one or three.
+    const has = (p: { a: number; b: number }) => {
+      const m = Math.min(p.a, p.b);
+      return size === 2 ? m >= 2 : m === 1 || m >= 3;
     };
+    const off = parts.every(has);
+    const next = parts.map((p) => {
+      const d = off ? -size : has(p) ? 0 : size;
+      return { ...p, a: p.a + d, b: p.b + d };
+    });
+    if (next.some((p) => p.a > 3 || p.b > 3)) return { text, start: s, end: e };
+    // Each line's words and their marks written anew, in place of the old.
+    let out = '';
+    let at = 0;
+    let first: [number, number] | null = null;
+    for (const p of next) {
+      out += text.slice(at, p.from);
+      const coreAt = out.length + p.a;
+      first ??= [coreAt, coreAt + p.core.length];
+      out += `${'*'.repeat(p.a)}${p.core}${'*'.repeat(p.b)}`;
+      at = p.to;
+    }
+    const lastEnd = out.length;
+    out += text.slice(at);
+    // One line: its words chosen, to press again. Several: all of them.
+    if (next.length === 1 && first) return { text: out, start: first[0], end: first[1] };
+    return { text: out, start: Math.min(s, next[0]?.from ?? s), end: lastEnd };
   }
   if (format === 'link') {
     // One link: the first line of what is chosen, or the word at the caret.
@@ -263,6 +314,8 @@ export function formatNote(
     .map((line) => {
       if (lines.length > 1 && line.trim() === '') return line;
       n += 1;
+      // A checklist item stays as it is: done stays done (N535W-03).
+      if (format === 'checklist' && CHECKBOX_MARK.test(line)) return line;
       const mark = format === 'numbered' ? `${n}. ` : format === 'checklist' ? '- [ ] ' : '- ';
       return mark + line.replace(LIST_MARK, '');
     })

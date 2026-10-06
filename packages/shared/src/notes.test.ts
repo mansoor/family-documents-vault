@@ -508,6 +508,12 @@ describe('notes you can write (5.35)', () => {
       'addresses each with an unseen character': fill('https://a\u200b'),
       'bracketed addresses with an unseen character': fill('[a](https://a\u202e)'),
       'addresses outside the BMP': fill(`https://a${String.fromCodePoint(0xe0001)}`),
+      // The second round (N535P-01): addresses with no host at all, each
+      // of which once read the rest of the run again.
+      'addresses with no host, then a path': fill('https:///'),
+      'addresses with no host, then a query': fill('http://?'),
+      'addresses with no host, then a fragment': fill('https://#'),
+      'addresses with no host, over plain http': fill('http:///'),
     };
     for (const [what, input] of Object.entries(inputs)) {
       const started = Date.now();
@@ -520,13 +526,18 @@ describe('notes you can write (5.35)', () => {
     }
   });
 
-  it('reads a note as long as a vault keeps, of many lines, in a few milliseconds (the 5.35 review, X535-01)', () => {
+  it('reads a note as long as a vault keeps, of many lines or of addresses with no host, in a few milliseconds (the 5.35 review, X535-01, N535P-01)', () => {
     // As the vault reads them: once a search hit, once each of a member's
     // Only me documents in their private search. Twenty in a row.
     for (const [what, note] of [
       ['one paragraph of many lines', 'a\n'.repeat(NOTES_MAX / 2)],
       ['one item carried on over many lines', `- a\n${' b\n'.repeat((NOTES_MAX - 4) / 3)}`],
       ['short lines of words', 'ab\n'.repeat(NOTES_MAX / 3)],
+      // The second round (N535P-01): written-out addresses with no host.
+      ['addresses with no host, then a path', 'https:///'.repeat(Math.floor(NOTES_MAX / 9))],
+      ['addresses with no host, then a query', 'http://?'.repeat(NOTES_MAX / 8)],
+      ['addresses with no host, then a fragment', 'https://#'.repeat(Math.floor(NOTES_MAX / 9))],
+      ['addresses with no host, over plain http', 'http:///'.repeat(NOTES_MAX / 8)],
     ] as const) {
       expect(note.length, what).toBeLessThanOrEqual(NOTES_MAX);
       const started = Date.now();
