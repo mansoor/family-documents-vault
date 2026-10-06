@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
-import { deriveKey } from '@fdv/crypto';
+import { alertLinkBinding, deriveKey, sealBytes } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import pg from 'pg';
@@ -21,11 +21,14 @@ import { deliver } from './reminders.js';
 /** Just enough SMTP to accept some recipients and refuse others. */
 async function fakeSmtp(refuse: (address: string) => boolean) {
   const delivered: string[] = [];
+  /** Each message as it was sent, headers and body. */
+  const messages: string[] = [];
   const server = net.createServer((sock) => {
     sock.setEncoding('utf8');
     let buf = '';
     let inData = false;
     let rcpts: string[] = [];
+    let message: string[] = [];
     const say = (line: string) => sock.write(`${line}\r\n`);
     say('220 fake ESMTP');
     sock.on('data', (chunk: string) => {
@@ -38,9 +41,11 @@ async function fakeSmtp(refuse: (address: string) => boolean) {
           if (line === '.') {
             inData = false;
             delivered.push(...rcpts);
+            messages.push(message.join('\n'));
             rcpts = [];
+            message = [];
             say('250 queued');
-          }
+          } else message.push(line);
           continue;
         }
         const verb = line.slice(0, 4).toUpperCase();
@@ -63,8 +68,14 @@ async function fakeSmtp(refuse: (address: string) => boolean) {
   });
   await new Promise<void>((res) => server.listen(0, '127.0.0.1', res));
   const port = (server.address() as net.AddressInfo).port;
-  return { port, delivered, close: () => new Promise((res) => server.close(res)) };
+  return { port, delivered, messages, close: () => new Promise((res) => server.close(res)) };
 }
+
+/** A message's quoted-printable undone: its soft line breaks, and its `=XX`. */
+const unfolded = (message: string) =>
+  message
+    .replace(/=\n/g, '')
+    .replace(/=([0-9A-F]{2})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 
 describe('telling a refused address from a broken server', () => {
   it('recognises the error nodemailer gives for a refused recipient', () => {
@@ -241,12 +252,18 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
     await operator.close();
   });
 
+  const MASTER = 'email-refused-test-master-secret-32-bytes';
+  const linkKey = deriveKey(MASTER, 'alert-link-job');
+  const LINK = 'https://vault.example.test/reset#abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG';
+  /** The link as the API queues it (alert-job.ts): sealed, for this household (F529-11). */
+  const sealed = (url: string, household = hh) =>
+    sealBytes(linkKey, Buffer.from(url, 'utf8'), alertLinkBinding(household)).toString('base64');
   const reset = {
     household_id: hh,
     account_ids: [] as string[],
     subject: 'Setting a new password for your vault',
     body: 'b',
-    url: 'https://vault.example.test/reset#abc',
+    sealed_url: sealed(LINK),
     url_label: 'Set a new password',
     email_only: true,
     via: 'operator' as const,
@@ -254,7 +271,8 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
   const deps = (withOperator: boolean) => ({
     app: db,
     vapid: null,
-    smtpKey: deriveKey('email-refused-test-master-secret-32-bytes', 'smtp-credentials'),
+    smtpKey: deriveKey(MASTER, 'smtp-credentials'),
+    linkKey,
     baseUrl: 'x',
     log: () => undefined,
     operatorMail: withOperator
@@ -267,6 +285,38 @@ describe.skipIf(!testAdminUrl())('a reset link goes only by the operator’s mai
     expect(channels).toEqual(['email']);
     expect(operator.delivered).toEqual(['sam-reset@example.test']);
     expect(household.delivered).toEqual([]);
+  });
+
+  it('the link sealed on the queue is opened for the email, and one that does not open sends nothing (F529-11)', async () => {
+    const before = operator.messages.length;
+    expect(await sendAlert(deps(true), { ...reset, account_ids: [account] })).toEqual(['email']);
+    const sent = unfolded(operator.messages.slice(before).join('\n'));
+    // The link, in the text and behind the button; the job held only its seal.
+    expect(sent).toContain(LINK.slice(LINK.indexOf('#')));
+    expect(reset.sealed_url).not.toContain('reset#');
+    // Moved to another household's alert, or under another key: not sent,
+    // rather than sent with no link (the 0.4.1 bug).
+    const moved = { ...reset, account_ids: [account], sealed_url: sealed(LINK, randomUUID()) };
+    const otherKey = {
+      ...reset,
+      account_ids: [account],
+      sealed_url: sealBytes(
+        deriveKey('another-master-secret-of-32-bytes-at-least', 'alert-link-job'),
+        Buffer.from(LINK),
+        alertLinkBinding(hh),
+      ).toString('base64'),
+    };
+    const delivered = operator.delivered.length;
+    expect(await sendAlert(deps(true), moved)).toEqual([]);
+    expect(await sendAlert(deps(true), otherKey)).toEqual([]);
+    expect(operator.delivered).toHaveLength(delivered);
+    // One queued by an API from before, its link in words, still goes.
+    const { sealed_url: _gone, ...legacy } = reset;
+    void _gone;
+    expect(await sendAlert(deps(true), { ...legacy, url: LINK, account_ids: [account] })).toEqual([
+      'email',
+    ]);
+    expect(unfolded(operator.messages.at(-1) ?? '')).toContain(LINK.slice(LINK.indexOf('#')));
   });
 
   it('with no operator server it is not sent at all, rather than the household’s', async () => {

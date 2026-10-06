@@ -376,6 +376,7 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
       app,
       vapid,
       smtpKey: deriveKey(MASTER, 'smtp-credentials'),
+      linkKey: deriveKey(MASTER, 'alert-link-job'),
       baseUrl: 'https://vault.example.test',
       operatorMail: { url: `smtp://127.0.0.1:${smtp.port}`, from: 'operator@actors.test' },
       log,

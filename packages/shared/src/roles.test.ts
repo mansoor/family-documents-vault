@@ -24,6 +24,7 @@ import {
   refusalFor,
   ROLES,
   rolesWith,
+  seesLocation,
   TEEN_NOT_ADULTS_ONLY,
   visibilityChoices,
   visibilityRefusal,
@@ -62,6 +63,16 @@ describe('the role matrix', () => {
     ] as Capability[]) {
       expect(rolesWith(c), c).toEqual(['owner']);
     }
+  });
+
+  it('where the original is kept is the household’s: owners, adults and teens (5.41)', () => {
+    expect(rolesWith('document.see_location')).toEqual(['owner', 'adult', 'teen']);
+    expect(ROLES.filter((r) => seesLocation(r))).toEqual(['owner', 'adult', 'teen']);
+    // A viewer (a guest is one) never; nor a caller with no role at all.
+    expect(seesLocation('viewer')).toBe(false);
+    expect(seesLocation(null)).toBe(false);
+    expect(seesLocation(undefined)).toBe(false);
+    expect(seesLocation('guest' as Role)).toBe(false);
   });
 
   it('a teen keeps the two things the design gives them', () => {

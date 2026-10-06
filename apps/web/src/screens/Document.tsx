@@ -2,6 +2,7 @@ import {
   FILE_REMOVED,
   formatDate,
   issuedByLabel,
+  seesLocation,
   whenExactly,
   type CoreField,
   type VersionView,
@@ -321,7 +322,9 @@ export function DocumentScreen() {
         ))}
         <dt>Category</dt>
         <dd>{categoryLabel(doc.category)}</dd>
-        {doc.physical_location && (
+        {/* Where the original is kept is the household's (5.41): never a
+            viewer's or a guest's, whatever an answer carries. */}
+        {seesLocation(storedRole()) && doc.physical_location && (
           <>
             <dt>{word('physical_location', 'Original is kept')}</dt>
             <dd>{doc.physical_location}</dd>

@@ -562,6 +562,19 @@ describe('App', () => {
     await expectAccessible();
   });
 
+  it('a viewer, or a guest, is never shown where the original is kept (5.41)', async () => {
+    const state = fresh();
+    installFakeApi(state);
+    signedIn('viewer');
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    await screen.findByRole('heading', { name: "Mansoor's passport" });
+    expect(screen.getByText('14 Mar 2021')).toBeInTheDocument();
+    // Even were an answer to carry it, the page shows neither it nor its label.
+    expect(screen.queryByText('Bedroom safe, top shelf')).not.toBeInTheDocument();
+    expect(screen.queryByText('Original is kept')).not.toBeInTheDocument();
+  });
+
   it('asking to take away an owner’s role says it waits, and they can refuse', async () => {
     const coOwner = { ...AISHA, id: 'm-1', display_name: 'Sam', has_account: true, role: 'owner' };
     const state = fresh({ members: [ME, coOwner] });

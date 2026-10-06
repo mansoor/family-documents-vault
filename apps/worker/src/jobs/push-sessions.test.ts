@@ -26,6 +26,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
   let account = '';
   const vapid = { ...webpush.generateVAPIDKeys(), subject: 'mailto:test@example.test' };
   const smtpKey = deriveKey('push-sessions-test-master-secret-32-bytes', 'smtp-credentials');
+  const linkKey = deriveKey('push-sessions-test-master-secret-32-bytes', 'alert-link-job');
 
   const session = async (live: boolean) => {
     const r = await admin.query<{ id: string }>(
@@ -116,7 +117,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
   it('an alert follows the same rule', async () => {
     const endpoints = pushedTo();
     await sendAlert(
-      { app: db, vapid, smtpKey, baseUrl: 'x', log: () => undefined },
+      { app: db, vapid, smtpKey, linkKey, baseUrl: 'x', log: () => undefined },
       { household_id: hh, account_ids: [account], subject: 'A new device', body: 'b' },
     );
     expect(endpoints.sort()).toEqual(['old-browser', 'phone']);
@@ -124,7 +125,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
 
   it('a sign-in locked, or paused after a restore, is pushed nothing but of its own sign-in (5.28)', async () => {
     const alert = { household_id: hh, account_ids: [account], subject: 'A new device', body: 'b' };
-    const deps = { app: db, vapid, smtpKey, baseUrl: 'x', log: () => undefined };
+    const deps = { app: db, vapid, smtpKey, linkKey, baseUrl: 'x', log: () => undefined };
     // Another owner who can sign in, as every household keeps (0051's floor):
     // this one is locked as no owner could be through the API, to see the rule.
     const m = await admin.query<{ id: string }>(
@@ -159,7 +160,7 @@ describe.skipIf(!testAdminUrl())('push reaches only live sign-ins', () => {
   });
 
   it("a guest's sign-in past its end is pushed nothing but of its own sign-in (5.34)", async () => {
-    const deps = { app: db, vapid, smtpKey, baseUrl: 'x', log: () => undefined };
+    const deps = { app: db, vapid, smtpKey, linkKey, baseUrl: 'x', log: () => undefined };
     // Somebody outside the family, limited, whose sign-in ended a minute ago
     // (written as the owning role: nobody signed in may set it so).
     const g = await admin.query<{ id: string }>(

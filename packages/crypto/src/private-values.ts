@@ -77,6 +77,17 @@ export const memberPhotoSourceBinding = (householdId: string, memberId: string, 
 export const OPERATOR_MAIL_KEY_PURPOSE = 'operator-mail-job';
 export const operatorMailBinding = (householdId: string) => `mail.to_address:${householdId}`;
 
+/**
+ * The link in an alert the API asks the worker to send (`alert.send`): a
+ * password reset's, which opens a sign-in for an hour. Sealed the way 5.20
+ * seals its mail jobs (the Phase 5 exit, F529-11), under a key derived from
+ * the master key for this alone, so the queue's table — which the
+ * application role reads — and every backup of it hold no working link.
+ * The API seals, the worker opens; bound to its household.
+ */
+export const ALERT_LINK_KEY_PURPOSE = 'alert-link-job';
+export const alertLinkBinding = (householdId: string) => `alert.send:url:${householdId}`;
+
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
 

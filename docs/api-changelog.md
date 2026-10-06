@@ -15,6 +15,53 @@ against self-hosted servers that are months or years behind.
 4. The client declares its minimum server version; the server declares its
    minimum client version. Either side refusing says so in plain words.
 
+## 0.6.0
+
+The Phase 5 release: the first on `main` since 0.4.5 (0.5.x were development
+tags). This is the summary for client authors; each item is given in full
+under "After 0.5.0 (Phase 5)" in [Unreleased](#unreleased). Nothing a 0.4.x
+client calls is gone: `min_client_version` stays `0.0.1`, and the phone app
+needs a vault of 0.4.10 or later.
+
+- **New `features`**, each `true` from the release that shipped it:
+  `custom_types`, `collections`, `reminder_dates`, `member_photos`,
+  `share_options`, `collection_shares`, `share_second_factor`,
+  `share_email_code` (only with the operator's mail server, `FDV_SMTP_URL`),
+  `remove_for_good`, `member_edit`, `upload_requests`, `member_identity`,
+  `member_admin`, `sign_out_everywhere`, `access_restrictions`, `guests` and
+  `detail_suggestions`. New `limits`: `share_max_days`, `guest_max_days`.
+- **Two callers without a sign-in.** A share link is looked at and opened
+  with its token in a body (`POST /api/v1/shared/preview`, `/code`,
+  `/unlock`); what it gives is fetched inside a session cookie scoped to
+  `/api/v1/shared` (`GET /api/v1/shared/items`, `/items/{id}/content`,
+  `/items/{id}/pages/{n}`). Somebody sending documents to a request does the
+  same under `/api/v1/drop`. Neither cookie opens anything else, and a link
+  made since 0.5.14 opens nothing on the old token-in-path routes.
+- **New for the family:** kinds of document and their fields; collections,
+  and links to them; reminders from any date a kind shows; a person's
+  details, photo and identity record (sealed, masked, revealed with a
+  passkey or a code); notes; removing a document for good; requests to send
+  documents, and looking at what came in before it is filed; suggestions
+  from a document's pages.
+- **New for owners**, each with two-step sign-in or a passkey, asked again
+  with one of those and never the password (`403 totp_required_for_owner`,
+  `403 step_up_required`): the view of somebody's sign-in, locking it,
+  starting a password reset, signing somebody out everywhere, limiting what
+  a viewer sees, a guest's sign-in, and who reads identity details.
+- **Changed for viewers** (a guest is a viewer, `kind: "guest"` on `/me`):
+  no birthdays, household answers or household suggestions (5.3); a limited
+  viewer is given only their grant (5.33); `physical_location` is `null`
+  (5.41); no suggestions from pages (5.37).
+- **Changed:** a restore pauses every link, every request to send
+  documents and every sign-in but the owners', until an owner turns each
+  back on (`GET /api/v1/after-restore`).
+- **Changed (breaking, only for a client written against a 0.5.12–0.5.17
+  development tag):** lists are collections, `/api/v1/collections`, with no
+  alias (5.17b). 0.4.5 had neither.
+- **Deprecated, removed in 0.9.0:** the token-in-path routes of share links,
+  password resets and invitations; see
+  [Deprecations in effect](#deprecations-in-effect).
+
 ## Unreleased
 
 - `GET /api/v1/capabilities` — the capability document. Fetch it first,
@@ -3761,6 +3808,34 @@ guest_always_limited`. A guest owns no document, by any path — made,
       `features.detail_suggestions`. `@fdv/client`: `detailSuggestions`;
       the fake answers what a test gives it, `unavailable` otherwise, and
       refuses a viewer as the vault does.
+  - The Phase 5 exit (5.41).
+    - **Changed, for viewers only:** where a document's paper original is
+      kept is the household's. `physical_location` is `null` for a viewer,
+      limited or not, and so for a guest, in every answer that carries a
+      document (`DocumentView`): `GET /api/v1/documents/{id}`,
+      `GET /api/v1/documents`, `GET /api/v1/collections/{id}`'s items, and
+      the rest. Owners, adults and teens are answered as before; nobody
+      else could write it, and still cannot. Neither pass of a search (`GET /api/v1/search`,
+      `GET /api/v1/search/sealed`) finds, ranks or leaves out a document by
+      its location's words for a viewer: they are matched against the index
+      without them (migration 0058 gives the location a weight of its own,
+      `D`, which also ranks a location's words a little lower for everybody
+      else). Nothing a share link, the drop page, the activity log, a
+      digest, an email or a push carries names a location, as before. The
+      field stays, so older clients read it as unknown. New capability
+      `document.see_location` (owners, adults, teens); `@fdv/shared`:
+      `seesLocation(role)`. `@fdv/client`'s fake answers the same.
+    - **Fixed:** `POST /api/v1/auth/passkey/verify`, and
+      `POST /api/v1/auth/step-up` with a `passkey`, given a response that
+      names no credential (`{ "response": {} }`), answered `500`. Now
+      `401 passkey_rejected`, as any passkey not accepted.
+    - **Changed (the queue, not the API):** a password reset's link in an
+      `alert.send` job is sealed under a key derived from the master key
+      (`sealed_url`, `ALERT_LINK_KEY_PURPOSE`), as 5.20's `mail.to_address`
+      jobs are: the queue's table, which the application role reads, and
+      every backup of it, hold no working link. The worker opens it as it
+      sends; a job queued by an older API, its `url` in words, is still
+      sent.
 
 ## Deprecations in effect
 

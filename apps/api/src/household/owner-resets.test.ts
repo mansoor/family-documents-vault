@@ -21,7 +21,7 @@ import { PasswordService } from '../auth/passwords.js';
 import { OwnerResetService } from './owner-resets.js';
 import type { Tokens } from '../auth/service.js';
 import { codeFor } from '../auth/totp.js';
-import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { alertsSent, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 
 /**
  * A password reset an owner starts (5.29, D5, A48–A50, A54).
@@ -2035,10 +2035,8 @@ describe.skipIf(!testAdminUrl())(
         stop_now: false,
         expires_at: expect.any(String) as unknown,
       });
-      const alerts = t.h.jobs
-        .slice(since)
-        .filter((j) => j.name === 'alert.send')
-        .map((j) => j.data);
+      // The alerts as the worker opens them: on the queue the link is sealed.
+      const alerts = alertsSent({ jobs: t.h.jobs.slice(since) });
       const withLink = alerts.filter((a) => typeof a.url === 'string');
       // One mail carries it: to her account alone, by the operator's server
       // alone, by email alone.
@@ -2051,11 +2049,12 @@ describe.skipIf(!testAdminUrl())(
       });
       const url = withLink[0]?.url as string;
       expect(url).toMatch(/^http:\/\/localhost:8080\/reset#[A-Za-z0-9_-]{43}$/);
-      // No other job, line or answer holds it.
+      // No job holds it as words — the queue's table, which the application
+      // role reads and every backup keeps, has it sealed (F529-11) — and no
+      // line or answer holds it.
       const secret = tokenFrom(url);
-      expect(JSON.stringify(t.h.jobs.filter((j) => j.data !== withLink[0])).includes(secret)).toBe(
-        false,
-      );
+      expect(JSON.stringify(t.h.jobs).includes(secret)).toBe(false);
+      expect(JSON.stringify(t.h.jobs)).not.toMatch(/reset#/);
       const lines = await admin<{ detail: unknown }>(
         `select detail from audit_event where action = 'member.reset_started'`,
       );
@@ -2091,15 +2090,10 @@ describe.skipIf(!testAdminUrl())(
         return { p, account };
       };
       const lastLinkTo = (account: string) => {
-        const sent = t.h.jobs
-          .filter(
-            (j) =>
-              j.name === 'alert.send' &&
-              typeof j.data.url === 'string' &&
-              (j.data.account_ids as string[]).includes(account),
-          )
+        const sent = alertsSent(t.h)
+          .filter((a) => typeof a.url === 'string' && (a.account_ids as string[]).includes(account))
           .at(-1);
-        return sent?.data.url as string;
+        return sent?.url as string;
       };
 
       // An owner's.

@@ -55,6 +55,7 @@ import {
   refusalFor,
   RESET_LINK_MINUTES,
   resetCommand,
+  seesLocation,
   shareEndWords,
   suspensionInEffect,
   TYPE_IN_USE,
@@ -1573,12 +1574,29 @@ export function createFakeVault(): {
       can(state.role, 'audit.read')
         ? (state.members.find((m) => m.id === memberId)?.display_name ?? null)
         : null;
+    /**
+     * Whether whoever asks sees where originals are kept (5.41): owners,
+     * adults and teens, as the real vault answers them; anybody else null.
+     */
+    const locationShown = () => {
+      const s = session();
+      return 'id' in s && seesLocation(whoOf(s).role);
+    };
     /** A document as the real vault answers it, with its status in words (0.5.7). */
     const viewOf = (doc: FakeDocument) =>
-      documentView(doc, state.types, { role: state.role, editorName });
+      documentView(doc, state.types, {
+        role: state.role,
+        editorName,
+        location: locationShown(),
+      });
     /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
     const listedOf = (doc: FakeDocument) =>
-      documentView(doc, state.types, { listed: true, role: state.role, editorName });
+      documentView(doc, state.types, {
+        listed: true,
+        role: state.role,
+        editorName,
+        location: locationShown(),
+      });
     /** Its note's words changed (5.35): stamped by whoever is signed in, now. Else left alone. */
     const stampNotes = (doc: FakeDocument, before: string | null, memberId: string) => {
       if ((doc.notes ?? null) === before) return;
@@ -3878,6 +3896,8 @@ function documentView(
     role?: string;
     /** Who changed a note, by member id, as the reader may be told them (5.35). */
     editorName?: (memberId: string) => string | null;
+    /** Whether the reader sees where the original is kept (5.41): null unless they do. */
+    location?: boolean;
   } = {},
 ): DocumentView {
   const type = types.find((t) => t.key === doc.type_key);
@@ -3892,7 +3912,7 @@ function documentView(
     issued_by: doc.issued_by ?? null,
     issued: doc.issued ?? null,
     expires,
-    physical_location: doc.physical_location ?? null,
+    physical_location: opts.location === true ? (doc.physical_location ?? null) : null,
     tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',
     notes: sealed ? null : (doc.notes ?? null),

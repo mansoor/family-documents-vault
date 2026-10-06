@@ -2,6 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  ALERT_LINK_KEY_PURPOSE,
+  alertLinkBinding,
   deriveKey,
   EnvKeyProvider,
   OPERATOR_MAIL_KEY_PURPOSE,
@@ -184,6 +186,29 @@ export function mailSent(h: Pick<Harness, 'jobs'>): Array<MailRequest> {
     });
 }
 
+/** The key the harness's `alert.send` links are sealed under, as the worker's are (F529-11). */
+export const TEST_ALERT_KEY = deriveKey(TEST_MASTER, ALERT_LINK_KEY_PURPOSE);
+
+/**
+ * Each `alert.send` job, as the worker reads it: its link, sealed on the
+ * queue, opened as `url`. The test harness's view of what the alert says;
+ * `h.jobs` keeps what the queue holds.
+ */
+export function alertsSent(h: Pick<Harness, 'jobs'>): Array<Record<string, unknown>> {
+  return h.jobs
+    .filter((j) => j.name === 'alert.send')
+    .map((j) => {
+      const { sealed_url: sealed, ...rest } = j.data;
+      if (typeof sealed !== 'string') return rest;
+      const url = openBytes(
+        TEST_ALERT_KEY,
+        Buffer.from(sealed, 'base64'),
+        alertLinkBinding(String(j.data.household_id)),
+      ).toString('utf8');
+      return { ...rest, url };
+    });
+}
+
 export async function createHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const tdb: TestDatabase = await createTestDatabase();
   const vaultDir = await mkdtemp(path.join(tmpdir(), 'fdv-api-vault-'));
@@ -212,7 +237,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     jobs.push({ name, data, ...(options ? { options } : {}) });
   };
   // The same mapping as production, not a copy of it: see alert-job.ts.
-  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
+  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(TEST_ALERT_KEY, a));
   // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
   const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
   // And an email to one address (5.20): the same sealed mapping as production.

@@ -2632,6 +2632,145 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     }
   }, 120_000);
 
+  it('the Phase 5 exit: a restore from before a restriction, a lock and a revocation leaves each person paused and each link paused (5.41)', async () => {
+    const live = await createTestDatabase();
+    made.push(live);
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-541-'));
+    try {
+      await installQueue(live.adminUrl);
+      const hh = await seed(live.adminUrl);
+      const sara = await signedIn(live.adminUrl, hh, 'Sara', 'adult');
+      const accountant = await signedIn(live.adminUrl, hh, 'Accountant', 'viewer');
+      // Sara's link to one of the documents, and one of the owner's; each
+      // with somebody's browser open on it.
+      const account = async (member: string) =>
+        (
+          await sql(
+            live.adminUrl,
+            'select account_id from account_household where member_id = $1',
+            [member],
+          )
+        ).rows[0]?.account_id as string;
+      const owner = (
+        await sql(live.adminUrl, "select account_id from account_household where role = 'owner'")
+      ).rows[0]?.account_id as string;
+      const linkBy = async (by: string) =>
+        (
+          await sql(
+            live.adminUrl,
+            `insert into share_link (household_id, document_id, token_hash, created_by, expires_at, flow)
+             select $1, d.id, $2, $3, now() + interval '7 days', 'v2'
+               from document d where d.household_id = $1 order by d.id limit 1
+             returning id`,
+            [hh, randomBytes(32), by],
+          )
+        ).rows[0]?.id as string;
+      const sarasLink = await linkBy(await account(sara));
+      const ownersLink = await linkBy(owner);
+      for (const link of [sarasLink, ownersLink]) {
+        await sql(
+          live.adminUrl,
+          `insert into share_session (household_id, share_id, cookie_hash, expires_at)
+           values ($1, $2, $3, now() + interval '1 hour')`,
+          [hh, link, randomBytes(32)],
+        );
+      }
+      // Both sign in: a session each.
+      for (const member of [sara, accountant]) {
+        await sql(
+          live.adminUrl,
+          `insert into session (account_id, household_id, refresh_hash, expires_at)
+           values ($1, $2, $3, now() + interval '30 days')`,
+          [await account(member), hh, randomBytes(32)],
+        );
+      }
+      const backup = (
+        await backupDatabase({
+          adminUrl: live.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      // After the backup: the accountant is limited to the house's own
+      // documents, Sara is locked (which pauses her link, as long as the
+      // lock lasts: 5.28 works it out from her sign-in, and writes nothing
+      // on the link), and the owner takes their link back. The backup can
+      // know none of it.
+      await sql(
+        live.adminUrl,
+        `insert into access_restriction (member_id, household_id, include_no_person_docs)
+         values ($1, $2, true)`,
+        [accountant, hh],
+      );
+      await sql(
+        live.adminUrl,
+        `update account_household set suspended_at = now(), suspend_reason = 'locked'
+          where member_id = $1`,
+        [sara],
+      );
+      await sql(live.adminUrl, 'update share_link set revoked_at = now() where id = $1', [
+        ownersLink,
+      ]);
+
+      const t = await empty();
+      const report = await restoreBackup(backup, KEY, into(t), quiet, KEYS);
+      // Each person waits for an owner: the one restricted since, the one
+      // locked since — and nobody but the owners can sign in until then.
+      expect(await suspensions(t.adminUrl)).toMatchObject({
+        Sara: { role: 'adult', reason: 'restored', in_effect: true },
+        Accountant: { role: 'viewer', reason: 'restored', in_effect: true },
+        One: { role: 'owner', in_effect: false },
+        Two: { role: 'owner', in_effect: false },
+      });
+      expect(report.signInsPaused).toBeGreaterThanOrEqual(2);
+      // Each link waits for an owner too: Sara's, and the one taken back
+      // since, which the backup holds as live.
+      const links = await sql(
+        t.adminUrl,
+        `select id, paused_at is not null as paused, paused_reason, revoked_at is not null as revoked
+           from share_link where id = any($1) order by id`,
+        [[sarasLink, ownersLink]],
+      );
+      expect(links.rows).toEqual(
+        [sarasLink, ownersLink].sort().map((id) => ({
+          id,
+          paused: true,
+          paused_reason: 'restored',
+          revoked: false,
+        })),
+      );
+      // No session survives: not a sign-in's, not a link's.
+      const left = await sql(
+        t.adminUrl,
+        `select (select count(*)::int from session where revoked_at is null) as sessions,
+                (select count(*)::int from share_session) as link_sessions`,
+      );
+      expect(left.rows[0]).toEqual({ sessions: 0, link_sessions: 0 });
+      // And a link asking as itself reaches nothing while it waits.
+      for (const link of [sarasLink, ownersLink]) {
+        const reached = await withClient(t.appUrl, async (c) => {
+          await c.query('begin');
+          await c.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                    set_config('app.share_id', $2, true)`,
+            [hh, link],
+          );
+          const { rows } = await c.query<{ n: number }>(
+            `select (select count(*)::int from document) + (select count(*)::int from share_link) as n`,
+          );
+          await c.query('commit');
+          return rows[0]?.n;
+        });
+        expect(reached, link).toBe(0);
+      }
+    } finally {
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('a backup from before 0054 is brought up to date: nobody is restricted (5.32)', async () => {
     const older = await empty();
     const migrations = await migrationsUpTo(53);

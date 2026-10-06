@@ -208,7 +208,8 @@ export class PasskeyService {
     response: AuthenticationResponseJSON,
     meta: RequestMeta,
   ): Promise<Tokens> {
-    const credentialId = Buffer.from(response.id, 'base64url');
+    const credentialId = credentialIdOf(response);
+    if (!credentialId) throw rejected();
     const credential = await this.db
       .selectFrom('credential')
       .selectAll()
@@ -270,11 +271,13 @@ export class PasskeyService {
    * the device is present without opening a new session (SEC-17).
    */
   async verifyForAccount(accountId: string, response: AuthenticationResponseJSON): Promise<void> {
+    const credentialId = credentialIdOf(response);
+    if (!credentialId) throw rejected();
     const credential = await this.db
       .selectFrom('credential')
       .selectAll()
       .where('kind', '=', 'passkey')
-      .where('credential_id', '=', Buffer.from(response.id, 'base64url'))
+      .where('credential_id', '=', credentialId)
       .where('account_id', '=', accountId)
       .executeTakeFirst();
     if (!credential?.public_key) throw rejected();
@@ -419,6 +422,16 @@ export class PasskeyService {
 
 const rejected = () =>
   new ApiError(401, 'passkey_rejected', 'That passkey was not accepted. Try again.');
+
+/**
+ * The credential a sign-in or a step-up names, or null for a response that
+ * names none: refused as any passkey not accepted, never a server error
+ * (the Phase 5 exit found `{ "response": {} }` answered 500 on a public route).
+ */
+function credentialIdOf(response: AuthenticationResponseJSON): Buffer | null {
+  const id = (response as { id?: unknown } | null | undefined)?.id;
+  return typeof id === 'string' && id.length > 0 ? Buffer.from(id, 'base64url') : null;
+}
 
 function explain(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);

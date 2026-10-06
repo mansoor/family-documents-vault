@@ -1,5 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { deriveKey, EnvKeyProvider, OPERATOR_MAIL_KEY_PURPOSE, ScopeKeys } from '@fdv/crypto';
+import {
+  ALERT_LINK_KEY_PURPOSE,
+  deriveKey,
+  EnvKeyProvider,
+  OPERATOR_MAIL_KEY_PURPOSE,
+  ScopeKeys,
+} from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
 import { loadConfig } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
@@ -293,6 +299,8 @@ async function main(): Promise<void> {
     app: dbs.app,
     vapid,
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+    // An alert's link, a password reset's, comes sealed (F529-11).
+    linkKey: deriveKey(masterSecret, ALERT_LINK_KEY_PURPOSE),
     baseUrl: config.FDV_BASE_URL,
     log,
     agent: pushAgent,

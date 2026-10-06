@@ -2,7 +2,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from './auth/service.js';
 import type { CreatedInvitation } from './household/invitations.js';
-import { createHarness, type Harness } from './test-harness.js';
+import { alertsSent, createHarness, type Harness } from './test-harness.js';
 
 /**
  * Invitation and reset links the same way (5.17). A new link reads
@@ -48,9 +48,8 @@ describe.skipIf(!testAdminUrl())('invitation and reset links the same way', () =
       payload: { email: 'owner@example.test' },
       ...peer(),
     });
-    const url = h.jobs
-      .filter((j) => j.name === 'alert.send')
-      .map((j) => (j.data as { url?: string }).url)
+    const url = alertsSent(h)
+      .map((a) => a.url as string | undefined)
       .filter(Boolean)
       .at(-1) as string;
     expect(url).toMatch(/\/reset#/);
