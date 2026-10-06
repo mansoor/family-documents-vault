@@ -200,6 +200,93 @@ describe('the same choice, wherever Only me is chosen (the third round)', () => 
     ).toBeInTheDocument();
   });
 
+  /**
+   * As a browser runs it (the fourth round): what a listener queues runs
+   * while `window.event` is still that event, so React makes it at once —
+   * before the card's own work is done, while Save is still switched off.
+   */
+  async function asBrowser(type: string, fire: () => void) {
+    const event = new Event(type);
+    Object.defineProperty(window, 'event', { configurable: true, get: () => event });
+    try {
+      fire();
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+    } finally {
+      delete (window as unknown as { event?: unknown }).event;
+    }
+  }
+
+  for (const [how, put] of [
+    [
+      'Cancel',
+      (dialog: HTMLElement) =>
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })),
+    ],
+    ['Escape', (dialog: HTMLElement) => fireEvent.keyDown(dialog, { key: 'Escape' })],
+  ] as const) {
+    it(`the edit card's question put away with ${how}, as a browser runs it, gives the focus back to Save (W3, the edit card)`, async () => {
+      installFakeApi(fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY] }));
+      signedIn();
+      window.history.replaceState({}, '', '/documents/doc-1/confirm');
+      render(<App />);
+      const who = await screen.findByRole('group', { name: 'Who can see this' });
+      fireEvent.click(within(who).getByRole('button', { name: 'Only me' }));
+      const save = screen.getByRole('button', { name: 'Save to the vault' });
+      save.focus();
+      fireEvent.click(save);
+      const dialog = await screen.findByRole('alertdialog', {
+        name: 'Your links to this document',
+      });
+      await waitFor(() =>
+        expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus(),
+      );
+      await asBrowser(how === 'Cancel' ? 'click' : 'keydown', () => put(dialog));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('alertdialog', { name: 'Your links to this document' }),
+        ).toBeNull(),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Save to the vault' })).toHaveFocus(),
+      );
+    });
+  }
+
+  it('a link a restore paused is said to end either way; Keep is offered only for one it would keep (API-1)', async () => {
+    const PAUSED = { ...SURVEYOR, will_end: true as const };
+    // Only that one: no Keep, and why.
+    const state = fresh({ documents: [{ ...PASSPORT }], ownLinks: [PAUSED] });
+    installFakeApi(state);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    const { unmount } = render(<App />);
+    let dialog = await makeItOnlyMe();
+    expect(dialog).toHaveTextContent(
+      'It ends either way: paused after a restore, it cannot be turned back on while this is Only me.',
+    );
+    expect(within(dialog).queryByRole('radio', { name: /Keep them/ })).toBeNull();
+    expect(dialog).toHaveTextContent('They end either way.');
+    unmount();
+    cleanup();
+
+    // Beside one that can send: Keep keeps that one, and the notice counts it alone.
+    const both = fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY, PAUSED] });
+    installFakeApi(both);
+    signedIn();
+    window.history.replaceState({}, '', '/documents/doc-1');
+    render(<App />);
+    dialog = await makeItOnlyMe();
+    fireEvent.click(
+      within(dialog).getByRole('radio', {
+        name: 'Keep them: the people they are for can still open it',
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make it Only me' }));
+    await screen.findByRole('heading', {
+      name: 'Only you, and the people your 1 link is for, can open this.',
+    });
+  });
+
   it('on the document, the question put away gives the focus back to Save (W3)', async () => {
     installFakeApi(fresh({ documents: [{ ...PASSPORT }], ownLinks: [ATTORNEY] }));
     signedIn();

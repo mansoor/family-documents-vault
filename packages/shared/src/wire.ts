@@ -1115,6 +1115,13 @@ export interface OwnLinkToEnd {
   collection_name: string | null;
   expires_at: string;
   protection: ShareProtection[];
+  /**
+   * It ends whichever is chosen (the Phase 5 exit's fourth round): paused
+   * after a restore, it waits for an owner to turn it back on, and no owner
+   * can see an Only me document of somebody else's. Absent for an owner,
+   * who can, and for every other link.
+   */
+  will_end?: true;
 }
 
 /**

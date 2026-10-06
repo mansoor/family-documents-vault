@@ -656,6 +656,22 @@ export function ConfirmForm(props: {
   const [unread, setUnread] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Save, for the focus to come back to.
+  const ownSave = useRef<HTMLButtonElement>(null);
+  const saveButton = props.submitButton ?? ownSave;
+  // A question over the card put away while the card was still saving —
+  // the links question (5.41) — leaves the focus nowhere: in a browser it
+  // goes before the card is done, while Save is still switched off. Once
+  // the card is done and nothing has the focus, Save takes it back (the
+  // Phase 5 exit's fourth round, W3).
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (wasBusy.current && !busy) {
+      const at = document.activeElement;
+      if (!at || at === document.body) saveButton.current?.focus();
+    }
+    wasBusy.current = busy;
+  }, [busy, saveButton]);
 
   const type = types.find((t) => t.key === typeKey);
   const me = members.find((m) => m.is_me);
@@ -1273,11 +1289,7 @@ export function ConfirmForm(props: {
           )}
         </div>
         <ErrorNote message={error} />
-        <Button
-          {...(props.submitButton ? { ref: props.submitButton } : {})}
-          type="submit"
-          disabled={busy}
-        >
+        <Button ref={saveButton} type="submit" disabled={busy}>
           {busy ? 'Saving…' : props.submitLabel}
         </Button>
         {props.onSkip ? (

@@ -8,6 +8,8 @@ import {
   pagesNotSharedNote,
   sharePagesNote,
   type DocumentView,
+  type LinksChoiceNeeded,
+  type VisibilityChange,
   type ShareLinkPreview,
   type SharedSession,
 } from '@fdv/shared';
@@ -938,8 +940,9 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(await pausedFor(owner)).toContain(link.share.id);
 
       // Sam makes the document his, then Only me: no owner can see it now.
-      // The paused link is his, and could send it again: he is asked about
-      // it (5.41, F1), and keeps it, which keeps it as it is — paused.
+      // The paused link is his: he is asked about it (5.41, F1) — marked as
+      // one that ends whichever he chooses, as no owner could turn it back
+      // on while the document is Only me (the fourth round, API-1).
       const his = await h.app.inject({
         method: 'PATCH',
         url: `/api/v1/documents/${policy}`,
@@ -949,25 +952,75 @@ describe.skipIf(!testAdminUrl())('share links', () => {
       expect(his.statusCode, his.body).toBe(200);
       const asked = await setVisibility(sam, policy, 'private');
       expect([asked.statusCode, code(asked)]).toEqual([409, 'links_choice_needed']);
+      const detail = JSON.parse(
+        json<{ error: { detail: string } }>(asked).error.detail,
+      ) as LinksChoiceNeeded;
+      expect(detail.links).toEqual([
+        expect.objectContaining({ id: link.share.id, will_end: true }),
+      ]);
+      // Keep keeps nothing that cannot send: the link ends, and the notice
+      // says only Sam can open it.
       const onlyHis = await setVisibility(sam, policy, 'private', 'keep');
       expect(onlyHis.statusCode, onlyHis.body).toBe(200);
+      expect(json<VisibilityChange>(onlyHis)).toMatchObject({
+        notice: { title: 'Only you can open this. Your 1 link to it has ended.' },
+        links: { yours: 1, yours_now: 'ended', others: 0 },
+      });
+      const ended = await withSystem(h.db, owner.household_id, (trx) =>
+        trx
+          .selectFrom('share_link')
+          .select(sql<boolean>`revoked_at is not null`.as('revoked'))
+          .where('id', '=', link.share.id)
+          .executeTakeFirstOrThrow(),
+      );
+      expect(ended.revoked).toBe(true);
       expect(await sees(owner, policy)).toBe(false);
       expect(await pausedFor(owner)).not.toContain(link.share.id);
 
-      // That does not make the link his to turn back on.
+      // Nor is it his to turn back on.
       const refused = await resume(sam, link.share.id);
       expect(refused.statusCode).toBe(403);
       expect(code(refused)).toBe('forbidden');
-      expect((await linkRow(link.share.id)).paused_at).not.toBeNull();
 
-      // Put back for the household, the leaked link still does not work:
-      // it waits for an owner, as it did before.
+      // Put back for the household, it still does not work, and no owner
+      // is asked about it: it has ended.
       const shared = await setVisibility(sam, policy, 'household');
       expect(shared.statusCode, shared.body).toBe(200);
       expect((await preview(link.link_token)).statusCode).toBe(404);
       expect((await unlock(link.link_token)).statusCode).toBe(404);
-      expect(await pausedFor(owner)).toContain(link.share.id);
+      expect(await pausedFor(owner)).not.toContain(link.share.id);
       expect((await auditOf(link.share.id)).map((a) => a.action)).not.toContain('share.resumed');
+    });
+
+    it("an owner's own link a restore paused, kept as their document is made Only me, stays theirs to turn back on (API-1)", async () => {
+      const deeds = await make('Owner deeds', 'household', owner);
+      const link = json<CreatedShare>(await share(deeds, { recipient_label: 'the surveyor' }));
+      expect((await takeBack(owner, link.share.id)).statusCode).toBe(204);
+      await restoredFromBefore(link.share.id);
+      expect(await pausedFor(owner)).toContain(link.share.id);
+      const hers = await h.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/documents/${deeds}`,
+        headers: h.as(owner),
+        payload: { owner_member_id: owner.member_id },
+      });
+      expect(hers.statusCode, hers.body).toBe(200);
+      const asked = await setVisibility(owner, deeds, 'private');
+      expect([asked.statusCode, code(asked)]).toEqual([409, 'links_choice_needed']);
+      const detail = JSON.parse(
+        json<{ error: { detail: string } }>(asked).error.detail,
+      ) as LinksChoiceNeeded;
+      expect(detail.links.map((l) => [l.id, l.will_end])).toEqual([[link.share.id, undefined]]);
+      const kept = await setVisibility(owner, deeds, 'private', 'keep');
+      expect(kept.statusCode, kept.body).toBe(200);
+      expect(json<VisibilityChange>(kept)).toMatchObject({
+        notice: { title: 'Only you, and the people your 1 link is for, can open this.' },
+        links: { yours: 1, yours_now: 'kept', others: 0 },
+      });
+      // Still paused, still the owner's to turn back on — and it sends again.
+      expect(await pausedFor(owner)).toContain(link.share.id);
+      expect((await resume(owner, link.share.id)).statusCode).toBe(200);
+      expect((await unlock(link.link_token)).statusCode).toBe(200);
     });
   });
 

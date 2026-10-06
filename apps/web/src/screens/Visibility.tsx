@@ -204,6 +204,9 @@ export function LinksChoiceDialog(props: {
 }) {
   const { ask } = props;
   const [keep, setKeep] = useState(false);
+  // Keep is offered while there is a link it would keep: one a restore
+  // paused ends either way (the fourth round, API-1).
+  const keepable = ask.keep_allowed && ask.links.some((l) => !l.will_end);
   return (
     <ConfirmDialog
       title="Your links to this document"
@@ -211,7 +214,7 @@ export function LinksChoiceDialog(props: {
       busyLabel="Saving…"
       busy={props.busy === true}
       {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
-      onConfirm={() => props.onChoose(keep && ask.keep_allowed ? 'keep' : 'end')}
+      onConfirm={() => props.onChoose(keep && keepable ? 'keep' : 'end')}
       onCancel={props.onCancel}
     >
       <p>{ask.message}</p>
@@ -226,16 +229,18 @@ export function LinksChoiceDialog(props: {
           <input
             type="radio"
             name="own-links"
-            checked={!keep || !ask.keep_allowed}
+            checked={!keep || !keepable}
             onChange={() => setKeep(false)}
           />
           <span>End these links</span>
         </label>
-        {ask.keep_allowed ? (
+        {keepable ? (
           <label className="row" style={{ gap: 8 }}>
             <input type="radio" name="own-links" checked={keep} onChange={() => setKeep(true)} />
             <span>Keep them: the people they are for can still open it</span>
           </label>
+        ) : ask.keep_allowed ? (
+          <p>They end either way.</p>
         ) : (
           <p>This household doesn’t share Only me documents outside the family, so they end.</p>
         )}
@@ -278,5 +283,10 @@ export function ownLinkWords(l: OwnLinkToEnd, timezone: string): string {
       : `asks for ${l.protection
           .map((p) => (p === 'pin' ? 'a PIN' : p === 'password' ? 'a password' : 'an emailed code'))
           .join(' and ')}`;
-  return `${who}${what}: ends ${shareEndWords(new Date(l.expires_at), timezone, { weekday: false })}; ${asks}.`;
+  // Paused after a restore, and not one the reader can turn back on: it
+  // ends whichever is chosen (the fourth round, API-1).
+  const either = l.will_end
+    ? ' It ends either way: paused after a restore, it cannot be turned back on while this is Only me.'
+    : '';
+  return `${who}${what}: ends ${shareEndWords(new Date(l.expires_at), timezone, { weekday: false })}; ${asks}.${either}`;
 }

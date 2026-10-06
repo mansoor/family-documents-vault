@@ -14,6 +14,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
 import {
+  can,
   canSee,
   mayChangeVisibilityAtAll,
   ONLY_ME_KEEP_REFUSED,
@@ -119,6 +120,15 @@ export class VisibilityService {
       const into = to === 'private' && doc.visibility !== 'private';
       const own = into ? await ownLinksServing(trx, p, documentId) : [];
       const others = into ? await othersLinksServing(trx, p, documentId) : 0;
+      // A link a restore paused waits for an owner to turn it back on (A55),
+      // and no owner can see somebody else's Only me document: for anybody
+      // but an owner, it can never send again once this is Only me. Named,
+      // it ends whichever is chosen; only a link that can send is kept, and
+      // said to be (the Phase 5 exit's fourth round, API-1).
+      const resumes = can(p.role, 'restore.review');
+      const canSend = (l: OwnLink) => l.paused_reason !== 'restored' || resumes;
+      let ending: OwnLink[] = [];
+      let kept: OwnLink[] = [];
       let yoursNow: 'ended' | 'kept' | null = null;
       if (own.length > 0) {
         const shareable = await onlyMeShareable(trx);
@@ -133,6 +143,7 @@ export class VisibilityService {
             collection_name: l.collection_name,
             expires_at: l.expires_at.toISOString(),
             protection: protectionOf(l),
+            ...(canSend(l) ? {} : { will_end: true }),
           }));
           throw new ApiError(
             409,
@@ -143,14 +154,16 @@ export class VisibilityService {
             { detail: JSON.stringify({ links, keep_allowed: shareable, others }) },
           );
         }
-        yoursNow = ownLinks === 'end' ? 'ended' : 'kept';
+        ending = ownLinks === 'end' ? own : own.filter((l) => !canSend(l));
+        kept = ownLinks === 'keep' ? own.filter(canSend) : [];
+        yoursNow = kept.length > 0 ? 'kept' : 'ended';
       }
       const prune: string[] = [];
-      if (yoursNow === 'ended') {
+      if (ending.length > 0) {
         // A document's link ends, as Take it back ends it — its code's
         // address with it; a collection's link leaves this one out, and
         // gives the rest as before.
-        const single = own.filter((l) => l.kind === 'document').map((l) => l.id);
+        const single = ending.filter((l) => l.kind === 'document').map((l) => l.id);
         if (single.length > 0) {
           await trx
             .updateTable('share_link')
@@ -160,7 +173,7 @@ export class VisibilityService {
             .execute();
           await endSessions(trx, single);
         }
-        const collections = own.filter((l) => l.kind === 'collection').map((l) => l.id);
+        const collections = ending.filter((l) => l.kind === 'collection').map((l) => l.id);
         if (collections.length > 0) {
           // Left out, as one not ticked when the link was made: it never
           // goes with this link again, whatever it is made later.
@@ -169,7 +182,9 @@ export class VisibilityService {
                        and document_id = ${documentId} and kind = 'ticked'`.execute(trx);
         }
         prune.push(
-          ...own.filter((l) => l.kind === 'document' && l.permission === 'view').map((l) => l.id),
+          ...ending
+            .filter((l) => l.kind === 'document' && l.permission === 'view')
+            .map((l) => l.id),
         );
       }
       const links = into ? { yours: own.length, yours_now: yoursNow, others } : undefined;
@@ -315,8 +330,8 @@ export class VisibilityService {
           ...(links
             ? {
                 links_others_stopped: others,
-                ...(yoursNow === 'ended' ? { links_ended: own.length } : {}),
-                ...(yoursNow === 'kept' ? { links_kept: own.length } : {}),
+                ...(ending.length > 0 ? { links_ended: ending.length } : {}),
+                ...(kept.length > 0 ? { links_kept: kept.length } : {}),
               }
             : {}),
         },
@@ -347,11 +362,18 @@ export class VisibilityService {
       // else made have stopped.
       const notice = yoursNow
         ? {
-            title: privateTitle(yoursNow, own.length),
+            // Who else can open it: the people the links kept are for, and
+            // only those that can send.
+            title:
+              yoursNow === 'kept'
+                ? privateTitle('kept', kept.length)
+                : privateTitle('ended', ending.length),
             body:
               (already
                 ? 'Nobody else in the family can open it.'
-                : VisibilityService.PRIVATE_NOTICE.body) + stoppedWords(others),
+                : VisibilityService.PRIVATE_NOTICE.body) +
+              (kept.length > 0 ? pausedEndedWords(ending.length) : '') +
+              stoppedWords(others),
           }
         : already
           ? null
@@ -383,6 +405,14 @@ function privateTitle(now: 'ended' | 'kept', n: number): string {
     : `Only you can open this. Your ${links} to it ${n === 1 ? 'has' : 'have'} ended.`;
 }
 
+/** " Your link paused after a restore has ended: …" — kept beside others that can send. */
+function pausedEndedWords(n: number): string {
+  if (n === 0) return '';
+  return n === 1
+    ? ' Your link paused after a restore has ended: no owner could turn it back on while this is Only me.'
+    : ` Your ${n} links paused after a restore have ended: no owner could turn them back on while this is Only me.`;
+}
+
 /** " The link someone else made to it has stopped." */
 function stoppedWords(others: number): string {
   if (others === 0) return '';
@@ -394,6 +424,8 @@ function stoppedWords(others: number): string {
 interface OwnLink {
   id: string;
   kind: 'document' | 'collection';
+  /** Paused, and why: a restore's ('restored'), or the household's rule's. */
+  paused_reason: string | null;
   recipient_label: string | null;
   collection_name: string | null;
   expires_at: Date;
@@ -414,16 +446,18 @@ interface OwnLink {
  */
 async function ownLinksServing(trx: Db, p: Principal, documentId: string): Promise<OwnLink[]> {
   const rows = await sql<OwnLink>`
-    select s.id, 'document' as kind, s.recipient_label, null as collection_name, s.expires_at,
-           s.permission, s.pin_hash, s.secret_kind, s.code_email
+    select s.id, 'document' as kind, s.paused_reason, s.recipient_label,
+           null as collection_name, s.expires_at, s.permission, s.pin_hash, s.secret_kind,
+           s.code_email
       from share_link s
      where s.document_id = ${documentId}
        and s.created_by = ${p.accountId}
        and s.revoked_at is null
        and s.expires_at > now() and s.attempts < 10
     union all
-    select s.id, 'collection' as kind, s.recipient_label, c.name as collection_name, s.expires_at,
-           s.permission, s.pin_hash, s.secret_kind, s.code_email
+    select s.id, 'collection' as kind, s.paused_reason, s.recipient_label,
+           c.name as collection_name, s.expires_at, s.permission, s.pin_hash, s.secret_kind,
+           s.code_email
       from share_link s
       join share_link_item t on t.share_id = s.id and t.document_id = ${documentId}
                             and t.kind = 'ticked'

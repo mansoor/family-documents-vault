@@ -3910,8 +3910,12 @@ only_me_not_shared`. The activity log says it, notable, to owners and
       its `detail` is JSON (`LinksChoiceNeeded`): each link's `id`, `kind`,
       `recipient_label`, `collection_name`, `expires_at` and `protection` —
       never a token — `keep_allowed`, and `others`, how many links somebody
-      else made stop with it. `end` ends a document's link as Take it back
-      does, and leaves the document out of a collection's link; `keep`
+      else made stop with it. A link a restore paused, for anybody but an
+      owner, is marked `will_end: true`: no owner can turn it back on while
+      the document is Only me, so it ends whichever is chosen, and `keep`
+      keeps, and the notice counts, only links that can send. `end` ends a
+      document's link as Take it back does, and leaves the document out of a
+      collection's link; `keep`
       leaves them; while the household does not share Only me documents
       outside the family, `keep` is `409 only_me_not_shared`. Links others
       made stop, as before. The answer (`VisibilityChange`) adds `links`

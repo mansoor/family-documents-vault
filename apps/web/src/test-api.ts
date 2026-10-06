@@ -1802,18 +1802,25 @@ export function installFakeApi(state: FakeState) {
         );
       }
       if (doc) doc.visibility = to;
-      if (own.length > 0 && ownLinks === 'end') state.ownLinks = [];
+      // Ended: all on End; on Keep, those that could never send (API-1).
+      if (own.length > 0 && ownLinks) {
+        state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+      }
       const firstTime = to === 'private' && !state.privateNoticeShown;
       if (firstTime) state.privateNoticeShown = true;
       const n = own.length;
+      // Only a link that can send is kept (the fourth round, API-1): one a
+      // restore paused, for anybody but an owner, ends whichever is chosen.
+      const kept = ownLinks === 'keep' ? own.filter((l) => !l.will_end).length : 0;
+      const ended = n - kept;
       return json({
         notice:
           n > 0
             ? {
                 title:
-                  ownLinks === 'keep'
-                    ? `Only you, and the people your ${n} link${n === 1 ? ' is' : 's are'} for, can open this.`
-                    : `Only you can open this. Your ${n} link${n === 1 ? '' : 's'} to it ${n === 1 ? 'has' : 'have'} ended.`,
+                  kept > 0
+                    ? `Only you, and the people your ${kept} link${kept === 1 ? ' is' : 's are'} for, can open this.`
+                    : `Only you can open this. Your ${ended} link${ended === 1 ? '' : 's'} to it ${ended === 1 ? 'has' : 'have'} ended.`,
                 body: 'Nobody else in the family can open it.',
               }
             : firstTime
@@ -1826,7 +1833,7 @@ export function installFakeApi(state: FakeState) {
           ? {
               links: {
                 yours: n,
-                yours_now: n > 0 ? (ownLinks === 'keep' ? 'kept' : 'ended') : null,
+                yours_now: n > 0 ? (kept > 0 ? 'kept' : 'ended') : null,
                 others: 0,
               },
             }
@@ -3247,7 +3254,7 @@ export function installFakeApi(state: FakeState) {
               { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
             );
           }
-          if (ownLinks === 'end') state.ownLinks = [];
+          state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
         }
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
         if (ifMatch && ifMatch !== doc.etag) {
