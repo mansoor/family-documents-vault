@@ -7,7 +7,9 @@ import { deriveSigningKey } from './auth/tokens.js';
 import { buildApp } from './app.js';
 import { loadConfig, type ApiConfig } from './config.js';
 import { PgBoss } from 'pg-boss';
+import { proposalPool } from './documents/proposal-pool.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
+import { stopApi } from './shutdown.js';
 import { VisibilityService } from './documents/visibility.js';
 import { TypeService } from './documents/types.js';
 import { CollectionService } from './collections/service.js';
@@ -256,9 +258,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
-    await app.close();
-    await boss.stop({ graceful: false });
-    await db.destroy();
+    await stopApi({ proposals: proposalPool, app, boss, db });
     process.exit(0);
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

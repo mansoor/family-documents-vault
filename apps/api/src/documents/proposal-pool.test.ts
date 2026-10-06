@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker, type WorkerOptions } from 'node:worker_threads';
 import { createPool } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import { proposeDetails, type DetailSuggestions, type ProposalContext } from '@fdv/shared';
@@ -58,7 +59,8 @@ const CTX: ProposalContext = {
 /**
  * A thread that stands in for the rules: it answers at once — unless the
  * page says SPIN, when it never answers at all, as a page made to be slow
- * would not.
+ * would not; EXIT, when it stops; or ENV, when it answers with the names
+ * in its environment.
  */
 const CANNED = { type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' } };
 const STAND_IN = new URL(
@@ -66,11 +68,58 @@ const STAND_IN = new URL(
 import { parentPort } from 'node:worker_threads';
 parentPort.on('message', (job) => {
   if (job.text.includes('SPIN')) for (;;) {}
-  parentPort.postMessage({ id: job.id, proposal: ${JSON.stringify(CANNED)} });
+  if (job.text.includes('EXIT')) process.exit(1);
+  const proposal = job.text.includes('ENV') ? { env: Object.keys(process.env) } : ${JSON.stringify(CANNED)};
+  parentPort.postMessage({ id: job.id, proposal });
 });
 parentPort.postMessage({ ready: true });
 `)}`,
 );
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Makes threads as Node does — or, while `fail` is set, throws as
+ * `new Worker` does under thread, process or memory pressure.
+ */
+function workerMaker() {
+  const maker = {
+    fail: false,
+    calls: 0,
+    create: (code: string, options: WorkerOptions) => {
+      maker.calls += 1;
+      if (maker.fail) {
+        throw Object.assign(new Error('Worker initialization failure: 11'), {
+          code: 'ERR_WORKER_INIT_FAILED',
+        });
+      }
+      return new Worker(code, options);
+    },
+  };
+  return maker;
+}
+
+/** The pool's warnings, and anything thrown that nothing caught, while a test runs. */
+function watching() {
+  const warned: string[] = [];
+  const uncaught: unknown[] = [];
+  const onWarning = (w: Error) => {
+    if (w.name === 'FdvWarning') warned.push(w.message);
+  };
+  const onUncaught = (e: unknown) => uncaught.push(e);
+  process.on('warning', onWarning);
+  process.on('uncaughtException', onUncaught);
+  return {
+    warned,
+    uncaught,
+    // A warning is emitted on the next tick.
+    settle: () => new Promise((r) => setImmediate(r)),
+    off: () => {
+      process.off('warning', onWarning);
+      process.off('uncaughtException', onUncaught);
+    },
+  };
+}
 
 describe('the proposal thread (5.37, N537P-01)', () => {
   it('proposes on its own thread what proposeDetails proposes', async () => {
@@ -140,7 +189,7 @@ describe('the proposal thread (5.37, N537P-01)', () => {
     }
   }, 30_000);
 
-  it('bundled, as the image runs it: the thread is dist/proposal-worker.mjs beside the server', async () => {
+  it('bundled, as the image runs it: the thread is dist/proposal-worker.mjs beside the server, and a script that proposes once exits on its own (R2-02)', async () => {
     const dir = path.join(API_DIR, 'dist', `test-proposals-${randomUUID().slice(0, 8)}`);
     await mkdir(dir, { recursive: true });
     try {
@@ -151,10 +200,10 @@ describe('the proposal thread (5.37, N537P-01)', () => {
           `import { readFileSync } from 'node:fs';`,
           `import { ProposalPool } from '${pool.split(path.sep).join('/')}';`,
           `const { text, ctx } = JSON.parse(readFileSync(new URL('./input.json', import.meta.url), 'utf8'));`,
+          // Kept awake while it waits for its answer, then nothing: no close.
           `const awake = setInterval(() => undefined, 1000);`,
           `const pool = new ProposalPool();`,
           `console.log(JSON.stringify(await pool.propose(text, ctx)));`,
-          `await pool.close();`,
           `clearInterval(awake);`,
         ].join('\n'),
       );
@@ -170,15 +219,134 @@ describe('the proposal thread (5.37, N537P-01)', () => {
           stdio: 'ignore',
         });
       }
+      // The idle thread never keeps the process alive: it ends by itself.
       const out = execFileSync(process.execPath, [path.join(dir, 'server.mjs')], {
         cwd: API_DIR,
         encoding: 'utf8',
+        timeout: 20_000,
       });
       expect(JSON.parse(out.trim())).toEqual(proposeDetails(PASSPORT, CTX));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 120_000);
+});
+
+describe('the proposal thread when it cannot be made (5.37, R2-01, R2-02, R2-03)', () => {
+  it('a thread that cannot be made answers nothing, never a rejection; the pool rests, then recovers', async () => {
+    const maker = workerMaker();
+    maker.fail = true;
+    const pool = new ProposalPool({ entry: STAND_IN, restMs: 300, createWorker: maker.create });
+    const seen = watching();
+    try {
+      await expect(pool.propose('a page', CTX)).resolves.toBeNull();
+      await seen.settle();
+      expect(seen.warned).toHaveLength(1);
+      expect(seen.warned[0]).toMatch(/would not start: Worker initialization failure/);
+      // Resting: answered at once, and nothing tried.
+      await expect(pool.propose('a page', CTX)).resolves.toBeNull();
+      expect(maker.calls).toBe(1);
+      // With nothing asked, nothing is tried, and the rest ends by itself.
+      maker.fail = false;
+      await sleep(400);
+      expect(maker.calls).toBe(1);
+      // The next page asked for gets a new thread.
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+      expect(maker.calls).toBe(2);
+      expect(seen.warned).toHaveLength(1);
+      expect(seen.uncaught).toEqual([]);
+    } finally {
+      seen.off();
+      await pool.close();
+    }
+  }, 30_000);
+
+  it('a thread that cannot be made again after a deadline kill: the page queued behind is answered with nothing, and the process lives', async () => {
+    const maker = workerMaker();
+    const pool = new ProposalPool({
+      entry: STAND_IN,
+      deadlineMs: 300,
+      restMs: 300,
+      createWorker: maker.create,
+    });
+    const seen = watching();
+    try {
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+      maker.fail = true;
+      const slow = pool.propose('SPIN', CTX);
+      const queued = pool.propose('a page', CTX);
+      // The restart from the deadline's timer throws: answered, not thrown.
+      expect(await slow).toBeNull();
+      expect(await queued).toBeNull();
+      await seen.settle();
+      expect(pool.ended).toBe(1);
+      expect(maker.calls).toBe(2);
+      expect(seen.warned).toHaveLength(1);
+      expect(seen.uncaught).toEqual([]);
+      // After the rest, with the machine able again, a new thread.
+      maker.fail = false;
+      await sleep(350);
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+    } finally {
+      seen.off();
+      await pool.close();
+    }
+  }, 30_000);
+
+  it('a thread that stops by itself and cannot be made again: the page queued behind is answered with nothing', async () => {
+    const maker = workerMaker();
+    const pool = new ProposalPool({ entry: STAND_IN, restMs: 300, createWorker: maker.create });
+    const seen = watching();
+    try {
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+      maker.fail = true;
+      const dying = pool.propose('EXIT', CTX);
+      const queued = pool.propose('a page', CTX);
+      expect(await dying).toBeNull();
+      expect(await queued).toBeNull();
+      await seen.settle();
+      expect(seen.warned).toHaveLength(1);
+      expect(seen.uncaught).toEqual([]);
+    } finally {
+      seen.off();
+      await pool.close();
+    }
+  }, 30_000);
+
+  it('a page that cannot be sent to the thread is answered with nothing, and the next is sent', async () => {
+    const pool = new ProposalPool({ entry: STAND_IN });
+    try {
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+      // A function cannot be copied to another thread: postMessage throws.
+      const unsendable = { ...CTX, people: [{ id: 'm', name: 'Sarah', toJSON: () => 1 }] };
+      await expect(pool.propose('a page', unsendable as ProposalContext)).resolves.toBeNull();
+      expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+    } finally {
+      await pool.close();
+    }
+  }, 30_000);
+
+  it('close answers the page on the thread at once, not at its deadline (R2-02)', async () => {
+    const pool = new ProposalPool({ entry: STAND_IN, deadlineMs: 10_000 });
+    expect(await pool.propose('a page', CTX)).toEqual(CANNED);
+    const started = Date.now();
+    const slow = pool.propose('SPIN', CTX);
+    await sleep(50);
+    await pool.close();
+    expect(await slow).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2_000);
+  }, 30_000);
+
+  it('the thread holds none of the environment: no master key, no database address (R2-03)', async () => {
+    process.env.FDV_TEST_SECRET = 'not for the thread';
+    const pool = new ProposalPool({ entry: STAND_IN });
+    try {
+      expect(await pool.propose('ENV', CTX)).toEqual({ env: [] });
+    } finally {
+      delete process.env.FDV_TEST_SECRET;
+      await pool.close();
+    }
+  }, 30_000);
 });
 
 const PDF = Buffer.from(

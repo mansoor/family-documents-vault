@@ -3698,9 +3698,10 @@ guest_always_limited`. A guest owns no document, by any path — made,
       the pages; `unavailable` with no file, or a kind of file it does not
       read — and when the proposal could not be made in time: it is made
       on a thread of the API's own, one page at a time, and a page that
-      takes more than a second, or finds eight waiting, is answered
-      `unavailable`, never an error, while every other request is answered
-      as usual. `proposal` is `{}` unless `ready`, and often then. Offered,
+      takes more than a second, finds eight waiting, or finds that the
+      thread cannot be started (it is tried again ten seconds later), is
+      answered `unavailable`, never an error, while every other request is
+      answered as usual. `proposal` is `{}` unless `ready`, and often then. Offered,
       never filled in: nothing is written, and neither the words nor the
       proposal is kept or logged (`Cache-Control: no-store`). An Only me
       document's words are opened only in its owner's own request (404 to
