@@ -223,10 +223,16 @@ async function main() {
   await join('tariq', 'Tariq', 'teen');
   // A viewer limited to Ahmed's tax papers: what the demonstration widens
   // to his Adults only ones too, which takes an owner's two-step sign-in.
-  await join('vera', 'Vera', 'viewer', {
+  const vera = await join('vera', 'Vera', 'viewer', {
     relationship: 'the family’s accountant',
     restriction: { people: [people.ahmed.member_id], types: ['tax_return'] },
   });
+  // The day's reminders by email, for the owner and Vera: off unless asked
+  // for, and the demonstration reads both digests in its mail.
+  for (const token of [t, vera.access_token]) {
+    await call('PUT', '/notifications/preferences', { token, body: { daily_email: true } });
+  }
+  console.log('  turned on the day’s reminders by email for the owner and Vera');
 
   // The papers.
   const me = await call('GET', '/me', { token: t });
@@ -263,7 +269,8 @@ async function main() {
     {
       title: 'House deed, 14 Elm Street',
       type_key: 'property_deed',
-      owner_member_id: null,
+      // The owner's: on her page, and hers to make Only me.
+      owner_member_id: me.member_id,
       visibility: 'household',
       issued: { date: '2016-09-30', precision: 'day' },
       physical_location: 'Study, the fire safe',

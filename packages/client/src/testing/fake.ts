@@ -3642,6 +3642,10 @@ export function createFakeVault(): {
       }
       if (part === 'only_me' && !self) return fail(404, 'not_found', 'That page does not exist.');
       if (!canEditIdentity(me, { id }, part)) return fail(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
+      // Another person's, an owner's to write, is an owner power (5.41).
+      if (!self && !state.ownerTwoStep) {
+        return needsTwoStep("to change another person's identity details");
+      }
       const kept = record[part];
       const version = kept?.version ?? 0;
       if (b.version !== version) {

@@ -433,6 +433,23 @@ export class IdentityService {
    * they are asked who they are: whose it is (`self`), or 404. Another
    * person's Only me part is not there for anybody.
    */
+  /**
+   * Whether the caller may write this part of this person's record, before
+   * anything else is asked (the route then asks an owner power for another
+   * person's): 404 for a record not there for them, 403 for one they may
+   * read and not change. `put` asks it all again, under its lock.
+   */
+  async mayWrite(p: Principal, requested: string, part: IdentityPart): Promise<{ self: boolean }> {
+    return withPrincipal(this.db, p, async (trx) => {
+      const subject = await this.subject(trx, p, requested);
+      if (part === 'only_me' && !subject.self) throw notFound();
+      if (!canEditIdentity({ role: p.role, memberId: p.memberId }, subject, part)) {
+        throw new ApiError(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
+      }
+      return { self: subject.self };
+    });
+  }
+
   async mayReveal(p: Principal, requested: string, part: IdentityPart): Promise<{ self: boolean }> {
     return withPrincipal(this.db, p, async (trx) => {
       const subject = await this.subject(trx, p, requested);

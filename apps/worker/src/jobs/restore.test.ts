@@ -1992,6 +1992,26 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     // review, N534A-03), not the default 15 s.
   }, 120_000);
 
+  it('notices the guards that keep a lock with a sign-in taken away gone (0059)', async () => {
+    for (const [table, trigger] of [
+      ['account_household', 'account_household_keep_suspension'],
+      ['member', 'member_former_suspension'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        expect(refused, trigger).not.toMatch(new RegExp(`\\b${trigger}\\b`));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {
@@ -2667,6 +2687,25 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         ).rows[0]?.id as string;
       const sarasLink = await linkBy(await account(sara));
       const ownersLink = await linkBy(owner);
+      // Tariq's sign-in was taken away when the backup was made; Lina's too,
+      // while she was locked (0059): each kept with the person.
+      const tariq = await signedIn(live.adminUrl, hh, 'Tariq', 'teen');
+      const lina = await signedIn(live.adminUrl, hh, 'Lina', 'adult');
+      for (const [person, locked] of [
+        [tariq, false],
+        [lina, true],
+      ] as const) {
+        await sql(
+          live.adminUrl,
+          `update member m set former_account_id = a.account_id,
+                  former_suspended_at = case when $2 then now() end,
+                  former_suspend_reason = case when $2 then 'locked' end,
+                  former_suspended_until = case when $2 then now() + interval '3 days' end
+             from account_household a where a.member_id = m.id and m.id = $1`,
+          [person, locked],
+        );
+        await sql(live.adminUrl, 'delete from account_household where member_id = $1', [person]);
+      }
       for (const link of [sarasLink, ownersLink]) {
         await sql(
           live.adminUrl,
@@ -2749,6 +2788,20 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
                 (select count(*)::int from share_session) as link_sessions`,
       );
       expect(left.rows[0]).toEqual({ sessions: 0, link_sessions: 0 });
+      // A sign-in taken away when the backup was made waits for an owner
+      // too, once given back — a lock put on it since could not otherwise be
+      // known — and one taken away locked stays locked, its end gone, as a
+      // lock kept on a sign-in does.
+      const kept = await sql(
+        t.adminUrl,
+        `select display_name as name, former_suspend_reason as reason,
+                former_suspended_until is not null as ends
+           from member where former_account_id is not null order by display_name`,
+      );
+      expect(kept.rows).toEqual([
+        { name: 'Lina', reason: 'locked', ends: false },
+        { name: 'Tariq', reason: 'restored', ends: false },
+      ]);
       // And a link asking as itself reaches nothing while it waits.
       for (const link of [sarasLink, ownersLink]) {
         const reached = await withClient(t.appUrl, async (c) => {

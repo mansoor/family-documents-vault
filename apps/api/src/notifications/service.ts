@@ -233,23 +233,38 @@ export class NotificationService {
           session_id: p.sessionId,
         })
         .onConflict((oc) =>
-          oc.column('endpoint').doUpdateSet({
-            account_id: p.accountId,
-            household_id: p.householdId,
-            // Signed in again: it follows the new session (and ends with it).
-            session_id: p.sessionId,
-            kind: input.kind,
-            installation_id: installation,
-            p256dh: input.keys.p256dh,
-            auth: input.keys.auth,
-            failed_at: null,
-            fail_reason: null,
-            consecutive_failures: 0,
-            user_agent: meta.userAgent ?? null,
-          }),
+          oc
+            .column('endpoint')
+            .doUpdateSet({
+              account_id: p.accountId,
+              household_id: p.householdId,
+              // Signed in again: it follows the new session (and ends with it).
+              session_id: p.sessionId,
+              kind: input.kind,
+              installation_id: installation,
+              p256dh: input.keys.p256dh,
+              auth: input.keys.auth,
+              failed_at: null,
+              fail_reason: null,
+              consecutive_failures: 0,
+              user_agent: meta.userAgent ?? null,
+            })
+            // Only one's own (the Phase 5 exit's review, E541-02): an address
+            // somebody else registered is never taken over — their lock, or
+            // their sign-out, must still reach their phone. Asked before the
+            // database's rules are, so a limited caller is refused as anybody
+            // is, never with a server error.
+            .where('device.account_id', '=', p.accountId),
         )
         .returning(['id', 'created_at'])
-        .executeTakeFirstOrThrow();
+        .executeTakeFirst();
+      if (!row) {
+        throw new ApiError(
+          409,
+          'device_taken',
+          'This device already gets somebody else’s notifications from this vault. Turn notifications off on it, then on again.',
+        );
+      }
       await trx
         .insertInto('notification_preference')
         .values({ account_id: p.accountId, household_id: p.householdId })

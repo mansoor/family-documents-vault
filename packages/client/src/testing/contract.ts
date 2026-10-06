@@ -1474,6 +1474,27 @@ export const contractScenarios: Scenario[] = [
         message: 'Turn on two-step sign-in to change who can see identity details.',
       });
       expect((await api.identityAudience(token)).pending).toBeNull();
+      // Nor, since the Phase 5 exit, does a password alone write another
+      // person's details (A54): refused, and nothing written.
+      const other = await ctx.addSignIn(token, {
+        name: 'Identity Adult',
+        email: 'identity-adult@example.test',
+        password: 'another correct horse',
+        role: 'adult',
+      });
+      const overwritten = await refusal(
+        api.updateIdentity(token, other, {
+          part: 'shared',
+          version: 0,
+          fields: { given_name: 'Overwritten' },
+        }),
+      );
+      expect(overwritten).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: "Turn on two-step sign-in to change another person's identity details.",
+      });
+      expect((await api.identity(token, other)).versions.shared).toBe(0);
     },
   },
   {

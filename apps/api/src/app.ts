@@ -244,6 +244,18 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
       void reply.status(422).send(refused.toBody(req.id));
       return;
     }
+    // A locked or paused sign-in deleted without its lock kept with the
+    // person (0059's FDV05): the API keeps it first; anything that did not
+    // is answered as the conflict it is, never as the server's fault.
+    if (pgCode === 'FDV05') {
+      const refused = new ApiError(
+        409,
+        'sign_in_suspended',
+        'That sign-in is locked or paused. An owner unlocks it, or turns it back on, first.',
+      );
+      void reply.status(409).send(refused.toBody(req.id));
+      return;
+    }
     if (pgCode === '22021' || pgCode === '22P05') {
       const refused = new ApiError(
         422,

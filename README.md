@@ -132,14 +132,17 @@ recorded as that one address.
 
 **A proxy of your own must pass the vault's headers on as they are.** The web container
 sends a `Content-Security-Policy` with every page: `script-src 'self'; object-src 'none';
-base-uri 'none'` for the app, and a stricter one (nothing loaded from anywhere else, no
-framing, no forms) with `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`
-and `X-Frame-Options: DENY` on the pages people outside the family open (`/s`, `/shared/…`,
-`/drop`); the API adds a sandbox policy to everything under `/api/v1/shared` and
-`/api/v1/drop`. Do not replace, loosen or drop them, and turn off anything in a proxy or a
-CDN that adds a script to pages (analytics, "email address obfuscation", script
-optimisers): the policy blocks it, and the page breaks. They are a second line of defence
-behind the app, which never draws a note or a file as HTML.
+base-uri 'none'` for the app, and a stricter one (no framing, no forms, and nothing loaded
+from anywhere but the vault itself and Google Fonts) with `Referrer-Policy: no-referrer`,
+`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` on the pages people outside
+the family open (`/s`, `/shared/…`, `/drop`); the API adds a sandbox policy to everything
+under `/api/v1/shared` and `/api/v1/drop`. Those pages, like the app, load their fonts
+from Google Fonts (`fonts.googleapis.com`, `fonts.gstatic.com`): the browser of somebody
+you send a link to asks Google for them, with no referrer. Do not replace, loosen or drop
+the headers, and turn off anything in a proxy or a CDN that adds a script to pages
+(analytics, "email address obfuscation", script optimisers): the policy blocks it, and the
+page breaks. They are a second line of defence behind the app, which never draws a note or
+a file as HTML.
 
 ### Links for people outside the family
 
@@ -330,7 +333,6 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_SMTP_URL`                                  | unset                                     | Your own mail server for password-reset links and the codes a share link can ask for, e.g. `smtps://user:app-password@smtp.fastmail.com:465`. Set it on the API and the worker. See [Passwords](#passwords).            |
 | `FDV_SMTP_FROM`                                 | `Family Document Vault <vault@localhost>` | Who those emails come from.                                                                                                                                                                                             |
 | `FDV_PUSH_ALLOW_PRIVATE_ENDPOINTS`              | `false`                                   | Let notifications go to addresses inside your own network — a UnifiedPush distributor (ntfy) on your LAN. Set it on both the API and the worker. See [Notifications on the phone app](#notifications-on-the-phone-app). |
-| `FDV_MASTER_KEY_FILE`                           | unset                                     | A file holding the master key, in place of `FDV_MASTER_KEY` (a Docker secret, say). One of the two must be set.                                                                                                         |
 | `FDV_RP_ID`                                     | the host of `FDV_BASE_URL`                | The domain passkeys belong to. Leave it unset unless the vault is served from a subdomain of a name the passkeys should work across.                                                                                    |
 | `FDV_TLS_EMAIL`                                 | unset                                     | Your address for Let's Encrypt, with `Caddyfile.public` or the public-only site.                                                                                                                                        |
 | `FDV_HTTPS_PORT`                                | `443`                                     | The port the TLS overlay's Caddy listens on for `https://`.                                                                                                                                                             |
@@ -338,11 +340,17 @@ All configuration is through environment variables in `.env` (see [`.env.example
 | `FDV_OCR_MAX_PAGES`                             | `20`                                      | How many pages of a PDF the worker reads (1 to 200): by the PDF's own text, and by OCR only where a page is a scan. The rest of a longer file is kept, but its words are not searched or suggested from.                |
 | `FDV_DIGEST_HOUR`                               | `9`                                       | The household's local hour for the day's reminders (0 to 23).                                                                                                                                                           |
 | `FDV_WEEKLY_HOUR`                               | `18`                                      | The local hour on Sunday for the weekly email summary (0 to 23).                                                                                                                                                        |
-| `FDV_BACKUP_CRON`                               | `30 2 * * *`                              | When the worker writes the nightly encrypted database backup (cron, in the server's time).                                                                                                                              |
+| `FDV_BACKUP_CRON`                               | `30 2 * * *`                              | When the worker writes the nightly encrypted database backup (cron, in UTC).                                                                                                                                            |
 | `FDV_BACKUP_RETAIN_DAYS`                        | `30`                                      | How many days of backups are kept in `/data/backups` (1 to 365).                                                                                                                                                        |
 | `FDV_VAPID_PUBLIC_KEY`, `FDV_VAPID_PRIVATE_KEY` | generated                                 | The keys notifications are signed with. `gen-env` makes them; changing them silences every device until it turns notifications on again.                                                                                |
 | `FDV_VAPID_SUBJECT`                             | `mailto:vault@example.invalid`            | The contact push services are given for those keys.                                                                                                                                                                     |
-| `FDV_RUN_MIGRATIONS`                            | `true`                                    | Whether the API applies database migrations as it starts. Leave it on.                                                                                                                                                  |
+
+Two more are read by the API and worker images, but `docker-compose.yml` does not pass
+them from `.env`: they are for running the images some other way. `FDV_MASTER_KEY_FILE`
+names a file holding the master key, read in place of `FDV_MASTER_KEY` (a Docker secret,
+say); the compose file requires `FDV_MASTER_KEY` itself, so using a key file means a
+compose file of your own. `FDV_RUN_MIGRATIONS=false` leaves the API's start without
+migrating, for when something else migrates the database first; the default is `true`.
 
 Health endpoints, for your monitoring: `/healthz` (the API process is up) and `/readyz` (it can reach the database).
 
@@ -628,7 +636,7 @@ The honest limit: someone who controls the whole server can read everything. For
 Three things make up a complete backup:
 
 1. **Your `.env`** — it holds the master key. Keep a copy off the server. Without it, nothing else below is readable.
-2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own. From 0.5.8 an Only me document's notes and details are sealed under their owner's key, as its pages always were; backups made before then keep them unsealed until they rotate out.
+2. **The database** — the worker writes an encrypted `pg_dump` every night (`FDV_BACKUP_CRON`, default 02:30 UTC) into the `fdv_vault-data` volume under `/data/backups`, keeping `FDV_BACKUP_RETAIN_DAYS` (30) days. Copy that folder somewhere else on a schedule of your own. From 0.5.8 an Only me document's notes and details are sealed under their owner's key, as its pages always were; backups made before then keep them unsealed until they rotate out.
 3. **The files** — the `fdv_vault-data` volume (`/data/vault`) for the local vault, or your bucket. They are ciphertext; the master key and the database together open them.
 
 Useful commands (run inside the worker container):
@@ -793,10 +801,10 @@ Images are version-tagged, and `latest` is the newest release (a milestone or a 
 
 0.6.0 follows 0.4.5 as the release `latest` points to (the 0.5.x tags between them were
 development builds; from one of those, the same steps apply). Its migrations (`0022` to
-`0058`) run by themselves the first time the new API starts, in one go; nothing needs
-doing by hand.
-0.4.5 has no guard against a database a newer release has upgraded, so **never start the
-0.4.5 images on it again**: going back means restoring the backup below with them.
+`0059`) run by themselves the first time the new API starts, in one go; nothing needs
+doing by hand. 0.4.5 has no guard against a database a newer release has upgraded, so
+**never start the 0.4.5 images on it again**: going back means restoring the backup below
+with them.
 
 1. **Take a backup, and copy it off the server**, with your `.env` beside it:
 
@@ -808,7 +816,23 @@ doing by hand.
    (`fdv-<time>.sql.enc`); `docker compose cp worker:/data/backups ./backups` copies the
    folder out.
 
-2. **Rehearse the restore.** `docker compose exec worker sh scripts/restore-drill.sh`
+2. **Bring the files beside `.env` up to the release.** The images are not all of it:
+   `docker-compose.yml`, `docker-compose.tls.yml` and the `docker/` folder (the Caddy
+   files) come from your folder, and 0.4.5's would leave the new settings unpassed and the
+   TLS overlay as it was. In a clone (your `.env` is not in git, and stays):
+
+   ```bash
+   git fetch --tags && git checkout v0.6.0
+   ```
+
+   Otherwise download `docker-compose.yml`, `docker-compose.tls.yml`,
+   `docker-compose.dev.yml` and the `docker/` folder from the v0.6.0 release into the
+   folder, keeping `.env`. The TLS overlay now needs Docker Compose 2.24.4 or later
+   (`docker compose version`), for its `!override`. If you run the public-only site, every
+   `docker compose` command from here on takes `--profile public-only` too, with the
+   overlay's `-f` files.
+
+3. **Rehearse the restore.** `docker compose exec worker sh scripts/restore-drill.sh`
    restores the newest backup into a scratch database beside yours, checks it, and drops
    it. To rehearse the upgrade itself, do the same with the new images in a project of its
    own, which shares nothing with your vault but the backup file and `.env`:
@@ -824,27 +848,41 @@ doing by hand.
    rehearsal (it would send real reminders from restored data), and only ever use
    `down -v` with `-p fdvrehearse`.
 
-3. **Upgrade.** Set `FDV_VERSION=0.6.0` in `.env`, then:
+4. **Upgrade.** Set `FDV_VERSION=0.6.0` in `.env`, then:
 
    ```bash
    docker compose pull
    docker compose up -d
    ```
 
-   Give every command the same `-f` files you always use (the TLS overlay's, say). The API
+   Give every command the same `-f` files (and `--profile`) you always use. The API
    migrates the database as it starts, and the worker and the web app wait for it.
 
-4. **What to look at afterwards.** Every document, person and setting is as it was. What
-   is new needs no setting, with three exceptions worth a minute: `FDV_SMTP_URL` (a mail server of yours, for password-reset links and the codes a
-   share link can ask for: see [Passwords](#passwords)); `FDV_PUBLIC_URL` and the
-   public-only site, for share links and requests to send documents that reach people
-   outside your network (see
+5. **Two changes that can break a 0.4.5 setup.**
+   - **With the TLS overlay, `:8080` now answers this machine only** (it is bound to
+     `127.0.0.1`). A device that still opens `http://<the server's address>:8080` beside
+     the Caddy name stops reaching the vault: give it the `https://` address instead, or
+     run without the overlay.
+   - **Whose address is believed changed.** `FDV_TRUST_PROXY` now defaults to `network`,
+     and the web container's nginx passes on the address a request came from, never what
+     a caller wrote in `X-Forwarded-For`. With a reverse proxy of your own in front of
+     `:8080`, every device is now recorded as the proxy, and shares one sign-in limit with
+     every other: use the TLS overlay for the certificate instead, or put your proxy on the
+     vault's own network in front of the API, as [Who is asking](#who-is-asking) says.
+     `FDV_TRUST_PROXY=private` does not bring the old behaviour back for a proxy in front of
+     `:8080`.
+
+6. **What to look at afterwards.** Every document, person and setting is as it was. What
+   is new needs no setting, with three exceptions worth a minute: `FDV_SMTP_URL` (a mail
+   server of yours, for password-reset links and the codes a share link can ask for: see
+   [Passwords](#passwords)); `FDV_PUBLIC_URL` and the public-only site, for share links and
+   requests to send documents that reach people outside your network (see
    [Links for people outside the family](#links-for-people-outside-the-family)); and
    two-step sign-in or a passkey for every owner, without which an owner cannot lock a
-   sign-in, start a reset, sign somebody out everywhere or limit what a viewer sees.
-   A viewer who already had a sign-in keeps seeing the family's documents until an owner
-   limits them (People → their name → Account); no viewer sees birthdays, the household's
-   answers, or where the paper originals are kept.
+   sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees or change
+   another person's identity details. A viewer who already had a sign-in keeps seeing the
+   family's documents until an owner limits them (People → their name → Account); no viewer
+   sees birthdays, the household's answers, or where the paper originals are kept.
 
 ## Developing
 

@@ -1,7 +1,21 @@
 import { z } from 'zod';
 
+/**
+ * The levels a line is written at, least to most said: every one the API
+ * takes (compose passes LOG_LEVEL to both), so `trace` or `fatal` never stops
+ * the worker (the Phase 5 exit's review, D541-06).
+ */
+export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/** Whether a line at `level` is written when the worker is set to `setting`. */
+export function logs(setting: LogLevel, level: string): boolean {
+  const at = LOG_LEVELS.indexOf(level as LogLevel);
+  return at >= 0 && at <= LOG_LEVELS.indexOf(setting);
+}
+
 const schema = z.object({
-  LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
+  LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
   DATABASE_URL: z.string().min(1).describe('Connection string for the application role.'),
   FDV_MASTER_KEY: z.string().min(32).optional(),
   FDV_MASTER_KEY_FILE: z.string().min(1).optional(),

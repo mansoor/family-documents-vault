@@ -496,7 +496,11 @@ export function createApi(http: Http) {
      * A whole part, made from the `version` it was read at (0 for one never
      * written): a part moved on since is `409 conflict`. Leave out a masked
      * value to keep it; null clears it. Another person's Only me part is
-     * `404`; who may not change this part, `403`.
+     * `404`; who may not change this part, `403`. Since the Phase 5 exit
+     * (0.6.0), an owner writing another person's shared part uses an owner
+     * power (A54): `403 step_up_required` with `change_identity`, a passkey
+     * or a code, never the password; without either, `403
+     * totp_required_for_owner`.
      */
     updateIdentity: (token: string, memberId: string, body: IdentityWrite) =>
       request<IdentityView>(`/api/v1/members/${enc(memberId)}/identity`, {

@@ -38,6 +38,7 @@ export type StepUpAction =
   | 'manage_sign_ins'
   | 'open_identity'
   | 'reveal_identity'
+  | 'change_identity'
   | 'identity_audience'
   | 'limit_access'
   | 'renew_guest';
@@ -80,6 +81,10 @@ const WHY: Record<StepUpAction, string> = {
   // Showing one's own identity numbers (5.26): any credential, as opening
   // an Only me document asks.
   reveal_identity: 'to see your identity numbers',
+  // Writing another person's identity details (an owner, their shared
+  // part): an owner power since the Phase 5 exit's review (A54), so one
+  // phished password cannot overwrite everybody's passport numbers.
+  change_identity: "to change another person's identity details",
   // Who reads other people's identity details (5.26, A34, A54).
   identity_audience: 'to change who can see identity details',
   // What a viewer can see, limited, changed or let go (5.33): an owner

@@ -114,7 +114,9 @@ type Kind =
   | 'uploadKey'
   | 'dropFile'
   | 'dropToken'
-  | 'page';
+  | 'page'
+  /** Not a parameter: another account's push address, sent in a body. */
+  | 'deviceEndpoint';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -190,6 +192,11 @@ interface Rule {
   theirs?: Partial<Record<Attacker, string>>;
   /** Attackers who do not try it, and why. */
   skip?: Partial<Record<Attacker, string>>;
+  /**
+   * Attackers whose victims here are others than their usual ones: by kind,
+   * names of the fixture's ids (`ids[name]`).
+   */
+  victims?: Partial<Record<Attacker, Partial<Record<Kind, string[]>>>>;
 }
 
 /** What a route says to a caller whose sign-in no longer works. */
@@ -209,6 +216,14 @@ const NOBODY = 'nobody-541@example.test';
 const OLD_OWNER_POWER =
   'an owner power from before Phase 5, asked with any credential (SEC-17), which A54 left as it was';
 
+/**
+ * An owner takes a sign-in away and gives it back with any credential
+ * (SEC-17): a lock, or a restore's pause, goes with the person and comes
+ * back with it (0059), so neither lifts what only an owner power does.
+ */
+const SIGN_IN_KEEPS_LOCK =
+  'an owner takes a sign-in away and gives it back; a lock or a pause comes back with it (0059)';
+
 /** Adults manage the kinds of document the family keeps, owners included (A6). */
 const ADULTS_TYPES = {
   otherAdult: 'adults manage the kinds of document (A6)',
@@ -221,7 +236,7 @@ const FAMILY_SUGGESTIONS = {
 } as const;
 /** Owners read and write everybody's shared identity part, masked (A33); never an Only me part. */
 const OWNERS_SHARED_IDENTITY =
-  "owners read and write everybody's shared part, its numbers masked (A33); never an Only me part";
+  "owners read everybody's shared part, its numbers masked (A33); never an Only me part";
 
 /**
  * Every route's rule. A route the router has and this does not fails the
@@ -459,14 +474,21 @@ const RULES: Record<string, Rule> = {
     skip: { passwordOnlyOwner: OLD_OWNER_POWER },
   },
   'POST /api/v1/me/step-down': { who: 'owners', body: () => ({ role: 'adult' }), last: true },
+  // An owner takes a sign-in away, and gives it back, with any credential:
+  // the password-only owner tries both on somebody locked and somebody paused
+  // after a restore — given back last, after the taking away — and they stay
+  // so (0059; asserted after the sweep).
   'DELETE /api/v1/members/:id/sign-in': {
     who: 'owners',
-    skip: { passwordOnlyOwner: OLD_OWNER_POWER },
+    victims: { passwordOnlyOwner: { member: ['kemalMember', 'linaMember'] } },
+    theirs: { passwordOnlyOwner: SIGN_IN_KEEPS_LOCK },
   },
   'POST /api/v1/members/:id/sign-in': {
     who: 'owners',
     body: () => ({ role: 'viewer' }),
-    skip: { passwordOnlyOwner: OLD_OWNER_POWER },
+    last: true,
+    victims: { passwordOnlyOwner: { member: ['kemalMember', 'linaMember'] } },
+    theirs: { passwordOnlyOwner: SIGN_IN_KEEPS_LOCK },
   },
   'POST /api/v1/members/:id/invite': {
     who: 'adults',
@@ -505,6 +527,8 @@ const RULES: Record<string, Rule> = {
     who: 'signedIn',
     theirs: { passwordOnlyOwner: OWNERS_SHARED_IDENTITY },
   },
+  // Writing another person's is an owner power since the exit's review: the
+  // password-only owner is refused it (its own test, below, says how).
   'PUT /api/v1/members/:id/identity': {
     who: 'family',
     bodies: () =>
@@ -513,7 +537,6 @@ const RULES: Record<string, Rule> = {
         version: 1,
         fields: { ids: [{ id: 'p1', kind: 'passport', number: 'OVERWRITTEN' }] },
       })),
-    theirs: { passwordOnlyOwner: OWNERS_SHARED_IDENTITY },
   },
   'POST /api/v1/members/:id/identity/reveal': {
     who: 'signedIn',
@@ -594,17 +617,20 @@ const RULES: Record<string, Rule> = {
   },
   'POST /api/v1/notifications/smtp/test': { who: 'owners', body: () => ({}) },
   'GET /api/v1/devices': { who: 'signedIn' },
+  // A new address of one's own; and Ahmed's, which must stay his (E541-02).
   'POST /api/v1/devices': {
     who: 'signedIn',
-    body: () => ({
-      kind: 'unified_push',
-      endpoint: `https://ntfy.example.test/attacker${randomUUID().slice(0, 8)}`,
-      keys: { p256dh: 'p', auth: 'a' },
-    }),
+    bodies: (f) =>
+      [`https://ntfy.example.test/attacker${randomUUID().slice(0, 8)}`, f.deviceEndpoint].map(
+        (endpoint) => ({ kind: 'unified_push', endpoint, keys: { p256dh: 'p', auth: 'a' } }),
+      ),
   },
   'DELETE /api/v1/devices': {
     who: 'signedIn',
-    body: () => ({ endpoint: 'https://ntfy.example.test/nobody' }),
+    bodies: (f) => [
+      { endpoint: 'https://ntfy.example.test/nobody' },
+      { endpoint: f.deviceEndpoint },
+    ],
   },
   'POST /api/v1/devices/:id/test': { who: 'signedIn', body: () => ({}) },
 
@@ -998,10 +1024,11 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     await fresh(ahmed);
     const exported = await ok(send(ahmed, 'POST', '/api/v1/exports', {}), 202);
     ids.export = json<{ id: string }>(exported).id;
+    ids.deviceEndpoint = `https://ntfy.example.test/up${randomUUID().slice(0, 8)}`;
     const device = await ok(
       send(ahmed, 'POST', '/api/v1/devices', {
         kind: 'unified_push',
-        endpoint: `https://ntfy.example.test/up${randomUUID().slice(0, 8)}`,
+        endpoint: ids.deviceEndpoint,
         keys: { p256dh: 'ahmed-p256dh', auth: 'ahmed-auth' },
       }),
       201,
@@ -1058,9 +1085,22 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     );
     await admin.query('delete from access_restriction where member_id = $1', [ned.member_id]);
 
-    // Kemal, locked by Olivia.
+    // Kemal, locked by Olivia; Lina, paused as a restore leaves somebody.
     await fresh(olivia);
     await ok(send(olivia, 'POST', `/api/v1/members/${kemal.member_id}/lock`, {}));
+    ids.kemalMember = kemal.member_id;
+    await h.decider(olivia);
+    const lina = await h.join(olivia, {
+      name: 'Lina',
+      email: 'lina-541@example.test',
+      role: 'adult',
+    });
+    ids.linaMember = lina.member_id;
+    await admin.query(
+      `update account_household set suspended_at = now(), suspend_reason = 'restored'
+        where member_id = $1`,
+      [lina.member_id],
+    );
   }, 180_000);
 
   /** Answers to many at once, each from an address of its own. */
@@ -1480,6 +1520,148 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     expect(json<DocumentView>(theirs).notes).toBe('My own words');
   });
 
+  it('a locked or paused sign-in is never deleted by anybody signed in unless its lock is kept (0059)', async () => {
+    // The database's own wall behind the API's: an owner, asking as
+    // themselves, deletes Kemal's locked sign-in without keeping its lock.
+    const pool = createPool(h.appUrl, 1);
+    const client = await pool.connect();
+    const ownerAccount = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [olivia.member_id],
+      )
+    ).rows[0]?.account_id;
+    try {
+      await client.query('begin');
+      await client.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                set_config('app.role', 'owner', true), set_config('app.account_id', $2, true),
+                set_config('app.member_id', $3, true)`,
+        [olivia.household_id, ownerAccount, olivia.member_id],
+      );
+      const refused = await client
+        .query('delete from account_household where member_id = $1', [kemal.member_id])
+        .then(
+          () => null,
+          (e: { code?: string }) => e.code,
+        );
+      expect(refused).toBe('FDV05');
+      await client.query('rollback');
+      // Nor may anybody but an owner change what is kept with a person: an
+      // adult, of their own record.
+      const saraAccount = (
+        await admin.query<{ account_id: string }>(
+          'select account_id from account_household where member_id = $1',
+          [sara.member_id],
+        )
+      ).rows[0]?.account_id;
+      await client.query('begin');
+      await client.query(
+        `select set_config('app.household_id', $1, true), set_config('app.actor', 'account', true),
+                set_config('app.role', 'adult', true), set_config('app.account_id', $2, true),
+                set_config('app.member_id', $3, true)`,
+        [olivia.household_id, saraAccount, sara.member_id],
+      );
+      const planted = await client
+        .query(
+          `update member set former_suspended_at = now(), former_suspend_reason = 'restored'
+            where id = $1`,
+          [sara.member_id],
+        )
+        .then(
+          (r) => r.rowCount,
+          (e: { code?: string }) => e.code,
+        );
+      expect(planted).toBe('42501');
+    } finally {
+      await client.query('rollback').catch(() => undefined);
+      client.release();
+      await pool.end();
+    }
+    // Through the API, were the lock ever not kept (a planted rule throws
+    // away what the vault keeps with Kemal): the wall answers, in a plain
+    // sentence, never a 500, and the sign-in stays.
+    await admin.query(`create function public.forget_kept() returns trigger language plpgsql as $$
+      begin
+        new.former_suspended_at := null; new.former_suspended_by := null;
+        new.former_suspended_until := null; new.former_suspend_reason := null;
+        new.former_suspend_note := null;
+        return new;
+      end $$`);
+    await admin.query(
+      `create trigger forget_kept before update on member
+         for each row execute function public.forget_kept()`,
+    );
+    try {
+      await fresh(olivia);
+      const refused = await send(olivia, 'DELETE', `/api/v1/members/${kemal.member_id}/sign-in`);
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(json<{ error: { code: string; message: string } }>(refused).error).toMatchObject({
+        code: 'sign_in_suspended',
+        message:
+          'That sign-in is locked or paused. An owner unlocks it, or turns it back on, first.',
+      });
+    } finally {
+      await admin.query('drop trigger forget_kept on member');
+      await admin.query('drop function public.forget_kept()');
+    }
+    expect(
+      (await admin.query('select 1 from account_household where member_id = $1', [kemal.member_id]))
+        .rows,
+    ).toHaveLength(1);
+  });
+
+  it("writing another person's identity details is an owner power: never with a password alone", async () => {
+    const card = async () =>
+      json<{ versions: { shared: number } }>(
+        await ok(send(olivia, 'GET', `/api/v1/members/${ahmed.member_id}/identity`)),
+      ).versions.shared;
+    const write = (who: Tokens, version: number, name = 'Overwritten') =>
+      send(who, 'PUT', `/api/v1/members/${ahmed.member_id}/identity`, {
+        part: 'shared',
+        version,
+        fields: { given_name: name, ids: [{ id: 'd1', kind: 'driving_licence' }] },
+      });
+    const before = await card();
+    // An owner with only a password, however fresh: refused outright.
+    await fresh(peter);
+    const byPassword = await write(peter, before);
+    expect([byPassword.statusCode, codeOf(byPassword)]).toEqual([403, 'totp_required_for_owner']);
+    // An owner with two-step sign-in, but no passkey or code lately: asked for one.
+    await admin.query(
+      `update session set verified_at = now(), factor_verified_at = now() - interval '10 minutes'
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [olivia.member_id],
+    );
+    const stale = await write(olivia, before);
+    expect([stale.statusCode, codeOf(stale)]).toEqual([403, 'step_up_required']);
+    expect(await card()).toBe(before);
+    // With a code just given: written.
+    await fresh(olivia);
+    await ok(write(olivia, before));
+    expect(await card()).toBe(before + 1);
+    // One's own takes nothing more, as before.
+    await fresh(ahmed);
+    await admin.query(
+      `update session set factor_verified_at = null
+        where account_id = (select account_id from account_household where member_id = $1)`,
+      [ahmed.member_id],
+    );
+    await ok(write(ahmed, before + 1, 'Ahmed, by himself'));
+    // Put back as the rest of this file planted it.
+    await fresh(olivia);
+    await ok(
+      send(olivia, 'PUT', `/api/v1/members/${ahmed.member_id}/identity`, {
+        part: 'shared',
+        version: before + 2,
+        fields: {
+          given_name: 'Ahmed',
+          ids: [{ id: 'd1', kind: 'driving_licence', number: LICENCE }],
+        },
+      }),
+    );
+  });
+
   it('a locked member and a guest whose sign-in ended cannot sign in again, nor refresh', async () => {
     const signIn = (email: string, password: string) =>
       h.app.inject({
@@ -1552,7 +1734,7 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
         const params = paramsOf(route.url);
         const objectParam = params.some((p) => p.kind !== null && OBJECT_KINDS.has(p.kind));
         const expected = expectation(a, rule, objectParam);
-        for (const fill of fillsFor(a, params)) {
+        for (const fill of fillsFor(a, params, rule)) {
           for (const body of rule.bodies ? rule.bodies(fill) : [rule.body?.(fill)]) {
             const res = await attack(a, route, rule, fill, body);
             results.push(judge(a, key, rule, expected, res));
@@ -1566,6 +1748,48 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     ).toEqual([]);
     // Every attacker tried every route it was not excused from.
     expect(results.length).toBeGreaterThan(attackers.length * routes.length);
+
+    // E541-01: the password-only owner took Kemal's sign-in (locked) and
+    // Lina's (paused after a restore) away, and gave both back — and both
+    // are still so: neither can sign in, and only an owner power ends it.
+    const restored = await admin.query<{ object_id: string; detail: { kept?: string } }>(
+      `select object_id, detail from audit_event
+        where action = 'member.sign_in_restored' and object_id = any($1)`,
+      [[ids.kemalMember, ids.linaMember]],
+    );
+    expect(Object.fromEntries(restored.rows.map((r) => [r.object_id, r.detail.kept]))).toEqual({
+      [ids.kemalMember as string]: 'locked',
+      [ids.linaMember as string]: 'restored',
+    });
+    const suspended = await admin.query<{ member_id: string; suspend_reason: string | null }>(
+      'select member_id, suspend_reason from account_household where member_id = any($1)',
+      [[ids.kemalMember, ids.linaMember]],
+    );
+    expect(Object.fromEntries(suspended.rows.map((r) => [r.member_id, r.suspend_reason]))).toEqual({
+      [ids.kemalMember as string]: 'locked',
+      [ids.linaMember as string]: 'restored',
+    });
+    for (const email of ['kemal-541@example.test', 'lina-541@example.test']) {
+      const again = await h.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password',
+        payload: { email, password: 'another correct horse' },
+        ...peer(),
+      });
+      expect(again.statusCode, email).toBe(403);
+    }
+    // And the other owners were told, as for a lock.
+    const told = alertsSent(h).map((a) => String(a.subject));
+    expect(told).toContain("Peter gave Kemal's sign-in back, still locked");
+    expect(told).toContain("Peter gave Lina's sign-in back, still paused");
+    // E541-02: Ahmed's phone is still his, whoever sent its address.
+    const phone = await admin.query<{ member_id: string; p256dh: string }>(
+      `select a.member_id, d.p256dh from device d
+         join account_household a on a.account_id = d.account_id
+        where d.id = $1`,
+      [ids.device],
+    );
+    expect(phone.rows).toEqual([{ member_id: ahmed.member_id, p256dh: 'ahmed-p256dh' }]);
   }, 600_000);
 
   it('no identity value, note, detail, suggestion, page text or location reaches the activity log, a push or an email', async () => {
@@ -1634,9 +1858,12 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       }),
     );
     expect(own.body).toContain(PASSPORT);
-    // (Not while anybody cannot be told, A34: Kemal's lock ends first.)
+    // (Not while anybody cannot be told, A34: Kemal's lock ends first, and
+    // Lina's pause.)
     await fresh(olivia);
     await ok(send(olivia, 'DELETE', `/api/v1/members/${kemal.member_id}/lock`), 204);
+    await fresh(olivia);
+    await ok(send(olivia, 'POST', `/api/v1/members/${ids.linaMember}/resume`, {}), 204);
     await fresh(olivia);
     const widened = await send(olivia, 'PUT', '/api/v1/household/identity-audience', {
       audience: 'adults',
@@ -1842,6 +2069,7 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       suggestionKey: ['home_owner_needs_deed'],
       uploadKey: [ids.uploadKey as string],
       dropFile: [ids.dropFile as string],
+      deviceEndpoint: [ids.deviceEndpoint as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -1943,10 +2171,15 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
   }
 
   /** The requests one attacker makes of one route: a victim of each kind, in turn. */
-  function fillsFor(a: AttackerDef, params: Param[]): Fill[] {
+  function fillsFor(a: AttackerDef, params: Param[], rule?: Rule): Fill[] {
     const randomToken = () => Buffer.from(randomUUID() + randomUUID()).toString('base64url');
+    // The rule's own victims for this attacker, where it names any.
+    const victims: Partial<Record<Kind, string[]>> = { ...a.victims };
+    for (const [kind, names] of Object.entries(rule?.victims?.[a.name] ?? {})) {
+      victims[kind as Kind] = names.map((n) => ids[n] as string);
+    }
     const one = (kind: Kind, i: number): string => {
-      const list = a.victims[kind];
+      const list = victims[kind];
       if (list && list.length > 0) return list[Math.min(i, list.length - 1)] as string;
       switch (kind) {
         case 'page':
@@ -1960,7 +2193,7 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       }
     };
     const kinds = Object.keys(PARAM_KIND_DEFAULTS) as Kind[];
-    const n = Math.max(1, ...params.map((p) => (p.kind ? (a.victims[p.kind]?.length ?? 1) : 1)));
+    const n = Math.max(1, ...params.map((p) => (p.kind ? (victims[p.kind]?.length ?? 1) : 1)));
     return Array.from({ length: n }, (_, i) => {
       const fill = Object.fromEntries(kinds.map((k) => [k, one(k, 0)])) as Fill;
       for (const p of params) if (p.kind) fill[p.kind] = one(p.kind, i);
@@ -2127,6 +2360,7 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   dropFile: true,
   dropToken: true,
   page: true,
+  deviceEndpoint: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {

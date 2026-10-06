@@ -1187,6 +1187,23 @@ export function installFakeApi(state: FakeState) {
       if (!canEditIdentity(me, { id }, b.part)) {
         return refuse(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
       }
+      // Another person's: an owner power since the Phase 5 exit (A54), a
+      // passkey or a code, never the password.
+      if (!self && state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to change another person’s identity details.',
+        );
+      }
+      if (!self && state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change another person’s identity details.',
+          { action: 'change_identity' },
+        );
+      }
       const kept = record[b.part];
       const version = kept?.version ?? 0;
       if (b.version !== version) {

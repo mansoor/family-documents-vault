@@ -75,6 +75,16 @@ export interface Schema {
     /** The account whose sign-in was taken away, so it can be given back (0019). */
     former_account_id: Generated<string | null>;
     /**
+     * That sign-in's lock, or a restore's pause, as it was when the sign-in
+     * was taken away (0059, the Phase 5 exit's review): given back with it,
+     * so neither is lifted by taking a sign-in away and giving it back.
+     */
+    former_suspended_at: Timestamp | null;
+    former_suspended_by: string | null;
+    former_suspended_until: Timestamp | null;
+    former_suspend_reason: 'locked' | 'restored' | null;
+    former_suspend_note: string | null;
+    /**
      * Moved on by one with every change to the name, date of birth,
      * relationship or passing (0046): the database's to keep, never set.
      */

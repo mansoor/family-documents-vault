@@ -47,7 +47,8 @@ needs a vault of 0.4.10 or later.
   with one of those and never the password (`403 totp_required_for_owner`,
   `403 step_up_required`): the view of somebody's sign-in, locking it,
   starting a password reset, signing somebody out everywhere, limiting what
-  a viewer sees, a guest's sign-in, and who reads identity details.
+  a viewer sees, a guest's sign-in, who reads identity details, and writing
+  another person's identity details.
 - **Changed for viewers** (a guest is a viewer, `kind: "guest"` on `/me`):
   no birthdays, household answers or household suggestions (5.3); a limited
   viewer is given only their grant (5.33); `physical_location` is `null`
@@ -3836,6 +3837,27 @@ guest_always_limited`. A guest owns no document, by any path — made,
       every backup of it, hold no working link. The worker opens it as it
       sends; a job queued by an older API, its `url` in words, is still
       sent.
+    - **Changed (A54):** writing another person's identity details
+      (`PUT /api/v1/members/{id}/identity`, an owner writing their shared
+      part) is an owner power: `403 totp_required_for_owner` to an owner with
+      neither two-step sign-in nor a passkey, `403 step_up_required` with
+      `action: "change_identity"` (a passkey or a code, never the password)
+      to one who has not given one in five minutes. Reading them is as
+      before, masked, and so is writing one's own. `FACTOR_STEP_UPS` adds
+      `change_identity`.
+    - **Changed:** a lock, or a restore's pause, outlives a sign-in taken away
+      (migration 0059). `DELETE /api/v1/members/{id}/sign-in` keeps it with
+      the person, and `POST /api/v1/members/{id}/sign-in` gives the sign-in
+      back still locked or paused — its message says so, the person is not
+      told they can sign in, and the other owners are told — so only an
+      owner power ends it. A restore pauses a sign-in that was taken away
+      when the backup was made, for whenever it is given back. The database
+      refuses to delete a locked or paused sign-in that has not been kept so
+      (`409 sign_in_suspended`).
+    - **Changed:** `POST /api/v1/devices` with a push address another sign-in
+      registered answers `409 device_taken` and leaves that device as it was;
+      it used to move it to the caller (and answered a limited viewer or a
+      guest `500`). An address of one's own is updated as before.
 
 ## Deprecations in effect
 

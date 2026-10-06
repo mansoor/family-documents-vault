@@ -925,6 +925,59 @@ describe("a person's identity details (5.27)", () => {
     expect(await within(region).findByText('0419')).toBeInTheDocument();
   });
 
+  it('an owner changing another person’s details is asked for a code, never the password; without two-step sign-in, refused (A54, the Phase 5 exit)', async () => {
+    const state = fresh({
+      members: [ME, AISHA_KHAN],
+      identities: { 'm-0': aishaRecord() },
+      stepUpNeeded: true,
+    });
+    installFakeApi(state);
+    signedIn();
+    at('/people/m-0');
+    const { unmount } = render(<App />);
+    let region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    let form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.change(within(form).getByLabelText('Job title'), { target: { value: 'Architect' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    expect(within(prompt).queryByLabelText(/password/i)).not.toBeInTheDocument();
+    fireEvent.change(within(prompt).getByLabelText(/code from your authenticator app/i), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm' }));
+    expect(await within(region).findByText('Identity details saved.')).toBeInTheDocument();
+    // Refused once for who is asking, then written: the same change, kept once.
+    expect(puts(state).map((b) => b.fields.job_title)).toEqual(['Architect', 'Architect']);
+    expect(state.identities?.['m-0']?.shared).toMatchObject({
+      version: 2,
+      fields: { job_title: 'Architect' },
+    });
+    unmount();
+
+    // Without two-step sign-in: said in the form, and nothing is written.
+    const without = fresh({
+      members: [ME, AISHA_KHAN],
+      identities: { 'm-0': aishaRecord() },
+      twoStep: false,
+    });
+    installFakeApi(without);
+    signedIn();
+    at('/people/m-0');
+    render(<App />);
+    region = await card();
+    fireEvent.click(within(region).getByRole('button', { name: 'Edit identity details' }));
+    form = await screen.findByRole('form', { name: 'Aisha’s identity details' });
+    fireEvent.change(within(form).getByLabelText('Job title'), { target: { value: 'Architect' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Save' }));
+    const alert = await within(form).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Turn on two-step sign-in to change another person’s identity details.',
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(without.identities?.['m-0']?.shared?.version).toBe(1);
+  });
+
   it('a stale version is a conflict: what was saved is shown, to make the changes again', async () => {
     const state = fresh({ members: [ME], identities: { me: myRecord() } });
     installFakeApi(state);

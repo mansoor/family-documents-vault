@@ -1067,6 +1067,9 @@ export const FACTOR_STEP_UPS: readonly string[] = [
   // Since 5.34: renewing a guest's sign-in, or giving one back with a new
   // end (A28) — an owner power too.
   'renew_guest',
+  // Since the Phase 5 exit (5.41): an owner writing another person's
+  // identity details (their shared part) — an owner power too.
+  'change_identity',
 ];
 
 /**
