@@ -26,6 +26,16 @@ describe('the activity log, in sentences', () => {
     expect(describeEvent(base)?.text).toBe('Sarah downloaded “Home insurance policy”');
   });
 
+  it('says a note was added, changed or taken off, never what it says (5.35)', () => {
+    const said = (change?: string) =>
+      describeEvent(ev({ action: 'document.notes_changed', detail: change ? { change } : {} }))
+        ?.text;
+    expect(said('added')).toBe('Sarah added a note to “Home insurance policy”');
+    expect(said('changed')).toBe('Sarah changed the note on “Home insurance policy”');
+    expect(said('removed')).toBe('Sarah took the note off “Home insurance policy”');
+    expect(said()).toBe('Sarah changed the note on “Home insurance policy”');
+  });
+
   it('says who opened a shared link, since nobody signed in', () => {
     const line = describeEvent(
       ev({ action: 'share.opened', actor: null, actor_label: 'shared link (the letting agent)' }),
@@ -421,6 +431,14 @@ describe('when things happened, in words', () => {
   it('exactly, for a table or a history: the date and the time, however long ago (5.1)', () => {
     expect(whenExactly('2026-09-22T16:12:00')).toBe('22 Sept 2026, 4:12pm');
     expect(whenExactly('2025-08-02T09:05:00')).toBe('2 Aug 2025, 9:05am');
+  });
+
+  it("says a moment exactly on the household's clock when given it (5.35)", () => {
+    // 23:12 UTC is the next morning in Karachi, and 4:12pm in Los Angeles.
+    expect(whenExactly('2026-09-25T23:12:00Z', 'Asia/Karachi')).toBe('26 Sept 2026, 4:12am');
+    expect(whenExactly('2026-09-25T23:12:00Z', 'America/Los_Angeles')).toBe('25 Sept 2026, 4:12pm');
+    // A zone this device does not know is said in UTC, not refused.
+    expect(whenExactly('2026-09-25T23:12:00Z', 'Mars/Olympus')).toBe('25 Sept 2026, 11:12pm');
   });
 
   it('counts calendar days, so late last night is yesterday and not today', () => {

@@ -14,7 +14,15 @@ import {
   type Role,
   type SuggestionView,
 } from '@fdv/shared';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { flushSync } from 'react-dom';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, type Invitation, type Member, type SearchHit } from '../api.js';
@@ -505,10 +513,7 @@ function HitRow({
       <RowMain title={title} pick={pick} onOpen={onOpen}>
         <span className="doc-title">{title}</span>
         <span className="muted">{rowLine(hit, types)}</span>
-        <span
-          className="snippet"
-          dangerouslySetInnerHTML={{ __html: sanitiseSnippet(hit.snippet) }}
-        />
+        <span className="snippet">{snippetParts(hit.snippet)}</span>
         <StatusBadge status={hit.status} />
       </RowMain>
       {/* A hit has no version or ETag: its ⋯ fetches the document on opening. */}
@@ -517,10 +522,21 @@ function HitRow({
   );
 }
 
-/** The server marks matches with <em>; everything else is escaped. */
-export function sanitiseSnippet(s: string): string {
-  const esc = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return esc.replace(/&lt;em&gt;/g, '<em>').replace(/&lt;\/em&gt;/g, '</em>');
+/**
+ * A search's snippet, as elements: the server marks each match with <em>
+ * and </em>, and every other character is the document's own words, shown
+ * as they are. Never an HTML string (5.35: a snippet may be a note's words,
+ * and there is no path from a note to HTML).
+ */
+export function snippetParts(s: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  let marked = false;
+  s.split(/(<em>|<\/em>)/).forEach((part, i) => {
+    if (part === '<em>') marked = true;
+    else if (part === '</em>') marked = false;
+    else if (part) out.push(marked ? <em key={i}>{part}</em> : <Fragment key={i}>{part}</Fragment>);
+  });
+  return out;
 }
 
 export function PeopleScreen() {
@@ -856,15 +872,25 @@ function Missing(props: {
   const [showHidden, setShowHidden] = useState(false);
   if (props.items.length === 0 && props.hidden.length === 0) {
     // Only an answered "no" is an invitation to answer; a viewer's null is not.
+    // The questions, on their own, with any answers already given, and back
+    // here (5.35): Settings has none, and the first-run wizard goes on to
+    // things only a new vault asks. Anybody else is told who can.
     return props.profileAnswered !== false ? null : (
       <section aria-labelledby="missing-h">
         <h2 id="missing-h" className="section-h">
           We noticed something missing
         </h2>
-        <p className="muted">
-          Answer a few questions about your household and this is where we will tell you what is not
-          here yet. <Link to="/settings">Settings</Link>
-        </p>
+        {can(storedRole(), 'profile.edit') ? (
+          <p className="muted">
+            Answer a few questions about your household and this is where we will tell you what is
+            not here yet. <Link to="/household-questions">Answer the questions</Link>
+          </p>
+        ) : (
+          <p className="muted">
+            Once an adult answers a few questions about your household, this is where we will tell
+            you what is not here yet.
+          </p>
+        )}
       </section>
     );
   }

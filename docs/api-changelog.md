@@ -3617,6 +3617,64 @@ guest_always_limited`. A guest owns no document, by any path — made,
       invitations, refuses as the vault does (an owner's guest invitation
       asked for a passkey or a code first, `access_ended`'s `reason`, a
       re-invited guest, removal), and ends a guest's sign-in at its end.
+  - Notes you can write (5.35; A30, A31, A32). One note a document, in a
+    small Markdown that each client draws as its own elements — never as
+    HTML. Plain text, as every note was until now, is already valid, so an
+    older phone showing notes as plain text shows the same words. No
+    feature flag: a vault before 5.35 is told by the fields below being
+    absent.
+    - **Added:** every document view (`GET /documents/{id}`, the lists,
+      what `POST`/`PATCH /documents` answer, a collection's documents)
+      gains `notes_updated_at`, when the note's words last changed —
+      written, changed or taken away, by any route: `POST`/`PATCH
+/documents`, a capture's metadata, a file sent in and filed. Only the
+      words move it: an edit of anything else, the same words saved again
+      (once trimmed), a move to or from Only me leave it as it was. Null
+      until somebody writes a note on 5.35 or later (nothing is filled in
+      for older notes). And `notes_updated_by_name`, who changed them, as
+      the household knows them, on the activity log's terms like a
+      version's `uploaded_by_name`: null to a viewer (a guest among them),
+      and when that person has left the household.
+    - **Unchanged:** `notes` is a string of 10,000 characters at most
+      (`422` beyond), written through `PATCH /documents/{id}` by whoever may
+      change the document (a viewer or a guest `403`; a teen their own
+      only), with `If-Match` as ever (`409 conflict`, the document as it is
+      now in `detail`). An Only me document's note stays sealed under its
+      owner's key (0.5.8, A31).
+    - **Added:** the activity line `document.notes_changed`, with
+      `detail.change` `added`, `changed` or `removed` and never the note's
+      words ("Sarah changed the note on “Water bill”"), for whoever may see
+      the document. **Changed:** an edit of the note alone is no longer also
+      `document.updated`, and `document.updated`'s `fields` never name
+      `notes`.
+    - **Changed:** a search's snippet shows a note as plain text ("Blue bins
+      go out on Mondays", not "\*\*Blue\*\* bins…"), in both passes; the
+      index still holds a note's words as written.
+    - The Markdown (`@fdv/shared`, `parseNotes`): paragraphs and line
+      breaks; bold (`**`) and italic (`*` or `_`); bulleted (`- `, `* `,
+      `+ `), numbered (`1. `) and checklist (`- [ ] `, `- [x] `) items, one
+      level deep; level-3 headings (`### `); links, `[words](address)` or an
+      address written out, to `https:`, `http:` or `mailto:` only, drawn
+      with their address as the browser will reach it (a host in another
+      script as punycode). Anything else — HTML, images, tables, other
+      headings, a `javascript:` or `data:` link, and a link whose address
+      could show as somewhere it does not go: one with a control, format
+      (Unicode Cf: bidi overrides, zero-width characters, the soft hyphen)
+      or line-separator character in it, or a name before its host
+      (`https://bank.example@evil.example`) — is text, exactly as written.
+      The parser is linear in a note's length, a note of many lines too.
+    - The database: 0057 adds `document.notes_updated_at` and
+      `.notes_updated_by` (a sign-in; its name comes off if the sign-in is
+      removed, the moment stays), and a guard that somebody signed in
+      stamps a note only as themselves and now. The restore check knows it.
+    - `@fdv/shared`: `NOTES_MAX`, `parseNotes`, `notesPlainText`,
+      `noteTreeText`, `noteLinkAllowed`, the `NoteTree` types,
+      `DocumentView`'s `notes_updated_at` and `notes_updated_by_name`, and
+      `whenExactly`'s time zone. `@fdv/client`: the fake keeps a note's stamp
+      as the vault does, refuses a viewer's edit and a teen's of somebody
+      else's document, and, as the vault does, takes back an invitation still
+      waiting when the same person is invited again — by its maker or an
+      owner only (`409 already_invited`).
 
 ## Deprecations in effect
 

@@ -3,6 +3,7 @@ import {
   effectiveVisibility,
   issuerCandidates,
   mayChangeVisibilityAtAll,
+  notesPlainText,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
   sentThroughWords,
@@ -218,7 +219,30 @@ export type DocRow = {
   deleted_at: Date | null;
   /** An owner asked to remove it for good, then (5.24): in the Trash only. */
   purge_requested_at: Date | null;
+  /** When its note's words last changed, and whose sign-in changed them (0057, 5.35). */
+  notes_updated_at: Date | null;
+  notes_updated_by: string | null;
 };
+
+/**
+ * What an edit did to a note's words (5.35): wrote one where there was
+ * none, changed it, or took it away — or nothing, when the words are the
+ * same (or were not sent). Only a change stamps the note and is audited.
+ */
+export function noteChange(
+  before: string | null,
+  after: string | null | undefined,
+): 'added' | 'changed' | 'removed' | null {
+  if (after === undefined || (after ?? null) === (before ?? null)) return null;
+  if (before === null) return 'added';
+  return after === null ? 'removed' : 'changed';
+}
+
+/** A note's stamp (0057): whoever is signed in, as the database's clock has it now. */
+const noteStamp = (p: Principal) => ({
+  notes_updated_at: sql<Date>`now()`,
+  notes_updated_by: p.accountId,
+});
 
 const isoDate = (d: string | null): string | null => (d === null ? null : d.slice(0, 10));
 
@@ -690,9 +714,12 @@ export class DocumentService {
     opened: PrivateValues | null = null,
     /** Its versions, newest first, when a list has read them for the page. */
     known?: VersionBrief[],
+    /** Who changed notes, by sign-in, when a list has read them for the page. */
+    editors?: Map<string, string>,
   ): Promise<DocumentView> {
     const type = row.type_key ? await typeOf(row.type_key) : null;
     const versions = known ?? (await this.versionsOf(trx, [row.id])).get(row.id) ?? [];
+    const named = editors ?? (await this.noteEditors(trx, p, [row]));
     const issued = row.issued_on
       ? {
           date: isoDate(row.issued_on) as string,
@@ -724,6 +751,12 @@ export class DocumentService {
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
       has_notes: row.notes !== null || row.notes_sealed !== null,
+      // Who last changed its note's words, and when (5.35): the moment to
+      // whoever sees the document, the name on the activity log's terms.
+      notes_updated_at: row.notes_updated_at?.toISOString() ?? null,
+      notes_updated_by_name: row.notes_updated_by
+        ? (named.get(row.notes_updated_by) ?? null)
+        : null,
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
@@ -779,6 +812,38 @@ export class DocumentService {
   }
 
   /**
+   * Who last changed these documents' notes, by sign-in, as the household
+   * knows them (5.35): on the activity log's terms, as a version's uploader
+   * (5.1) — a viewer, an outsider, is told nobody's name; somebody whose
+   * sign-in was taken away is still named; somebody who has left is not.
+   * One statement for a whole page, and none when there is nobody to name.
+   */
+  private async noteEditors(
+    trx: Db,
+    p: Principal,
+    rows: Array<Pick<DocRow, 'notes_updated_by'>>,
+  ): Promise<Map<string, string>> {
+    const named = new Map<string, string>();
+    const ids = [
+      ...new Set(rows.map((r) => r.notes_updated_by).filter((id): id is string => id !== null)),
+    ];
+    if (ids.length === 0 || !allows(p, 'audit.read')) return named;
+    const found = await sql<{ account_id: string; name: string }>`
+      select ah.account_id, m.display_name as name
+        from account_household ah
+        join member m on m.id = ah.member_id
+       where ah.household_id = ${p.householdId}::uuid
+         and ah.account_id = any(${ids}::uuid[])
+      union all
+      select m.former_account_id as account_id, m.display_name as name
+        from member m
+       where m.household_id = ${p.householdId}::uuid
+         and m.former_account_id = any(${ids}::uuid[])`.execute(trx);
+    for (const r of found.rows) if (!named.has(r.account_id)) named.set(r.account_id, r.name);
+    return named;
+  }
+
+  /**
    * Documents as every list of them gives them, for rows the caller's own
    * query has already found — the documents in a collection (5.14). An Only me
    * one's notes and details stay sealed, as in any list.
@@ -789,8 +854,9 @@ export class DocumentService {
       trx,
       rows.map((r) => r.id),
     );
+    const editors = await this.noteEditors(trx, p, rows);
     return Promise.all(
-      rows.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [])),
+      rows.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors)),
     );
   }
 
@@ -817,6 +883,8 @@ export class DocumentService {
       const whose = p.role === 'teen' ? { ...input, owner_member_id: p.memberId } : input;
       const values = await this.columns(trx, p, await this.ownVisibility(trx, p, whose), null);
       const made: Record<string, unknown> = { ...values };
+      // Written with a note: whoever filed it wrote it, now (5.35).
+      if (made.notes != null) Object.assign(made, noteStamp(p));
       // Only me from the start: its notes and details are sealed as they
       // are written, and never kept plain (0.5.8). The id is minted here,
       // so they are sealed for this document and no other.
@@ -947,6 +1015,15 @@ export class DocumentService {
         input,
         open ? { ...current, ...open } : current,
       );
+      // Its note's words, compared as they are held open (5.35): only a
+      // change stamps the note, and is said in the activity log — which is
+      // what it was, never what it says. An Only me note is compared opened
+      // and sealed again below, as every write of its owner's is.
+      const notesChanged = noteChange(
+        open ? open.notes : current.notes,
+        'notes' in values ? (values.notes as string | null) : undefined,
+      );
+      if (notesChanged) Object.assign(values, noteStamp(p));
       // An Only me document's details as this edit leaves them, open: the
       // date its kind reminds from may be one of them (0.5.15, A62).
       let details: Record<string, unknown> | undefined;
@@ -989,15 +1066,30 @@ export class DocumentService {
       if (current.type_key && row.type_key !== current.type_key) {
         await dropDeletedType(trx, current.type_key);
       }
-      await appendAudit(trx, {
-        householdId: p.householdId,
-        actorAccountId: p.accountId,
-        action: 'document.updated',
-        objectType: 'document',
-        objectId: id,
-        detail: { fields: Object.keys(input) },
-        ip: meta.ip,
-      });
+      // What else it changed, by name; its note is a line of its own.
+      const fields = Object.keys(input).filter((f) => f !== 'notes');
+      if (fields.length > 0 || !('notes' in input)) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'document.updated',
+          objectType: 'document',
+          objectId: id,
+          detail: { fields },
+          ip: meta.ip,
+        });
+      }
+      if (notesChanged) {
+        await appendAudit(trx, {
+          householdId: p.householdId,
+          actorAccountId: p.accountId,
+          action: 'document.notes_changed',
+          objectType: 'document',
+          objectId: id,
+          detail: { change: notesChanged },
+          ip: meta.ip,
+        });
+      }
       // Becoming Essential: its current version's pages are drawn now, so
       // a phone can keep them for when there is no connection (0.4.12).
       if (row.is_essential && !current.is_essential) {
@@ -1158,8 +1250,9 @@ export class DocumentService {
         trx,
         page.map((r) => r.id),
       );
+      const editors = await this.noteEditors(trx, p, page);
       const items = await Promise.all(
-        page.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [])),
+        page.map((r) => this.view(trx, p, r, typeOf, null, versions.get(r.id) ?? [], editors)),
       );
       const filtered = q.status ? items.filter((d) => d.status.value === q.status) : items;
       const last = page[page.length - 1];
@@ -1605,6 +1698,11 @@ export class DocumentService {
         );
       }
     } else {
+      // Filed with a note, plain or sealed: whoever filed it wrote it, as
+      // this commit's clock has it (5.35) — the claim's ran earlier.
+      const noted =
+        (f.values as Record<string, unknown>).notes != null ||
+        (f.values as Record<string, unknown>).notes_sealed != null;
       const row = await trx
         .insertInto('document')
         .values({
@@ -1614,6 +1712,7 @@ export class DocumentService {
           created_by: p.accountId,
           updated_by: p.accountId,
           ...f.values,
+          ...(noted ? noteStamp(p) : {}),
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -2131,6 +2230,8 @@ export class DocumentService {
         extra: Record<string, unknown> | null;
         notes_sealed_present: boolean;
         sealed_details: string[];
+        words_shown: boolean;
+        details_text: string;
         rank: number;
         snippet: string;
         matched_in: 'title' | 'content';
@@ -2172,6 +2273,9 @@ export class DocumentService {
                d.expires_on, d.expires_precision, d.issued_by, d.issued_on, d.issued_precision,
                d.identifier, d.physical_location, d.tags, d.notes, d.extra,
                d.notes_sealed is not null as notes_sealed_present, d.sealed_details,
+               d.visibility in ('household', 'adults') as words_shown,
+               case when d.visibility in ('household', 'adults')
+                    then fdv_details_text(d.extra) else '' end as details_text,
                h.rank, h.snippet, h.matched_in
         from hits h join document d on d.id = h.id
         where d.deleted_at is null
@@ -2183,6 +2287,36 @@ export class DocumentService {
           ${q.issued_by ? sql`and lower(d.issued_by) = lower(${q.issued_by.trim()})` : sql``}
         order by h.rank desc, d.updated_at desc
         limit ${limit}`.execute(trx);
+
+      // A snippet from a document's own words shows its note as plain text
+      // (5.35): the index takes a note's words as written, marks and all,
+      // but a snippet is read by a person — "Blue on Mondays", not
+      // "**Blue** on *Mondays*". The same words as above, the note's
+      // without its marks, in one statement for the page.
+      const withNotes = rows.rows.filter(
+        (r) => r.matched_in === 'title' && r.words_shown && r.notes !== null,
+      );
+      const snippets = new Map<string, string>();
+      if (withNotes.length > 0) {
+        const words = withNotes.map((r) =>
+          [
+            r.title ?? '',
+            r.issued_by ?? '',
+            r.identifier ?? '',
+            r.details_text,
+            notesPlainText(r.notes),
+          ].join(' '),
+        );
+        const lit = await sql<{ n: number; snippet: string }>`
+          select n::int as n,
+                 ts_headline('simple', t, websearch_to_tsquery('simple', ${q.q}),
+                   'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet
+            from unnest(${words}::text[]) with ordinality as u(t, n)`.execute(trx);
+        for (const s of lit.rows) {
+          const r = withNotes[s.n - 1];
+          if (r) snippets.set(r.document_id, s.snippet);
+        }
+      }
 
       const items: SearchHit[] = [];
       const typeOf = typeLookup(trx);
@@ -2213,7 +2347,7 @@ export class DocumentService {
             { ...r, issued, expires },
             { notes: r.notes_sealed_present, details: r.sealed_details },
           ),
-          snippet: r.snippet,
+          snippet: snippets.get(r.document_id) ?? r.snippet,
           matched_in: r.matched_in,
           rank: Number(r.rank),
         });

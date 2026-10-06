@@ -1991,6 +1991,23 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     // About twenty round trips of the check: its siblings' time (the 5.34
     // review, N534A-03), not the default 15 s.
   }, 120_000);
+
+  it("notices the guard on a note's stamp gone (0057)", async () => {
+    await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      // The others are found: it is this one that is missing.
+      expect(refused).toMatch(/document_owner_not_guest/);
+      expect(refused).not.toMatch(/document_notes_stamp/);
+    } finally {
+      await sql(vault.adminUrl, 'alter table public.document enable trigger document_notes_stamp');
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
 });
 
 describe('the connection for pg_dump and psql', () => {

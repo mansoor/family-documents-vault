@@ -12,6 +12,7 @@ import { FamilyScreen } from './screens/Family.js';
 import { GuestsScreen } from './guests.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
+import { HouseholdQuestionsScreen } from './screens/HouseholdQuestions.js';
 import { IncomingFileScreen, IncomingScreen } from './screens/Incoming.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
@@ -166,6 +167,15 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <RemindersScreen />
+              </Gate>
+            }
+          />
+          {/* The household's questions on their own, from Reminders (5.35). */}
+          <Route
+            path="/household-questions"
+            element={
+              <Gate need="signed-in">
+                <HouseholdQuestionsScreen />
               </Gate>
             }
           />

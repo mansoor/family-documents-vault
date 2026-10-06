@@ -1017,6 +1017,8 @@ const GUARDS = [
     fn: 'member_identity_not_guest',
   },
   { name: 'scope_key_not_guest', table: 'scope_key', fn: 'scope_key_not_guest' },
+  // Somebody signed in stamps a note as themselves, now (0057, 5.35).
+  { name: 'document_notes_stamp', table: 'document', fn: 'document_notes_stamp' },
 ];
 
 /**

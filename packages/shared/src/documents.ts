@@ -49,6 +49,20 @@ export interface DocumentView {
   /** Whether it has notes, wherever `notes` is null for being sealed (0.5.8). Absent from older vaults. */
   has_notes?: boolean;
   /**
+   * When its note's words last changed — written, changed or taken away
+   * (5.35, A30). Only the words move it: an edit to anything else, or the
+   * same words saved again, leaves it as it was. Null when nobody has
+   * written one since 5.35; absent from older vaults.
+   */
+  notes_updated_at?: string | null;
+  /**
+   * Who changed them then, as the household knows them — on the activity
+   * log's terms, as a version's `uploaded_by_name`: null to a viewer, who is
+   * not told what the family has been doing, and when that person has left
+   * the household. Absent from older vaults.
+   */
+  notes_updated_by_name?: string | null;
+  /**
    * The type's own details, by field key: each of its field's kind since
    * 0.5.7 (details.ts). A key its type no longer asks for may still be here.
    * Sealed like the notes on an Only me document (0.5.8): empty in a list.

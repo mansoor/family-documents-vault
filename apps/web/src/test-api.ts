@@ -292,6 +292,12 @@ export interface FakeState {
    * on its calendar. Left out, 'UTC', the vault's default.
    */
   timezone?: string;
+  /** When a note saved here was written (5.35); left out, 26 Sept 2026, 10:05 UTC. */
+  noteSavedAt?: string;
+  /** Whether the household answered the wizard's questions, as GET /suggestions says; left out, yes. */
+  profileAnswered?: boolean;
+  /** The household's answers as GET /profile gives them (5.35); left out, none. */
+  profile?: Record<string, unknown>;
   suggestions: Array<Record<string, unknown>>;
   /** Hits the second pass (FND-08) returns; matched on the snippet text. */
   sealed: Array<Record<string, unknown>>;
@@ -945,7 +951,7 @@ export function installFakeApi(state: FakeState) {
       const items = state.suggestions.filter((x) => Boolean(x.dismissed) === dismissed);
       return json({
         items,
-        profile_answered: true,
+        profile_answered: state.profileAnswered ?? true,
         dismissed_count: state.suggestions.filter((x) => x.dismissed).length,
       });
     }
@@ -977,6 +983,7 @@ export function installFakeApi(state: FakeState) {
         has_business: null,
         country: null,
         answered_at: null,
+        ...(state.profile ?? {}),
       });
     }
     // The people outside the family (5.34): an owner's to list.
@@ -3092,6 +3099,12 @@ export function installFakeApi(state: FakeState) {
             else merged[k] = v;
           }
           change.extra = merged;
+        }
+        // A note's words changed (5.35): stamped by whoever is signed in,
+        // now; the same words again leave the stamp as it was.
+        if ('notes' in change && (change.notes ?? null) !== (doc.notes ?? null)) {
+          change.notes_updated_at = state.noteSavedAt ?? '2026-09-26T10:05:00Z';
+          change.notes_updated_by_name = 'Mansoor Seikh';
         }
         // A new ETag for every change, as the vault's comes from when it was made.
         Object.assign(doc, change, { etag: `"edit-${state.calls.length}"` });

@@ -2090,6 +2090,53 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: "a note as the vault keeps it: its words as written, and who last changed them and when — moved only by a change of its words, and never over somebody else's (5.35)",
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const made = await api.createDocument(token, {
+        title: 'Contract boiler',
+        notes: 'Serviced **every** May\n- [ ] book it',
+      });
+      expect(made.notes).toBe('Serviced **every** May\n- [ ] book it');
+      expect(made.notes_updated_at).toEqual(expect.any(String));
+      expect(made.notes_updated_by_name).toEqual(expect.any(String));
+      const bare = await api.createDocument(token, { title: 'Contract fuse box' });
+      expect(bare.notes_updated_at ?? null).toBeNull();
+      // Anything else changed, or the same words saved again: it stands.
+      const retitled = await api.updateDocument(
+        token,
+        made.id,
+        { title: 'Contract boiler, upstairs' },
+        made.etag,
+      );
+      expect(retitled.notes_updated_at).toBe(made.notes_updated_at);
+      const same = await api.updateDocument(
+        token,
+        made.id,
+        { notes: ' Serviced **every** May\n- [ ] book it\n' },
+        retitled.etag,
+      );
+      expect(same.notes_updated_at).toBe(made.notes_updated_at);
+      // The words changed: it moves.
+      const changed = await api.updateDocument(
+        token,
+        made.id,
+        { notes: '- [x] serviced in May' },
+        same.etag,
+      );
+      expect(Date.parse(changed.notes_updated_at as string)).toBeGreaterThanOrEqual(
+        Date.parse(made.notes_updated_at as string),
+      );
+      expect(changed.notes_updated_by_name).toBe(made.notes_updated_by_name);
+      // Saved from an older copy: refused, and theirs is kept.
+      const stale = await refusal(
+        api.updateDocument(token, made.id, { notes: 'From an older copy' }, made.etag),
+      );
+      expect(stale).toMatchObject({ status: 409, code: 'conflict' });
+      expect((await api.document(token, made.id)).notes).toBe('- [x] serviced in May');
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

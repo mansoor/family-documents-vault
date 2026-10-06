@@ -681,15 +681,22 @@ describe('the document page shows them (5.10)', () => {
   it('notes keep their line breaks', async () => {
     const state = start('/add');
     await addCard('birth_certificate');
-    type('Notes', 'Certified copy\n\nOriginal with Mum');
+    type('Notes', 'Certified copy\nfrom the register\n\nOriginal with Mum');
     fireEvent.click(screen.getByRole('button', { name: 'Save to the vault' }));
     await waitFor(() => expect(window.location.pathname).toBe('/documents/doc-new'));
-    expect(state.captures?.[0]?.metadata?.notes).toBe('Certified copy\n\nOriginal with Mum');
+    expect(state.captures?.[0]?.metadata?.notes).toBe(
+      'Certified copy\nfrom the register\n\nOriginal with Mum',
+    );
 
-    // As written, on the document's page: its lines are its own.
+    // As written, on the document's page: its lines are its own — since
+    // 5.35 a note is drawn from its Markdown, which plain text already is:
+    // a blank line between paragraphs, and each line break kept.
     const heading = await screen.findByRole('heading', { name: 'Notes' });
-    const text = heading.closest('section')?.querySelector('p') as HTMLElement;
-    expect(text.textContent).toBe('Certified copy\n\nOriginal with Mum');
-    expect(text).toHaveClass('keep-lines');
+    const paragraphs = [...(heading.closest('section')?.querySelectorAll('.note p') ?? [])];
+    expect(paragraphs.map((p) => p.textContent)).toEqual([
+      'Certified copyfrom the register',
+      'Original with Mum',
+    ]);
+    expect(paragraphs[0]?.querySelectorAll('br')).toHaveLength(1);
   });
 });

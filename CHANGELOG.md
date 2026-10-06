@@ -6,6 +6,32 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.37] - 2026-10-06 — iteration 5.35
+
+Notes you can write, with a little formatting.
+
+### Added
+
+- **Notes on every document.** Anyone who may change a document can add or edit its one note, and teens can on their own documents.
+  - The editor has Bold, Italic, List, Numbered, Checklist and Link, with Ctrl/Cmd+B and I, a Write / Preview switch, and a counter.
+  - The note shows who last edited it and when, on the household's clock. Viewers and guests see when, but not by whom.
+  - If someone else changed the note while you were writing, you see their version and choose: keep theirs, or save yours over it. A change to anything else on the document saves your note anyway.
+  - Drafts are kept in the browser only for documents everyone in the family can see, and only for the person who wrote them. They are gone when you sign out.
+  - Links show their full address. An address that hides its real target (invisible characters, or a name before the site) stays plain text.
+- The activity log records that a note was added, changed or removed, never what it says.
+- "Answer the questions" on an empty Needs attention page opens just the household questions, already filled in with your answers.
+
+### Changed
+
+- Search results show a note's words without its formatting marks.
+- Editing only a note no longer also logs "changed the details".
+- The web app now tells the browser to run only its own scripts, as a second line of defence.
+
+### Fixed
+
+- "Export everything" is shown only to people who may export.
+- A panel could ignore Escape pressed at the very moment it finished saving.
+
 ## [0.5.36] - 2026-10-05 — iteration 5.34
 
 Someone outside the family, such as an attorney or an accountant, can have a sign-in of their own: always limited, always with an end, and never shown among the family.

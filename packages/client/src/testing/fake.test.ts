@@ -108,6 +108,63 @@ describe('the fake vault, for somebody who is not an owner', () => {
     expect(refused).toMatchObject({ status: 404, code: 'not_found' });
   });
 
+  it("a note's stamp as the real vault keeps it (5.35): only a change of words moves it; a viewer is told when, not who, and changes no note; a teen only their own", async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    const made = await api.createDocument(token, { title: 'Bill', notes: 'Paid **monthly**' });
+    expect(made.notes_updated_at).toEqual(expect.any(String));
+    expect(made.notes_updated_by_name).toBe('Fake Owner');
+    const stamp = made.notes_updated_at;
+    for (const body of [{ title: 'Water bill' }, { notes: ' Paid **monthly** ' }]) {
+      expect((await api.updateDocument(token, made.id, body)).notes_updated_at).toBe(stamp);
+    }
+    const scan = await api.capture(
+      token,
+      {
+        file: {
+          kind: 'bytes',
+          filename: 'bill.pdf',
+          contentType: 'application/pdf',
+          bytes: PDF,
+        },
+        metadata: { title: 'Scanned', notes: 'Filed with a note' },
+      },
+      '1c2d3e4f-5061-4728-9bac-1d2e3f4a5b6c',
+    );
+    expect(await api.document(token, scan.document_id)).toMatchObject({
+      notes: 'Filed with a note',
+      notes_updated_by_name: 'Fake Owner',
+    });
+
+    vault.state.role = 'viewer';
+    expect(await api.document(token, made.id)).toMatchObject({
+      notes_updated_at: stamp,
+      notes_updated_by_name: null,
+    });
+    expect(
+      await refusal(api.updateDocument(token, made.id, { notes: 'Not a viewer’s to change' })),
+    ).toMatchObject({ status: 403, code: 'forbidden' });
+
+    vault.state.role = 'teen';
+    expect(
+      await refusal(api.updateDocument(token, made.id, { notes: 'Not theirs to change' })),
+    ).toMatchObject({ status: 403, code: 'forbidden' });
+    const own = await api.createDocument(token, {
+      title: 'Bus pass',
+      owner_member_id: 'fake-member',
+    });
+    const written = await api.updateDocument(token, own.id, { notes: '- [ ] top up' });
+    expect(written).toMatchObject({ notes: '- [ ] top up', notes_updated_by_name: 'Fake Owner' });
+    expect((await api.document(token, made.id)).notes).toBe('Paid **monthly**');
+  });
+
   it('collections as the real vault keeps them for each role (0.5.12): a viewer sees none', async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
@@ -419,6 +476,72 @@ describe('the fake vault, people outside the family (5.34)', () => {
     expect(
       (await api.invite(token, { ...asked, email: 'lena3@example.test' })).invitation.member_id,
     ).toBe('lena');
+  });
+});
+
+describe('the fake vault, inviting somebody again', () => {
+  it('a new invitation for the same person takes back the one still waiting, as the vault does; only its maker or an owner sends it again (N534W-02 b)', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    vault.state.members.push({ id: 'omar', display_name: 'Omar', role: null, is_me: false });
+    const first = await api.invite(token, {
+      member_id: 'omar',
+      email: 'omar@example.test',
+      role: 'teen',
+    });
+    const second = await api.invite(token, {
+      member_id: 'omar',
+      email: 'omar.k@example.test',
+      role: 'teen',
+    });
+    // The first link no longer works, and is listed as taken back.
+    expect(
+      await refusal(
+        api.acceptInvitationLink(first.link_token, {
+          code: first.code,
+          password: 'omar’s own password',
+        }),
+      ),
+    ).toMatchObject({ status: 404, code: 'invitation_not_valid' });
+    const states = (await api.invitations(token)).items.map((i) => [i.id, i.state]);
+    expect(states).toEqual([
+      [first.invitation.id, 'revoked'],
+      [second.invitation.id, 'pending'],
+    ]);
+
+    // Another adult, who did not make it, may not send it again; an owner may.
+    vault.state.members.push({ id: 'sam', display_name: 'Sam', role: 'adult', is_me: false });
+    vault.state.signIns.push({
+      member_id: 'sam',
+      email: 'sam@example.test',
+      password: 'sam’s own password',
+    });
+    const sam = await api.signIn('sam@example.test', 'sam’s own password');
+    if (!('access_token' in sam)) throw new Error('Sam could not sign in');
+    expect(
+      await refusal(
+        api.invite(sam.access_token, {
+          member_id: 'omar',
+          email: 'omar.sam@example.test',
+          role: 'teen',
+        }),
+      ),
+    ).toMatchObject({ status: 409, code: 'already_invited' });
+    expect(vault.state.invitations.map((i) => i.view.state)).toEqual(['revoked', 'pending']);
+
+    // The one that stands is accepted as ever.
+    await api.acceptInvitationLink(second.link_token, {
+      code: second.code,
+      password: 'omar’s own password',
+    });
+    expect(vault.state.members.find((m) => m.id === 'omar')?.role).toBe('teen');
   });
 });
 

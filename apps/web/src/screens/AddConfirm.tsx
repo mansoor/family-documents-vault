@@ -8,6 +8,7 @@ import {
   issuerFromFilename,
   issuerKey,
   missingFields,
+  NOTES_MAX,
   parseDateInput,
   REMIND_ONCE,
   reminderOf,
@@ -42,9 +43,6 @@ import {
 } from '../details.js';
 import { Button, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
-
-/** The longest a note may be (POST /documents' limit). */
-const NOTES_MAX = 10_000;
 
 /**
  * Said under the date an Only me document is reminded from (5.16b): the

@@ -1,5 +1,5 @@
 import type { MultipartFile } from '@fastify/multipart';
-import type { CaptureMetadata } from '@fdv/shared';
+import { NOTES_MAX, type CaptureMetadata } from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -49,7 +49,9 @@ const documentBody = z
     physical_location: z.string().max(500).nullable(),
     is_essential: z.boolean(),
     tags: z.array(z.string().max(40)).max(50),
-    notes: z.string().max(10_000).nullable(),
+    // 5.35: a note in the small Markdown of @fdv/shared's notes.ts; its
+    // limit is unchanged.
+    notes: z.string().max(NOTES_MAX).nullable(),
     // The type's own details (0.5.7): checked against the type in the
     // service, and on an edit merged — null takes a key away.
     extra: z.record(z.string(), z.unknown()),

@@ -6,6 +6,7 @@ import {
   type TokenStore,
 } from '@fdv/client';
 import { api, type Tokens } from './api.js';
+import { forgetDrafts } from './note-drafts.js';
 import { clearPhotos } from './photos.js';
 import { disable as disablePush } from './push.js';
 
@@ -90,6 +91,9 @@ export class Session {
   }
 
   accept(tokens: Tokens) {
+    // A new sign-in starts with no notes half-written by the last one
+    // (5.35, A32).
+    forgetDrafts();
     // The in-memory half is set before this returns; the store write is
     // localStorage, which is synchronous underneath.
     void this.core.accept(tokens);
@@ -97,14 +101,34 @@ export class Session {
 
   clear() {
     // People's photos are held in memory for the sign-in that fetched them
-    // (5.17c): the next person at this browser is not shown them.
+    // (5.17c): the next person at this browser is not shown them. Nor the
+    // notes they had not saved (5.35, A32).
     clearPhotos();
+    forgetDrafts();
     void this.core.clear();
   }
 
   /** A usable access token — or why there is not one. */
-  token(): Promise<TokenResult> {
-    return this.core.token();
+  async token(): Promise<TokenResult> {
+    const before = this.core.info;
+    const r = await this.core.token();
+    const after = this.core.info;
+    // A session that ended by itself — signed out on another device, taken
+    // away, run out — takes its unsaved notes with it, as signing out does
+    // (5.35, A32).
+    if (r.kind === 'ended' || r.kind === 'signed_out') forgetDrafts();
+    // And one this tab took over from another tab, signed in there as
+    // somebody else (the 5.35 review, W535-07): nothing of the last
+    // person's stays — their unsaved notes, the photos fetched for them.
+    if (
+      before &&
+      after &&
+      (before.member_id !== after.member_id || before.household_id !== after.household_id)
+    ) {
+      forgetDrafts();
+      clearPhotos();
+    }
+    return r;
   }
 
   async signOut() {

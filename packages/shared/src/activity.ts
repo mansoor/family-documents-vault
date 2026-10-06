@@ -94,6 +94,14 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
       return line(`${who} added ${doc}`);
     case 'document.updated':
       return line(`${who} edited ${doc}`);
+    // 5.35: its note written, changed or taken away. The log never holds
+    // what a note says, only which of those it was.
+    case 'document.notes_changed':
+      return detail.change === 'added'
+        ? line(`${who} added a note to ${doc}`)
+        : detail.change === 'removed'
+          ? line(`${who} took the note off ${doc}`)
+          : line(`${who} changed the note on ${doc}`);
     case 'document.version_added':
       return line(`${who} uploaded a new copy of ${doc}`);
     case 'document.downloaded':
@@ -711,17 +719,41 @@ export function whenWords(iso: string, now = new Date()): string {
 /**
  * "26 Sep 2026, 3:12pm" — a moment exactly, date and time always both: for
  * a table or a history, where lines are compared rather than read aloud.
+ * On the household's clock when given its time zone (5.35: who last edited
+ * a note, and when); else this device's. A zone this device does not know
+ * reads as UTC rather than failing.
  */
-export function whenExactly(iso: string): string {
+export function whenExactly(iso: string, timezone?: string | null): string {
   const at = new Date(iso);
-  const date = at.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  return `${date}, ${clockTime(at)}`;
+  const zone = timezone ? knownZone(timezone) : undefined;
+  const date = at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    ...(zone ? { timeZone: zone } : {}),
+  });
+  return `${date}, ${clockTime(at, zone)}`;
+}
+
+/** A time zone this device can say times in, or UTC. */
+function knownZone(timezone: string): string {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone: timezone });
+    return timezone;
+  } catch {
+    return 'UTC';
+  }
 }
 
 /** "4:12pm": the time as the design writes it. */
-function clockTime(at: Date): string {
+function clockTime(at: Date, timeZone?: string): string {
   return at
-    .toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true })
+    .toLocaleTimeString('en-GB', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      ...(timeZone ? { timeZone } : {}),
+    })
     .replace(/\s/g, '')
     .toLowerCase();
 }

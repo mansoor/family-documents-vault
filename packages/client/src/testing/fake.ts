@@ -319,6 +319,12 @@ export interface FakeInvitation {
   code: string;
   restriction: AccessGrant | null;
   by_owner: boolean;
+  /**
+   * Who made it, by member id: a later invitation for the same person, from
+   * its maker or an owner, takes its place (as the real vault's does).
+   * Absent for one a test made: then only an owner replaces it.
+   */
+  by_member?: string;
 }
 
 export interface FakeRestriction extends AccessGrant {
@@ -349,6 +355,12 @@ type FakeDocument = {
    * sets it, to have an owner ask before removing it for good (5.24).
    */
   filedBySomeoneElse?: boolean;
+  /**
+   * When its note's words last changed, and who changed them, by member id
+   * (5.35): set as the real vault sets it, only when the words change.
+   */
+  notes_updated_at?: string | null;
+  notes_updated_by?: string | null;
 } & Omit<CaptureMetadata, 'title'>;
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
@@ -1208,6 +1220,20 @@ export function createFakeVault(): {
       };
       state.members.push(member);
     }
+    // "Send another one", as the real vault: an invitation for the same
+    // person still waiting is taken back — by its maker or an owner; anybody
+    // else is told somebody else has invited them (N534W-02 b).
+    const waiting = state.invitations.filter(
+      (i) => i.view.member_id === member?.id && i.view.state === 'pending',
+    );
+    if (who.role !== 'owner' && waiting.some((i) => i.by_member !== who.memberId)) {
+      return fail(
+        409,
+        'already_invited',
+        'Somebody else has already invited this person. Ask them, or an owner, to send it again.',
+      );
+    }
+    for (const i of waiting) i.view.state = 'revoked';
     const view: Invitation = {
       id: next('invitation'),
       member_id: member.id,
@@ -1231,6 +1257,7 @@ export function createFakeVault(): {
       code,
       restriction: checked,
       by_owner: who.role === 'owner',
+      by_member: who.memberId,
     });
     return ok({ invitation: view, link_token: token, code }, 201);
   };
@@ -1525,11 +1552,27 @@ export function createFakeVault(): {
       state.resetNotices.delete(whoOf(s).memberId);
       return empty();
     }
+    /**
+     * Who last changed a note, as the real vault names them (5.35): on the
+     * activity log's terms — never to a viewer — and by the name the
+     * household knows them by.
+     */
+    const editorName = (memberId: string) =>
+      can(state.role, 'audit.read')
+        ? (state.members.find((m) => m.id === memberId)?.display_name ?? null)
+        : null;
     /** A document as the real vault answers it, with its status in words (0.5.7). */
-    const viewOf = (doc: FakeDocument) => documentView(doc, state.types, { role: state.role });
+    const viewOf = (doc: FakeDocument) =>
+      documentView(doc, state.types, { role: state.role, editorName });
     /** As a list answers it: an Only me document's notes and details stay sealed (0.5.8). */
     const listedOf = (doc: FakeDocument) =>
-      documentView(doc, state.types, { listed: true, role: state.role });
+      documentView(doc, state.types, { listed: true, role: state.role, editorName });
+    /** Its note's words changed (5.35): stamped by whoever is signed in, now. Else left alone. */
+    const stampNotes = (doc: FakeDocument, before: string | null, memberId: string) => {
+      if ((doc.notes ?? null) === before) return;
+      doc.notes_updated_at = new Date().toISOString();
+      doc.notes_updated_by = memberId;
+    };
     /**
      * The details sent for a document, checked as the real vault checks
      * them (0.5.7): against the type it will have, merged into what it
@@ -1597,6 +1640,7 @@ export function createFakeVault(): {
           ...(visibility !== undefined ? { visibility } : {}),
           extra,
         };
+        stampNotes(doc, null, whoOf(s).memberId);
         state.documents.push(doc);
         return ok(viewOf(doc), 201);
       }
@@ -1674,6 +1718,15 @@ export function createFakeVault(): {
       );
       if (!doc) return fail(404, 'not_found', 'That document is not in the vault.');
       if (init.method === 'GET') return ok(viewOf(doc));
+      // As the real vault: a viewer (a guest among them) changes nothing,
+      // and a teen only their own (5.35's notes, as every edit).
+      const editor = whoOf(s);
+      if (!can(editor.role, 'document.edit')) {
+        return fail(403, 'forbidden', refusalFor('document.edit'));
+      }
+      if (editor.role === 'teen' && doc.owner_member_id !== editor.memberId) {
+        return fail(403, 'forbidden', 'You can only change your own documents.');
+      }
       // As the real vault: an edit made to a version somebody has since
       // changed is refused, not laid over theirs.
       const ifMatch = init.headers['if-match'];
@@ -1712,7 +1765,11 @@ export function createFakeVault(): {
       }
       if (body.issued_by !== undefined) doc.issued_by = tidy(body.issued_by as string | null);
       if (body.expires !== undefined) doc.expires = body.expires as DateValue | null;
-      if (body.notes !== undefined) doc.notes = note(body.notes as string | null);
+      if (body.notes !== undefined) {
+        const before = doc.notes ?? null;
+        doc.notes = note(body.notes as string | null);
+        stampNotes(doc, before, editor.memberId);
+      }
       doc.revision = (doc.revision ?? 1) + 1;
       return ok(viewOf(doc));
     }
@@ -1823,6 +1880,7 @@ export function createFakeVault(): {
             'owner',
           ),
         };
+        stampNotes(doc, null, whoOf(s).memberId);
         state.documents.push(doc);
         documentId = doc.id;
       }
@@ -3765,7 +3823,12 @@ function answer(made: FakeUpload) {
 function documentView(
   doc: FakeDocument,
   types: ReadonlyArray<DocumentTypeView>,
-  opts: { listed?: boolean; role?: string } = {},
+  opts: {
+    listed?: boolean;
+    role?: string;
+    /** Who changed a note, by member id, as the reader may be told them (5.35). */
+    editorName?: (memberId: string) => string | null;
+  } = {},
 ): DocumentView {
   const type = types.find((t) => t.key === doc.type_key);
   const expires = doc.expires ?? null;
@@ -3784,6 +3847,11 @@ function documentView(
     visibility: doc.visibility ?? 'household',
     notes: sealed ? null : (doc.notes ?? null),
     has_notes: (doc.notes ?? null) !== null,
+    // When its note's words last changed, and who changed them (5.35).
+    notes_updated_at: doc.notes_updated_at ?? null,
+    notes_updated_by_name: doc.notes_updated_by
+      ? (opts.editorName?.(doc.notes_updated_by) ?? null)
+      : null,
     extra: sealed ? {} : (doc.extra ?? {}),
     // The fake's one signed-in person files every document it holds, unless
     // a test says somebody else did (5.24).

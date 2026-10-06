@@ -13,6 +13,7 @@ import { describeError, useApp, useLoad } from '../app-context.js';
 import { AddToCollection, audienceLabel, collectionsOffered } from '../collections.js';
 import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
+import { NotesSection } from '../notes.js';
 import {
   BottomNav,
   Button,
@@ -39,15 +40,23 @@ export function DocumentScreen() {
   const { id } = useParams<{ id: string }>();
   const { withToken, guarded, authVersion, session, caps } = useApp();
   const navigate = useNavigate();
-  const { data, error, reload } = useLoad(
+  const { data, error, reload, setData } = useLoad(
     async (t) => {
-      const [doc, versions, members, types] = await Promise.all([
+      const [doc, versions, members, types, profile] = await Promise.all([
         api.document(t, id as string),
         api.versions(t, id as string),
         api.members(t),
         api.documentTypes(t),
+        // The household's clock, which a note's "edited …" is said in (5.35).
+        api.profile(t).catch(() => null),
       ]);
-      return { doc, versions: versions.items, members: members.items, types: types.items };
+      return {
+        doc,
+        versions: versions.items,
+        members: members.items,
+        types: types.items,
+        timezone: profile?.timezone ?? null,
+      };
     },
     [id, authVersion],
   );
@@ -407,14 +416,21 @@ export function DocumentScreen() {
         </label>
       </section>
 
-      {doc.notes && (
-        <section aria-labelledby="notes-h">
-          <h2 id="notes-h" className="section-h">
-            {word('notes', 'Notes')}
-          </h2>
-          {/* Plain text, as it was written: its line breaks kept (5.10). */}
-          <p className="keep-lines">{doc.notes}</p>
-        </section>
+      {/* One note a document (5.35, A30): read by whoever sees it, written
+          by whoever may change it. A kind of document that does not ask for
+          notes offers none, but shows one it has. */}
+      {(doc.notes || (mayChangeIt && coreRule(type, 'notes').shown)) && (
+        <NotesSection
+          key={doc.id}
+          doc={doc}
+          label={word('notes', 'Notes')}
+          mayEdit={mayChangeIt}
+          timezone={data.timezone}
+          // As the vault holds it now, whether saved or refused (409): over
+          // whatever the page holds then, never a copy from before a reload.
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          onRefreshed={(now) => setData((d) => (d ? { ...d, doc: now } : d))}
+        />
       )}
       {collectionsOffered(caps, storedRole()) && (
         <DocumentCollections documentId={doc.id} title={doc.title ?? 'Needs a name'} />
