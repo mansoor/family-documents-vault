@@ -122,11 +122,12 @@ test('an Only me note is found only through its owner’s private search', async
   await page.getByLabel('Notes').fill(`Ask the agent about the ${word}\nbefore the lease ends`);
   await page.getByRole('button', { name: 'Save to the vault' }).click();
 
-  // The note as it was written, its line break kept.
+  // The note as it was written, its line break kept. (Its paragraph: since
+  // 5.35 the section also says who edited it and when.)
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   const note = page
     .locator('section', { has: page.getByRole('heading', { name: 'Notes' }) })
-    .locator('p');
+    .locator('.note p');
   await expect(note).toHaveText(`Ask the agent about the ${word} before the lease ends`);
   expect(await note.innerText()).toBe(`Ask the agent about the ${word}\nbefore the lease ends`);
 
