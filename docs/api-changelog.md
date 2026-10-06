@@ -3681,14 +3681,18 @@ guest_always_limited`. A guest owns no document, by any path — made,
     - **Added:** `GET /api/v1/documents/{id}/suggestions` — what the
       words on a document's newest version propose for the fields it has no
       value for: `{ "state": "ready" | "pending" | "unavailable",
-"proposal": { … } }`. `proposal` has at most `type_key`,
+"version_id": "…" | null, "proposal": { … } }`. `version_id` is the
+      version whose pages were read (null unless `ready`): a client offers
+      the proposal only while that is still the document's newest version,
+      and asks again when one is added. `proposal` has at most `type_key`,
       `owner_member_id`, `issued`, `expires` (each a `DateValue`),
       `identifier` and `issued_by`, each `{ "value", "confidence", "cue" }`:
       a confidence from 0 to 1, never below `PROPOSAL_THRESHOLDS` for its
       field (anything below is left out), and a cue from a fixed list
       (`PROPOSAL_CUES`: `kind_words`, `machine_lines`, `name_labelled`,
       `issue_label`, `expiry_label`, `due_label`, `period_end`,
-      `number_label`, `known_issuer`, `letterhead`, `issuing_body`, …) —
+      `number_label`, `known_issuer`, `letterhead`, `issuing_body`,
+      `issuing_country`, …) —
       a reason, never the page's words. A field the document has a value
       for is never proposed. `pending` while the worker is still reading
       the pages; `unavailable` with no file, or a kind of file it does not
@@ -3703,22 +3707,36 @@ guest_always_limited`. A guest owns no document, by any path — made,
       date and no number without a confident kind — the document's own, or
       one the page proposes at the 2.6 spike's bar (a score of 5, 2 ahead
       of the next); only the dates that kind keeps; whose it is, by the
-      family's names where the page names its holder (never a guest, and
-      nobody when two of the family are named together); a passport's
-      machine-readable lines believed only with their check digits right;
+      family's names: a first name with the family's surname beside it or
+      on the form's surname line, never a first name alone, never a
+      first name that is also a word ("Bill To:", "May 2025") without its
+      surname, never a name on a doctor's, a parent's or a signature's line
+      or in a transaction, never a guest, and nobody when two of the
+      family are named together; a passport's machine-readable lines
+      believed only with their check digits right, its holder only with
+      the family's surname, and its expiry's century the one that fits its
+      issue; a kind whose issuer is a country (a passport's "Issuing
+      country") offered a country, never an office; a pet's vaccination
+      record never a person's medical record; "issued" a label only in a
+      label's form ("Issued:", "Issued 14 March"), never in a sentence;
+      a number read whole, never a phone number or a postcode;
       a date in numbers whose order the document does not show read in the
       household's (`profile.country`, the US month first), and not at all
       without one. English only (A46).
     - **Unchanged:** `GET /documents/{id}/issuer-suggestions` stays, for
       older phones.
     - **Changed (the worker):** a PDF's text is read from the PDF itself
-      (poppler's `pdftotext`); only a page with none — a scan — is drawn
-      and OCR'd, so a text PDF never reaches Tesseract. A Word file's words
-      are read from its XML (its headers, body and footers), so it is
-      searched, and suggested from, as a PDF is; `ocr_status` is `done` for
-      it. An Excel workbook is still not read. The text kept of one
-      version is at most 500,000 characters. `FDV_OCR_MAX_PAGES` (20) is
-      now the pages of a PDF read, by its own text or by OCR.
+      (poppler's `pdftotext -layout`, so a table's label stays beside its
+      value); a page is drawn and OCR'd only when it is a scan — no text of
+      its own, or a picture covering a tenth of it or more (poppler's
+      `pdfimages`) — and then keeps both texts, so a text PDF never reaches
+      Tesseract and nothing searched before is lost. A Word file's words
+      are read from its XML (its headers, body and footers), the XML turned
+      into text on a thread of its own that is stopped at its deadline; so
+      it is searched, and suggested from, as a PDF is; `ocr_status` is
+      `done` for it. An Excel workbook is still not read. The text kept of
+      one version is at most 500,000 characters. `FDV_OCR_MAX_PAGES` (20)
+      is now the pages of a PDF read, by its own text or by OCR.
     - `@fdv/shared`: `proposeDetails`, `ProposalContext`, `DetailProposal`,
       `Proposed`, `PROPOSAL_FIELDS`, `PROPOSAL_CUES`, `CUE_WORDS`,
       `PROPOSAL_THRESHOLDS`, `KIND_MIN_SCORE`, `KIND_MIN_LEAD`,

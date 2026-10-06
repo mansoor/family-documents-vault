@@ -180,10 +180,12 @@ describe('the fake vault, for somebody who is not an owner', () => {
     // Nothing given: nothing to read.
     expect(await api.detailSuggestions(token, made.id)).toEqual({
       state: 'unavailable',
+      version_id: null,
       proposal: {},
     });
     vault.state.detailSuggestions.set(made.id, {
       state: 'ready',
+      version_id: 'v-made',
       proposal: {
         type_key: { value: 'passport', confidence: 0.9, cue: 'kind_words' },
         expires: {
@@ -219,7 +221,11 @@ describe('the fake vault, for somebody who is not an owner', () => {
       'identifier',
     ]);
     // Still being read: asked again, nothing yet.
-    vault.state.detailSuggestions.set(made.id, { state: 'pending', proposal: {} });
+    vault.state.detailSuggestions.set(made.id, {
+      state: 'pending',
+      version_id: null,
+      proposal: {},
+    });
     expect((await api.detailSuggestions(token, made.id)).state).toBe('pending');
     expect(await refusal(api.detailSuggestions(token, 'no-such-document'))).toMatchObject({
       status: 404,

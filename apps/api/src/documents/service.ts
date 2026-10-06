@@ -1407,7 +1407,7 @@ export class DocumentService {
       const doc = await this.fetch(trx, p, id);
       this.mustOwnIfTeen(p, doc);
       const read = await this.pagesText(trx, p, doc);
-      if (read.state !== 'ready') return { state: read.state, proposal: {} };
+      if (read.state !== 'ready') return { state: read.state, version_id: null, proposal: {} };
 
       // The household's kinds as it keeps them now; a hidden one is never proposed.
       const kinds = await trx
@@ -1454,7 +1454,7 @@ export class DocumentService {
             : 'dmy'
           : undefined,
       });
-      return { state: 'ready', proposal };
+      return { state: 'ready', version_id: read.versionId, proposal };
     });
   }
 
@@ -1469,7 +1469,9 @@ export class DocumentService {
     trx: Db,
     p: Principal,
     doc: DocRow,
-  ): Promise<{ state: 'ready'; text: string } | { state: 'pending' | 'unavailable' }> {
+  ): Promise<
+    { state: 'ready'; text: string; versionId: string } | { state: 'pending' | 'unavailable' }
+  > {
     const version = await trx
       .selectFrom('document_version')
       .select(['id', 'ocr_status', 'wrapped_by_scope'])
@@ -1500,7 +1502,7 @@ export class DocumentService {
     }
     if (text === null)
       return { state: version.ocr_status === 'pending' ? 'pending' : 'unavailable' };
-    return { state: 'ready', text: text.slice(0, PAGES_TEXT_MAX) };
+    return { state: 'ready', text: text.slice(0, PAGES_TEXT_MAX), versionId: version.id };
   }
 
   /** Counts by member and by category, for the home screen tiles (ORG-02). */

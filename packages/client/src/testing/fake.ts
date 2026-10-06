@@ -2008,7 +2008,7 @@ export function createFakeVault(): {
       }
       const given = state.detailSuggestions.get(id);
       if (!given || given.state !== 'ready') {
-        return ok({ state: given?.state ?? 'unavailable', proposal: {} });
+        return ok({ state: given?.state ?? 'unavailable', version_id: null, proposal: {} });
       }
       // A field the document has a value for is never offered.
       const has: Record<keyof DetailSuggestions['proposal'], boolean> = {
@@ -2022,7 +2022,7 @@ export function createFakeVault(): {
       const proposal = Object.fromEntries(
         Object.entries(given.proposal).filter(([k]) => !has[k as keyof typeof has]),
       );
-      return ok({ state: 'ready', proposal });
+      return ok({ state: 'ready', version_id: given.version_id, proposal });
     }
     const uploadKey = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
     if (uploadKey && init.method === 'GET') {

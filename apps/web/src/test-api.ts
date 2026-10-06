@@ -3009,11 +3009,12 @@ export function installFakeApi(state: FakeState) {
       const given = state.detailSuggestions?.[id];
       const doc = state.documents.find((d) => d.id === id);
       if (!given || given.state !== 'ready' || !doc) {
-        return json({ state: given?.state ?? 'unavailable', proposal: {} });
+        return json({ state: given?.state ?? 'unavailable', version_id: null, proposal: {} });
       }
       const has = (v: unknown) => v !== null && v !== undefined && v !== '';
       return json({
         state: 'ready',
+        version_id: given.version_id,
         proposal: Object.fromEntries(
           Object.entries(given.proposal).filter(([field]) => !has(doc[field])),
         ),

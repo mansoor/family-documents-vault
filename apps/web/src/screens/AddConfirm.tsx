@@ -385,6 +385,20 @@ export function ConfirmScreen() {
       // be typed over.
       notes: d.notes ?? (d.has_notes ? null : ''),
       details: detailInputs(d.extra, type?.fields ?? []),
+      // Whose it is, when the document says nobody: the card's own guess.
+      ownerDefaulted: d.owner_member_id === null,
+      // A name nobody typed — none, or the one the card would give it —
+      // still follows the kind, the person, the issuer and the month.
+      titleAutomatic:
+        d.title === null ||
+        (!!d.type_key &&
+          !!type &&
+          d.title ===
+            autoTitle(
+              type,
+              members.find((m) => m.id === d.owner_member_id),
+              { issued_by: d.issued_by ?? null, issued: d.issued },
+            )),
     };
   };
   return (
@@ -393,6 +407,7 @@ export function ConfirmScreen() {
       back={`/documents/${doc.id}`}
       lede="Change anything that is wrong. Everything else can wait."
       documentId={doc.id}
+      versionId={doc.latest_version_id}
       filedByMe={doc.filed_by_me === true}
       types={types}
       members={members}
@@ -438,6 +453,10 @@ interface CardValues {
   notes: string | null;
   /** The type's own details as the card holds them, by field key (5.10). */
   details: Record<string, DetailInput>;
+  /** Whose it is was the card's guess, not the document's (5.37, decision 17). */
+  ownerDefaulted?: boolean;
+  /** The name is one nobody typed: it follows the details until somebody does. */
+  titleAutomatic?: boolean;
 }
 
 /** How many issuers the card offers at once. */
@@ -544,6 +563,8 @@ export function ConfirmForm(props: {
   fileName?: string;
   /** The document this card is about, when it is already in the vault. */
   documentId?: string;
+  /** Its newest version: the pages proposed from must be that version's (5.37). */
+  versionId?: string | null;
   /** Whether the reader filed that document (a teen changes who sees only those: A72). */
   filedByMe?: boolean;
   types: DocumentTypeView[];
@@ -564,7 +585,11 @@ export function ConfirmForm(props: {
   const [title, setTitle] = useState(initial.title);
   // The name follows the type, the person, the issuer and the month until
   // somebody types one.
-  const [titleTyped, setTitleTyped] = useState(initial.title !== '' && !props.fileName);
+  const [titleTyped, setTitleTyped] = useState(
+    initial.title !== '' && !props.fileName && initial.titleAutomatic !== true,
+  );
+  // Whose it is, chosen by somebody: the card's own guess is not a choice (decision 17).
+  const [ownerChosen, setOwnerChosen] = useState(initial.ownerDefaulted !== true);
   const [owner, setOwner] = useState(initial.owner);
   const [issuer, setIssuer] = useState(initial.issuer);
   const [issued, setIssued] = useState(initial.issued);
@@ -690,13 +715,19 @@ export function ConfirmForm(props: {
   // What the pages propose (5.37), on the Edit card of a document already
   // in the vault: a chip under each empty field, filling it only on a tap.
   const suggests = useSuggestionsOffered() && editing && Boolean(props.documentId);
-  const proposal = useDetailSuggestions(props.documentId, suggests, undefined);
+  const proposal =
+    useDetailSuggestions(props.documentId, suggests, { versionId: props.versionId ?? null })
+      ?.proposal ?? null;
+  // Its dates, its number and its issuer were read for one kind: another
+  // kind chosen, and they are not offered (the review).
+  const readFor = proposal?.type_key?.value ?? base.typeKey;
+  const kindFits = typeKey === '' || typeKey === readFor;
   const offers = useIssuerOffers({
     fileName: props.fileName,
     documentId: props.documentId,
     typeKey,
     wanted: issuer.trim() === '',
-    fromProposal: suggests ? (proposal?.issued_by?.value ?? null) : undefined,
+    fromProposal: suggests ? ((kindFits ? proposal?.issued_by?.value : null) ?? null) : undefined,
   });
   /** A chip for one proposed field, under it, while that field is empty. */
   const chip = (
@@ -706,6 +737,8 @@ export function ConfirmForm(props: {
     pick: () => void,
   ) => {
     const p = proposal?.[field];
+    const forKind = field === 'issued' || field === 'expires' || field === 'identifier';
+    if (forKind && !kindFits) return null;
     const words = proposal && p && empty ? chipWords(field, proposal, types, members) : null;
     if (!words || !p) return null;
     return (
@@ -755,6 +788,7 @@ export function ConfirmForm(props: {
   };
   const chooseOwner = (v: string) => {
     setOwner(v);
+    setOwnerChosen(true);
     retitle({ who: members.find((m) => m.id === v) ?? null });
     if (type && props.fileName && !visibilityChosen) {
       // Nobody has chosen yet: the kind's default, for this person.
@@ -993,10 +1027,12 @@ export function ConfirmForm(props: {
         />
         {chip(
           'owner_member_id',
-          owner === '' && people.some((m) => m.id === proposal?.owner_member_id?.value),
+          (owner === '' || !ownerChosen) &&
+            proposal?.owner_member_id?.value !== owner &&
+            people.some((m) => m.id === proposal?.owner_member_id?.value),
           'whose it is',
           () => {
-            if (owner !== '' || !proposal?.owner_member_id) return;
+            if ((owner !== '' && ownerChosen) || !proposal?.owner_member_id) return;
             chooseOwner(proposal.owner_member_id.value);
             document.getElementById('f-who')?.focus();
           },

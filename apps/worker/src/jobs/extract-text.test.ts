@@ -5,6 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { ZipArchive } from 'archiver';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { proposeDetails } from '@fdv/shared';
 import { extractText, MAX_TEXT_CHARS } from './extract-text.js';
 import { detectTools, ocrImage } from './tools.js';
 import { NotWordError, WORD_MIME, wordText, wordXmlText } from './word-text.js';
@@ -83,6 +84,75 @@ function mixedPdf(line: string, scan: { jpeg: Buffer; width: number; height: num
       Buffer.from('\nendstream', 'latin1'),
     ],
   ]);
+}
+
+/**
+ * A page that is a picture with a line of real text in its text layer: a
+ * scan with a header line. The line is not drawn (rendering mode 3, as an
+ * OCR layer is), so only the page's own text can give it back.
+ */
+function scanWithHeader(header: string, scan: { jpeg: Buffer; width: number; height: number }) {
+  const draw = `q 612 0 0 792 0 0 cm /Im1 Do Q BT 3 Tr /F1 9 Tf 20 780 Td (${header}) Tj ET`;
+  return pdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> >> >>',
+    `<< /Length ${draw.length} >>\nstream\n${draw}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    [
+      Buffer.from(
+        `<< /Type /XObject /Subtype /Image /Width ${scan.width} /Height ${scan.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${scan.jpeg.length} >>\nstream\n`,
+        'latin1',
+      ),
+      scan.jpeg,
+      Buffer.from('\nendstream', 'latin1'),
+    ],
+  ]);
+}
+
+/**
+ * A schedule laid out as a table: each label in one column, its value in
+ * another, as an insurer's PDF sets them (the review's key/value table).
+ */
+function tablePdf(rows: Array<[string, string]>): Buffer {
+  const lines = rows
+    .map(([k, v], i) => {
+      const y = 700 - i * 24;
+      return `BT /F1 11 Tf 72 ${y} Td (${k}) Tj ET BT /F1 11 Tf 320 ${y} Td (${v}) Tj ET`;
+    })
+    .join(' ');
+  const head = 'BT /F1 16 Tf 72 740 Td (Home Insurance Policy Schedule) Tj ET';
+  const content = `${head} ${lines}`;
+  return pdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]);
+}
+
+/** A page of words drawn as a JPEG, as a scanner draws one. */
+async function scanImage(dir: string, words: string[]): Promise<Buffer> {
+  const picture = path.join(dir, `scan-${words.length}-${words[0]?.length ?? 0}.jpg`);
+  const font = await run('fc-match', ['-f', '%{file}', 'sans-serif'])
+    .then(({ stdout }) => stdout.trim())
+    .catch(() => '');
+  await run(tools.magick ? 'magick' : 'convert', [
+    '-size',
+    '1275x1650',
+    'xc:white',
+    ...(font ? ['-font', font] : []),
+    '-pointsize',
+    '64',
+    '-fill',
+    'black',
+    ...words.flatMap((w, i) => ['-annotate', `+100+${400 + i * 120}`, w]),
+    '-quality',
+    '90',
+    `jpeg:${picture}`,
+  ]);
+  return readFile(picture);
 }
 
 /** A Word file of the parts given, as Word zips them. */
@@ -223,6 +293,116 @@ describe('extracting text (5.37)', () => {
     },
     120_000,
   );
+
+  it.skipIf(!scans)(
+    "a scanned page that also carries a line of text is OCR'd, and keeps both (C537-07)",
+    async () => {
+      const jpeg = await scanImage(dir, ['ELECTRICITY BILL 4471', 'AMOUNT DUE 187 POUNDS']);
+      for (const header of [
+        // A browser's print header: a date, a file name, its address, 1/1.
+        '05/10/2026, 18:42 file:///C:/Users/me/Downloads/bill-scan.pdf energy bill 1/1',
+        'Scanned with CamScanner by a phone in the kitchen',
+      ]) {
+        const file = path.join(dir, 'header-scan.pdf');
+        await writeFile(file, scanWithHeader(header, { jpeg, width: 1275, height: 1650 }));
+        const { asked, ocr } = counting();
+        const got = await extractText(file, 'application/pdf', { maxPages: 5, workDir: dir, ocr });
+        expect(asked, header).toHaveLength(1);
+        const text = got?.text.replace(/\s+/g, ' ') ?? '';
+        // The scan is read, and the line it carried is kept beside it.
+        expect(text, header).toMatch(/ELECTRICITY BILL 4471/);
+        expect(text, header).toContain(header);
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!pdfText)(
+    "a table's labels stay beside their values, so a text PDF's dates and number are proposed (C537-08)",
+    async () => {
+      const file = path.join(dir, 'schedule.pdf');
+      await writeFile(
+        file,
+        tablePdf([
+          ['Policy number', 'HQ-4471-2290'],
+          ['Policyholder', 'Mrs Sara Khan'],
+          ['Start date', '15 June 2025'],
+          ['End date', '14 June 2026'],
+          ['Annual premium', '412.80'],
+        ]),
+      );
+      const got = await extractText(file, 'application/pdf', { maxPages: 5, workDir: dir });
+      expect(got?.source).toBe('pdf');
+      const p = proposeDetails(got?.text ?? '', {
+        types: [
+          {
+            key: 'insurance_policy',
+            label: 'Insurance policy',
+            fields: [],
+            expiry_driver: 'expires_on',
+            issued_by_label: 'Insurer',
+          },
+        ],
+        people: [{ id: 'm-sara', name: 'Sara' }],
+        household: 'The Khan family',
+        dateOrder: 'dmy',
+        current: { type_key: 'insurance_policy' },
+      });
+      expect(p.issued?.value.date).toBe('2025-06-15');
+      expect(p.expires?.value.date).toBe('2026-06-14');
+      expect(p.identifier?.value).toBe('HQ-4471-2290');
+    },
+    60_000,
+  );
+
+  it('megabytes of unclosed tags are turned into text in linear time (P537-01)', () => {
+    // Unclosed to the end: nothing after them closes a tag.
+    const xml = `<w:document ${W}><w:body>${para('Start')}${'<a '.repeat(80_000)}`;
+    const started = Date.now();
+    expect(wordXmlText(xml)).toBe('Start');
+    // Quadratic, this took seconds (and megabytes, hours); linear, milliseconds.
+    expect(Date.now() - started).toBeLessThan(1_500);
+  }, 30_000);
+
+  it('a Word file of megabytes of unclosed tags is read on its own thread: the worker keeps ticking (P537-01)', async () => {
+    const file = path.join(dir, 'unclosed.docx');
+    await writeFile(
+      file,
+      await docx({
+        ...WORD_PARTS,
+        'word/document.xml': `<w:document ${W}><w:body>${para('Start')}${'<a '.repeat(3_000_000)}`,
+      }),
+    );
+    let ticks = 0;
+    const tick = setInterval(() => (ticks += 1), 5);
+    const started = Date.now();
+    try {
+      const text = await wordText(file);
+      expect(text).toContain('Start');
+    } finally {
+      clearInterval(tick);
+    }
+    const took = Date.now() - started;
+    expect(took).toBeLessThan(20_000);
+    // The event loop ran all the while: a tick every few milliseconds.
+    expect(ticks).toBeGreaterThan(Math.floor(took / 5 / 4));
+  }, 60_000);
+
+  it('turning XML into text stops at its deadline, whatever it is doing (P537-01)', async () => {
+    const file = path.join(dir, 'slow.docx');
+    await writeFile(
+      file,
+      await docx({
+        ...WORD_PARTS,
+        'word/document.xml': `<w:document ${W}><w:body>${para('Start').repeat(80_000)}</w:body></w:document>`,
+      }),
+    );
+    const started = Date.now();
+    await expect(wordText(file, { deadlineMs: 30 })).rejects.toThrow('took too long');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // Given the time, the same file is read.
+    expect(await wordText(file)).toContain('Start');
+  }, 60_000);
 
   it('a Word file gives its text: its header, its body and its tables, then its footer', async () => {
     const file = path.join(dir, 'tenancy.docx');

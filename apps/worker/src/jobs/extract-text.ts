@@ -1,6 +1,7 @@
 import {
   detectTools,
   ocrImage,
+  pdfImageCoverage,
   pdfPageCount,
   pdfPageTexts,
   renderPdfPage,
@@ -16,9 +17,12 @@ import { WORD_MIME, wordText } from './word-text.js';
  * version (`version.process`) and, later, a file that is not a document yet
  * (Phase 6's inbox) the same way.
  *
- * - A PDF gives the text it carries (pdftotext), page by page; only a page
- *   with none — a scan — is drawn and OCR'd. A text PDF never reaches
- *   Tesseract.
+ * - A PDF gives the text it carries (pdftotext, laid out as the page is),
+ *   page by page. A page that is a scan is drawn and OCR'd too: one with
+ *   no text of its own, or one a picture covers a tenth of or more, whatever
+ *   text it also carries (the review: a scan with a printed header line had
+ *   its scan dropped). Such a page keeps both texts, so nothing searched
+ *   before 5.37 is lost. A text PDF never reaches Tesseract.
  * - A photo or a scan is OCR'd.
  * - A Word file gives the words in its XML.
  * - Anything else (an Excel workbook) gives none.
@@ -51,6 +55,13 @@ export interface ExtractedText {
 
 /** A page whose own text has fewer letters and digits than this is a scan: it is OCR'd. */
 export const MIN_PAGE_TEXT = 16;
+/** A page this much of which a picture covers is a scan too, whatever text it carries. */
+export const MIN_PICTURE_COVER = 0.1;
+/**
+ * When the pictures cannot be measured, a page with less text of its own
+ * than this is OCR'd as well, in case it is a scan with a line of text.
+ */
+export const SHORT_PAGE_TEXT = 200;
 /**
  * The most text kept of one file. Search's index of a version has room for
  * about this much (a tsvector is at most 1 MB); a document's details are on
@@ -109,6 +120,8 @@ async function readPdf(
     own = await pdfPageTexts(file, Math.min(total ?? opts.maxPages, opts.maxPages)).catch(() => []);
   }
   const pages = total !== null ? Math.min(total, opts.maxPages) : own.length;
+  // How much of each page is a picture: none of a text page's, all of a scan's.
+  const coverage = tools.pdfimages && pages > 0 ? await pdfImageCoverage(file, pages) : null;
   if (pages === 0) {
     // Nothing could count its pages: draw what there is, and OCR it.
     if (!canOcr) return null;
@@ -122,13 +135,17 @@ async function readPdf(
   let ocrPages = 0;
   for (let n = 1; n <= pages; n += 1) {
     const words = own[n - 1] ?? '';
-    if (letters(words) >= MIN_PAGE_TEXT || !canOcr) {
+    const count = letters(words);
+    if (count > 0) textPages += 1;
+    const pictured = coverage ? (coverage.get(n) ?? 0) >= MIN_PICTURE_COVER : null;
+    const scan = count < MIN_PAGE_TEXT || (pictured ?? count < SHORT_PAGE_TEXT);
+    if (!scan || !canOcr) {
       texts.push(words.trim());
-      if (letters(words) > 0) textPages += 1;
       continue;
     }
-    // A page with no text of its own: a scan, drawn and read.
-    texts.push((await ocr(await renderPdfPage(file, opts.workDir, n))).trim());
+    // A scan, drawn and read; with any text of its own kept beside it.
+    const read = (await ocr(await renderPdfPage(file, opts.workDir, n))).trim();
+    texts.push(count > 0 ? `${words.trim()}\n${read}` : read);
     ocrPages += 1;
   }
   if (textPages === 0 && ocrPages === 0 && !tools.pdftotext) return null;

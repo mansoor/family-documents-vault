@@ -124,7 +124,8 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
       logger: { level: 'trace', stream: { write: (s: string) => void logged.push(s) } },
     });
     admin = createPool(h.adminUrl, 2);
-    owner = await h.setup();
+    // The family's surname, as the pages print it: whose a page is needs it (the review).
+    owner = await h.setup({ household_name: 'The Khan family' });
     sarah = await h.join(owner, { name: 'Sarah', email: 'sarah-537@example.test', role: 'adult' });
     tariq = await h.join(owner, { name: 'Tariq', email: 'tariq-537@example.test', role: 'teen' });
     uma = await h.join(owner, { name: 'Uma', email: 'uma-537@example.test', role: 'viewer' });
@@ -167,16 +168,18 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
     const pending = await suggestions(owner, made.document_id);
     expect(pending.statusCode).toBe(200);
     expect(pending.headers['cache-control']).toBe('no-store');
-    expect(json(pending)).toEqual({ state: 'pending', proposal: {} });
+    expect(json(pending)).toEqual({ state: 'pending', version_id: null, proposal: {} });
 
     await readPages(made, PASSPORT);
     const before = await read(owner, made.document_id);
     const audited = await auditCount();
     const ready = json<DetailSuggestions>(await suggestions(owner, made.document_id));
     expect(ready.state).toBe('ready');
+    // Read off the newest version's pages, and it says which (the review: W537-1).
+    expect(ready.version_id).toBe(made.version_id);
     expect(ready.proposal).toEqual({
       type_key: { value: 'passport', confidence: expect.any(Number) as unknown, cue: 'kind_words' },
-      owner_member_id: { value: sarah.member_id, confidence: 0.85, cue: 'name_labelled' },
+      owner_member_id: { value: sarah.member_id, confidence: 0.9, cue: 'name_labelled' },
       issued: {
         value: { date: '2021-03-14', precision: 'day' },
         confidence: expect.any(Number) as unknown,
@@ -192,7 +195,8 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
         confidence: expect.any(Number) as unknown,
         cue: 'number_label',
       },
-      issued_by: { value: 'HM Passport Office', confidence: 0.85, cue: 'issuing_body' },
+      // A passport's issuer is its country, as the kind names the field (W537-3).
+      issued_by: { value: 'United Kingdom', confidence: 0.85, cue: 'issuing_country' },
     });
     for (const p of Object.values(ready.proposal) as Array<{ confidence: number }>) {
       expect(p.confidence).toBeGreaterThanOrEqual(0.7);
@@ -226,11 +230,13 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
     await readPages(made, 'We met Sarah for lunch on 14 March 2031 and talked about the garden.');
     expect(json(await suggestions(owner, made.document_id))).toEqual({
       state: 'ready',
+      version_id: made.version_id,
       proposal: {},
     });
     const bare = await send(owner, 'POST', '/api/v1/documents', { title: 'No file' });
     expect(json(await suggestions(owner, json<DocumentView>(bare).id))).toEqual({
       state: 'unavailable',
+      version_id: null,
       proposal: {},
     });
     // A file the worker could not read, or would not: nothing to propose from.
@@ -240,6 +246,7 @@ describe.skipIf(!testAdminUrl())('suggestions from the pages (5.37)', () => {
     ]);
     expect(json(await suggestions(owner, skipped.document_id))).toEqual({
       state: 'unavailable',
+      version_id: null,
       proposal: {},
     });
   });

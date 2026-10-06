@@ -30,33 +30,42 @@ export interface ProposalFixture {
   };
 }
 
-/** The vault's own kinds, as a household that has changed none of them has them. */
-export const FIXTURE_KINDS: ProposalKind[] = [
-  ['birth_certificate', 'Birth certificate', null],
-  ['passport', 'Passport', 'expires_on'],
-  ['drivers_licence', "Driver's licence", 'expires_on'],
-  ['national_id', 'Social security / national ID', null],
-  ['visa', 'Visa / residence permit', 'expires_on'],
-  ['marriage_certificate', 'Marriage / divorce certificate', null],
-  ['will', 'Will / trust / power of attorney', 'review_on'],
-  ['property_deed', 'Property deed / lease', 'expires_on'],
-  ['vehicle_registration', 'Vehicle title / registration', 'expires_on'],
-  ['insurance_policy', 'Insurance policy', 'expires_on'],
-  ['tax_return', 'Tax return', null],
-  ['tax_form', 'W-2 / 1099 / tax form', null],
-  ['bank_statement', 'Bank / investment statement', null],
-  ['loan', 'Loan / mortgage', 'expires_on'],
-  ['medical_record', 'Medical record / immunisation', null],
-  ['prescription', 'Prescription', 'expires_on'],
-  ['diploma', 'Diploma / transcript', null],
-  ['employment_contract', 'Employment contract / offer', 'expires_on'],
-  ['utility_bill', 'Utility / bill', 'expires_on'],
-  ['warranty', 'Warranty / receipt', 'expires_on'],
-].map(([key, label, driver]) => ({
-  key: key as string,
-  label: label as string,
+/**
+ * The vault's own kinds, as a household that has changed none of them has
+ * them, each with its word for who issued it (0025): a passport's is the
+ * issuing country.
+ */
+export const FIXTURE_KINDS: ProposalKind[] = (
+  [
+    ['birth_certificate', 'Birth certificate', null, null],
+    ['passport', 'Passport', 'expires_on', 'Issuing country'],
+    ['drivers_licence', "Driver's licence", 'expires_on', null],
+    ['national_id', 'Social security / national ID', null, null],
+    ['visa', 'Visa / residence permit', 'expires_on', null],
+    ['marriage_certificate', 'Marriage / divorce certificate', null, null],
+    ['will', 'Will / trust / power of attorney', 'review_on', null],
+    ['property_deed', 'Property deed / lease', 'expires_on', null],
+    ['vehicle_registration', 'Vehicle title / registration', 'expires_on', null],
+    ['insurance_policy', 'Insurance policy', 'expires_on', 'Insurer'],
+    ['tax_return', 'Tax return', null, null],
+    ['tax_form', 'W-2 / 1099 / tax form', null, 'Issuer'],
+    ['bank_statement', 'Bank / investment statement', null, 'Institution'],
+    ['loan', 'Loan / mortgage', 'expires_on', 'Lender'],
+    ['medical_record', 'Medical record / immunisation', null, 'Provider'],
+    ['prescription', 'Prescription', 'expires_on', null],
+    ['diploma', 'Diploma / transcript', null, 'Institution'],
+    ['employment_contract', 'Employment contract / offer', 'expires_on', 'Employer'],
+    ['utility_bill', 'Utility / bill', 'expires_on', 'Provider'],
+    ['warranty', 'Warranty / receipt', 'expires_on', 'Vendor'],
+    ['pet_record', 'Pet records', 'expires_on', 'Vet'],
+    ['other', 'Something else', null, null],
+  ] as const
+).map(([key, label, driver, issuer]) => ({
+  key,
+  label,
   fields: [],
-  expiry_driver: driver ?? null,
+  expiry_driver: driver,
+  issued_by_label: issuer,
 }));
 
 /** The family: two of them by first name, one by the name the family calls her. */
@@ -113,7 +122,7 @@ export const TUNED: ProposalFixture[] = [
       issued: '2021-03-14',
       expires: '2031-03-14',
       identifier: '533401872',
-      issued_by: 'HM Passport Office',
+      issued_by: 'United Kingdom',
     },
   },
   {
@@ -146,7 +155,7 @@ export const TUNED: ProposalFixture[] = [
       issued: '2020-06-02',
       expires: '2030-06-01',
       identifier: 'B04417352',
-      issued_by: 'US Department of State',
+      issued_by: 'United States',
     },
   },
   {
@@ -679,7 +688,7 @@ export const HELD_OUT: ProposalFixture[] = [
       issued: '2022-02-14',
       expires: '2032-02-14',
       identifier: '533217804',
-      issued_by: 'HM Passport Office',
+      issued_by: 'United Kingdom',
     },
   },
   {
@@ -714,7 +723,7 @@ export const HELD_OUT: ProposalFixture[] = [
       issued: '2021-03-15',
       expires: '2031-03-14',
       identifier: 'A46182937',
-      issued_by: 'US Department of State',
+      issued_by: 'United States',
     },
   },
   {

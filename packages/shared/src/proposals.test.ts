@@ -365,6 +365,205 @@ describe('proposeDetails: a filled field is never offered', () => {
   });
 });
 
+/** The review's families (5.37): names that are words, and a surname for everybody. */
+const THOMPSONS = ctx({
+  people: [
+    { id: 'p-sarah', name: 'Sarah Thompson' },
+    { id: 'p-david', name: 'David Thompson' },
+    { id: 'p-will', name: 'Will Thompson' },
+    { id: 'p-may', name: 'May Thompson' },
+  ],
+  household: 'The Thompsons',
+  issuers: [],
+});
+const CARTERS = ctx({
+  people: [
+    { id: 'p-bill', name: 'Bill Carter' },
+    { id: 'p-jen', name: 'Jennifer Carter' },
+    { id: 'p-grace', name: 'Grace Carter' },
+  ],
+  household: 'Carter Family',
+  issuers: [],
+  dateOrder: 'mdy',
+});
+
+describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () => {
+  it('a first name that is also a word is never matched alone (C537-01)', () => {
+    for (const [text, family] of [
+      [
+        'Columbus Plumbing LLC\nINVOICE\nBill To:\nJ CARTER\n742 Maple Ave\nColumbus OH 43215',
+        CARTERS,
+      ],
+      [
+        'AEP Ohio\nJ CARTER\nBill Date Sep 5, 2025\nService Address 742 MAPLE AVE COLUMBUS OH 43215',
+        CARTERS,
+      ],
+      ['Bill Payment Confirmation\n742 Maple Ave\nColumbus OH 43215', CARTERS],
+      ['May 2025 Statement\nMrs S Thompson\n12 Elm Road\nLeeds LS6 2AB', THOMPSONS],
+      [
+        'Brown & Co\nMr D Thompson\n12 Elm Road\nLeeds LS6 2AB\nRe: Will and Lasting Power of Attorney',
+        THOMPSONS,
+      ],
+      ['Home insurance\nName of insured: Mr D Thompson\nWill-writing cover included', THOMPSONS],
+      ['Dear Will,\nThanks for the lovely evening.', THOMPSONS],
+    ] as const) {
+      expect(proposeDetails(text, family).owner_member_id, text).toBeUndefined();
+    }
+    // With the surname beside it, Will is Will.
+    expect(
+      proposeDetails('St James’s Hospital\nPatient: Will Thompson\nDischarge summary', THOMPSONS)
+        .owner_member_id?.value,
+    ).toBe('p-will');
+  });
+
+  it('a first name alone could be anybody: a doctor, a solicitor, another passport holder (C537-02)', () => {
+    // A grandmother's passport: SARAH, but PATEL, in print and in its lines.
+    const patel = fixture('uk-passport-sara')
+      .text.replace(
+        'P<GBRKHAN<<SARA<AMINA<<<<<<<<<<<<<<<<<<<<<<<',
+        'P<GBRPATEL<<SARAH<<<<<<<<<<<<<<<<<<<<<<<<<<<<',
+      )
+      .replace(/KHAN/g, 'PATEL')
+      .replace('SARA AMINA', 'SARAH');
+    expect(patel).toContain('P<GBRPATEL<<SARAH<');
+    expect(proposeDetails(patel, THOMPSONS).owner_member_id).toBeUndefined();
+    for (const text of [
+      'Hyde Park Surgery\nRe: Mr D Thompson\nDear Mr Thompson,\nYour results are normal.\nYours sincerely,\nDr Sarah Jones',
+      'Clinic letter\nPatient: Mr D Thompson\nConsultant: Dr Will Hughes',
+      'Brown & Co Solicitors\nMrs S Thompson\n12 Elm Road\nYour matter is handled by Mr David Brown, partner.',
+      'Dear Sarah,\nThank you for your letter.',
+    ]) {
+      expect(proposeDetails(text, THOMPSONS).owner_member_id, text).toBeUndefined();
+    }
+    // A passport with the family's surname in its lines is theirs.
+    const own = fixture('uk-passport-sara')
+      .text.replace(/KHAN/g, 'THOMPSON')
+      .replace(/SARA\b/g, 'SARAH');
+    expect(proposeDetails(own, THOMPSONS).owner_member_id?.value).toBe('p-sarah');
+  });
+
+  it("a family member's name on a transaction line is a payee, not whose it is (C537-03)", () => {
+    const uk = lines(
+      'Barclays Bank UK PLC',
+      'Mr D M Thompson',
+      '12 Elm Road',
+      'Leeds LS6 2AB',
+      'Your statement',
+      '8 Aug Transfer to Sarah Thompson Ref: Holiday 200.00 954.80',
+    );
+    expect(proposeDetails(uk, THOMPSONS).owner_member_id).toBeUndefined();
+    const us = lines(
+      'Chase',
+      'ACCOUNT HOLDER: J CARTER',
+      '08/15 Zelle Payment To Grace Carter -50.00',
+    );
+    expect(proposeDetails(us, CARTERS).owner_member_id).toBeUndefined();
+  });
+});
+
+describe('proposeDetails: the review round (5.37)', () => {
+  it('a pet’s vaccination certificate is a pet record, never a person’s medical record (C537-04)', () => {
+    for (const text of [
+      'RABIES VACCINATION CERTIFICATE\nClintonville Animal Hospital\nAnimal: Cat\nVeterinarian: Dr L Moreno',
+      'Vaccination certificate\nPark Lane Veterinary Surgery\nPet’s name: Biscuit\nSpecies: Dog',
+      'Banfield Pet Hospital\nVaccination history\nPet: Mittens (Cat)\nMicrochip 826098765432109',
+    ]) {
+      expect(proposeDetails(text, ctx()).type_key?.value, text).toBe('pet_record');
+      // With no pet kind, nothing: never the person's kind.
+      const noPets = FIXTURE_KINDS.filter((k) => k.key !== 'pet_record');
+      expect(proposeDetails(text, ctx({ types: noPets })).type_key, text).toBeUndefined();
+    }
+  });
+
+  it('"issued" in a sentence is not a label: the letter’s "Date:" is its issue date (C537-05)', () => {
+    const letter = lines(
+      'Hyde Park Surgery',
+      'Date: 22/07/2025',
+      'We have issued a new prescription for her inhaler.',
+      'Next review due 22/07/2026.',
+    );
+    const p = proposeDetails(letter, ctx({ current: { type_key: 'medical_record' } }));
+    expect(p.issued?.value.date).toBe('2025-07-22');
+    const bill = lines(
+      'British Gas',
+      'Bill date: 3 May 2025',
+      'We have issued a refund of £20.00, which will reach your account by 14 June 2025.',
+    );
+    expect(
+      proposeDetails(bill, ctx({ current: { type_key: 'utility_bill' } })).issued?.value.date,
+    ).toBe('2025-05-03');
+  });
+
+  it('a passport’s machine-readable expiry is read in the century that fits its issue (C537-06)', () => {
+    const exp = '990314';
+    const line2 = (() => {
+      const v = (c: string) =>
+        /\d/.test(c) ? Number(c) : /[A-Z]/.test(c) ? c.charCodeAt(0) - 55 : 0;
+      const cd = (t: string) =>
+        [...t].reduce((sum, c, i) => sum + v(c) * ([7, 3, 1][i % 3] as number), 0) % 10;
+      return `533401872${cd('533401872')}GBR850303${cd('850303')}F${exp}${cd(exp)}<<<<<<<<<<<<<<00`;
+    })();
+    const old = lines(
+      'PASSPORT',
+      'Nationality BRITISH CITIZEN',
+      'Place of birth LEEDS',
+      'Date of issue 14 MAR 89',
+      'Date of expiry 14 MAR 99',
+      'P<GBRKHAN<<SARA<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<',
+      line2,
+    );
+    const p = proposeDetails(old, ctx());
+    expect(p.expires).toMatchObject({ value: { date: '1999-03-14' }, cue: 'machine_lines' });
+    expect(p.issued?.value.date).toBe('1989-03-14');
+  });
+
+  it('a number is read whole, and a phone number or a postcode is never one (C537-09)', () => {
+    const policy = ctx({ current: { type_key: 'insurance_policy' } });
+    expect(
+      proposeDetails('Policy Number 123 4567-B12-35\nEffective 03/15/2025', policy).identifier
+        ?.value,
+    ).toBe('123 4567-B12-35');
+    expect(proposeDetails('Policy number: HB 2219 4487 01', policy).identifier?.value).toBe(
+      'HB 2219 4487 01',
+    );
+    const bill = ctx({ current: { type_key: 'utility_bill' } });
+    for (const text of [
+      'Account number\n0808 164 1088 (call us)',
+      'Account number: 0345 030 7058',
+      'Account number: (800) 555-0199',
+      'Account number: +44 113 496 0000',
+    ]) {
+      expect(proposeDetails(text, bill).identifier, text).toBeUndefined();
+    }
+    expect(proposeDetails('Policy no.\nLS6 2AB 12 Elm Road', policy).identifier).toBeUndefined();
+  });
+
+  it('a motor insurance certificate with its vehicle’s registration mark is insurance (decision 15)', () => {
+    const p = proposeFor(fixture('uk-car-insurance-ahmed'), 'dmy');
+    expect(p.type_key?.value).toBe('insurance_policy');
+    expect(p.issued?.value.date).toBe('2025-11-12');
+    expect(p.expires?.value.date).toBe('2026-11-11');
+  });
+
+  it('a passport’s issuer is a country, never the office that printed it (W537-3)', () => {
+    expect(proposeFor(fixture('uk-passport-sara'), 'dmy').issued_by).toMatchObject({
+      value: 'United Kingdom',
+      cue: 'machine_lines',
+    });
+    expect(proposeFor(fixture('us-passport-ahmed'), 'dmy').issued_by).toMatchObject({
+      value: 'United States',
+      cue: 'issuing_country',
+    });
+    // An Irish passport is Ireland's; the United Kingdom's names Northern Ireland.
+    expect(proposeFor(fixture('uk-passport-ahmed'), 'dmy').issued_by?.value).toBe('United Kingdom');
+    for (const f of ALL) {
+      expect(proposeFor(f, 'dmy').issued_by?.value ?? '', f.name).not.toMatch(
+        /passport office|department of state/i,
+      );
+    }
+  });
+});
+
 describe('proposeDetails: how it does on the fixtures', () => {
   const total = (s: Record<FixtureField, FieldScore>) =>
     FIXTURE_FIELDS.reduce(
@@ -390,21 +589,42 @@ describe('proposeDetails: how it does on the fixtures', () => {
   it('on the held-out documents, written by someone who never saw the rules', () => {
     const s = score(HELD_OUT, 'dmy');
     expect(HELD_OUT).toHaveLength(14);
-    // What it scored the one time it was run, with the rules frozen: a
-    // floor, so a change that reads them worse fails here. Its misses: a
-    // motor certificate whose vehicle's registration mark scores it nearly
-    // as a vehicle registration (so no kind, and nothing read for it); a
-    // GP letter's date on a line of its own; the issuers no letterhead rule
-    // offers (State Farm, PG&E, the GP practice, California's DMV); and a
-    // school's name offered as the issuer of a letter that is none of the
-    // kinds, which this set says has none.
-    expect(s.type_key).toMatchObject({ said: 12, right: 11, wrong: 0, quiet: 2 });
+    // Run once with the rules frozen (11/12 kinds, 10, 10, 8, 9, 8). The
+    // review round then fixed one of its misses — the motor certificate's
+    // "vehicle registration mark" — and the passport issuers became
+    // countries, so this set is no longer unseen. Its misses now: a GP
+    // letter's date on a line of its own; Granny Ruth, whose surname the
+    // family's names do not give; the issuers no letterhead rule offers
+    // (State Farm, PG&E, the GP practice, California's DMV); and a school's
+    // name offered as the issuer of a letter that is none of the kinds.
+    expect(s.type_key).toMatchObject({ said: 12, right: 12, wrong: 0, quiet: 2 });
     expect(s.owner).toMatchObject({ right: 10, wrong: 0 });
-    expect(s.issued).toMatchObject({ right: 10, wrong: 0 });
-    expect(s.expires).toMatchObject({ right: 8, wrong: 0 });
-    expect(s.identifier).toMatchObject({ right: 9, wrong: 0 });
+    expect(s.issued).toMatchObject({ right: 11, wrong: 0 });
+    expect(s.expires).toMatchObject({ right: 9, wrong: 0 });
+    expect(s.identifier).toMatchObject({ right: 10, wrong: 0 });
     expect(s.issued_by.right).toBeGreaterThanOrEqual(8);
     expect(total(s).wrong).toBeLessThanOrEqual(1);
+  });
+
+  it('a page made to be slow is not: each of these is proposed for in well under 250 ms', () => {
+    const fill = (piece: string) => piece.repeat(Math.ceil(60_000 / piece.length)).slice(0, 60_000);
+    const crafted = [
+      fill('Sara '),
+      fill('Sara Khan, '),
+      `PASSPORT\nNationality\nPlace of birth\n${fill('exp ')}`,
+      fill('Sara Ahmed Zain Ruth Khan '),
+      fill('Dear Sara Khan, '),
+      fill('01/09/2026 Card payment to TESCO 12.50 Sara Khan '),
+      fill('Date of issue 14 MAR 2021 Date of expiry 14 MAR 2031 '),
+      fill('Mr Sara Khan\n12 Acacia Avenue\n'),
+    ];
+    for (const text of crafted) {
+      const started = Date.now();
+      const p = proposeDetails(text, ctx());
+      expect(Date.now() - started, text.slice(0, 30)).toBeLessThan(250);
+      // Bounded by work counted, not by time: the same page, the same answer.
+      expect(proposeDetails(text, ctx())).toEqual(p);
+    }
   });
 
   it('a long statement is read quickly: the dates and labels of 60,000 characters', () => {

@@ -23,6 +23,14 @@
  * the household has used. So the server proposes from a filed document's
  * text, and a later reader (Phase 6's inbox, a phone that read the page
  * itself) proposes from any text, the same way. English only (A46).
+ *
+ * For Phase 6's inbox (I2): give `current` only what the item itself
+ * holds — nothing, before anyone has touched it — never the batch's
+ * defaults, or the defaults would hide the very disagreements the review
+ * must show. Then compare each proposal with the default for its field: a
+ * default fills a field nothing is proposed for; a proposal equal to the
+ * default confirms it; a proposal above its threshold that differs from
+ * the default is a disagreement, tagged for Check with both values.
  */
 import type { CoreField, DateValue, DocumentTypeView } from './documents.js';
 import { scoredIssuers, type KnownIssuer } from './issuers.js';
@@ -56,6 +64,7 @@ export const PROPOSAL_CUES = [
   'known_issuer',
   'letterhead',
   'issuing_body',
+  'issuing_country',
 ] as const;
 export type ProposalCue = (typeof PROPOSAL_CUES)[number];
 
@@ -74,6 +83,7 @@ export const CUE_WORDS: Readonly<Record<ProposalCue, string>> = {
   known_issuer: 'One of your issuers, named on the page',
   letterhead: 'The name the page gives itself',
   issuing_body: 'The body that issues this kind of document, named on the page',
+  issuing_country: 'The country the page says issued it',
 };
 
 /** One proposal: the value, how sure, and why. */
@@ -114,7 +124,7 @@ export const KIND_MIN_LEAD = 2;
 
 /** A kind of document as the household keeps it: GET /document-types' view, or enough of it. */
 export type ProposalKind = Pick<DocumentTypeView, 'key' | 'label' | 'fields' | 'expiry_driver'> &
-  Partial<Pick<DocumentTypeView, 'short_label' | 'hidden' | 'core'>>;
+  Partial<Pick<DocumentTypeView, 'short_label' | 'hidden' | 'core' | 'issued_by_label'>>;
 
 /** Somebody in the family, by the name the household knows them by. */
 export interface ProposalPerson {
@@ -153,6 +163,38 @@ export interface ProposalContext {
 
 /** Text beyond this is the small print of a long document; the details are on its first pages. */
 const MAX_TEXT = 60_000;
+
+/*
+ * What one proposal may look at (the 5.37 review: crafted text cost the
+ * API seconds a request). Every pattern stops after so many matches; all
+ * of them share one budget of work, counted in matches looked at rather
+ * than timed, so the same text always gets the same answer — about 30 ms
+ * of work on a laptop, and a page that would take more stops there.
+ */
+const MAX_WORK = 30_000;
+const MAX_DATES = 400;
+const MAX_LABELS = 1_200;
+/** Each kind of label, at most: a thousand "Paid out"s do not crowd out a "Statement date". */
+const MAX_LABELS_A_SPEC = 150;
+const MAX_LABELS_A_LINE = 12;
+const MAX_NAME_MATCHES = 40;
+const MAX_NUMBER_LABELS = 20;
+const MAX_PEOPLE = 50;
+const MAX_KINDS = 200;
+const MAX_MRZ_LINES = 400;
+/** The most of one line read at a time for what it says. */
+const MAX_LINE_READ = 400;
+
+/** The work a proposal may do, spent a match at a time; once spent, each pattern stops. */
+class Work {
+  constructor(private left: number) {}
+
+  /** Spends one unit; false once there is none left. */
+  spend(): boolean {
+    this.left -= 1;
+    return this.left >= 0;
+  }
+}
 
 const round = (n: number) => Math.round(Math.min(1, Math.max(0, n)) * 100) / 100;
 
@@ -213,7 +255,9 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
   vehicle_registration: [
     [
       3,
-      /vehicle registration|certificate of (?:title|registration)|registration certificate|\bv5c?\b|log ?book|vehicle title/,
+      // Not "vehicle registration mark": that is the next cue, on a motor
+      // insurance certificate as much as on a registration (the review).
+      /vehicle registration(?! *(?:mark|number|no\b))|certificate of (?:title|registration)|registration certificate|\bv5c?\b|log ?book|vehicle title/,
     ],
     [
       3,
@@ -373,6 +417,18 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
     [2, /\bmodel\b|\bserial\b/],
     [1, /\bpurchased\b|\bretailer\b|\bproduct\b/],
   ],
+  pet_record: [
+    [
+      3,
+      /\bvet\b|\bveterinar(?:y|ian)\b|\bmrcvs\b|\bdvm\b|pet'?s name|rabies (?:vaccination|certificate|tag)|pet passport|animal hospital|pet hospital/,
+    ],
+    [
+      2,
+      /\bmicrochip|\bspecies\b|\bbreed\b|\bcanine\b|\bfeline\b|\bdhppi?\b|\bfvrcp\b|kennel cough|\bneutered\b|\bspayed\b/,
+    ],
+    [2, /vaccination (?:record|certificate|history)|certificate of vaccination|\bvaccinat/],
+    [1, /\banimal\b|\bowner\b|\bpet\b|\bdog\b|\bcat\b/],
+  ],
   national_id: [
     [
       3,
@@ -380,6 +436,16 @@ const KIND_CUES: Readonly<Record<string, readonly Cue[]>> = {
     ],
     [1, /date of birth|\bsex\b/],
   ],
+};
+
+/**
+ * Kinds a strong cue of another kind rules out, whatever they score: a
+ * vet's vaccination certificate is not a person's medical record, however
+ * many "hospital"s and "vaccination"s it has (the 5.37 review).
+ */
+const KIND_VETOES: Readonly<Record<string, RegExp>> = {
+  medical_record:
+    /\bveterinar(?:y|ian)\b|\bvet\b|\bmrcvs\b|\bdvm\b|pet'?s name|\bspecies\b|\bmicrochip|\bcanine\b|\bfeline\b|animal hospital|pet hospital|\bkennel cough\b/,
 };
 
 /** Words in a field's or kind's name that say nothing of it. */
@@ -391,7 +457,7 @@ function phrase(name: string | null | undefined): RegExp | null {
     .split(/[^a-z0-9']+/)
     .filter((w) => w.length > 0);
   if (words.length === 0 || words.every((w) => PLAIN_WORDS.has(w) || w.length < 3)) return null;
-  const body = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join("[\\s'/-]+");
+  const body = words.map(escape).join("[\\s'/-]+");
   return new RegExp(`(?<![a-z0-9])${body}(?![a-z0-9])`);
 }
 
@@ -419,17 +485,28 @@ interface KindScore {
   mrz: boolean;
 }
 
-function scoreKinds(hay: string, types: readonly ProposalKind[], mrz: Mrz | null): KindScore[] {
+function scoreKinds(
+  hay: string,
+  types: readonly ProposalKind[],
+  mrz: Mrz | null,
+  work: Work,
+): KindScore[] {
   const out: KindScore[] = [];
-  for (const kind of types) {
+  for (const kind of types.slice(0, MAX_KINDS)) {
     if (kind.hidden) continue;
+    const veto = KIND_VETOES[kind.key];
+    if (veto?.test(hay)) continue;
     const own = KIND_CUES[kind.key];
     let score = 0;
     if (own) {
-      for (const [weight, re] of own) if (re.test(hay)) score += weight;
+      for (const [weight, re] of own) {
+        work.spend();
+        if (re.test(hay)) score += weight;
+      }
     } else {
       let fields = 0;
       for (const [weight, re] of ownCues(kind)) {
+        work.spend();
         if (!re.test(hay)) continue;
         if (weight === 1) {
           if (fields === 2) continue;
@@ -451,7 +528,10 @@ function scoreKinds(hay: string, types: readonly ProposalKind[], mrz: Mrz | null
 /** A passport's machine-readable zone (ICAO 9303, TD3): what its check digits vouch for. */
 interface Mrz {
   number: string | null;
-  expires: DateValue | null;
+  /** The expiry as written, YYMMDD: its century is chosen once the issue date is known. */
+  expires: string | null;
+  /** The issuing state, ISO 3166 alpha-3 ("GBR"). */
+  state: string;
   surname: string;
   given: string[];
 }
@@ -470,15 +550,29 @@ function checkDigit(s: string): number {
   return sum % 10;
 }
 
-/** YYMMDD as a day, in this century: an expiry is never last century's. */
-function mrzDate(s: string): DateValue | null {
-  if (!/^\d{6}$/.test(s)) return null;
-  return dayValue(2000 + Number(s.slice(0, 2)), Number(s.slice(2, 4)), Number(s.slice(4, 6)));
+/**
+ * An expiry written YYMMDD, in the century that fits: a passport runs at
+ * most about ten years, so the one within eleven years after its issue
+ * date when the page gives one; otherwise, as a two-digit year on the page
+ * is read, 1970 to 2069 (the review: a 1999 passport is not 2099's).
+ */
+function mrzExpiry(s: string, issued: string | null): DateValue | null {
+  const yy = Number(s.slice(0, 2));
+  const m = Number(s.slice(2, 4));
+  const d = Number(s.slice(4, 6));
+  const candidates = [1900 + yy, 2000 + yy];
+  if (issued) {
+    const from = Number(issued.slice(0, 4));
+    const fits = candidates.find((y) => y >= from && y <= from + 11);
+    if (fits !== undefined) return dayValue(fits, m, d);
+  }
+  return dayValue(fullYear(s.slice(0, 2)), m, d);
 }
 
 function readMrz(body: string): Mrz | null {
   const lines = body
     .split('\n')
+    .slice(0, MAX_MRZ_LINES)
     .map((l) => l.toUpperCase().replace(/\s+/g, '').replace(/[«‹]/g, '<'))
     .filter((l) => l.length > 0);
   for (let i = 0; i + 1 < lines.length; i += 1) {
@@ -494,7 +588,8 @@ function readMrz(body: string): Mrz | null {
     const [surname = '', given = ''] = top.slice(5).split('<<');
     return {
       number: numberRight ? num.replace(/</g, '') || null : null,
-      expires: expiryRight ? mrzDate(exp) : null,
+      expires: expiryRight ? exp : null,
+      state: top.slice(2, 5).replace(/</g, ''),
       surname: surname.replace(/</g, ' ').trim(),
       given: given.split('<').filter((w) => w.length > 0),
     };
@@ -551,21 +646,48 @@ interface FoundDate {
 }
 
 /**
- * Every date written out in the text, where it is. Days first — "14 Mar
- * 2031", "14-Mar-2031", "March 14, 2031", "2031-03-14", "14/03/2031" —
- * then months alone ("March 2031", "03/2031") where no day was found. A
- * date in numbers whose order cannot be told (03/04/2031) is read in the
- * order the document's other dates are written in; failing that, the
- * household's; and not at all when neither says.
+ * Every date written out in the text, where it is, up to `MAX_DATES`. Days
+ * first — "14 Mar 2031", "14-Mar-2031", "March 14, 2031", "2031-03-14",
+ * "14/03/2031" — then months alone ("March 2031", "03/2031") where no day
+ * was found. A date in numbers whose order cannot be told (03/04/2031) is
+ * read in the order the document's other dates are written in; failing
+ * that, the household's; and not at all when neither says.
  */
-function findDates(hay: string, order: 'dmy' | 'mdy' | undefined): FoundDate[] {
+function findDates(
+  hay: string,
+  order: 'dmy' | 'mdy' | undefined,
+  lines: Lines,
+  work: Work,
+): FoundDate[] {
   const found: Array<Omit<FoundDate, 'line'>> = [];
-  const taken = (at: number, end: number) => found.some((f) => at < f.end && end > f.at);
+  // Matches come in order within each pattern: a sorted list of what each
+  // took, searched by halving, keeps this linear in the dates found.
+  const taken: Array<[number, number]> = [];
+  const overlaps = (at: number, end: number) => {
+    let lo = 0;
+    let hi = taken.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((taken[mid] as [number, number])[1] <= at) lo = mid + 1;
+      else hi = mid;
+    }
+    const next = taken[lo];
+    return next !== undefined && next[0] < end;
+  };
   const add = (at: number, end: number, value: DateValue | null) => {
-    if (value && !taken(at, end)) found.push({ at, end, value });
+    if (!value || overlaps(at, end)) return;
+    found.push({ at, end, value });
+    let i = taken.length;
+    taken.push([at, end]);
+    while (i > 0 && (taken[i - 1] as [number, number])[0] > at) {
+      taken[i] = taken[i - 1] as [number, number];
+      i -= 1;
+    }
+    taken[i] = [at, end];
   };
   const each = (re: RegExp, make: (m: RegExpMatchArray) => DateValue | null) => {
     for (const m of hay.matchAll(re)) {
+      if (found.length >= MAX_DATES || !work.spend()) return;
       const at = m.index ?? 0;
       add(at, at + m[0].length, make(m));
     }
@@ -586,7 +708,9 @@ function findDates(hay: string, order: 'dmy' | 'mdy' | undefined): FoundDate[] {
   // day first, 12/25 month first, and a dotted date is day first.
   let dayFirst = 0;
   let monthFirst = 0;
+  let seen = 0;
   for (const m of hay.matchAll(numeric)) {
+    if (++seen > MAX_DATES || !work.spend()) break;
     const a = Number(m[1]);
     const b = Number(m[3]);
     if (a > 12 && b <= 12) dayFirst += 1;
@@ -615,24 +739,67 @@ function findDates(hay: string, order: 'dmy' | 'mdy' | undefined): FoundDate[] {
     monthValue(Number(m[2]), monthOf(m[1])),
   );
   each(/(?<![\d/.-])(\d{1,2})\/(\d{4})\b/g, (m) => monthValue(Number(m[2]), Number(m[1])));
-  const lineAt = lineIndex(hay);
-  return found.sort((a, b) => a.at - b.at).map((f) => ({ ...f, line: lineAt(f.at) }));
+  return found.sort((a, b) => a.at - b.at).map((f) => ({ ...f, line: lines.at(f.at) }));
 }
 
-/** The line a place in the text is on, counted from 0. */
-function lineIndex(text: string): (at: number) => number {
-  const starts = [0];
-  for (let i = 0; i < text.length; i += 1) if (text.charCodeAt(i) === 10) starts.push(i + 1);
-  return (at) => {
+/**
+ * The text's lines, worked out once for each proposal: where each starts,
+ * which line a place is on, and what each line is — asked of a line once,
+ * however many names or labels are on it (the review: a 60,000-character
+ * line re-read for every name on it took seconds).
+ */
+class Lines {
+  private readonly starts: number[] = [0];
+  private readonly facts = new Map<string, boolean>();
+
+  constructor(private readonly hay: string) {
+    for (let i = 0; i < hay.length; i += 1) if (hay.charCodeAt(i) === 10) this.starts.push(i + 1);
+  }
+
+  get count(): number {
+    return this.starts.length;
+  }
+
+  /** The line a place in the text is on, counted from 0. */
+  at(place: number): number {
     let lo = 0;
-    let hi = starts.length - 1;
+    let hi = this.starts.length - 1;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if ((starts[mid] as number) <= at) lo = mid;
+      if ((this.starts[mid] as number) <= place) lo = mid;
       else hi = mid - 1;
     }
     return lo;
-  };
+  }
+
+  start(line: number): number {
+    return this.starts[line] ?? this.hay.length;
+  }
+
+  /** Where the line ends, before its new line. */
+  end(line: number): number {
+    const next = this.starts[line + 1];
+    return next === undefined ? this.hay.length : next - 1;
+  }
+
+  /** The line's folded text, at most its first `MAX_LINE_READ` characters. */
+  text(line: number): string {
+    if (line < 0 || line >= this.starts.length) return '';
+    const from = this.start(line);
+    return this.hay.slice(from, Math.min(this.end(line), from + MAX_LINE_READ));
+  }
+
+  /** Whether the line matches `re`, asked of each line once for each question. */
+  is(question: string, re: RegExp, line: number): boolean {
+    if (line < 0 || line >= this.starts.length) return false;
+    const key = `${question}:${line}`;
+    let answer = this.facts.get(key);
+    if (answer === undefined) {
+      answer = re.test(this.text(line));
+      this.facts.set(key, answer);
+    }
+    return answer;
+  }
 }
 
 type DateRole = 'issued' | 'expires' | 'none';
@@ -656,14 +823,26 @@ const BLOCKING: LabelSpec = {
   re: /date of (?:birth|death|marriage|registration)|birth ?date|\bdob\b|\bd\.o\.b\b|\bborn\b|printed on|generated on|statement period|billing period|\bperiod\b|\bpaid\b|\btransactions?\b/g,
 };
 
+/** Where a date can start, to see that a word is a label for the date after it. */
+const DATE_START = '(?:\\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)';
+
+/**
+ * A word that is a label only in a label's form: "Issued: …", "Issued 14
+ * March …", or alone at the end of its line with the date below — never
+ * "we have issued a new prescription" in a letter (the review).
+ */
+const asLabel = (words: string) =>
+  new RegExp(`\\b(?:${words})\\b(?= *:? *(?:on +)?(?:${DATE_START}|$))`, 'gm');
+
 const GENERIC_LABELS: readonly LabelSpec[] = [
   BLOCKING,
   {
     role: 'issued',
     weight: 4,
     cue: 'issue_label',
-    re: /date of issue|issue date|date issued|issued on|\bissued\b|date of grant/g,
+    re: /date of issue|issue date|date issued|issued on|date of grant/g,
   },
+  { role: 'issued', weight: 4, cue: 'issue_label', re: asLabel('issued') },
   {
     role: 'issued',
     weight: 3,
@@ -674,15 +853,16 @@ const GENERIC_LABELS: readonly LabelSpec[] = [
     role: 'expires',
     weight: 4,
     cue: 'expiry_label',
-    re: /date of expir(?:y|ation)|expir(?:y|ation) date|expires on|\bexpires\b|\bexpiry\b|\bexpiration\b|valid until|valid to\b|valid thru|valid through|\bexp\b/g,
+    re: /date of expir(?:y|ation)|expir(?:y|ation) date|expires on|valid until|valid to\b|valid thru|valid through|\bexp\b/g,
   },
+  { role: 'expires', weight: 4, cue: 'expiry_label', re: asLabel('expires|expiry|expiration') },
 ];
 
 const label = (role: DateRole, weight: number, cue: ProposalCue, re: RegExp): LabelSpec => ({
   role,
   weight,
   cue,
-  re: new RegExp(re.source, 'g'),
+  re: new RegExp(re.source, 'gm'),
 });
 
 /** The labels a kind of document gives its own dates, besides everybody's. */
@@ -746,6 +926,10 @@ const KIND_LABELS: Readonly<Record<string, readonly LabelSpec[]>> = {
     ),
     label('expires', 3, 'expiry_label', /end date|term ends|expiry of the term|ending on/),
   ],
+  pet_record: [
+    label('issued', 3, 'issue_label', /date (?:given|administered|of vaccination)|vaccinated on/),
+    label('expires', 3, 'expiry_label', /(?:booster|next vaccination|revaccination) (?:due|date)/),
+  ],
 };
 
 /** Kinds whose "from … to …" is the document's own life: its start issued, its end expiring. */
@@ -762,6 +946,8 @@ interface LabelHit {
   end: number;
   line: number;
   spec: LabelSpec;
+  /** Words of a sentence before it on its line: a label in prose is a weaker one. */
+  inProse: boolean;
 }
 
 function labelsFor(kind: ProposalKind): LabelSpec[] {
@@ -777,12 +963,33 @@ function labelsFor(kind: ProposalKind): LabelSpec[] {
   return specs;
 }
 
-function findLabels(hay: string, specs: readonly LabelSpec[], lineAt: (at: number) => number) {
+/** The longest run of words starting in lower case: four or more is a sentence, not a form. */
+function proseRun(text: string): number {
+  let run = 0;
+  let best = 0;
+  for (const w of text.split(/[\s,;]+/)) {
+    if (/^[a-z]/.test(w)) best = Math.max(best, (run += 1));
+    else if (w !== '') run = 0;
+  }
+  return best;
+}
+
+function findLabels(
+  body: string,
+  hay: string,
+  specs: readonly LabelSpec[],
+  lines: Lines,
+  work: Work,
+): LabelHit[] {
   const hits: LabelHit[] = [];
   for (const spec of specs) {
+    let n = 0;
     for (const m of hay.matchAll(spec.re)) {
+      if (++n > MAX_LABELS_A_SPEC || hits.length >= MAX_LABELS || !work.spend()) break;
       const at = m.index ?? 0;
-      hits.push({ at, end: at + m[0].length, line: lineAt(at), spec });
+      const line = lines.at(at);
+      const before = body.slice(Math.max(lines.start(line), at - 60), at);
+      hits.push({ at, end: at + m[0].length, line, spec, inProse: proseRun(before) >= 3 });
     }
   }
   // Longest first where two start together ("expiry date" over "expiry").
@@ -797,33 +1004,39 @@ interface DateClaim {
 
 /**
  * Each date's role, by its label: the label nearest before it on its own
- * line or the line above, with no other date between them — or, where a
- * line of labels sits over a line of as many dates and nothing else, the
- * label above it in the same place. "From … to …" gives a period kind its
- * start and its end.
+ * line, or ending the line above, with no other date between them — or,
+ * where a line of labels sits over a line of as many dates and nothing
+ * else, the label above it in the same place. A label in a sentence counts
+ * for less, and one with a sentence after it does not reach down to the
+ * next line. "From … to …" gives a period kind its start and its end.
  */
 function claimDates(
+  body: string,
   hay: string,
   kind: ProposalKind,
   order: 'dmy' | 'mdy' | undefined,
+  lines: Lines,
+  work: Work,
 ): { issued: DateClaim[]; expires: DateClaim[] } {
-  const dates = findDates(hay, order);
-  const lineAt = lineIndex(hay);
-  const labels = findLabels(hay, labelsFor(kind), lineAt);
+  const dates = findDates(hay, order, lines, work);
+  const labels = findLabels(body, hay, labelsFor(kind), lines, work);
   const role = new Map<FoundDate, LabelSpec>();
 
   // A line of labels over a line of dates, as an ID card sets them out.
   const byLine = new Map<number, LabelHit[]>();
   for (const l of labels) {
     const on = byLine.get(l.line) ?? [];
+    if (on.length >= MAX_LABELS_A_LINE) continue;
     // One label for each place: a shorter one inside a longer is the same.
-    if (!on.some((o) => l.at < o.end && l.end > o.at)) on.push(l);
+    const last = on[on.length - 1];
+    if (!last || l.at >= last.end) on.push(l);
     byLine.set(l.line, on);
   }
-  const datesOn = (line: number) => dates.filter((d) => d.line === line);
+  const datesBy = new Map<number, FoundDate[]>();
+  for (const d of dates) datesBy.set(d.line, [...(datesBy.get(d.line) ?? []), d]);
   for (const [line, on] of byLine) {
     if (on.length < 2) continue;
-    const below = datesOn(line + 1);
+    const below = datesBy.get(line + 1) ?? [];
     if (below.length === on.length && !byLine.has(line + 1)) {
       below.forEach((d, i) => role.set(d, (on[i] as LabelHit).spec));
     }
@@ -835,7 +1048,12 @@ function claimDates(
   for (let i = 0; i + 1 < dates.length; i += 1) {
     const a = dates[i] as FoundDate;
     const b = dates[i + 1] as FoundDate;
-    if (!/^ *(?:-|–|—|to|until|till|through|thru|and) *$/.test(hay.slice(a.end, b.at))) continue;
+    if (b.at - a.end > 30) continue;
+    // "1 June 2026 to 1 June 2027", or "… to 23:59 on 11 November 2026".
+    const between = hay.slice(a.end, b.at);
+    const joined =
+      /^ *(?:-|–|—|to|until|till|through|thru|and)(?: +\d{1,2}[:.]\d{2}(?: *[ap]\.?m\.?)?(?: +on)?)? *$/;
+    if (!joined.test(between)) continue;
     ranged.add(a);
     ranged.add(b);
     period.push([a, b]);
@@ -843,20 +1061,19 @@ function claimDates(
 
   const issued: DateClaim[] = [];
   const expiring: DateClaim[] = [];
-  const claim = (d: FoundDate, spec: LabelSpec) => {
-    if (spec.role === 'issued') issued.push({ value: d.value, weight: spec.weight, cue: spec.cue });
-    if (spec.role === 'expires') {
-      expiring.push({ value: d.value, weight: spec.weight, cue: spec.cue });
-    }
+  const claim = (d: FoundDate, spec: LabelSpec, weaker: boolean) => {
+    const weight = weaker ? spec.weight - 1 : spec.weight;
+    if (spec.role === 'issued') issued.push({ value: d.value, weight, cue: spec.cue });
+    if (spec.role === 'expires') expiring.push({ value: d.value, weight, cue: spec.cue });
   };
   // Labels and dates both in order: each date looks back over a window.
   let from = 0;
   for (const [i, d] of dates.entries()) {
-    while (from < labels.length && (labels[from] as LabelHit).at < d.at - 200) from += 1;
+    while (from < labels.length && (labels[from] as LabelHit).at < d.at - 220) from += 1;
     if (ranged.has(d)) continue;
     const set = role.get(d);
     if (set) {
-      claim(d, set);
+      claim(d, set, false);
       continue;
     }
     const previous = dates[i - 1];
@@ -864,14 +1081,19 @@ function claimDates(
     for (let j = from; j < labels.length; j += 1) {
       const l = labels[j] as LabelHit;
       if (l.at >= d.at) break;
-      if (l.end > d.at || d.line - l.line > 1 || d.at - l.end > 80) continue;
+      if (l.end > d.at) continue;
+      const sameLine = l.line === d.line;
+      // On its own line, as far as a column apart (pdftotext -layout);
+      // from the line above, only a label that ends that line.
+      if (sameLine ? d.at - l.end > 160 : d.line - l.line !== 1 || d.at - l.end > 80) continue;
+      if (!sameLine && proseRun(body.slice(l.end, lines.end(l.line))) >= 4) continue;
       // Another date between the label and this one is the label's.
       if (previous && previous.at >= l.end) continue;
       if (!nearest || l.end > nearest.end || (l.end === nearest.end && l.at < nearest.at)) {
         nearest = l;
       }
     }
-    if (nearest) claim(d, nearest.spec);
+    if (nearest) claim(d, nearest.spec, nearest.inProse);
   }
   if (PERIOD_KINDS.has(kind.key)) {
     for (const [a, b] of period) {
@@ -922,18 +1144,41 @@ const NUMBER_LABELS: Readonly<Record<string, RegExp>> = {
   prescription: /(?:rx|prescription) ?(?:no|number|#)\.?/g,
 };
 
+/** A UK postcode at the start of what follows a label: an address, not a number. */
+const POSTCODE = /^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}\b/i;
+
+/** Kinds that set their details out as a card does: a row of labels over a row of values. */
+const ID_CARDS = new Set(['passport', 'drivers_licence', 'visa', 'national_id']);
+
+/**
+ * A telephone number, never a document's: a UK number (0808 164 1088, 020
+ * 7946 0000), a US one ((800) 555-0199, 1-800-555-0199), anything written
+ * with its country's +, or a number the page says to call.
+ */
+function phoneLike(value: string, after: string): boolean {
+  const digits = value.replace(/\D/g, '');
+  if (/^\+/.test(value)) return true;
+  if (/^0\d{9,10}$/.test(digits) && /^0\d{2,4}[ -]\d{3,4}(?:[ -]?\d{3,4})?$/.test(value)) {
+    return true;
+  }
+  if (/^(?:1[ -.]?)?\(?[2-9]\d{2}\)?[ -.]?\d{3}[ -.]\d{4}$/.test(value)) return true;
+  return /^[\s(]*(?:call|tel|phone|fax)\b/i.test(after);
+}
+
 /**
  * The number after one of the kind's number labels, read off the text as
- * written: one word with two or more digits in it — and, for a number all
- * in digits, the groups of digits after it ("8500 1234 567") — on the
- * label's line or the next. On an identity card, where a row of labels sits
- * over a row of values, the first word on the next line that looks like a
- * document's number, less surely.
+ * written, on the label's line or the next: its first word with two or
+ * more digits in it, and — for a short first word — the words with digits
+ * that follow it after single spaces ("123 4567-B12-35", "8500 1234 567"),
+ * whole. A phone number is never one. On an identity card, where a row of
+ * labels sits over a row of values, the first word on the next line that
+ * looks like a document's number, less surely.
  */
 function findNumbers(
   body: string,
   hay: string,
   kind: ProposalKind,
+  work: Work,
 ): Array<{ value: string; sure: boolean }> {
   const res: RegExp[] = [];
   const own = NUMBER_LABELS[kind.key];
@@ -950,20 +1195,44 @@ function findNumbers(
     !/^\d{1,4}[/.-]\d{1,2}[/.-]\d{2,4}$/.test(value) &&
     !/^\d+\.\d{2}$/.test(value);
   for (const re of res) {
+    let n = 0;
     for (const m of hay.matchAll(re)) {
+      if (++n > MAX_NUMBER_LABELS || !work.spend()) break;
       const from = (m.index ?? 0) + m[0].length;
       const rest = body.slice(from, from + 120);
-      const v = /^[ :#.\-–]*(?:\n *)?([A-Za-z0-9][A-Za-z0-9/-]*)((?: [0-9][0-9/-]*)*)/.exec(rest);
-      const word = v?.[1]?.replace(/[/-]+$/, '');
-      const value = word && /^\d+$/.test(word) ? `${word}${v?.[2] ?? ''}` : word;
-      if (fits(value)) {
-        out.push({ value, sure: true });
-        continue;
+      const v =
+        /^[ :#.\-–]*(?:\n *)?([A-Za-z0-9][A-Za-z0-9/-]*)((?: [A-Za-z0-9][A-Za-z0-9/-]*)*)/.exec(
+          rest,
+        );
+      // A number starts with a word with a digit in it, or a short prefix
+      // of capitals before one ("HB 2219 4487 01"): "DOB 17091981" is not one.
+      const lead = v?.[1] ?? '';
+      const prefix =
+        /^[A-Z]{1,3}$/.test(lead) &&
+        !/^(?:DOB|REF|NO|TEL|FAX|ISS|EXP|THE|AND|FOR)$/.test(lead) &&
+        /^ \S*\d/.test(v?.[2] ?? '');
+      if (v && (/\d/.test(lead) || prefix)) {
+        const first = v[1] as string;
+        let value = first;
+        if (first.length <= 8) {
+          for (const t of (v[2] ?? '').split(' ').filter((t) => t !== '')) {
+            if (!/\d/.test(t)) break;
+            value += ` ${t}`;
+          }
+        }
+        value = value.replace(/[/-]+$/, '');
+        const after = rest.slice(v[0].length, v[0].length + 30);
+        if (fits(value)) {
+          if (!phoneLike(value, after) && !POSTCODE.test(value)) out.push({ value, sure: true });
+          continue;
+        }
       }
       if (!ID_CARDS.has(kind.key)) continue;
       const next = /^[^\n]*\n([^\n]*)/.exec(rest)?.[1] ?? '';
-      const onCard = /(?<![A-Za-z0-9])([A-Z0-9]{6,12})(?![A-Za-z0-9])/g;
+      const onCard = /(?<![A-Za-z0-9])([A-Z0-9]{6,18})(?![A-Za-z0-9])/g;
       for (const c of next.matchAll(onCard)) {
+        // A date of birth on the card is not its number.
+        if (/^\d{8}$/.test(c[1] ?? '') || /\bdob\W*$/i.test(next.slice(0, c.index ?? 0))) continue;
         if ((c[1]?.match(/\d/g) ?? []).length >= 2 && fits(c[1])) {
           out.push({ value: c[1], sure: false });
           break;
@@ -973,9 +1242,6 @@ function findNumbers(
   }
   return out;
 }
-
-/** Kinds that set their details out as a card does: a row of labels over a row of values. */
-const ID_CARDS = new Set(['passport', 'drivers_licence', 'visa', 'national_id']);
 
 // ----------------------------------------------------------------- people
 
@@ -1007,23 +1273,52 @@ const KINSHIP = new Set([
 ]);
 
 /**
- * A label that says the name after it is the holder's, the payee's or the
- * addressee's — with at most two words between ("Name: KHAN, SARA"), kept
- * to check they are not somebody else's name.
+ * First names that are also ordinary words or months: "Bill To:", "May
+ * 2025", "Re: Will and Lasting Power of Attorney" (the review). Such a name
+ * counts only with the person's surname beside it.
  */
+const COMMON_WORD_NAMES = new Set(
+  (
+    'bill will may june april august grace hope mark rose frank jack pat sue dawn faith joy ' +
+    'ruby amber summer holly ivy lily daisy robin sky ray art guy gene nick rod bob sunny ' +
+    'rich page brook iris honey star autumn winter angel chase miles max penny sandy hunter ' +
+    'grant dean drew lane wade reed bell hall victor sterling crystal destiny harmony ' +
+    'patience prudence mercy charity faith skip buck chip dusty rusty misty pearl jade ' +
+    'olive violet heather poppy rowan hazel ginger carol christian august may'
+  ).split(' '),
+);
+
+/** Words of a household's name that are not a surname: "The Khan family". */
+const NOT_SURNAMES = new Set(['the', 'family', 'household', 'home', 'house', 'of', 'and', 'our']);
+
+/** A label right before a name that says it is the holder's, the payee's or the addressee's. */
 const NAME_LABEL =
-  /\b(?:name|names|full name|given names?|forenames?|first names?|surname|holder|policy ?holder|account (?:holder|name)|patient|insured|named insured|employee|tenants?|dear|mr|mrs|ms|miss|mx|dr|master|re|ln|fn)\b(?:\(s\))?[ .:,/-]*((?:[a-z'-]+[ ,]+){0,2})$/;
+  /\b(?:name|names|full name|given names?|forenames?(?: or initials)?|first names?|surname|holder|policy ?holder|account (?:holder|name)|patient|insured|named insured|employee|tenants?|dear|re|mr|mrs|ms|miss|mx|master|ln|fn)\b(?:\(s\))?[ .:,/-]*((?:[a-z'-]+[ ,]+){0,2})$/;
 /** The same, on the line above a name on a line of its own. */
 const NAME_LABEL_ABOVE =
-  /\b(?:name|names|given names?|forenames?|surname|holder|policy ?holder|insured|tenants?|patient)\b/;
-/** A UK or EU licence's names, by their field numbers: 1. the surname, 2. the given names. */
-const NAME_FIELD = /^ *[12]\. *$/;
-/** A line naming somebody who is not the document's holder: a parent, a witness, a doctor. */
+  /\b(?:name|names|given names?|forenames?|holder|policy ?holder|insured|tenants?|patient|service for|bill(?:ed)? to|sold to|customer)\b/;
+/** A UK or EU licence's given names, by their field number: 2. */
+const NAME_FIELD = /^ *2\. *$/;
+/** A label for a surname, or a licence's surname field (1.). */
+const SURNAME_LABEL = /\b(?:surname|last name|family name|ln)\b|^ *1\.(?= )/;
+/**
+ * A line naming somebody who is not the document's holder: a parent, a
+ * witness, a doctor, a solicitor, whoever signs a letter.
+ */
 const NOT_THE_HOLDER =
-  /\b(?:father|mother|parents?|informant|spouse|guardians?|witness(?:es)?|next of kin|emergency contact|registrar|prescriber|landlord|agent|signed|signature)\b/;
+  /\b(?:father|mother|parents?|informant|spouse|guardians?|witness(?:es)?|next of kin|emergency contact|registrar|prescriber|landlord|agent|signed|signature|doctor|dr|consultant|gp|physician|surgeon|nurse|midwife|solicitor|partner|vet|veterinar(?:y|ian)|teacher|head ?teacher|headmistress|headmaster|yours (?:sincerely|faithfully|truly)|kind regards|named drivers?|executors?|attorneys?|beneficiar(?:y|ies)|referee|trustee|practice manager|adviser|advisor|representative)\b/;
+/**
+ * A transaction: an amount, a leading date, or a payment's words. A name
+ * there is a payee's, not the holder's (the review: "Transfer to Sarah
+ * Thompson 200.00" on Mr D Thompson's statement).
+ */
+const TRANSACTION =
+  /\b\d{1,3}(?:,\d{3})*\.\d{2}\b|^ *\d{1,2}(?:[/.-]\d{1,2}| +[a-z]{3}\b)|\b(?:transfer|payments?|paid|zelle|direct debit|standing order|card|purchase|deposit|withdrawal|faster payment|bacs|cheque|check|refund|ref)\b/;
 /** A line of an address: a number and a street, a UK postcode, or a US state and ZIP. */
 const ADDRESS =
   /\b\d+[a-z]?,? +(?:[a-z'-]+ +){0,3}(?:road|rd|street|st|lane|ln|avenue|ave|drive|close|way|court|ct|place|crescent|grove|terrace|gardens|boulevard|blvd|mews)\b|\b[a-z]{1,2}\d[a-z\d]? *\d[a-z]{2}\b|\b[a-z]{2},? +\d{5}(?:-\d{4})?\b/;
+/** A name at the head of the page is the holder's or the addressee's; deep in it, anybody's. */
+const HEAD_LINES = 20;
 
 function nameWords(name: string): string[] {
   return fold(name)
@@ -1033,6 +1328,34 @@ function nameWords(name: string): string[] {
 
 const escape = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+interface PersonKey {
+  id: string;
+  first: string;
+  /** Surnames that are theirs: their own, or — named by a first name only — the family's. */
+  surnames: Set<string>;
+  common: boolean;
+}
+
+/** Each person, with the surnames that may follow their first name. */
+function personKeys(people: readonly ProposalPerson[], household: string | null): PersonKey[] {
+  const family = new Set<string>();
+  for (const w of nameWords(household ?? '')) {
+    if (NOT_SURNAMES.has(w)) continue;
+    family.add(w);
+    // "The Thompsons".
+    if (w.endsWith('s') && w.length > 3) family.add(w.slice(0, -1));
+  }
+  const words = people.map((p) => nameWords(p.name));
+  for (const ws of words) if (ws.length > 1) family.add(ws[ws.length - 1] as string);
+  return people.flatMap((p, i) => {
+    const ws = words[i] ?? [];
+    const first = ws[0];
+    if (!first) return [];
+    const surnames = ws.length > 1 ? new Set([ws[ws.length - 1] as string]) : new Set(family);
+    return [{ id: p.id, first, surnames, common: COMMON_WORD_NAMES.has(first) }];
+  });
+}
+
 interface NameSeen {
   at: number;
   end: number;
@@ -1040,93 +1363,133 @@ interface NameSeen {
   score: number;
 }
 
-/**
- * Where the page names this person, each place scored: their name where
- * the page names its holder (0.85; 0.9 with the whole name), at the head of
- * an address (as labelled), their whole name anywhere (0.8), their first
- * name alone, unlabelled (0.55: not enough on its own). A name on a line
- * about somebody else — a parent, a witness, a doctor — does not count.
- */
-function namesSeen(
-  body: string,
-  hay: string,
-  person: ProposalPerson,
-  others: ReadonlySet<string>,
-  lineAt: (at: number) => number,
-): NameSeen[] {
-  const words = nameWords(person.name);
-  const first = words[0];
-  if (!first || first.length < 3) return [];
-  const patterns: Array<[RegExp, boolean]> = [
-    [new RegExp(`(?<![a-z])${escape(first)}(?![a-z])`, 'g'), false],
-  ];
-  if (words.length > 1) {
-    patterns.unshift([
-      new RegExp(`(?<![a-z])${words.map(escape).join('[ ,]+')}(?![a-z])`, 'g'),
-      true,
-    ]);
-  }
-  const out: NameSeen[] = [];
-  for (const [re, full] of patterns) {
-    for (const m of hay.matchAll(re)) {
-      const at = m.index ?? 0;
-      // A name is written with a capital: "will" and "grace" are not Will and Grace.
-      if (!/[A-Z]/.test(body.charAt(at))) continue;
-      const lineStart = hay.lastIndexOf('\n', at - 1) + 1;
-      const lineEnd = hay.indexOf('\n', at);
-      const line = hay.slice(lineStart, lineEnd < 0 ? hay.length : lineEnd);
-      if (NOT_THE_HOLDER.test(line)) continue;
-      // What leads up to it on its line: enough for a label and two words.
-      const before = hay.slice(Math.max(lineStart, at - 80), at);
-      const label = NAME_LABEL.exec(before);
-      // "Name: Zain Ahmed Khan" names Zain; Ahmed there is his middle name.
-      let labelled =
-        (label !== null &&
-          !(label[1] ?? '').split(/[ ,]+/).some((w) => w !== '' && others.has(w))) ||
-        NAME_FIELD.test(before);
-      const leading = before.trim() === '' || /^ *(?:mr|mrs|ms|miss|mx|dr)\.? *$/.test(before);
-      if (!labelled && leading) {
-        const prevEnd = lineStart - 1;
-        const prev = prevEnd > 0 ? hay.slice(hay.lastIndexOf('\n', prevEnd - 1) + 1, prevEnd) : '';
-        // The line above says whose name this is, or the lines below are its address.
-        const below = hay.slice(lineEnd < 0 ? hay.length : lineEnd + 1).split('\n', 3);
-        labelled = NAME_LABEL_ABOVE.test(prev) || below.some((l) => ADDRESS.test(l));
-      }
-      const score = labelled ? (full ? 0.9 : 0.85) : full ? 0.8 : 0.55;
-      out.push({ at, end: at + m[0].length, line: lineAt(at), score });
-    }
+/** The words after a name on its line, in their own case: up to three, initials skipped. */
+function followingWords(text: string): Array<{ word: string; capital: boolean }> {
+  const out: Array<{ word: string; capital: boolean }> = [];
+  let rest = text;
+  for (let i = 0; i < 4 && out.length < 3; i += 1) {
+    const m = /^[ ,]+([A-Za-z][A-Za-z'’-]*)\.?/.exec(rest);
+    if (!m) break;
+    rest = rest.slice(m[0].length);
+    const word = m[1] as string;
+    if (word.length === 1) continue; // an initial: "Jennifer A Carter"
+    out.push({ word, capital: /^[A-Z]/.test(word) });
   }
   return out;
 }
 
 /**
+ * Where the page names this person, each place scored. A person is named
+ * by their first name with their surname: beside it ("Mrs Sara Khan",
+ * "KHAN, SARA"), or on a surname line just above it, as a passport or a
+ * licence sets it out. Then 0.9 where the page says it is the holder's or
+ * the addressee's, 0.8 at the head of the page, 0.6 deeper in. A first
+ * name alone is never enough (0.7 at most, under the bar): it could be
+ * anybody's — and one followed by another surname is somebody else's, as
+ * is a name on a line about a doctor, a parent or a signature, or in a
+ * transaction. A name that is also a word counts only with the surname.
+ */
+function namesSeen(
+  body: string,
+  hay: string,
+  person: PersonKey,
+  firsts: ReadonlySet<string>,
+  lines: Lines,
+  work: Work,
+): NameSeen[] {
+  const re = new RegExp(`(?<![a-z'])${escape(person.first)}(?![a-z'])`, 'g');
+  const out: NameSeen[] = [];
+  let n = 0;
+  for (const m of hay.matchAll(re)) {
+    if (++n > MAX_NAME_MATCHES || !work.spend()) break;
+    const at = m.index ?? 0;
+    const end = at + m[0].length;
+    // A name is written with a capital: "will" and "grace" are not Will and Grace.
+    if (!/[A-Z]/.test(body.charAt(at))) continue;
+    // "Will-writing" is a word, not a name.
+    if (/^-[A-Za-z]/.test(body.slice(end, end + 2))) continue;
+    const line = lines.at(at);
+    if (lines.is('not-holder', NOT_THE_HOLDER, line)) continue;
+    if (lines.is('transaction', TRANSACTION, line)) continue;
+    const lineStart = lines.start(line);
+    const before = hay.slice(Math.max(lineStart, at - 80), at);
+    const prev = /([a-z'-]+)[ ,]+$/.exec(before)?.[1];
+    // "Zain Ahmed Khan": Ahmed here is Zain's middle name.
+    if (prev && firsts.has(prev)) continue;
+    const next = followingWords(body.slice(end, Math.min(lines.end(line), end + 60)));
+    let full =
+      next.some((w) => person.surnames.has(fold(w.word))) ||
+      (prev !== undefined && person.surnames.has(prev));
+    // A form's surname line just above: "Surname / KHAN / Given names / SARA AMINA".
+    if (!full) {
+      for (let j = line; j >= Math.max(0, line - 2); j -= 1) {
+        const words = lines.text(j).split(/[^a-z'-]+/);
+        if (!words.some((w) => person.surnames.has(w))) continue;
+        if (SURNAME_LABEL.test(lines.text(j)) || SURNAME_LABEL.test(lines.text(j - 1))) {
+          full = true;
+          break;
+        }
+      }
+    }
+    // Followed by another surname: somebody else of that name.
+    if (!full && next[0]?.capital && !firsts.has(fold(next[0].word))) continue;
+    if (person.common && !full) continue;
+    const label = NAME_LABEL.exec(before);
+    const leading = before.trim() === '' || /^ *(?:mr|mrs|ms|miss|mx)\.? *$/.test(before);
+    let labelled =
+      (label !== null && !(label[1] ?? '').split(/[ ,]+/).some((w) => w !== '' && firsts.has(w))) ||
+      NAME_FIELD.test(before);
+    // The line above says whose name this is, or the lines below are its
+    // address: only for the whole name.
+    if (!labelled && full && leading) {
+      labelled =
+        lines.is('name-above', NAME_LABEL_ABOVE, line - 1) ||
+        [1, 2, 3].some((k) => lines.is('address', ADDRESS, line + k));
+    }
+    const score = full ? (labelled ? 0.9 : line < HEAD_LINES ? 0.8 : 0.6) : labelled ? 0.7 : 0.5;
+    out.push({ at, end, line, score });
+  }
+  return out;
+}
+
+/** Below this much lead over the next person, the page does not say whose it is. */
+const PERSON_LEAD = 0.1 - 1e-9;
+
+/**
  * Whose the document is, when the page says: the one person in the family
  * it names as its holder. Two named as surely, or two named together
  * ("Mr Ahmed Khan and Mrs Sara Khan"), is a document of theirs together,
- * and nobody is proposed.
+ * and nobody is proposed. A passport's machine-readable lines name its
+ * holder by surname and given name, and count only when both are theirs.
  */
 function proposePerson(
   body: string,
   hay: string,
   people: readonly ProposalPerson[],
+  household: string | null,
   mrz: Mrz | null,
+  lines: Lines,
+  work: Work,
 ): Proposed<string> | null {
-  const lineAt = lineIndex(hay);
-  const firsts = new Map(people.map((p) => [p.id, nameWords(p.name)[0] ?? '']));
-  const seen = people.map((p) => {
-    const others = new Set([...firsts].filter(([id]) => id !== p.id).map(([, f]) => f));
-    const places = namesSeen(body, hay, p, others, lineAt);
+  const keys = personKeys(people.slice(0, MAX_PEOPLE), household);
+  const firsts = new Set(keys.map((k) => k.first));
+  const seen = keys.map((k) => {
+    const others = new Set([...firsts].filter((f) => f !== k.first));
+    const places = namesSeen(body, hay, k, others, lines, work);
     const best = places.reduce<NameSeen | null>((b, s) => (!b || s.score > b.score ? s : b), null);
-    // A passport's machine-readable lines name its holder.
-    const first = firsts.get(p.id);
-    const inMrz = !!mrz && !!first && mrz.given[0]?.toLowerCase() === first;
-    return { id: p.id, places, best, score: Math.max(best?.score ?? 0, inMrz ? 0.9 : 0) };
+    const inMrz =
+      !!mrz &&
+      fold(mrz.given[0] ?? '') === k.first &&
+      fold(mrz.surname)
+        .split(' ')
+        .some((w) => k.surnames.has(w));
+    return { id: k.id, places, best, score: Math.max(best?.score ?? 0, inMrz ? 0.9 : 0) };
   });
   seen.sort((a, b) => b.score - a.score);
   const [top, next] = seen;
   const bar = PROPOSAL_THRESHOLDS.owner_member_id;
   if (!top || top.score < bar) return null;
-  if (next && next.score >= bar && top.score - next.score < 0.1) return null;
+  if (next && next.score >= bar && top.score - next.score < PERSON_LEAD) return null;
   const where = top.best;
   if (where) {
     for (const other of seen.slice(1)) {
@@ -1148,10 +1511,6 @@ function proposePerson(
  * them — often only initials, which no letterhead rule would offer.
  */
 const ISSUING_BODIES: Readonly<Record<string, ReadonlyArray<readonly [RegExp, string]>>> = {
-  passport: [
-    [/\bhmpo\b|hm passport office|identity (?:and|&) passport service/, 'HM Passport Office'],
-    [/department of state/, 'US Department of State'],
-  ],
   drivers_licence: [
     [/\bdvla\b|driver (?:and|&) vehicle licensing agency/, 'DVLA'],
     [/\bdva\b|driver (?:and|&) vehicle agency/, 'DVA'],
@@ -1164,6 +1523,84 @@ const ISSUING_BODIES: Readonly<Record<string, ReadonlyArray<readonly [RegExp, st
     [/internal revenue service/, 'IRS'],
   ],
 };
+
+/** Countries by their ISO 3166 alpha-3 codes, as a passport's machine lines give them. */
+const COUNTRIES: Readonly<Record<string, string>> = {
+  GBR: 'United Kingdom',
+  USA: 'United States',
+  IRL: 'Ireland',
+  CAN: 'Canada',
+  AUS: 'Australia',
+  NZL: 'New Zealand',
+  IND: 'India',
+  PAK: 'Pakistan',
+  BGD: 'Bangladesh',
+  LKA: 'Sri Lanka',
+  NGA: 'Nigeria',
+  GHA: 'Ghana',
+  KEN: 'Kenya',
+  ZAF: 'South Africa',
+  FRA: 'France',
+  DEU: 'Germany',
+  ESP: 'Spain',
+  PRT: 'Portugal',
+  ITA: 'Italy',
+  NLD: 'Netherlands',
+  BEL: 'Belgium',
+  POL: 'Poland',
+  ROU: 'Romania',
+  SWE: 'Sweden',
+  NOR: 'Norway',
+  DNK: 'Denmark',
+  FIN: 'Finland',
+  CHE: 'Switzerland',
+  AUT: 'Austria',
+  GRC: 'Greece',
+  TUR: 'Turkey',
+  CHN: 'China',
+  JPN: 'Japan',
+  KOR: 'South Korea',
+  PHL: 'Philippines',
+  MEX: 'Mexico',
+  BRA: 'Brazil',
+  JAM: 'Jamaica',
+  SGP: 'Singapore',
+  MYS: 'Malaysia',
+  ARE: 'United Arab Emirates',
+  SAU: 'Saudi Arabia',
+  EGY: 'Egypt',
+};
+
+/** A country named in the page's first lines, as a passport's cover line names it. */
+const COUNTRY_LINES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bunited kingdom\b|\bgreat britain\b/, 'United Kingdom'],
+  [/\bunited states\b/, 'United States'],
+  ...Object.values(COUNTRIES)
+    .filter((c) => c !== 'United Kingdom' && c !== 'United States')
+    // Ireland, not Northern Ireland: that is the United Kingdom.
+    .map((c) => [new RegExp(`(?<!northern )\\b${escape(c.toLowerCase())}\\b`), c] as const),
+];
+
+/** Whether a kind's issuer is a country ("Issuing country", a passport's): no body is one. */
+function issuedByCountry(kind: ProposalKind | null): boolean {
+  const word = kind?.issued_by_label ?? kind?.core?.issued_by?.label ?? null;
+  return !!word && /\bcountry\b/i.test(word);
+}
+
+/**
+ * The country that issued it, for a kind whose issuer is a country: the
+ * issuing state in its machine-readable lines, or a country named in its
+ * first lines. Nothing else fits the field.
+ */
+function proposeCountry(hay: string, mrz: Mrz | null, lines: Lines): Proposed<string> | null {
+  const coded = mrz ? COUNTRIES[mrz.state] : undefined;
+  if (coded) return { value: coded, confidence: 0.9, cue: 'machine_lines' };
+  const head = Array.from({ length: Math.min(6, lines.count) }, (_, i) => lines.text(i)).join('\n');
+  const named = COUNTRY_LINES.filter(([re]) => re.test(head));
+  return named.length === 1 && named[0]
+    ? { value: named[0][1], confidence: 0.85, cue: 'issuing_country' }
+    : null;
+}
 
 function proposeIssuer(
   body: string,
@@ -1209,12 +1646,20 @@ const filled = (v: unknown) =>
  * and its cue — only for fields it has no value for yet, and only above
  * each field's threshold. Nothing, often: that is the right answer for a
  * page that does not say.
+ *
+ * Bounded: every pattern looks at a limited number of matches, each line
+ * is asked about once, and all of it shares one budget of work
+ * (`MAX_WORK`), counted rather than timed so the same page always gets the
+ * same answer; a page that would take more stops, and what was found by
+ * then is what is proposed.
  */
 export function proposeDetails(text: string, ctx: ProposalContext): DetailProposal {
   const body = text.slice(0, MAX_TEXT).replace(/\r\n?/g, '\n');
   const hay = fold(body);
   const current = ctx.current ?? {};
   const out: DetailProposal = {};
+  const work = new Work(MAX_WORK);
+  const lines = new Lines(hay);
   const mrz = readMrz(body);
 
   // The kind: the document's own, or one the page proposes above the bar.
@@ -1223,7 +1668,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   if (filled(current.type_key)) {
     kind = ctx.types.find((t) => t.key === current.type_key) ?? null;
   } else {
-    const [best, next] = scoreKinds(hay, ctx.types, mrz);
+    const [best, next] = scoreKinds(hay, ctx.types, mrz, work);
     const lead = best ? best.score - (next?.score ?? 0) : 0;
     if (best && best.score >= KIND_MIN_SCORE && lead >= KIND_MIN_LEAD) {
       const confidence = round(Math.min(0.97, 0.5 + 0.04 * best.score + 0.04 * lead));
@@ -1241,13 +1686,15 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
 
   // Whose it is: the family's names, where the page names its holder.
   if (!filled(current.owner_member_id)) {
-    const person = proposePerson(body, hay, ctx.people, mrz);
+    const person = proposePerson(body, hay, ctx.people, ctx.household ?? null, mrz, lines, work);
     if (person) out.owner_member_id = { ...person, confidence: round(person.confidence) };
   }
 
-  // Who issued it.
+  // Who issued it: a country, where the kind's issuer is one.
   if (!filled(current.issued_by) && (!kind || shows(kind, 'issued_by'))) {
-    const issuer = proposeIssuer(body, hay, ctx, kind?.key ?? null);
+    const issuer = issuedByCountry(kind)
+      ? proposeCountry(hay, kind?.key === 'passport' ? mrz : null, lines)
+      : proposeIssuer(body, hay, ctx, kind?.key ?? null);
     if (issuer && round(issuer.confidence) >= PROPOSAL_THRESHOLDS.issued_by) {
       out.issued_by = { ...issuer, confidence: round(issuer.confidence) };
     }
@@ -1257,14 +1704,18 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   if (!kind) return out;
   const mrzFits = mrz !== null && kind.key === 'passport';
 
-  const { issued, expires: expiring } = claimDates(hay, kind, ctx.dateOrder);
-  let issuedOn = shows(kind, 'issued') && !filled(current.issued) ? bestDate(issued, false) : null;
+  const { issued, expires: expiring } = claimDates(body, hay, kind, ctx.dateOrder, lines, work);
+  const printedIssue = bestDate(issued, false);
+  let issuedOn = shows(kind, 'issued') && !filled(current.issued) ? printedIssue : null;
   let expiresOn: Proposed<DateValue> | null = null;
   if (expires(kind) && !filled(current.expires)) {
-    expiresOn =
+    const fromMrz =
       mrzFits && mrz.expires
-        ? { value: mrz.expires, confidence: 0.95, cue: 'machine_lines' }
-        : bestDate(expiring, true);
+        ? mrzExpiry(mrz.expires, printedIssue?.value.date ?? current.issued?.date ?? null)
+        : null;
+    expiresOn = fromMrz
+      ? { value: fromMrz, confidence: 0.95, cue: 'machine_lines' }
+      : bestDate(expiring, true);
   }
   // A document that runs out before it was issued says neither.
   const from = issuedOn?.value.date ?? current.issued?.date ?? null;
@@ -1287,7 +1738,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
     if (mrzFits && mrz.number) {
       number = { value: mrz.number, confidence: 0.95, cue: 'machine_lines' };
     } else {
-      const found = findNumbers(body, hay, kind);
+      const found = findNumbers(body, hay, kind, work);
       const first = found[0];
       if (first) {
         const plain = (v: string) => v.replace(/\s/g, '');
