@@ -90,6 +90,8 @@ describe('buildCapabilities', () => {
       access_restrictions: true,
       // 5.34: someone outside the family, with a sign-in that ends (D4, A28).
       guests: true,
+      // 5.37: what a document's pages propose, each with a confidence (A44).
+      detail_suggestions: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

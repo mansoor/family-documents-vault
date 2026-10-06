@@ -82,6 +82,7 @@ import {
   type IdentityFields,
   type IdentityPart,
   type IdentityPartView,
+  type DetailSuggestions,
   type IssuerSuggestions,
   type Invitation,
   type MemberAccess,
@@ -274,6 +275,13 @@ export interface FakeVaultState {
   /** What GET /documents/{id}/issuer-suggestions answers, by document; "unavailable" if unset. */
   issuerSuggestions: Map<string, IssuerSuggestions>;
   /**
+   * What the pages propose, by document (5.37): GET
+   * /documents/{id}/suggestions answers it — less any field the document
+   * has a value for by then, as the vault leaves those out — and
+   * "unavailable" if unset.
+   */
+  detailSuggestions: Map<string, DetailSuggestions>;
+  /**
    * What GET /versions/{id}/pages/{n} answers, by version: how many pages
    * are drawn, or a kind of file the vault cannot draw. A version the fake
    * made and nobody set here is still being drawn (`preview_pending`).
@@ -387,6 +395,7 @@ const FAKE_EDITABLE = [
   'owner_member_id',
   'identifier',
   'issued_by',
+  'issued',
   'expires',
   'notes',
 ];
@@ -623,6 +632,7 @@ export function createFakeVault(): {
     captures: new Map(),
     reminders: [],
     issuerSuggestions: new Map(),
+    detailSuggestions: new Map(),
     pages: new Map(),
     offlineEssentials: { items: [], received: new Set() },
     // Each reminds from Expires where it expires and has lead times, as
@@ -1405,6 +1415,8 @@ export function createFakeVault(): {
           access_restrictions: true,
           // Someone outside the family (5.34).
           guests: true,
+          // What the pages propose for a document's empty fields (5.37).
+          detail_suggestions: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1764,6 +1776,7 @@ export function createFakeVault(): {
         doc.identifier = (body.identifier as string | null)?.trim() || null;
       }
       if (body.issued_by !== undefined) doc.issued_by = tidy(body.issued_by as string | null);
+      if (body.issued !== undefined) doc.issued = body.issued as DateValue | null;
       if (body.expires !== undefined) doc.expires = body.expires as DateValue | null;
       if (body.notes !== undefined) {
         const before = doc.notes ?? null;
@@ -1973,6 +1986,43 @@ export function createFakeVault(): {
         return fail(404, 'not_found', 'That document is not in the vault.');
       }
       return ok(state.issuerSuggestions.get(id) ?? { state: 'unavailable', items: [] });
+    }
+    // What the pages propose (5.37), refused as the vault refuses an edit:
+    // a viewer (a guest among them) whatever the id, a teen for another's;
+    // an Only me document is there for its owner alone.
+    const proposalFor = /^\/api\/v1\/documents\/([^/]+)\/suggestions$/.exec(path);
+    if (proposalFor && init.method === 'GET') {
+      const s = session();
+      if (!('id' in s)) return s;
+      const editor = whoOf(s);
+      if (!can(editor.role, 'document.edit')) {
+        return fail(403, 'forbidden', refusalFor('document.edit'));
+      }
+      const id = decodeURIComponent(proposalFor[1] as string);
+      const doc = state.documents.find((d) => d.id === id && !d.deleted_at);
+      if (!doc || (doc.visibility === 'private' && doc.owner_member_id !== editor.memberId)) {
+        return fail(404, 'not_found', 'That document is not in the vault.');
+      }
+      if (editor.role === 'teen' && doc.owner_member_id !== editor.memberId) {
+        return fail(403, 'forbidden', 'You can only change your own documents.');
+      }
+      const given = state.detailSuggestions.get(id);
+      if (!given || given.state !== 'ready') {
+        return ok({ state: given?.state ?? 'unavailable', version_id: null, proposal: {} });
+      }
+      // A field the document has a value for is never offered.
+      const has: Record<keyof DetailSuggestions['proposal'], boolean> = {
+        type_key: !!doc.type_key,
+        owner_member_id: !!doc.owner_member_id,
+        issued: !!doc.issued,
+        expires: !!doc.expires,
+        identifier: !!doc.identifier?.trim(),
+        issued_by: !!doc.issued_by?.trim(),
+      };
+      const proposal = Object.fromEntries(
+        Object.entries(given.proposal).filter(([k]) => !has[k as keyof typeof has]),
+      );
+      return ok({ state: 'ready', version_id: given.version_id, proposal });
     }
     const uploadKey = /^\/api\/v1\/uploads\/([^/]+)$/.exec(path);
     if (uploadKey && init.method === 'GET') {

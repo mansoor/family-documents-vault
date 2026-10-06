@@ -19,6 +19,7 @@ import { AuthService, type Tokens } from './auth/service.js';
 import { codeFor, TotpService } from './auth/totp.js';
 import { deriveSigningKey } from './auth/tokens.js';
 import { loadConfig } from './config.js';
+import type { Proposals } from './documents/proposal-pool.js';
 import { DocumentService, type Enqueue } from './documents/service.js';
 import { VisibilityService } from './documents/visibility.js';
 import { TypeService } from './documents/types.js';
@@ -155,6 +156,8 @@ export interface HarnessOptions {
   incomingBeforeCommit?: IncomingOptions['beforeCommit'];
   /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
   trustProxy?: 'network' | 'private' | 'all' | 'none';
+  /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
+  proposals?: Proposals;
 }
 
 /** The key the harness's `mail.to_address` jobs are sealed under, as the worker's are. */
@@ -266,6 +269,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     enqueue,
     reminders,
     deriveSealedKey(TEST_MASTER),
+    opts.proposals,
   );
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),

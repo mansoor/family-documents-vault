@@ -6,6 +6,34 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.5.38] - 2026-10-06 — iteration 5.37
+
+The vault reads what it can from a document's pages, and suggests its details.
+
+### Added
+
+- **"We read the pages — is this right?"** A document's page offers a chip for each empty detail the vault could read: what kind it is, whose it is, the issued and expiry dates, the number and the issuer.
+  - One tap fills that one detail. Nothing is ever filled without a tap, and nothing you typed is overwritten.
+  - Each chip shows how sure the vault is, for example "suggested · 92%". Anything it is less sure of is not offered at all.
+  - "Not now" puts the card away for that document. The Edit card offers the same chips under empty fields.
+- **The vault reads Word documents too.** Their words are found by search.
+- **Only people who may change a document are offered suggestions.**
+  - Viewers and guests never are.
+  - An Only me document's pages are read only for its owner.
+  - Nothing read is stored, logged or sent anywhere.
+
+### Changed
+
+- **PDFs that already carry their words are read directly**, so their search text is ready at once, and only scanned pages are photo-read. A scan with a printed line on it, such as a scanner's header, is still photo-read in full.
+- **Tables in PDFs keep each label beside its value**, so search snippets of statements and schedules read better.
+- A passport's issuer is suggested as its country.
+- **Dates such as 03/04/2031 are read only when their order is clear**, from other dates on the page or the household's country.
+- A person is suggested only when the page names them with their surname, never from a first name alone or a payee line.
+
+### Security
+
+- **Reading a Word file, and working out suggestions, each run apart from the rest of the vault**, under a time limit. A file made to be slow is given up on, and reminders, mail, backups and other people's requests carry on.
+
 ## [0.5.37] - 2026-10-06 — iteration 5.35
 
 Notes you can write, with a little formatting.

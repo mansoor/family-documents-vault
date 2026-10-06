@@ -2520,6 +2520,11 @@ for (const attacker of ['restricted', 'guest'] as const)
             (id) => `/api/v1/documents/${id}/issuer-suggestions`,
             hidden.document,
           ],
+          [
+            'what its pages propose (5.37)',
+            (id) => `/api/v1/documents/${id}/suggestions`,
+            hidden.document,
+          ],
           ['its collections', (id) => `/api/v1/documents/${id}/collections`, hidden.document],
           ['its collection', (id) => `/api/v1/collections/${id}`, hidden.collection],
           [

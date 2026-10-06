@@ -15,9 +15,15 @@ import { describe, expect, it } from 'vitest';
  *
  * Signing in, a reset and an invitation's page ask as `anonymous`; a link,
  * once its share is found, asks as the link. What is left is two lookups
- * made before anybody is known.
+ * made before anybody is known — and the proposal thread, which loads its
+ * own entry as it starts.
  */
 const ALLOWED = [
+  // The proposal thread (5.37, N537P-01): started from its own entry,
+  // proposal-worker (which imports @fdv/shared alone), with tsx's loader
+  // registered first when it runs from source. It runs proposeDetails on
+  // what it is sent, and nothing else: no database, and no scope.
+  'documents/proposal-pool.ts ProposalPool.start (loads a module as it runs)',
   // Which share a link's token names, found by its hash. Until it is found
   // there is no link to ask as; after, the link asks as itself.
   'documents/shares.ts ShareService.linkScope',

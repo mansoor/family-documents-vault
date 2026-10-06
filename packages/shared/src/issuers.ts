@@ -691,6 +691,27 @@ const UNSEEN = Number.MAX_SAFE_INTEGER;
  *   web address that agrees, or a registered name behind it.
  */
 export function issuerCandidates(text: string, opts: IssuerOptions): IssuerCandidate[] {
+  return scoredIssuers(text, opts)
+    .slice(0, MAX_SUGGESTIONS)
+    .map(({ value, source }) => ({ value, source }));
+}
+
+/** An issuer read off the page, with the score that ranked it (5.37). */
+export interface ScoredIssuer {
+  value: string;
+  source: 'known' | 'page';
+  /**
+   * The score above: 10 or more for one of the household's own issuers the
+   * page names, at least `OFFER_AT` (4) for a name read off the page alone.
+   */
+  score: number;
+}
+
+/**
+ * Every issuer `issuerCandidates` would offer, one per issuer, best first,
+ * each with its score: what `proposeDetails` turns into a confidence.
+ */
+export function scoredIssuers(text: string, opts: IssuerOptions): ScoredIssuer[] {
   const body = text.slice(0, MAX_TEXT);
   const lines = body.split(/\r\n|\r|\n/).filter((l) => l.trim() !== '');
   if (lines.length === 0) return [];
@@ -761,12 +782,11 @@ export function issuerCandidates(text: string, opts: IssuerOptions): IssuerCandi
       compareText(a.value, b.value),
   );
   const seen = new Set<string>();
-  const out: IssuerCandidate[] = [];
+  const out: ScoredIssuer[] = [];
   for (const s of scored) {
     if (seen.has(s.key)) continue;
     seen.add(s.key);
-    out.push({ value: s.value, source: s.source });
-    if (out.length === MAX_SUGGESTIONS) break;
+    out.push({ value: s.value, source: s.source, score: s.score });
   }
   return out;
 }

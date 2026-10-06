@@ -57,7 +57,9 @@ const schema = z.object({
     .min(1)
     .max(200)
     .default(20)
-    .describe('Pages of a PDF that are OCRed; the rest are stored but not searchable.'),
+    .describe(
+      "Pages of a PDF that are read, by the PDF's own text or by OCR where a page has none; the rest are stored but not searchable.",
+    ),
   DATABASE_ADMIN_URL: z
     .string()
     .min(1)

@@ -7,15 +7,19 @@ const run = promisify(execFile);
 
 /**
  * The three command-line tools the worker image ships: poppler
- * (pdftoppm, pdfinfo), ImageMagick (magick) and Tesseract. Wrapped so the
- * rest of the worker never builds a shell command, and so tests can skip
- * cleanly on a machine without them.
+ * (pdftoppm, pdfinfo, pdftotext), ImageMagick (magick) and Tesseract.
+ * Wrapped so the rest of the worker never builds a shell command, and so
+ * tests can skip cleanly on a machine without them.
  */
 
 export interface Tools {
   pdftoppm: boolean;
   magick: boolean;
   tesseract: boolean;
+  /** poppler's, in the same package as pdftoppm (5.37); absent, every page is OCR'd. */
+  pdftotext?: boolean;
+  /** poppler's too: how much of each page its pictures cover (the 5.37 review). */
+  pdfimages?: boolean;
 }
 
 let cached: Tools | null = null;
@@ -35,6 +39,8 @@ export async function detectTools(): Promise<Tools> {
     pdftoppm: await has('pdftoppm', ['-v']),
     magick: (await has('magick', ['-version'])) || (await has('convert', ['-version'])),
     tesseract: await has('tesseract', ['--version']),
+    pdftotext: await has('pdftotext', ['-v']),
+    pdfimages: await has('pdfimages', ['-v']),
   };
   return cached;
 }
@@ -98,6 +104,104 @@ export async function renderPdfPages(
   );
   const files = (await readdir(outDir)).filter((f) => /^page-\d+\.png$/.test(f)).sort();
   return files.map((f) => path.join(outDir, f));
+}
+
+/**
+ * The text a PDF carries of its own, page by page, for its first
+ * `lastPage` pages (5.37): poppler's pdftotext, UTF-8, laid out as the page
+ * is (`-layout`), so a label stays on the line of the value beside it (the
+ * review: in reading order a table's label and value came apart). A page
+ * that is a scan comes back empty, or nearly. Nothing is drawn, so it takes
+ * a moment however many pages there are.
+ */
+export async function pdfPageTexts(file: string, lastPage: number): Promise<string[]> {
+  const { stdout } = await run(
+    'pdftotext',
+    [
+      '-q',
+      '-layout',
+      '-enc',
+      'UTF-8',
+      '-eol',
+      'unix',
+      '-f',
+      '1',
+      '-l',
+      String(lastPage),
+      file,
+      '-',
+    ],
+    { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
+  );
+  // A form feed ends each page, the last one included.
+  const pages = stdout.split('');
+  if (pages.length > 1 && (pages[pages.length - 1] ?? '').trim() === '') pages.pop();
+  return pages;
+}
+
+/**
+ * How much of each of a PDF's first `lastPage` pages its pictures cover,
+ * from 0 to 1, by page number (the review): a scan is a picture of the
+ * whole page, with perhaps a line of text of its own — a "Scanned with"
+ * line, a browser's print header. From pdfimages' list (each picture's size and
+ * resolution, so its size on the page) and pdfinfo's page sizes. A page
+ * not in the answer has no picture; null when either cannot say.
+ */
+export async function pdfImageCoverage(
+  file: string,
+  lastPage: number,
+): Promise<Map<number, number> | null> {
+  try {
+    const range = ['-f', '1', '-l', String(lastPage)];
+    const [listed, info] = await Promise.all([
+      run('pdfimages', ['-list', ...range, file], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }),
+      run('pdfinfo', [...range, file], { timeout: 30_000 }),
+    ]);
+    const pageArea = new Map<number, number>();
+    for (const m of info.stdout.matchAll(
+      /^Page\s+(\d+)\s+size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts/gm,
+    )) {
+      pageArea.set(Number(m[1]), (Number(m[2]) / 72) * (Number(m[3]) / 72));
+    }
+    const covered = new Map<number, number>();
+    for (const row of listed.stdout.split('\n')) {
+      const c = row.trim().split(/\s+/);
+      if (c.length < 14 || !/^\d+$/.test(c[0] ?? '') || c[2] !== 'image') continue;
+      const page = Number(c[0]);
+      const [w, h, xppi, yppi] = [c[3], c[4], c[12], c[13]].map(Number) as [
+        number,
+        number,
+        number,
+        number,
+      ];
+      if (!(xppi > 0 && yppi > 0)) continue;
+      covered.set(page, (covered.get(page) ?? 0) + (w / xppi) * (h / yppi));
+    }
+    const out = new Map<number, number>();
+    for (const [page, area] of covered) {
+      const whole = pageArea.get(page);
+      if (whole && whole > 0) out.set(page, Math.min(1, area / whole));
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Draws one page of a PDF as a PNG in `outDir`, as `renderPdfPages` draws them, for OCR. */
+export async function renderPdfPage(
+  file: string,
+  outDir: string,
+  page: number,
+  dpi = 150,
+): Promise<string> {
+  const base = path.join(outDir, `page-${page}`);
+  await run(
+    'pdftoppm',
+    ['-png', '-r', String(dpi), '-f', String(page), '-l', String(page), '-singlefile', file, base],
+    { timeout: 120_000 },
+  );
+  return `${base}.png`;
 }
 
 /**

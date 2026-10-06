@@ -68,9 +68,9 @@ CMD ["node", "apps/api/dist/server.mjs"]
 FROM ${NODE_IMAGE} AS worker
 ENV NODE_ENV=production \
     FDV_MIGRATIONS_DIR=/app/migrations
-# OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages and
-# page counts), ImageMagick (thumbnails and page previews; HEIC for iPhone
-# photos). All offline.
+# OCR and rendering tools: Tesseract 5 (English), poppler (PDF pages, page
+# counts and the text a PDF carries: 5.37), ImageMagick (thumbnails and page
+# previews; HEIC for iPhone photos). All offline.
 # Fonts matter: without them poppler renders text-only PDFs blank, and OCR
 # reads nothing.
 # A view-only link's pages carry whom it is for (5.18), in whatever script
@@ -85,7 +85,7 @@ RUN apk add --no-cache tesseract-ocr tesseract-ocr-data-eng poppler-utils imagem
          ! -name NotoSansArabic-Regular.ttf ! -name NotoSansDevanagari-Regular.ttf \
          ! -name NotoColorEmoji.ttf -delete \
     && fc-cache -f && magick -version >/dev/null && magick -list format | grep -q PANGO \
-    && tesseract --version >/dev/null && pg_dump --version >/dev/null
+    && tesseract --version >/dev/null && pdftotext -v >/dev/null 2>&1 && pg_dump --version >/dev/null
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/apps/worker/node_modules ./apps/worker/node_modules

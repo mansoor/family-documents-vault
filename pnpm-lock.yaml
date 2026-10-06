@@ -220,6 +220,9 @@ importers:
       web-push:
         specifier: ^3.6.7
         version: 3.6.7
+      yauzl:
+        specifier: ^3.4.0
+        version: 3.4.0
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -236,6 +239,9 @@ importers:
       '@types/web-push':
         specifier: ^3.6.4
         version: 3.6.4
+      '@types/yauzl':
+        specifier: ^2.10.3
+        version: 2.10.3
       http_ece:
         specifier: 1.2.0
         version: 1.2.0

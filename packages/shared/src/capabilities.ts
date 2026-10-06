@@ -189,6 +189,16 @@ export interface CapabilityFeatures {
    * /members/{id}/renew (`renew_guest`). Absent from older vaults.
    */
   guests?: boolean;
+  /**
+   * What a document's pages say about it (5.37, A44):
+   * GET /documents/{id}/suggestions proposes its kind, whose it is, when it
+   * was issued and when it runs out, its number and who issued it — each
+   * with a confidence and the cue it came from, only for fields it has no
+   * value for, and only above `PROPOSAL_THRESHOLDS`. For whoever may change
+   * the document; offered, never filled in. Absent from older vaults, which
+   * have GET /documents/{id}/issuer-suggestions only (it stays).
+   */
+  detail_suggestions?: boolean;
 }
 
 export interface CapabilityLimits {

@@ -22,3 +22,4 @@ export * from './text-search.js';
 export * from './upload-requests.js';
 export * from './wire.js';
 export * from './tokens.js';
+export * from './proposals.js';

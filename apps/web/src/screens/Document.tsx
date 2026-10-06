@@ -27,6 +27,7 @@ import {
   TrashIcon,
 } from '../ui.js';
 import { storedRole } from '../session.js';
+import { PagesSuggest, useSuggestionsOffered } from '../suggestions.js';
 import { SharePanel } from './Share.js';
 import { VisibilityControl } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
@@ -63,6 +64,8 @@ export function DocumentScreen() {
   const [thumb, setThumb] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [keys] = useState(createUploadKeys);
+  // What its pages propose for its empty fields (5.37): offered after Save.
+  const suggests = useSuggestionsOffered();
 
   const latest = data?.versions[0];
   useEffect(() => {
@@ -263,6 +266,18 @@ export function DocumentScreen() {
       <ErrorNote message={actionError} />
       {latest && !latest.file_removed && (
         <Button onClick={() => void download(latest)}>Download</Button>
+      )}
+      {/* "We read the pages — is this right?" (5.37): for whoever may change it. */}
+      {suggests && mayChangeIt && latest && !latest.file_removed && (
+        <PagesSuggest
+          key={doc.id}
+          doc={doc}
+          types={types}
+          members={members}
+          onSaved={(saved) => setData((d) => (d ? { ...d, doc: saved } : d))}
+          onStale={reload}
+          onGone={() => facts.current?.focus()}
+        />
       )}
 
       <dl className="facts" ref={facts} tabIndex={-1}>
