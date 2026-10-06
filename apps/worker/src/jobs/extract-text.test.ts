@@ -111,6 +111,42 @@ function scanWithHeader(header: string, scan: { jpeg: Buffer; width: number; hei
 }
 
 /**
+ * Pages of text, each with a picture placed on it (`place`, a PDF matrix
+ * in points): an illustrated brochure, or — the words an invisible layer
+ * over a picture of the whole page — a searchable scan, as a scanner's own
+ * OCR makes one. The picture is 8 by 8 pixels, stretched: its size on the
+ * page is what counts.
+ */
+function picturedPdf(pages: number, lines: string[], place: string, invisible = false): Buffer {
+  const kids = Array.from({ length: pages }, (_, i) => `${5 + i * 2} 0 R`).join(' ');
+  const pixels = Buffer.alloc(8 * 8 * 3, 0x9c);
+  const words = lines
+    .map((l, i) => `BT ${invisible ? '3 Tr ' : ''}/F1 10 Tf 72 ${740 - i * 14} Td (${l}) Tj ET`)
+    .join(' ');
+  const content = `q ${place} cm /Im1 Do Q ${words}`;
+  const objects: Array<string | Buffer[]> = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${kids}] /Count ${pages} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    [
+      Buffer.from(
+        `<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length ${pixels.length} >>\nstream\n`,
+        'latin1',
+      ),
+      pixels,
+      Buffer.from('\nendstream', 'latin1'),
+    ],
+  ];
+  for (let i = 0; i < pages; i += 1) {
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${6 + i * 2} 0 R /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R >> >> >>`,
+      `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+    );
+  }
+  return pdf(objects);
+}
+
+/**
  * A schedule laid out as a table: each label in one column, its value in
  * another, as an insurer's PDF sets them (the review's key/value table).
  */
@@ -313,6 +349,55 @@ describe('extracting text (5.37)', () => {
         expect(text, header).toMatch(/ELECTRICITY BILL 4471/);
         expect(text, header).toContain(header);
       }
+    },
+    120_000,
+  );
+
+  it.skipIf(!scans || !tools.pdfimages)(
+    "a page with text of its own is read by it, pictures or not: a brochure's photos and a searchable scan are never OCR'd (N537E-02)",
+    async () => {
+      const never = () => Promise.reject(new Error('Tesseract was called'));
+      // Twenty pages of thirty lines, each with a 4 by 3 inch photo: 12.8% of the page.
+      const brochure = path.join(dir, 'brochure.pdf');
+      const copy = Array.from(
+        { length: 30 },
+        (_, i) => `Line ${i + 1} of our garden range: benches, tables and parasols for 2026`,
+      );
+      await writeFile(brochure, picturedPdf(20, copy, '288 0 0 216 300 60'));
+      const read = counting(never);
+      const got = await extractText(brochure, 'application/pdf', {
+        maxPages: 20,
+        workDir: dir,
+        ocr: read.ocr,
+      });
+      expect(read.asked).toEqual([]);
+      expect(got).toMatchObject({ source: 'pdf', textPages: 20, ocrPages: 0 });
+      // Each page's words once, not twice.
+      expect(got?.text.split('Line 30 of our garden range')).toHaveLength(21);
+
+      // A searchable scan: a picture of the whole page under its scanner's text layer.
+      const searchable = path.join(dir, 'searchable.pdf');
+      const layer = [
+        'NORTHERN WATER',
+        'Water Services Bill',
+        'Bill date 3 May 2025',
+        'Account number 4471 2290 01',
+        'Mrs Sara Khan, 12 Acacia Avenue, Leeds LS6 2AB',
+        'Your charges for the period 1 April 2025 to 30 September 2025',
+        'Amount due 187.40 by 31 May 2025',
+        'Please pay by Direct Debit, or online at northernwater.example',
+        'Thank you for being our customer since 2011',
+      ];
+      await writeFile(searchable, picturedPdf(1, layer, '612 0 0 792 0 0', true));
+      const again = counting(never);
+      const scan = await extractText(searchable, 'application/pdf', {
+        maxPages: 5,
+        workDir: dir,
+        ocr: again.ocr,
+      });
+      expect(again.asked).toEqual([]);
+      expect(scan).toMatchObject({ source: 'pdf', textPages: 1, ocrPages: 0 });
+      expect(scan?.text.replace(/\s+/g, ' ')).toContain('Account number 4471 2290 01');
     },
     120_000,
   );

@@ -3696,7 +3696,11 @@ guest_always_limited`. A guest owns no document, by any path — made,
       a reason, never the page's words. A field the document has a value
       for is never proposed. `pending` while the worker is still reading
       the pages; `unavailable` with no file, or a kind of file it does not
-      read; `proposal` is `{}` unless `ready`, and often then. Offered,
+      read — and when the proposal could not be made in time: it is made
+      on a thread of the API's own, one page at a time, and a page that
+      takes more than a second, or finds eight waiting, is answered
+      `unavailable`, never an error, while every other request is answered
+      as usual. `proposal` is `{}` unless `ready`, and often then. Offered,
       never filled in: nothing is written, and neither the words nor the
       proposal is kept or logged (`Cache-Control: no-store`). An Only me
       document's words are opened only in its owner's own request (404 to
@@ -3707,30 +3711,42 @@ guest_always_limited`. A guest owns no document, by any path — made,
       date and no number without a confident kind — the document's own, or
       one the page proposes at the 2.6 spike's bar (a score of 5, 2 ahead
       of the next); only the dates that kind keeps; whose it is, by the
-      family's names: a first name with the family's surname beside it or
-      on the form's surname line, never a first name alone, never a
-      first name that is also a word ("Bill To:", "May 2025") without its
-      surname, never a name on a doctor's, a parent's or a signature's line
-      or in a transaction, never a guest, and nobody when two of the
-      family are named together; a passport's machine-readable lines
+      family's names: a first name with the person's own surname beside it
+      or on the form's surname line — for somebody known by a first name
+      only, the household's surname ("The Thompsons"), never another
+      member's — never a first name alone, never a first name that is also
+      a word ("Bill To:", "May 2025") without its surname, never a name
+      with a doctor, a parent or a signature before it on its line, or in
+      a transaction (what is right of a name, in a column of its own, is
+      not about it: "Our ref"), never a surname past a comma ("Sarah
+      Ahmed, Lucy Thompson"), never a guest, and nobody when two of the
+      family are named together, or when a name is said too often to look
+      at every time; a passport's machine-readable lines
       believed only with their check digits right, its holder only with
       the family's surname, and its expiry's century the one that fits its
       issue; a kind whose issuer is a country (a passport's "Issuing
       country") offered a country, never an office; a pet's vaccination
       record never a person's medical record; "issued" a label only in a
-      label's form ("Issued:", "Issued 14 March"), never in a sentence;
+      label's form — its date right after it ("Issued: 14 March"), or
+      alone on its line with the date below — never in a sentence, wrapped
+      or not;
       a number read whole, never a phone number or a postcode;
       a date in numbers whose order the document does not show read in the
       household's (`profile.country`, the US month first), and not at all
-      without one. English only (A46).
+      without one. English only (A46). Read from the text's first 60,000
+      characters, each line's first 2,000, and no run of white space
+      longer than 40; each pattern linear, and each stopping after so many
+      matches, so the same text always gets the same answer.
     - **Unchanged:** `GET /documents/{id}/issuer-suggestions` stays, for
       older phones.
     - **Changed (the worker):** a PDF's text is read from the PDF itself
       (poppler's `pdftotext -layout`, so a table's label stays beside its
       value); a page is drawn and OCR'd only when it is a scan — no text of
-      its own, or a picture covering a tenth of it or more (poppler's
-      `pdfimages`) — and then keeps both texts, so a text PDF never reaches
-      Tesseract and nothing searched before is lost. A Word file's words
+      its own, or a line or so (under 200 letters) with a picture covering a
+      tenth of it or more (poppler's `pdfimages`) — and then keeps both
+      texts, so nothing searched before is lost. A page with more text of
+      its own is read by it alone: a text PDF, an illustrated one and a
+      searchable scan with its own text layer never reach Tesseract. A Word file's words
       are read from its XML (its headers, body and footers), the XML turned
       into text on a thread of its own that is stopped at its deadline; so
       it is searched, and suggested from, as a PDF is; `ocr_status` is

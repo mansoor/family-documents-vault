@@ -458,6 +458,127 @@ describe('proposeDetails: whose it is, and nobody else (the 5.37 review)', () =>
       '08/15 Zelle Payment To Grace Carter -50.00',
     );
     expect(proposeDetails(us, CARTERS).owner_member_id).toBeUndefined();
+    // Laid out in columns, the payee alone in one: the row still starts with its date.
+    const columns = lines(
+      'Barclays Bank UK PLC',
+      'Mr D M Thompson',
+      '08 Aug 2025      SARAH THOMPSON      FASTER PAYMENT      200.00',
+    );
+    expect(proposeDetails(columns, THOMPSONS).owner_member_id).toBeUndefined();
+  });
+
+  it("a first name only takes the household's surname, never another member's (N537P-03)", () => {
+    const family = ctx({
+      people: [
+        { id: 'p-sarah', name: 'Sarah Thompson' },
+        { id: 'p-david', name: 'David Thompson' },
+        { id: 'p-will', name: 'Will' },
+        { id: 'p-amelia', name: 'Amelia' },
+        { id: 'p-ruth', name: 'Ruth Miller' },
+      ],
+      household: 'The Thompsons',
+      issuers: [],
+    });
+    // Granny's late husband's papers, and a cousin's report.
+    for (const text of [
+      'Pension Wise\nMr Will Miller\n4 Mill Lane\nYork YO1 7AA',
+      'Certified copy of an entry of death\nName and surname: Will Miller',
+      'Hillside Primary School\nEnd of year report\nStudent name: Amelia Miller',
+    ]) {
+      expect(proposeDetails(text, family).owner_member_id, text).toBeUndefined();
+    }
+    // With the household's surname, they are theirs.
+    expect(
+      proposeDetails('End of year report\nStudent name: Amelia Thompson', family).owner_member_id
+        ?.value,
+    ).toBe('p-amelia');
+    // A household whose name is no surname: the one most of the family share, and only that.
+    const ours = ctx({ ...family, household: 'Our family' });
+    expect(
+      proposeDetails('End of year report\nStudent name: Amelia Thompson', ours).owner_member_id
+        ?.value,
+    ).toBe('p-amelia');
+    expect(proposeDetails('Student name: Amelia Miller', ours).owner_member_id).toBeUndefined();
+    // One member's surname is nobody's "most".
+    const granny = ctx({
+      people: [
+        { id: 'p-ruth', name: 'Ruth Miller' },
+        { id: 'p-amelia', name: 'Amelia' },
+      ],
+      household: 'Our family',
+      issuers: [],
+    });
+    expect(proposeDetails('Student name: Amelia Miller', granny).owner_member_id).toBeUndefined();
+  });
+
+  it("a comma ends a name: the next one's surname is not hers (the second check's probe)", () => {
+    for (const text of [
+      'Class list\nNames: Sarah Ahmed, Lucy Thompson, Jo Hill',
+      'Sports day results\nRelay team: Sarah Ahmed, Lucy Thompson, Jo Hill',
+    ]) {
+      expect(proposeDetails(text, THOMPSONS).owner_member_id, text).toBeUndefined();
+    }
+    // Her own name, written either way round, is still hers.
+    for (const text of ['Names: Sarah Thompson, Jo Hill', 'Name: THOMPSON, SARAH']) {
+      expect(proposeDetails(text, THOMPSONS).owner_member_id?.value, text).toBe('p-sarah');
+    }
+  });
+
+  it('a limit gives fewer answers, never another one (N537P-04)', () => {
+    const wording = Array.from(
+      { length: 41 },
+      (_, i) => `${i + 1}. We will pay for loss or damage, and you will tell us of any change.`,
+    );
+    const schedule = 'Policy schedule\nPolicyholders: Mr Will Thompson and Mrs Sarah Thompson';
+    // 82 "will"s in the wording are not 82 Wills: the two of them, so nobody…
+    expect(proposeDetails(lines(...wording, schedule), THOMPSONS).owner_member_id).toBeUndefined();
+    // …and Will alone, after them, is still found.
+    const his = 'Policy schedule\nPolicyholder: Mr Will Thompson\nNamed driver: Mrs Sarah Thompson';
+    expect(proposeDetails(lines(...wording, his), THOMPSONS).owner_member_id?.value).toBe('p-will');
+    // 41 Wills that are words, with their capital: Will is not looked for to
+    // the end, so nobody is proposed — never Sarah alone.
+    const asked = Array.from({ length: 41 }, (_, i) => `${i + 1}. Will you tell us of any change?`);
+    expect(proposeDetails(lines(...asked, schedule), THOMPSONS).owner_member_id).toBeUndefined();
+    // Nor where the family is too many to look for each.
+    const many = ctx({
+      people: [
+        { id: 'p-sarah', name: 'Sarah Thompson' },
+        ...Array.from({ length: 50 }, (_, i) => ({ id: `p-${i}`, name: `Cousin${i} Thompson` })),
+      ],
+      household: 'The Thompsons',
+      issuers: [],
+    });
+    const hers = 'Hyde Park Surgery\nPatient: Mrs Sarah Thompson';
+    expect(proposeDetails(hers, THOMPSONS).owner_member_id?.value).toBe('p-sarah');
+    expect(proposeDetails(hers, many).owner_member_id).toBeUndefined();
+  });
+
+  it("what is right of a name is another column: a letter's reference beside its address (N537P-08)", () => {
+    const pad = (left: string, right: string) => `${left.padEnd(52)}${right}`;
+    for (const right of [
+      'Our ref: DT/4471',
+      'Amount due £84.20',
+      'GP: Dr A Patel',
+      'Card ending 4471',
+    ]) {
+      const letter = lines(
+        'Brown & Co Solicitors',
+        '',
+        pad('Mrs Sarah Thompson', right),
+        pad('12 Elm Road', 'Date: 22 July 2025'),
+        'Leeds LS6 2AB',
+      );
+      const got = proposeDetails(letter, THOMPSONS).owner_member_id;
+      expect(got?.value, right).toBe('p-sarah');
+      expect(got?.confidence, right).toBe(0.9);
+    }
+    // What is left of it is its label: a father's name is not whose it is.
+    const birth = lines(
+      'Birth certificate',
+      pad('Name and surname of child', 'Will Thompson'),
+      pad("Father's name", 'David Thompson'),
+    );
+    expect(proposeDetails(birth, THOMPSONS).owner_member_id?.value).toBe('p-will');
   });
 });
 
@@ -492,6 +613,40 @@ describe('proposeDetails: the review round (5.37)', () => {
     expect(
       proposeDetails(bill, ctx({ current: { type_key: 'utility_bill' } })).issued?.value.date,
     ).toBe('2025-05-03');
+  });
+
+  it('"issued" wrapped to the end of a line, or before a number, is still in a sentence (N537P-02)', () => {
+    const asIs = (text: string, kind: string) =>
+      proposeDetails(text, ctx({ current: { type_key: kind } })).issued?.value.date;
+    // Wrapped as pdftotext -layout wraps a letter: "issued" ends the line.
+    const bill = lines(
+      'Octopus Energy',
+      'Bill date: 3 May 2025',
+      'Account number: A-1B2C3D4E',
+      'We have issued',
+      'a refund of £20.00, which will reach your account by 14 June 2025.',
+    );
+    expect(asIs(bill, 'utility_bill')).toBe('2025-05-03');
+    const surgery = lines(
+      'Hyde Park Surgery',
+      '22 July 2025',
+      'Re: May Thompson',
+      'We have issued',
+      'a repeat prescription; next review due 22/07/2026.',
+    );
+    expect(asIs(surgery, 'medical_record')).toBeUndefined();
+    // A digit after it is not a date after it.
+    const inhalers = lines(
+      'Hyde Park Surgery',
+      'We issued 2 inhalers; next review due 22/07/2026.',
+    );
+    expect(asIs(inhalers, 'medical_record')).toBeUndefined();
+    // A label alone on its line, numbered or not, still has its date below it…
+    for (const label of ['Issued', 'Issued:', '4a. Issued', 'Date issued']) {
+      expect(asIs(lines('PASSPORT', label, '14 March 2025'), 'passport'), label).toBe('2025-03-14');
+    }
+    // …and one in a label's form, the date right after it.
+    expect(asIs('PASSPORT\nIssued: on 14 March 2025', 'passport')).toBe('2025-03-14');
   });
 
   it('a passport’s machine-readable expiry is read in the century that fits its issue (C537-06)', () => {
@@ -618,13 +773,40 @@ describe('proposeDetails: how it does on the fixtures', () => {
       fill('Date of issue 14 MAR 2021 Date of expiry 14 MAR 2031 '),
       fill('Mr Sara Khan\n12 Acacia Avenue\n'),
     ];
-    for (const text of crafted) {
-      const started = Date.now();
-      const p = proposeDetails(text, ctx());
-      expect(Date.now() - started, text.slice(0, 30)).toBeLessThan(250);
-      // Bounded by work counted, not by time: the same page, the same answer.
-      expect(proposeDetails(text, ctx())).toEqual(p);
+    // A label, then a run of white space with no date after it: 25 s a
+    // page before (N537P-01), as a Word file's tabs give it.
+    for (const word of ['Issued', 'Expiry']) {
+      for (const space of [' ', '\t']) {
+        const run = `${word}${space.repeat(59_990)}x`;
+        crafted.push(run, `Passport nationality place of birth surname\n${run}`);
+      }
     }
+    for (const text of crafted) {
+      for (const over of [
+        {},
+        { current: { type_key: 'passport' } },
+        { current: { type_key: 'utility_bill' } },
+      ]) {
+        const started = Date.now();
+        const p = proposeDetails(text, ctx(over));
+        expect(Date.now() - started, text.slice(0, 30)).toBeLessThan(250);
+        // Bounded by what it counts, never by time: the same page, the same answer.
+        expect(proposeDetails(text, ctx(over))).toEqual(p);
+      }
+    }
+  });
+
+  it('the text is read with no run of white space over 40 and no line over 2,000 characters', () => {
+    // pdftotext -layout sets a label and its value far apart on a wide form.
+    const wide = lines('PASSPORT', `Issued:${' '.repeat(100)}14 March 2025`);
+    expect(
+      proposeDetails(wide, ctx({ current: { type_key: 'passport' } })).issued?.value.date,
+    ).toBe('2025-03-14');
+    // What is past a line's first 2,000 characters is not read.
+    const long = `Date of issue 14 March 2025 ${'x'.repeat(2_000)} Date of expiry 14 March 2035`;
+    const p = proposeDetails(long, ctx({ current: { type_key: 'passport' } }));
+    expect(p.issued?.value.date).toBe('2025-03-14');
+    expect(p.expires).toBeUndefined();
   });
 
   it('a long statement is read quickly: the dates and labels of 60,000 characters', () => {

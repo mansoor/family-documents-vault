@@ -142,8 +142,8 @@ export async function pdfPageTexts(file: string, lastPage: number): Promise<stri
 /**
  * How much of each of a PDF's first `lastPage` pages its pictures cover,
  * from 0 to 1, by page number (the review): a scan is a picture of the
- * whole page, whatever text it also carries — a "Scanned with" line, a
- * browser's print header. From pdfimages' list (each picture's size and
+ * whole page, with perhaps a line of text of its own — a "Scanned with"
+ * line, a browser's print header. From pdfimages' list (each picture's size and
  * resolution, so its size on the page) and pdfinfo's page sizes. A page
  * not in the answer has no picture; null when either cannot say.
  */

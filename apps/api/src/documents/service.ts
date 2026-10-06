@@ -4,7 +4,6 @@ import {
   issuerCandidates,
   mayChangeVisibilityAtAll,
   notesPlainText,
-  proposeDetails,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
   sentThroughWords,
@@ -14,6 +13,7 @@ import {
   type IssuerSuggestions,
   type KnownIssuer,
   type CaptureMetadata,
+  type ProposalContext,
   type UploadStatus,
   type SearchHit as WireSearchHit,
 } from '@fdv/shared';
@@ -67,6 +67,7 @@ import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import type { ReminderService } from '../reminders/service.js';
+import { proposalPool, type Proposals } from './proposal-pool.js';
 import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
@@ -455,6 +456,8 @@ export class DocumentService {
     private readonly reminders: ReminderService | null = null,
     /** Signs the handle on the second pass of search; null disables it. */
     private readonly sealedKey: Uint8Array | null = null,
+    /** Where a document's pages are proposed for: off the event loop, with a deadline (5.37). */
+    private readonly proposals: Proposals = proposalPool,
   ) {}
 
   // ---------------------------------------------------------------- types
@@ -1400,62 +1403,82 @@ export class DocumentService {
    * logged. Only for whoever may change the document: a viewer, limited or
    * not, and a guest are refused as for any edit, and a teen is answered
    * only for their own. 'pending' while the pages are being read.
+   *
+   * The proposal is made on the proposal thread, after the transaction
+   * (N537P-01): a page that takes longer than its deadline, or finds the
+   * thread busy, is answered 'unavailable' — never a 500 — and the API
+   * answers everybody else meanwhile.
    */
   async detailSuggestions(p: Principal, id: string): Promise<DetailSuggestions> {
     this.canWrite(p);
-    return withPrincipal(this.db, p, async (trx) => {
-      const doc = await this.fetch(trx, p, id);
-      this.mustOwnIfTeen(p, doc);
-      const read = await this.pagesText(trx, p, doc);
-      if (read.state !== 'ready') return { state: read.state, version_id: null, proposal: {} };
+    const asked = await withPrincipal(
+      this.db,
+      p,
+      async (
+        trx,
+      ): Promise<
+        | { state: 'ready'; text: string; versionId: string; ctx: ProposalContext }
+        | { state: 'pending' | 'unavailable' }
+      > => {
+        const doc = await this.fetch(trx, p, id);
+        this.mustOwnIfTeen(p, doc);
+        const read = await this.pagesText(trx, p, doc);
+        if (read.state !== 'ready') return { state: read.state };
 
-      // The household's kinds as it keeps them now; a hidden one is never proposed.
-      const kinds = await trx
-        .selectFrom('effective_document_type')
-        .selectAll()
-        .where('deleted_at', 'is', null)
-        .execute();
-      // The family by the names the household knows them by: never a guest,
-      // who owns no document (5.34).
-      const family = await trx
-        .selectFrom('member')
-        .select(['id', 'display_name'])
-        .where('kind', '=', 'family')
-        .execute();
-      const household = await trx
-        .selectFrom('household')
-        .select('name')
-        .where('id', '=', p.householdId)
-        .executeTakeFirst();
-      const profile = await trx
-        .selectFrom('household_profile')
-        .select('country')
-        .where('household_id', '=', p.householdId)
-        .executeTakeFirst();
-      const day = (on: string | null, precision: string | null): DateValue | null =>
-        on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;
-      const proposal = proposeDetails(read.text, {
-        types: kinds.map(typeView),
-        people: family.map((m) => ({ id: m.id, name: m.display_name })),
-        issuers: await this.knownIssuers(trx, p, { type_key: doc.type_key ?? undefined }),
-        household: household?.name ?? null,
-        current: {
-          type_key: doc.type_key,
-          owner_member_id: doc.owner_member_id,
-          issued: day(doc.issued_on, doc.issued_precision),
-          expires: day(doc.expires_on, doc.expires_precision),
-          identifier: doc.identifier,
-          issued_by: doc.issued_by,
-        },
-        // 03/04/2031 as the household writes dates: the US month first.
-        dateOrder: profile?.country
-          ? MONTH_FIRST.has(profile.country)
-            ? 'mdy'
-            : 'dmy'
-          : undefined,
-      });
-      return { state: 'ready', version_id: read.versionId, proposal };
-    });
+        // The household's kinds as it keeps them now; a hidden one is never proposed.
+        const kinds = await trx
+          .selectFrom('effective_document_type')
+          .selectAll()
+          .where('deleted_at', 'is', null)
+          .execute();
+        // The family by the names the household knows them by: never a guest,
+        // who owns no document (5.34).
+        const family = await trx
+          .selectFrom('member')
+          .select(['id', 'display_name'])
+          .where('kind', '=', 'family')
+          .execute();
+        const household = await trx
+          .selectFrom('household')
+          .select('name')
+          .where('id', '=', p.householdId)
+          .executeTakeFirst();
+        const profile = await trx
+          .selectFrom('household_profile')
+          .select('country')
+          .where('household_id', '=', p.householdId)
+          .executeTakeFirst();
+        const day = (on: string | null, precision: string | null): DateValue | null =>
+          on
+            ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] }
+            : null;
+        const ctx: ProposalContext = {
+          types: kinds.map(typeView),
+          people: family.map((m) => ({ id: m.id, name: m.display_name })),
+          issuers: await this.knownIssuers(trx, p, { type_key: doc.type_key ?? undefined }),
+          household: household?.name ?? null,
+          current: {
+            type_key: doc.type_key,
+            owner_member_id: doc.owner_member_id,
+            issued: day(doc.issued_on, doc.issued_precision),
+            expires: day(doc.expires_on, doc.expires_precision),
+            identifier: doc.identifier,
+            issued_by: doc.issued_by,
+          },
+          // 03/04/2031 as the household writes dates: the US month first.
+          dateOrder: profile?.country
+            ? MONTH_FIRST.has(profile.country)
+              ? 'mdy'
+              : 'dmy'
+            : undefined,
+        };
+        return { state: 'ready', text: read.text, versionId: read.versionId, ctx };
+      },
+    );
+    if (asked.state !== 'ready') return { state: asked.state, version_id: null, proposal: {} };
+    const proposal = await this.proposals.propose(asked.text, asked.ctx);
+    if (!proposal) return { state: 'unavailable', version_id: null, proposal: {} };
+    return { state: 'ready', version_id: asked.versionId, proposal };
   }
 
   /**

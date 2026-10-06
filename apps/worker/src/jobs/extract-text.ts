@@ -19,10 +19,12 @@ import { WORD_MIME, wordText } from './word-text.js';
  *
  * - A PDF gives the text it carries (pdftotext, laid out as the page is),
  *   page by page. A page that is a scan is drawn and OCR'd too: one with
- *   no text of its own, or one a picture covers a tenth of or more, whatever
- *   text it also carries (the review: a scan with a printed header line had
- *   its scan dropped). Such a page keeps both texts, so nothing searched
- *   before 5.37 is lost. A text PDF never reaches Tesseract.
+ *   no text of its own, or one with only a line or so (under 200 letters)
+ *   that a picture covers a tenth of or more (the review: a scan with a
+ *   printed header line had its scan dropped). Such a page keeps both
+ *   texts, so nothing searched before 5.37 is lost. A page with more text
+ *   of its own — a text PDF's, an illustrated brochure's, a searchable
+ *   scan's own text layer — never reaches Tesseract (N537E-02).
  * - A photo or a scan is OCR'd.
  * - A Word file gives the words in its XML.
  * - Anything else (an Excel workbook) gives none.
@@ -55,11 +57,17 @@ export interface ExtractedText {
 
 /** A page whose own text has fewer letters and digits than this is a scan: it is OCR'd. */
 export const MIN_PAGE_TEXT = 16;
-/** A page this much of which a picture covers is a scan too, whatever text it carries. */
+/**
+ * A page with little text of its own (under `SHORT_PAGE_TEXT`) that a
+ * picture covers this much of is a scan with a line of text — a print
+ * header, "Scanned with CamScanner" — and is OCR'd too (C537-07).
+ */
 export const MIN_PICTURE_COVER = 0.1;
 /**
- * When the pictures cannot be measured, a page with less text of its own
- * than this is OCR'd as well, in case it is a scan with a line of text.
+ * A page with this much text of its own is read by it, pictures or not: a
+ * brochure's photos, or a searchable scan's own text layer, are never
+ * OCR'd again (N537E-02). Under it, a page with a picture over a tenth of
+ * it — or whose pictures cannot be measured — is OCR'd as well.
  */
 export const SHORT_PAGE_TEXT = 200;
 /**
@@ -138,7 +146,7 @@ async function readPdf(
     const count = letters(words);
     if (count > 0) textPages += 1;
     const pictured = coverage ? (coverage.get(n) ?? 0) >= MIN_PICTURE_COVER : null;
-    const scan = count < MIN_PAGE_TEXT || (pictured ?? count < SHORT_PAGE_TEXT);
+    const scan = count < MIN_PAGE_TEXT || (count < SHORT_PAGE_TEXT && (pictured ?? true));
     if (!scan || !canOcr) {
       texts.push(words.trim());
       continue;

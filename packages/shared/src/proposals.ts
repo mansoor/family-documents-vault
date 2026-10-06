@@ -165,13 +165,21 @@ export interface ProposalContext {
 const MAX_TEXT = 60_000;
 
 /*
- * What one proposal may look at (the 5.37 review: crafted text cost the
- * API seconds a request). Every pattern stops after so many matches; all
- * of them share one budget of work, counted in matches looked at rather
- * than timed, so the same text always gets the same answer — about 30 ms
- * of work on a laptop, and a page that would take more stops there.
+ * What bounds the cost of one proposal (the 5.37 reviews: crafted text
+ * cost the API seconds, then 25 s, a request):
+ *
+ * - the text: its first `MAX_TEXT` characters, each line at most
+ *   `MAX_LINE`, and no run of white space longer than `MAX_SPACE_RUN`
+ *   (`normalise`), so no pattern meets a long run of anything;
+ * - the patterns: none with two unbounded repeats that can take the same
+ *   characters, so each is linear in what it reads;
+ * - the matches: each pattern stops after so many (below), counted rather
+ *   than timed, so the same text always gets the same answer;
+ * - and, around all of it, the API's deadline: a proposal runs on a worker
+ *   thread that is ended after a second (apps/api, proposal-pool.ts).
  */
-const MAX_WORK = 30_000;
+const MAX_LINE = 2_000;
+const MAX_SPACE_RUN = 40;
 const MAX_DATES = 400;
 const MAX_LABELS = 1_200;
 /** Each kind of label, at most: a thousand "Paid out"s do not crowd out a "Statement date". */
@@ -185,15 +193,27 @@ const MAX_MRZ_LINES = 400;
 /** The most of one line read at a time for what it says. */
 const MAX_LINE_READ = 400;
 
-/** The work a proposal may do, spent a match at a time; once spent, each pattern stops. */
-class Work {
-  constructor(private left: number) {}
-
-  /** Spends one unit; false once there is none left. */
-  spend(): boolean {
-    this.left -= 1;
-    return this.left >= 0;
+/**
+ * The text a proposal reads: its first `MAX_TEXT` characters, with new
+ * lines as "\n", each run of white space at most `MAX_SPACE_RUN` long —
+ * blank lines too — and each line at most `MAX_LINE` long. Nothing a
+ * detail is written with is longer (N537P-01: 'Issued' then 59,990 tabs
+ * took 25 s).
+ */
+function normalise(text: string): string {
+  const spaces = new RegExp(`[^\\S\\n]{${MAX_SPACE_RUN + 1},}`, 'g');
+  const out: string[] = [];
+  let blank = 0;
+  for (const line of text
+    .slice(0, MAX_TEXT)
+    .replace(/\r\n?/g, '\n')
+    .replace(spaces, ' '.repeat(MAX_SPACE_RUN))
+    .split('\n')) {
+    blank = line.trim() === '' ? blank + 1 : 0;
+    if (blank > MAX_SPACE_RUN) continue;
+    out.push(line.length > MAX_LINE ? line.slice(0, MAX_LINE) : line);
   }
+  return out.join('\n');
 }
 
 const round = (n: number) => Math.round(Math.min(1, Math.max(0, n)) * 100) / 100;
@@ -485,12 +505,7 @@ interface KindScore {
   mrz: boolean;
 }
 
-function scoreKinds(
-  hay: string,
-  types: readonly ProposalKind[],
-  mrz: Mrz | null,
-  work: Work,
-): KindScore[] {
+function scoreKinds(hay: string, types: readonly ProposalKind[], mrz: Mrz | null): KindScore[] {
   const out: KindScore[] = [];
   for (const kind of types.slice(0, MAX_KINDS)) {
     if (kind.hidden) continue;
@@ -500,13 +515,11 @@ function scoreKinds(
     let score = 0;
     if (own) {
       for (const [weight, re] of own) {
-        work.spend();
         if (re.test(hay)) score += weight;
       }
     } else {
       let fields = 0;
       for (const [weight, re] of ownCues(kind)) {
-        work.spend();
         if (!re.test(hay)) continue;
         if (weight === 1) {
           if (fields === 2) continue;
@@ -653,12 +666,7 @@ interface FoundDate {
  * read in the order the document's other dates are written in; failing
  * that, the household's; and not at all when neither says.
  */
-function findDates(
-  hay: string,
-  order: 'dmy' | 'mdy' | undefined,
-  lines: Lines,
-  work: Work,
-): FoundDate[] {
+function findDates(hay: string, order: 'dmy' | 'mdy' | undefined, lines: Lines): FoundDate[] {
   const found: Array<Omit<FoundDate, 'line'>> = [];
   // Matches come in order within each pattern: a sorted list of what each
   // took, searched by halving, keeps this linear in the dates found.
@@ -687,7 +695,7 @@ function findDates(
   };
   const each = (re: RegExp, make: (m: RegExpMatchArray) => DateValue | null) => {
     for (const m of hay.matchAll(re)) {
-      if (found.length >= MAX_DATES || !work.spend()) return;
+      if (found.length >= MAX_DATES) return;
       const at = m.index ?? 0;
       add(at, at + m[0].length, make(m));
     }
@@ -710,7 +718,7 @@ function findDates(
   let monthFirst = 0;
   let seen = 0;
   for (const m of hay.matchAll(numeric)) {
-    if (++seen > MAX_DATES || !work.spend()) break;
+    if (++seen > MAX_DATES) break;
     const a = Number(m[1]);
     const b = Number(m[3]);
     if (a > 12 && b <= 12) dayFirst += 1;
@@ -800,6 +808,29 @@ class Lines {
     }
     return answer;
   }
+
+  /**
+   * Whether the line, from its start to the end of the column that holds
+   * `place`, matches `re`. pdftotext -layout sets a letter's right-hand
+   * column ("Our ref", "Amount due", "GP: Dr …") on the addressee's line
+   * (N537P-08): what is right of a name is another column, and not about
+   * it, but what is left of it is its label ("Father's name").
+   * Columns are parted by three spaces or more.
+   */
+  upTo(question: string, re: RegExp, place: number): boolean {
+    const line = this.at(place);
+    const from = this.start(line);
+    const stop = this.end(line);
+    const gap = this.hay.slice(place, stop).indexOf('   ');
+    const to = gap === -1 ? stop : place + gap;
+    const key = `${question}:${line}:${to}`;
+    let answer = this.facts.get(key);
+    if (answer === undefined) {
+      answer = re.test(this.hay.slice(from, to));
+      this.facts.set(key, answer);
+    }
+    return answer;
+  }
 }
 
 type DateRole = 'issued' | 'expires' | 'none';
@@ -809,6 +840,8 @@ interface LabelSpec {
   weight: number;
   cue: ProposalCue;
   re: RegExp;
+  /** A word that is a label only in a label's form (`labelForm`): "issued", "expires". */
+  form?: boolean;
 }
 
 /**
@@ -824,15 +857,50 @@ const BLOCKING: LabelSpec = {
 };
 
 /** Where a date can start, to see that a word is a label for the date after it. */
-const DATE_START = '(?:\\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)';
+const DATE_START = /^(?:\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/;
 
 /**
- * A word that is a label only in a label's form: "Issued: …", "Issued 14
- * March …", or alone at the end of its line with the date below — never
- * "we have issued a new prescription" in a letter (the review).
+ * A word that is a label only in a label's form (`labelForm`): "Issued: …",
+ * "Issued 14 March …", or alone on its line with the date below — never
+ * "we have issued a new prescription" in a letter (the reviews). Found as
+ * a plain word, its form checked in code: a lookahead over the spaces
+ * after it was quadratic in them (N537P-01).
  */
-const asLabel = (words: string) =>
-  new RegExp(`\\b(?:${words})\\b(?= *:? *(?:on +)?(?:${DATE_START}|$))`, 'gm');
+const asLabel = (words: string) => new RegExp(`\\b(?:${words})\\b`, 'g');
+
+/**
+ * Between a label and its date: "Issued: on 14 March", or as far apart as
+ * pdftotext -layout sets a wide form's columns — a run of spaces is at most
+ * `MAX_SPACE_RUN` once the text is normalised.
+ */
+const LABEL_SEPARATOR = new RegExp(`^ {0,${MAX_SPACE_RUN}}:? {0,${MAX_SPACE_RUN}}(?:on {1,4})?`);
+/** All that may stand before a label alone on its line: "4a.", "Date". */
+const ALONE_BEFORE = /^\s*(?:\d+[a-z]?\.?\s*)?(?:date\s+)?$/;
+
+/**
+ * Whether a word found at `at`–`end` is a label in a label's form: where
+ * its date may be — starting right after its separator, on its own line,
+ * or anywhere on the next line when it stands alone on its own — or null
+ * where it is a word in a sentence ("We issued 2 inhalers", "We have
+ * issued⏎a refund").
+ */
+function labelForm(
+  hay: string,
+  at: number,
+  end: number,
+  line: number,
+  lines: Lines,
+): { dateAt: number } | { below: true } | null {
+  const stop = lines.end(line);
+  const sep =
+    end +
+    (LABEL_SEPARATOR.exec(hay.slice(end, Math.min(stop, end + 2 * MAX_SPACE_RUN + 8)))?.[0]
+      .length ?? 0);
+  if (/^\s*$/.test(hay.slice(sep, stop))) {
+    return ALONE_BEFORE.test(hay.slice(lines.start(line), at)) ? { below: true } : null;
+  }
+  return DATE_START.test(hay.slice(sep, sep + 3)) ? { dateAt: sep } : null;
+}
 
 const GENERIC_LABELS: readonly LabelSpec[] = [
   BLOCKING,
@@ -842,7 +910,7 @@ const GENERIC_LABELS: readonly LabelSpec[] = [
     cue: 'issue_label',
     re: /date of issue|issue date|date issued|issued on|date of grant/g,
   },
-  { role: 'issued', weight: 4, cue: 'issue_label', re: asLabel('issued') },
+  { role: 'issued', weight: 4, cue: 'issue_label', re: asLabel('issued'), form: true },
   {
     role: 'issued',
     weight: 3,
@@ -855,7 +923,13 @@ const GENERIC_LABELS: readonly LabelSpec[] = [
     cue: 'expiry_label',
     re: /date of expir(?:y|ation)|expir(?:y|ation) date|expires on|valid until|valid to\b|valid thru|valid through|\bexp\b/g,
   },
-  { role: 'expires', weight: 4, cue: 'expiry_label', re: asLabel('expires|expiry|expiration') },
+  {
+    role: 'expires',
+    weight: 4,
+    cue: 'expiry_label',
+    re: asLabel('expires|expiry|expiration'),
+    form: true,
+  },
 ];
 
 const label = (role: DateRole, weight: number, cue: ProposalCue, re: RegExp): LabelSpec => ({
@@ -948,6 +1022,10 @@ interface LabelHit {
   spec: LabelSpec;
   /** Words of a sentence before it on its line: a label in prose is a weaker one. */
   inProse: boolean;
+  /** A label only in its form: its date starts exactly here, on its own line… */
+  dateAt?: number;
+  /** …or it stands alone on its line, and its date is on the next. */
+  below?: boolean;
 }
 
 function labelsFor(kind: ProposalKind): LabelSpec[] {
@@ -979,17 +1057,19 @@ function findLabels(
   hay: string,
   specs: readonly LabelSpec[],
   lines: Lines,
-  work: Work,
 ): LabelHit[] {
   const hits: LabelHit[] = [];
   for (const spec of specs) {
     let n = 0;
     for (const m of hay.matchAll(spec.re)) {
-      if (++n > MAX_LABELS_A_SPEC || hits.length >= MAX_LABELS || !work.spend()) break;
+      if (++n > MAX_LABELS_A_SPEC || hits.length >= MAX_LABELS) break;
       const at = m.index ?? 0;
+      const end = at + m[0].length;
       const line = lines.at(at);
+      const form = spec.form ? labelForm(hay, at, end, line, lines) : {};
+      if (!form) continue;
       const before = body.slice(Math.max(lines.start(line), at - 60), at);
-      hits.push({ at, end: at + m[0].length, line, spec, inProse: proseRun(before) >= 3 });
+      hits.push({ at, end, line, spec, inProse: proseRun(before) >= 3, ...form });
     }
   }
   // Longest first where two start together ("expiry date" over "expiry").
@@ -1016,10 +1096,9 @@ function claimDates(
   kind: ProposalKind,
   order: 'dmy' | 'mdy' | undefined,
   lines: Lines,
-  work: Work,
 ): { issued: DateClaim[]; expires: DateClaim[] } {
-  const dates = findDates(hay, order, lines, work);
-  const labels = findLabels(body, hay, labelsFor(kind), lines, work);
+  const dates = findDates(hay, order, lines);
+  const labels = findLabels(body, hay, labelsFor(kind), lines);
   const role = new Map<FoundDate, LabelSpec>();
 
   // A line of labels over a line of dates, as an ID card sets them out.
@@ -1087,6 +1166,8 @@ function claimDates(
       // from the line above, only a label that ends that line.
       if (sameLine ? d.at - l.end > 160 : d.line - l.line !== 1 || d.at - l.end > 80) continue;
       if (!sameLine && proseRun(body.slice(l.end, lines.end(l.line))) >= 4) continue;
+      // A label only in its form: its date right after it, or below it alone.
+      if (l.spec.form && (sameLine ? l.dateAt !== d.at : !l.below)) continue;
       // Another date between the label and this one is the label's.
       if (previous && previous.at >= l.end) continue;
       if (!nearest || l.end > nearest.end || (l.end === nearest.end && l.at < nearest.at)) {
@@ -1178,7 +1259,6 @@ function findNumbers(
   body: string,
   hay: string,
   kind: ProposalKind,
-  work: Work,
 ): Array<{ value: string; sure: boolean }> {
   const res: RegExp[] = [];
   const own = NUMBER_LABELS[kind.key];
@@ -1197,7 +1277,7 @@ function findNumbers(
   for (const re of res) {
     let n = 0;
     for (const m of hay.matchAll(re)) {
-      if (++n > MAX_NUMBER_LABELS || !work.spend()) break;
+      if (++n > MAX_NUMBER_LABELS) break;
       const from = (m.index ?? 0) + m[0].length;
       const rest = body.slice(from, from + 120);
       const v =
@@ -1336,9 +1416,17 @@ interface PersonKey {
   common: boolean;
 }
 
-/** Each person, with the surnames that may follow their first name. */
+/**
+ * Each person, with the surnames that may follow their first name: their
+ * own, or — known by a first name only — the household's ("The
+ * Thompsons"). Never another member's: Granny Ruth Miller's late
+ * husband's papers name a "Will Miller" who is not the grandson Will
+ * (N537P-03). Only where the household's name gives none, the surname
+ * most of the family share: more than half of those with one, and two at
+ * least.
+ */
 function personKeys(people: readonly ProposalPerson[], household: string | null): PersonKey[] {
-  const family = new Set<string>();
+  let family = new Set<string>();
   for (const w of nameWords(household ?? '')) {
     if (NOT_SURNAMES.has(w)) continue;
     family.add(w);
@@ -1346,7 +1434,17 @@ function personKeys(people: readonly ProposalPerson[], household: string | null)
     if (w.endsWith('s') && w.length > 3) family.add(w.slice(0, -1));
   }
   const words = people.map((p) => nameWords(p.name));
-  for (const ws of words) if (ws.length > 1) family.add(ws[ws.length - 1] as string);
+  if (family.size === 0) {
+    const shared = new Map<string, number>();
+    const surnamed = words.filter((ws) => ws.length > 1);
+    for (const ws of surnamed) {
+      const last = ws[ws.length - 1] as string;
+      shared.set(last, (shared.get(last) ?? 0) + 1);
+    }
+    for (const [surname, n] of shared) {
+      if (n >= 2 && n * 2 > surnamed.length) family = new Set([surname]);
+    }
+  }
   return people.flatMap((p, i) => {
     const ws = words[i] ?? [];
     const first = ws[0];
@@ -1363,12 +1461,16 @@ interface NameSeen {
   score: number;
 }
 
-/** The words after a name on its line, in their own case: up to three, initials skipped. */
+/**
+ * The words after a name on its line, in their own case: up to three,
+ * initials skipped, and none past a comma — "Sarah Ahmed, Lucy Thompson"
+ * is two people, and Thompson is not Sarah's.
+ */
 function followingWords(text: string): Array<{ word: string; capital: boolean }> {
   const out: Array<{ word: string; capital: boolean }> = [];
   let rest = text;
   for (let i = 0; i < 4 && out.length < 3; i += 1) {
-    const m = /^[ ,]+([A-Za-z][A-Za-z'’-]*)\.?/.exec(rest);
+    const m = /^ +([A-Za-z][A-Za-z'’-]*)\.?/.exec(rest);
     if (!m) break;
     rest = rest.slice(m[0].length);
     const word = m[1] as string;
@@ -1395,22 +1497,23 @@ function namesSeen(
   person: PersonKey,
   firsts: ReadonlySet<string>,
   lines: Lines,
-  work: Work,
-): NameSeen[] {
+): { places: NameSeen[]; stopped: boolean } {
   const re = new RegExp(`(?<![a-z'])${escape(person.first)}(?![a-z'])`, 'g');
   const out: NameSeen[] = [];
   let n = 0;
   for (const m of hay.matchAll(re)) {
-    if (++n > MAX_NAME_MATCHES || !work.spend()) break;
     const at = m.index ?? 0;
     const end = at + m[0].length;
     // A name is written with a capital: "will" and "grace" are not Will and Grace.
     if (!/[A-Z]/.test(body.charAt(at))) continue;
     // "Will-writing" is a word, not a name.
     if (/^-[A-Za-z]/.test(body.slice(end, end + 2))) continue;
+    // Only a name counts towards the most looked at: 82 "will"s in a
+    // policy's wording are not 82 Wills (N537P-04).
+    if (++n > MAX_NAME_MATCHES) return { places: out, stopped: true };
     const line = lines.at(at);
-    if (lines.is('not-holder', NOT_THE_HOLDER, line)) continue;
-    if (lines.is('transaction', TRANSACTION, line)) continue;
+    if (lines.upTo('not-holder', NOT_THE_HOLDER, at)) continue;
+    if (lines.upTo('transaction', TRANSACTION, at)) continue;
     const lineStart = lines.start(line);
     const before = hay.slice(Math.max(lineStart, at - 80), at);
     const prev = /([a-z'-]+)[ ,]+$/.exec(before)?.[1];
@@ -1449,7 +1552,7 @@ function namesSeen(
     const score = full ? (labelled ? 0.9 : line < HEAD_LINES ? 0.8 : 0.6) : labelled ? 0.7 : 0.5;
     out.push({ at, end, line, score });
   }
-  return out;
+  return { places: out, stopped: false };
 }
 
 /** Below this much lead over the next person, the page does not say whose it is. */
@@ -1469,13 +1572,18 @@ function proposePerson(
   household: string | null,
   mrz: Mrz | null,
   lines: Lines,
-  work: Work,
 ): Proposed<string> | null {
-  const keys = personKeys(people.slice(0, MAX_PEOPLE), household);
+  // A limit may give fewer answers, never another one (N537P-04): where
+  // anybody was not looked for to the end, nobody is proposed.
+  if (people.length > MAX_PEOPLE) return null;
+  const keys = personKeys(people, household);
   const firsts = new Set(keys.map((k) => k.first));
-  const seen = keys.map((k) => {
-    const others = new Set([...firsts].filter((f) => f !== k.first));
-    const places = namesSeen(body, hay, k, others, lines, work);
+  const scans = keys.map((k) =>
+    namesSeen(body, hay, k, new Set([...firsts].filter((f) => f !== k.first)), lines),
+  );
+  if (scans.some((s) => s.stopped)) return null;
+  const seen = keys.map((k, i) => {
+    const places = (scans[i] as { places: NameSeen[] }).places;
     const best = places.reduce<NameSeen | null>((b, s) => (!b || s.score > b.score ? s : b), null);
     const inMrz =
       !!mrz &&
@@ -1647,18 +1755,16 @@ const filled = (v: unknown) =>
  * each field's threshold. Nothing, often: that is the right answer for a
  * page that does not say.
  *
- * Bounded: every pattern looks at a limited number of matches, each line
- * is asked about once, and all of it shares one budget of work
- * (`MAX_WORK`), counted rather than timed so the same page always gets the
- * same answer; a page that would take more stops, and what was found by
- * then is what is proposed.
+ * Bounded (see `MAX_LINE`): the text it reads is normalised first, its
+ * patterns are linear, each stops after so many matches, and each line is
+ * asked about once — counted, not timed, so the same page always gets the
+ * same answer.
  */
 export function proposeDetails(text: string, ctx: ProposalContext): DetailProposal {
-  const body = text.slice(0, MAX_TEXT).replace(/\r\n?/g, '\n');
+  const body = normalise(text);
   const hay = fold(body);
   const current = ctx.current ?? {};
   const out: DetailProposal = {};
-  const work = new Work(MAX_WORK);
   const lines = new Lines(hay);
   const mrz = readMrz(body);
 
@@ -1668,7 +1774,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   if (filled(current.type_key)) {
     kind = ctx.types.find((t) => t.key === current.type_key) ?? null;
   } else {
-    const [best, next] = scoreKinds(hay, ctx.types, mrz, work);
+    const [best, next] = scoreKinds(hay, ctx.types, mrz);
     const lead = best ? best.score - (next?.score ?? 0) : 0;
     if (best && best.score >= KIND_MIN_SCORE && lead >= KIND_MIN_LEAD) {
       const confidence = round(Math.min(0.97, 0.5 + 0.04 * best.score + 0.04 * lead));
@@ -1686,7 +1792,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
 
   // Whose it is: the family's names, where the page names its holder.
   if (!filled(current.owner_member_id)) {
-    const person = proposePerson(body, hay, ctx.people, ctx.household ?? null, mrz, lines, work);
+    const person = proposePerson(body, hay, ctx.people, ctx.household ?? null, mrz, lines);
     if (person) out.owner_member_id = { ...person, confidence: round(person.confidence) };
   }
 
@@ -1704,7 +1810,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
   if (!kind) return out;
   const mrzFits = mrz !== null && kind.key === 'passport';
 
-  const { issued, expires: expiring } = claimDates(body, hay, kind, ctx.dateOrder, lines, work);
+  const { issued, expires: expiring } = claimDates(body, hay, kind, ctx.dateOrder, lines);
   const printedIssue = bestDate(issued, false);
   let issuedOn = shows(kind, 'issued') && !filled(current.issued) ? printedIssue : null;
   let expiresOn: Proposed<DateValue> | null = null;
@@ -1738,7 +1844,7 @@ export function proposeDetails(text: string, ctx: ProposalContext): DetailPropos
     if (mrzFits && mrz.number) {
       number = { value: mrz.number, confidence: 0.95, cue: 'machine_lines' };
     } else {
-      const found = findNumbers(body, hay, kind, work);
+      const found = findNumbers(body, hay, kind);
       const first = found[0];
       if (first) {
         const plain = (v: string) => v.replace(/\s/g, '');
