@@ -11,6 +11,7 @@ import {
   PASSPORT,
   STATEMENT,
   signedIn,
+  TOKENS,
   type FakeCollection,
   type FakeState,
 } from './test-api.js';
@@ -163,6 +164,26 @@ const titles = (t: HTMLElement) =>
     .map((r) => r.querySelector('.cell-title')?.textContent ?? null);
 /** How many the bar says are chosen; null with none chosen and no bar. */
 const selected = () => document.querySelector('.bulk-count')?.textContent ?? null;
+/** What Tab can reach in the grid. */
+const gridStops = (t: HTMLElement) =>
+  [...t.querySelectorAll<HTMLElement>('[tabindex], a, button, input')].filter(
+    (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled,
+  );
+/**
+ * A press of the mouse as a browser makes it, which jsdom does not: the
+ * focus goes to what can take it under the pointer — or, where nothing can
+ * (a label's words), leaves what had it for nowhere; then the click.
+ */
+function press(el: HTMLElement) {
+  fireEvent.mouseDown(el);
+  const to = el.closest<HTMLElement>('a[href], button, input, select, textarea, [tabindex]');
+  act(() => {
+    if (to) to.focus();
+    else (document.activeElement as HTMLElement | null)?.blur();
+  });
+  fireEvent.mouseUp(el);
+  fireEvent.click(el);
+}
 const documentCalls = (state: FakeState) =>
   state.calls.filter((c) => c.method === 'GET' && /\/api\/v1\/documents\?/.test(c.url));
 const lastQuery = (state: FakeState) =>
@@ -802,6 +823,30 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(tip()).toBeNull();
   });
 
+  it('the arrows leave the scrolling to the table, which scrolls only as far as it must (F2)', async () => {
+    at('/documents', {}, 'owner', MID);
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    // No scroll-padding: with it, a browser scrolls a pinned cell or the head
+    // "into view" as it takes the focus — back to the left, and up.
+    const wrap = t.closest('.tbl-wrap') as HTMLElement;
+    expect(wrap.style.scrollPaddingLeft).toBe('');
+    expect(wrap.style.scrollPaddingTop).toBe('');
+    // Nor its own scroll, which puts a row out of sight in the middle of the box.
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    const first = within(t).getByRole('checkbox', {
+      name: 'Select “Barclays statement, September 2026”',
+    });
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(within(t).getByRole('checkbox', { name: 'Select “House deed”' })).toHaveFocus();
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' });
+    expect(within(t).getByRole('checkbox', { name: 'Select all 4 shown' })).toHaveFocus();
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+  });
+
   it('a focused cell is scrolled clear of the pinned box and title (W3)', async () => {
     at('/documents', {}, 'owner', MID);
     const t = await table();
@@ -918,6 +963,122 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(screen.queryByRole('group', { name: 'Columns shown' })).not.toBeInTheDocument();
   });
 
+  it('a press on a column’s name in the Columns menu shows or hides it, and the menu stays (F1)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const columns = screen.getByRole('button', { name: 'Columns' });
+    press(columns);
+    expect(columns).toHaveFocus();
+    // Its name, not its box: words that cannot take the focus.
+    press(within(screen.getByRole('group', { name: 'Columns shown' })).getByText('Location'));
+    const menu = screen.getByRole('group', { name: 'Columns shown' });
+    expect(within(menu).getByRole('checkbox', { name: 'Location' })).not.toBeChecked();
+    expect(headers(t)).not.toContain('Location');
+    // And from another column's box, in focus: the same.
+    act(() => within(menu).getByRole('checkbox', { name: 'Kind' }).focus());
+    press(within(menu).getByText('Location'));
+    expect(screen.getByRole('group', { name: 'Columns shown' })).toBeInTheDocument();
+    expect(headers(t)).toContain('Location');
+  });
+
+  it('is one stop for Tab still, after its last column goes, or its last row (F3)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    // The last column's cell, then that column hidden.
+    const first = within(t).getByRole('checkbox', {
+      name: 'Select “Barclays statement, September 2026”',
+    });
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: 'End' });
+    const last = headers(t).at(-1) as string;
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: last }));
+    expect(headers(t)).not.toContain(last);
+    const deed = within(t).getByRole('checkbox', { name: 'Select “House deed”' });
+    act(() => deed.focus());
+    expect(gridStops(t)).toEqual([deed]);
+    // The last row's box, then that row moved to the Trash; Dismiss.
+    const visa = within(t).getByRole('checkbox', { name: "Select “Sara's visa”" });
+    act(() => visa.focus());
+    fireEvent.click(visa);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+    );
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
+    await waitFor(() => expect(titles(t)).toHaveLength(3));
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    const all = within(t).getByRole('checkbox', { name: 'Select all 3 shown' });
+    await waitFor(() => expect(all).toHaveFocus());
+    expect(gridStops(t)).toEqual([all]);
+  });
+
+  it('an empty table is still a stop for Tab; and with the last documents gone, Dismiss gives the focus to the heading (F4)', async () => {
+    at('/documents', { documents: [] });
+    let t = await table();
+    await screen.findByText('Nothing here yet.');
+    // Not the header's box, which has nothing to choose: the first sort.
+    expect(within(t).getByRole('checkbox', { name: /^Select all/ })).toBeDisabled();
+    expect(gridStops(t)).toEqual([within(t).getByRole('button', { name: /^Title/ })]);
+    cleanup();
+
+    at('/documents');
+    t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select all 4 shown' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+    );
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
+    await screen.findByText('Nothing here yet.');
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Documents', level: 1 })).toHaveFocus(),
+    );
+  });
+
+  it('the next person to sign in at this tab, pressing Back, finds none of the last one’s choices (F5)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
+    expect(selected()).toBe('1 selected');
+    fireEvent.click(within(t).getByRole('link', { name: 'House deed' }));
+    await screen.findByRole('heading', { name: 'House deed', level: 1 });
+    // Signed out, from the document.
+    fireEvent.click(screen.getByRole('button', { name: /^Your account/ }));
+    const signOut = await screen.findByRole('menuitem', { name: 'Sign out' });
+    await act(async () => {
+      fireEvent.click(signOut);
+    });
+    // Sara signs in, at the same tab.
+    const fake = globalThis.fetch;
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input instanceof Request ? input.url : input).includes('/api/v1/auth/password')
+        ? Promise.resolve(Response.json({ ...TOKENS, member_id: 'm-2', role: 'adult' }))
+        : fake(input, init),
+    );
+    fireEvent.change(await screen.findByLabelText('Email'), {
+      target: { value: 'sara@example.test' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    // Back: the table as Sara has it, nothing of Mansoor's chosen.
+    act(() => window.history.back());
+    const again = await table();
+    const deed = await within(again).findByRole('checkbox', { name: 'Select “House deed”' });
+    expect(deed).not.toBeChecked();
+    expect(selected()).toBeNull();
+  });
+
   it('a "+1" collection names the rest: in a tip, and to a screen reader (W10)', async () => {
     at('/documents', {
       collections: [TRAVEL, { ...TRAVEL, id: 'collection-x', name: 'Tax', items: ['doc-3'] }],
@@ -932,6 +1093,25 @@ describe('the Documents table, from 768 px (R2)', () => {
     // Shown whole on hover, though nothing is cut.
     fireEvent.mouseOver(within(cell).getByText('+1'));
     expect(document.querySelector('.clip-tip')).toHaveTextContent('Tax, Travel');
+  });
+
+  it('a tip goes with its row, though the pointer never left it', async () => {
+    at('/documents', {
+      collections: [TRAVEL, { ...TRAVEL, id: 'collection-x', name: 'Tax', items: ['doc-3'] }],
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const visa = within(t).getByRole('link', { name: "Sara's visa" }).closest('tr') as HTMLElement;
+    fireEvent.mouseOver(within(visa).getByText('+1'));
+    expect(document.querySelector('.clip-tip')).toHaveTextContent('Tax, Travel');
+    // The row to the Trash, the pointer where it was: nothing says it left.
+    fireEvent.click(within(visa).getByRole('checkbox', { name: "Select “Sara's visa”" }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+    );
+    await waitFor(() => expect(titles(t)).toHaveLength(3));
+    expect(document.querySelector('.clip-tip')).toBeNull();
   });
 
   it('after Show more, the focus is on the first of the new rows; the button is never off to one side (W2)', async () => {

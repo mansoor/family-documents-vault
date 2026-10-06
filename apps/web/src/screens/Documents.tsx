@@ -95,7 +95,11 @@ export function DocumentsScreen() {
   const [params, setParams] = useSearchParams();
   const view = viewFrom(params, role);
   const setView = (next: TableView) => setParams(paramsOf(next));
-  const pages = usePages(view);
+  const info = session.info;
+  const holder: Holder | null = info
+    ? { household: info.household_id, member: info.member_id }
+    : null;
+  const pages = usePages(view, holder);
 
   const hasCollections = caps?.features.collections === true;
   const { data: members } = useLoad(async (t) => (await api.members(t)).items, [authVersion]);
@@ -125,7 +129,14 @@ export function DocumentsScreen() {
   return mode === 'phone' ? (
     <PhoneDocuments view={view} setView={setView} pages={pages} who={who} known={known} />
   ) : (
-    <TableDocuments view={view} setView={setView} pages={pages} who={who} known={known} />
+    <TableDocuments
+      view={view}
+      setView={setView}
+      pages={pages}
+      who={who}
+      known={known}
+      holder={holder}
+    />
   );
 }
 
@@ -155,12 +166,20 @@ interface Pages {
   reload: () => void;
 }
 
+/** Who is signed in: whose choices a history entry may give back. */
+interface Holder {
+  household: string;
+  member: string;
+}
+
 /**
  * What this page's entry in the browser's history keeps of a view (the
  * review's W4): what was chosen, and how many were shown — so that Back
  * from a document is the table as it was left, not its first page afresh.
+ * Whose it is, too: the next person to sign in at this tab, and press
+ * Back, finds none of the last person's choices (the second round's F5).
  */
-interface Kept {
+interface Kept extends Holder {
   key: string;
   picked: string[];
   shown: number;
@@ -168,11 +187,17 @@ interface Kept {
 
 const KEPT = 'fdvDocuments';
 
-function readKept(key: string): Kept | null {
+function readKept(key: string, holder: Holder | null): Kept | null {
+  if (!holder) return null;
   try {
     const state = window.history.state as Record<string, unknown> | null;
     const k = state?.[KEPT] as Partial<Kept> | undefined;
-    return k && k.key === key && Array.isArray(k.picked) && typeof k.shown === 'number'
+    return k &&
+      k.key === key &&
+      k.household === holder.household &&
+      k.member === holder.member &&
+      Array.isArray(k.picked) &&
+      typeof k.shown === 'number'
       ? (k as Kept)
       : null;
   } catch {
@@ -190,9 +215,11 @@ function writeKept(k: Kept): void {
 }
 
 /** A view's pages: the first, then each Show more asks for the next after the cursor. */
-function usePages(view: TableView): Pages {
+function usePages(view: TableView, holder: Holder | null): Pages {
   const { withToken } = useApp();
   const key = paramsOf(view).toString();
+  const household = holder?.household ?? null;
+  const member = holder?.member ?? null;
   const [got, setGot] = useState<{
     key: string;
     items: DocumentView[];
@@ -214,7 +241,9 @@ function usePages(view: TableView): Pages {
       const asWas = viewFrom(new URLSearchParams(key), storedRole());
       // As many as were shown: after an action, or back from a document.
       const want =
-        shown.current.key === key ? shown.current.count : (readKept(key)?.shown ?? PAGE_SIZE);
+        shown.current.key === key
+          ? shown.current.count
+          : (readKept(key, household && member ? { household, member } : null)?.shown ?? PAGE_SIZE);
       try {
         let r = await withToken((t) =>
           api.documents(
@@ -252,7 +281,7 @@ function usePages(view: TableView): Pages {
     return () => {
       cancelled = true;
     };
-  }, [key, asked, withToken]);
+  }, [key, asked, withToken, household, member]);
 
   const current = got && got.key === key ? got : null;
   const more = async (): Promise<string | null> => {
@@ -412,8 +441,9 @@ function TableDocuments(props: {
   pages: Pages;
   who: Chooser;
   known: Known;
+  holder: Holder | null;
 }) {
-  const { view, setView, pages, who, known } = props;
+  const { view, setView, pages, who, known, holder } = props;
   const navigate = useNavigate();
   const [hidden, setHidden] = useState<Set<ColumnKey>>(readHidden);
   const columns = columnsFor(who.role, { collections: known.collections.length > 0 });
@@ -424,10 +454,10 @@ function TableDocuments(props: {
   // Back from a document finds it as it was (W4).
   const [picked, setPicked] = useState<{ key: string; ids: ReadonlySet<string> }>(() => ({
     key: viewKey,
-    ids: new Set(readKept(viewKey)?.picked ?? []),
+    ids: new Set(readKept(viewKey, holder)?.picked ?? []),
   }));
   const pickedIds =
-    picked.key === viewKey ? picked.ids : new Set<string>(readKept(viewKey)?.picked ?? []);
+    picked.key === viewKey ? picked.ids : new Set<string>(readKept(viewKey, holder)?.picked ?? []);
   const chosen = pages.items.filter((d) => pickedIds.has(d.id));
   const setPickedIds = (ids: ReadonlySet<string>) => setPicked({ key: viewKey, ids });
   // What the last action came to, said until it is put away or the view changes.
@@ -436,9 +466,10 @@ function TableDocuments(props: {
   const setOutcome = (o: Outcome | null) => setSaid(o ? { key: viewKey, outcome: o } : null);
   const outcomeRef = useRef<HTMLDivElement>(null);
   const pickAllRef = useRef<HTMLInputElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const table = useRef<HTMLTableElement>(null);
-  const tips = useClipTips();
+  const tips = useClipTips(pages.items);
   const grid = useGrid(table, wrap, [
     pages.items.map((d) => d.id).join(','),
     shown.map((c) => c.key).join(','),
@@ -448,10 +479,18 @@ function TableDocuments(props: {
   // Kept in this page's history entry as it changes (W4).
   const pickedKey = [...pickedIds].join(',');
   const count = pages.items.length;
+  const household = holder?.household ?? null;
+  const member = holder?.member ?? null;
   useEffect(() => {
-    if (pages.loading || count === 0) return;
-    writeKept({ key: viewKey, picked: pickedKey ? pickedKey.split(',') : [], shown: count });
-  }, [viewKey, pickedKey, count, pages.loading]);
+    if (pages.loading || count === 0 || !household || !member) return;
+    writeKept({
+      key: viewKey,
+      household,
+      member,
+      picked: pickedKey ? pickedKey.split(',') : [],
+      shown: count,
+    });
+  }, [viewKey, pickedKey, count, pages.loading, household, member]);
 
   const sortBy = (key: ColumnKey) => {
     const sort: DocumentSort = key;
@@ -482,11 +521,13 @@ function TableDocuments(props: {
   /**
    * Where the focus goes when what had it goes (W13): the header's box, the
    * next thing to choose with; or, for somebody who chooses nothing, the
-   * table's own place in it.
+   * table's own place in it. With no documents left to choose from — the
+   * last of them moved to the Trash — the page's heading (F4): never
+   * nowhere.
    */
   const backToTable = () => {
     if (pickAllRef.current && !pickAllRef.current.disabled) pickAllRef.current.focus();
-    else grid.focusActive();
+    else if (pages.items.length === 0 || !grid.focusActive()) heading.current?.focus();
   };
 
   /** An action came back: what it did, what it could not, and the list again. */
@@ -529,7 +570,9 @@ function TableDocuments(props: {
   return (
     <main className="page page-table" aria-busy={pages.loading}>
       <div className="table-head">
-        <h1>Documents</h1>
+        <h1 ref={heading} tabIndex={-1}>
+          Documents
+        </h1>
         <ColumnsMenu columns={columns} hidden={hidden} onChange={toggleColumn} />
       </div>
       <div className="filters" role="group" aria-label="Filters">
@@ -580,12 +623,9 @@ function TableDocuments(props: {
       <div
         ref={wrap}
         className="tbl-wrap"
-        // What the pinned box and title cover, and the head: never where
-        // the focus is scrolled to (W3).
-        style={{
-          scrollPaddingLeft: (selectable ? PICK_WIDTH : 0) + TITLE_MIN,
-          scrollPaddingTop: 48,
-        }}
+        // No scroll-padding: with it, a browser scrolls a pinned cell or the
+        // head "into view" each time it is focused, back to the left and up
+        // (F2). `reveal` keeps the focus clear of them instead (W3).
         onMouseOver={tips.show}
         onMouseOut={tips.hide}
         onKeyDown={tips.escape}
@@ -743,6 +783,10 @@ const gridRows = (table: HTMLTableElement) => [
 const targetOf = (cell: HTMLElement): HTMLElement =>
   cell.querySelector<HTMLElement>('input, a, button') ?? cell;
 
+/** A box or a button that cannot be used now, so cannot take the focus. */
+const disabled = (el: HTMLElement): boolean =>
+  (el instanceof HTMLInputElement || el instanceof HTMLButtonElement) && el.disabled;
+
 /**
  * The table as one stop for Tab (the review's W1): a grid, the arrows moving
  * between its cells, Home and End along a row (with Control, to the first
@@ -774,7 +818,13 @@ function useGrid(
     // Where the focus last was — the first row's box until then — or as
     // near as there is now: rows come and go with a sort or a filter.
     const cells = [...(rows[Math.min(at.current.row, rows.length - 1)]?.cells ?? [])];
-    const active = cells[Math.max(0, Math.min(at.current.col, cells.length - 1))];
+    let active = cells[Math.max(0, Math.min(at.current.col, cells.length - 1))];
+    // Never a control that cannot take the focus — the header's box, with
+    // no rows to choose — or the grid has no stop at all: the head's first
+    // that can (F4).
+    if (active && disabled(targetOf(active))) {
+      active = [...(rows[0]?.cells ?? [])].find((c) => !disabled(targetOf(c)));
+    }
     if (active) targetOf(active).tabIndex = 0;
   }, [table, version]);
 
@@ -791,10 +841,13 @@ function useGrid(
     if (!t || !cell || !t.contains(cell)) return;
     const place = placeOf(cell);
     if (place.row < 0) return;
-    const rows = gridRows(t);
-    const before = rows[at.current.row]?.cells[at.current.col];
-    if (before && before !== cell) targetOf(before).tabIndex = -1;
-    targetOf(cell).tabIndex = 0;
+    // The one stop is this cell now; whichever had it is not, wherever it
+    // is — where it was may be gone, with a row or a column (F3).
+    const target = targetOf(cell);
+    for (const el of t.querySelectorAll<HTMLElement>('[tabindex="0"]')) {
+      if (el !== target) el.tabIndex = -1;
+    }
+    target.tabIndex = 0;
     at.current = place;
     reveal(wrap.current, cell);
   };
@@ -840,15 +893,18 @@ function useGrid(
     }
     e.preventDefault();
     const next = rows[to.row]?.cells[Math.min(to.col, width(to.row) - 1)];
-    if (next) targetOf(next).focus();
+    // The browser does not scroll it: it would put a row out of sight in the
+    // middle of the box, a jump each time, and a pinned cell or the head
+    // "into view" back at the left. `reveal`, as it takes the focus, scrolls
+    // just enough (F2).
+    if (next) targetOf(next).focus({ preventScroll: true });
   };
 
-  /** The cell last in focus, focused again. */
-  const focusActive = () => {
-    const t = table.current;
-    if (!t) return;
-    const cell = t.querySelector<HTMLElement>('[tabindex="0"]');
+  /** The cell last in focus, focused again: whether it took it. */
+  const focusActive = (): boolean => {
+    const cell = table.current?.querySelector<HTMLElement>('[tabindex="0"]');
     cell?.focus();
+    return Boolean(cell) && document.activeElement === cell;
   };
 
   return { onFocus, onKeyDown, focusActive };
@@ -880,6 +936,9 @@ function reveal(box: HTMLDivElement | null, cell: HTMLTableCellElement) {
     if (c.top < top) box.scrollTop -= top - c.top;
     else if (c.bottom > bottom) box.scrollTop += c.bottom - bottom;
   }
+  // And the window, when it is too short for the whole box.
+  const now = cell.getBoundingClientRect();
+  if (now.top < 0 || now.bottom > window.innerHeight) cell.scrollIntoView({ block: 'nearest' });
 }
 
 /** The header's box: every row shown, chosen or not; part of them, mixed. */
@@ -1112,9 +1171,12 @@ function ColumnsMenu(props: {
   return (
     <div
       className="columns-wrap"
-      // Shut when the focus leaves it, so it never sits over what has it (W14).
+      // Shut when the focus goes somewhere else, so it never sits over what
+      // has it (W14). Only then: a press on a column's name, which cannot
+      // take the focus, leaves it going nowhere — and is the column's, to
+      // show or hide (F1). A click outside shuts it by itself, above.
       onBlur={(e) => {
-        if (open && !e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+        if (open && e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) setOpen(false);
       }}
     >
       <button
@@ -1158,15 +1220,20 @@ const TIP_ROOM = 80;
  * stop for Tab. Whether the words are cut is measured then, so a kind or a
  * name that came after the rows, or a font that came late, is measured as
  * it now is (W11). Escape puts it away (WCAG 1.4.13). It repeats words that
- * are on the page already, so a screen reader is not told them twice.
+ * are on the page already, so a screen reader is not told them twice. A
+ * row that goes — to the Trash, say — takes its tip with it, though the
+ * pointer never left it (no mouseout comes from what is gone).
  */
-function useClipTips() {
+function useClipTips(rows: readonly DocumentView[]) {
   const [tip, setTip] = useState<{
     text: string;
+    /** The row it is of; null for the head's. */
+    row: string | null;
     left: number;
     top?: number;
     bottom?: number;
   } | null>(null);
+  const shown = tip && (tip.row === null || rows.some((d) => d.id === tip.row)) ? tip : null;
   const cut = (el: HTMLElement) =>
     el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
   const clipOf = (target: EventTarget | null): HTMLElement | null => {
@@ -1183,25 +1250,26 @@ function useClipTips() {
     const below = r.bottom + 4 + TIP_ROOM < window.innerHeight;
     setTip({
       text: el.dataset.clip ?? '',
+      row: el.closest<HTMLElement>('tr[data-id]')?.dataset.id ?? null,
       left,
       ...(below ? { top: r.bottom + 4 } : { bottom: window.innerHeight - r.top + 4 }),
     });
   };
   const hide = () => setTip(null);
   const escape = (e: ReactKeyboardEvent) => {
-    if (e.key === 'Escape' && tip) setTip(null);
+    if (e.key === 'Escape' && shown) setTip(null);
   };
   return {
     show,
     hide,
     escape,
-    tip: tip ? (
+    tip: shown ? (
       <div
         className="clip-tip"
         aria-hidden="true"
-        style={{ left: tip.left, top: tip.top, bottom: tip.bottom }}
+        style={{ left: shown.left, top: shown.top, bottom: shown.bottom }}
       >
-        {tip.text}
+        {shown.text}
       </div>
     ) : null,
   };
