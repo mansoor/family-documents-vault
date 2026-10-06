@@ -6,6 +6,41 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.6.0-rc.1] - 2026-10-06 — iteration 5.41, the Phase 5 release candidate
+
+The release candidate for 0.6.0, which gathers every 0.5.x release since 0.4.5. It is for the owner's demonstration. Once that passes, 0.6.0 goes to `main` and the `latest` images move to it.
+
+### Added
+
+- **Upgrading from 0.4.5 to 0.6.0** is described step by step in the README. It covers updating the compose files beside your `.env`, the backup and restore rehearsal to do first, and the two changes that can break a 0.4.5 setup.
+- The README lists every `FDV_*` setting with its default.
+- **Only me and share links.**
+  - When you make a document Only me and you have links to it, you choose whether to end them or keep them. Keeping them is for the rare case where you work on a document with someone outside the family before the other adults may see it.
+  - Owners decide whether Only me documents may be shared outside the family at all (Settings → Household). It is on by default. When it is off, new links to an Only me document are refused, and the ones that exist pause until it is turned back on.
+  - Nobody is told how many links other people have to their Only me documents.
+
+### Changed
+
+- **Where a document's paper original is kept is seen only by owners, adults and teens.**
+  - Viewers (family or not), guests, people opening a share link and people sending you files never see it.
+  - Searching cannot match on it for them.
+  - Emails, notifications and activity lines never mention it to them.
+  - A document's status never asks them where it is kept.
+- **Taking someone's sign-in away and giving it back keeps any lock or pause.** The other owners are told, and so is the person, including any limits they still have. A locked sign-in can't be deleted out from under its lock.
+- **Changing another person's identity details is an owner power.** It needs two-step sign-in, and a passkey or a code to confirm, as showing their numbers already does.
+- **Phone notifications:** registering a phone for notifications can't take over another person's phone while they are signed in on it. Once their session has ended, the next person can register it.
+
+### Fixed
+
+- **Sign-in:** a passkey sign-in or confirmation that names no credential is refused properly instead of failing.
+- **Worker log levels:** the worker accepts every log level the API does (`trace` and `fatal` used to stop it).
+- **Household time zone:** setting it through `PUT /api/v1/profile` alone no longer counts as answering the household questions.
+
+### Security
+
+- **Password-reset links waiting to be emailed are sealed.** A link waiting in the job queue can't be read there; the worker opens it as it sends.
+- **A new security test runs every kind of outside or limited caller against every API route.** It fails if a route is added without a rule. It also checks that no planted secret ever appears in an answer, an email, a notification, a queued job or the activity log.
+
 ## [0.5.38] - 2026-10-06 — iteration 5.37
 
 The vault reads what it can from a document's pages, and suggests its details.

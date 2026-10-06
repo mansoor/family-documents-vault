@@ -1,9 +1,15 @@
-import { visibilityChoices, type Visibility } from '@fdv/shared';
-import { useState } from 'react';
-import { api } from '../api.js';
+import {
+  shareEndWords,
+  visibilityChoices,
+  type LinksChoiceNeeded,
+  type OwnLinkToEnd,
+  type Visibility,
+} from '@fdv/shared';
+import { useRef, useState, type RefObject } from 'react';
+import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { Button, ErrorNote, Pills } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Pills } from '../ui.js';
 
 /**
  * Who can see a document, in the three plain choices the design insists
@@ -45,8 +51,15 @@ export function VisibilityControl(props: {
    */
   onBusy?: (busy: boolean) => void;
 }) {
-  const { guarded } = useApp();
+  const { guarded, withToken } = useApp();
   const [open, setOpen] = useState(Boolean(props.onClose));
+  // Into Only me with links of one's own (5.41): which, and whether they
+  // may be kept, as the vault said.
+  const [ask, setAsk] = useState<LinksAsk | null>(null);
+  // Where the focus goes back to when the question is answered or put away:
+  // Save, which may hold none (it was switched off while saving; Safari
+  // never focuses a clicked button), so it is said (the third round, W3).
+  const saveButton = useRef<HTMLButtonElement>(null);
   const [choice, setChoice] = useState<Visibility>(props.current);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,17 +81,25 @@ export function VisibilityControl(props: {
     props.onBusy?.(on);
   };
 
-  const save = async () => {
+  const save = async (ownLinks?: 'end' | 'keep') => {
     working(true);
     setError(null);
     try {
-      const result = await guarded((t) => api.setVisibility(t, props.documentId, choice));
+      const result = await guarded((t) => api.setVisibility(t, props.documentId, choice, ownLinks));
+      setAsk(null);
+      if (!result) return;
       await props.onChanged();
       setOpen(false);
-      if (result?.notice) setNotice(result.notice);
+      if (result.notice) setNotice(result.notice);
       else props.onClose?.();
     } catch (err) {
-      setError(describeError(err));
+      const asked = ownLinks ? null : await linksAsk(err, withToken);
+      if (asked) {
+        setAsk(asked);
+      } else {
+        setAsk(null);
+        setError(describeError(err));
+      }
     } finally {
       working(false);
     }
@@ -121,8 +142,21 @@ export function VisibilityControl(props: {
       />
       <p className="muted">{choices.find((c) => c.value === choice)?.hint}</p>
       <ErrorNote message={error} />
+      {ask && (
+        <LinksChoiceDialog
+          ask={ask}
+          busy={busy}
+          returnFocus={saveButton}
+          onChoose={(ownLinks) => void save(ownLinks)}
+          onCancel={() => setAsk(null)}
+        />
+      )}
       <div className="row">
-        <Button disabled={busy || choice === props.current} onClick={() => void save()}>
+        <Button
+          ref={saveButton}
+          disabled={busy || choice === props.current}
+          onClick={() => void save()}
+        >
           {busy ? 'Saving…' : 'Save'}
         </Button>
         {/* Not while it is being saved: it would be saved, and the notice never shown. */}
@@ -136,4 +170,123 @@ export function VisibilityControl(props: {
       </div>
     </section>
   );
+}
+
+/** The question `409 links_choice_needed` asks, with its words and the household's clock. */
+export type LinksAsk = LinksChoiceNeeded & { message: string; timezone: string };
+
+/**
+ * `409 links_choice_needed`, read and made ready to ask (5.41): null for
+ * any other answer. Its links are listed on the household's clock.
+ */
+export async function linksAsk(
+  err: unknown,
+  withToken: <T>(fn: (token: string) => Promise<T>) => Promise<T | null>,
+): Promise<LinksAsk | null> {
+  const asked = linksChoice(err);
+  if (!asked) return null;
+  const profile = await withToken((t) => api.profile(t)).catch(() => null);
+  return { ...asked, message: (err as Error).message, timezone: profile?.timezone ?? 'UTC' };
+}
+
+/**
+ * What becomes of one's own links to a document made Only me (5.41): each
+ * named, End to start with, Keep while the household lets them out. Asked
+ * by "Who can see this" and by the edit card alike.
+ */
+export function LinksChoiceDialog(props: {
+  ask: LinksAsk;
+  busy?: boolean;
+  /** Where focus goes when it is answered or put away, the browser having remembered none. */
+  returnFocus?: RefObject<HTMLElement | null>;
+  onChoose: (ownLinks: 'end' | 'keep') => void;
+  onCancel: () => void;
+}) {
+  const { ask } = props;
+  const [keep, setKeep] = useState(false);
+  // Keep is offered while there is a link it would keep: one a restore
+  // paused ends either way (the fourth round, API-1).
+  const keepable = ask.keep_allowed && ask.links.some((l) => !l.will_end);
+  return (
+    <ConfirmDialog
+      title="Your links to this document"
+      confirmLabel="Make it Only me"
+      busyLabel="Saving…"
+      busy={props.busy === true}
+      {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
+      onConfirm={() => props.onChoose(keep && keepable ? 'keep' : 'end')}
+      onCancel={props.onCancel}
+    >
+      <p>{ask.message}</p>
+      <ul className="stack" aria-label="Your links to it">
+        {ask.links.map((l) => (
+          <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
+        ))}
+      </ul>
+      <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend>What happens to them</legend>
+        <label className="row" style={{ gap: 8 }}>
+          <input
+            type="radio"
+            name="own-links"
+            checked={!keep || !keepable}
+            onChange={() => setKeep(false)}
+          />
+          <span>End these links</span>
+        </label>
+        {keepable ? (
+          <label className="row" style={{ gap: 8 }}>
+            <input type="radio" name="own-links" checked={keep} onChange={() => setKeep(true)} />
+            <span>Keep them: the people they are for can still open it</span>
+          </label>
+        ) : ask.keep_allowed ? (
+          <p>They end either way.</p>
+        ) : (
+          <p>This household doesn’t share Only me documents outside the family, so they end.</p>
+        )}
+      </fieldset>
+      {ask.others > 0 && (
+        <p>
+          {ask.others === 1
+            ? 'The link someone else made to it stops.'
+            : `The ${ask.others} links others made to it stop.`}
+        </p>
+      )}
+    </ConfirmDialog>
+  );
+}
+
+/** `409 links_choice_needed`, read: the person's own links, and whether keeping them is offered. */
+function linksChoice(err: unknown): LinksChoiceNeeded | null {
+  if (!(err instanceof ApiRequestError) || err.code !== 'links_choice_needed') return null;
+  try {
+    const parsed = JSON.parse(err.detail ?? '') as Partial<LinksChoiceNeeded>;
+    return Array.isArray(parsed.links)
+      ? {
+          links: parsed.links,
+          keep_allowed: parsed.keep_allowed === true,
+          others: Number(parsed.others) || 0,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "For the attorney: ends 10 Oct 2026, 5:00 pm; asks for a password." */
+export function ownLinkWords(l: OwnLinkToEnd, timezone: string): string {
+  const who = l.recipient_label ? `For ${l.recipient_label}` : 'A link';
+  const what = l.kind === 'collection' ? ` (the collection “${l.collection_name ?? ''}”)` : '';
+  const asks =
+    l.protection.length === 0
+      ? 'asks for nothing more'
+      : `asks for ${l.protection
+          .map((p) => (p === 'pin' ? 'a PIN' : p === 'password' ? 'a password' : 'an emailed code'))
+          .join(' and ')}`;
+  // Paused after a restore, and not one the reader can turn back on: it
+  // ends whichever is chosen (the fourth round, API-1).
+  const either = l.will_end
+    ? ' It ends either way: paused after a restore, it cannot be turned back on while this is Only me.'
+    : '';
+  return `${who}${what}: ends ${shareEndWords(new Date(l.expires_at), timezone, { weekday: false })}; ${asks}.${either}`;
 }

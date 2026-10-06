@@ -215,7 +215,7 @@ export class HouseholdService {
   async updateProfile(p: Principal, input: z.infer<typeof profileBody>, meta: RequestMeta) {
     requireCapability(p, 'profile.edit');
     await withPrincipal(this.db, p, async (trx) => {
-      const values: Record<string, unknown> = { answered_at: new Date() };
+      const values: Record<string, unknown> = {};
       for (const k of [
         'owns_home',
         'rents_home',
@@ -227,6 +227,10 @@ export class HouseholdService {
         if (input[k] !== undefined) values[k] = input[k];
       }
       if (input.extra !== undefined) values.extra = JSON.stringify(input.extra);
+      // The household's questions count as answered only when an answer
+      // came (the Phase 5 exit's third round, R2-04): a time zone alone, as
+      // the README sets it, leaves Home's invitation to answer them.
+      if (Object.keys(values).length > 0) values.answered_at = new Date();
       if (input.timezone !== undefined) {
         try {
           new Intl.DateTimeFormat('en', { timeZone: input.timezone });
@@ -239,11 +243,13 @@ export class HouseholdService {
           .where('id', '=', p.householdId)
           .execute();
       }
-      await trx
-        .insertInto('household_profile')
-        .values({ household_id: p.householdId, ...values })
-        .onConflict((oc) => oc.column('household_id').doUpdateSet(values))
-        .execute();
+      if (Object.keys(values).length > 0) {
+        await trx
+          .insertInto('household_profile')
+          .values({ household_id: p.householdId, ...values })
+          .onConflict((oc) => oc.column('household_id').doUpdateSet(values))
+          .execute();
+      }
       await appendAudit(trx, {
         householdId: p.householdId,
         actorAccountId: p.accountId,

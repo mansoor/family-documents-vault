@@ -6,6 +6,7 @@ import {
   canSeeIdentity,
   IDENTITY_EDIT_REFUSAL,
   IDENTITY_TOO_LONG,
+  ONLY_ME_KEEP_REFUSED,
   identityAudienceRank,
   identityChanges,
   identityFilled,
@@ -17,6 +18,7 @@ import {
   type IdentityAudienceView,
   type IdentityFields,
   type IdentityPart,
+  type OwnLinkToEnd,
   type IdentityPartView,
   type Visibility,
   canSeeCollection,
@@ -459,6 +461,22 @@ export interface FakeState {
     string,
     Partial<Record<IdentityPart, { fields: IdentityFields; version: number }>>
   >;
+  /**
+   * A sign-in given back comes back still locked, or still paused after a
+   * restore (0059): the vault's answer says so.
+   */
+  signInKept?: 'locked' | 'restored';
+  /**
+   * Whether the household's Only me documents can be shared outside the
+   * family (5.41); left out, on.
+   */
+  onlyMeShareable?: boolean;
+  /**
+   * The signed-in person's own links that would still send a document they
+   * make Only me (5.41): the vault asks which way first (409
+   * links_choice_needed).
+   */
+  ownLinks?: OwnLinkToEnd[];
   /** Who reads other people's shared identity details (A34); left out, the narrowest. */
   identityAudience?: IdentityAudience;
   /** A wider audience waiting its 72 hours. */
@@ -1187,6 +1205,23 @@ export function installFakeApi(state: FakeState) {
       if (!canEditIdentity(me, { id }, b.part)) {
         return refuse(403, 'forbidden', IDENTITY_EDIT_REFUSAL);
       }
+      // Another person's: an owner power since the Phase 5 exit (A54), a
+      // passkey or a code, never the password.
+      if (!self && state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to change another person’s identity details.',
+        );
+      }
+      if (!self && state.stepUpNeeded) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change another person’s identity details.',
+          { action: 'change_identity' },
+        );
+      }
       const kept = record[b.part];
       const version = kept?.version ?? 0;
       if (b.version !== version) {
@@ -1742,22 +1777,106 @@ export function installFakeApi(state: FakeState) {
     }
     if (path.startsWith('/api/v1/audit')) return json({ items: state.activity, next: null });
     if (path.endsWith('/visibility') && method === 'POST') {
-      const to = (body as { visibility: string }).visibility;
+      const { visibility: to, own_links: ownLinks } = body as {
+        visibility: string;
+        own_links?: 'end' | 'keep';
+      };
       const doc = state.documents.find((d) => path.includes(String(d.id)));
       // Out of "only me" asks what opening it asks (5.4).
       const ask = askedToLoosen(doc, { visibility: to });
       if (state.stepUpNeeded && ask) return stepUp(ask);
+      // Into Only me with links of one's own (5.41): which way, first.
+      const own = to === 'private' && doc?.visibility !== 'private' ? (state.ownLinks ?? []) : [];
+      const shareable = state.onlyMeShareable !== false;
+      if (own.length > 0 && ownLinks === 'keep' && !shareable) {
+        return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+      }
+      if (own.length > 0 && !ownLinks) {
+        return refuse(
+          409,
+          'links_choice_needed',
+          own.length === 1
+            ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+            : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+        );
+      }
       if (doc) doc.visibility = to;
+      // Ended: all on End; on Keep, those that could never send (API-1).
+      if (own.length > 0 && ownLinks) {
+        state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+      }
       const firstTime = to === 'private' && !state.privateNoticeShown;
       if (firstTime) state.privateNoticeShown = true;
+      const n = own.length;
+      // Only a link that can send is kept (the fourth round, API-1): one a
+      // restore paused, for anybody but an owner, ends whichever is chosen.
+      const kept = ownLinks === 'keep' ? own.filter((l) => !l.will_end).length : 0;
+      const ended = n - kept;
       return json({
-        notice: firstTime
+        notice:
+          n > 0
+            ? {
+                title:
+                  kept > 0
+                    ? `Only you, and the people your ${kept} link${kept === 1 ? ' is' : 's are'} for, can open this.`
+                    : `Only you can open this. Your ${ended} link${ended === 1 ? '' : 's'} to it ${ended === 1 ? 'has' : 'have'} ended.`,
+                body: 'Nobody else in the family can open it.',
+              }
+            : firstTime
+              ? {
+                  title: 'Only you can open this',
+                  body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+                }
+              : null,
+        ...(to === 'private'
           ? {
-              title: 'Only you can open this',
-              body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+              links: {
+                yours: n,
+                yours_now: n > 0 ? (kept > 0 ? 'kept' : 'ended') : null,
+                others: 0,
+              },
             }
-          : null,
+          : {}),
       });
+    }
+    // The household's rule for Only me documents and links (5.41).
+    if (path === '/api/v1/household/sharing') {
+      const role = storedRole();
+      if (role !== 'owner' && role !== 'adult') {
+        return refuse(403, 'forbidden', 'Only an adult can share a document outside the family.');
+      }
+      if (method === 'GET') {
+        return json({
+          only_me_shareable: state.onlyMeShareable !== false,
+          can_change: role === 'owner',
+        });
+      }
+      if (role !== 'owner') {
+        return refuse(
+          403,
+          'forbidden',
+          'Only an owner can change whether Only me documents can be shared outside the family.',
+        );
+      }
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to change whether Only me documents can be shared outside the family.',
+        );
+      }
+      if (state.accountStepUp) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change whether Only me documents can be shared outside the family.',
+          { action: 'only_me_sharing' },
+        );
+      }
+      const next = (body as { only_me_shareable: boolean }).only_me_shareable;
+      state.onlyMeShareable = next;
+      return json({ only_me_shareable: next, can_change: true });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });
     if (path.endsWith('/share') && method === 'POST') {
@@ -2615,6 +2734,15 @@ export function installFakeApi(state: FakeState) {
         target.role = role;
         target.sign_in_removed = false;
       }
+      // Given back still locked, or still paused after a restore (0059).
+      if (state.signInKept) {
+        return json({
+          message:
+            state.signInKept === 'locked'
+              ? `${String(target?.display_name)}'s sign-in is back, as a viewer, and still locked: an owner unlocks it.`
+              : `${String(target?.display_name)}'s sign-in is back, as a viewer, and still paused after the restore: an owner turns it back on.`,
+        });
+      }
       return json({
         message: `${String(target?.display_name)} can sign in again with their own password.`,
       });
@@ -3102,6 +3230,32 @@ export function installFakeApi(state: FakeState) {
         // is now.
         const ask = askedToLoosen(doc, body as object);
         if (state.stepUpNeeded && ask) return stepUp(ask);
+        // Into Only me with links of one's own (5.41): which way, first —
+        // before the ETag, as the vault's visibility change comes first.
+        const { own_links: ownLinks, ...edit } = body as Record<string, unknown> & {
+          own_links?: 'end' | 'keep';
+        };
+        const own =
+          edit.visibility === 'private' && doc.visibility !== 'private'
+            ? (state.ownLinks ?? [])
+            : [];
+        if (own.length > 0) {
+          const shareable = state.onlyMeShareable !== false;
+          if (ownLinks === 'keep' && !shareable) {
+            return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+          }
+          if (!ownLinks) {
+            return refuse(
+              409,
+              'links_choice_needed',
+              own.length === 1
+                ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+                : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+              { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+            );
+          }
+          state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+        }
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
         if (ifMatch && ifMatch !== doc.etag) {
           return json(
@@ -3118,7 +3272,7 @@ export function installFakeApi(state: FakeState) {
           );
         }
         // Details merge, and null takes one away (0.5.7).
-        const change = { ...(body as Record<string, unknown>) };
+        const change = { ...edit };
         if (change.extra && typeof change.extra === 'object') {
           const merged = { ...((doc.extra as Record<string, unknown> | undefined) ?? {}) };
           for (const [k, v] of Object.entries(change.extra)) {

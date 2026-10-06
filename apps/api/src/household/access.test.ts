@@ -1286,6 +1286,137 @@ describe.skipIf(!testAdminUrl())('limit what a viewer can see (5.33)', () => {
     expect(await givenBack(yan)).not.toContain(LIMITED_WORDS);
   });
 
+  it('given back still locked or paused, somebody limited is told so, and told again as the lock ends or the restore is over (C-02, the Phase 5 exit)', async () => {
+    const accountOf = async (who: Tokens) =>
+      (
+        await admin.query<{ account_id: string }>(
+          'select account_id from account_household where member_id = $1',
+          [who.member_id],
+        )
+      ).rows[0]?.account_id as string;
+    /** What the person themselves was sent, by what `act` did. */
+    const toThem = async (who: Tokens, account: string, act: () => Promise<void>) => {
+      const since = h.jobs.length;
+      await act();
+      return h.jobs
+        .slice(since)
+        .filter(
+          (j) =>
+            j.name === 'alert.send' &&
+            (j.data.account_ids as string[] | undefined)?.includes(account) === true,
+        )
+        .map((j) => `${String(j.data.subject)} / ${String(j.data.body)}`);
+    };
+    const away = async (who: Tokens) => {
+      await fresh(owner);
+      const r = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${who.member_id}/sign-in`,
+        headers: h.as(owner),
+      });
+      expect(r.statusCode, r.body).toBe(204);
+    };
+    const back = async (who: Tokens) => {
+      await fresh(owner);
+      const r = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${who.member_id}/sign-in`,
+        headers: h.as(owner),
+        payload: { role: 'viewer' },
+      });
+      expect(r.statusCode, r.body).toBe(200);
+    };
+    const limit = async (who: Tokens) => {
+      await fresh(owner);
+      expect((await put(owner, who.member_id, { people: [ahmed.member_id] })).statusCode).toBe(200);
+    };
+
+    // Locked, its sign-in taken away, limited while away, given back locked.
+    const una = await viewerNamed('Una');
+    const unaAccount = await accountOf(una);
+    await fresh(owner);
+    const locked = await h.app.inject({
+      method: 'POST',
+      url: `/api/v1/members/${una.member_id}/lock`,
+      headers: h.as(owner),
+      payload: {},
+    });
+    expect(locked.statusCode, locked.body).toBe(200);
+    await away(una);
+    await limit(una);
+    const givenBack = await toThem(una, unaAccount, () => back(una));
+    expect(givenBack).toHaveLength(1);
+    expect(givenBack[0]).toContain('still locked');
+    expect(givenBack[0]).toContain(LIMITED_WORDS);
+    expect(givenBack[0]).not.toContain('Ahmed');
+    // ...and as the lock ends.
+    const unlocked = await toThem(una, unaAccount, async () => {
+      await fresh(owner);
+      const r = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${una.member_id}/lock`,
+        headers: h.as(owner),
+      });
+      expect(r.statusCode, r.body).toBe(204);
+    });
+    expect(unlocked).toHaveLength(1);
+    expect(unlocked[0]).toContain(LIMITED_WORDS);
+
+    // Paused by a restore, taken away, limited, given back paused, turned on.
+    const vin = await viewerNamed('Vin');
+    const vinAccount = await accountOf(vin);
+    await admin.query(
+      `update account_household set suspended_at = now(), suspend_reason = 'restored'
+        where member_id = $1`,
+      [vin.member_id],
+    );
+    await away(vin);
+    await limit(vin);
+    const paused = await toThem(vin, vinAccount, () => back(vin));
+    expect(paused).toHaveLength(1);
+    expect(paused[0]).toContain('still paused');
+    expect(paused[0]).toContain(LIMITED_WORDS);
+    const resumed = await toThem(vin, vinAccount, async () => {
+      await fresh(owner);
+      const r = await h.app.inject({
+        method: 'POST',
+        url: `/api/v1/members/${vin.member_id}/resume`,
+        headers: h.as(owner),
+        payload: {},
+      });
+      expect(r.statusCode, r.body).toBe(204);
+    });
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toContain(LIMITED_WORDS);
+
+    // Nobody limited: nothing of it, and given back locked, nothing at all.
+    const wim = await viewerNamed('Wim');
+    const wimAccount = await accountOf(wim);
+    await fresh(owner);
+    expect(
+      (
+        await h.app.inject({
+          method: 'POST',
+          url: `/api/v1/members/${wim.member_id}/lock`,
+          headers: h.as(owner),
+          payload: {},
+        })
+      ).statusCode,
+    ).toBe(200);
+    await away(wim);
+    expect(await toThem(wim, wimAccount, () => back(wim))).toEqual([]);
+    const wimUnlocked = await toThem(wim, wimAccount, async () => {
+      await fresh(owner);
+      await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/members/${wim.member_id}/lock`,
+        headers: h.as(owner),
+      });
+    });
+    expect(wimUnlocked).toHaveLength(1);
+    expect(wimUnlocked[0]).not.toContain(LIMITED_WORDS);
+  });
+
   it('an ended restriction waiting for confirmation is kept as it is, ended; a new end in the past is still refused (L533-05)', async () => {
     const xan = await viewerNamed('Xan');
     await fresh(owner);

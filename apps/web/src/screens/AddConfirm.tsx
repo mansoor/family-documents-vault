@@ -25,7 +25,7 @@ import {
   type Role,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -49,6 +49,7 @@ import {
   useSuggestionsOffered,
 } from '../suggestions.js';
 import { Button, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
+import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
 /**
@@ -331,6 +332,14 @@ export function ConfirmScreen() {
   const { guarded, withToken } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  // Into Only me with links of one's own (5.41): asked here as "Who can see
+  // this" asks it, and the save made again with the answer (the Phase 5
+  // exit's third round, W1). Put away: nothing is saved, the card stays.
+  const [linksAsked, setLinksAsked] = useState<{
+    ask: LinksAsk;
+    answer: (ownLinks: 'end' | 'keep' | null) => void;
+  } | null>(null);
+  const saveButton = useRef<HTMLButtonElement>(null);
   const {
     data,
     error: loadError,
@@ -402,38 +411,73 @@ export function ConfirmScreen() {
     };
   };
   return (
-    <ConfirmForm
-      title="Is this right?"
-      back={`/documents/${doc.id}`}
-      lede="Change anything that is wrong. Everything else can wait."
-      documentId={doc.id}
-      versionId={doc.latest_version_id}
-      filedByMe={doc.filed_by_me === true}
-      types={types}
-      members={members}
-      initial={cardFor(doc)}
-      submitLabel="Save to the vault"
-      onSubmit={async (details) => {
-        // Only send visibility when it changed: the server rewraps keys for it.
-        if (details.visibility === doc.visibility) delete details.visibility;
-        let saved: DocumentView | null;
-        try {
+    <>
+      <ConfirmForm
+        title="Is this right?"
+        back={`/documents/${doc.id}`}
+        lede="Change anything that is wrong. Everything else can wait."
+        documentId={doc.id}
+        versionId={doc.latest_version_id}
+        filedByMe={doc.filed_by_me === true}
+        types={types}
+        members={members}
+        initial={cardFor(doc)}
+        submitLabel="Save to the vault"
+        submitButton={saveButton}
+        onSubmit={async (details) => {
+          // Only send visibility when it changed: the server rewraps keys for it.
+          if (details.visibility === doc.visibility) delete details.visibility;
           // Out of Only me asks what opening it asks (5.4); not confirmed,
           // nothing is saved and the card stays.
-          saved = await guarded((t) => api.updateDocument(t, doc.id, details, doc.etag));
-        } catch (err) {
-          if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
-          // Changed somewhere else since the card was filled: what it holds
-          // now is taken in, what was typed is kept, and the next Save is
-          // made on top of it.
-          const now = heldNow(err) ?? (await withToken((t) => api.document(t, doc.id)));
-          if (!now) throw err;
-          setData({ doc: now, types, members });
-          throw new ChangedElsewhere(cardFor(now));
-        }
-        if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
-      }}
-    />
+          const send = (ownLinks?: 'end' | 'keep') =>
+            guarded((t) =>
+              api.updateDocument(
+                t,
+                doc.id,
+                ownLinks ? { ...details, own_links: ownLinks } : details,
+                doc.etag,
+              ),
+            );
+          let saved: DocumentView | null;
+          try {
+            saved = await send();
+          } catch (err) {
+            // Into Only me with links of one's own: which way, first. Its
+            // answer is the same save, with it; a refusal of that (the
+            // household's rule) is said on the card.
+            const ask = await linksAsk(err, withToken);
+            if (ask) {
+              const ownLinks = await new Promise<'end' | 'keep' | null>((answer) =>
+                setLinksAsked({ ask, answer }),
+              );
+              setLinksAsked(null);
+              if (!ownLinks) return;
+              saved = await send(ownLinks);
+            } else {
+              if (!(err instanceof ApiRequestError && err.status === 409)) throw err;
+              // The household's rule, said as the vault says it.
+              if (err.code === 'only_me_not_shared') throw err;
+              // Changed somewhere else since the card was filled: what it
+              // holds now is taken in, what was typed is kept, and the next
+              // Save is made on top of it.
+              const now = heldNow(err) ?? (await withToken((t) => api.document(t, doc.id)));
+              if (!now) throw err;
+              setData({ doc: now, types, members });
+              throw new ChangedElsewhere(cardFor(now));
+            }
+          }
+          if (saved) void navigate(`/documents/${saved.id}`, { replace: true });
+        }}
+      />
+      {linksAsked && (
+        <LinksChoiceDialog
+          ask={linksAsked.ask}
+          returnFocus={saveButton}
+          onChoose={(ownLinks) => linksAsked.answer(ownLinks)}
+          onCancel={() => linksAsked.answer(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -571,6 +615,8 @@ export function ConfirmForm(props: {
   members: Member[];
   initial: CardValues;
   submitLabel: string;
+  /** The Save button, for a question over the card to give focus back to. */
+  submitButton?: RefObject<HTMLButtonElement | null>;
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput) => Promise<void>;
   /** Save without details: offered for a new document only. */
@@ -610,6 +656,22 @@ export function ConfirmForm(props: {
   const [unread, setUnread] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Save, for the focus to come back to.
+  const ownSave = useRef<HTMLButtonElement>(null);
+  const saveButton = props.submitButton ?? ownSave;
+  // A question over the card put away while the card was still saving —
+  // the links question (5.41) — leaves the focus nowhere: in a browser it
+  // goes before the card is done, while Save is still switched off. Once
+  // the card is done and nothing has the focus, Save takes it back (the
+  // Phase 5 exit's fourth round, W3).
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (wasBusy.current && !busy) {
+      const at = document.activeElement;
+      if (!at || at === document.body) saveButton.current?.focus();
+    }
+    wasBusy.current = busy;
+  }, [busy, saveButton]);
 
   const type = types.find((t) => t.key === typeKey);
   const me = members.find((m) => m.is_me);
@@ -1227,7 +1289,7 @@ export function ConfirmForm(props: {
           )}
         </div>
         <ErrorNote message={error} />
-        <Button type="submit" disabled={busy}>
+        <Button ref={saveButton} type="submit" disabled={busy}>
           {busy ? 'Saving…' : props.submitLabel}
         </Button>
         {props.onSkip ? (

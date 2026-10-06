@@ -2176,18 +2176,34 @@ describe.skipIf(!testAdminUrl())('identity details, from the other side (5.26)',
         .error.code,
     ).toBe('step_up_required');
     // ...then writes it back unhidden, leaving out the value it never saw.
-    for (const who of [second, owner]) {
+    const unhide = async (who: Tokens) => {
       const shown = json<IdentityView>(await get(who, sam.member_id));
       expect(shown.shared.masked).toContain('custom.c1');
-      const unhidden = await put(who, sam.member_id, {
+      return put(who, sam.member_id, {
         part: 'shared',
         version: shown.versions.shared,
         fields: { ...shown.shared.fields, custom: [{ id: 'c1', label: 'Locker', hidden: false }] },
       });
-      expect(unhidden.statusCode, unhidden.body).toBe(200);
-      // Still hidden, still masked, and nowhere in what came back.
-      expect(unhidden.body).not.toContain(LOCKER);
-      expect(json<IdentityView>(unhidden).shared.masked).toContain('custom.c1');
+    };
+    // Writing another adult's details is itself an owner power (A54, the
+    // Phase 5 exit): never with a password alone, never on a stale code.
+    const refused = await unhide(second);
+    expect(refused.statusCode).toBe(403);
+    expect(json<{ error: { code: string } }>(refused).error.code).toBe('totp_required_for_owner');
+    const asked = await unhide(owner);
+    expect(asked.statusCode).toBe(403);
+    expect(json<{ error: { code: string; action?: string } }>(asked).error).toMatchObject({
+      code: 'step_up_required',
+      action: 'change_identity',
+    });
+    // With a fresh code, the write goes through, and still unmasks nothing.
+    await asOwner();
+    const unhidden = await unhide(owner);
+    expect(unhidden.statusCode, unhidden.body).toBe(200);
+    // Still hidden, still masked, and nowhere in what came back.
+    expect(unhidden.body).not.toContain(LOCKER);
+    expect(json<IdentityView>(unhidden).shared.masked).toContain('custom.c1');
+    for (const who of [second, owner]) {
       const after = await get(who, sam.member_id);
       expect(after.body).not.toContain(LOCKER);
       expect(json<IdentityView>(after).shared.fields.custom).toEqual([

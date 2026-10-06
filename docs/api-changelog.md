@@ -15,6 +15,60 @@ against self-hosted servers that are months or years behind.
 4. The client declares its minimum server version; the server declares its
    minimum client version. Either side refusing says so in plain words.
 
+## 0.6.0
+
+The Phase 5 release: the first on `main` since 0.4.5 (0.5.x were development
+tags). This is the summary for client authors; each item is given in full
+under "After 0.5.0 (Phase 5)" in [Unreleased](#unreleased). Nothing a 0.4.x
+client calls is gone: `min_client_version` stays `0.0.1`, and the phone app
+needs a vault of 0.4.10 or later.
+
+- **New `features`**, each `true` from the release that shipped it:
+  `custom_types`, `collections`, `reminder_dates`, `member_photos`,
+  `share_options`, `collection_shares`, `share_second_factor`,
+  `share_email_code` (only with the operator's mail server, `FDV_SMTP_URL`),
+  `remove_for_good`, `member_edit`, `upload_requests`, `member_identity`,
+  `member_admin`, `sign_out_everywhere`, `access_restrictions`, `guests` and
+  `detail_suggestions`. New `limits`: `share_max_days`, `guest_max_days`.
+- **Two callers without a sign-in.** A share link is looked at and opened
+  with its token in a body (`POST /api/v1/shared/preview`, `/code`,
+  `/unlock`); what it gives is fetched inside a session cookie scoped to
+  `/api/v1/shared` (`GET /api/v1/shared/items`, `/items/{id}/content`,
+  `/items/{id}/pages/{n}`). Somebody sending documents to a request does the
+  same under `/api/v1/drop`. Neither cookie opens anything else, and a link
+  made since 0.5.14 opens nothing on the old token-in-path routes.
+- **New for the family:** kinds of document and their fields; collections,
+  and links to them; reminders from any date a kind shows; a person's
+  details, photo and identity record (sealed, masked, revealed with a
+  passkey or a code); notes; removing a document for good; requests to send
+  documents, and looking at what came in before it is filed; suggestions
+  from a document's pages.
+- **New for owners**, each with two-step sign-in or a passkey, asked again
+  with one of those and never the password (`403 totp_required_for_owner`,
+  `403 step_up_required`): the view of somebody's sign-in, locking it,
+  starting a password reset, signing somebody out everywhere, limiting what
+  a viewer sees, a guest's sign-in, who reads identity details, writing
+  another person's identity details, and whether Only me documents can be
+  shared outside the family.
+- **New:** making a document Only me asks what becomes of the person's own
+  links to it (`409 links_choice_needed`, `own_links`), and a household
+  rule decides whether Only me documents go outside the family at all
+  (`/api/v1/household/sharing`).
+- **Changed for viewers** (a guest is a viewer, `kind: "guest"` on `/me`):
+  no birthdays, household answers or household suggestions (5.3); a limited
+  viewer is given only their grant (5.33); `physical_location` is `null`
+  (5.41), and no status ever says a document needs it; no suggestions from
+  pages (5.37).
+- **Changed:** a restore pauses every link, every request to send
+  documents and every sign-in but the owners', until an owner turns each
+  back on (`GET /api/v1/after-restore`).
+- **Changed (breaking, only for a client written against a 0.5.12–0.5.17
+  development tag):** lists are collections, `/api/v1/collections`, with no
+  alias (5.17b). 0.4.5 had neither.
+- **Deprecated, removed in 0.9.0:** the token-in-path routes of share links,
+  password resets and invitations; see
+  [Deprecations in effect](#deprecations-in-effect).
+
 ## Unreleased
 
 - `GET /api/v1/capabilities` — the capability document. Fetch it first,
@@ -3761,6 +3815,119 @@ guest_always_limited`. A guest owns no document, by any path — made,
       `features.detail_suggestions`. `@fdv/client`: `detailSuggestions`;
       the fake answers what a test gives it, `unavailable` otherwise, and
       refuses a viewer as the vault does.
+  - The Phase 5 exit (5.41).
+    - **Changed, for viewers only:** where a document's paper original is
+      kept is the household's. `physical_location` is `null` for a viewer,
+      limited or not, and so for a guest, in every answer that carries a
+      document (`DocumentView`): `GET /api/v1/documents/{id}`,
+      `GET /api/v1/documents`, `GET /api/v1/collections/{id}`'s items, and
+      the rest. Owners, adults and teens are answered as before; nobody
+      else could write it, and still cannot. Neither pass of a search (`GET /api/v1/search`,
+      `GET /api/v1/search/sealed`) finds, ranks or leaves out a document by
+      its location's words for a viewer: they are matched against the index
+      without them (migration 0058 gives the location a weight of its own,
+      `D`, which also ranks a location's words a little lower for everybody
+      else). Nothing a share link, the drop page, the activity log, a
+      digest, an email or a push carries names a location, as before. The
+      field stays, so older clients read it as unknown. New capability
+      `document.see_location` (owners, adults, teens); `@fdv/shared`:
+      `seesLocation(role)`. `@fdv/client`'s fake answers the same.
+    - **Fixed:** `POST /api/v1/auth/passkey/verify`, and
+      `POST /api/v1/auth/step-up` with a `passkey`, given a response that
+      names no credential (`{ "response": {} }`), answered `500`. Now
+      `401 passkey_rejected`, as any passkey not accepted.
+    - **Changed (the queue, not the API):** a password reset's link in an
+      `alert.send` job is sealed under a key derived from the master key
+      (`sealed_url`, `ALERT_LINK_KEY_PURPOSE`), as 5.20's `mail.to_address`
+      jobs are: the queue's table, which the application role reads, and
+      every backup of it, hold no working link. The worker opens it as it
+      sends; a job queued by an older API, its `url` in words, is still
+      sent.
+    - **Changed (A54):** writing another person's identity details
+      (`PUT /api/v1/members/{id}/identity`, an owner writing their shared
+      part) is an owner power: `403 totp_required_for_owner` to an owner with
+      neither two-step sign-in nor a passkey, `403 step_up_required` with
+      `action: "change_identity"` (a passkey or a code, never the password)
+      to one who has not given one in five minutes. Reading them is as
+      before, masked, and so is writing one's own. `FACTOR_STEP_UPS` adds
+      `change_identity`.
+    - **Changed:** a lock, or a restore's pause, outlives a sign-in taken away
+      (migration 0059). `DELETE /api/v1/members/{id}/sign-in` keeps it with
+      the person, and `POST /api/v1/members/{id}/sign-in` gives the sign-in
+      back still locked or paused — its message says so, the person is not
+      told they can sign in, and the other owners are told — so only an
+      owner power ends it. A restore pauses a sign-in that was taken away
+      when the backup was made, for whenever it is given back. The database
+      refuses to delete a locked or paused sign-in that has not been kept so
+      (`409 sign_in_suspended`).
+    - **Changed:** `POST /api/v1/devices` with a push address another sign-in
+      registered answers `409 device_taken` and leaves that device as it was;
+      it used to move it to the caller (and answered a limited viewer or a
+      guest `500`). An address of one's own is updated as before. An address
+      whose sign-in has ended (signed out of nowhere: revoked, as a restore
+      does, or run out) is anybody's to take over (migration 0060): only a
+      live one of somebody else's is `409 device_taken`. A client given
+      `device_taken` may give the address up and post a new one; the web app
+      does so.
+    - **Changed:** somebody whose sign-in is given back still locked or
+      paused is emailed so, when an owner limited what they see while it was
+      away, with the words of a limited sign-in given back (L533-03); the
+      emails as a lock ends (`DELETE /api/v1/members/{id}/lock`) and as a
+      restore's pause ends (`POST /api/v1/members/{id}/resume`) carry those
+      words too, for anybody limited.
+    - **Added (the owner's decision of 6 Oct 2026):** `GET` and
+      `PUT /api/v1/household/sharing` — whether this household's Only me
+      documents can be shared outside the family (`OnlyMeSharing`:
+      `only_me_shareable`, on unless an owner turned it off, and
+      `can_change`). Read by owners and adults (`403` to anybody else);
+      changed by an owner (`sharing.only_me_rule`; `403 forbidden` to an
+      adult), an owner power (A54): `403 totp_required_for_owner`, `403
+step_up_required` with `action: "only_me_sharing"`. Turned off, every
+      live link that sends an Only me document — a document's link to it, or
+      a collection's link that ticked it — is paused, `paused_reason:
+"only_me_not_shared"` on the link (to an owner and its maker; anybody
+      else sees it paused), and each maker is emailed how many of theirs;
+      turned back on, those links work again, unless something else stops
+      them. Neither the answer nor the activity log counts them: how many
+      links other people had to their Only me documents is theirs to know.
+      While it is
+      off no link serves an Only me document at all, whatever its row says:
+      `POST /api/v1/documents/{id}/share` to one, and `POST
+/api/v1/collections/{id}/shares` ticking one, answer `409
+only_me_not_shared`. The activity log says it, notable, to owners and
+      adults: "Olivia turned off sharing Only me documents outside the
+      family". Migration 0061; a vault restored from an older
+      backup has it on, and a link it had paused waits for an owner after a
+      restore, as every link does (A55).
+    - **Changed:** a visibility change into Only me (`POST
+/api/v1/documents/{id}/visibility`, or `PATCH /api/v1/documents/{id}`
+      with `visibility: "private"`) takes `own_links: "end" | "keep"`. With
+      links of the caller's own that could send the document — a link to it,
+      or a collection's link that ticked it, whether live or paused (by the
+      household's rule or a restore), and the collection's even while the
+      document is out of the collection — and no `own_links`, it answers
+      `409 links_choice_needed` and changes nothing;
+      its `detail` is JSON (`LinksChoiceNeeded`): each link's `id`, `kind`,
+      `recipient_label`, `collection_name`, `expires_at` and `protection` —
+      never a token — `keep_allowed`, and `others`, how many links somebody
+      else made stop with it. A link a restore paused, for anybody but an
+      owner, is marked `will_end: true`: no owner can turn it back on while
+      the document is Only me, so it ends whichever is chosen, and `keep`
+      keeps, and the notice counts, only links that can send. `end` ends a
+      document's link as Take it back does, and leaves the document out of a
+      collection's link; `keep`
+      leaves them; while the household does not share Only me documents
+      outside the family, `keep` is `409 only_me_not_shared`. Links others
+      made stop, as before. The answer (`VisibilityChange`) adds `links`
+      (`yours`, `yours_now`: `ended` | `kept` | null, `others`), and the
+      notice says what is true now: "Only you can open this. Your 2 links to
+      it have ended.", "Only you, and the people your 1 link is for, can open
+      this." The activity log's line counts them (`links_ended`,
+      `links_kept`, `links_others_stopped`). A client that sends no
+      `own_links` gets the `409` only when there are such links.
+    - **Changed:** a document's `status`, to a viewer or a guest, never asks
+      for where the original is kept: a kind that requires it is worked out
+      without it for them (the document, a list, a search).
 
 ## Deprecations in effect
 

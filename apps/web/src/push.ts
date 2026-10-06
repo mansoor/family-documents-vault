@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, ApiRequestError } from './api.js';
 
 /**
  * Turning notifications on, from the browser's side.
@@ -92,23 +92,64 @@ export async function enable(token: string): Promise<PushState> {
       kind: 'unsupported',
       message: 'This browser would not start the notification worker.',
     };
+  const publicKey = key.public_key;
   const existing = await reg.pushManager.getSubscription();
   const sub =
     existing ??
     (await reg.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(key.public_key) as BufferSource,
+      applicationServerKey: urlBase64ToUint8Array(publicKey) as BufferSource,
     }));
-  const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
-  if (!json.endpoint || !json.keys?.p256dh || !json.keys.auth) {
+  if (!(await post(token, reg, sub, () => Promise.resolve(publicKey)))) {
     return { kind: 'unsupported', message: 'This browser gave an incomplete subscription.' };
   }
-  await api.registerDevice(token, {
+  return { kind: 'on' };
+}
+
+/** What the vault is told of a subscription; null for an incomplete one. */
+function deviceOf(sub: PushSubscription) {
+  const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys.auth) return null;
+  return {
     endpoint: json.endpoint,
     keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
     label: deviceLabel(),
-  });
-  return { kind: 'on' };
+  };
+}
+
+/**
+ * Tells the vault of this browser's subscription. One the vault says is
+ * somebody else's, still signed in (`409 device_taken`: whoever used this
+ * browser before, without signing out), is given up, and a new one made
+ * for this sign-in — the browser's notifications go to whoever turns them
+ * on here now (the Phase 5 exit's second round, C-01). False: incomplete.
+ */
+async function post(
+  token: string,
+  reg: ServiceWorkerRegistration,
+  sub: PushSubscription,
+  publicKey: () => Promise<string | null>,
+): Promise<boolean> {
+  const device = deviceOf(sub);
+  if (!device) return false;
+  try {
+    await api.registerDevice(token, device);
+    return true;
+  } catch (err) {
+    if (!(err instanceof ApiRequestError) || err.code !== 'device_taken') throw err;
+  }
+  const key = await publicKey();
+  if (!key) return false;
+  await sub.unsubscribe().catch(() => false);
+  const renewed = deviceOf(
+    await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
+    }),
+  );
+  if (!renewed) return false;
+  await api.registerDevice(token, renewed);
+  return true;
 }
 
 /**
@@ -121,13 +162,10 @@ export async function repost(token: string): Promise<void> {
   try {
     const reg = await navigator.serviceWorker.getRegistration('/');
     const sub = await reg?.pushManager.getSubscription();
-    const json = sub?.toJSON() as
-      { endpoint?: string; keys?: { p256dh?: string; auth?: string } } | undefined;
-    if (!json?.endpoint || !json.keys?.p256dh || !json.keys.auth) return;
-    await api.registerDevice(token, {
-      endpoint: json.endpoint,
-      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
-      label: deviceLabel(),
+    if (!reg || !sub) return;
+    await post(token, reg, sub, async () => {
+      const key = await api.pushKey();
+      return key.enabled ? key.public_key : null;
     });
   } catch {
     // Turning them on again in Notifications does the same.

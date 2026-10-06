@@ -20,6 +20,7 @@ import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
 import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js';
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
+import { HouseholdScreen } from './screens/Household.js';
 import { NotificationsScreen } from './screens/Notifications.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
@@ -258,6 +259,14 @@ export function App() {
             element={
               <Gate need="signed-in">
                 <StorageScreen />
+              </Gate>
+            }
+          />
+          <Route
+            path="/settings/household"
+            element={
+              <Gate need="signed-in">
+                <HouseholdScreen />
               </Gate>
             }
           />

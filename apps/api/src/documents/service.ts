@@ -73,7 +73,13 @@ import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
 import { allows, requireCapability } from '../authz.js';
-import { canSee, FILE_REMOVED, PREVIEW_MAX_PAGES, PURGE_NOTICE_HOURS } from '@fdv/shared';
+import {
+  canSee,
+  FILE_REMOVED,
+  PREVIEW_MAX_PAGES,
+  PURGE_NOTICE_HOURS,
+  seesLocation,
+} from '@fdv/shared';
 
 /**
  * Documents: the metadata rows and their immutable, encrypted versions.
@@ -327,6 +333,12 @@ export function statusOf(
     | undefined,
   plain: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
   sealed?: SealedPresence | null,
+  /**
+   * Whether the reader may see where the original is kept (5.41): one who
+   * may not is never told a document needs it — that it is not written
+   * down is the household's to know.
+   */
+  location = true,
 ): Status {
   const doc = withSealed(plain, sealed);
   return deriveStatus(
@@ -345,7 +357,7 @@ export function statusOf(
             }
           : null,
         doc,
-      ),
+      ).filter((m) => location || m.key !== 'physical_location'),
     },
     today(),
   );
@@ -360,6 +372,18 @@ export function statusOf(
 export const HAS_PRIVATE_WORDS = `d.notes_sealed is not null or d.extra_sealed is not null
   or d.notes is not null or d.extra <> '{}'::jsonb
   or exists (select 1 from document_text_sealed s where s.document_id = d.id)`;
+
+/**
+ * What a document's own words are matched and ranked against, as `d` (5.41):
+ * for somebody who may not see where originals are kept, the index without
+ * the location's words — which alone have weight D (0058) — so that no word
+ * of it finds a document, nor, left out with "-", hides one. Not the index's
+ * own column, so their search reads the rows they may see one by one: a
+ * viewer's few, at most a household's. Both passes of a search ask it.
+ */
+export function searchedWords(p: Pick<Principal, 'role'>) {
+  return seesLocation(p.role) ? sql`d.search_tsv` : sql`ts_filter(d.search_tsv, '{a,b,c}')`;
+}
 
 /** What a row says of its sealed notes and details, without opening them (0.5.8). */
 export const sealedOf = (row: {
@@ -751,7 +775,9 @@ export class DocumentService {
       expires,
       identifier: row.identifier,
       issued_by: row.issued_by,
-      physical_location: row.physical_location,
+      // Where the original is kept: the household's alone (5.41). A viewer,
+      // limited or not, and a guest are answered null, whatever the row says.
+      physical_location: seesLocation(p.role) ? row.physical_location : null,
       is_essential: row.is_essential,
       tags: row.tags,
       notes: onlyMe ? (opened?.notes ?? null) : row.notes,
@@ -765,7 +791,12 @@ export class DocumentService {
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
-      status: statusOf(type, { ...row, issued, expires, extra: plainExtra }, sealedOf(row)),
+      status: statusOf(
+        type,
+        { ...row, issued, expires, extra: plainExtra },
+        sealedOf(row),
+        seesLocation(p.role),
+      ),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -2324,6 +2355,7 @@ export class DocumentService {
   }> {
     const limit = Math.min(Math.max(q.limit ?? 25, 1), 100);
     const adultsOk = p.seesAdults;
+    const words = searchedWords(p);
     return withPrincipal(this.db, p, async (trx) => {
       const rows = await sql<{
         document_id: string;
@@ -2351,7 +2383,7 @@ export class DocumentService {
       }>`
         with query as (select websearch_to_tsquery('simple', ${q.q}) as tsq),
         doc_hits as (
-          select d.id, ts_rank(d.search_tsv, query.tsq) * 2 as rank,
+          select d.id, ts_rank(${words}, query.tsq) * 2 as rank,
                  -- The details' words, and the notes, are shown where the
                  -- index has them (0032, 0033): never an Only me document's.
                  ts_headline('simple',
@@ -2363,7 +2395,7 @@ export class DocumentService {
                    query.tsq, 'MaxFragments=1, MaxWords=18, MinWords=6, StartSel=<em>, StopSel=</em>') as snippet,
                  'title'::text as matched_in
           from document d, query
-          where d.deleted_at is null and d.search_tsv @@ query.tsq
+          where d.deleted_at is null and ${words} @@ query.tsq
         ),
         text_hits as (
           select t.document_id as id, max(ts_rank(t.tsv, query.tsq)) as rank,
@@ -2459,6 +2491,7 @@ export class DocumentService {
             type,
             { ...r, issued, expires },
             { notes: r.notes_sealed_present, details: r.sealed_details },
+            seesLocation(p.role),
           ),
           snippet: snippets.get(r.document_id) ?? r.snippet,
           matched_in: r.matched_in,

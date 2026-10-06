@@ -5,7 +5,7 @@ import { deriveKey, EnvKeyProvider, ScopeKeys } from '@fdv/crypto';
 import type { DocumentView } from '@fdv/shared';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
+import { alertsSent, createHarness, TEST_MASTER, type Harness } from '../test-harness.js';
 import { SoftwareAuthenticator } from './passkey-test-authenticator.js';
 import { PasswordService } from './passwords.js';
 import type { Tokens } from './service.js';
@@ -270,7 +270,7 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
 
   /** The link the worker was asked to email, as the person would receive it. */
   const lastLink = (): string | undefined => {
-    const alerts = h.jobs.filter((j) => j.name === 'alert.send').map((j) => j.data);
+    const alerts = alertsSent(h);
     for (let i = alerts.length - 1; i >= 0; i--) {
       const url = (alerts[i] as { url?: string }).url;
       if (url) return url;
@@ -307,13 +307,18 @@ describe.skipIf(!testAdminUrl())('forgetting a password', () => {
 
   it('sends a link by email only, never as a push to a lock screen', async () => {
     await forgot('sam@example.test');
-    const alerts = h.jobs.filter((j) => j.name === 'alert.send').map((j) => j.data);
+    const alerts = alertsSent(h);
     const last = alerts[alerts.length - 1] as {
       email_only?: boolean;
       url?: string;
       url_label?: string;
       account_ids: string[];
     };
+    // On the queue, which the application role reads and every backup
+    // keeps, the link is sealed: no link, no token (F529-11).
+    const queued = h.jobs.filter((j) => j.name === 'alert.send').at(-1)?.data;
+    expect(queued?.url).toBeUndefined();
+    expect(JSON.stringify(queued)).not.toMatch(/reset#|localhost:8080/);
     expect(last.email_only).toBe(true);
     // By the operator's mail server, never the household's: an owner can
     // point the household's at themselves and read the link.
@@ -806,9 +811,11 @@ describe.skipIf(!testAdminUrl())(
             // Nothing the owner is answered with, or told, or can read in the
             // log, holds a link.
             expect(linksIn(res.body), label).toEqual([]);
-            const toOwner = h.jobs
-              .slice(since)
-              .filter((j) => ((j.data.account_ids as string[]) ?? []).includes(ownerAccount));
+            // The alerts as the worker opens them (their links unsealed).
+            const opened = alertsSent({ jobs: h.jobs.slice(since) });
+            const toOwner = opened.filter((a) =>
+              ((a.account_ids as string[]) ?? []).includes(ownerAccount),
+            );
             expect(linksIn(JSON.stringify(toOwner)), label).toEqual([]);
             const lines = await h.app.inject({
               url: '/api/v1/audit?limit=100',
@@ -817,14 +824,13 @@ describe.skipIf(!testAdminUrl())(
             expect(linksIn(lines.body), label).toEqual([]);
             // A link travels, if at all, to their own account, by the
             // operator's mail server alone.
-            const carrying = h.jobs
-              .slice(since)
-              .filter((j) => linksIn(JSON.stringify(j.data)).length);
-            for (const j of carrying) {
-              expect(j.name, label).toBe('alert.send');
-              expect(j.data.account_ids, label).toEqual([theirAccount]);
-              expect(j.data.via, label).toBe('operator');
+            const carrying = opened.filter((a) => linksIn(JSON.stringify(a)).length);
+            for (const a of carrying) {
+              expect(a.account_ids, label).toEqual([theirAccount]);
+              expect(a.via, label).toBe('operator');
             }
+            // And the queue itself holds none, sealed or not (F529-11).
+            expect(linksIn(JSON.stringify(h.jobs.slice(since))), label).toEqual([]);
             expect(carrying.length, label).toBe(operatorMail ? 1 : 0);
             // And no reset that works was made but that one: none at all
             // without the operator's mail server.
@@ -842,7 +848,9 @@ describe.skipIf(!testAdminUrl())(
           }
         }
       }
-    });
+      // Eight people joined and reset, on two vaults: about two seconds
+      // alone, and past 15 with the whole gate on one database server.
+    }, 60_000);
 
     it('waiting: a link handed over while they kept nothing private works no more once they do', async () => {
       const v = vaults.find((x) => !x.operatorMail) as (typeof vaults)[number];

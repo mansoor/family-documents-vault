@@ -173,14 +173,19 @@ export function registerIdentity(
     identity.get(principal(req), parse(idParam, req.params).id, metaOf(req)),
   );
 
-  app.put('/api/v1/members/:id/identity', auth, async (req) =>
-    identity.put(
-      principal(req),
-      parse(idParam, req.params).id,
-      parse(identityWriteBody, req.body ?? {}),
-      metaOf(req),
-    ),
-  );
+  app.put('/api/v1/members/:id/identity', auth, async (req) => {
+    const p = principal(req);
+    const id = parse(idParam, req.params).id;
+    const body = parse(identityWriteBody, req.body ?? {});
+    // Whose they are, and whether the caller may write them, first; then
+    // another person's — an owner writing their shared part — is an owner
+    // power (A54; the owner's decision on the Phase 5 exit's review): a
+    // passkey or a code, never the password, and refused outright to an
+    // owner with neither. One's own asks nothing more, as before.
+    const { self } = await identity.mayWrite(p, id, body.part);
+    if (!self) await stepUp.requireOwnerPower(p, 'change_identity');
+    return identity.put(p, id, body, metaOf(req));
+  });
 
   app.post('/api/v1/members/:id/identity/reveal', auth, async (req) => {
     const p = principal(req);

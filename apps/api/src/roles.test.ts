@@ -541,6 +541,8 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
   const NOT_YET_ENFORCED: Partial<Record<Capability, string>> = {
     'document.see_adults': 'a filter, not a refusal — the test above',
     'family.details': 'a filter, not a refusal — household/what-viewers-see.test.ts (5.3)',
+    'document.see_location':
+      'a filter, not a refusal — phase5-exit.test.ts, where the original is kept (5.41)',
     'document.share': '3.3, share links',
     'upload_request.create':
       'a 404, not a refusal: a teen or a viewer never learns a request exists — uploads/upload-requests.test.ts (5.21)',
@@ -552,6 +554,8 @@ describe.skipIf(!testAdminUrl())('the role matrix, endpoint by endpoint', () => 
       "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — household/owner-resets.test.ts refuses an adult, a teen and a viewer (5.29)",
     'member.sign_out':
       "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — household/sign-out.test.ts refuses an adult, a teen and a viewer (5.30)",
+    'sharing.only_me_rule':
+      "an owner power (A54): this file's owner has no two-step sign-in, and is refused it for that — documents/only-me-links.test.ts refuses an adult and a password-only owner, and the exit test every attacker (5.41)",
   };
 
   it('every capability in the matrix is either exercised here or named as owed', () => {

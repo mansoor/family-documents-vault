@@ -1,4 +1,5 @@
 import type https from 'node:https';
+import { alertLinkBinding, openBytes } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import { sql } from 'kysely';
 import nodemailer from 'nodemailer';
@@ -26,7 +27,14 @@ export interface Alert {
   account_ids: string[];
   subject: string;
   body: string;
-  /** Where the button goes, when somewhere better than the vault's front page. */
+  /**
+   * Where the button goes, when somewhere better than the vault's front
+   * page: a password reset's link, sealed by the API under the alert-link
+   * key (F529-11), so the queue holds no working link. Opened here, as it
+   * is sent, and never kept or logged.
+   */
+  sealed_url?: string;
+  /** The link in plain words: only from an API before the Phase 5 exit, its jobs still queued. */
   url?: string;
   url_label?: string;
   /**
@@ -71,6 +79,8 @@ export interface AlertDeps {
   app: Db;
   vapid: VapidKeys | null;
   smtpKey: Buffer;
+  /** The key the API sealed an alert's link under (ALERT_LINK_KEY_PURPOSE). */
+  linkKey: Buffer;
   baseUrl: string;
   /** The operator's mail server (FDV_SMTP_URL), if there is one. */
   operatorMail?: { url: string; from: string } | null;
@@ -89,8 +99,35 @@ export function isAlert(data: unknown): data is Alert {
   );
 }
 
-export async function sendAlert(deps: AlertDeps, alert: Alert): Promise<string[]> {
-  if (alert.account_ids.length === 0) return [];
+/**
+ * The alert with its link opened, or null when it has a link that does not
+ * open (another key, another household, altered): then it is not sent, for
+ * a reset email with no link in it is the 0.4.1 bug again.
+ */
+function opened(deps: AlertDeps, alert: Alert): Alert | null {
+  if (alert.sealed_url === undefined) return alert;
+  try {
+    const url = openBytes(
+      deps.linkKey,
+      Buffer.from(alert.sealed_url, 'base64'),
+      alertLinkBinding(alert.household_id),
+    ).toString('utf8');
+    return { ...alert, url };
+  } catch {
+    return null;
+  }
+}
+
+export async function sendAlert(deps: AlertDeps, queued: Alert): Promise<string[]> {
+  if (queued.account_ids.length === 0) return [];
+  const alert = opened(deps, queued);
+  if (!alert) {
+    deps.log('warn', 'an alert whose link does not open: not sent', {
+      household: queued.household_id,
+      subject: queued.subject,
+    });
+    return [];
+  }
   if (alert.via === 'operator') {
     return (await operatorEmail(deps, alert)) > 0 ? ['email'] : [];
   }

@@ -309,6 +309,24 @@ const CLEAR_LAPSED = `update public.account_household
      set suspended_at = null, suspended_by = null, suspended_until = null,
          suspend_reason = null, suspend_note = null
    where suspend_reason = 'locked' and suspended_until is not null and suspended_until <= now()`;
+/**
+ * A sign-in that was taken away when the backup was made is paused too, for
+ * whenever it is given back (0059, the Phase 5 exit's review): a lock put on
+ * it after the backup would otherwise be undone by giving it back. Kept with
+ * the person, as a lock taken away with its sign-in is, and by the same
+ * rules as the sign-ins above.
+ */
+const PAUSE_REMOVED = `update public.member
+     set former_suspended_at = now(), former_suspended_by = null,
+         former_suspended_until = null, former_suspend_reason = 'restored',
+         former_suspend_note = null
+   where former_account_id is not null
+     and former_suspend_reason is distinct from 'restored'
+     and not (former_suspend_reason = 'locked' and former_suspended_at is not null
+              and (former_suspended_until is null or former_suspended_until > now()))`;
+const KEEP_REMOVED_LOCKS = `update public.member set former_suspended_until = null
+   where former_suspend_reason = 'locked'
+     and former_suspended_until is not null and former_suspended_until > now()`;
 
 /**
  * UNDO pauses the sign-ins in the load's own transaction when the backup has
@@ -324,6 +342,8 @@ async function pauseSignIns(admin: ReturnType<typeof createPool>): Promise<SignI
     await client.query(PAUSE_SIGN_INS);
     await client.query(KEEP_LOCKS);
     await client.query(CLEAR_LAPSED);
+    await client.query(PAUSE_REMOVED);
+    await client.query(KEEP_REMOVED_LOCKS);
     await client.query('commit');
   } catch (err) {
     await client.query('rollback').catch(() => undefined);
@@ -761,6 +781,11 @@ begin
     ${PAUSE_LINKS};
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('links_paused', n);
+    -- A link the household's rule on Only me documents had paused (0061)
+    -- waits for an owner too (A55): the rule turned back on does not bring
+    -- it back by itself.
+    update public.share_link set paused_reason = 'restored'
+     where paused_reason = 'only_me_not_shared';
   end if;
   if to_regclass('public.share_session') is not null then
     delete from public.share_session;
@@ -1019,6 +1044,18 @@ const GUARDS = [
   { name: 'scope_key_not_guest', table: 'scope_key', fn: 'scope_key_not_guest' },
   // Somebody signed in stamps a note as themselves, now (0057, 5.35).
   { name: 'document_notes_stamp', table: 'document', fn: 'document_notes_stamp' },
+  // A lock, or a restore's pause, outlives a sign-in taken away: nobody
+  // signed in deletes a suspended sign-in without keeping it with the person,
+  // and only an owner changes what is kept (0059).
+  {
+    name: 'account_household_keep_suspension',
+    table: 'account_household',
+    fn: 'account_household_keep_suspension',
+  },
+  { name: 'member_former_suspension', table: 'member', fn: 'member_former_suspension' },
+  // Only an owner changes whether Only me documents are shared outside the
+  // family (0061, 5.41).
+  { name: 'household_only_me_rule', table: 'household', fn: 'household_only_me_rule' },
 ];
 
 /**

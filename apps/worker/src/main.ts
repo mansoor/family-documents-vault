@@ -1,7 +1,13 @@
 import { readFile } from 'node:fs/promises';
-import { deriveKey, EnvKeyProvider, OPERATOR_MAIL_KEY_PURPOSE, ScopeKeys } from '@fdv/crypto';
+import {
+  ALERT_LINK_KEY_PURPOSE,
+  deriveKey,
+  EnvKeyProvider,
+  OPERATOR_MAIL_KEY_PURPOSE,
+  ScopeKeys,
+} from '@fdv/crypto';
 import { assertSchemaKnown, createPool } from '@fdv/db';
-import { loadConfig } from './config.js';
+import { loadConfig, logs, type LogLevel } from './config.js';
 import { backupDatabase } from './jobs/backup.js';
 import { buildExport, type ExportJob } from './jobs/export.js';
 import { processVersion, type ProcessVersionJob } from './jobs/process-version.js';
@@ -36,11 +42,16 @@ import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
 
-const log = (level: string, msg: string, extra: Record<string, unknown> = {}) =>
+/** LOG_LEVEL, once the configuration is read: until then, everything is written. */
+let logLevel: LogLevel = 'trace';
+const log = (level: string, msg: string, extra: Record<string, unknown> = {}) => {
+  if (!logs(logLevel, level)) return;
   console.log(JSON.stringify({ level, msg, time: new Date().toISOString(), ...extra }));
+};
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  logLevel = config.LOG_LEVEL;
   const adminUrl = config.DATABASE_ADMIN_URL ?? config.DATABASE_URL;
   if (!(await masterKeyOpensVault(adminUrl, await resolveMasterSecret(config), log))) {
     process.exitCode = 1;
@@ -293,6 +304,8 @@ async function main(): Promise<void> {
     app: dbs.app,
     vapid,
     smtpKey: deriveKey(masterSecret, 'smtp-credentials'),
+    // An alert's link, a password reset's, comes sealed (F529-11).
+    linkKey: deriveKey(masterSecret, ALERT_LINK_KEY_PURPOSE),
     baseUrl: config.FDV_BASE_URL,
     log,
     agent: pushAgent,

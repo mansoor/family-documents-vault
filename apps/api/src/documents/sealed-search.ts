@@ -1,11 +1,11 @@
 import { openPrivate, type PrivateValues, type ScopeKeys } from '@fdv/crypto';
 import { openSealedText } from './sealed-text.js';
 import { withPrincipal, type Db } from '@fdv/db';
-import { matchText, notesPlainText, parseQuery, type DateValue } from '@fdv/shared';
+import { matchText, notesPlainText, parseQuery, seesLocation, type DateValue } from '@fdv/shared';
 import { sql } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { ApiError } from '../errors.js';
-import { HAS_PRIVATE_WORDS, sealedOf, statusOf, type SearchHit } from './service.js';
+import { HAS_PRIVATE_WORDS, searchedWords, sealedOf, statusOf, type SearchHit } from './service.js';
 import { verifySealedToken } from './sealed-token.js';
 
 /**
@@ -92,8 +92,9 @@ export class SealedSearchService {
            ${claims.category ? sql`and d.category = ${claims.category}` : sql``}
            ${claims.issued_by ? sql`and lower(d.issued_by) = lower(${claims.issued_by})` : sql``}
            -- Anything the first pass already returned on its title, number,
-           -- tags or issuer is not repeated here.
-           and not (d.search_tsv @@ websearch_to_tsquery('simple', ${claims.q}))
+           -- tags or issuer is not repeated here: matched as that pass
+           -- matched it, with the location's words or without (5.41).
+           and not (${searchedWords(p)} @@ websearch_to_tsquery('simple', ${claims.q}))
          order by d.id
          limit ${MAX_DOCUMENTS}`.execute(trx);
 
@@ -138,7 +139,7 @@ export class SealedSearchService {
             : null;
         // The document's own words, as the index would have had them, then
         // its pages': a search may name one of each ("car JM1BK32F").
-        const own = ownWords(row, values);
+        const own = ownWords(row, values, seesLocation(p.role));
         const m = matchText([own, content ?? ''].join('\n'), query);
         if (!m) continue;
         const inOwn = matchText(own, query);
@@ -170,7 +171,12 @@ export class SealedSearchService {
             owner_member_id: row.owner_member_id,
             issued_by: row.issued_by,
             issued,
-            status: statusOf(type, { ...row, issued, expires }, sealedOf(row)),
+            status: statusOf(
+              type,
+              { ...row, issued, expires },
+              sealedOf(row),
+              seesLocation(p.role),
+            ),
             snippet: (inOwn ?? inContent ?? m).snippet,
             // Its notes or details, as the first pass says of a document's
             // own words; else its pages.
@@ -196,12 +202,14 @@ export class SealedSearchService {
 
 /**
  * A document's own words, in the order the first pass shows them: title,
- * issuer, number, details, notes, tags, where the original is kept. The
+ * issuer, number, details, notes, tags, where the original is kept — that
+ * last only for somebody who may see it (5.41): a viewer's own Only me
+ * document is not found, nor shown in a snippet, by its location. The
  * details as fdv_details_text (0032) indexes a visible document's: each
  * text, choice and number, and a date's date — not its precision. Its note
  * as plain text, as the first pass's snippet shows one (5.35).
  */
-function ownWords(row: SealedRow, values: PrivateValues): string {
+function ownWords(row: SealedRow, values: PrivateValues, withLocation: boolean): string {
   const details = Object.values(values.extra).flatMap((v) => {
     if (typeof v === 'string' || typeof v === 'number') return [String(v)];
     const date = v && typeof v === 'object' ? (v as { date?: unknown }).date : undefined;
@@ -214,7 +222,7 @@ function ownWords(row: SealedRow, values: PrivateValues): string {
     details.join(' '),
     notesPlainText(values.notes),
     row.tags.join(' '),
-    row.physical_location,
+    withLocation ? row.physical_location : null,
   ]
     .filter((s) => s)
     .join('\n');

@@ -26,6 +26,28 @@ describe('the activity log, in sentences', () => {
     expect(describeEvent(base)?.text).toBe('Sarah downloaded “Home insurance policy”');
   });
 
+  it("says the household's rule for Only me documents was turned off or on, and nothing of anybody's links (5.41, F3)", () => {
+    const rule = (detail: Record<string, unknown>) =>
+      describeEvent(
+        ev({
+          action: 'household.only_me_sharing_changed',
+          actor: 'Olivia',
+          object_type: 'household',
+          object_id: 'h',
+          object_title: null,
+          detail,
+        }),
+      );
+    // A line written by a development build that counted them says no count either.
+    expect(rule({ only_me_shareable: false, links_paused: 3 })).toMatchObject({
+      text: 'Olivia turned off sharing Only me documents outside the family',
+      notable: true,
+    });
+    expect(rule({ only_me_shareable: true, links_resumed: 3 })?.text).toBe(
+      'Olivia turned on sharing Only me documents outside the family',
+    );
+  });
+
   it('says a note was added, changed or taken off, never what it says (5.35)', () => {
     const said = (change?: string) =>
       describeEvent(ev({ action: 'document.notes_changed', detail: change ? { change } : {} }))

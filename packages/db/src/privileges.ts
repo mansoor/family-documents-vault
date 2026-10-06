@@ -176,6 +176,18 @@ begin
     revoke execute on function public.member_given_adults_only(uuid) from public;
     grant execute on function public.member_given_adults_only(uuid) to fdv_app;
   end if;
+  -- A push address whose sign-in has ended, freed for whoever signs in on
+  -- that browser or phone now (0060): asked by somebody signed in, and
+  -- nobody else's by default.
+  if to_regprocedure('public.device_release_stale(text)') is not null then
+    revoke execute on function public.device_release_stale(text) from public;
+    grant execute on function public.device_release_stale(text) to fdv_app;
+  end if;
+  -- Whether the household lets its Only me documents out (0061): asked by
+  -- every link's own functions, and by the API.
+  if to_regprocedure('public.app_only_me_shareable()') is not null then
+    grant execute on function public.app_only_me_shareable() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

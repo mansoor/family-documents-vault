@@ -49,13 +49,52 @@ describe.skipIf(!testAdminUrl())("people's identity details (5.26)", () => {
 
   const get = (who: Tokens, id: string) =>
     h.app.inject({ url: `/api/v1/members/${id}/identity`, headers: h.as(who) });
-  const put = (who: Tokens, id: string, payload: Record<string, unknown>) =>
-    h.app.inject({
-      method: 'PUT',
-      url: `/api/v1/members/${id}/identity`,
-      headers: h.as(who),
-      payload,
-    });
+  /**
+   * A write, as the web makes it. Another person's, an owner's to write, is
+   * an owner power since the Phase 5 exit (A54): asked here as a browser
+   * would, the owner's session just confirmed with a code. (The second owner,
+   * with a password alone, is refused it whatever.)
+   */
+  const put = async (who: Tokens, id: string, payload: Record<string, unknown>) => {
+    const send = () =>
+      h.app.inject({
+        method: 'PUT',
+        url: `/api/v1/members/${id}/identity`,
+        headers: h.as(who),
+        payload,
+      });
+    return who === owner && id !== who.member_id ? withFreshFactor(owner, send) : send();
+  };
+  /**
+   * Their sessions as if a code had just been given, for one request, and
+   * then as they were: what a test asks of the owner's step-up stays its own.
+   */
+  const withFreshFactor = async <T>(who: Tokens, f: () => Promise<T>): Promise<T> => {
+    const pool = createPool(h.adminUrl, 1);
+    const sessions = `account_id = (select account_id from account_household where member_id = $1)
+                      and revoked_at is null`;
+    try {
+      const { rows } = await pool.query<{ id: string; v: string | null; f: string | null }>(
+        `select id, verified_at::text as v, factor_verified_at::text as f from session where ${sessions}`,
+        [who.member_id],
+      );
+      await pool.query(
+        `update session set verified_at = now(), factor_verified_at = now() where ${sessions}`,
+        [who.member_id],
+      );
+      try {
+        return await f();
+      } finally {
+        for (const row of rows)
+          await pool.query(
+            'update session set verified_at = $2::timestamptz, factor_verified_at = $3::timestamptz where id = $1',
+            [row.id, row.v, row.f],
+          );
+      }
+    } finally {
+      await pool.end();
+    }
+  };
   const reveal = (who: Tokens, id: string, payload: Record<string, unknown>) =>
     h.app.inject({
       method: 'POST',

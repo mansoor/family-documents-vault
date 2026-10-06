@@ -117,6 +117,18 @@ export function SettingsScreen() {
             </Link>
           </li>
         )}
+        {/* The household's rule for Only me documents and links (5.41):
+            read by owners and adults, an owner's to change. */}
+        {mayShare && (
+          <li>
+            <Link to="/settings/household" className="rowbtn">
+              <span className="doc-title">Household</span>
+              <span className="muted">
+                Whether Only me documents can be shared outside the family
+              </span>
+            </Link>
+          </li>
+        )}
         {mayShare && (
           <li>
             <Link to="/settings/sharing" className="rowbtn">

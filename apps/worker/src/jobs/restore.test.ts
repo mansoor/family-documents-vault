@@ -1992,6 +1992,47 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     // review, N534A-03), not the default 15 s.
   }, 120_000);
 
+  it('notices the guards that keep a lock with a sign-in taken away gone (0059)', async () => {
+    for (const [table, trigger] of [
+      ['account_household', 'account_household_keep_suspension'],
+      ['member', 'member_former_suspension'],
+    ] as const) {
+      await sql(vault.adminUrl, `alter table public.${table} disable trigger ${trigger}`);
+      try {
+        const refused = await checkRestored(target()).then(
+          () => null,
+          (e: unknown) => (e as Error).message,
+        );
+        expect(refused, trigger).toMatch(/guard the vault relies on is missing/);
+        expect(refused, trigger).not.toMatch(new RegExp(`\\b${trigger}\\b`));
+      } finally {
+        await sql(vault.adminUrl, `alter table public.${table} enable trigger ${trigger}`);
+      }
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
+  it("notices the guard on the household's rule for Only me documents gone (0061)", async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.household disable trigger household_only_me_rule',
+    );
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      expect(refused).not.toMatch(/household_only_me_rule/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.household enable trigger household_only_me_rule',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {
@@ -2632,6 +2673,195 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
     }
   }, 120_000);
 
+  it('the Phase 5 exit: a restore from before a restriction, a lock and a revocation leaves each person paused and each link paused (5.41)', async () => {
+    const live = await createTestDatabase();
+    made.push(live);
+    const backups = await mkdtemp(path.join(tmpdir(), 'fdv-restore-541-'));
+    try {
+      await installQueue(live.adminUrl);
+      const hh = await seed(live.adminUrl);
+      const sara = await signedIn(live.adminUrl, hh, 'Sara', 'adult');
+      const accountant = await signedIn(live.adminUrl, hh, 'Accountant', 'viewer');
+      // Sara's link to one of the documents, and one of the owner's; each
+      // with somebody's browser open on it.
+      const account = async (member: string) =>
+        (
+          await sql(
+            live.adminUrl,
+            'select account_id from account_household where member_id = $1',
+            [member],
+          )
+        ).rows[0]?.account_id as string;
+      const owner = (
+        await sql(live.adminUrl, "select account_id from account_household where role = 'owner'")
+      ).rows[0]?.account_id as string;
+      const linkBy = async (by: string) =>
+        (
+          await sql(
+            live.adminUrl,
+            `insert into share_link (household_id, document_id, token_hash, created_by, expires_at, flow)
+             select $1, d.id, $2, $3, now() + interval '7 days', 'v2'
+               from document d where d.household_id = $1 order by d.id limit 1
+             returning id`,
+            [hh, randomBytes(32), by],
+          )
+        ).rows[0]?.id as string;
+      const sarasLink = await linkBy(await account(sara));
+      const ownersLink = await linkBy(owner);
+      // And one the household's rule on Only me documents paused (0061),
+      // the rule off when the backup was made.
+      const onlyMeLink = await linkBy(owner);
+      await sql(
+        live.adminUrl,
+        `update share_link set paused_at = now(), paused_reason = 'only_me_not_shared'
+          where id = $1`,
+        [onlyMeLink],
+      );
+      await sql(live.adminUrl, 'update household set only_me_shareable = false where id = $1', [
+        hh,
+      ]);
+      // Tariq's sign-in was taken away when the backup was made; Lina's too,
+      // while she was locked (0059): each kept with the person.
+      const tariq = await signedIn(live.adminUrl, hh, 'Tariq', 'teen');
+      const lina = await signedIn(live.adminUrl, hh, 'Lina', 'adult');
+      for (const [person, locked] of [
+        [tariq, false],
+        [lina, true],
+      ] as const) {
+        await sql(
+          live.adminUrl,
+          `update member m set former_account_id = a.account_id,
+                  former_suspended_at = case when $2 then now() end,
+                  former_suspend_reason = case when $2 then 'locked' end,
+                  former_suspended_until = case when $2 then now() + interval '3 days' end
+             from account_household a where a.member_id = m.id and m.id = $1`,
+          [person, locked],
+        );
+        await sql(live.adminUrl, 'delete from account_household where member_id = $1', [person]);
+      }
+      for (const link of [sarasLink, ownersLink]) {
+        await sql(
+          live.adminUrl,
+          `insert into share_session (household_id, share_id, cookie_hash, expires_at)
+           values ($1, $2, $3, now() + interval '1 hour')`,
+          [hh, link, randomBytes(32)],
+        );
+      }
+      // Both sign in: a session each.
+      for (const member of [sara, accountant]) {
+        await sql(
+          live.adminUrl,
+          `insert into session (account_id, household_id, refresh_hash, expires_at)
+           values ($1, $2, $3, now() + interval '30 days')`,
+          [await account(member), hh, randomBytes(32)],
+        );
+      }
+      const backup = (
+        await backupDatabase({
+          adminUrl: live.adminUrl,
+          backupKey: KEY,
+          dir: backups,
+          retainDays: 30,
+          log: quiet,
+        })
+      ).file;
+
+      // After the backup: the accountant is limited to the house's own
+      // documents, Sara is locked (which pauses her link, as long as the
+      // lock lasts: 5.28 works it out from her sign-in, and writes nothing
+      // on the link), and the owner takes their link back. The backup can
+      // know none of it.
+      await sql(
+        live.adminUrl,
+        `insert into access_restriction (member_id, household_id, include_no_person_docs)
+         values ($1, $2, true)`,
+        [accountant, hh],
+      );
+      await sql(
+        live.adminUrl,
+        `update account_household set suspended_at = now(), suspend_reason = 'locked'
+          where member_id = $1`,
+        [sara],
+      );
+      await sql(live.adminUrl, 'update share_link set revoked_at = now() where id = $1', [
+        ownersLink,
+      ]);
+
+      const t = await empty();
+      const report = await restoreBackup(backup, KEY, into(t), quiet, KEYS);
+      // Each person waits for an owner: the one restricted since, the one
+      // locked since — and nobody but the owners can sign in until then.
+      expect(await suspensions(t.adminUrl)).toMatchObject({
+        Sara: { role: 'adult', reason: 'restored', in_effect: true },
+        Accountant: { role: 'viewer', reason: 'restored', in_effect: true },
+        One: { role: 'owner', in_effect: false },
+        Two: { role: 'owner', in_effect: false },
+      });
+      expect(report.signInsPaused).toBeGreaterThanOrEqual(2);
+      // Each link waits for an owner too: Sara's, the one taken back
+      // since, which the backup holds as live, and the one the household's
+      // rule had paused — turning the rule back on does not bring that one
+      // back by itself (A55). The rule is as the backup had it.
+      const links = await sql(
+        t.adminUrl,
+        `select id, paused_at is not null as paused, paused_reason, revoked_at is not null as revoked
+           from share_link where id = any($1) order by id`,
+        [[sarasLink, ownersLink, onlyMeLink]],
+      );
+      expect((await sql(t.adminUrl, 'select only_me_shareable as on from household')).rows).toEqual(
+        [{ on: false }],
+      );
+      expect(links.rows).toEqual(
+        [sarasLink, ownersLink, onlyMeLink].sort().map((id) => ({
+          id,
+          paused: true,
+          paused_reason: 'restored',
+          revoked: false,
+        })),
+      );
+      // No session survives: not a sign-in's, not a link's.
+      const left = await sql(
+        t.adminUrl,
+        `select (select count(*)::int from session where revoked_at is null) as sessions,
+                (select count(*)::int from share_session) as link_sessions`,
+      );
+      expect(left.rows[0]).toEqual({ sessions: 0, link_sessions: 0 });
+      // A sign-in taken away when the backup was made waits for an owner
+      // too, once given back — a lock put on it since could not otherwise be
+      // known — and one taken away locked stays locked, its end gone, as a
+      // lock kept on a sign-in does.
+      const kept = await sql(
+        t.adminUrl,
+        `select display_name as name, former_suspend_reason as reason,
+                former_suspended_until is not null as ends
+           from member where former_account_id is not null order by display_name`,
+      );
+      expect(kept.rows).toEqual([
+        { name: 'Lina', reason: 'locked', ends: false },
+        { name: 'Tariq', reason: 'restored', ends: false },
+      ]);
+      // And a link asking as itself reaches nothing while it waits.
+      for (const link of [sarasLink, ownersLink]) {
+        const reached = await withClient(t.appUrl, async (c) => {
+          await c.query('begin');
+          await c.query(
+            `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                    set_config('app.share_id', $2, true)`,
+            [hh, link],
+          );
+          const { rows } = await c.query<{ n: number }>(
+            `select (select count(*)::int from document) + (select count(*)::int from share_link) as n`,
+          );
+          await c.query('commit');
+          return rows[0]?.n;
+        });
+        expect(reached, link).toBe(0);
+      }
+    } finally {
+      await rm(backups, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('a backup from before 0054 is brought up to date: nobody is restricted (5.32)', async () => {
     const older = await empty();
     const migrations = await migrationsUpTo(53);
@@ -2656,9 +2886,11 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       const { rows } = await sql(
         t.adminUrl,
         `select (select count(*)::int from access_restriction) as restrictions,
-                to_regprocedure('public.doc_in_grant(access_grant, uuid, visibility, uuid, text)') is not null as helper`,
+                to_regprocedure('public.doc_in_grant(access_grant, uuid, visibility, uuid, text)') is not null as helper,
+                (select bool_and(only_me_shareable) from household) as only_me_shareable`,
       );
-      expect(rows[0]).toEqual({ restrictions: 0, helper: true });
+      // And, from before 0061, the household lets its Only me documents out.
+      expect(rows[0]).toEqual({ restrictions: 0, helper: true, only_me_shareable: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });
       await rm(olderDir, { recursive: true, force: true });

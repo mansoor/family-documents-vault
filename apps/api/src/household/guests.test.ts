@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from '../auth/totp.js';
 import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import { alertsSent, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * Someone outside the family with a sign-in of their own: a guest (5.34,
@@ -1630,9 +1630,8 @@ describe.skipIf(!testAdminUrl())('someone outside the family (5.34)', () => {
     });
     expect(reset.statusCode, reset.body).toBe(200);
     expect(json<{ path: string }>(reset).path).toBe('mail');
-    const mailed = h.jobs
-      .slice(before)
-      .map((j) => j.data.url)
+    const mailed = alertsSent({ jobs: h.jobs.slice(before) })
+      .map((a) => a.url)
       .find((u): u is string => typeof u === 'string');
     const token = (mailed ?? '').split('#')[1] as string;
     const spent = await h.app.inject({

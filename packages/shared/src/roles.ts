@@ -32,6 +32,14 @@ export type Capability =
   /** See documents marked *Adults only*. This one is read by the query
    *  that lists documents, so it is a filter before it is a refusal. */
   | 'document.see_adults'
+  /**
+   * See where a document's paper original is kept (`physical_location`;
+   * the owner's decision of 6 Oct 2026, 5.41): the household's business,
+   * not the documents'. A filter, as the Adults only one is: anybody else
+   * is answered null, and never finds a document by its words
+   * (`seesLocation`).
+   */
+  | 'document.see_location'
   /** Change a document's visibility. */
   | 'document.visibility'
   /** Create a link that someone outside the family can open (SHR-05). */
@@ -109,6 +117,11 @@ export type Capability =
    */
   | 'identity.audience'
   /**
+   * Decide whether the household's Only me documents can be shared outside
+   * the family (5.41): on unless turned off. An owner power (A54).
+   */
+  | 'sharing.only_me_rule'
+  /**
    * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
    * own, and never another owner's (A50). An owner power (A54): asked with a
    * passkey or a code, never the password.
@@ -150,6 +163,12 @@ const MATRIX: Record<Capability, Rule> = {
   'document.see_adults': {
     roles: ['owner', 'adult'],
     refusal: 'That document is for the adults in the family.',
+  },
+  'document.see_location': {
+    // Where the family keeps its originals is about the house: a viewer —
+    // an accountant, an attorney, a guest — is given documents, not that.
+    roles: ['owner', 'adult', 'teen'],
+    refusal: 'Where the family keeps its paper originals is for the family.',
   },
   'document.visibility': {
     roles: ['owner', 'adult'],
@@ -279,6 +298,13 @@ const MATRIX: Record<Capability, Rule> = {
     // never at once when it widens (A34).
     roles: ['owner'],
     refusal: 'Only an owner can change who sees identity details.',
+  },
+  'sharing.only_me_rule': {
+    // Whether anybody may send an Only me document outside the family: the
+    // owners' decision for the household (5.41), made with two-step sign-in
+    // (A54).
+    roles: ['owner'],
+    refusal: 'Only an owner can change whether Only me documents can be shared outside the family.',
   },
   'member.suspend': {
     // Only owners lock (A52), and one owner cannot lock out another (A50):
@@ -422,6 +448,18 @@ export function canSee(
     default:
       return false;
   }
+}
+
+/**
+ * Whether somebody sees where a document's paper original is kept
+ * (`physical_location`, 5.41): owners, adults and teens. Never a viewer,
+ * limited or not — so never a guest, who is one (5.34) — and never a
+ * caller with no role at all: a share link's recipient, an upload's
+ * sender. Every answer that carries a document gives anybody else null,
+ * and a search finds nothing for them by its words (0058).
+ */
+export function seesLocation(role: Role | null | undefined): boolean {
+  return role !== null && role !== undefined && can(role, 'document.see_location');
 }
 
 /** What of a restriction decides whether it lets its viewer see Adults only documents. */

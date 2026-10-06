@@ -1,5 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import { deriveKey, EnvKeyProvider, OPERATOR_MAIL_KEY_PURPOSE, ScopeKeys } from '@fdv/crypto';
+import {
+  ALERT_LINK_KEY_PURPOSE,
+  deriveKey,
+  EnvKeyProvider,
+  OPERATOR_MAIL_KEY_PURPOSE,
+  ScopeKeys,
+} from '@fdv/crypto';
 import { assertSchemaKnown, createDb, createPool, migrateUp } from '@fdv/db';
 import { AuthService } from './auth/service.js';
 import { TotpService } from './auth/totp.js';
@@ -130,8 +136,10 @@ async function main(): Promise<void> {
    * An alert goes on the queue rather than out of the API: the worker owns
    * push and the household's mail server, and a sign-in must not wait for
    * an SMTP handshake. The job name matches `JOBS.alertSend` in the worker.
+   * Its link, a password reset's, is sealed on the queue (F529-11).
    */
-  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(a));
+  const alertKey = deriveKey(masterSecret, ALERT_LINK_KEY_PURPOSE);
+  const alert = (a: AlertRequest) => enqueue('alert.send', alertJob(alertKey, a));
   // What the worker pushes (4.13): the same mapping here and in tests, as alerts.
   const push = (r: PushRequest) => enqueue('push.send', pushJob(r));
   // An email to one address, through the operator's mail server (5.20):
@@ -194,7 +202,7 @@ async function main(): Promise<void> {
     auth,
     totp,
     passkeys,
-    visibility: new VisibilityService(db, keys),
+    visibility: new VisibilityService(db, keys, enqueue),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
     documents,

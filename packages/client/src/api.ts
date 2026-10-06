@@ -58,6 +58,7 @@ import type {
   OfflineOpen,
   OfflineOpensResult,
   OfflineSet,
+  OnlyMeSharing,
   NewVault,
   OwnerChange,
   Page,
@@ -94,6 +95,7 @@ import type {
   VaultRow,
   VersionView,
   Visibility,
+  VisibilityChange,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
 import { captureUpload, photoUpload, type CaptureBody, type PhotoBody } from './multipart.js';
@@ -496,7 +498,11 @@ export function createApi(http: Http) {
      * A whole part, made from the `version` it was read at (0 for one never
      * written): a part moved on since is `409 conflict`. Leave out a masked
      * value to keep it; null clears it. Another person's Only me part is
-     * `404`; who may not change this part, `403`.
+     * `404`; who may not change this part, `403`. Since the Phase 5 exit
+     * (0.6.0), an owner writing another person's shared part uses an owner
+     * power (A54): `403 step_up_required` with `change_identity`, a passkey
+     * or a code, never the password; without either, `403
+     * totp_required_for_owner`.
      */
     updateIdentity: (token: string, memberId: string, body: IdentityWrite) =>
       request<IdentityView>(`/api/v1/members/${enc(memberId)}/identity`, {
@@ -722,11 +728,38 @@ export function createApi(http: Http) {
       });
       return asked ? { removed: false, document: asked } : { removed: true };
     },
-    setVisibility: (token: string, documentId: string, visibility: Visibility) =>
-      request<{ notice: { title: string; body: string } | null }>(
-        `/api/v1/documents/${documentId}/visibility`,
-        { method: 'POST', body: { visibility }, token },
-      ),
+    /**
+     * Who can see a document. Into Only me (5.41), the person's own links
+     * that would still send it are ended (`ownLinks: 'end'`) or kept
+     * (`'keep'`); with neither, while there are any, `409
+     * links_choice_needed`, its `detail` a `LinksChoiceNeeded` (JSON). No
+     * keeping while the household shares no Only me documents outside the
+     * family: `409 only_me_not_shared`.
+     */
+    setVisibility: (
+      token: string,
+      documentId: string,
+      visibility: Visibility,
+      ownLinks?: 'end' | 'keep',
+    ) =>
+      request<VisibilityChange>(`/api/v1/documents/${documentId}/visibility`, {
+        method: 'POST',
+        body: { visibility, ...(ownLinks ? { own_links: ownLinks } : {}) },
+        token,
+      }),
+    /**
+     * Whether this household's Only me documents can be shared outside the
+     * family (5.41): owners and adults read it; an owner changes it, with a
+     * passkey or a code (`only_me_sharing`, A54).
+     */
+    onlyMeSharing: (token: string) =>
+      request<OnlyMeSharing>('/api/v1/household/sharing', { token }),
+    setOnlyMeSharing: (token: string, onlyMeShareable: boolean) =>
+      request<OnlyMeSharing>('/api/v1/household/sharing', {
+        method: 'PUT',
+        body: { only_me_shareable: onlyMeShareable },
+        token,
+      }),
     versions: (token: string, id: string) =>
       request<{ items: VersionView[] }>(`/api/v1/documents/${id}/versions`, { token }),
     /** One file, as a new version. The key is made once per file and kept for retries. */

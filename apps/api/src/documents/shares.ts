@@ -34,6 +34,7 @@ import { ApiError, notFound } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
 import { seenDocument, type Enqueue } from './service.js';
 import { madeWith } from './made-with.js';
+import { onlyMeShareable } from './only-me-rule.js';
 import { endSessions } from './share-sessions.js';
 import { DecryptStream } from '@fdv/crypto';
 import {
@@ -48,6 +49,7 @@ import {
   FOLLOW_MAX_DAYS,
   isShareAddress,
   maskEmail,
+  ONLY_ME_NOT_SHARED,
   PREVIEW_MAX_PAGES,
   readShareCode,
   seesAdults,
@@ -69,6 +71,7 @@ import {
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionSharePreview,
+  type OnlyMeSharing,
   type ShareCodeSent,
   type ShareLinkPreview,
   type SharePages,
@@ -299,7 +302,7 @@ export interface ShareView {
    * and it lends nothing outside what they may see now.
    */
   paused_at: string | null;
-  paused_reason: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
+  paused_reason: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | 'only_me_not_shared' | null;
   /** What it gives (5.18): the pages, drawn with whom it is for, or the file. */
   permission: SharePermission;
   max_opens: number | null;
@@ -579,12 +582,12 @@ const sessionEnded = () =>
  * What a link asks for besides itself (5.20), as the page is told: its PIN
  * or its password, and a code. A hash with no kind is a PIN's.
  */
-const protectionOf = (link: {
+export const protectionOf = (link: {
   pin_hash: string | null;
-  secret_kind: SecretKind | null;
+  secret_kind: string | null;
   code_email: string | null;
 }): ShareProtection[] => [
-  ...(link.pin_hash ? [wireKind(link.secret_kind)] : []),
+  ...(link.pin_hash ? [wireKind(link.secret_kind as SecretKind | null)] : []),
   ...(link.code_email ? (['code'] as const) : []),
 ];
 
@@ -906,6 +909,11 @@ export class ShareService {
       if (!doc || !canSee(p, doc)) {
         throw notFound('That document');
       }
+      // Only me, while the household shares none outside the family (5.41):
+      // nobody makes a link to one, its owner included.
+      if (doc.visibility === 'private' && !(await onlyMeShareable(trx))) {
+        throw new ApiError(409, 'only_me_not_shared', ONLY_ME_NOT_SHARED);
+      }
       const newest = await trx
         .selectFrom('document_version')
         .select(['id', 'mime', 'file_removed_at'])
@@ -1156,6 +1164,16 @@ export class ShareService {
       const found = asked.length ? await this.collectionDocuments(trx, p, c.id, asked) : [];
       // One the sharer cannot see is answered as one that is not in it.
       if (found.length !== asked.length) throw notInCollection();
+      // Their own Only me document ticked, while the household shares none
+      // outside the family (5.41).
+      const onlyMe = found.find((d) => d.visibility === 'private');
+      if (onlyMe && !(await onlyMeShareable(trx))) {
+        throw new ApiError(
+          409,
+          'only_me_not_shared',
+          `“${onlyMe.title ?? 'A document'}” is Only me, and this household doesn't share Only me documents outside the family. Untick it, or change who can see it first.`,
+        );
+      }
       const gone = found.find((d) => d.file_removed === true);
       if (gone) {
         throw new ApiError(
@@ -1726,6 +1744,128 @@ export class ShareService {
         share_id: id,
       }).catch(() => undefined);
     }
+  }
+
+  // ------------------------------------- Only me documents outside (5.41)
+
+  /**
+   * GET /household/sharing (5.41; the owner's decision of 6 Oct 2026):
+   * whether the household's Only me documents can be shared outside the
+   * family — for those who may share at all, owners and adults.
+   */
+  async onlyMeSharing(p: Principal): Promise<OnlyMeSharing> {
+    requireCapability(p, 'document.share');
+    return withPrincipal(this.db, p, async (trx) => ({
+      only_me_shareable: await onlyMeShareable(trx),
+      can_change: can(p.role, 'sharing.only_me_rule'),
+    }));
+  }
+
+  /**
+   * PUT /household/sharing: an owner's, with a passkey or a code (A54, the
+   * route). Off, no link serves an Only me document, whoever made it: the
+   * database's own functions say so (0061), and live() too; every live link
+   * that sends one — a document's link to it, or a collection's that ticked
+   * it — is paused now (`only_me_not_shared`), and each link's maker is told
+   * how many of theirs. On again, those are turned back on, and each link's
+   * own checks still ask whatever else might stop it (its end, a lock, a
+   * document no longer theirs to lend). The answer, and the activity log's
+   * line, say only that it was turned off or on: how many links other people
+   * had to their Only me documents is not the owner's to learn (F3).
+   */
+  async setOnlyMeSharing(
+    p: Principal,
+    shareable: boolean,
+    meta: RequestMeta,
+  ): Promise<OnlyMeSharing> {
+    requireCapability(p, 'sharing.only_me_rule');
+    const done = await withPrincipal(this.db, p, async (trx) => {
+      const now = await sql<{ shareable: boolean }>`
+        select only_me_shareable as shareable from household
+         where id = app_household() for update`.execute(trx);
+      if (now.rows[0]?.shareable === shareable) return null;
+      await trx
+        .updateTable('household')
+        .set({ only_me_shareable: shareable })
+        .where('id', '=', p.householdId)
+        .execute();
+      // The links are paused, or back on, whoever made them: the owner
+      // turning it off cannot see another member's Only me document, and
+      // needs not to: it is the link that is paused, never the document.
+      const moved = shareable
+        ? await sql<{ id: string; created_by: string }>`
+            update share_link set paused_at = null, paused_reason = null
+             where household_id = app_household()
+               and paused_reason = 'only_me_not_shared'
+            returning id, created_by`.execute(trx)
+        : await sql<{ id: string; created_by: string }>`
+            update share_link s set paused_at = now(), paused_reason = 'only_me_not_shared'
+              from account_household maker
+             where s.household_id = app_household()
+               and maker.account_id = s.created_by and maker.household_id = s.household_id
+               and s.paused_at is null and s.revoked_at is null
+               and s.expires_at > now() and s.attempts < 10
+               -- One that sends it now: its maker's own Only me document (a
+               -- link anybody else made to one sends nothing already).
+               and (exists (select 1 from document d
+                             where d.id = s.document_id and d.visibility = 'private'
+                               and d.owner_member_id = maker.member_id
+                               and d.deleted_at is null)
+                    or exists (select 1 from share_link_item t
+                                 join document d on d.id = t.document_id
+                                where t.share_id = s.id and t.kind = 'ticked'
+                                  and d.visibility = 'private'
+                                  and d.owner_member_id = maker.member_id
+                                  and d.deleted_at is null))
+            returning s.id, s.created_by`.execute(trx);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'household.only_me_sharing_changed',
+        objectType: 'household',
+        objectId: p.householdId,
+        // That it was turned off or on, and nothing of the links: how many
+        // other people's links sent their Only me documents is theirs to
+        // know (the third round, F3), and each maker is told their own.
+        detail: { only_me_shareable: shareable },
+        ip: meta.ip,
+      });
+      const by =
+        (
+          await trx
+            .selectFrom('member')
+            .select('display_name')
+            .where('id', '=', p.memberId)
+            .executeTakeFirst()
+        )?.display_name ?? 'An owner';
+      // Each maker of their own links, how many: never which.
+      const perMaker = new Map<string, number>();
+      for (const r of moved.rows) {
+        if (r.created_by === p.accountId) continue;
+        perMaker.set(r.created_by, (perMaker.get(r.created_by) ?? 0) + 1);
+      }
+      return { by, perMaker };
+    });
+    if (done) {
+      for (const [account, n] of done.perMaker) {
+        const yours = n === 1 ? 'Your link that sends one' : `Your ${n} links that send one`;
+        await this.alert({
+          householdId: p.householdId,
+          accountIds: [account],
+          subject: shareable
+            ? 'Your links to Only me documents work again'
+            : 'Your links to Only me documents are paused',
+          body: shareable
+            ? `${done.by} turned sharing Only me documents outside the family back on. ${yours} ${n === 1 ? 'works' : 'work'} again, unless something else has stopped ${n === 1 ? 'it' : 'them'} since.`
+            : `${done.by} turned off sharing Only me documents outside the family. ${yours} ${n === 1 ? 'is' : 'are'} paused, and ${n === 1 ? 'works' : 'work'} again if it is turned back on.`,
+          emailOnly: true,
+        });
+      }
+    }
+    return {
+      only_me_shareable: shareable,
+      can_change: true,
+    };
   }
 
   // ------------------------------------------------------ after a restore
@@ -2945,6 +3085,10 @@ export class ShareService {
       // demoted to teen or viewer, their sign-in taken away: each of these
       // ends the link, asked on every open rather than remembered.
       if (!canSee(sharer, doc)) throw gone();
+      // An Only me document, while the household shares none outside the
+      // family (5.41): whatever else the link says. The database asks the
+      // same (app_shared_document(), 0061).
+      if (doc.visibility === 'private' && !(await onlyMeShareable(trx))) throw gone();
       return { ...row, maker, collection: null };
     }
     if (row.collection_id === null) throw gone();
@@ -3017,6 +3161,9 @@ export class ShareService {
       .orderBy('i.document_id')
       .execute();
     const sharer = sharerOf(link.maker.role, link.maker.member_id);
+    // (An Only me document, while the household shares none outside the
+    // family, is given no row by the database itself: app_link_documents(),
+    // 0061, 5.41.)
     return rows
       .filter((d) => {
         const kind = snapshot.get(d.id);
@@ -3117,7 +3264,8 @@ function summarise(
     secret_kind?: SecretKind | null;
     code_email?: string | null;
     this_device_only?: boolean;
-    paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
+    paused_reason?:
+      'restored' | 'locked' | 'sign_in_paused' | 'limited' | 'only_me_not_shared' | null;
   },
   state: ShareView['state'],
   timezone: string,
@@ -3167,6 +3315,11 @@ function summarise(
       }
       if (r.paused_reason === 'restored') {
         return `${who}, ${opened}. Paused after a restore until it is turned back on; it would stop working on ${end}.`;
+      }
+      // 5.41: it sends an Only me document, and the household's owners
+      // turned off sharing those outside the family.
+      if (r.paused_reason === 'only_me_not_shared') {
+        return `${who}, ${opened}. Paused: this household doesn't share Only me documents outside the family. It works again if an owner turns that back on, and would stop working on ${end}.`;
       }
       return `${who}, ${opened}. Paused for now; it would stop working on ${end}.`;
   }

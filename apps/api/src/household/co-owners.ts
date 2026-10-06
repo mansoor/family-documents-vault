@@ -287,6 +287,22 @@ export class CoOwnerService {
           `${target.display_name} is an owner. Ask for their role to be changed first — that takes seven days, and they are told about it.`,
         );
       }
+      // A lock, or a restore's pause, stays with the person (0059, the Phase
+      // 5 exit's review): kept with them before the sign-in goes, and put
+      // back when it is given back, so only an owner power ever ends it
+      // (A54) — never taking a sign-in away and giving it back.
+      // Copied by the database, to the microsecond: the wall below (0059)
+      // lets the sign-in go only with its very suspension kept.
+      const suspended = suspensionInEffect(target);
+      await sql`update member m
+                   set former_suspended_at = a.suspended_at,
+                       former_suspended_by = a.suspended_by,
+                       former_suspended_until = a.suspended_until,
+                       former_suspend_reason = a.suspend_reason,
+                       former_suspend_note = a.suspend_note
+                  from account_household a
+                 where a.member_id = m.id and m.id = ${memberId}
+                   and suspension_in_effect(a.suspended_at, a.suspended_until)`.execute(trx);
       await trx
         .deleteFrom('account_household')
         .where('account_id', '=', target.account_id)
@@ -319,7 +335,7 @@ export class CoOwnerService {
         action: 'member.sign_in_removed',
         objectType: 'member',
         objectId: memberId,
-        detail: { role: target.role },
+        detail: { role: target.role, ...(suspended ? { kept: target.suspend_reason } : {}) },
         ip: meta.ip,
       });
     });
@@ -376,6 +392,11 @@ export class CoOwnerService {
           'member.display_name',
           'member.former_account_id',
           'member.kind',
+          'member.former_suspended_at',
+          'member.former_suspended_by',
+          'member.former_suspended_until',
+          'member.former_suspend_reason',
+          'member.former_suspend_note',
           'account.disabled_at',
         ])
         .where('member.id', '=', memberId)
@@ -449,6 +470,16 @@ export class CoOwnerService {
           `That sign-in belongs to somebody else in the household now.`,
         );
       }
+      // Locked, or paused after a restore, when it was taken away: it comes
+      // back so (0059). A lock that has run out by itself meanwhile is over.
+      const kept =
+        member.former_suspend_reason !== null &&
+        suspensionInEffect({
+          suspended_at: member.former_suspended_at,
+          suspended_until: member.former_suspended_until,
+        })
+          ? member.former_suspend_reason
+          : null;
       await trx
         .insertInto('account_household')
         .values({
@@ -457,11 +488,27 @@ export class CoOwnerService {
           member_id: memberId,
           role,
           access_expires_at: member.kind === 'guest' ? accessExpiresAt : null,
+          ...(kept
+            ? {
+                suspended_at: member.former_suspended_at,
+                suspended_by: member.former_suspended_by,
+                suspended_until: member.former_suspended_until,
+                suspend_reason: kept,
+                suspend_note: member.former_suspend_note,
+              }
+            : {}),
         })
         .execute();
       await trx
         .updateTable('member')
-        .set({ former_account_id: null })
+        .set({
+          former_account_id: null,
+          former_suspended_at: null,
+          former_suspended_by: null,
+          former_suspended_until: null,
+          former_suspend_reason: null,
+          former_suspend_note: null,
+        })
         .where('id', '=', memberId)
         .execute();
       await appendAudit(trx, {
@@ -475,9 +522,65 @@ export class CoOwnerService {
           ...(member.kind === 'guest' && accessExpiresAt
             ? { kind: 'guest', access_expires_at: accessExpiresAt.toISOString() }
             : {}),
+          ...(kept ? { kept } : {}),
         },
         ip: meta.ip,
       });
+      if (kept) {
+        // Given back still locked, or still paused: nobody is told they can
+        // sign in, and the other owners are told it is so, as for a lock.
+        const still = kept === 'locked' ? 'locked' : 'paused';
+        const by =
+          (
+            await trx
+              .selectFrom('member')
+              .select('display_name')
+              .where('id', '=', p.memberId)
+              .executeTakeFirst()
+          )?.display_name ?? 'An owner';
+        const owners = await trx
+          .selectFrom('account_household')
+          .select('account_id')
+          .where('role', '=', 'owner')
+          .where('account_id', '!=', p.accountId)
+          .execute();
+        // Limited while it was away, they are told so now (L533-03), with
+        // why they cannot sign in yet: an alert about their own sign-in
+        // reaches them while it is locked or paused (the Phase 5 exit's
+        // second round, C-02).
+        if (await isRestricted(trx, memberId)) {
+          await this.alert({
+            householdId: p.householdId,
+            accountIds: [account],
+            subject: `Your sign-in to your family vault is back, and still ${still}`,
+            body:
+              (kept === 'locked'
+                ? 'Your sign-in has been given back, but it stays locked until an owner unlocks it.'
+                : 'Your sign-in has been given back, but it stays paused after the restore until an owner turns it back on.') +
+              ` ${LIMITED_WORDS}`,
+            emailOnly: true,
+            ownSignIn: true,
+          });
+        }
+        if (owners.length > 0) {
+          await this.alert({
+            pushType: 'owner_change',
+            householdId: p.householdId,
+            accountIds: owners.map((o) => o.account_id),
+            subject: `${by} gave ${member.display_name}'s sign-in back, still ${still}`,
+            body:
+              kept === 'locked'
+                ? `${member.display_name} cannot sign in until an owner unlocks their sign-in from their page.`
+                : `${member.display_name} cannot sign in until an owner turns their sign-in back on after the restore.`,
+          });
+        }
+        return {
+          message:
+            kept === 'locked'
+              ? `${member.display_name}'s sign-in is back, as ${article(role)}, and still locked: an owner unlocks it.`
+              : `${member.display_name}'s sign-in is back, as ${article(role)}, and still paused after the restore: an owner turns it back on.`,
+        };
+      }
       // Limited while it was away, they are told so now, plainly and with
       // nothing of what is given (A59; the 5.33 review, L533-03): nobody
       // could be told while there was no sign-in to tell.
@@ -806,8 +909,10 @@ export class CoOwnerService {
         'account_household.account_id',
         'account_household.role',
         'account_household.suspended_at',
+        'account_household.suspended_by',
         'account_household.suspended_until',
         'account_household.suspend_reason',
+        'account_household.suspend_note',
         'member.display_name',
         'member.id as member_id',
         'member.kind',

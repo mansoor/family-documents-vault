@@ -13,6 +13,23 @@ describe.skipIf(!testAdminUrl())('household profile and members', () => {
   });
   afterAll(() => h.close());
 
+  it("a time zone alone, as the README sets it, answers none of the household's questions (R2-04)", async () => {
+    const put = await h.app.inject({
+      method: 'PUT',
+      url: '/api/v1/profile',
+      headers: h.as(owner),
+      payload: { timezone: 'Europe/London' },
+    });
+    expect(put.statusCode, put.body).toBe(200);
+    expect(put.json<{ timezone: string; answered_at: string | null }>()).toMatchObject({
+      timezone: 'Europe/London',
+      answered_at: null,
+    });
+    // Home still offers them.
+    const suggestions = await h.app.inject({ url: '/api/v1/suggestions', headers: h.as(owner) });
+    expect(suggestions.json<{ profile_answered: boolean }>().profile_answered).toBe(false);
+  });
+
   it('the profile starts empty and remembers the wizard answers', async () => {
     const before = await h.app.inject({ url: '/api/v1/profile', headers: h.as(owner) });
     expect(

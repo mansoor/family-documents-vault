@@ -3,7 +3,7 @@ import { testAdminUrl } from '@fdv/db/testing';
 import { createDb, createPool, type Db } from '@fdv/db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Tokens } from '../auth/service.js';
-import { createHarness, type Harness } from '../test-harness.js';
+import { alertsSent, createHarness, type Harness } from '../test-harness.js';
 
 /**
  * UnifiedPush in the API (4.13): registering the phone app's push address,
@@ -225,9 +225,8 @@ describe.skipIf(!testAdminUrl())('UnifiedPush in the API', () => {
       url: '/api/v1/auth/password/forgot',
       payload: { email: 'sam-up@example.test' },
     });
-    const link = h.jobs
-      .filter((j) => j.name === 'alert.send')
-      .map((j) => (j.data as { url?: string }).url)
+    const link = alertsSent(h)
+      .map((a) => a.url as string | undefined)
       .filter(Boolean)
       .at(-1) as string;
     const reset = await h.app.inject({

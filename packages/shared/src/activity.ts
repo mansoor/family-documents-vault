@@ -287,6 +287,13 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           : `${who} changed ${possessive(personOf(e))} identity details`,
       );
     }
+    // Whether the household's Only me documents can be shared outside the
+    // family (5.41): that, and nothing of anybody's links (F3).
+    case 'household.only_me_sharing_changed':
+      return line(
+        `${who} turned ${detail.only_me_shareable === true ? 'on' : 'off'} sharing Only me documents outside the family`,
+        true,
+      );
     // Who sees other people's identity details (A34): wider only after
     // notice, and the line says from when.
     case 'identity.audience_changed': {

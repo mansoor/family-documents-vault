@@ -607,6 +607,9 @@ describe.skipIf(!testAdminUrl())("an Only me bill's reminders and the digest", (
  * only documents reaches it, as it reaches every other copy of the rule. An
  * unrestricted viewer's is as it was.
  */
+/** Where the paper originals below are kept: the household's alone (5.41). */
+const KEPT_IN = 'Hall cupboard, the grey box';
+
 describe.skipIf(!testAdminUrl())("a restricted viewer's digest (5.32)", () => {
   let tdb: TestDatabase;
   let db: Db;
@@ -670,7 +673,15 @@ describe.skipIf(!testAdminUrl())("a restricted viewer's digest (5.32)", () => {
       ] as const) {
         const d = await trx
           .insertInto('document')
-          .values({ household_id: hh, title, visibility, owner_member_id: owner, type_key: type })
+          .values({
+            household_id: hh,
+            title,
+            visibility,
+            owner_member_id: owner,
+            type_key: type,
+            // Where its paper original is kept (5.41): no digest says.
+            physical_location: KEPT_IN,
+          })
           .returning('id')
           .executeTakeFirstOrThrow();
         await trx
@@ -723,5 +734,9 @@ describe.skipIf(!testAdminUrl())("a restricted viewer's digest (5.32)", () => {
       'Ahmed water bill',
       'Owner council tax bill',
     ]);
+    // And no digest, a viewer's above all, names where an original is kept
+    // (5.41): its email and its pushes are made from these.
+    expect(digests.length).toBeGreaterThan(3);
+    expect(JSON.stringify(digests)).not.toContain(KEPT_IN.split(', ')[1]);
   });
 });

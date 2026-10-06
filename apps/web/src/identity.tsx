@@ -1137,7 +1137,7 @@ function IdentityForm(props: {
   /** Closed unsaved: `wrote` when a part was saved on the way, so the card reads it again. */
   onCancel: (wrote: boolean) => void;
 }) {
-  const { withToken } = useApp();
+  const { withToken, guarded } = useApp();
   const [base, setBase] = useState<IdentityView>(props.view);
   const [initial] = useState<Draft>(() => draftFrom(props.view));
   const [draft, setDraft] = useState<Draft>(initial);
@@ -1415,7 +1415,9 @@ function IdentityForm(props: {
     try {
       for (const st of steps) {
         if (identityChanges(last[st.part], st.fields).length === 0) continue;
-        const saved = await withToken((t) =>
+        // Another person's: an owner power since the Phase 5 exit (A54),
+        // asked for here as showing their numbers is; refused, nothing more.
+        const saved = await guarded((t) =>
           api.updateIdentity(t, props.member.id, {
             part: st.part,
             version: at[st.part] ?? 0,

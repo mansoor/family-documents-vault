@@ -1,3 +1,5 @@
+import { alertLinkBinding, sealBytes } from '@fdv/crypto';
+
 /**
  * What the API asks the worker to send as an alert (`alert.send`).
  *
@@ -37,13 +39,28 @@ export interface AlertRequest {
   ownSignIn?: boolean;
 }
 
-export function alertJob(a: AlertRequest): Record<string, unknown> {
+/**
+ * The job. Its link, when it has one, is sealed (F529-11) under `key`
+ * (ALERT_LINK_KEY_PURPOSE): the only links an alert carries are password
+ * resets', and the queue's table, which the application role reads and
+ * every backup keeps, must hold none that works. The worker opens it.
+ */
+export function alertJob(key: Buffer, a: AlertRequest): Record<string, unknown> {
   return {
     household_id: a.householdId,
     account_ids: a.accountIds,
     subject: a.subject,
     body: a.body,
-    ...(a.url ? { url: a.url, url_label: a.urlLabel } : {}),
+    ...(a.url
+      ? {
+          sealed_url: sealBytes(
+            key,
+            Buffer.from(a.url, 'utf8'),
+            alertLinkBinding(a.householdId),
+          ).toString('base64'),
+          url_label: a.urlLabel,
+        }
+      : {}),
     ...(a.emailOnly ? { email_only: true } : {}),
     ...(a.operatorMail ? { via: 'operator' } : {}),
     ...(a.pushType ? { push_type: a.pushType } : {}),

@@ -588,7 +588,13 @@ export interface Share {
    * Absent from older vaults; treat a reason never heard of as paused.
    */
   paused_at?: string | null;
-  paused_reason?: 'restored' | 'locked' | 'sign_in_paused' | 'limited' | null;
+  /**
+   * Since 5.41, `only_me_not_shared`, to an owner and to whoever made it: it
+   * sends an Only me document, and the household no longer lets those out;
+   * it works again if an owner turns that back on.
+   */
+  paused_reason?:
+    'restored' | 'locked' | 'sign_in_paused' | 'limited' | 'only_me_not_shared' | null;
   /**
    * What it gives (5.18): `view`, the pages the vault drew for it, with
    * whom it is for across each, and never the file; `download`, the file.
@@ -903,6 +909,12 @@ export interface DocumentInput {
    * key left out stays as it is, and null takes it away.
    */
   extra?: Record<string, unknown>;
+  /**
+   * An edit into Only me (5.41): what becomes of the person's own links that
+   * would still send it — `409 links_choice_needed` asks, while there are
+   * any. Never on a new document.
+   */
+  own_links?: 'end' | 'keep';
 }
 
 export interface Counts {
@@ -1067,7 +1079,72 @@ export const FACTOR_STEP_UPS: readonly string[] = [
   // Since 5.34: renewing a guest's sign-in, or giving one back with a new
   // end (A28) — an owner power too.
   'renew_guest',
+  // Since the Phase 5 exit (5.41): an owner writing another person's
+  // identity details (their shared part) — an owner power too.
+  'change_identity',
+  // Since 5.41: whether the household's Only me documents can be shared
+  // outside the family (PUT /household/sharing) — an owner power too.
+  'only_me_sharing',
 ];
+
+/**
+ * `GET` and `PUT /api/v1/household/sharing` (5.41): whether this household's
+ * Only me documents can be shared outside the family — on unless an owner
+ * turned it off. Read by owners and adults; changed by an owner, with a
+ * passkey or a code (`only_me_sharing`, A54). Turned off, every live link
+ * that sent an Only me document is paused, and each link's maker is told
+ * how many of theirs; turned back on, those are on again. The answer never
+ * counts them: how many links other people had to their Only me documents
+ * is theirs to know.
+ */
+export interface OnlyMeSharing {
+  only_me_shareable: boolean;
+  can_change: boolean;
+}
+
+/**
+ * One of the person's own links that would still send a document they are
+ * making Only me (5.41), as `409 links_choice_needed` names it in its
+ * `detail` (JSON: `LinksChoiceNeeded`): whom it is for, a collection's name
+ * for a collection's link, its end, and what it asks for. Never a token.
+ */
+export interface OwnLinkToEnd {
+  id: string;
+  kind: 'document' | 'collection';
+  recipient_label: string | null;
+  collection_name: string | null;
+  expires_at: string;
+  protection: ShareProtection[];
+  /**
+   * It ends whichever is chosen (the Phase 5 exit's fourth round): paused
+   * after a restore, it waits for an owner to turn it back on, and no owner
+   * can see an Only me document of somebody else's. Absent for an owner,
+   * who can, and for every other link.
+   */
+  will_end?: true;
+}
+
+/**
+ * `409 links_choice_needed`'s `detail`, parsed: the person's own links, and
+ * whether keeping them is offered — not while the household shares no Only
+ * me documents — and how many links others made stop with it.
+ */
+export interface LinksChoiceNeeded {
+  links: OwnLinkToEnd[];
+  keep_allowed: boolean;
+  others: number;
+}
+
+/**
+ * A visibility change's answer: the notice to say now, if any; and, into
+ * Only me (5.41), what happened to the links that sent it — the person's
+ * own, ended or kept as they chose, and how many of everybody else's
+ * stopped. `links` is absent from older vaults, and on any other change.
+ */
+export interface VisibilityChange {
+  notice: { title: string; body: string } | null;
+  links?: { yours: number; yours_now: 'ended' | 'kept' | null; others: number };
+}
 
 /**
  * One part of a person's identity details, as the reader is shown it

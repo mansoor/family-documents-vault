@@ -1474,6 +1474,27 @@ export const contractScenarios: Scenario[] = [
         message: 'Turn on two-step sign-in to change who can see identity details.',
       });
       expect((await api.identityAudience(token)).pending).toBeNull();
+      // Nor, since the Phase 5 exit, does a password alone write another
+      // person's details (A54): refused, and nothing written.
+      const other = await ctx.addSignIn(token, {
+        name: 'Identity Adult',
+        email: 'identity-adult@example.test',
+        password: 'another correct horse',
+        role: 'adult',
+      });
+      const overwritten = await refusal(
+        api.updateIdentity(token, other, {
+          part: 'shared',
+          version: 0,
+          fields: { given_name: 'Overwritten' },
+        }),
+      );
+      expect(overwritten).toMatchObject({
+        status: 403,
+        code: 'totp_required_for_owner',
+        message: "Turn on two-step sign-in to change another person's identity details.",
+      });
+      expect((await api.identity(token, other)).versions.shared).toBe(0);
     },
   },
   {
@@ -2163,6 +2184,33 @@ export const contractScenarios: Scenario[] = [
       );
       expect(stale).toMatchObject({ status: 409, code: 'conflict' });
       expect((await api.document(token, made.id)).notes).toBe('- [x] serviced in May');
+    },
+  },
+  {
+    name: 'where a paper original is kept is the household’s: an adult and a teen are told it; a viewer is answered null, in the document and in the list (5.41)',
+    run: async (api, ctx) => {
+      const first = await signIn(api, ctx);
+      const lou = { email: 'location-viewer@example.test', password: 'the viewer’s own password' };
+      await ctx.addSignIn(first.access_token, { name: 'Lou', role: 'viewer', ...lou });
+      const tia = { email: 'location-teen@example.test', password: 'the teen’s own password' };
+      await ctx.addSignIn(first.access_token, { name: 'Tia', role: 'teen', ...tia });
+      const WHERE = 'Loft, in the blue trunk';
+      const made = await api.createDocument(first.access_token, {
+        title: 'Contract deeds box',
+        physical_location: WHERE,
+      });
+      expect(made.physical_location).toBe(WHERE);
+      const told = async (token: string) => [
+        (await api.document(token, made.id)).physical_location,
+        (await api.documents(token)).items.find((d) => d.id === made.id)?.physical_location,
+      ];
+      const teen = await signInAs(api, tia.email, tia.password);
+      expect(await told(teen.access_token)).toEqual([WHERE, WHERE]);
+      // A viewer sees the document, and never where its original is.
+      const viewer = await signInAs(api, lou.email, lou.password);
+      expect(await told(viewer.access_token)).toEqual([null, null]);
+      // It is still kept, and still the household's to read.
+      expect(await told(first.access_token)).toEqual([WHERE, WHERE]);
     },
   },
   {

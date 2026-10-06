@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import { requireCapability } from '../authz.js';
 import { ApiError } from '../errors.js';
 import { errorForLog } from '../log-redaction.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
@@ -34,6 +35,9 @@ const dateValue = z
     precision: z.enum(['day', 'month', 'year']),
   })
   .nullable();
+
+/** Into Only me, the person's own links that send it (5.41): ended, or kept. */
+const ownLinksBody = z.enum(['end', 'keep']).optional();
 
 const documentBody = z
   .object({
@@ -338,7 +342,11 @@ export function registerDocuments(
   });
 
   app.patch<{ Params: { id: string } }>('/api/v1/documents/:id', auth, async (req, reply) => {
-    const body = parse(documentBody, req.body ?? {});
+    // Into Only me, what becomes of the person's own links (5.41).
+    const { own_links: ownLinks, ...body } = parse(
+      documentBody.extend({ own_links: ownLinksBody }),
+      req.body ?? {},
+    );
     // Essential turned off, or out of "only me": what opening it asks is
     // asked first, or one tap takes the question away (5.4, SEC-17).
     const ask = stepUp ? await docs.stepUpToLoosen(principal(req), req.params.id, body) : null;
@@ -347,7 +355,7 @@ export function registerDocuments(
     // column update. It runs first so the ETag check below sees its effect.
     const { visibility: nextVisibility, ...rest } = body;
     if (nextVisibility !== undefined) {
-      await visibility.change(principal(req), req.params.id, nextVisibility, metaOf(req));
+      await visibility.change(principal(req), req.params.id, nextVisibility, metaOf(req), ownLinks);
     }
     const d = await docs.update(
       principal(req),
@@ -370,7 +378,12 @@ export function registerDocuments(
     auth,
     async (req, reply) => {
       const body = parse(
-        z.object({ visibility: z.enum(['household', 'adults', 'private']) }),
+        z.object({
+          visibility: z.enum(['household', 'adults', 'private']),
+          // Into Only me, the person's own links that send it (5.41):
+          // ended, or kept. Left out while there are any: 409.
+          own_links: ownLinksBody,
+        }),
         req.body,
       );
       // Out of "only me" asks what opening it asks (5.4); into it, nothing.
@@ -380,7 +393,13 @@ export function registerDocuments(
       // told "only you can open this" is part of the act, not a separate
       // thing the client has to know to go and ask about (SEC-19).
       return reply.send(
-        await visibility.change(principal(req), req.params.id, body.visibility, metaOf(req)),
+        await visibility.change(
+          principal(req),
+          req.params.id,
+          body.visibility,
+          metaOf(req),
+          body.own_links,
+        ),
       );
     },
   );
@@ -682,6 +701,20 @@ export function registerDocuments(
   );
 
   app.get('/api/v1/shares', auth, async (req) => ({ items: await shares.list(principal(req)) }));
+
+  /**
+   * Only me documents and links outside the family (5.41; the owner's
+   * decision of 6 Oct 2026): the household's rule, read by those who may
+   * share at all, and an owner's to change (A54): who may first, then a
+   * passkey or a code, never the password.
+   */
+  app.get('/api/v1/household/sharing', auth, async (req) => shares.onlyMeSharing(principal(req)));
+  app.put('/api/v1/household/sharing', auth, async (req) => {
+    const body = parse(z.object({ only_me_shareable: z.boolean() }).strict(), req.body ?? {});
+    requireCapability(principal(req), 'sharing.only_me_rule');
+    if (stepUp) await stepUp.requireOwnerPower(principal(req), 'only_me_sharing');
+    return shares.setOnlyMeSharing(principal(req), body.only_me_shareable, metaOf(req));
+  });
 
   app.delete<{ Params: { id: string } }>('/api/v1/shares/:id', auth, async (req, reply) => {
     await shares.revoke(principal(req), parse(idParam, req.params).id, metaOf(req));
