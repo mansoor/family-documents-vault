@@ -62,7 +62,7 @@ async function openForm(over: Parameters<typeof fresh>[0] = {}, role: 'owner' | 
   const state = fresh({ timezone: 'Europe/London', ...over });
   installFakeApi(state);
   signedIn(role);
-  window.history.replaceState({}, '', '/settings/sharing');
+  window.history.replaceState({}, '', '/sharing');
   render(<App />);
   fireEvent.click(await screen.findByRole('link', { name: 'Ask for documents' }));
   await screen.findByRole('heading', { name: 'What you are asking for' });
@@ -274,10 +274,10 @@ describe('asking for documents', () => {
   it.each([
     ['teen', '/people/m-0'],
     ['viewer', '/people/m-0'],
-    ['teen', '/settings/sharing/ask'],
-    ['viewer', '/settings/sharing/ask'],
-    ['teen', '/settings/sharing'],
-    ['viewer', '/settings/sharing'],
+    ['teen', '/sharing/ask'],
+    ['viewer', '/sharing/ask'],
+    ['teen', '/sharing'],
+    ['viewer', '/sharing'],
   ] as const)('a %s is never offered it at %s, and never asks', async (role, at) => {
     const state = fresh({ members: [{ ...ME, role }, AISHA] });
     installFakeApi(state);
@@ -289,7 +289,7 @@ describe('asking for documents', () => {
       // Her page has loaded what it shows: nothing more is coming.
       await screen.findByRole('heading', { name: 'Aisha’s documents' });
       expect(screen.queryByRole('link', { name: /Ask someone for/ })).not.toBeInTheDocument();
-    } else if (at === '/settings/sharing/ask') {
+    } else if (at === '/sharing/ask') {
       expect(
         await screen.findByText('Only an owner or an adult can ask someone to send documents.'),
       ).toBeInTheDocument();
@@ -369,7 +369,7 @@ describe('Sharing lists requests (5.22)', () => {
     const state = fresh({ uploadRequests: requests });
     installFakeApi(state);
     signedIn(role);
-    window.history.replaceState({}, '', '/settings/sharing');
+    window.history.replaceState({}, '', '/sharing');
     render(<App />);
     await screen.findByRole('heading', { name: 'Asking for documents' });
     return state;
@@ -480,7 +480,7 @@ describe('Sharing lists requests (5.22)', () => {
     );
     expect(within(waits).getByRole('link', { name: 'Turn on Sara’s sign-in' })).toHaveAttribute(
       'href',
-      '/settings/after-restore',
+      '/after-restore',
     );
     // A lock ends with the unlock: nothing to do here.
     expect(locked).toHaveTextContent('Paused while the sign-in of Sara is locked.');
@@ -593,11 +593,11 @@ describe('After a restore lists paused requests too (the 5.22 review)', () => {
   const paused = (over: Record<string, unknown> = {}) =>
     request({ state: 'paused', paused_reason: 'restored', ...over });
 
-  it('Settings counts them, and an owner turns one back on from After a restore', async () => {
+  it('Home counts them, and an owner turns one back on from After a restore', async () => {
     const state = fresh({ uploadRequests: [paused(), paused({ id: 'req-b', title: 'Lease' })] });
     installFakeApi(state);
     signedIn('owner');
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
     fireEvent.click(
       await screen.findByRole('link', {
@@ -634,7 +634,7 @@ describe('After a restore lists paused requests too (the 5.22 review)', () => {
     });
     installFakeApi(state);
     signedIn('owner');
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
     expect(
       await screen.findByRole('link', {
@@ -647,7 +647,7 @@ describe('After a restore lists paused requests too (the 5.22 review)', () => {
     const state = fresh({ uploadRequests: [paused()] });
     installFakeApi(state);
     signedIn('adult');
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
     fireEvent.click(
       await screen.findByRole('link', { name: /After a restore.*1 request you made is paused/ }),

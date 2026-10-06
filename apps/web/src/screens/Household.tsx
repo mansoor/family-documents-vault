@@ -4,7 +4,7 @@ import { flushSync } from 'react-dom';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded } from '../identity.js';
-import { BottomNav, ErrorNote, TopBar } from '../ui.js';
+import { ErrorNote, TopBar } from '../ui.js';
 
 /**
  * Settings → Household (5.41): the household's rule for Only me documents
@@ -17,7 +17,6 @@ export function HouseholdScreen() {
     <main className="page page-top has-nav">
       <TopBar title="Household" back="/settings" />
       <OnlyMeSharingCard />
-      <BottomNav />
     </main>
   );
 }

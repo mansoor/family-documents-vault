@@ -165,7 +165,8 @@ test('a bill due in 5 days is in Needs attention and on Home', async () => {
   // Seven days before a date five days off is already here: it is due now,
   // and says what it is about.
   const about = aboutLine('Due date', due, 5);
-  await page.getByRole('link', { name: 'Reminders' }).click();
+  // Reminders, in the bottom bar, is called Needs attention since R1.
+  await page.getByRole('link', { name: 'Needs attention', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Needs attention' })).toBeVisible();
   const row = page.getByRole('listitem').filter({ hasText: BILL });
   await expect(row.getByText(about)).toBeVisible();

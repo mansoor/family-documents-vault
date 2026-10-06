@@ -741,7 +741,7 @@ describe('App', () => {
     });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings/activity');
+    window.history.replaceState({}, '', '/activity');
     render(<App />);
 
     await screen.findByText('Sarah downloaded “Home insurance policy”');
@@ -2032,7 +2032,7 @@ describe('the quick fixes (5.1)', () => {
     const state = fresh({ documents: [{ ...PASSPORT, deleted_at: '2026-09-26T10:04:00Z' }] });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings/trash');
+    window.history.replaceState({}, '', '/trash');
     render(<App />);
     await screen.findByRole('heading', { name: 'Trash' });
     expect(await screen.findByText("Mansoor's passport")).toBeInTheDocument();
@@ -2098,7 +2098,7 @@ describe('the quick fixes (5.1)', () => {
     });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings/activity');
+    window.history.replaceState({}, '', '/activity');
     render(<App />);
     const table = await screen.findByRole('table');
     expect(
@@ -2154,7 +2154,7 @@ describe('the quick fixes (5.1)', () => {
     installFakeApi(fresh({ documents: [{ ...theirs, deleted_at: '2026-09-26T10:04:00Z' }] }));
     // A new fake vault: the first one rotated the refresh token it knew.
     signedIn('teen');
-    window.history.replaceState({}, '', '/settings/trash');
+    window.history.replaceState({}, '', '/trash');
     render(<App />);
     expect(await screen.findByText("Mansoor's passport")).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Bring it back/ })).not.toBeInTheDocument();
@@ -2171,7 +2171,7 @@ describe('the quick fixes (5.1)', () => {
       fresh({ documents: [binned('d-1', 'Old lease'), binned('d-2', 'Old policy')], pageSize: 1 }),
     );
     signedIn();
-    window.history.replaceState({}, '', '/settings/trash');
+    window.history.replaceState({}, '', '/trash');
     render(<App />);
     expect(await screen.findByText('Old lease')).toBeInTheDocument();
     expect(screen.queryByText('Old policy')).not.toBeInTheDocument();

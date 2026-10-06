@@ -221,7 +221,7 @@ test('the collection is shared from its page, and opens outside the family with 
 
     // The family's list of links has it; taken back, after asking, the
     // page open on it stops.
-    await page.goto('/settings/sharing');
+    await page.goto('/sharing');
     const live = page.getByRole('list', { name: 'Links that work now' });
     await expect(live.getByText(`The collection “${COLLECTION}”`)).toBeVisible();
     await live

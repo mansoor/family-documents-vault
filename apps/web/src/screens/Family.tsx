@@ -14,7 +14,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { TwoStepNeeded, whenWords } from '../identity.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ErrorNote, Pills, TopBar } from '../ui.js';
+import { Button, ErrorNote, Pills, TopBar } from '../ui.js';
 
 /**
  * Settings → Family (5.27): who can see the identity details kept on each
@@ -35,7 +35,6 @@ export function FamilyScreen() {
     <main className="page page-top has-nav">
       <TopBar title="Family" back="/settings" />
       <IdentityAudienceCard />
-      <BottomNav />
     </main>
   );
 }

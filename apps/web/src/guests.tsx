@@ -16,7 +16,7 @@ import { dayOf, endOf, LimitsPicker, NO_LIMITS, ViewerLimits, type Limits } from
 import { api, type CreatedInvitation, type Member } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, Field, TopBar } from './ui.js';
+import { Button, ConfirmDialog, ErrorNote, Field, TopBar } from './ui.js';
 
 /**
  * Someone outside the family (5.34, D4, A27, A28): an attorney, an
@@ -116,7 +116,7 @@ export function OutsideTheFamily(props: { onSignIn: () => void }) {
         )}
         {mayAsk && (
           <li>
-            <Link to="/settings/sharing/ask" className="rowbtn">
+            <Link to="/sharing/ask" className="rowbtn">
               <span className="doc-title">Ask them to send documents</span>
               <span className="muted">
                 A link they send their papers through. Nothing of the family’s is shown to them.
@@ -261,7 +261,31 @@ export function GuestInviteForm(props: {
 }
 
 /**
- * People outside the family (Settings, owners, 5.34): each guest, what they
+ * The family, and beside it the people outside it (R1): two tabs on People,
+ * for an owner, the only one who lists the guests (5.34). Nothing for
+ * anybody else, who sees the family alone.
+ */
+export function PeopleTabs({ at }: { at: 'family' | 'outside' }) {
+  const { caps, session } = useApp();
+  if (!caps?.features.guests || session.info?.role !== 'owner') return null;
+  return (
+    <nav className="tabs" aria-label="People">
+      <Link to="/people" className="tab" aria-current={at === 'family' ? 'page' : undefined}>
+        Family
+      </Link>
+      <Link
+        to="/people/outside"
+        className="tab"
+        aria-current={at === 'outside' ? 'page' : undefined}
+      >
+        Outside the family
+      </Link>
+    </nav>
+  );
+}
+
+/**
+ * People outside the family (People, owners, 5.34): each guest, what they
  * can see, and when their access ends. And what an owner does with a
  * guest's sign-in (the 5.34 review, W534-03): renew it, change what they
  * see, sign them out everywhere, take it away, give it back with a new end,
@@ -296,8 +320,9 @@ export function GuestsScreen() {
   const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
 
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="People outside the family" back="/settings" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="People outside the family" />
+      <PeopleTabs at="outside" />
       <p className="lede">
         Guests sign in to see only what you give them, until the day their access ends. They are
         never shown among the family.
@@ -360,7 +385,6 @@ export function GuestsScreen() {
       <Link to="/people" className="btn btn-quiet">
         Invite someone from People
       </Link>
-      <BottomNav />
     </main>
   );
 }

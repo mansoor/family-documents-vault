@@ -15,7 +15,7 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, Field, Select, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Field, Select, TopBar } from '../ui.js';
 
 /**
  * Incoming (5.23): what somebody outside the family sent through a request,
@@ -70,8 +70,8 @@ export function IncomingScreen() {
   }, [said]);
 
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Files sent to you" back="/settings" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="Files sent to you" />
       <ErrorNote message={error} />
       <p role="status" ref={status} tabIndex={-1} className="status-line">
         {said}
@@ -83,7 +83,7 @@ export function IncomingScreen() {
       <ul className="list" aria-label="Waiting for you">
         {(data ?? []).map((f) => (
           <li key={f.id}>
-            <Link to={`/incoming/${f.id}`} className="rowbtn">
+            <Link to={`/inbox/${f.id}`} className="rowbtn">
               <span className="doc-title">{f.name}</span>
               <span className="muted">{fromWords(f)}</span>
               <span className="muted">
@@ -98,7 +98,6 @@ export function IncomingScreen() {
           <li className="muted">Nothing is waiting for you.</li>
         )}
       </ul>
-      <BottomNav />
     </main>
   );
 }
@@ -229,12 +228,12 @@ export function IncomingFileScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title={file?.name ?? 'A file sent to you'} back="/incoming" />
+      <TopBar title={file?.name ?? 'A file sent to you'} back="/inbox" />
       <ErrorNote message={error} />
       {data && !file && !error && (
         <p className="muted">
           This file is not waiting any more: somebody filed or refused it, or it was removed.{' '}
-          <Link to="/incoming">See what is waiting</Link>.
+          <Link to="/inbox">See what is waiting</Link>.
         </p>
       )}
       {file && data && (
@@ -250,7 +249,6 @@ export function IncomingFileScreen() {
           onDone={(to, said) => void navigate(to, said ? { state: { said } } : undefined)}
         />
       )}
-      <BottomNav />
     </main>
   );
 }
@@ -351,7 +349,7 @@ function IncomingFile(props: {
     try {
       await withToken((t) => api.rejectIncoming(t, file.id));
       setAsking(false);
-      props.onDone('/incoming', `“${file.name}” was refused, and removed.`);
+      props.onDone('/inbox', `“${file.name}” was refused, and removed.`);
     } catch (err) {
       setAsking(false);
       setProblem(describeError(err));

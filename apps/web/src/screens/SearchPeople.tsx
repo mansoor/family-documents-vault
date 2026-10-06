@@ -32,7 +32,6 @@ import { DocActions } from '../DocActions.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
-  BottomNav,
   Button,
   categoryLabel,
   Check,
@@ -47,6 +46,7 @@ import { addLink, DocRow, rowLine, RowMain, type RowPick } from './Home.js';
 
 /** The most documents put in a collection at once, as the vault takes them. */
 const MOST_AT_ONCE = 200;
+import { PeopleTabs } from '../guests.js';
 import { InvitePanel } from './Invite.js';
 import { OwnerChangeNotices } from './Roles.js';
 
@@ -58,8 +58,11 @@ const ISSUER_CHIPS = 8;
  * and for who issued it (0.4.10: "Barclays", "British Gas"). With no query
  * it browses — by category (from the home tiles), by person or by issuer —
  * because non-technical users browse before they search.
+ *
+ * At /documents it is called Documents: the shell's Documents opens this
+ * browse view until R2 builds the Documents table there (Phase 6, R1).
  */
-export function SearchScreen() {
+export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
   const { withToken, authVersion, caps } = useApp();
   const navigate = useNavigate();
   const select = useSelect(collectionsOffered(caps, storedRole()));
@@ -207,8 +210,8 @@ export function SearchScreen() {
   };
 
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Search" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title={title} />
       <div className="field">
         <label htmlFor="q">Search everything</label>
         <input
@@ -348,7 +351,6 @@ export function SearchScreen() {
         </ul>
       )}
       {select.sheet}
-      <BottomNav />
     </main>
   );
 }
@@ -602,8 +604,9 @@ export function PeopleScreen() {
     }
   };
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar title="People" />
+      <PeopleTabs at="family" />
       <ErrorNote message={error} />
       <OwnerChangeNotices items={data?.changes ?? []} onChanged={reload} />
       <p className="muted">{data ? `${data.members.length} in the household` : ''}</p>
@@ -681,7 +684,6 @@ export function PeopleScreen() {
         invitations={data?.invitations ?? []}
         onChanged={reload}
       />
-      <BottomNav />
     </main>
   );
 }
@@ -763,7 +765,7 @@ export function RemindersScreen() {
 
   const count = (data?.due.length ?? 0) + (data?.attention.length ?? 0);
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar title="Needs attention" />
       <ErrorNote message={error} />
       {data && count === 0 && (
@@ -852,7 +854,6 @@ export function RemindersScreen() {
         profileAnswered={data?.profileAnswered ?? true}
         act={act}
       />
-      <BottomNav />
     </main>
   );
 }

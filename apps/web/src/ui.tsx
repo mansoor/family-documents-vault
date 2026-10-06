@@ -1,4 +1,4 @@
-import { avatarColour, can, graphemesOf, statusTone, type Status } from '@fdv/shared';
+import { avatarColour, graphemesOf, statusTone, type Status } from '@fdv/shared';
 import {
   useEffect,
   useId,
@@ -10,7 +10,6 @@ import {
   type RefObject,
 } from 'react';
 import { NavLink } from 'react-router';
-import { storedRole } from './session.js';
 
 /** Small shared pieces, styled from the tokens in styles.css. */
 
@@ -412,37 +411,6 @@ export function TopBar({
   );
 }
 
-export function BottomNav() {
-  const canAdd = can(storedRole(), 'document.add');
-  const item = (to: string, label: string, icon: string) => (
-    <NavLink
-      to={to}
-      className={({ isActive }) => `nav-item${isActive ? ' nav-on' : ''}`}
-      end={to === '/'}
-    >
-      <span aria-hidden="true" className="nav-icon">
-        {icon}
-      </span>
-      <span>{label}</span>
-    </NavLink>
-  );
-  return (
-    <nav className="bottomnav" aria-label="Main">
-      {item('/', 'Home', '⌂')}
-      {item('/search', 'Search', '⌕')}
-      {/* A viewer can open and download, and nothing else: an Add button
-          that always refuses is worse than no Add button. */}
-      {canAdd && (
-        <NavLink to="/add" className="fab" aria-label="Add a document">
-          +
-        </NavLink>
-      )}
-      {item('/reminders', 'Reminders', '◷')}
-      {item('/people', 'People', '☺')}
-    </nav>
-  );
-}
-
 /** A bin with a lid, drawn: emoji look different on every phone. */
 export function TrashIcon() {
   return (
@@ -718,7 +686,7 @@ export function MoveToTrashDialog(props: {
     >
       <p>
         “{props.title ?? 'This document'}” leaves every list, search and reminder. You can bring it
-        back from the Trash in Settings.
+        back from the Trash.
       </p>
     </ConfirmDialog>
   );

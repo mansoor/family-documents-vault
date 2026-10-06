@@ -19,14 +19,8 @@ import { accessEndWords } from '../guests.js';
 import { IdentityNotice } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
-import {
-  BottomNav,
-  Button,
-  categoryLabel,
-  CollapsibleSection,
-  ErrorNote,
-  StatusBadge,
-} from '../ui.js';
+import { Button, categoryLabel, CollapsibleSection, ErrorNote, StatusBadge } from '../ui.js';
+import { AfterRestoreBanner } from './AfterRestore.js';
 import { mayBringBack, purgeAskedWords } from './Trash.js';
 
 /**
@@ -106,16 +100,15 @@ export function HomeScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <header className="topbar">
+      {/* Settings is in the shell's navigation since R1, not here; on a
+          phone the shell's own bar says the household's name above this. */}
+      <header className="topbar home-head">
         <div style={{ flexGrow: 1 }}>
           <div className="muted" style={{ fontSize: 13 }}>
             Household
           </div>
           <h1 style={{ fontSize: 24 }}>{caps?.branding.display_name ?? 'Family Document Vault'}</h1>
         </div>
-        <Link to="/settings" className="back" aria-label="Settings">
-          ⚙
-        </Link>
       </header>
       <ErrorNote message={error} />
 
@@ -127,6 +120,8 @@ export function HomeScreen() {
           <span className="muted">Owners must. It takes a minute, in Settings.</span>
         </Link>
       )}
+      {/* What a restore paused, while it waits (5.16; in Settings until R1). */}
+      <AfterRestoreBanner />
       {/* A wider audience for identity details, waiting its 72 hours (5.27). */}
       <IdentityNotice memberId={data?.me.member_id} />
       {data?.me.reset_notice && (
@@ -233,7 +228,6 @@ export function HomeScreen() {
           ))}
         </ul>
       </section>
-      <BottomNav />
     </main>
   );
 }
@@ -438,7 +432,7 @@ function RemovalNotice({
           </li>
         ))}
       </ul>
-      <Link to="/settings/trash" className="quiet-link">
+      <Link to="/trash" className="quiet-link">
         Open the Trash
       </Link>
     </div>

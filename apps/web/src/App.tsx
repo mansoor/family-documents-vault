@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { AppProvider, useApp } from './app-context.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
@@ -21,11 +21,12 @@ import { ForgotPasswordScreen, ResetPasswordScreen } from './screens/Password.js
 import { SharedScreen } from './screens/Shared.js';
 import { SharingScreen } from './screens/Sharing.js';
 import { HouseholdScreen } from './screens/Household.js';
-import { NotificationsScreen } from './screens/Notifications.js';
+import { EmailScreen, NotificationsScreen } from './screens/Notifications.js';
 import { PersonDocumentsScreen, ProfileScreen } from './screens/Person.js';
 import { PeopleScreen, RemindersScreen, SearchScreen } from './screens/SearchPeople.js';
 import { SettingsScreen, StorageScreen } from './screens/Settings.js';
 import { SetupScreen } from './screens/Setup.js';
+import { AppShell } from './shell.js';
 import { Logo } from './ui.js';
 
 /**
@@ -33,7 +34,7 @@ import { Logo } from './ui.js';
  *  - not connected            → the connection card
  *  - setup required           → /setup only
  *  - signed out               → /welcome, /sign-in
- *  - signed in                → everything else
+ *  - signed in                → everything else, inside the shell
  */
 function Gate({ children, need }: { children: ReactNode; need: 'signed-in' | 'signed-out' }) {
   const { caps, session, connectionError } = useApp();
@@ -69,6 +70,43 @@ function SetupGate() {
   if (connectionError || !caps) return <Gate need="signed-out">{null}</Gate>;
   if (!caps.setup_required && !session.signedIn) return <Navigate to="/welcome" replace />;
   return <SetupScreen />;
+}
+
+/**
+ * Where a screen was before R1, and where it is now. Settings held these
+ * until Settings became settings only; Files sent to you was /incoming,
+ * which the vault's own emails and notifications still link to.
+ */
+const MOVED: ReadonlyArray<readonly [from: string, to: string]> = [
+  ['/settings/activity', '/activity'],
+  ['/settings/trash', '/trash'],
+  ['/settings/sharing', '/sharing'],
+  ['/settings/sharing/ask', '/sharing/ask'],
+  ['/settings/guests', '/people/outside'],
+  ['/settings/after-restore', '/after-restore'],
+  ['/incoming', '/inbox'],
+  ['/incoming/:id', '/inbox/:id'],
+];
+
+/**
+ * The same screen at its new address, the old one replaced in the history
+ * (so Back does not bounce): what was asked (?person=…), where on the page
+ * (#…) and what the last screen said there come with it.
+ */
+function Moved({ to }: { to: string }) {
+  const location = useLocation();
+  const state: unknown = location.state;
+  const params = useParams();
+  const pathname = to.replace(/:(\w+)/g, (_whole: string, name: string) =>
+    encodeURIComponent(params[name] ?? ''),
+  );
+  return (
+    <Navigate
+      to={{ pathname, search: location.search, hash: location.hash }}
+      state={state}
+      replace
+    />
+  );
 }
 
 export function App() {
@@ -115,244 +153,61 @@ export function App() {
               </Gate>
             }
           />
+          {/* Every signed-in screen, inside the shell (Phase 6, R1). */}
           <Route
-            path="/"
             element={
               <Gate need="signed-in">
-                <HomeScreen />
+                <AppShell />
               </Gate>
             }
-          />
-          <Route
-            path="/add"
-            element={
-              <Gate need="signed-in">
-                <AddScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/documents/:id"
-            element={
-              <Gate need="signed-in">
-                <DocumentScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/documents/:id/read"
-            element={
-              <Gate need="signed-in">
-                <ReaderScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/documents/:id/confirm"
-            element={
-              <Gate need="signed-in">
-                <ConfirmScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/search"
-            element={
-              <Gate need="signed-in">
-                <SearchScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/reminders"
-            element={
-              <Gate need="signed-in">
-                <RemindersScreen />
-              </Gate>
-            }
-          />
-          {/* The household's questions on their own, from Reminders (5.35). */}
-          <Route
-            path="/household-questions"
-            element={
-              <Gate need="signed-in">
-                <HouseholdQuestionsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/people"
-            element={
-              <Gate need="signed-in">
-                <PeopleScreen />
-              </Gate>
-            }
-          />
-          {/* A person's profile, from People (and old bookmarks); their
-              documents, from Home (A64). */}
-          <Route
-            path="/people/:id"
-            element={
-              <Gate need="signed-in">
-                <ProfileScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/people/:id/documents"
-            element={
-              <Gate need="signed-in">
-                <PersonDocumentsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/collections"
-            element={
-              <Gate need="signed-in">
-                <CollectionsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/collections/:id"
-            element={
-              <Gate need="signed-in">
-                <CollectionScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <Gate need="signed-in">
-                <SettingsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/notifications"
-            element={
-              <Gate need="signed-in">
-                <NotificationsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/activity"
-            element={
-              <Gate need="signed-in">
-                <ActivityScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/trash"
-            element={
-              <Gate need="signed-in">
-                <TrashScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/storage"
-            element={
-              <Gate need="signed-in">
-                <StorageScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/household"
-            element={
-              <Gate need="signed-in">
-                <HouseholdScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/family"
-            element={
-              <Gate need="signed-in">
-                <FamilyScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/guests"
-            element={
-              <Gate need="signed-in">
-                <GuestsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/after-restore"
-            element={
-              <Gate need="signed-in">
-                <AfterRestoreScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/sharing"
-            element={
-              <Gate need="signed-in">
-                <SharingScreen />
-              </Gate>
-            }
-          />
-          {/* Ask for documents (5.22): from Sharing, and from a person's
-              page (?person=<their id>, a hint for whoever reviews). */}
-          <Route
-            path="/settings/sharing/ask"
-            element={
-              <Gate need="signed-in">
-                <AskForDocumentsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/kinds"
-            element={
-              <Gate need="signed-in">
-                <KindsScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/kinds/new"
-            element={
-              <Gate need="signed-in">
-                <KindScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/settings/kinds/:key"
-            element={
-              <Gate need="signed-in">
-                <KindScreen />
-              </Gate>
-            }
-          />
-          {/* What was sent through a request, looked at before it is filed (5.23). */}
-          <Route
-            path="/incoming"
-            element={
-              <Gate need="signed-in">
-                <IncomingScreen />
-              </Gate>
-            }
-          />
-          <Route
-            path="/incoming/:id"
-            element={
-              <Gate need="signed-in">
-                <IncomingFileScreen />
-              </Gate>
-            }
-          />
+          >
+            <Route path="/" element={<HomeScreen />} />
+            <Route path="/add" element={<AddScreen />} />
+            {/* Documents in the sidebar: until R2 builds the Documents table
+                here, today's browse view (Search with no query). */}
+            <Route path="/documents" element={<SearchScreen title="Documents" />} />
+            <Route path="/documents/:id" element={<DocumentScreen />} />
+            <Route path="/documents/:id/read" element={<ReaderScreen />} />
+            <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />
+            <Route path="/search" element={<SearchScreen />} />
+            <Route path="/reminders" element={<RemindersScreen />} />
+            {/* The household's questions on their own, from Reminders (5.35). */}
+            <Route path="/household-questions" element={<HouseholdQuestionsScreen />} />
+            <Route path="/people" element={<PeopleScreen />} />
+            {/* Beside the family, for owners (5.34; under People since R1). */}
+            <Route path="/people/outside" element={<GuestsScreen />} />
+            {/* A person's profile, from People (and old bookmarks); their
+                documents, from Home (A64). */}
+            <Route path="/people/:id" element={<ProfileScreen />} />
+            <Route path="/people/:id/documents" element={<PersonDocumentsScreen />} />
+            <Route path="/collections" element={<CollectionsScreen />} />
+            <Route path="/collections/:id" element={<CollectionScreen />} />
+            {/* What was sent through a request, looked at before it is filed
+                (5.23): the Inbox since R1. */}
+            <Route path="/inbox" element={<IncomingScreen />} />
+            <Route path="/inbox/:id" element={<IncomingFileScreen />} />
+            <Route path="/sharing" element={<SharingScreen />} />
+            {/* Ask for documents (5.22): from Sharing, and from a person's
+                page (?person=<their id>, a hint for whoever reviews). */}
+            <Route path="/sharing/ask" element={<AskForDocumentsScreen />} />
+            <Route path="/activity" element={<ActivityScreen />} />
+            <Route path="/trash" element={<TrashScreen />} />
+            {/* From Home's banner, while a restore has paused something. */}
+            <Route path="/after-restore" element={<AfterRestoreScreen />} />
+            {/* Settings holds settings only (R1). */}
+            <Route path="/settings" element={<SettingsScreen />} />
+            <Route path="/settings/notifications" element={<NotificationsScreen />} />
+            <Route path="/settings/email" element={<EmailScreen />} />
+            <Route path="/settings/storage" element={<StorageScreen />} />
+            <Route path="/settings/household" element={<HouseholdScreen />} />
+            <Route path="/settings/family" element={<FamilyScreen />} />
+            <Route path="/settings/kinds" element={<KindsScreen />} />
+            <Route path="/settings/kinds/new" element={<KindScreen />} />
+            <Route path="/settings/kinds/:key" element={<KindScreen />} />
+          </Route>
+          {MOVED.map(([from, to]) => (
+            <Route key={from} path={from} element={<Moved to={to} />} />
+          ))}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

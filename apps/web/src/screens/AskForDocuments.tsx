@@ -28,7 +28,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, Check, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
+import { Button, Check, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
 import { DEVICE_ONLY_NOTE, EndPicker, insecureLink, PasswordChoice } from './Share.js';
 
 /**
@@ -206,7 +206,7 @@ export function AskForDocumentsScreen() {
   const [params] = useSearchParams();
   const fromPerson = params.get('person');
   const mayAsk = can(storedRole(), 'upload_request.create');
-  const back = fromPerson ? `/people/${encodeURIComponent(fromPerson)}` : '/settings/sharing';
+  const back = fromPerson ? `/people/${encodeURIComponent(fromPerson)}` : '/sharing';
   const [value, setValue] = useState<AskValue>(() => ({ ...START, person: fromPerson ?? '' }));
   const set = (change: Partial<AskValue>) => setValue((v) => ({ ...v, ...change }));
   const [made, setMade] = useState<CreatedUploadRequest | null>(null);
@@ -262,9 +262,8 @@ export function AskForDocumentsScreen() {
   if (!mayAsk) {
     return (
       <main className="page page-top has-nav">
-        <TopBar title="Ask for documents" back="/settings" />
+        <TopBar title="Ask for documents" back="/" />
         <p className="lede">Only an owner or an adult can ask someone to send documents.</p>
-        <BottomNav />
       </main>
     );
   }
@@ -309,7 +308,6 @@ export function AskForDocumentsScreen() {
           timezone={timezone}
           onDone={() => void navigate(back, { replace: true })}
         />
-        <BottomNav />
       </main>
     );
   }
@@ -680,7 +678,6 @@ export function AskForDocumentsScreen() {
           </p>
         )}
       </form>
-      <BottomNav />
     </main>
   );
 }

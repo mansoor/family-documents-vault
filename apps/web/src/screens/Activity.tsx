@@ -2,7 +2,7 @@ import { whenExactly, whenWords, type ActivityLine } from '@fdv/shared';
 import { useState } from 'react';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { BottomNav, Button, ErrorNote, TopBar } from '../ui.js';
+import { Button, ErrorNote, TopBar } from '../ui.js';
 
 /**
  * The household activity log (SHR-07).
@@ -44,8 +44,8 @@ export function ActivityScreen() {
   };
 
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="What has been happening" back="/settings" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="What has been happening" />
       <ErrorNote message={error ?? loadError} />
       <p className="muted">
         Everything anybody has done in this vault. Your own private documents are only ever in your
@@ -83,7 +83,6 @@ export function ActivityScreen() {
           {busy ? 'Loading…' : 'Show older'}
         </Button>
       )}
-      <BottomNav />
     </main>
   );
 }

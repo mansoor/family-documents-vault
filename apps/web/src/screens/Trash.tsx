@@ -4,7 +4,7 @@ import { Link } from 'react-router';
 import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, TopBar, TrashIcon } from '../ui.js';
 
 /**
  * What its filer — and anybody else looking at the Trash — is told of an
@@ -168,8 +168,8 @@ export function TrashScreen() {
   };
 
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Trash" back="/settings" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="Trash" />
       <ErrorNote message={error ?? first.error} />
       <p className="muted">
         Documents moved to the Trash. They are out of every list, search and reminder until somebody
@@ -254,7 +254,6 @@ export function TrashScreen() {
           onCancel={() => setConfirming(null)}
         />
       )}
-      <BottomNav />
     </main>
   );
 }

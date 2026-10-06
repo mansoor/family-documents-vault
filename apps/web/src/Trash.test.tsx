@@ -6,7 +6,7 @@ import { App } from './App.js';
 import { fresh, installFakeApi, PASSPORT, signedIn, type FakeState } from './test-api.js';
 
 /**
- * Removing a document for good, on the web (5.24): in Settings → Trash, for
+ * Removing a document for good, on the web (5.24): in the Trash, for
  * owners — at once for one they filed or that is theirs, "Ask to remove for
  * good" for anybody else's, then "Remove for good from {time}" — through the
  * app's own dialog and "confirm it's you"; and what whoever filed it is
@@ -53,7 +53,7 @@ const openTrash = async (
 ) => {
   installFakeApi(state);
   signedIn(role);
-  window.history.replaceState({}, '', '/settings/trash');
+  window.history.replaceState({}, '', '/trash');
   const shown = render(<App />);
   await screen.findByRole('heading', { name: 'Trash' });
   return shown;
@@ -202,7 +202,7 @@ describe('removing a document for good, on the web (5.24)', () => {
     expect(notice).toHaveTextContent('“My payslip”');
     expect(notice).toHaveTextContent(words);
     const open = within(notice).getByRole('link', { name: 'Open the Trash' });
-    expect(open).toHaveAttribute('href', '/settings/trash');
+    expect(open).toHaveAttribute('href', '/trash');
     // Seen as a link, underlined (the review, W524-6).
     expect(open).toHaveClass('quiet-link');
     await expectAccessible();

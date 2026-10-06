@@ -43,7 +43,6 @@ import { IdentityCard } from '../identity.js';
 import { PersonAvatar } from '../person-avatar.js';
 import { storedRole } from '../session.js';
 import {
-  BottomNav,
   Button,
   Check,
   ConfirmDialog,
@@ -159,7 +158,6 @@ export function ProfileScreen() {
         <Link to="/people" className="btn btn-quiet">
           Back to People
         </Link>
-        <BottomNav />
       </main>
     );
   }
@@ -247,7 +245,7 @@ export function ProfileScreen() {
               request says, for whoever reviews, whose they probably are. */}
           {can(myRole, 'upload_request.create') && !member.is_deceased && (
             <Link
-              to={`/settings/sharing/ask?person=${encodeURIComponent(member.id)}`}
+              to={`/sharing/ask?person=${encodeURIComponent(member.id)}`}
               className="btn btn-quiet ask-start"
             >
               {member.is_me
@@ -259,7 +257,6 @@ export function ProfileScreen() {
           <RoleControls member={member} onChanged={reload} />
         </>
       )}
-      <BottomNav />
     </main>
   );
 }
@@ -1407,7 +1404,7 @@ export function PersonDocumentsScreen() {
   const name = member ? nameOf(member, data?.members ?? []) : '';
   const title = member ? (member.is_me ? 'Your documents' : `${name}’s documents`) : 'Documents';
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar title={title} back={back} />
       <ErrorNote message={error} />
       {data && !member && <p className="lede">We can’t find that person.</p>}
@@ -1428,7 +1425,6 @@ export function PersonDocumentsScreen() {
         ))}
         {data && member && data.docs.length === 0 && <li className="muted">No documents yet.</li>}
       </ul>
-      <BottomNav />
     </main>
   );
 }

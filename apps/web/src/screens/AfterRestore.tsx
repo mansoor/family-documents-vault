@@ -10,11 +10,69 @@ import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
 import { linkTarget, RequestRow, requestTarget, turnedBackOnWords } from './Sharing.js';
 
 /**
- * Settings → After a restore (5.16).
+ * "1 link is paused until you turn it back on", "2 links and 1 request you
+ * made are paused"; since 5.28 an owner's sign-ins first: "1 sign-in, 2
+ * links and 1 request are paused until you turn them back on".
+ */
+export function pausedWords(
+  waiting: { links: number; requests: number; signIns?: number },
+  owner: boolean,
+): string {
+  const signIns = waiting.signIns ?? 0;
+  const count = (n: number, one: string, many: string) =>
+    n > 0 ? `${n} ${n === 1 ? one : many}` : null;
+  const parts = [
+    count(signIns, 'sign-in', 'sign-ins'),
+    count(waiting.links, 'link', 'links'),
+    count(waiting.requests, 'request', 'requests'),
+  ].filter((p): p is string => p !== null);
+  const many = signIns + waiting.links + waiting.requests > 1;
+  const last = parts.pop();
+  const what = parts.length > 0 ? `${parts.join(', ')} and ${last ?? ''}` : (last ?? '');
+  return owner
+    ? `${what} ${many ? 'are' : 'is'} paused until you turn ${many ? 'them' : 'it'} back on`
+    : `${what} you made ${many ? 'are' : 'is'} paused`;
+}
+
+/**
+ * The way to After a restore (R1; in Settings until then): on Home, and
+ * only while a restore has paused something the reader may decide about
+ * (5.16) — an owner, any link; anybody else who may share, the links they
+ * made, which only an owner turns back on. Requests to send documents count
+ * too (5.22), and the sign-ins it paused, which only an owner is given
+ * (5.28). Nothing at all otherwise: it is a task, not a place.
+ */
+export function AfterRestoreBanner() {
+  const { authVersion } = useApp();
+  const mayShare = can(storedRole(), 'document.share');
+  const owner = can(storedRole(), 'restore.review');
+  const { data: waiting } = useLoad(
+    async (t) => {
+      if (!mayShare) return null;
+      const paused = await api.afterRestore(t);
+      return {
+        links: paused.links.length,
+        requests: (paused.upload_requests ?? []).length,
+        signIns: (paused.sign_ins ?? []).length,
+      };
+    },
+    [authVersion, mayShare],
+  );
+  if (!waiting || waiting.links + waiting.requests + waiting.signIns === 0) return null;
+  return (
+    <Link to="/after-restore" className="attention attention-warn">
+      <strong>After a restore</strong>
+      <span className="muted">{pausedWords(waiting, owner)}</span>
+    </Link>
+  );
+}
+
+/**
+ * After a restore (5.16): from Home, while a restore has paused something.
  *
  * A backup is the vault as it was when it was made: a link taken back since
  * is live again in it, and the line in the activity log that said who took
@@ -145,7 +203,7 @@ export function AfterRestoreScreen() {
   const signIns = waiting?.signIns ?? [];
   return (
     <main className="page page-top has-nav">
-      <TopBar title="After a restore" back="/settings" />
+      <TopBar title="After a restore" back="/" />
       <p className="lede">
         The vault was put back from a backup. A link taken back after that backup was made would
         work again, so every link was paused.{' '}
@@ -325,7 +383,6 @@ export function AfterRestoreScreen() {
           </p>
         </ConfirmDialog>
       )}
-      <BottomNav />
     </main>
   );
 }

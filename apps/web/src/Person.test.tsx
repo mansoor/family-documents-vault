@@ -618,11 +618,11 @@ describe("a person's photo (5.17c)", () => {
     await waitFor(() => expect(photo()?.getAttribute('src')).toBe('blob:photo-1'));
     expect(state.calls.filter((c) => c.url.endsWith('/photo/p-1'))).toHaveLength(1);
     // Signing out lets every one go.
-    fireEvent.click(screen.getByRole('link', { name: 'Home' }));
-    fireEvent.click(await screen.findByRole('link', { name: 'Settings' }));
-    const signOut = await screen.findAllByRole('button', { name: 'Sign out' });
+    // From the account menu, since R1.
+    fireEvent.click(screen.getByRole('button', { name: /^Your account/ }));
+    const signOut = await screen.findByRole('menuitem', { name: 'Sign out' });
     await act(async () => {
-      fireEvent.click(signOut[signOut.length - 1] as HTMLElement);
+      fireEvent.click(signOut);
     });
     await waitFor(() => expect(photosHeld()).toBe(0));
     expect(revoked).toHaveBeenCalledWith('blob:photo-1');
@@ -1373,7 +1373,7 @@ describe('locking a sign-in (5.28)', () => {
     expect(within(region).queryByText(/Locking signs/)).not.toBeInTheDocument();
   });
 
-  describe('Settings → After a restore: the sign-ins waiting', () => {
+  describe('After a restore, from Home: the sign-ins waiting', () => {
     const VIC = { ...AISHA, id: 'm-4', display_name: 'Vic', has_account: true, role: 'viewer' };
     const paused = (id: string, role: MemberAccount['role']) =>
       card({
@@ -1390,7 +1390,7 @@ describe('locking a sign-in (5.28)', () => {
       });
       installFakeApi(state);
       signedIn();
-      at('/settings');
+      at('/');
       render(<App />);
       fireEvent.click(
         await screen.findByRole('link', {
@@ -1409,7 +1409,11 @@ describe('locking a sign-in (5.28)', () => {
 
       // Asked to confirm it is them with a passkey or a code, as for an unlock.
       state.accountStepUp = true;
-      fireEvent.click(within(list).getByRole('button', { name: 'Turn back on Tess’s sign-in' }));
+      // Pressed, as a browser does it: focus on the button first, not on the
+      // page's heading, where coming here put it (R1).
+      const turnOn = within(list).getByRole('button', { name: 'Turn back on Tess’s sign-in' });
+      turnOn.focus();
+      fireEvent.click(turnOn);
       await confirmWithCode();
       const said = await screen.findByText('Tess can sign in again.');
       await waitFor(() => expect(said).toHaveFocus());
@@ -1431,7 +1435,7 @@ describe('locking a sign-in (5.28)', () => {
         }),
       );
       signedIn();
-      at('/settings/after-restore');
+      at('/after-restore');
       render(<App />);
       const list = await screen.findByRole('list', { name: 'Paused sign-ins' });
       expect(
@@ -1452,7 +1456,7 @@ describe('locking a sign-in (5.28)', () => {
         fresh({ members: [ME, TESS, VIC], accounts: { 'm-1': paused('m-1', 'teen') } }),
       );
       signedIn('adult');
-      at('/settings/after-restore');
+      at('/after-restore');
       render(<App />);
       await screen.findByRole('heading', { name: /paused links/i });
       expect(screen.queryByRole('list', { name: 'Paused sign-ins' })).not.toBeInTheDocument();
@@ -1514,7 +1518,7 @@ describe('locking a sign-in (5.28)', () => {
     });
     installFakeApi(state);
     signedIn();
-    at('/settings/after-restore');
+    at('/after-restore');
     render(<App />);
     await screen.findByText('Sara’s payslip');
     const row = (title: string) => screen.getByText(title).closest('li') as HTMLElement;
@@ -1581,7 +1585,7 @@ describe('locking a sign-in (5.28)', () => {
     const state = fresh({ members: [ME, TESS], shares: [link], uploadRequests: [request] });
     installFakeApi(state);
     signedIn();
-    at('/settings/after-restore');
+    at('/after-restore');
     render(<App />);
     await screen.findByText('Sara’s payslip');
     state.accountStepUp = false;

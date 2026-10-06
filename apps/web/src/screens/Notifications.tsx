@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { whenWords, type DeviceRow } from '@fdv/shared';
+import { refusalFor, whenWords, type DeviceRow } from '@fdv/shared';
+import { Link } from 'react-router';
 import { api, type SmtpProvider, type SmtpView } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import * as push from '../push.js';
 import { Button, ErrorNote, Field, TopBar } from '../ui.js';
 
 /**
- * "How you hear about things": notifications on this device, what each
- * person wants, and — for owners — the household's own email settings
- * (decision 13: bring your own SMTP, with presets and a Test).
+ * "How you hear about things": notifications on this device, and what each
+ * person wants. The household's own email settings are Household's, in
+ * Settings, since R1 (`EmailScreen`).
  */
 export function NotificationsScreen() {
   const { withToken, session, authVersion } = useApp();
@@ -110,10 +111,34 @@ export function NotificationsScreen() {
           checked={prefs?.weekly_email ?? true}
           onChange={(v) => void setPref({ weekly_email: v })}
         />
-        {!isOwner && <p className="muted">Email needs an owner to set up the mail server.</p>}
+        {isOwner ? (
+          <p className="muted">
+            Email needs the mail server set up:{' '}
+            <Link to="/settings/email">Where email comes from</Link>, under Household in Settings.
+          </p>
+        ) : (
+          <p className="muted">Email needs an owner to set up the mail server.</p>
+        )}
       </section>
+    </main>
+  );
+}
 
-      {isOwner && <SmtpSection />}
+/**
+ * Where email comes from (decision 13: bring your own SMTP, with presets
+ * and a Test): the household's, set by an owner. Under Household in
+ * Settings since R1; on How you hear about things until then.
+ */
+export function EmailScreen() {
+  const { session } = useApp();
+  return (
+    <main className="page page-top">
+      <TopBar title="Where email comes from" back="/settings" />
+      {session.info?.role === 'owner' ? (
+        <SmtpSection />
+      ) : (
+        <p className="lede">{refusalFor('notifications.manage')}</p>
+      )}
     </main>
   );
 }
@@ -217,10 +242,7 @@ function SmtpSection() {
   };
 
   return (
-    <section className="card stack" aria-labelledby="smtp-h">
-      <h2 id="smtp-h" style={{ fontSize: 18 }}>
-        Where email comes from
-      </h2>
+    <section className="card stack" aria-label="The mail server">
       {smtp?.configured && !touched ? (
         <>
           <p className={smtp.status === 'ok' ? 'status status-ok' : 'status status-danger'}>

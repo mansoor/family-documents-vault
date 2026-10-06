@@ -16,7 +16,6 @@ import { mayChange } from '../DocActions.js';
 import { asksFor, coreRule, detailText, useAttributes } from '../details.js';
 import { NotesSection } from '../notes.js';
 import {
-  BottomNav,
   Button,
   categoryLabel,
   ConfirmDialog,
@@ -184,7 +183,6 @@ export function DocumentScreen() {
       <main className="page page-top has-nav">
         <TopBar title="Document" back="/" />
         <ErrorNote message={error} />
-        <BottomNav />
       </main>
     );
   }
@@ -192,7 +190,6 @@ export function DocumentScreen() {
     return (
       <main className="page page-top has-nav">
         <TopBar title="Document" back="/" />
-        <BottomNav />
       </main>
     );
 
@@ -481,7 +478,6 @@ export function DocumentScreen() {
           onCancel={() => setConfirmingTrash(false)}
         />
       )}
-      <BottomNav />
     </main>
   );
 }

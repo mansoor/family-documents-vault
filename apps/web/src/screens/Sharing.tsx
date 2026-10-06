@@ -4,10 +4,10 @@ import { Link } from 'react-router';
 import { api, type Share } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, TopBar } from '../ui.js';
 
 /**
- * Settings → Sharing (5.19): every link outside the family the reader may
+ * Sharing (5.19): every link outside the family the reader may
  * know about — to a document, or to a collection — in one list, each taken
  * back after asking (5.1's dialog). A collection's link is listed only to
  * whoever can see the collection and every document it was made with (or
@@ -234,8 +234,8 @@ export function SharingScreen() {
   const askedLive = asked.filter(requestWorking);
   const askedEnded = asked.filter((r) => !requestWorking(r)).slice(0, 20);
   return (
-    <main className="page page-top has-nav">
-      <TopBar title="Sharing" back="/settings" />
+    <main className="page page-top page-wide has-nav">
+      <TopBar title="Sharing" />
       <p className="lede">
         Links to documents and collections outside the family
         {mayAsk ? ', and requests for someone to send you documents' : ''}. Each works until its
@@ -291,7 +291,7 @@ export function SharingScreen() {
             A link for someone outside the family to send you files — your accountant, a solicitor.
             They see nothing in the vault.
           </p>
-          <Link to="/settings/sharing/ask" className="btn btn-primary ask-start">
+          <Link to="/sharing/ask" className="btn btn-primary ask-start">
             Ask for documents
           </Link>
           {requests.data !== null && askedLive.length === 0 && (
@@ -363,7 +363,6 @@ export function SharingScreen() {
           </p>
         </ConfirmDialog>
       )}
-      <BottomNav />
     </main>
   );
 }
@@ -440,7 +439,7 @@ export function RequestRow(props: {
             </Button>
           )}
           {signInFirst && (
-            <Link to="/settings/after-restore" className="btn btn-quiet">
+            <Link to="/after-restore" className="btn btn-quiet">
               {r.requested_by_name
                 ? `Turn on ${r.requested_by_name}’s sign-in`
                 : 'Turn on their sign-in'}
