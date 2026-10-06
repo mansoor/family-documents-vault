@@ -490,6 +490,75 @@ h3 {
   cursor: default;
 }
 
+/* What the pages propose (5.37, A44): a chip to tap, and how sure, lightly. */
+.pill-sugg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  flex-grow: 0;
+  gap: 4px 8px;
+  padding: 6px 14px;
+  border-style: dashed;
+  border-color: var(--accent);
+  text-align: left;
+}
+
+.pill-sugg-value {
+  overflow-wrap: anywhere;
+}
+
+.mark-sugg {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.sugg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sugg-h {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.sugg-card p {
+  margin: 0;
+}
+
+.sugg-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sugg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.sugg-field {
+  flex: 0 0 8.5em;
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+
 .steps {
   display: flex;
   gap: 6px;

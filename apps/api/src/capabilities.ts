@@ -120,6 +120,9 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.34: someone outside the family with a sign-in of their own: a
       // viewer, always limited, ending within a year (D4, A28).
       guests: true,
+      // 5.37: what a document's pages propose for its empty fields, each
+      // with a confidence, offered to whoever may change it (A44).
+      detail_suggestions: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

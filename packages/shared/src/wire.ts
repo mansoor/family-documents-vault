@@ -1,4 +1,5 @@
 import type { DateValue, DocumentView, Visibility } from './documents.js';
+import type { DetailProposal } from './proposals.js';
 import type { MemberKind } from './guests.js';
 import type { IdentityAudience, IdentityFields, IdentityPart } from './identity.js';
 import type { MemberAccess, MyRestriction, RestrictionSummary } from './restrictions.js';
@@ -940,6 +941,20 @@ export interface IssuerCount {
 export interface IssuerSuggestions {
   state: 'ready' | 'pending' | 'unavailable';
   items: Array<{ value: string; source: 'known' | 'page' }>;
+}
+
+/**
+ * GET /documents/{id}/suggestions (5.37, `features.detail_suggestions`):
+ * what its newest version's pages propose for it (`proposeDetails`),
+ * worked out for this request and never kept. 'pending' while the vault is
+ * still reading the pages; 'unavailable' when there are none it can read
+ * (no file yet, a kind of file it does not read, a reading that failed).
+ * `proposal` is empty unless 'ready' — and often then too: a page that
+ * does not say proposes nothing.
+ */
+export interface DetailSuggestions {
+  state: 'ready' | 'pending' | 'unavailable';
+  proposal: DetailProposal;
 }
 
 export interface SearchResult {

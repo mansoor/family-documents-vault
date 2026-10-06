@@ -3676,6 +3676,57 @@ guest_always_limited`. A guest owns no document, by any path — made,
       waiting when the same person is invited again — by its maker or an
       owner only (`409 already_invited`).
 
+  - The vault reads what it can, and suggests (5.37,
+    `features.detail_suggestions`; A44, A46).
+    - **Added:** `GET /api/v1/documents/{id}/suggestions` — what the
+      words on a document's newest version propose for the fields it has no
+      value for: `{ "state": "ready" | "pending" | "unavailable",
+"proposal": { … } }`. `proposal` has at most `type_key`,
+      `owner_member_id`, `issued`, `expires` (each a `DateValue`),
+      `identifier` and `issued_by`, each `{ "value", "confidence", "cue" }`:
+      a confidence from 0 to 1, never below `PROPOSAL_THRESHOLDS` for its
+      field (anything below is left out), and a cue from a fixed list
+      (`PROPOSAL_CUES`: `kind_words`, `machine_lines`, `name_labelled`,
+      `issue_label`, `expiry_label`, `due_label`, `period_end`,
+      `number_label`, `known_issuer`, `letterhead`, `issuing_body`, …) —
+      a reason, never the page's words. A field the document has a value
+      for is never proposed. `pending` while the worker is still reading
+      the pages; `unavailable` with no file, or a kind of file it does not
+      read; `proposal` is `{}` unless `ready`, and often then. Offered,
+      never filled in: nothing is written, and neither the words nor the
+      proposal is kept or logged (`Cache-Control: no-store`). An Only me
+      document's words are opened only in its owner's own request (404 to
+      anybody else, as for a document that does not exist). Refused as any
+      edit is: `403` to a viewer, limited or not, and a guest, whatever the
+      id; a teen is answered for their own documents only.
+    - The rules (`@fdv/shared`, `proposeDetails`): no cue, no answer; no
+      date and no number without a confident kind — the document's own, or
+      one the page proposes at the 2.6 spike's bar (a score of 5, 2 ahead
+      of the next); only the dates that kind keeps; whose it is, by the
+      family's names where the page names its holder (never a guest, and
+      nobody when two of the family are named together); a passport's
+      machine-readable lines believed only with their check digits right;
+      a date in numbers whose order the document does not show read in the
+      household's (`profile.country`, the US month first), and not at all
+      without one. English only (A46).
+    - **Unchanged:** `GET /documents/{id}/issuer-suggestions` stays, for
+      older phones.
+    - **Changed (the worker):** a PDF's text is read from the PDF itself
+      (poppler's `pdftotext`); only a page with none — a scan — is drawn
+      and OCR'd, so a text PDF never reaches Tesseract. A Word file's words
+      are read from its XML (its headers, body and footers), so it is
+      searched, and suggested from, as a PDF is; `ocr_status` is `done` for
+      it. An Excel workbook is still not read. The text kept of one
+      version is at most 500,000 characters. `FDV_OCR_MAX_PAGES` (20) is
+      now the pages of a PDF read, by its own text or by OCR.
+    - `@fdv/shared`: `proposeDetails`, `ProposalContext`, `DetailProposal`,
+      `Proposed`, `PROPOSAL_FIELDS`, `PROPOSAL_CUES`, `CUE_WORDS`,
+      `PROPOSAL_THRESHOLDS`, `KIND_MIN_SCORE`, `KIND_MIN_LEAD`,
+      `scoredIssuers`, `DetailSuggestions` and
+      `features.detail_suggestions`. `@fdv/client`: `detailSuggestions`;
+      the fake answers what a test gives it, `unavailable` otherwise, and
+      refuses a viewer as the vault does.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and

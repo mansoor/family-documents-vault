@@ -104,6 +104,7 @@ const EXTRA_KEY = '4d5e6f70-8192-4a34-9b5c-6d7e8f901234';
 const REFUSED_EXTRA_KEY = '5e6f7081-92a3-4b45-8c6d-7e8f90123456';
 const GONE_KIND_KEY = '6f708192-a3b4-4c56-9d7e-8f9012345678';
 const OWN_KIND_KEY = '708192a3-b4c5-4d67-8e8f-90123456789a';
+const SUGGESTIONS_KEY = '8192a3b4-c5d6-4e78-9f80-123456789abc';
 
 async function refusal(p: Promise<unknown>): Promise<ApiRequestError> {
   try {
@@ -345,6 +346,34 @@ export const contractScenarios: Scenario[] = [
       const offered = await api.issuerSuggestions(token, made.document_id);
       expect(['pending', 'unavailable']).toContain(offered.state);
       expect(offered.items).toEqual([]);
+    },
+  },
+  {
+    name: 'pages nobody has read yet propose nothing, and the vault says so (5.37)',
+    run: async (api, ctx) => {
+      const token = (ctx.tokens as Tokens).access_token;
+      expect((await api.capabilities()).features.detail_suggestions).toBe(true);
+      const made = await api.capture(
+        token,
+        {
+          metadata: { title: 'Contract scan' },
+          file: {
+            kind: 'bytes',
+            filename: 'scan.pdf',
+            contentType: 'application/pdf',
+            bytes: PDF,
+          },
+        },
+        SUGGESTIONS_KEY,
+      );
+      const offered = await api.detailSuggestions(token, made.document_id);
+      expect(['pending', 'unavailable']).toContain(offered.state);
+      expect(offered.proposal).toEqual({});
+      // A document that is not there is not there.
+      const missing = await refusal(
+        api.detailSuggestions(token, '00000000-0000-4000-8000-000000000000'),
+      );
+      expect(missing.status).toBe(404);
     },
   },
   {

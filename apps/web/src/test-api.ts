@@ -12,6 +12,7 @@ import {
   maskIdentity,
   mergeIdentityWrite,
   revealIdentity,
+  type DetailSuggestions,
   type IdentityAudience,
   type IdentityAudienceView,
   type IdentityFields,
@@ -442,6 +443,13 @@ export interface FakeState {
     }
   >;
   /**
+   * GET /documents/{id}/suggestions, by document id (5.37): what its pages
+   * propose. Given, the vault says it suggests (`features.detail_suggestions`);
+   * a document not here answers 'unavailable'. A field the document has a
+   * value for by then is left out, as the vault leaves it.
+   */
+  detailSuggestions?: Record<string, DetailSuggestions>;
+  /**
    * People's identity details (5.27, over 5.26's API), by member id: each
    * part's fields, as the vault keeps them sealed, and its version. Given,
    * the vault says it keeps them (`features.member_identity`). The one
@@ -799,6 +807,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.accessRestrictions !== false ? { access_restrictions: true } : {}),
           // Someone outside the family (5.34): said when a test gives guests.
           ...(state.guests ? { guests: true } : {}),
+          // What the pages propose (5.37): said when a test gives some.
+          ...(state.detailSuggestions ? { detail_suggestions: true } : {}),
         },
         limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
         deprecations: [],
@@ -2992,6 +3002,22 @@ export function installFakeApi(state: FakeState) {
       return made
         ? json({ state: 'done', document_id: made, version_id: 'v-new' })
         : json({ error: { code: 'not_found', message: 'That upload is not known here.' } }, 404);
+    }
+    const proposalMatch = /^\/api\/v1\/documents\/([^/]+)\/suggestions$/.exec(path);
+    if (proposalMatch) {
+      const id = proposalMatch[1] as string;
+      const given = state.detailSuggestions?.[id];
+      const doc = state.documents.find((d) => d.id === id);
+      if (!given || given.state !== 'ready' || !doc) {
+        return json({ state: given?.state ?? 'unavailable', proposal: {} });
+      }
+      const has = (v: unknown) => v !== null && v !== undefined && v !== '';
+      return json({
+        state: 'ready',
+        proposal: Object.fromEntries(
+          Object.entries(given.proposal).filter(([field]) => !has(doc[field])),
+        ),
+      });
     }
     const suggestionsMatch = /^\/api\/v1\/documents\/([^/]+)\/issuer-suggestions$/.exec(path);
     if (suggestionsMatch) {

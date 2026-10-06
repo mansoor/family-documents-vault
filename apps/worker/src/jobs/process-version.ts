@@ -7,28 +7,31 @@ import { pipeline } from 'node:stream/promises';
 import { DecryptStream, EncryptStream, sealChunk, unwrapKey, type ScopeKeys } from '@fdv/crypto';
 import { withSystem, type Db } from '@fdv/db';
 import { adapterFromRow, readAll, type StorageAdapter } from '@fdv/storage';
+import { extractText } from './extract-text.js';
 import type { SendPreviews } from './previews.js';
 import {
   detectTools,
   drawable,
   imageFrames,
-  ocrImage,
   pdfPageCount,
   readIfExists,
-  renderPdfPages,
   thumbnail,
 } from './tools.js';
+import { WORD_MIME } from './word-text.js';
 
 /**
  * The ingest pipeline's background half (design, Ingest pipeline):
  *
- *   stored -> page count -> thumbnail -> OCR -> index -> (Essentials) pages queued
+ *   stored -> page count -> thumbnail -> text -> index -> (Essentials) pages queued
  *
  * The document is already visible and downloadable; everything here only
  * enriches it. A failed step is recorded on the version and never blocks
  * anything. Thumbnails are encrypted with the version's own file key and
- * cached in the vault; OCR text lands in `document_text` (plain, indexed)
- * or `document_text_sealed` (private documents), never both.
+ * cached in the vault. The text is read by `extractText` (5.37): a PDF's
+ * own, OCR only for its pages with none, a photo's by OCR, a Word file's
+ * from its XML. It lands in `document_text` (plain, indexed) or
+ * `document_text_sealed` (private documents), never both, and is never
+ * logged. `ocr_status` says whether it was read, however it was.
  */
 
 export interface ProcessVersionJob {
@@ -96,7 +99,8 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
   const dir = await mkdtemp(path.join(tmpdir(), 'fdv-proc-'));
   try {
     // 1. Plaintext to a temp file. It lives only for this job.
-    const ext = version.mime === 'application/pdf' ? 'pdf' : 'img';
+    const ext =
+      version.mime === 'application/pdf' ? 'pdf' : version.mime === WORD_MIME ? 'docx' : 'img';
     const plainFile = path.join(dir, `source.${ext}`);
     await writeFile(plainFile, await decryptToBuffer(adapter, version.storage_key, fileKey));
 
@@ -138,19 +142,23 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       }
     }
 
-    // 4. OCR, page by page, bounded.
-    if ((isPdf || isImage) && tools.tesseract && (!isPdf || tools.pdftoppm)) {
-      try {
-        const pages = isPdf ? await renderPdfPages(plainFile, dir, deps.maxOcrPages) : [plainFile];
-        const texts: string[] = [];
-        for (const p of pages) texts.push(await ocrImage(p));
-        const content = texts.join('\n\n').trim();
-        await storeText(deps.db, hh, version.id, doc, scopeKey, content);
+    // 4. The words, bounded: a PDF's own text, OCR only for its pages that
+    // have none, a photo's by OCR, a Word file's (5.37).
+    let read: { source: string; textPages: number; ocrPages: number } | null = null;
+    try {
+      const got = await extractText(plainFile, version.mime, {
+        maxPages: deps.maxOcrPages,
+        workDir: dir,
+        tools,
+      });
+      if (got) {
+        await storeText(deps.db, hh, version.id, doc, scopeKey, got.text);
         update.ocr_status = 'done';
-      } catch (err) {
-        errors.push(`ocr: ${(err as Error).message}`);
-        update.ocr_status = 'failed';
+        read = { source: got.source, textPages: got.textPages, ocrPages: got.ocrPages };
       }
+    } catch (err) {
+      errors.push(`ocr: ${(err as Error).message}`);
+      update.ocr_status = 'failed';
     }
 
     // 5. Page previews (4.7): a kind the vault cannot draw says so now.
@@ -205,6 +213,8 @@ export async function processVersion(deps: ProcessDeps, job: ProcessVersionJob):
       pages: update.page_count ?? null,
       thumbnail: Boolean(update.thumbnail_key),
       ocr: update.ocr_status,
+      // How the words were read, never what they are.
+      text: read ?? undefined,
       errors: errors.length ? errors : undefined,
     });
   } finally {

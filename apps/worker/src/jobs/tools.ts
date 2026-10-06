@@ -7,15 +7,17 @@ const run = promisify(execFile);
 
 /**
  * The three command-line tools the worker image ships: poppler
- * (pdftoppm, pdfinfo), ImageMagick (magick) and Tesseract. Wrapped so the
- * rest of the worker never builds a shell command, and so tests can skip
- * cleanly on a machine without them.
+ * (pdftoppm, pdfinfo, pdftotext), ImageMagick (magick) and Tesseract.
+ * Wrapped so the rest of the worker never builds a shell command, and so
+ * tests can skip cleanly on a machine without them.
  */
 
 export interface Tools {
   pdftoppm: boolean;
   magick: boolean;
   tesseract: boolean;
+  /** poppler's, in the same package as pdftoppm (5.37); absent, every page is OCR'd. */
+  pdftotext?: boolean;
 }
 
 let cached: Tools | null = null;
@@ -35,6 +37,7 @@ export async function detectTools(): Promise<Tools> {
     pdftoppm: await has('pdftoppm', ['-v']),
     magick: (await has('magick', ['-version'])) || (await has('convert', ['-version'])),
     tesseract: await has('tesseract', ['--version']),
+    pdftotext: await has('pdftotext', ['-v']),
   };
   return cached;
 }
@@ -98,6 +101,40 @@ export async function renderPdfPages(
   );
   const files = (await readdir(outDir)).filter((f) => /^page-\d+\.png$/.test(f)).sort();
   return files.map((f) => path.join(outDir, f));
+}
+
+/**
+ * The text a PDF carries of its own, page by page, for its first
+ * `lastPage` pages (5.37): poppler's pdftotext, in reading order, UTF-8. A
+ * page that is a scan comes back empty, or nearly. Nothing is drawn, so it
+ * takes a moment however many pages there are.
+ */
+export async function pdfPageTexts(file: string, lastPage: number): Promise<string[]> {
+  const { stdout } = await run(
+    'pdftotext',
+    ['-q', '-enc', 'UTF-8', '-eol', 'unix', '-f', '1', '-l', String(lastPage), file, '-'],
+    { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
+  );
+  // A form feed ends each page, the last one included.
+  const pages = stdout.split('');
+  if (pages.length > 1 && (pages[pages.length - 1] ?? '').trim() === '') pages.pop();
+  return pages;
+}
+
+/** Draws one page of a PDF as a PNG in `outDir`, as `renderPdfPages` draws them, for OCR. */
+export async function renderPdfPage(
+  file: string,
+  outDir: string,
+  page: number,
+  dpi = 150,
+): Promise<string> {
+  const base = path.join(outDir, `page-${page}`);
+  await run(
+    'pdftoppm',
+    ['-png', '-r', String(dpi), '-f', String(page), '-l', String(page), '-singlefile', file, base],
+    { timeout: 120_000 },
+  );
+  return `${base}.png`;
 }
 
 /**

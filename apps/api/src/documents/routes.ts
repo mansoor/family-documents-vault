@@ -243,6 +243,20 @@ export function registerDocuments(
     },
   );
 
+  /**
+   * What its pages propose for its empty fields, each with a confidence
+   * (5.37): offered, never filled in, never kept (A44).
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/v1/documents/:id/suggestions',
+    auth,
+    async (req, reply) => {
+      // Worked out from the page's words for this person, now: not for keeping.
+      void reply.header('cache-control', 'no-store');
+      return docs.detailSuggestions(principal(req), req.params.id);
+    },
+  );
+
   const searchQuery = z.object({
     q: z.string().trim().min(1).max(200),
     member_id: z.string().uuid().optional(),

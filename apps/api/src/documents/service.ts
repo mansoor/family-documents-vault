@@ -4,10 +4,12 @@ import {
   issuerCandidates,
   mayChangeVisibilityAtAll,
   notesPlainText,
+  proposeDetails,
   PRIVATE_BY_DEFAULT,
   PRIVATE_TO_THEM,
   sentThroughWords,
   visibilityRefusal,
+  type DetailSuggestions,
   type IssuerCount,
   type IssuerSuggestions,
   type KnownIssuer,
@@ -1357,36 +1359,9 @@ export class DocumentService {
     return withPrincipal(this.db, p, async (trx) => {
       const doc = await this.fetch(trx, p, id);
       this.mustOwnIfTeen(p, doc);
-      const version = await trx
-        .selectFrom('document_version')
-        .select(['id', 'ocr_status', 'wrapped_by_scope'])
-        .where('document_id', '=', id)
-        .orderBy('version_no', 'desc')
-        .executeTakeFirst();
-      if (!version) return { state: 'unavailable', items: [] };
-
-      let text: string | null = null;
-      if (doc.visibility === 'private') {
-        const sealed = await trx
-          .selectFrom('document_text_sealed')
-          .select('content_cipher')
-          .where('version_id', '=', version.id)
-          .executeTakeFirst();
-        if (sealed) {
-          const key = await this.keys.unwrapById(trx, version.wrapped_by_scope);
-          text = openSealedText(key, sealed.content_cipher);
-        }
-      } else {
-        const plain = await trx
-          .selectFrom('document_text')
-          .select('content')
-          .where('version_id', '=', version.id)
-          .executeTakeFirst();
-        text = plain?.content ?? null;
-      }
-      if (text === null) {
-        return { state: version.ocr_status === 'pending' ? 'pending' : 'unavailable', items: [] };
-      }
+      const read = await this.pagesText(trx, p, doc);
+      if (read.state !== 'ready') return { state: read.state, items: [] };
+      const { text } = read;
 
       const known = await this.knownIssuers(trx, p, { type_key: doc.type_key ?? undefined });
       // Whose name is on the letter is never who sent it.
@@ -1413,6 +1388,119 @@ export class DocumentService {
         })),
       };
     });
+  }
+
+  /**
+   * GET /documents/{id}/suggestions (5.37): what its pages propose for the
+   * fields it has no value for — its kind, whose it is, its dates, its
+   * number and who issued it — each with a confidence, by `proposeDetails`,
+   * from the household's kinds, the family's names and the issuers the
+   * caller can see. Offered, never filled in (A44): nothing is written, and
+   * nothing is kept — not the text, not the proposal — and neither is ever
+   * logged. Only for whoever may change the document: a viewer, limited or
+   * not, and a guest are refused as for any edit, and a teen is answered
+   * only for their own. 'pending' while the pages are being read.
+   */
+  async detailSuggestions(p: Principal, id: string): Promise<DetailSuggestions> {
+    this.canWrite(p);
+    return withPrincipal(this.db, p, async (trx) => {
+      const doc = await this.fetch(trx, p, id);
+      this.mustOwnIfTeen(p, doc);
+      const read = await this.pagesText(trx, p, doc);
+      if (read.state !== 'ready') return { state: read.state, proposal: {} };
+
+      // The household's kinds as it keeps them now; a hidden one is never proposed.
+      const kinds = await trx
+        .selectFrom('effective_document_type')
+        .selectAll()
+        .where('deleted_at', 'is', null)
+        .execute();
+      // The family by the names the household knows them by: never a guest,
+      // who owns no document (5.34).
+      const family = await trx
+        .selectFrom('member')
+        .select(['id', 'display_name'])
+        .where('kind', '=', 'family')
+        .execute();
+      const household = await trx
+        .selectFrom('household')
+        .select('name')
+        .where('id', '=', p.householdId)
+        .executeTakeFirst();
+      const profile = await trx
+        .selectFrom('household_profile')
+        .select('country')
+        .where('household_id', '=', p.householdId)
+        .executeTakeFirst();
+      const day = (on: string | null, precision: string | null): DateValue | null =>
+        on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;
+      const proposal = proposeDetails(read.text, {
+        types: kinds.map(typeView),
+        people: family.map((m) => ({ id: m.id, name: m.display_name })),
+        issuers: await this.knownIssuers(trx, p, { type_key: doc.type_key ?? undefined }),
+        household: household?.name ?? null,
+        current: {
+          type_key: doc.type_key,
+          owner_member_id: doc.owner_member_id,
+          issued: day(doc.issued_on, doc.issued_precision),
+          expires: day(doc.expires_on, doc.expires_precision),
+          identifier: doc.identifier,
+          issued_by: doc.issued_by,
+        },
+        // 03/04/2031 as the household writes dates: the US month first.
+        dateOrder: profile?.country
+          ? MONTH_FIRST.has(profile.country)
+            ? 'mdy'
+            : 'dmy'
+          : undefined,
+      });
+      return { state: 'ready', proposal };
+    });
+  }
+
+  /**
+   * The words on a document's newest version, for this request alone: from
+   * the search index, or — an Only me document's — opened under its
+   * owner's key, only ever in its owner's own request, as the second search
+   * pass opens them (2.5). Never kept opened. 'pending' while the worker
+   * has not read the pages yet; 'unavailable' when there is nothing to read.
+   */
+  private async pagesText(
+    trx: Db,
+    p: Principal,
+    doc: DocRow,
+  ): Promise<{ state: 'ready'; text: string } | { state: 'pending' | 'unavailable' }> {
+    const version = await trx
+      .selectFrom('document_version')
+      .select(['id', 'ocr_status', 'wrapped_by_scope'])
+      .where('document_id', '=', doc.id)
+      .orderBy('version_no', 'desc')
+      .executeTakeFirst();
+    if (!version) return { state: 'unavailable' };
+    let text: string | null = null;
+    if (doc.visibility === 'private') {
+      // Its owner's, and nobody else's, whatever let them this far.
+      if (doc.owner_member_id !== p.memberId) throw notFound();
+      const sealed = await trx
+        .selectFrom('document_text_sealed')
+        .select('content_cipher')
+        .where('version_id', '=', version.id)
+        .executeTakeFirst();
+      if (sealed) {
+        const key = await this.keys.unwrapById(trx, version.wrapped_by_scope);
+        text = openSealedText(key, sealed.content_cipher);
+      }
+    } else {
+      const plain = await trx
+        .selectFrom('document_text')
+        .select('content')
+        .where('version_id', '=', version.id)
+        .executeTakeFirst();
+      text = plain?.content ?? null;
+    }
+    if (text === null)
+      return { state: version.ocr_status === 'pending' ? 'pending' : 'unavailable' };
+    return { state: 'ready', text: text.slice(0, PAGES_TEXT_MAX) };
   }
 
   /** Counts by member and by category, for the home screen tiles (ORG-02). */
@@ -3049,6 +3137,12 @@ const previewJobKey = (versionId: string) => `previews:${versionId}`;
  * still waiting or being drawn, so asking again never draws twice.
  */
 const PREVIEW_REQUEUE_MS = 2 * 60 * 1000;
+
+/** What is read of a document's words for a suggestion: its first pages say who and what it is. */
+const PAGES_TEXT_MAX = 60_000;
+
+/** Countries that write a date month first (03/04/2031 is March 4), for reading the pages' dates. */
+const MONTH_FIRST = new Set(['US', 'PH', 'FM', 'MH', 'PW', 'GU', 'AS', 'MP', 'PR', 'VI', 'UM']);
 
 const encodeCursor = (c: { k: string; id: string }) =>
   Buffer.from(JSON.stringify(c)).toString('base64url');

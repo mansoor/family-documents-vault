@@ -41,6 +41,13 @@ import {
   useAttributes,
   type DetailInput,
 } from '../details.js';
+import {
+  chipWords,
+  SuggestedMark,
+  SuggestionChip,
+  useDetailSuggestions,
+  useSuggestionsOffered,
+} from '../suggestions.js';
 import { Button, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
@@ -447,6 +454,9 @@ const PAGES_PENDING_TRIES = 12;
  * vault is still reading them, as long as the field is empty); for a new
  * file, the household's issuers whose names are in the file's name; then
  * the household's issuers, those used for this type first.
+ *
+ * A vault that proposes from the pages (5.37) has already said who in its
+ * proposal (`fromProposal`): then the older question is not asked.
  */
 function useIssuerOffers(opts: {
   fileName: string | undefined;
@@ -454,8 +464,12 @@ function useIssuerOffers(opts: {
   typeKey: string;
   /** False once the field has a value: nothing more is asked for. */
   wanted: boolean;
+  /** Who the pages propose (5.37): given, the pages are not asked again here. */
+  fromProposal?: string | null | undefined;
 }): string[] {
-  const { fileName, documentId, typeKey, wanted } = opts;
+  const { fileName, typeKey, wanted, fromProposal } = opts;
+  // With the pages' proposal in hand, the older question is not asked.
+  const documentId = fromProposal === undefined ? opts.documentId : undefined;
   const { withToken } = useApp();
   const [household, setHousehold] = useState<KnownIssuer[]>([]);
   const [fromPages, setFromPages] = useState<IssuerSuggestions['items']>([]);
@@ -509,6 +523,7 @@ function useIssuerOffers(opts: {
   const seen = new Set<string>();
   const offers: string[] = [];
   for (const value of [
+    ...(fromProposal ? [fromProposal] : []),
     ...fromPages.map((s) => s.value),
     ...inName,
     ...household.map((k) => k.value),
@@ -672,12 +687,33 @@ export function ConfirmForm(props: {
   /** A field changed: if Save could not read it, it is not marked any more. */
   const changed = (id: string) => setUnread((was) => (was === id ? null : was));
 
+  // What the pages propose (5.37), on the Edit card of a document already
+  // in the vault: a chip under each empty field, filling it only on a tap.
+  const suggests = useSuggestionsOffered() && editing && Boolean(props.documentId);
+  const proposal = useDetailSuggestions(props.documentId, suggests, undefined);
   const offers = useIssuerOffers({
     fileName: props.fileName,
     documentId: props.documentId,
     typeKey,
     wanted: issuer.trim() === '',
+    fromProposal: suggests ? (proposal?.issued_by?.value ?? null) : undefined,
   });
+  /** A chip for one proposed field, under it, while that field is empty. */
+  const chip = (
+    field: 'type_key' | 'owner_member_id' | 'issued' | 'expires' | 'identifier',
+    empty: boolean,
+    name: string,
+    pick: () => void,
+  ) => {
+    const p = proposal?.[field];
+    const words = proposal && p && empty ? chipWords(field, proposal, types, members) : null;
+    if (!words || !p) return null;
+    return (
+      <div className="pills" role="group" aria-label={`What the pages say: ${name}`}>
+        <SuggestionChip label={words} confidence={p.confidence} cue={p.cue} onPick={pick} />
+      </div>
+    );
+  };
 
   /** The name nobody typed, from what the card says now and what just changed. */
   const nameFor = (
@@ -702,6 +738,31 @@ export function ConfirmForm(props: {
   const chooseIssuer = (v: string) => {
     setIssuer(v);
     retitle({ issuer: v });
+  };
+  const chooseType = (v: string) => {
+    setTypeKey(v);
+    // Another type asks for other things: nothing is marked until
+    // Save has waited for them.
+    setWaited(false);
+    const t = types.find((x) => x.key === v);
+    retitle({ type: t ?? null });
+    // A new document takes the type's default; an existing one keeps
+    // who can see it until somebody chooses otherwise.
+    if (t && props.fileName) {
+      setVisibility(startingVisibility(t, myRole, owner, me?.id));
+      setVisibilityChosen(false);
+    }
+  };
+  const chooseOwner = (v: string) => {
+    setOwner(v);
+    retitle({ who: members.find((m) => m.id === v) ?? null });
+    if (type && props.fileName && !visibilityChosen) {
+      // Nobody has chosen yet: the kind's default, for this person.
+      setVisibility(startingVisibility(type, myRole, v, me?.id));
+    } else if (visibility === 'private' && v !== me?.id) {
+      // Only me is for your own documents.
+      setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
+    }
   };
 
   /**
@@ -894,20 +955,7 @@ export function ConfirmForm(props: {
           id="f-type"
           label="What it is"
           value={typeKey}
-          onChange={(v) => {
-            setTypeKey(v);
-            // Another type asks for other things: nothing is marked until
-            // Save has waited for them.
-            setWaited(false);
-            const t = types.find((x) => x.key === v);
-            retitle({ type: t ?? null });
-            // A new document takes the type's default; an existing one keeps
-            // who can see it until somebody chooses otherwise.
-            if (t && props.fileName) {
-              setVisibility(startingVisibility(t, myRole, owner, me?.id));
-              setVisibilityChosen(false);
-            }
-          }}
+          onChange={chooseType}
           options={[
             { value: '', label: 'Not sure yet' },
             // A kind hidden or archived is not offered for a new document;
@@ -917,6 +965,11 @@ export function ConfirmForm(props: {
               .map((t) => ({ value: t.key, label: t.label })),
           ]}
         />
+        {chip('type_key', typeKey === '', 'what it is', () => {
+          if (typeKey !== '' || !proposal?.type_key) return;
+          chooseType(proposal.type_key.value);
+          document.getElementById('f-type')?.focus();
+        })}
         <Field
           id="f-title"
           label="Name"
@@ -932,22 +985,22 @@ export function ConfirmForm(props: {
           id="f-who"
           label="Whose it is"
           value={owner}
-          onChange={(v) => {
-            setOwner(v);
-            retitle({ who: members.find((m) => m.id === v) ?? null });
-            if (type && props.fileName && !visibilityChosen) {
-              // Nobody has chosen yet: the kind's default, for this person.
-              setVisibility(startingVisibility(type, myRole, v, me?.id));
-            } else if (visibility === 'private' && v !== me?.id) {
-              // Only me is for your own documents.
-              setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
-            }
-          }}
+          onChange={chooseOwner}
           options={[
             { value: '', label: 'Not sure yet' },
             ...people.map((m) => ({ value: m.id, label: m.display_name })),
           ]}
         />
+        {chip(
+          'owner_member_id',
+          owner === '' && people.some((m) => m.id === proposal?.owner_member_id?.value),
+          'whose it is',
+          () => {
+            if (owner !== '' || !proposal?.owner_member_id) return;
+            chooseOwner(proposal.owner_member_id.value);
+            document.getElementById('f-who')?.focus();
+          },
+        )}
         {issuerShown && (
           <Field
             id="f-issuer"
@@ -961,20 +1014,30 @@ export function ConfirmForm(props: {
         )}
         {issuerShown && issuer.trim() === '' && offers.length > 0 && (
           <div className="pills" role="group" aria-label="Who it might be from">
-            {offers.map((name) => (
-              <button
-                key={name}
-                type="button"
-                className="pill"
-                onClick={() => {
-                  chooseIssuer(name);
-                  // The chips go once the field is filled: keep the place on the field.
-                  document.getElementById('f-issuer')?.focus();
-                }}
-              >
-                {`From ${name}?`}
-              </button>
-            ))}
+            {offers.map((name) => {
+              const pages = proposal?.issued_by?.value === name ? proposal.issued_by : null;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  className={pages ? 'pill pill-sugg' : 'pill'}
+                  onClick={() => {
+                    chooseIssuer(name);
+                    // The chips go once the field is filled: keep the place on the field.
+                    document.getElementById('f-issuer')?.focus();
+                  }}
+                >
+                  {pages ? (
+                    <>
+                      <span className="pill-sugg-value">{`From ${name}?`}</span>{' '}
+                      <SuggestedMark confidence={pages.confidence} cue={pages.cue} />
+                    </>
+                  ) : (
+                    `From ${name}?`
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
         {issuedShown && (
@@ -994,6 +1057,17 @@ export function ConfirmForm(props: {
             hint="A date, a month (March 2021) or a year"
           />
         )}
+        {issuedShown &&
+          chip('issued', issued.trim() === '', issuedLabel.toLowerCase(), () => {
+            const d = proposal?.issued?.value;
+            if (!d) return;
+            const v = formatDate(d);
+            // Only an empty field: what was typed is never written over.
+            setIssued((was) => (was.trim() === '' ? v : was));
+            changed('f-issued');
+            if (issued.trim() === '') retitle({ issued: v });
+            document.getElementById('f-issued')?.focus();
+          })}
         {expiresShown && (
           <Field
             id="f-expires"
@@ -1011,6 +1085,15 @@ export function ConfirmForm(props: {
             note={reminder ?? undefined}
           />
         )}
+        {expiresShown &&
+          chip('expires', expires.trim() === '', expiresLabel.toLowerCase(), () => {
+            const d = proposal?.expires?.value;
+            if (!d) return;
+            const v = formatDate(d);
+            setExpires((was) => (was.trim() === '' ? v : was));
+            changed('f-expires');
+            document.getElementById('f-expires')?.focus();
+          })}
         {identifierShown && (
           <Field
             id="f-number"
@@ -1022,6 +1105,13 @@ export function ConfirmForm(props: {
             invalid={invalid('f-number')}
           />
         )}
+        {identifierShown &&
+          chip('identifier', identifier.trim() === '', identifierLabel.toLowerCase(), () => {
+            const v = proposal?.identifier?.value;
+            if (!v) return;
+            setIdentifier((was) => (was.trim() === '' ? v : was));
+            document.getElementById('f-number')?.focus();
+          })}
         {locationShown && (
           <Field
             id="f-location"

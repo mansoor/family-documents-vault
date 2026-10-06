@@ -1,0 +1,141 @@
+import {
+  detectTools,
+  ocrImage,
+  pdfPageCount,
+  pdfPageTexts,
+  renderPdfPage,
+  renderPdfPages,
+  type Tools,
+} from './tools.js';
+import { WORD_MIME, wordText } from './word-text.js';
+
+/**
+ * A file's words (5.37): what search indexes and what `proposeDetails`
+ * reads. A function of a file and the kind of file it is, and nothing else
+ * — no document, no version, no database — so it reads a filed document's
+ * version (`version.process`) and, later, a file that is not a document yet
+ * (Phase 6's inbox) the same way.
+ *
+ * - A PDF gives the text it carries (pdftotext), page by page; only a page
+ *   with none — a scan — is drawn and OCR'd. A text PDF never reaches
+ *   Tesseract.
+ * - A photo or a scan is OCR'd.
+ * - A Word file gives the words in its XML.
+ * - Anything else (an Excel workbook) gives none.
+ *
+ * OCR is Tesseract's English (A46), on the worker's own machine: no page
+ * ever leaves it. What is read is returned, never logged: the caller keeps
+ * it as the document's visibility says (plain, or sealed for Only me: 5.9).
+ */
+
+export interface ExtractOptions {
+  /** The most pages of a PDF read (FDV_OCR_MAX_PAGES): by their own text, or OCR'd. */
+  maxPages: number;
+  /** A folder of the caller's for the pages drawn for OCR; the caller removes it. */
+  workDir: string;
+  /** The tools there are; found out when not given. */
+  tools?: Tools;
+  /** Reads one drawn page or photo: Tesseract, in English, unless a test stands in for it. */
+  ocr?: (image: string) => Promise<string>;
+}
+
+export interface ExtractedText {
+  /** The words, pages in order and a blank line between them; '' for a file with none. */
+  text: string;
+  /** How it was read. */
+  source: 'pdf' | 'ocr' | 'word';
+  /** Pages read by their own text, and pages drawn and OCR'd. */
+  textPages: number;
+  ocrPages: number;
+}
+
+/** A page whose own text has fewer letters and digits than this is a scan: it is OCR'd. */
+export const MIN_PAGE_TEXT = 16;
+/**
+ * The most text kept of one file. Search's index of a version has room for
+ * about this much (a tsvector is at most 1 MB); a document's details are on
+ * its first pages.
+ */
+export const MAX_TEXT_CHARS = 500_000;
+
+const IMAGES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/tiff',
+  'image/heic',
+  'image/heif',
+]);
+
+const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
+const kept = (s: string) => s.trim().slice(0, MAX_TEXT_CHARS);
+
+/**
+ * The words of `file`, read as the kind of file `mime` says it is; null
+ * when the vault cannot read that kind, or has not the tools to. Throws
+ * when a tool fails on the file, or it is not what it says.
+ */
+export async function extractText(
+  file: string,
+  mime: string,
+  opts: ExtractOptions,
+): Promise<ExtractedText | null> {
+  const tools = opts.tools ?? (await detectTools());
+  const ocr = opts.ocr ?? ((image: string) => ocrImage(image));
+  if (mime === WORD_MIME) {
+    return { text: kept(await wordText(file)), source: 'word', textPages: 0, ocrPages: 0 };
+  }
+  if (IMAGES.has(mime)) {
+    if (!tools.tesseract) return null;
+    return { text: kept(await ocr(file)), source: 'ocr', textPages: 0, ocrPages: 1 };
+  }
+  if (mime === 'application/pdf') return readPdf(file, opts, tools, ocr);
+  return null;
+}
+
+async function readPdf(
+  file: string,
+  opts: ExtractOptions,
+  tools: Tools,
+  ocr: (image: string) => Promise<string>,
+): Promise<ExtractedText | null> {
+  const canOcr = tools.tesseract && tools.pdftoppm;
+  const total = tools.pdftoppm ? await pdfPageCount(file) : null;
+  // The text the PDF carries; none when it cannot be read that way (an
+  // older image without pdftotext, a file pdftotext refuses), and then
+  // every page is OCR'd, as before 5.37.
+  let own: string[] = [];
+  if (tools.pdftotext) {
+    own = await pdfPageTexts(file, Math.min(total ?? opts.maxPages, opts.maxPages)).catch(() => []);
+  }
+  const pages = total !== null ? Math.min(total, opts.maxPages) : own.length;
+  if (pages === 0) {
+    // Nothing could count its pages: draw what there is, and OCR it.
+    if (!canOcr) return null;
+    const drawn = await renderPdfPages(file, opts.workDir, opts.maxPages);
+    const texts: string[] = [];
+    for (const page of drawn) texts.push(await ocr(page));
+    return { text: kept(texts.join('\n\n')), source: 'ocr', textPages: 0, ocrPages: drawn.length };
+  }
+  const texts: string[] = [];
+  let textPages = 0;
+  let ocrPages = 0;
+  for (let n = 1; n <= pages; n += 1) {
+    const words = own[n - 1] ?? '';
+    if (letters(words) >= MIN_PAGE_TEXT || !canOcr) {
+      texts.push(words.trim());
+      if (letters(words) > 0) textPages += 1;
+      continue;
+    }
+    // A page with no text of its own: a scan, drawn and read.
+    texts.push((await ocr(await renderPdfPage(file, opts.workDir, n))).trim());
+    ocrPages += 1;
+  }
+  if (textPages === 0 && ocrPages === 0 && !tools.pdftotext) return null;
+  return {
+    text: kept(texts.filter((t) => t !== '').join('\n\n')),
+    source: ocrPages > 0 ? 'ocr' : 'pdf',
+    textPages,
+    ocrPages,
+  };
+}

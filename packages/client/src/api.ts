@@ -6,6 +6,7 @@ import type {
   CaptureResult,
   UploadStatus,
   IssuerCount,
+  DetailSuggestions,
   IssuerSuggestions,
   CollectionAudience,
   CollectionDetail,
@@ -681,6 +682,13 @@ export function createApi(http: Http) {
     /** Who probably issued it, from its pages: offered, never filled in (0.4.10). */
     issuerSuggestions: (token: string, documentId: string) =>
       request<IssuerSuggestions>(`/api/v1/documents/${documentId}/issuer-suggestions`, { token }),
+    /**
+     * What its pages propose for its empty fields, each with a confidence
+     * (5.37, `features.detail_suggestions`): offered as one-tap chips, never
+     * filled in. Ask again while `pending`. A viewer or a guest is refused.
+     */
+    detailSuggestions: (token: string, documentId: string) =>
+      request<DetailSuggestions>(`/api/v1/documents/${documentId}/suggestions`, { token }),
     counts: (token: string) => request<Counts>('/api/v1/documents/counts', { token }),
     document: (token: string, id: string) =>
       request<DocumentView>(`/api/v1/documents/${id}`, { token }),

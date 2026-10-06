@@ -165,6 +165,85 @@ describe('the fake vault, for somebody who is not an owner', () => {
     expect((await api.document(token, made.id)).notes).toBe('Paid **monthly**');
   });
 
+  it('what the pages propose, as the real vault answers it (5.37): never a filled field, never to a viewer, a teen for their own', async () => {
+    const vault = createFakeVault();
+    const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
+    const { access_token: token } = await api.setup({
+      household_name: 'The Fake family',
+      display_name: 'Fake Owner',
+      email: 'owner@example.test',
+      password: 'a long enough password',
+    });
+    const refusal = (p: Promise<unknown>) => p.then(() => null).catch((e: unknown) => e);
+    expect((await api.capabilities()).features.detail_suggestions).toBe(true);
+    const made = await api.createDocument(token, { title: 'Scan' });
+    // Nothing given: nothing to read.
+    expect(await api.detailSuggestions(token, made.id)).toEqual({
+      state: 'unavailable',
+      proposal: {},
+    });
+    vault.state.detailSuggestions.set(made.id, {
+      state: 'ready',
+      proposal: {
+        type_key: { value: 'passport', confidence: 0.9, cue: 'kind_words' },
+        expires: {
+          value: { date: '2031-03-14', precision: 'day' },
+          confidence: 0.82,
+          cue: 'expiry_label',
+        },
+        issued: {
+          value: { date: '2021-03-14', precision: 'day' },
+          confidence: 0.82,
+          cue: 'issue_label',
+        },
+        identifier: { value: '533401872', confidence: 0.85, cue: 'number_label' },
+      },
+    });
+    expect(Object.keys((await api.detailSuggestions(token, made.id)).proposal)).toEqual([
+      'type_key',
+      'expires',
+      'issued',
+      'identifier',
+    ]);
+    // A chip tapped: that field has a value now, and is not offered again.
+    await api.updateDocument(token, made.id, {
+      expires: { date: '2031-03-14', precision: 'day' },
+      issued: { date: '2021-03-14', precision: 'day' },
+    });
+    expect((await api.document(token, made.id)).issued).toEqual({
+      date: '2021-03-14',
+      precision: 'day',
+    });
+    expect(Object.keys((await api.detailSuggestions(token, made.id)).proposal)).toEqual([
+      'type_key',
+      'identifier',
+    ]);
+    // Still being read: asked again, nothing yet.
+    vault.state.detailSuggestions.set(made.id, { state: 'pending', proposal: {} });
+    expect((await api.detailSuggestions(token, made.id)).state).toBe('pending');
+    expect(await refusal(api.detailSuggestions(token, 'no-such-document'))).toMatchObject({
+      status: 404,
+    });
+
+    // A viewer — a guest among them — is refused, whatever the id.
+    vault.state.role = 'viewer';
+    for (const id of [made.id, 'no-such-document']) {
+      expect(await refusal(api.detailSuggestions(token, id))).toMatchObject({
+        status: 403,
+        code: 'forbidden',
+        message: refusalFor('document.edit'),
+      });
+    }
+    // A teen, for their own documents only.
+    vault.state.role = 'teen';
+    expect(await refusal(api.detailSuggestions(token, made.id))).toMatchObject({ status: 403 });
+    const own = await api.createDocument(token, {
+      title: 'Bus pass',
+      owner_member_id: 'fake-member',
+    });
+    expect((await api.detailSuggestions(token, own.id)).state).toBe('unavailable');
+  });
+
   it('collections as the real vault keeps them for each role (0.5.12): a viewer sees none', async () => {
     const vault = createFakeVault();
     const api = createApi(createHttp({ baseUrl: 'https://fake.example', fetch: vault.fetch }));
