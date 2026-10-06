@@ -128,7 +128,8 @@ test('an Only me note is found only through its owner’s private search', async
   const note = page
     .locator('section', { has: page.getByRole('heading', { name: 'Notes' }) })
     .locator('.note p');
-  await expect(note).toHaveText(`Ask the agent about the ${word} before the lease ends`);
+  // A <br> since 5.35: its line break shows, though it adds no text.
+  await expect(note).toContainText('before the lease ends');
   expect(await note.innerText()).toBe(`Ask the agent about the ${word}\nbefore the lease ends`);
 
   // Sealed as it was written: the search index has no word of it…
