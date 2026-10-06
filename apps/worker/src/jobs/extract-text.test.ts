@@ -22,6 +22,12 @@ const run = promisify(execFile);
  */
 
 const tools = await detectTools();
+// tools.magick is true for ImageMagick 6's `convert` too (CI's Ubuntu has 6;
+// the worker image has 7, `magick`): draw with whichever is there.
+const magickBin = await run('magick', ['-version']).then(
+  () => 'magick',
+  () => 'convert',
+);
 const pdfText = Boolean(tools.pdftotext && tools.pdftoppm);
 const scans = pdfText && tools.tesseract && tools.magick;
 
@@ -174,7 +180,7 @@ async function scanImage(dir: string, words: string[]): Promise<Buffer> {
   const font = await run('fc-match', ['-f', '%{file}', 'sans-serif'])
     .then(({ stdout }) => stdout.trim())
     .catch(() => '');
-  await run(tools.magick ? 'magick' : 'convert', [
+  await run(magickBin, [
     '-size',
     '1275x1650',
     'xc:white',
@@ -269,7 +275,7 @@ describe('extracting text (5.37)', () => {
       const font = await run('fc-match', ['-f', '%{file}', 'sans-serif'])
         .then(({ stdout }) => stdout.trim())
         .catch(() => '');
-      await run(tools.magick ? 'magick' : 'convert', [
+      await run(magickBin, [
         '-size',
         '1275x1650',
         'xc:white',
