@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import axe from 'axe-core';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import {
   AISHA,
@@ -27,19 +27,25 @@ const PHONE = 375;
 const MID = 900;
 const WIDE = 1280;
 
-/** The window this wide, as the browser's media queries would say. */
+/** The window this wide (and tall), as the browser's media queries would say. */
 let width = 1280;
+let height = 900;
 const widthWatchers = new Set<() => void>();
-function atWidth(px: number) {
+function atWidth(px: number, tall = 900) {
   width = px;
+  height = tall;
   widthWatchers.clear();
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     writable: true,
     value: (query: string) => {
-      const min = /\(min-width:\s*(\d+)px\)/.exec(query);
+      const minWidth = /\(min-width:\s*(\d+)px\)/.exec(query);
+      const minHeight = /\(min-height:\s*(\d+)px\)/.exec(query);
       return {
-        matches: min ? width >= Number(min[1]) : false,
+        matches:
+          (!minWidth || width >= Number(minWidth[1])) &&
+          (!minHeight || height >= Number(minHeight[1])) &&
+          Boolean(minWidth || minHeight),
         media: query,
         onchange: null,
         addEventListener: (_: string, fn: () => void) => widthWatchers.add(fn),
@@ -52,10 +58,11 @@ function atWidth(px: number) {
   });
 }
 
-/** The window turned or resized to this width, as the media queries tell it. */
-function resizeTo(px: number) {
+/** The window turned or resized to this width (and height), as the media queries tell it. */
+function resizeTo(px: number, tall = height) {
   act(() => {
     width = px;
+    height = tall;
     for (const watcher of [...widthWatchers]) watcher();
   });
 }
@@ -135,8 +142,9 @@ function at(
   over: Partial<FakeState> = {},
   role: Role = 'owner',
   px: number = WIDE,
+  tall = 900,
 ): FakeState {
-  atWidth(px);
+  atWidth(px, tall);
   const state = fresh({ members: [{ ...ME, role }, AISHA], ...over });
   installFakeApi(state);
   signedIn(role);
@@ -363,6 +371,72 @@ describe('across the widths', () => {
   });
 });
 
+describe('a short window: the phone’s layout, whatever its width (the review)', () => {
+  it.each([
+    [900, 500],
+    [1000, 560],
+    [844, 390],
+  ])('at %ix%i the drawer reaches every section; the rail would not fit', async (wide, tall) => {
+    at('/', EVERYTHING, 'owner', wide, tall);
+    await screen.findByRole('navigation', { name: 'Main' });
+    expect(screen.queryByRole('navigation', { name: 'Sections' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+    await waitFor(() =>
+      expect(namesIn(within(drawer).getByRole('navigation', { name: 'Sections' }))).toEqual([
+        'Documents',
+        'Collections',
+        'Inbox, 1 waiting',
+        'Sharing',
+        'Activity',
+        'Trash',
+        'Settings',
+      ]),
+    );
+  });
+
+  it('tall enough again, the icons’ rail comes back', async () => {
+    at('/', EVERYTHING, 'owner', 900, 500);
+    await screen.findByRole('navigation', { name: 'Main' });
+    resizeTo(900, 700);
+    expect(await sidebar()).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull();
+  });
+});
+
+describe('an address that names a place on the page (the review)', () => {
+  it('goes there, and focus with it, not to the top and the heading', async () => {
+    const scrolled: Element[] = [];
+    // jsdom has no scrolling: what was asked to come into view is written down.
+    const had = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value(this: Element) {
+        scrolled.push(this);
+      },
+    });
+    try {
+      at('/', EVERYTHING);
+      await sidebar();
+      await screen.findByRole('heading', { name: 'Recently added' });
+      // As "Set up two-step sign-in" does, from a person's page.
+      act(() => {
+        window.history.pushState({}, '', '/settings#two-step');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      });
+      await screen.findByRole('heading', { name: 'Settings', level: 1 });
+      const card = document.getElementById('two-step') as HTMLElement;
+      await waitFor(() => expect(card).toHaveFocus());
+      expect(scrolled).toContain(card);
+      expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).not.toHaveFocus();
+    } finally {
+      if (had) Object.defineProperty(Element.prototype, 'scrollIntoView', had);
+      else Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
+    }
+  });
+});
+
 describe('the sidebar narrowed to its icons, 768–1023 px', () => {
   it('names each icon, and shows the name beside it on hover or focus', async () => {
     at('/', EVERYTHING, 'owner', MID);
@@ -397,14 +471,89 @@ describe('the bar on top', () => {
     expect(screen.getByLabelText('Search everything')).toHaveValue('passport');
   });
 
-  it('`n` opens Add, for whoever adds', async () => {
+  it('`n` puts focus on Add, and never leaves the page: nothing half-typed is lost (the review)', async () => {
+    at('/people', EVERYTHING);
+    await sidebar();
+    // Half-way through adding somebody, focus on a button rather than a field.
+    fireEvent.click(await screen.findByRole('button', { name: 'Add someone' }));
+    const name = await screen.findByLabelText('Name of another family member');
+    fireEvent.change(name, { target: { value: 'Zain' } });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: 'n' });
+    const add = within(appBar()).getByRole('link', { name: 'Add' });
+    await waitFor(() => expect(add).toHaveFocus());
+    expect(window.location.pathname).toBe('/people');
+    expect(name).toHaveValue('Zain');
+    // Add itself goes to Add, until bulk intake makes it a menu (I1).
+    expect(add).toHaveAttribute('href', '/add');
+    expect(add).toHaveAttribute('aria-keyshortcuts', 'n');
+  });
+
+  it('a key held down does nothing', async () => {
     at('/', EVERYTHING);
     await sidebar();
+    fireEvent.keyDown(document.body, { key: '/', repeat: true });
+    fireEvent.keyDown(document.body, { key: 'n', repeat: true });
+    expect(screen.getByRole('searchbox', { name: 'Search the vault' })).not.toHaveFocus();
+    expect(within(appBar()).getByRole('link', { name: 'Add' })).not.toHaveFocus();
+  });
+
+  it('turned off in Settings, on this device, neither key does anything (WCAG 2.1.4)', async () => {
+    at('/settings', EVERYTHING);
+    const box = await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    expect(box).toBeChecked();
+    expect(box).toHaveAccessibleDescription(/\/ goes to the search box and n to Add/);
+    fireEvent.click(box);
+    expect(box).not.toBeChecked();
+    expect(localStorage.getItem('fdv.shortcuts')).toBe('off');
+    // Nor said to be there.
+    const field = screen.getByRole('searchbox', { name: 'Search the vault' });
+    expect(field).not.toHaveAttribute('aria-keyshortcuts');
+    expect(within(appBar()).getByRole('link', { name: 'Add' })).not.toHaveAttribute(
+      'aria-keyshortcuts',
+    );
+    expect(appBar().querySelector('kbd')).toBeNull();
+    fireEvent.keyDown(document.body, { key: '/' });
     fireEvent.keyDown(document.body, { key: 'n' });
-    await screen.findByRole('heading', { name: 'Add a document', level: 1 });
-    expect(window.location.pathname).toBe('/add');
-    // Add itself goes there too, until bulk intake makes it a menu (I1).
-    expect(within(appBar()).getByRole('link', { name: 'Add' })).toHaveAttribute('href', '/add');
+    expect(field).not.toHaveFocus();
+    expect(within(appBar()).getByRole('link', { name: 'Add' })).not.toHaveFocus();
+    // Kept: the next time the vault is opened on this device, still off.
+    cleanup();
+    at('/', EVERYTHING);
+    await sidebar();
+    fireEvent.keyDown(document.body, { key: '/' });
+    expect(screen.getByRole('searchbox', { name: 'Search the vault' })).not.toHaveFocus();
+    // And on again.
+    cleanup();
+    at('/settings', EVERYTHING);
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' }),
+    );
+    expect(localStorage.getItem('fdv.shortcuts')).toBeNull();
+    fireEvent.keyDown(document.body, { key: '/' });
+    await waitFor(() =>
+      expect(screen.getByRole('searchbox', { name: 'Search the vault' })).toHaveFocus(),
+    );
+  });
+
+  it('a browser that keeps nothing (a private window) still turns them off, for now', async () => {
+    at('/settings', EVERYTHING);
+    const box = await screen.findByRole('checkbox', { name: 'Single-key shortcuts (/ and n)' });
+    // From here on this browser keeps nothing it is given.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      fireEvent.click(box);
+      expect(box).not.toBeChecked();
+      fireEvent.keyDown(document.body, { key: '/' });
+      expect(screen.getByRole('searchbox', { name: 'Search the vault' })).not.toHaveFocus();
+      fireEvent.click(box);
+      expect(box).toBeChecked();
+    } finally {
+      setItem.mockRestore();
+    }
   });
 
   it('neither key does anything while typing, nor with a dialog or a menu open', async () => {
@@ -433,9 +582,11 @@ describe('the bar on top', () => {
   it('`n` does nothing for a viewer, who adds nothing', async () => {
     at('/', {}, 'viewer');
     await sidebar();
+    const before = document.activeElement;
     fireEvent.keyDown(document.body, { key: 'n' });
     await screen.findByRole('heading', { name: 'Recently added' });
     expect(window.location.pathname).toBe('/');
+    expect(document.activeElement).toBe(before);
   });
 
   it('the account menu: your name, Settings, and Sign out', async () => {
@@ -505,8 +656,14 @@ describe('on a phone: the bottom bar and the drawer', () => {
     // No sidebar, and no bar on top with search.
     expect(screen.queryByRole('navigation', { name: 'Sections' })).toBeNull();
     expect(screen.queryByRole('search')).toBeNull();
-    // `/` opens Search.
+    // Neither key does anything here: no bar on top to go to, and leaving
+    // the page would lose what is on it (the review).
+    const before = document.activeElement;
     fireEvent.keyDown(document.body, { key: '/' });
+    fireEvent.keyDown(document.body, { key: 'n' });
+    expect(window.location.pathname).toBe('/');
+    expect(document.activeElement).toBe(before);
+    fireEvent.click(within(bar).getByRole('link', { name: 'Search' }));
     await screen.findByRole('heading', { name: 'Search', level: 1 });
     expect(within(bar).getByRole('link', { name: 'Search' })).toHaveAttribute(
       'aria-current',
@@ -764,12 +921,22 @@ describe('the shell’s styles', () => {
     expect(rule('.fab')).toMatch(/flex:\s*none/);
   });
 
-  it('narrowed, each icon’s name shows beside it on hover and on focus', () => {
-    expect(rule('.shell-mid .side-link::after')).toMatch(/content:\s*attr\(data-label\)/);
+  it('narrowed, each icon’s name shows beside it on hover and on focus, and is not read twice', () => {
+    // Drawn with empty alternative text: generated content is part of a
+    // link's name otherwise, "Home Home" (the review; Chromium checked).
+    expect(rule('.shell-mid .side-link::after')).toMatch(
+      /content:\s*attr\(data-label\)\s*\/\s*(''|"")/,
+    );
     expect(rule('.shell-mid .side-link::after')).toMatch(/opacity:\s*0/);
     expect(
       rule('.shell-mid .side-link:hover::after,\n.shell-mid .side-link:focus-visible::after'),
     ).toMatch(/opacity:\s*1/);
+    // Over whatever the page positions beside it (a preview, Search's bar),
+    // and under the bar on top and the menus.
+    const z = (selector: string) => Number(/z-index:\s*(\d+)/.exec(rule(selector))?.[1]);
+    expect(z('.shell-mid .sidebar')).toBeGreaterThan(z('.select-bar'));
+    expect(z('.shell-mid .sidebar')).toBeLessThan(z('.app-bar'));
+    expect(z('.shell-mid .sidebar')).toBeLessThan(z('.menu-layer'));
   });
 
   it('the skip link is out of sight until it has focus', () => {
@@ -791,5 +958,30 @@ describe('the shell’s styles', () => {
     expect(rule('.app-bar')).toMatch(/position:\s*sticky/);
     expect(rule('.shell .select-bar')).toMatch(/top:\s*var\(--shell-top\)/);
     expect(rule('.shell .page.reader')).toMatch(/height:\s*calc\(100dvh - var\(--shell-chrome\)\)/);
+  });
+
+  it('on a phone the bar on top stays, and the reader is the window less both bars exactly (the review)', () => {
+    const bar = rule('.phone-bar');
+    expect(bar).toMatch(/position:\s*sticky/);
+    expect(bar).toMatch(/top:\s*0/);
+    expect(bar).toMatch(/height:\s*var\(--phone-bar\)/);
+    const phone = rule('.shell-phone');
+    expect(phone).toMatch(/--shell-top:\s*var\(--phone-bar\)/);
+    expect(phone).toMatch(/--shell-chrome:\s*calc\(var\(--phone-bar\) \+ var\(--phone-bottom\)\)/);
+    expect(rule('.shell-phone .shell-content')).toMatch(/padding-bottom:\s*var\(--phone-bottom\)/);
+  });
+
+  it('a focused control or an address’s target is never scrolled under a bar (WCAG 2.4.11, the review)', () => {
+    const number = (pattern: RegExp, selector: string) =>
+      Number(pattern.exec(rule(selector))?.[1] ?? 0);
+    const top = number(/--shell-top:\s*(\d+)px/, '.shell-wide,\n.shell-mid');
+    expect(top).toBe(64);
+    expect(
+      number(/scroll-padding-top:\s*(\d+)px/, 'html:has(.shell-wide),\nhtml:has(.shell-mid)'),
+    ).toBeGreaterThan(top);
+    expect(number(/scroll-padding-top:\s*(\d+)px/, 'html:has(.shell-phone)')).toBeGreaterThan(
+      number(/--phone-bar:\s*(\d+)px/, '.shell-phone'),
+    );
+    expect(rule('html:has(.shell-phone)')).toMatch(/scroll-padding-bottom:\s*calc\(96px/);
   });
 });

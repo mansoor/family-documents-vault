@@ -4,9 +4,10 @@ import { Link, useLocation } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { Button, Check, ErrorNote, Field, TopBar } from '../ui.js';
 import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
+import { setShortcutsOn, useShortcutsOn } from '../shortcuts.js';
 import { ChangePassword } from './Password.js';
 
 /** A row that opens a part of Settings with a page of its own. */
@@ -115,6 +116,7 @@ export function SettingsScreen() {
             ))}
           </ul>
         </section>
+        <KeyShortcuts />
       </section>
 
       <section aria-labelledby="settings-notifications-h" className="settings-group">
@@ -154,6 +156,28 @@ export function SettingsScreen() {
 
       <ElsewhereNote />
     </main>
+  );
+}
+
+/**
+ * The single-key shortcuts, `/` and `n` (WCAG 2.1.4): on unless turned
+ * off, on this device alone (shortcuts.ts).
+ */
+function KeyShortcuts() {
+  const on = useShortcutsOn();
+  return (
+    <section aria-labelledby="keys-h">
+      <h3 id="keys-h" className="section-h">
+        On this device
+      </h3>
+      <Check
+        id="single-keys"
+        checked={on}
+        onChange={setShortcutsOn}
+        label="Single-key shortcuts (/ and n)"
+        note="With a keyboard, / goes to the search box and n to Add. Turn them off if you type by voice, or if they get in your way."
+      />
+    </section>
   );
 }
 

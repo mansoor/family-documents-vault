@@ -384,8 +384,8 @@ export class PurgeService {
           `${asker} asked to remove one of the documents you added for good on ` +
           `${shareEndWords(at, household.timezone, { weekday: false })}. ` +
           (mayKeep
-            ? 'Bring it back to keep it: it is in Settings → Trash. '
-            : 'To keep it, ask an owner or another adult to bring it back from Settings → Trash. ') +
+            ? 'Bring it back to keep it: it is in the Trash. '
+            : 'To keep it, ask an owner or another adult to bring it back from the Trash. ') +
           `Otherwise it can be removed for good from ${shareEndWords(from, household.timezone)}.`,
       });
     }
@@ -403,7 +403,7 @@ export class PurgeService {
         subject: 'An owner asked to remove a document for good',
         body:
           `${asker} asked to remove a document in the Trash for good. Whoever added it is told ` +
-          'too, if they still sign in here. Bringing it back from Settings → Trash within ' +
+          'too, if they still sign in here. Bringing it back from the Trash within ' +
           `${PURGE_NOTICE_HOURS} hours keeps it. The activity log says which.`,
       });
     }

@@ -2264,8 +2264,25 @@ fieldset.identity-section {
 }
 
 .shell-phone {
-  /* The bar on top (it scrolls away) and the bar at the bottom. */
-  --shell-chrome: 136px;
+  /* The bar on top, which stays, and the room the bar at the bottom takes:
+     each said once, here, so the reader is the window less both exactly. */
+  --phone-bar: 60px;
+  --phone-bottom: calc(88px + env(safe-area-inset-bottom));
+  --shell-top: var(--phone-bar);
+  --shell-chrome: calc(var(--phone-bar) + var(--phone-bottom));
+}
+
+/* A focused control, or the place an address names (#two-step), is never
+   scrolled to where a bar covers it (WCAG 2.4.11): the bar on top above,
+   and on a phone the bar at the bottom below. */
+html:has(.shell-wide),
+html:has(.shell-mid) {
+  scroll-padding-top: 72px;
+}
+
+html:has(.shell-phone) {
+  scroll-padding-top: 68px;
+  scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
 }
 
 /* Tab, once, from anywhere: straight to the page. */
@@ -2405,6 +2422,10 @@ fieldset.identity-section {
   padding: 16px 10px;
   align-items: center;
   overflow: visible;
+  /* Its names over the page beside it, whatever on the page is positioned
+     (a preview, Search's bar at 5); under the bar on top (30), menus (40)
+     and sheets (50). */
+  z-index: 25;
 }
 
 .shell-mid .brand {
@@ -2432,7 +2453,8 @@ fieldset.identity-section {
 }
 
 .shell-mid .side-link::after {
-  content: attr(data-label);
+  /* Drawn, and not read: the link's own words name it (the review). */
+  content: attr(data-label) / '';
   position: absolute;
   left: calc(100% + 10px);
   top: 50%;
@@ -2663,11 +2685,16 @@ a.menu-item {
 
 /* A phone: the bar with the menu, the household and the account. */
 .phone-bar {
+  /* Stays at the top as the page scrolls, as the prototype's: the menu and
+     the account always in reach. */
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 60px;
-  padding: 8px 12px;
+  height: var(--phone-bar);
+  padding: 0 12px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
@@ -2706,7 +2733,7 @@ a.menu-item {
 }
 
 .shell-phone .shell-content {
-  padding-bottom: calc(88px + env(safe-area-inset-bottom));
+  padding-bottom: var(--phone-bottom);
 }
 
 /* The drawer: over the page, from the left. */

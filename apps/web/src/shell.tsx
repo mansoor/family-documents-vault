@@ -20,6 +20,7 @@ import { collectionsOffered } from './collections.js';
 import { beside } from './DocActions.js';
 import { PersonAvatar } from './person-avatar.js';
 import { storedRole } from './session.js';
+import { shortcutsOn, useShortcutsOn } from './shortcuts.js';
 import { useSheetFocus } from './ui.js';
 
 /**
@@ -27,10 +28,10 @@ import { useSheetFocus } from './ui.js';
  *
  *  - 1024 px and wider: a sidebar of sections, always there, and a bar on
  *    top with search (`/`), Add (`n`) and the account menu;
- *  - 768–1023 px: the same, the sidebar narrowed to its icons, each named
- *    and with its name beside it on hover or focus;
- *  - narrower: today's bottom bar, and a menu at the top left that opens a
- *    drawer with the other sections.
+ *  - 768–1023 px, and 600 px tall or more: the same, the sidebar narrowed
+ *    to its icons, each named and with its name beside it on hover or focus;
+ *  - narrower, or shorter (a phone on its side): today's bottom bar, and a
+ *    menu at the top left that opens a drawer with the other sections.
  *
  * Each section is shown only to whom its screen is for, by the checks the
  * screens themselves make. The screens inside keep their own layout: R2 to
@@ -40,7 +41,13 @@ import { useSheetFocus } from './ui.js';
 export type ShellMode = 'wide' | 'mid' | 'phone';
 
 const WIDE = '(min-width: 1024px)';
-const MID = '(min-width: 768px)';
+/**
+ * The icons' rail needs about 590 px of height for an owner's sections, and
+ * does not scroll (it would cut off the names drawn beside it): a window
+ * shorter than this — a phone turned on its side, a laptop zoomed to 150% —
+ * has the phone's layout, whose drawer reaches every section (the review).
+ */
+const MID = '(min-width: 768px) and (min-height: 600px)';
 
 function readMode(): ShellMode {
   // No media queries (jsdom): the phone's layout, the one every screen had.
@@ -317,7 +324,7 @@ export function AppShell() {
   const { caps, session, authVersion, markAuthChanged } = useApp();
   const mode = useShellMode();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const role: Role = session.info?.role ?? storedRole();
   const canAdd = can(role, 'document.add');
   const mayReview = caps?.features.upload_requests === true && can(role, 'upload_request.create');
@@ -355,7 +362,9 @@ export function AppShell() {
   const [drawer, setDrawer] = useState(false);
   const hamburger = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const add = useRef<HTMLAnchorElement>(null);
   const content = useRef<HTMLDivElement>(null);
+  const keysOn = useShortcutsOn();
 
   // The drawer is for this page, on a phone: a move closes it (focus then
   // goes to the new page), and so does a window grown past it.
@@ -369,6 +378,8 @@ export function AppShell() {
   // A new page: focus on its heading, so a screen reader says where they
   // are, and the page from its top. Not on the first page, and not when the
   // screen put focus somewhere itself (Search's field, a status it says).
+  // A place on the page asked for by the address (/settings#two-step) is
+  // gone to instead, and focus with it: not the top (the review).
   const shown = useRef(pathname);
   useEffect(() => {
     if (shown.current === pathname) return;
@@ -383,38 +394,44 @@ export function AppShell() {
     ) {
       return;
     }
+    const asked =
+      hash.length > 1 ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
+    if (asked && box.contains(asked)) {
+      asked.scrollIntoView?.();
+      if (!asked.hasAttribute('tabindex')) asked.setAttribute('tabindex', '-1');
+      asked.focus({ preventScroll: true });
+      return;
+    }
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
     const heading = box.querySelector<HTMLElement>('h1') ?? box.querySelector<HTMLElement>('main');
     if (!heading) return;
     if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
     heading.focus({ preventScroll: true });
-  }, [pathname]);
+  }, [pathname, hash]);
 
-  // `/` searches and `n` adds, as the prototype has them; never while
-  // typing, and never over a sheet, a dialog or a menu.
-  // Both as the shell is drawn, not after: a key pressed the moment it is
-  // on the screen is heard, with what is true then (as useSheetFocus does).
-  const latest = useRef({ mode, canAdd, navigate });
+  // `/` goes to the search box and `n` to Add: focus only, never away from
+  // the page, so a key pressed by mistake loses nothing half-typed (WCAG
+  // 2.1.4, the review). Until bulk intake makes Add a menu (I1), `n` puts
+  // focus on it. Never while typing, over a sheet, a dialog or a menu, nor
+  // a key held down; nothing on a phone, which has no bar on top to go to;
+  // and nothing at all once turned off in Settings (shortcuts.ts).
+  // Listened for as the shell is drawn, not after: a key pressed the moment
+  // it is on the screen is heard (as useSheetFocus does).
+  const latest = useRef(mode);
   useLayoutEffect(() => {
-    latest.current = { mode, canAdd, navigate };
+    latest.current = mode;
   });
   useLayoutEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== '/' && e.key !== 'n') return;
-      if (busyElsewhere(e)) return;
-      const now = latest.current;
-      if (e.key === '/') {
-        e.preventDefault();
-        if (now.mode === 'phone' || !search.current) void now.navigate('/search');
-        else {
-          search.current.focus();
-          search.current.select();
-        }
-      } else if (now.canAdd && now.mode !== 'phone') {
-        e.preventDefault();
-        void now.navigate('/add');
-      }
+      if (e.repeat || latest.current === 'phone' || !shortcutsOn() || busyElsewhere(e)) return;
+      const to = e.key === '/' ? search.current : add.current;
+      // `n` for somebody who adds nothing: there is no Add.
+      if (!to) return;
+      e.preventDefault();
+      to.focus();
+      if (to instanceof HTMLInputElement) to.select();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -484,9 +501,9 @@ export function AppShell() {
       <div className="shell-main">
         {!phone && (
           <header className="app-bar">
-            <SearchBox field={search} />
+            <SearchBox field={search} keysOn={keysOn} />
             <span className="app-bar-gap" />
-            {canAdd && <AddControl />}
+            {canAdd && <AddControl link={add} keysOn={keysOn} />}
             {account}
           </header>
         )}
@@ -578,6 +595,9 @@ function SectionLink({
   linkRef?: RefObject<HTMLAnchorElement | null> | undefined;
   onPick?: (() => void) | undefined;
 }) {
+  // Its name is its words, once: the name drawn beside a narrowed icon
+  // (styles.css) is content no screen reader is given (the review). With
+  // what waits, said in one piece: "Inbox, 1 waiting".
   return (
     <Link
       ref={linkRef}
@@ -585,17 +605,15 @@ function SectionLink({
       onClick={onPick}
       className="side-link"
       data-label={narrow ? s.label : undefined}
+      aria-label={s.count !== undefined ? `${s.label}, ${s.count} waiting` : undefined}
       aria-current={here ? 'page' : undefined}
     >
       <Icon name={s.icon} />
       <span className={narrow ? 'visually-hidden' : 'side-label'}>{s.label}</span>
       {s.count !== undefined && (
-        <>
-          <span className="side-count" aria-hidden="true">
-            {s.count}
-          </span>
-          <span className="visually-hidden">, {s.count} waiting</span>
-        </>
+        <span className="side-count" aria-hidden="true">
+          {s.count}
+        </span>
       )}
     </Link>
   );
@@ -603,9 +621,15 @@ function SectionLink({
 
 /**
  * Search across the vault: Enter opens Search with what was typed, and `/`
- * comes here from anywhere.
+ * comes here from anywhere (unless the keys are off on this device).
  */
-function SearchBox({ field }: { field: RefObject<HTMLInputElement | null> }) {
+function SearchBox({
+  field,
+  keysOn,
+}: {
+  field: RefObject<HTMLInputElement | null>;
+  keysOn: boolean;
+}) {
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   return (
@@ -633,9 +657,9 @@ function SearchBox({ field }: { field: RefObject<HTMLInputElement | null> }) {
         onChange={(e) => setQ(e.target.value)}
         placeholder="Names, numbers, or words inside a document"
         autoComplete="off"
-        aria-keyshortcuts="/"
+        aria-keyshortcuts={keysOn ? '/' : undefined}
       />
-      <kbd aria-hidden="true">/</kbd>
+      {keysOn && <kbd aria-hidden="true">/</kbd>}
     </form>
   );
 }
@@ -643,11 +667,22 @@ function SearchBox({ field }: { field: RefObject<HTMLInputElement | null> }) {
 /**
  * Add, in the bar on top. In R1 it goes straight to Add; with bulk intake
  * (I1) it becomes a menu button here — "One document" or "Many documents" —
- * and nothing else about the bar changes.
+ * and nothing else about the bar changes. `n` puts focus on it.
  */
-function AddControl() {
+function AddControl({
+  link,
+  keysOn,
+}: {
+  link: RefObject<HTMLAnchorElement | null>;
+  keysOn: boolean;
+}) {
   return (
-    <Link to="/add" className="btn btn-primary app-add" aria-keyshortcuts="n">
+    <Link
+      ref={link}
+      to="/add"
+      className="btn btn-primary app-add"
+      aria-keyshortcuts={keysOn ? 'n' : undefined}
+    >
       <Icon name="plus" size={18} />
       Add
     </Link>

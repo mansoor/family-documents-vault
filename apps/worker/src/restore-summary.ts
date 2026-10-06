@@ -40,7 +40,7 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       `  - ${plural(r.linksPaused, 'share link')} ${r.linksPaused === 1 ? 'is' : 'are'} paused, ` +
         'so a link taken back since the backup',
       '    does not work again. An owner turns back on the ones still wanted, in',
-      '    Settings → After a restore.',
+      '    After a restore, on Home.',
     );
   }
   if (r.requestsPaused > 0) {
@@ -48,7 +48,7 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       `  - ${plural(r.requestsPaused, 'request')} to send documents ` +
         `${r.requestsPaused === 1 ? 'is' : 'are'} paused, so one taken back since the backup`,
       '    does not work again. An owner turns back on the ones still wanted, in',
-      '    Settings → After a restore.',
+      '    After a restore, on Home.',
     );
   }
   if (r.signInsPaused > 0) {
@@ -56,7 +56,7 @@ export function restoreSummary(file: string, r: RestoreReport): string {
       `  - ${plural(r.signInsPaused, 'sign-in')} ${r.signInsPaused === 1 ? 'is' : 'are'} paused — ` +
         'every one but the owners’ — since the backup cannot',
       '    know of a lock, or a sign-in taken away, since it was made. An owner turns',
-      '    each back on, one tap each, in Settings → After a restore.',
+      '    each back on, one tap each, in After a restore, on Home.',
     );
   }
   if (r.locksKept > 0) {
