@@ -518,7 +518,7 @@ only route that works whatever they keep belongs to whoever holds the master key
 
 ### Seeing what has happened
 
-Settings → **What has been happening** is the household's activity log, written
+**Activity** (What has been happening) is the household's activity log, written
 as sentences: _Sarah downloaded "Home insurance policy" — yesterday, 4:12pm._
 Owners, adults and teens can read it; a viewer cannot.
 
@@ -617,7 +617,7 @@ teen puts in stays in the family. Narrowing the collection or a document later
 only takes away. Such a link lasts 30 days at most. Sharing a collection
 always asks you to confirm it is you; a teen cannot share one; and deleting the
 collection, or making it Only me, ends its links. Every link, to a document or a
-collection, is in **Settings → Sharing**, to take back.
+collection, is in **Sharing**, to take back.
 
 ### When a new device signs in
 
@@ -670,7 +670,7 @@ The restore drill restores the newest backup into a scratch database beside your
 
 A restore goes into an empty database, never over a vault that is running: it refuses to. It gives the vault's database user its privileges back, brings a backup from an older release up to date, and checks the result before it says it is done. It refuses a backup from a newer release than the one you run — restore that with the newer release (`FDV_VERSION`).
 
-**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **Settings → After a restore**, and nobody else can, not even whoever made the link. They can take their own links back there. A link to somebody's Only me document, which no owner can see, stays paused: if it is still needed, they take it back and make a new one. At first only the owners can sign in: everybody else's sign-in is paused, since a lock an owner put on somebody after the backup would otherwise be undone, and an owner turns each back on, one tap each, in the same place. A sign-in that was locked when the backup was made stays locked until an owner unlocks it, even if the lock was due to end by itself. A link or a request somebody made works again only once both it and their sign-in are turned back on. The restore lists what else to look at.
+**Everything since the backup was made is undone** — documents added since, and also passwords changed, people removed and share links revoked since. So pick the newest backup; afterwards everybody signs in again, with the password they had when it was made. Every share link is paused, since one you took back after the backup would otherwise work again: an owner turns back on the ones still wanted in **After a restore**, which Home leads to while anything is paused, and nobody else can, not even whoever made the link. They can take their own links back there. A link to somebody's Only me document, which no owner can see, stays paused: if it is still needed, they take it back and make a new one. At first only the owners can sign in: everybody else's sign-in is paused, since a lock an owner put on somebody after the backup would otherwise be undone, and an owner turns each back on, one tap each, in the same place. A sign-in that was locked when the backup was made stays locked until an owner unlocks it, even if the lock was due to end by itself. A link or a request somebody made works again only once both it and their sign-in are turned back on. The restore lists what else to look at.
 
 **A document removed for good can come back from an older backup as a record, never as a file.** A backup holds only the database; an owner removing a document from the Trash for good deletes its files there and then. So a restore from a backup made before the removal brings its details back without its file: the restore looks for every file, lists the documents whose files are gone, and each of them says "The file was removed for good" when it is opened. An owner can remove such a record for good again, from the Trash. The restore also clears every request to remove a document for good: an owner who still wants one gone asks again, and whoever filed it has a day again.
 

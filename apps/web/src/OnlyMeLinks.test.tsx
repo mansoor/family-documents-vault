@@ -309,7 +309,11 @@ describe('Settings → Household', () => {
     signedIn();
     window.history.replaceState({}, '', '/settings');
     render(<App />);
-    fireEvent.click(await screen.findByRole('link', { name: /^Household/ }));
+    // Settings' own row: the shell's bar on a phone says "Household" too (R1).
+    const settings = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
+      'main',
+    ) as HTMLElement;
+    fireEvent.click(await within(settings).findByRole('link', { name: /^Household/ }));
     const toggle = await screen.findByRole('checkbox', {
       name: 'Only me documents can be shared outside the family',
     });

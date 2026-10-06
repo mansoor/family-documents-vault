@@ -800,6 +800,8 @@ describe('Settings holds settings only', () => {
     expect(rows(main)).toEqual([
       'How you hear about things',
       'Family',
+      // The household's rule for Only me documents (5.41): a setting, so here.
+      'Household',
       'Kinds of document',
       'Where your files are kept',
       'Where email comes from',
@@ -825,12 +827,16 @@ describe('Settings holds settings only', () => {
     await expectAccessible();
   });
 
-  it('an adult keeps the kinds of document under Household', async () => {
+  it('an adult keeps the kinds of document, and reads the Only me rule, under Household', async () => {
     at('/settings', EVERYTHING, 'adult');
     const main = (await screen.findByRole('heading', { name: 'Settings', level: 1 })).closest(
       'main',
     ) as HTMLElement;
-    expect(rows(main)).toEqual(['How you hear about things', 'Kinds of document']);
+    expect(rows(main)).toEqual(['How you hear about things', 'Household', 'Kinds of document']);
+    expect(within(main).getByRole('link', { name: /^Household/ })).toHaveAttribute(
+      'href',
+      '/settings/household',
+    );
     expect(within(main).getByRole('heading', { name: 'Your data', level: 2 })).toBeInTheDocument();
   });
 
