@@ -46,6 +46,11 @@ import {
   type ReminderProblem,
   type ResetNotice,
   type Role,
+  isDocumentSort,
+  LOCATION_SORT_REFUSAL,
+  seesLocation,
+  statusRank,
+  type DocumentSort,
 } from '@fdv/shared';
 import { vi } from 'vitest';
 
@@ -274,6 +279,14 @@ export interface FakeState {
   dropLostAfterBytes?: boolean;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
+  /**
+   * Refuse a request as the vault would, by method and path (R2: one of many
+   * documents an action is taken on, refused): the refusal, or undefined.
+   */
+  refuseWith?: (
+    method: string,
+    path: string,
+  ) => { status: number; code: string; message: string } | undefined;
   types: Array<Record<string, unknown>>;
   /** GET /document-attributes: the library a type's fields come from (0.5.6). */
   attributes?: Array<Record<string, unknown>>;
@@ -797,6 +810,8 @@ export function installFakeApi(state: FakeState) {
     if (state.offline && path !== '/api/v1/capabilities') {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
+    const refused = state.refuseWith?.(method, path);
+    if (refused) return refuse(refused.status, refused.code, refused.message);
     if (path === '/api/v1/capabilities') {
       return json({
         product: 'family-document-vault',
@@ -809,6 +824,8 @@ export function installFakeApi(state: FakeState) {
         features: {
           passkeys: true,
           custom_types: true,
+          // R2: GET /documents sorted by a column, filtered and paged.
+          document_table: true,
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionShares !== false
             ? { collection_shares: true }
@@ -3033,6 +3050,26 @@ export function installFakeApi(state: FakeState) {
         by_category: [{ category: 'identity', count: state.documents.length }],
       });
     }
+    if (path === '/api/v1/tags' && method === 'GET') {
+      // The tags on what is out of the Trash, most used first, as the vault counts them.
+      const counts = new Map<string, number>();
+      for (const d of state.documents.filter((x) => !x.deleted_at)) {
+        for (const t of (d.tags as string[] | undefined) ?? []) {
+          counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
+      }
+      return json({
+        items: [...counts]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([tag, count]) => ({ tag, count })),
+      });
+    }
+    if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
+      const answered = documentTable(state, query, storedRole() as Role);
+      return 'refused' in answered
+        ? refuse(422, 'validation_failed', answered.refused)
+        : json(answered.page);
+    }
     if (path === '/api/v1/documents' && method === 'GET') {
       // The Trash is its own list (5.1), as the vault's `deleted=true` is.
       const inTrash = query.get('deleted') === 'true';
@@ -3948,6 +3985,118 @@ function answerCollections(
     return done();
   }
   return Promise.reject(new Error(`unmocked ${method} ${path}`));
+}
+
+/**
+ * GET /documents sorted by a column (R2), as the vault answers it: the
+ * filters, the sort with blanks last and then the id, a page of `limit`
+ * after an offset cursor, `total`, each document's collections; where the
+ * original is kept never for a viewer — refused as a sort or a filter, and
+ * answered null.
+ */
+function documentTable(
+  state: FakeState,
+  query: URLSearchParams,
+  role: Role,
+): { refused: string } | { page: Record<string, unknown> } {
+  const sort = query.get('sort') as DocumentSort;
+  const location = query.get('location');
+  if ((sort === 'location' || location !== null) && !seesLocation(role)) {
+    return { refused: LOCATION_SORT_REFUSAL };
+  }
+  const sign = query.get('direction') === 'desc' ? -1 : 1;
+  const low = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase() : null);
+  const inTrash = query.get('deleted') === 'true';
+  // The collections the reader sees, as GET /collections gives them: a
+  // viewer, those an owner gave them (5.33).
+  const shown = (state.collections ?? [])
+    .filter(
+      (c) =>
+        canSeeCollection({ role, memberId: 'me' }, c) ||
+        (role === 'viewer' &&
+          c.audience === 'everyone' &&
+          (state.myRestriction?.collections ?? []).some((g) => g.id === c.id)),
+    )
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const collectionsOf = (d: Record<string, unknown>) =>
+    d.deleted_at
+      ? []
+      : shown
+          .filter((c) => c.items.includes(String(d.id)))
+          .map((c) => ({ id: c.id, name: c.name }));
+  const want = (k: string) => query.get(k);
+  const rows = state.documents
+    .filter((d) => Boolean(d.deleted_at) === inTrash)
+    .filter((d) => {
+      const person = want('member_id');
+      if (person === 'none') return !d.owner_member_id;
+      return !person || d.owner_member_id === person;
+    })
+    .filter((d) => !want('type_key') || d.type_key === want('type_key'))
+    .filter((d) => !want('status') || (d.status as { value: string }).value === want('status'))
+    .filter((d) => !want('visibility') || d.visibility === want('visibility'))
+    .filter(
+      (d) => !want('tag') || ((d.tags as string[] | undefined) ?? []).includes(want('tag') ?? ''),
+    )
+    .filter((d) => location === null || low(d.physical_location) === low(location))
+    .filter((d) => {
+      const c = want('collection_id');
+      if (!c) return true;
+      const ids = collectionsOf(d).map((x) => x.id);
+      return c === 'none' ? ids.length === 0 : ids.includes(c);
+    })
+    .map((d) => {
+      const date = (v: unknown) => (v as { date?: string } | null)?.date ?? null;
+      const typeLabel = state.types.find((t) => t.key === d.type_key)?.label;
+      const person = state.members.find((m) => m.id === d.owner_member_id)?.display_name;
+      const status = (d.status as { value: string }).value;
+      const key: Array<string | number | null> =
+        sort === 'title'
+          ? [low(d.title)]
+          : sort === 'kind'
+            ? [low(typeLabel)]
+            : sort === 'person'
+              ? [low(person)]
+              : sort === 'issued'
+                ? [date(d.issued)]
+                : sort === 'expires'
+                  ? [date(d.expires)]
+                  : sort === 'status'
+                    ? [statusRank(status), date(d.expires)]
+                    : sort === 'visibility'
+                      ? [{ household: 0, adults: 1, private: 2 }[String(d.visibility)] ?? 3]
+                      : sort === 'collections'
+                        ? [low(collectionsOf(d)[0]?.name)]
+                        : [low(d.physical_location)];
+      return { d, key };
+    });
+  rows.sort((a, b) => {
+    for (let i = 0; i < a.key.length; i++) {
+      const [x, y] = [a.key[i] ?? null, b.key[i] ?? null];
+      if (x === y) continue;
+      if (x === null) return 1;
+      if (y === null) return -1;
+      return (x < y ? -1 : 1) * sign;
+    }
+    return String(a.d.id) < String(b.d.id) ? -sign : sign;
+  });
+  const limit = Number(query.get('limit') ?? 50);
+  const start = Number(query.get('cursor') ?? 0);
+  const page = rows.slice(start, start + limit);
+  const more = start + limit < rows.length;
+  return {
+    page: {
+      items: page.map(({ d }) => ({
+        ...listed(d),
+        // Where it is kept is the household's (5.41).
+        physical_location: seesLocation(role) ? (d.physical_location ?? null) : null,
+        collections: collectionsOf(d),
+      })),
+      next_cursor: more ? String(start + limit) : null,
+      has_more: more,
+      total: rows.length,
+    },
+  };
 }
 
 /**

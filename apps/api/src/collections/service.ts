@@ -3,14 +3,12 @@ import { appendAudit, withPrincipal, type Db } from '@fdv/db';
 import {
   can,
   canSee,
-  COLLECTION_AUDIENCES,
   COLLECTION_DESCRIPTION_MAX,
   COLLECTION_ITEMS_PAGE,
   COLLECTION_ITEMS_PAGE_MAX,
   COLLECTION_NAME_MAX,
   collectionItemHint,
   inCollectionAudience,
-  mayBeRestricted,
   withinCollectionAudience,
   type CollectionAudience,
   type CollectionDetail,
@@ -27,6 +25,7 @@ import { ApiError } from '../errors.js';
 import { seenDocument, type DocumentService } from '../documents/service.js';
 import { madeWith } from '../documents/made-with.js';
 import { endSessions } from '../documents/share-sessions.js';
+import { seenCollection } from './seen.js';
 
 /**
  * Collections of documents (5.14).
@@ -94,28 +93,8 @@ const COLLECTION_COLUMNS = [
   'l.deleted_at',
 ] as const;
 
-/**
- * "This caller may see collection `l`", as SQL: `canSeeCollection` for every audience
- * there is, and not deleted. Its maker always may; Only me, its maker
- * alone. An audience it does not name is nobody's. And a viewer, a
- * collection for Everyone an owner has given them (A17, 5.33): the
- * database's own answer (0054's app_granted_collections(), nothing for a
- * viewer with no limits), which its rule for a restricted reader asks too.
- */
-export const seenCollection = (p: Principal) => {
-  const maker = sql<boolean>`coalesce(l.owner_member_id = ${p.memberId}::uuid, false)`;
-  const granted = mayBeRestricted(p.role)
-    ? sql<boolean>`or (l.audience = 'everyone' and l.id in (select app_granted_collections()))`
-    : sql<boolean>``;
-  return sql<boolean>`(l.deleted_at is null and (case l.audience ${sql.join(
-    COLLECTION_AUDIENCES.map((a) =>
-      a === 'only_me'
-        ? sql`when ${sql.lit(a)} then ${maker}`
-        : sql`when ${sql.lit(a)} then ${sql.lit(inCollectionAudience(p.role, a))} or ${maker}`,
-    ),
-    sql` `,
-  )} else false end ${granted}))`;
-};
+/** "This caller may see collection `l`", as SQL (seen.ts, on its own since R2). */
+export { seenCollection };
 
 /** The caller made this collection. */
 const isMaker = (p: Principal, row: { owner_member_id: string | null }) =>

@@ -16,6 +16,7 @@ import {
   CORE_FIELDS,
   DECEASED_REFUSAL,
   DECEASED_SIGNED_IN,
+  DOCUMENT_PAGE_MAX,
   deriveStatus,
   effectiveVisibility,
   EXPIRY_ALWAYS_REQUIRED,
@@ -97,6 +98,13 @@ import {
   type ReminderView,
   type ResetNotice,
   type ResetPath,
+  isDocumentSort,
+  LOCATION_SORT_REFUSAL,
+  maySortByLocation,
+  OLDER_DOCUMENT_SORTS,
+  STATUS_ORDER,
+  statusRank,
+  type DocumentSort,
   type Role,
   type Tokens,
   type VersionView,
@@ -1418,6 +1426,8 @@ export function createFakeVault(): {
           guests: true,
           // What the pages propose for a document's empty fields (5.37).
           detail_suggestions: true,
+          // GET /documents sorted by a column, filtered and paged (R2).
+          document_table: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -1597,6 +1607,167 @@ export function createFakeVault(): {
         editorName,
         location: locationShown(),
       });
+    /**
+     * GET /documents sorted by a column (R2), as the real vault answers it
+     * (apps/api/src/documents/table.ts): what the caller may see, filtered,
+     * sorted with blanks last and then by id, a page at a time after the
+     * last row's key, with `total` and each document's `collections` — and
+     * a sort or filter by location refused to whoever may not see one.
+     */
+    const documentTable = (
+      url: string,
+      who: { memberId: string; role: Role },
+      sort: DocumentSort,
+    ) => {
+      const location = param(url, 'location');
+      if ((sort === 'location' || location !== undefined) && !maySortByLocation(who.role)) {
+        return fail(
+          422,
+          'validation_failed',
+          LOCATION_SORT_REFUSAL,
+          sort === 'location' ? 'sort' : 'location',
+        );
+      }
+      const direction = param(url, 'direction') ?? 'asc';
+      if (direction !== 'asc' && direction !== 'desc') {
+        return fail(422, 'validation_failed', 'A direction is asc or desc.', 'direction');
+      }
+      const status = param(url, 'status');
+      if (status !== undefined && !(STATUS_ORDER as readonly string[]).includes(status)) {
+        return fail(
+          422,
+          'validation_failed',
+          'That is not a status a document can have.',
+          'status',
+        );
+      }
+      const limit = Number(param(url, 'limit') ?? 50);
+      if (!Number.isInteger(limit) || limit < 1 || limit > DOCUMENT_PAGE_MAX) {
+        return fail(
+          422,
+          'validation_failed',
+          `A page is 1 to ${DOCUMENT_PAGE_MAX} documents.`,
+          'limit',
+        );
+      }
+      const low = (v: string | null | undefined) => (v && v.trim() ? v.trim().toLowerCase() : null);
+      const shownCollections = state.collections
+        .filter((l) => !l.deleted && canSeeCollection(who, l))
+        .sort((a, b) => (low(a.name) as string).localeCompare(low(b.name) as string));
+      const inTrash = param(url, 'deleted') === 'true';
+      const collectionsOf = (doc: FakeDocument) =>
+        doc.deleted_at
+          ? []
+          : shownCollections
+              .filter((l) => l.items.some((i) => i.document_id === doc.id))
+              .map((l) => ({ id: l.id, name: l.name }));
+      const memberId = param(url, 'member_id');
+      const typeKey = param(url, 'type_key');
+      const tag = param(url, 'tag');
+      const visibility = param(url, 'visibility');
+      const collectionId = param(url, 'collection_id');
+      const by = param(url, 'issued_by');
+      const asked = param(url, 'purge_requested');
+      const rows = state.documents
+        .filter((d) => Boolean(d.deleted_at) === inTrash)
+        .filter((d) =>
+          canSee(who, {
+            visibility: d.visibility ?? 'household',
+            owner_member_id: d.owner_member_id ?? null,
+          }),
+        )
+        .filter((d) => asked === undefined || Boolean(d.purge_requested_at) === (asked === 'true'))
+        .filter((d) => !by || d.issued_by?.toLowerCase() === by.trim().toLowerCase())
+        .filter((d) =>
+          memberId === undefined
+            ? true
+            : memberId === 'none'
+              ? !d.owner_member_id
+              : d.owner_member_id === memberId,
+        )
+        .filter((d) => typeKey === undefined || d.type_key === typeKey)
+        .filter((d) => tag === undefined || (d.tags ?? []).includes(tag))
+        .filter((d) => visibility === undefined || (d.visibility ?? 'household') === visibility)
+        .filter((d) => location === undefined || low(d.physical_location) === low(location))
+        .filter((d) => {
+          if (collectionId === undefined) return true;
+          const ids = collectionsOf(d).map((c) => c.id);
+          return collectionId === 'none' ? ids.length === 0 : ids.includes(collectionId);
+        })
+        .map((d) => {
+          const view = listedOf(d);
+          const issued = view.issued?.date ?? null;
+          const expires = view.expires?.date ?? null;
+          const name = state.members.find((m) => m.id === d.owner_member_id)?.display_name;
+          const key: Array<string | number | null> =
+            sort === 'title'
+              ? [low(view.title)]
+              : sort === 'kind'
+                ? [low(state.types.find((t) => t.key === d.type_key)?.label)]
+                : sort === 'person'
+                  ? [low(name)]
+                  : sort === 'issued'
+                    ? [issued]
+                    : sort === 'expires'
+                      ? [expires]
+                      : sort === 'status'
+                        ? [statusRank(view.status.value), expires]
+                        : sort === 'visibility'
+                          ? [{ household: 0, adults: 1, private: 2 }[view.visibility]]
+                          : sort === 'collections'
+                            ? [low(collectionsOf(d)[0]?.name)]
+                            : [low(d.physical_location)];
+          return { view: { ...view, collections: collectionsOf(d) }, key, id: d.id };
+        })
+        .filter((r) => status === undefined || r.view.status.value === status);
+      const sign = direction === 'desc' ? -1 : 1;
+      type Keyed = { key: Array<string | number | null>; id: string };
+      const compare = (a: Keyed, b: Keyed) => {
+        for (let i = 0; i < a.key.length; i++) {
+          const [x, y] = [a.key[i] ?? null, b.key[i] ?? null];
+          if (x === y) continue;
+          if (x === null) return 1;
+          if (y === null) return -1;
+          return (x < y ? -1 : 1) * sign;
+        }
+        return a.id === b.id ? 0 : (a.id < b.id ? -1 : 1) * sign;
+      };
+      rows.sort(compare);
+      let after = rows;
+      const cursor = param(url, 'cursor');
+      if (cursor !== undefined) {
+        let at: { s?: unknown; d?: unknown; key?: unknown; id?: unknown };
+        try {
+          at = JSON.parse(decodeURIComponent(cursor)) as typeof at;
+        } catch {
+          return fail(422, 'validation_failed', 'That page cursor is not valid.');
+        }
+        if (
+          at.s !== sort ||
+          at.d !== direction ||
+          typeof at.id !== 'string' ||
+          !Array.isArray(at.key)
+        ) {
+          return fail(422, 'validation_failed', 'That page cursor is not valid.');
+        }
+        const from = { key: at.key as Array<string | number | null>, id: at.id };
+        after = rows.filter((r) => compare(r, from) > 0);
+      }
+      const page = after.slice(0, limit);
+      const last = page[page.length - 1];
+      const more = after.length > limit;
+      return ok({
+        items: page.map((r) => r.view),
+        next_cursor:
+          more && last
+            ? encodeURIComponent(
+                JSON.stringify({ s: sort, d: direction, key: last.key, id: last.id }),
+              )
+            : null,
+        has_more: more,
+        total: rows.length,
+      });
+    };
     /** Its note's words changed (5.35): stamped by whoever is signed in, now. Else left alone. */
     const stampNotes = (doc: FakeDocument, before: string | null, memberId: string) => {
       if ((doc.notes ?? null) === before) return;
@@ -1673,6 +1844,25 @@ export function createFakeVault(): {
         stampNotes(doc, null, whoOf(s).memberId);
         state.documents.push(doc);
         return ok(viewOf(doc), 201);
+      }
+      // Sorted by a column (R2): the Documents table, as the real vault pages it.
+      const sort = param(url, 'sort');
+      if (isDocumentSort(sort)) return documentTable(url, whoOf(s), sort);
+      if (sort !== undefined && !(OLDER_DOCUMENT_SORTS as readonly string[]).includes(sort)) {
+        return fail(422, 'validation_failed', 'That is not a way to sort documents.', 'sort');
+      }
+      // What the table adds goes with a column sort: refused with any other.
+      const tableOnly = [
+        ...['direction', 'collection_id', 'location'].filter((k) => param(url, k) !== undefined),
+        ...(param(url, 'member_id') === 'none' ? ['member_id=none'] : []),
+      ];
+      if (tableOnly.length > 0) {
+        return fail(
+          422,
+          'validation_failed',
+          'That goes with a sort by a column: title, kind, person, issued, expires, status, visibility, collections or location.',
+          tableOnly.join(', '),
+        );
       }
       // As the real vault: ?issued_by= filters, whatever the case.
       const by = param(url, 'issued_by');

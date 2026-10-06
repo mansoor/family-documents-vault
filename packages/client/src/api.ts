@@ -26,6 +26,8 @@ import type {
   DocumentAttributeInput,
   DocumentAttributeView,
   DocumentInput,
+  DocumentListParams,
+  DocumentPage,
   DocumentTypeImpact,
   DocumentTypeInput,
   DocumentTypeView,
@@ -61,7 +63,6 @@ import type {
   OnlyMeSharing,
   NewVault,
   OwnerChange,
-  Page,
   PausedSignIn,
   PasskeyView,
   Preferences,
@@ -676,8 +677,23 @@ export function createApi(http: Http) {
         body,
         token,
       }),
-    documents: (token: string, params: Params = {}) =>
-      request<Page<DocumentView>>(`/api/v1/documents${qs(params)}`, { token }),
+    /**
+     * A page of documents. Sorted by a column (R2, `features.document_table`:
+     * `DocumentListParams`), with a `direction` and the table's filters, a
+     * page carries `total` and each document its `collections`; a sort or
+     * filter by `location` is refused (422) to whoever may not see where
+     * originals are kept. An older vault refuses those sorts.
+     */
+    documents: (token: string, params: DocumentListParams | Params = {}) =>
+      request<DocumentPage>(`/api/v1/documents${qs(params)}`, { token }),
+    /**
+     * The tags on the documents this person can see, most used first (50 at
+     * most), or those starting with `q`: the Documents table's tag filter (R2).
+     */
+    tags: (token: string, q?: string) =>
+      request<{ items: Array<{ tag: string; count: number }> }>(`/api/v1/tags${qs({ q })}`, {
+        token,
+      }),
     /**
      * Who issued the household's documents, as far as this person can see
      * (0.4.10, `features.issued_by`): the filter chips, and with `type_key`

@@ -105,6 +105,12 @@ export interface DocumentView {
    * is not. Absent from older vaults.
    */
   file_removed?: boolean;
+  /**
+   * The collections it is in, of those the reader may see, by name (R2): on
+   * GET /documents sorted by a column only, and none while it is in the
+   * Trash. Absent everywhere else, and from older vaults.
+   */
+  collections?: Array<{ id: string; name: string }>;
   etag: string;
 }
 

@@ -2140,6 +2140,124 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'the Documents table: sorted by a column either way with blanks last, filtered, a page at a time by its cursor with how many in all; a viewer may not sort or filter by where originals are kept (R2)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.document_table).toBe(true);
+      const TAG = 'r2-table';
+      const made: Record<string, string> = {};
+      for (const [key, issued, where] of [
+        ['charlie', '2021-03-01', 'Loft'],
+        ['alpha', null, 'Desk'],
+        ['bravo', '2019-07-15', null],
+        ['delta', '2023-11-30', 'desk'],
+      ] as const) {
+        const doc = await api.createDocument(token, {
+          title: `${key === 'alpha' ? 'contract' : 'Contract'} table ${key}`,
+          tags: [TAG],
+          physical_location: where,
+          ...(issued ? { issued: { date: issued, precision: 'day' as const } } : {}),
+        });
+        made[key] = doc.id;
+      }
+      const titles = (page: { items: Array<{ title: string | null }> }) =>
+        page.items.map((d) => d.title?.replace(/^contract table /i, ''));
+
+      // By title, case aside; and the other way.
+      const byTitle = await api.documents(token, { sort: 'title', tag: TAG });
+      expect(titles(byTitle)).toEqual(['alpha', 'bravo', 'charlie', 'delta']);
+      expect(byTitle).toMatchObject({ total: 4, has_more: false, next_cursor: null });
+      const down = await api.documents(token, { sort: 'title', direction: 'desc', tag: TAG });
+      expect(titles(down)).toEqual(['delta', 'charlie', 'bravo', 'alpha']);
+      // By the day it was issued: the one with none last, whichever way.
+      expect(titles(await api.documents(token, { sort: 'issued', tag: TAG }))).toEqual([
+        'bravo',
+        'charlie',
+        'delta',
+        'alpha',
+      ]);
+      expect(
+        titles(await api.documents(token, { sort: 'issued', direction: 'desc', tag: TAG })),
+      ).toEqual(['delta', 'charlie', 'bravo', 'alpha']);
+
+      // Two at a time: the same order, nothing twice, and how many in all on each page.
+      const first = await api.documents(token, { sort: 'issued', tag: TAG, limit: 2 });
+      expect(titles(first)).toEqual(['bravo', 'charlie']);
+      expect(first).toMatchObject({ total: 4, has_more: true });
+      const second = await api.documents(token, {
+        sort: 'issued',
+        tag: TAG,
+        limit: 2,
+        cursor: first.next_cursor as string,
+      });
+      expect(titles(second)).toEqual(['delta', 'alpha']);
+      expect(second).toMatchObject({ total: 4, has_more: false, next_cursor: null });
+      // A cursor is for the sort and the direction it came with.
+      for (const other of [
+        { sort: 'title' as const },
+        { sort: 'issued' as const, direction: 'desc' as const },
+      ]) {
+        const refused = await refusal(
+          api.documents(token, { ...other, tag: TAG, cursor: first.next_cursor as string }),
+        );
+        expect(refused).toMatchObject({ status: 422, code: 'validation_failed' });
+      }
+
+      // Filters: where it is kept, whatever the case; nobody's; a collection, or none.
+      expect(
+        titles(await api.documents(token, { sort: 'title', tag: TAG, location: 'DESK' })),
+      ).toEqual(['alpha', 'delta']);
+      expect(
+        (await api.documents(token, { sort: 'title', tag: TAG, member_id: 'none' })).total,
+      ).toBe(4);
+      const box = await api.createCollection(token, {
+        name: 'Contract table box',
+        audience: 'everyone',
+      });
+      await api.addToCollection(token, box.id, [made.charlie as string, made.alpha as string]);
+      const inBox = await api.documents(token, { sort: 'title', tag: TAG, collection_id: box.id });
+      expect(titles(inBox)).toEqual(['alpha', 'charlie']);
+      expect(inBox.items.map((d) => d.collections?.map((c) => c.name))).toEqual([
+        ['Contract table box'],
+        ['Contract table box'],
+      ]);
+      expect(
+        titles(await api.documents(token, { sort: 'title', tag: TAG, collection_id: 'none' })),
+      ).toEqual(['bravo', 'delta']);
+      // Sorted by collection: those in one first, those in none last.
+      const byBox = titles(await api.documents(token, { sort: 'collections', tag: TAG }));
+      expect([...byBox.slice(0, 2)].sort()).toEqual(['alpha', 'charlie']);
+      expect([...byBox.slice(2)].sort()).toEqual(['bravo', 'delta']);
+      // The family sorts by where originals are kept; blanks last.
+      const byPlace = await api.documents(token, { sort: 'location', tag: TAG });
+      expect(byPlace.items.map((d) => d.physical_location?.toLowerCase() ?? null)).toEqual([
+        'desk',
+        'desk',
+        'loft',
+        null,
+      ]);
+
+      // An older sort is answered as before, and refuses what the table adds.
+      const older = await refusal(api.documents(token, { sort: 'recent', direction: 'asc' }));
+      expect(older).toMatchObject({ status: 422, code: 'validation_failed' });
+
+      // A viewer sorts and filters what they are given, and never by where it is kept.
+      const vic = { email: 'table-viewer@example.test', password: 'the viewer’s own password' };
+      await ctx.addSignIn(token, { name: 'Vic', role: 'viewer', ...vic });
+      const viewer = await signInAs(api, vic.email, vic.password);
+      const theirs = await api.documents(viewer.access_token, { sort: 'title', tag: TAG });
+      expect(titles(theirs)).toEqual(['alpha', 'bravo', 'charlie', 'delta']);
+      expect(theirs.items.every((d) => d.physical_location === null)).toBe(true);
+      for (const asked of [
+        { sort: 'location' as const, tag: TAG },
+        { sort: 'title' as const, tag: TAG, location: 'Desk' },
+      ]) {
+        const refused = await refusal(api.documents(viewer.access_token, asked));
+        expect(refused).toMatchObject({ status: 422, code: 'validation_failed' });
+      }
+    },
+  },
+  {
     name: "a note as the vault keeps it: its words as written, and who last changed them and when — moved only by a change of its words, and never over somebody else's (5.35)",
     run: async (api, ctx) => {
       const { access_token: token } = await signIn(api, ctx);

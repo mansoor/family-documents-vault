@@ -50,12 +50,15 @@ import {
   type DateValue,
   type DetailProblem,
   type DocumentAttributeView,
+  type DocumentPage,
+  type DocumentSort,
   type DocumentTypeView,
   type DocumentView,
   type OfflineItem,
   type RequiredRules,
   type RequiredValues,
   type SealedPresence,
+  type SortDirection,
   type Status,
   type TypeField,
   type VersionView,
@@ -72,6 +75,7 @@ import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
+import { documentTable } from './table.js';
 import { allows, requireCapability } from '../authz.js';
 import {
   canSee,
@@ -113,6 +117,7 @@ export interface DocumentInput {
 }
 
 export interface ListQuery {
+  /** A person's id; or, with a column sort (R2), `none` for nobody's. */
   member_id?: string | undefined;
   category?: string | undefined;
   /** Who issued it: the filter chips (0.4.10), matched regardless of case. */
@@ -126,7 +131,12 @@ export interface ListQuery {
   /** Only those an owner has asked to remove for good, or none of them (5.24). */
   purge_requested?: boolean | undefined;
   updated_since?: string | undefined;
-  sort?: 'recent' | 'expiring' | 'alpha' | undefined;
+  /** An older sort, or a column (R2, table.ts). */
+  sort?: 'recent' | 'expiring' | 'alpha' | DocumentSort | undefined;
+  /** R2, with a column sort: the direction, and the filters only the table has. */
+  direction?: SortDirection | undefined;
+  collection_id?: string | undefined;
+  location?: string | undefined;
   limit?: number | undefined;
   cursor?: string | undefined;
 }
@@ -360,6 +370,48 @@ export function statusOf(
       ).filter((m) => location || m.key !== 'physical_location'),
     },
     today(),
+  );
+}
+
+/**
+ * A row's status, as its view says it (`view`): from what is plain, and
+ * what was written down of what is sealed — and, for a reader who may not
+ * see where originals are kept, never that it needs one (`location`, 5.41).
+ * The Documents table (R2) sorts and filters by exactly this, so the order
+ * never disagrees with the words.
+ */
+export function rowStatus(
+  type: Parameters<typeof statusOf>[0],
+  row: Pick<
+    DocRow,
+    | 'owner_member_id'
+    | 'issued_on'
+    | 'issued_precision'
+    | 'expires_on'
+    | 'expires_precision'
+    | 'identifier'
+    | 'issued_by'
+    | 'physical_location'
+    | 'tags'
+    | 'notes'
+    | 'extra'
+    | 'notes_sealed'
+    | 'sealed_details'
+  >,
+  location = true,
+): Status {
+  const day = (on: string | null, precision: string | null): DateValue | null =>
+    on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;
+  return statusOf(
+    type,
+    {
+      ...row,
+      issued: day(row.issued_on, row.issued_precision),
+      expires: day(row.expires_on, row.expires_precision),
+      extra: (row.extra ?? {}) as Record<string, unknown>,
+    },
+    sealedOf(row),
+    location,
   );
 }
 
@@ -791,12 +843,8 @@ export class DocumentService {
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
-      status: statusOf(
-        type,
-        { ...row, issued, expires, extra: plainExtra },
-        sealedOf(row),
-        seesLocation(p.role),
-      ),
+      // (rowStatus: as the Documents table sorts and filters by it, R2.)
+      status: rowStatus(type, row, seesLocation(p.role)),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -1236,6 +1284,22 @@ export class DocumentService {
     p: Principal,
     q: ListQuery,
   ): Promise<{ items: DocumentView[]; next_cursor: string | null; has_more: boolean }> {
+    // The table's additions (R2) go with a column sort: here, with an older
+    // sort or none, they are refused rather than quietly left out.
+    const tableOnly = [
+      q.direction !== undefined && 'direction',
+      q.collection_id !== undefined && 'collection_id',
+      q.location !== undefined && 'location',
+      q.member_id === 'none' && 'member_id=none',
+    ].filter((x): x is string => x !== false);
+    if (tableOnly.length > 0) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'That goes with a sort by a column: title, kind, person, issued, expires, status, visibility, collections or location.',
+        { detail: tableOnly.join(', ') },
+      );
+    }
     const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
     return withPrincipal(this.db, p, async (trx) => {
       let query = trx
@@ -1304,6 +1368,18 @@ export class DocumentService {
           : null;
       return { items: filtered, next_cursor: next, has_more: rows.length > limit };
     });
+  }
+
+  /**
+   * GET /documents sorted by a column (Phase 6, R2): the Documents table.
+   * What the caller may see, as every list of documents gives it, filtered,
+   * sorted and a page at a time (table.ts); with how many there are in all,
+   * and the collections each is in.
+   */
+  async table(p: Principal, q: ListQuery & { sort: DocumentSort }): Promise<DocumentPage> {
+    return withPrincipal(this.db, p, (trx) =>
+      documentTable(trx, p, q, (rows) => this.listed(trx, p, rows)),
+    );
   }
 
   async tags(p: Principal, q: string | undefined): Promise<Array<{ tag: string; count: number }>> {

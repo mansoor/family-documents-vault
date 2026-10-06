@@ -299,12 +299,15 @@ describe('the sidebar, from 1024 px (R1)', () => {
     );
   });
 
-  it('Documents opens today’s browse view, called Documents, until R2', async () => {
+  it('Documents opens the Documents table (R2)', async () => {
     at('/', EVERYTHING);
     fireEvent.click(within(await sidebar()).getByRole('link', { name: 'Documents' }));
     await screen.findByRole('heading', { name: 'Documents', level: 1 });
     expect(window.location.pathname).toBe('/documents');
-    expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
+    const table = await screen.findByRole('table', { name: /^Documents, sorted by Title/ });
+    expect(
+      await within(table).findByRole('link', { name: "Mansoor's passport" }),
+    ).toBeInTheDocument();
   });
 
   it('a new page takes focus to its heading; the first does not', async () => {

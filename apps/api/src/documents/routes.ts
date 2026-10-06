@@ -1,5 +1,13 @@
 import type { MultipartFile } from '@fastify/multipart';
-import { NOTES_MAX, type CaptureMetadata } from '@fdv/shared';
+import {
+  DOCUMENT_PAGE_MAX,
+  DOCUMENT_SORTS,
+  isDocumentSort,
+  NOTES_MAX,
+  OLDER_DOCUMENT_SORTS,
+  SORT_DIRECTIONS,
+  type CaptureMetadata,
+} from '@fdv/shared';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -143,7 +151,8 @@ function captureMetadata(raw: unknown): CaptureMetadata {
 }
 
 const listQuery = z.object({
-  member_id: z.string().uuid().optional(),
+  // A person's id; or, with a column sort (R2), `none`: nobody's.
+  member_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
   category: z.string().optional(),
   issued_by: z.string().trim().min(1).max(200).optional(),
   type_key: z.string().optional(),
@@ -164,9 +173,16 @@ const listQuery = z.object({
     .transform((v) => v === 'true')
     .optional(),
   updated_since: z.string().datetime().optional(),
-  sort: z.enum(['recent', 'expiring', 'alpha']).optional(),
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  cursor: z.string().optional(),
+  // The older sorts, and since R2 the table's columns (document-table.ts in
+  // @fdv/shared); the table's additions below go with a column sort only.
+  sort: z.enum([...OLDER_DOCUMENT_SORTS, ...DOCUMENT_SORTS]).optional(),
+  direction: z.enum(SORT_DIRECTIONS).optional(),
+  // In this collection (one the caller may see), or in none of theirs.
+  collection_id: z.union([z.string().uuid(), z.literal('none')]).optional(),
+  // Kept there, whatever the case: only for whoever sees locations (5.41).
+  location: z.string().trim().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
+  cursor: z.string().max(2048).optional(),
 });
 
 function parseRange(
@@ -321,9 +337,15 @@ export function registerDocuments(
     },
   );
 
-  app.get('/api/v1/documents', auth, async (req) =>
-    docs.list(principal(req), parse(listQuery, req.query)),
-  );
+  // Sorted by a column, the Documents table (R2, table.ts); otherwise the
+  // list as older clients have always been given it.
+  app.get('/api/v1/documents', auth, async (req) => {
+    const q = parse(listQuery, req.query);
+    const sort = q.sort;
+    return isDocumentSort(sort)
+      ? docs.table(principal(req), { ...q, sort })
+      : docs.list(principal(req), { ...q, sort });
+  });
 
   app.post('/api/v1/documents', auth, async (req, reply) => {
     const created = await docs.create(

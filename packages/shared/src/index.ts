@@ -23,3 +23,4 @@ export * from './upload-requests.js';
 export * from './wire.js';
 export * from './tokens.js';
 export * from './proposals.js';
+export * from './document-table.js';

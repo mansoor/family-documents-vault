@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from '
 import { AppProvider, useApp } from './app-context.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
 import { DocumentScreen } from './screens/Document.js';
+import { DocumentsScreen } from './screens/Documents.js';
 import { ReaderScreen } from './screens/Reader.js';
 import { SignInScreen, WelcomeScreen } from './screens/Entry.js';
 import { ActivityScreen } from './screens/Activity.js';
@@ -163,9 +164,8 @@ export function App() {
           >
             <Route path="/" element={<HomeScreen />} />
             <Route path="/add" element={<AddScreen />} />
-            {/* Documents in the sidebar: until R2 builds the Documents table
-                here, today's browse view (Search with no query). */}
-            <Route path="/documents" element={<SearchScreen title="Documents" />} />
+            {/* Documents (R2): the table from 768 px, today's rows on a phone. */}
+            <Route path="/documents" element={<DocumentsScreen />} />
             <Route path="/documents/:id" element={<DocumentScreen />} />
             <Route path="/documents/:id/read" element={<ReaderScreen />} />
             <Route path="/documents/:id/confirm" element={<ConfirmScreen />} />

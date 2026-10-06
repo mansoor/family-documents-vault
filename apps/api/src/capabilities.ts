@@ -123,6 +123,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       // 5.37: what a document's pages propose for its empty fields, each
       // with a confidence, offered to whoever may change it (A44).
       detail_suggestions: true,
+      // R2: GET /documents sorted by a column, filtered and paged: the Documents table.
+      document_table: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

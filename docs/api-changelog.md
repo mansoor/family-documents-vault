@@ -3929,6 +3929,34 @@ only_me_not_shared`. The activity log says it, notable, to owners and
       for where the original is kept: a kind that requires it is worked out
       without it for them (the document, a list, a search).
 
+- After 0.6.0 (Phase 6):
+  - Documents as a table (R2, `features.document_table`). **Added:**
+    `GET /api/v1/documents` sorts by a column — `sort=title`, `kind`,
+    `person`, `issued`, `expires`, `status`, `visibility`, `collections` or
+    `location` — with `direction=asc|desc` (ascending unless said; a blank
+    goes last either way; a tie by the document's id). With one of those:
+    `member_id=none` (nobody's), `collection_id=<id>|none` (in that
+    collection, which the caller may see, or in none they may),
+    `location=<text>` (kept there, whatever the case); `status` gives full
+    pages and is counted, not filtered after the page; each page has
+    `total`, how many the filters give the caller; each document has
+    `collections` (`[{ id, name }]`, those the caller may see, by name;
+    none in the Trash). `next_cursor` holds the sort and direction it came
+    with, and is refused (`422 validation_failed`) with any other. A sort
+    or filter by location is refused (`422 validation_failed`) to a viewer,
+    limited or not, and so to a guest. `limit` is still 200 at most. A
+    status is worked out as the document's own view says it, so a sort by
+    status (most pressing first: expired, expiring soon, needs details, in
+    date, nothing to renew; then the sooner expiry) reads every document
+    the other filters give. **Unchanged:** `sort=recent|expiring|alpha`,
+    or none, answer as before — no `total`, no `collections`, `status`
+    filtered after the page — and refuse `direction`, `collection_id`,
+    `location` and `member_id=none` (`422`) rather than leave them out.
+    `GET /api/v1/tags` is in `@fdv/client` (`tags`). `@fdv/shared`:
+    `DOCUMENT_SORTS`, `DocumentSort`, `SortDirection`, `isDocumentSort`,
+    `STATUS_ORDER`, `statusRank`, `DOCUMENT_PAGE_MAX`, `maySortByLocation`,
+    `DocumentListParams`, `DocumentPage`. The client fake answers the same.
+
 ## Deprecations in effect
 
 - `GET /api/v1/shared/{token}`, `POST /api/v1/shared/{token}/open` and
