@@ -287,6 +287,17 @@ export function describeEvent(e: ActivityEvent): ActivityLine | null {
           : `${who} changed ${possessive(personOf(e))} identity details`,
       );
     }
+    // Whether the household's Only me documents can be shared outside the
+    // family (5.41), and how many links that paused or turned back on.
+    case 'household.only_me_sharing_changed': {
+      const on = detail.only_me_shareable === true;
+      const n = Number(on ? detail.links_resumed : detail.links_paused) || 0;
+      const links = n > 0 ? ` (${n} link${n === 1 ? '' : 's'} ${on ? 'back on' : 'paused'})` : '';
+      return line(
+        `${who} turned ${on ? 'on' : 'off'} sharing Only me documents outside the family${links}`,
+        true,
+      );
+    }
     // Who sees other people's identity details (A34): wider only after
     // notice, and the line says from when.
     case 'identity.audience_changed': {

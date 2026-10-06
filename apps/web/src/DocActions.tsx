@@ -463,6 +463,7 @@ export function DocActions(props: {
           <SharePanel
             documentId={props.documentId}
             documentTitle={doc?.title ?? null}
+            onlyMe={doc?.visibility === 'private'}
             onClose={closeSheet}
             onBusy={setSheetBusy}
           />

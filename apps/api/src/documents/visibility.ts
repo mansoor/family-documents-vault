@@ -9,15 +9,23 @@ import {
   type ScopeKeys,
 } from '@fdv/crypto';
 import { appendAudit, withPrincipal, type Db, type Visibility } from '@fdv/db';
+import { sql } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import { requireCapability } from '../authz.js';
 import {
   canSee,
   mayChangeVisibilityAtAll,
+  ONLY_ME_KEEP_REFUSED,
   visibilityRefusal,
+  type OwnLinkToEnd,
   type VisibilityAsker,
+  type VisibilityChange,
 } from '@fdv/shared';
+import { onlyMeShareable } from './only-me-rule.js';
+import { endSessions } from './share-sessions.js';
+import { protectionOf, SHARE_PAGES_PRUNE_JOB } from './shares.js';
+import type { Enqueue } from './service.js';
 
 /**
  * Changing a document's visibility (SEC-13, FND-07, decision 2).
@@ -34,6 +42,8 @@ export class VisibilityService {
   constructor(
     private readonly db: Db,
     private readonly keys: ScopeKeys,
+    /** How a view-only link ended here has its pages removed (5.18). */
+    private readonly enqueue: Enqueue = async () => undefined,
   ) {}
 
   /**
@@ -46,16 +56,28 @@ export class VisibilityService {
     body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
   };
 
+  /**
+   * Into Only me (the owner's decision of 6 Oct 2026): links others made to
+   * it stop, as they always have — none of them may see it now — and are
+   * counted in the answer; the person's own links that would still send it
+   * are theirs to end (`ownLinks: 'end'`, the default the web offers) or
+   * keep (`'keep'`), and with neither said, while there are any, it is `409
+   * links_choice_needed`, its `detail` naming them — whom each is for, its
+   * end, what it asks for, never a token. While the household does not
+   * share Only me documents outside the family, there is no keeping them
+   * (`409 only_me_not_shared`). The notice says what is true now.
+   */
   async change(
     p: Principal,
     documentId: string,
     to: Visibility,
     meta: RequestMeta,
-  ): Promise<{ notice: { title: string; body: string } | null }> {
+    ownLinks?: 'end' | 'keep',
+  ): Promise<VisibilityChange> {
     // A viewer is refused before anything is looked up, as always. A teen
     // may change their own (A72): which, the document says.
     if (!mayChangeVisibilityAtAll(p.role)) requireCapability(p, 'document.visibility');
-    return withPrincipal(this.db, p, async (trx) => {
+    const result = await withPrincipal(this.db, p, async (trx) => {
       // Locked before its versions are read: an upload committing a new
       // version holds the same lock, so every version is rewrapped, the new
       // one included (documents/service.ts accept()).
@@ -90,7 +112,67 @@ export class VisibilityService {
       // sentences: roles.ts.
       const refusal = visibilityRefusal(askerOf(p, doc), doc.visibility, to);
       if (refusal) throw new ApiError(403, 'forbidden', refusal);
-      if (doc.visibility === to) return { notice: null };
+      if (doc.visibility === to) return { notice: null, prune: [] as string[] };
+
+      // Into Only me: the person's own links that would still send it, and
+      // how many of everybody else's stop with it.
+      const into = to === 'private' && doc.visibility !== 'private';
+      const own = into ? await ownLinksServing(trx, p, documentId) : [];
+      const others = into ? await othersLinksServing(trx, p, documentId) : 0;
+      let yoursNow: 'ended' | 'kept' | null = null;
+      if (own.length > 0) {
+        const shareable = await onlyMeShareable(trx);
+        if (ownLinks === 'keep' && !shareable) {
+          throw new ApiError(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+        }
+        if (ownLinks === undefined) {
+          const links: OwnLinkToEnd[] = own.map((l) => ({
+            id: l.id,
+            kind: l.kind,
+            recipient_label: l.recipient_label,
+            collection_name: l.collection_name,
+            expires_at: l.expires_at.toISOString(),
+            protection: protectionOf(l),
+          }));
+          throw new ApiError(
+            409,
+            'links_choice_needed',
+            own.length === 1
+              ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+              : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+            { detail: JSON.stringify({ links, keep_allowed: shareable, others }) },
+          );
+        }
+        yoursNow = ownLinks === 'end' ? 'ended' : 'kept';
+      }
+      const prune: string[] = [];
+      if (yoursNow === 'ended') {
+        // A document's link ends, as Take it back ends it — its code's
+        // address with it; a collection's link leaves this one out, and
+        // gives the rest as before.
+        const single = own.filter((l) => l.kind === 'document').map((l) => l.id);
+        if (single.length > 0) {
+          await trx
+            .updateTable('share_link')
+            .set({ revoked_at: new Date(), revoked_by: p.accountId, code_email: null })
+            .where('id', 'in', single)
+            .where('revoked_at', 'is', null)
+            .execute();
+          await endSessions(trx, single);
+        }
+        const collections = own.filter((l) => l.kind === 'collection').map((l) => l.id);
+        if (collections.length > 0) {
+          // Left out, as one not ticked when the link was made: it never
+          // goes with this link again, whatever it is made later.
+          await sql`update share_link_item set kind = 'left_out'
+                     where share_id = any(${collections}::uuid[])
+                       and document_id = ${documentId} and kind = 'ticked'`.execute(trx);
+        }
+        prune.push(
+          ...own.filter((l) => l.kind === 'document' && l.permission === 'view').map((l) => l.id),
+        );
+      }
+      const links = into ? { yours: own.length, yours_now: yoursNow, others } : undefined;
       // Made private, it leaves every export somebody else asked for:
       // those were built while they could see it.
       if (to === 'private') {
@@ -224,11 +306,24 @@ export class VisibilityService {
         action: 'document.visibility_changed',
         objectType: 'document',
         objectId: documentId,
-        detail: { from: doc.visibility, to, versions: versions.length },
+        // What happened to the links, as counts: never whom they were for,
+        // nor a token.
+        detail: {
+          from: doc.visibility,
+          to,
+          versions: versions.length,
+          ...(links
+            ? {
+                links_others_stopped: others,
+                ...(yoursNow === 'ended' ? { links_ended: own.length } : {}),
+                ...(yoursNow === 'kept' ? { links_kept: own.length } : {}),
+              }
+            : {}),
+        },
         ip: meta.ip,
       });
 
-      if (to !== 'private') return { notice: null };
+      if (to !== 'private') return { notice: null, prune };
       // Told once per document, per person. A second visit to the same
       // decision is not a second chance to warn somebody; it is a nag.
       const already = await trx
@@ -237,18 +332,121 @@ export class VisibilityService {
         .where('document_id', '=', documentId)
         .where('member_id', '=', p.memberId)
         .executeTakeFirst();
-      if (already) return { notice: null };
-      await trx
-        .insertInto('private_notice')
-        .values({
-          household_id: p.householdId,
-          document_id: documentId,
-          member_id: p.memberId,
-        })
-        .execute();
-      return { notice: VisibilityService.PRIVATE_NOTICE };
+      if (!already) {
+        await trx
+          .insertInto('private_notice')
+          .values({
+            household_id: p.householdId,
+            document_id: documentId,
+            member_id: p.memberId,
+          })
+          .execute();
+      }
+      // With links of their own, what is true now is said every time: who
+      // else can open it, or that the links ended; and that links somebody
+      // else made have stopped.
+      const notice = yoursNow
+        ? {
+            title: privateTitle(yoursNow, own.length),
+            body:
+              (already
+                ? 'Nobody else in the family can open it.'
+                : VisibilityService.PRIVATE_NOTICE.body) + stoppedWords(others),
+          }
+        : already
+          ? null
+          : {
+              ...VisibilityService.PRIVATE_NOTICE,
+              body: VisibilityService.PRIVATE_NOTICE.body + stoppedWords(others),
+            };
+      return { notice, links, prune };
     });
+    // A view-only link ended here: its pages go, as when it is taken back.
+    for (const id of result.prune) {
+      await this.enqueue(SHARE_PAGES_PRUNE_JOB, {
+        household_id: p.householdId,
+        share_id: id,
+      }).catch(() => undefined);
+    }
+    return {
+      notice: result.notice,
+      ...('links' in result && result.links ? { links: result.links } : {}),
+    };
   }
+}
+
+/** "Only you can open this. Your 2 links to it have ended." */
+function privateTitle(now: 'ended' | 'kept', n: number): string {
+  const links = `${n} link${n === 1 ? '' : 's'}`;
+  return now === 'kept'
+    ? `Only you, and the people your ${links} ${n === 1 ? 'is' : 'are'} for, can open this.`
+    : `Only you can open this. Your ${links} to it ${n === 1 ? 'has' : 'have'} ended.`;
+}
+
+/** " The link someone else made to it has stopped." */
+function stoppedWords(others: number): string {
+  if (others === 0) return '';
+  return others === 1
+    ? ' The link someone else made to it has stopped.'
+    : ` The ${others} links others made to it have stopped.`;
+}
+
+interface OwnLink {
+  id: string;
+  kind: 'document' | 'collection';
+  recipient_label: string | null;
+  collection_name: string | null;
+  expires_at: Date;
+  permission: string;
+  pin_hash: string | null;
+  secret_kind: string | null;
+  code_email: string | null;
+}
+
+/**
+ * The caller's own live links that would still send this document once it
+ * is Only me: a link to it, and a collection's link that ticked it (one
+ * that only followed it stops by itself, as it no longer fits).
+ */
+async function ownLinksServing(trx: Db, p: Principal, documentId: string): Promise<OwnLink[]> {
+  const rows = await sql<OwnLink>`
+    select s.id, 'document' as kind, s.recipient_label, null as collection_name, s.expires_at,
+           s.permission, s.pin_hash, s.secret_kind, s.code_email
+      from share_link s
+     where s.document_id = ${documentId}
+       and s.created_by = ${p.accountId}
+       and s.revoked_at is null and s.paused_at is null
+       and s.expires_at > now() and s.attempts < 10
+    union all
+    select s.id, 'collection' as kind, s.recipient_label, c.name as collection_name, s.expires_at,
+           s.permission, s.pin_hash, s.secret_kind, s.code_email
+      from share_link s
+      join share_link_item t on t.share_id = s.id and t.document_id = ${documentId}
+                            and t.kind = 'ticked'
+      join doc_collection c on c.id = s.collection_id and c.deleted_at is null
+      join doc_collection_item i on i.collection_id = c.id and i.document_id = t.document_id
+     where s.created_by = ${p.accountId}
+       and s.revoked_at is null and s.paused_at is null
+       and s.expires_at > now() and s.attempts < 10
+     order by expires_at, id`.execute(trx);
+  return rows.rows;
+}
+
+/** How many live links somebody else made send this document now: each stops. */
+async function othersLinksServing(trx: Db, p: Principal, documentId: string): Promise<number> {
+  const r = await sql<{ n: number }>`
+    select count(*)::int as n
+      from share_link s
+     where s.created_by <> ${p.accountId}
+       and s.revoked_at is null and s.paused_at is null
+       and s.expires_at > now() and s.attempts < 10
+       and (s.document_id = ${documentId}
+            or exists (select 1 from share_link_item t
+                         join doc_collection_item i on i.collection_id = t.collection_id
+                                                   and i.document_id = t.document_id
+                        where t.share_id = s.id and t.document_id = ${documentId}
+                          and t.kind in ('ticked', 'followed')))`.execute(trx);
+  return r.rows[0]?.n ?? 0;
 }
 
 /**

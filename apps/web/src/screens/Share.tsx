@@ -5,6 +5,8 @@ import {
   defaultShareEnd,
   isShareAddress,
   latestShareEnd,
+  ONLY_ME_NOT_SHARED,
+  ONLY_ME_SHARE_WARNING,
   PREVIEW_MAX_PAGES,
   SHARE_CODE_TRUTH,
   SHARE_CODE_UNAVAILABLE,
@@ -46,6 +48,12 @@ export function SharePanel(props: {
   documentId: string;
   documentTitle: string | null;
   /**
+   * The document is Only me (5.41): the sheet says the people the link is
+   * for will see it; and while the household shares none outside the
+   * family, it offers no link at all, and says why.
+   */
+  onlyMe?: boolean;
+  /**
    * Opened from a row's ⋯ (5.4): it starts at the form, and Cancel or Done
    * closes the sheet it is in.
    */
@@ -67,20 +75,23 @@ export function SharePanel(props: {
 
   const { data, reload } = useLoad(
     async (t) => {
-      if (!mayShare) return { shares: [], newest: null, timezone: 'UTC' };
-      const [shares, versions, profile] = await Promise.all([
+      if (!mayShare) return { shares: [], newest: null, timezone: 'UTC', onlyMeOut: true };
+      const [shares, versions, profile, rule] = await Promise.all([
         api.shares(t),
         api.versions(t, props.documentId).catch(() => ({ items: [] })),
         api.profile(t).catch(() => null),
+        props.onlyMe ? api.onlyMeSharing(t).catch(() => null) : Promise.resolve(null),
       ]);
       const newest = [...versions.items].sort((a, b) => b.version_no - a.version_no)[0] ?? null;
       return {
         shares: shares.items.filter((s) => s.document_id === props.documentId),
         newest,
         timezone: profile?.timezone ?? 'UTC',
+        // An older vault says nothing: as before, its owner may.
+        onlyMeOut: rule?.only_me_shareable ?? true,
       };
     },
-    [props.documentId, authVersion, mayShare],
+    [props.documentId, authVersion, mayShare, props.onlyMe],
   );
   if (!mayShare) return null;
 
@@ -192,8 +203,11 @@ export function SharePanel(props: {
 
       {removed ? (
         <p className="muted">{COLLECTION_SHARE_FILE_REMOVED}</p>
+      ) : props.onlyMe && data && !data.onlyMeOut ? (
+        <p className="status status-warn">{ONLY_ME_NOT_SHARED}</p>
       ) : open ? (
         <div className="stack">
+          {props.onlyMe && <p className="status status-warn">{ONLY_ME_SHARE_WARNING}</p>}
           <LinkOptions
             options={options}
             read={read}

@@ -47,12 +47,18 @@ needs a vault of 0.4.10 or later.
   with one of those and never the password (`403 totp_required_for_owner`,
   `403 step_up_required`): the view of somebody's sign-in, locking it,
   starting a password reset, signing somebody out everywhere, limiting what
-  a viewer sees, a guest's sign-in, who reads identity details, and writing
-  another person's identity details.
+  a viewer sees, a guest's sign-in, who reads identity details, writing
+  another person's identity details, and whether Only me documents can be
+  shared outside the family.
+- **New:** making a document Only me asks what becomes of the person's own
+  links to it (`409 links_choice_needed`, `own_links`), and a household
+  rule decides whether Only me documents go outside the family at all
+  (`/api/v1/household/sharing`).
 - **Changed for viewers** (a guest is a viewer, `kind: "guest"` on `/me`):
   no birthdays, household answers or household suggestions (5.3); a limited
   viewer is given only their grant (5.33); `physical_location` is `null`
-  (5.41); no suggestions from pages (5.37).
+  (5.41), and no status ever says a document needs it; no suggestions from
+  pages (5.37).
 - **Changed:** a restore pauses every link, every request to send
   documents and every sign-in but the owners', until an owner turns each
   back on (`GET /api/v1/after-restore`).
@@ -3869,6 +3875,51 @@ guest_always_limited`. A guest owns no document, by any path — made,
       emails as a lock ends (`DELETE /api/v1/members/{id}/lock`) and as a
       restore's pause ends (`POST /api/v1/members/{id}/resume`) carry those
       words too, for anybody limited.
+    - **Added (the owner's decision of 6 Oct 2026):** `GET` and
+      `PUT /api/v1/household/sharing` — whether this household's Only me
+      documents can be shared outside the family (`OnlyMeSharing`:
+      `only_me_shareable`, on unless an owner turned it off, and
+      `can_change`). Read by owners and adults (`403` to anybody else);
+      changed by an owner (`sharing.only_me_rule`; `403 forbidden` to an
+      adult), an owner power (A54): `403 totp_required_for_owner`, `403
+step_up_required` with `action: "only_me_sharing"`. Turned off, every
+      live link that sends an Only me document — a document's link to it, or
+      a collection's link that ticked it — is paused, `paused_reason:
+"only_me_not_shared"` on the link (to an owner and its maker; anybody
+      else sees it paused), the answer counts them (`links_paused`) and each
+      maker is emailed how many of theirs; turned back on, those links work
+      again (`links_resumed`), unless something else stops them. While it is
+      off no link serves an Only me document at all, whatever its row says:
+      `POST /api/v1/documents/{id}/share` to one, and `POST
+/api/v1/collections/{id}/shares` ticking one, answer `409
+only_me_not_shared`. The activity log says it, notable, to owners and
+      adults: "Olivia turned off sharing Only me documents outside the family
+      (3 links paused)". Migration 0061; a vault restored from an older
+      backup has it on, and a link it had paused waits for an owner after a
+      restore, as every link does (A55).
+    - **Changed:** a visibility change into Only me (`POST
+/api/v1/documents/{id}/visibility`, or `PATCH /api/v1/documents/{id}`
+      with `visibility: "private"`) takes `own_links: "end" | "keep"`. With
+      live links of the caller's own that would still send the document — a
+      link to it, or a collection's link that ticked it — and no
+      `own_links`, it answers `409 links_choice_needed` and changes nothing;
+      its `detail` is JSON (`LinksChoiceNeeded`): each link's `id`, `kind`,
+      `recipient_label`, `collection_name`, `expires_at` and `protection` —
+      never a token — `keep_allowed`, and `others`, how many links somebody
+      else made stop with it. `end` ends a document's link as Take it back
+      does, and leaves the document out of a collection's link; `keep`
+      leaves them; while the household does not share Only me documents
+      outside the family, `keep` is `409 only_me_not_shared`. Links others
+      made stop, as before. The answer (`VisibilityChange`) adds `links`
+      (`yours`, `yours_now`: `ended` | `kept` | null, `others`), and the
+      notice says what is true now: "Only you can open this. Your 2 links to
+      it have ended.", "Only you, and the people your 1 link is for, can open
+      this." The activity log's line counts them (`links_ended`,
+      `links_kept`, `links_others_stopped`). A client that sends no
+      `own_links` gets the `409` only when there are such links.
+    - **Changed:** a document's `status`, to a viewer or a guest, never asks
+      for where the original is kept: a kind that requires it is worked out
+      without it for them (the document, a list, a search).
 
 ## Deprecations in effect
 

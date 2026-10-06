@@ -546,6 +546,13 @@ const RULES: Record<string, Rule> = {
     ],
   },
   'GET /api/v1/household/identity-audience': { who: 'signedIn' },
+  // 5.41: whether Only me documents can be shared outside the family —
+  // read by those who may share, an owner power to change (A54).
+  'GET /api/v1/household/sharing': { who: 'adults' },
+  'PUT /api/v1/household/sharing': {
+    who: 'ownerPower',
+    body: () => ({ only_me_shareable: true }),
+  },
   'PUT /api/v1/household/identity-audience': {
     who: 'ownerPower',
     body: () => ({ audience: 'family' }),
@@ -1738,6 +1745,111 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
     expect(await deviceOf(ids.deviceEndpoint as string)).toEqual([
       { account_id: await accountOf(ahmed), p256dh: 'ahmed-p256dh' },
     ]);
+  });
+
+  it("with the household's rule off, no link, recipient or route serves an Only me document, and Keep is refused; on again, it works again (5.41)", async () => {
+    const priv = doc.ahmedPrivate as { id: string };
+    const tax = doc.ahmedTax as { id: string };
+    const served = async (cookie: string) => {
+      const items = await h.app.inject({
+        url: '/api/v1/shared/items',
+        cookies: { fdv_share: cookie },
+        ...peer(),
+      });
+      const content = await h.app.inject({
+        url: `/api/v1/shared/items/${priv.id}/content`,
+        cookies: { fdv_share: cookie },
+        ...peer(),
+      });
+      return {
+        items: items.statusCode === 200 && items.body.includes(priv.id),
+        content: content.statusCode === 200,
+      };
+    };
+    /** What the database gives the link, asking as itself. */
+    const asTheLink = async (shareId: string) => {
+      const pool = createPool(h.appUrl, 1);
+      const client = await pool.connect();
+      try {
+        await client.query('begin');
+        await client.query(
+          `select set_config('app.household_id', $1, true), set_config('app.actor', 'link', true),
+                  set_config('app.share_id', $2, true)`,
+          [olivia.household_id, shareId],
+        );
+        const { rows } = await client.query<{ n: number }>(
+          'select count(*)::int as n from document where id = $1',
+          [priv.id],
+        );
+        return rows[0]?.n;
+      } finally {
+        await client.query('rollback').catch(() => undefined);
+        client.release();
+        await pool.end();
+      }
+    };
+    // Ahmed's own link to his Only me document, open in a browser.
+    await fresh(ahmed);
+    const made = json<{ link_token: string; share: { id: string } }>(
+      await ok(
+        send(ahmed, 'POST', `/api/v1/documents/${priv.id}/share`, { recipient_label: 'the GP' }),
+        201,
+      ),
+    );
+    const cookie = sessionOf(await ok(unlockLink(made.link_token)));
+    expect(await served(cookie)).toEqual({ items: true, content: true });
+
+    await fresh(olivia);
+    const off = await ok(
+      send(olivia, 'PUT', '/api/v1/household/sharing', { only_me_shareable: false }),
+    );
+    expect(json<{ links_paused: number }>(off).links_paused).toBeGreaterThanOrEqual(1);
+    // Nothing serves it: the session open on it, a new open, the database.
+    expect(await served(cookie)).toEqual({ items: false, content: false });
+    expect((await unlockLink(made.link_token)).statusCode).not.toBe(200);
+    expect(await asTheLink(made.share.id)).toBe(0);
+    // Nor were its pause missed.
+    await admin.query(
+      'update share_link set paused_at = null, paused_reason = null where id = $1',
+      [made.share.id],
+    );
+    expect(await served(cookie)).toEqual({ items: false, content: false });
+    expect((await unlockLink(made.link_token)).statusCode).not.toBe(200);
+    expect(await asTheLink(made.share.id)).toBe(0);
+    await admin.query(
+      `update share_link set paused_at = now(), paused_reason = 'only_me_not_shared' where id = $1`,
+      [made.share.id],
+    );
+    // Nobody makes one, its owner included.
+    await fresh(ahmed);
+    const refused = await send(ahmed, 'POST', `/api/v1/documents/${priv.id}/share`, {});
+    expect([refused.statusCode, codeOf(refused)]).toEqual([409, 'only_me_not_shared']);
+    // Keep is refused: making a document with a link of his Only me, his
+    // links end, or nothing changes.
+    await fresh(ahmed);
+    const taxLink = json<{ share: { id: string } }>(
+      await ok(send(ahmed, 'POST', `/api/v1/documents/${tax.id}/share`, {}), 201),
+    );
+    await fresh(ahmed);
+    const kept = await send(ahmed, 'POST', `/api/v1/documents/${tax.id}/visibility`, {
+      visibility: 'private',
+      own_links: 'keep',
+    });
+    expect([kept.statusCode, codeOf(kept)]).toEqual([409, 'only_me_not_shared']);
+    expect(
+      (await admin.query('select visibility from document where id = $1', [tax.id])).rows[0],
+    ).not.toEqual({ visibility: 'private' });
+    await fresh(ahmed);
+    await ok(send(ahmed, 'DELETE', `/api/v1/shares/${taxLink.share.id}`), 204);
+
+    // On again: the link works again.
+    await fresh(olivia);
+    await ok(send(olivia, 'PUT', '/api/v1/household/sharing', { only_me_shareable: true }));
+    const back = sessionOf(await ok(unlockLink(made.link_token)));
+    expect(await served(back)).toEqual({ items: true, content: true });
+    // Taken back, so what follows finds the vault as it was.
+    await fresh(ahmed);
+    await ok(send(ahmed, 'DELETE', `/api/v1/shares/${made.share.id}`), 204);
   });
 
   it('a locked member and a guest whose sign-in ended cannot sign in again, nor refresh', async () => {

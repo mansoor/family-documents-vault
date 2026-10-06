@@ -171,7 +171,12 @@ export class SealedSearchService {
             owner_member_id: row.owner_member_id,
             issued_by: row.issued_by,
             issued,
-            status: statusOf(type, { ...row, issued, expires }, sealedOf(row)),
+            status: statusOf(
+              type,
+              { ...row, issued, expires },
+              sealedOf(row),
+              seesLocation(p.role),
+            ),
             snippet: (inOwn ?? inContent ?? m).snippet,
             // Its notes or details, as the first pass says of a document's
             // own words; else its pages.

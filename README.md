@@ -896,8 +896,11 @@ with them.
    requests to send documents that reach people outside your network (see
    [Links for people outside the family](#links-for-people-outside-the-family)); and
    two-step sign-in or a passkey for every owner, without which an owner cannot lock a
-   sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees or change
-   another person's identity details. A viewer who already had a sign-in keeps seeing the
+   sign-in, start a reset, sign somebody out everywhere, limit what a viewer sees, change
+   another person's identity details, or decide whether Only me documents can be shared
+   outside the family (Settings → Household; on unless an owner turns it off). Making a
+   document Only me now asks what becomes of your own links to it: they end, unless you keep
+   them. A viewer who already had a sign-in keeps seeing the
    family's documents until an owner limits them (People → their name → Account); no viewer
    sees birthdays, the household's answers, or where the paper originals are kept.
 

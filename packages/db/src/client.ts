@@ -61,6 +61,11 @@ export interface Schema {
      * (`notice_request`), which the database holds to.
      */
     identity_audience: Generated<IdentityAudience>;
+    /**
+     * "Only me documents can be shared outside the family" (0061, 5.41): on
+     * unless an owner turned it off; off, no link serves one.
+     */
+    only_me_shareable: Generated<boolean>;
   };
 
   member: {
@@ -378,9 +383,13 @@ export interface Schema {
      * ones only. A link keeps the flow it was made with.
      */
     flow: Generated<'legacy' | 'v2'>;
-    /** Paused for an owner to turn back on, and why: a restore (0037). */
+    /**
+     * Paused, and why: a restore (0037), for an owner to turn back on; or,
+     * since 0061, the household's rule against sharing Only me documents
+     * outside the family, until an owner turns that back on.
+     */
     paused_at: Timestamp | null;
-    paused_reason: 'restored' | null;
+    paused_reason: 'restored' | 'only_me_not_shared' | null;
     /**
      * What it gives (0041): `view`, the pages the vault drew for it and never
      * the file; `download`, the file. Every link made before 0041 downloads,

@@ -781,6 +781,11 @@ begin
     ${PAUSE_LINKS};
     get diagnostics n = row_count;
     insert into pg_temp.fdv_restore_undone values ('links_paused', n);
+    -- A link the household's rule on Only me documents had paused (0061)
+    -- waits for an owner too (A55): the rule turned back on does not bring
+    -- it back by itself.
+    update public.share_link set paused_reason = 'restored'
+     where paused_reason = 'only_me_not_shared';
   end if;
   if to_regclass('public.share_session') is not null then
     delete from public.share_session;
@@ -1048,6 +1053,9 @@ const GUARDS = [
     fn: 'account_household_keep_suspension',
   },
   { name: 'member_former_suspension', table: 'member', fn: 'member_former_suspension' },
+  // Only an owner changes whether Only me documents are shared outside the
+  // family (0061, 5.41).
+  { name: 'household_only_me_rule', table: 'household', fn: 'household_only_me_rule' },
 ];
 
 /**

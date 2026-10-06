@@ -202,7 +202,7 @@ async function main(): Promise<void> {
     auth,
     totp,
     passkeys,
-    visibility: new VisibilityService(db, keys),
+    visibility: new VisibilityService(db, keys, enqueue),
     exports: new ExportService(db, keys, vaults, enqueue),
     vaults,
     documents,

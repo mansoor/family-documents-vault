@@ -2012,6 +2012,27 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
     expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
+  it("notices the guard on the household's rule for Only me documents gone (0061)", async () => {
+    await sql(
+      vault.adminUrl,
+      'alter table public.household disable trigger household_only_me_rule',
+    );
+    try {
+      const refused = await checkRestored(target()).then(
+        () => null,
+        (e: unknown) => (e as Error).message,
+      );
+      expect(refused).toMatch(/guard the vault relies on is missing/);
+      expect(refused).not.toMatch(/household_only_me_rule/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.household enable trigger household_only_me_rule',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
+  });
+
   it("notices the guard on a note's stamp gone (0057)", async () => {
     await sql(vault.adminUrl, 'alter table public.document disable trigger document_notes_stamp');
     try {
@@ -2687,6 +2708,18 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         ).rows[0]?.id as string;
       const sarasLink = await linkBy(await account(sara));
       const ownersLink = await linkBy(owner);
+      // And one the household's rule on Only me documents paused (0061),
+      // the rule off when the backup was made.
+      const onlyMeLink = await linkBy(owner);
+      await sql(
+        live.adminUrl,
+        `update share_link set paused_at = now(), paused_reason = 'only_me_not_shared'
+          where id = $1`,
+        [onlyMeLink],
+      );
+      await sql(live.adminUrl, 'update household set only_me_shareable = false where id = $1', [
+        hh,
+      ]);
       // Tariq's sign-in was taken away when the backup was made; Lina's too,
       // while she was locked (0059): each kept with the person.
       const tariq = await signedIn(live.adminUrl, hh, 'Tariq', 'teen');
@@ -2765,16 +2798,21 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         Two: { role: 'owner', in_effect: false },
       });
       expect(report.signInsPaused).toBeGreaterThanOrEqual(2);
-      // Each link waits for an owner too: Sara's, and the one taken back
-      // since, which the backup holds as live.
+      // Each link waits for an owner too: Sara's, the one taken back
+      // since, which the backup holds as live, and the one the household's
+      // rule had paused — turning the rule back on does not bring that one
+      // back by itself (A55). The rule is as the backup had it.
       const links = await sql(
         t.adminUrl,
         `select id, paused_at is not null as paused, paused_reason, revoked_at is not null as revoked
            from share_link where id = any($1) order by id`,
-        [[sarasLink, ownersLink]],
+        [[sarasLink, ownersLink, onlyMeLink]],
+      );
+      expect((await sql(t.adminUrl, 'select only_me_shareable as on from household')).rows).toEqual(
+        [{ on: false }],
       );
       expect(links.rows).toEqual(
-        [sarasLink, ownersLink].sort().map((id) => ({
+        [sarasLink, ownersLink, onlyMeLink].sort().map((id) => ({
           id,
           paused: true,
           paused_reason: 'restored',
@@ -2848,9 +2886,11 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
       const { rows } = await sql(
         t.adminUrl,
         `select (select count(*)::int from access_restriction) as restrictions,
-                to_regprocedure('public.doc_in_grant(access_grant, uuid, visibility, uuid, text)') is not null as helper`,
+                to_regprocedure('public.doc_in_grant(access_grant, uuid, visibility, uuid, text)') is not null as helper,
+                (select bool_and(only_me_shareable) from household) as only_me_shareable`,
       );
-      expect(rows[0]).toEqual({ restrictions: 0, helper: true });
+      // And, from before 0061, the household lets its Only me documents out.
+      expect(rows[0]).toEqual({ restrictions: 0, helper: true, only_me_shareable: true });
     } finally {
       await rm(migrations, { recursive: true, force: true });
       await rm(olderDir, { recursive: true, force: true });

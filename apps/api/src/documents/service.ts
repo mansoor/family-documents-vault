@@ -333,6 +333,12 @@ export function statusOf(
     | undefined,
   plain: RequiredValues & { owner_member_id: string | null; expires: DateValue | null },
   sealed?: SealedPresence | null,
+  /**
+   * Whether the reader may see where the original is kept (5.41): one who
+   * may not is never told a document needs it — that it is not written
+   * down is the household's to know.
+   */
+  location = true,
 ): Status {
   const doc = withSealed(plain, sealed);
   return deriveStatus(
@@ -351,7 +357,7 @@ export function statusOf(
             }
           : null,
         doc,
-      ),
+      ).filter((m) => location || m.key !== 'physical_location'),
     },
     today(),
   );
@@ -785,7 +791,12 @@ export class DocumentService {
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
-      status: statusOf(type, { ...row, issued, expires, extra: plainExtra }, sealedOf(row)),
+      status: statusOf(
+        type,
+        { ...row, issued, expires, extra: plainExtra },
+        sealedOf(row),
+        seesLocation(p.role),
+      ),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -2480,6 +2491,7 @@ export class DocumentService {
             type,
             { ...r, issued, expires },
             { notes: r.notes_sealed_present, details: r.sealed_details },
+            seesLocation(p.role),
           ),
           snippet: snippets.get(r.document_id) ?? r.snippet,
           matched_in: r.matched_in,

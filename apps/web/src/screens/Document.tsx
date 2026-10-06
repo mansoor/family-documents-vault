@@ -455,7 +455,11 @@ export function DocumentScreen() {
       )}
       {/* A link sends the file: with none yet, there is nothing to send (5.4). */}
       {doc.latest_version_id !== null && (
-        <SharePanel documentId={doc.id} documentTitle={doc.title} />
+        <SharePanel
+          documentId={doc.id}
+          documentTitle={doc.title}
+          onlyMe={doc.visibility === 'private'}
+        />
       )}
       {mayChangeIt && (
         <button

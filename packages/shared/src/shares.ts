@@ -105,6 +105,28 @@ export function withinCollectionAudience(audience: string, visibility: string): 
 export type CollectionShareLock = 'adults' | 'private' | 'no_file';
 
 /** What the share sheet says beside each, and asks. */
+/**
+ * Only me documents and links outside the family (5.41; the owner's
+ * decision of 6 Oct 2026). The share sheet's warning on an Only me
+ * document, while the household lets them out.
+ */
+export const ONLY_ME_SHARE_WARNING =
+  'This is Only me. The people this link is for will see it; nobody else in the family will.';
+
+/** A link that would send an Only me document, while the household shares none (409). */
+export const ONLY_ME_NOT_SHARED =
+  "This document is Only me, and this household doesn't share Only me documents outside the family. Change who can see it first.";
+
+/** "Keep them", asked while the household shares no Only me documents (409). */
+export const ONLY_ME_KEEP_REFUSED =
+  "This household doesn't share Only me documents outside the family, so your links to it end as it becomes Only me.";
+
+/** The household's rule, each way, in one line (Settings → Household). */
+export const ONLY_ME_SHARING_WORDS = {
+  on: 'The owner of an Only me document can send it outside the family with a link; nobody else in the family sees it.',
+  off: 'Nobody, owners included, can send an Only me document outside the family; links that sent one are paused.',
+} as const;
+
 export const COLLECTION_SHARE_REASONS: Readonly<Record<CollectionShareLock, string>> = {
   adults: 'Adults only — include anyway?',
   private: 'Only you can see this. It is private.',

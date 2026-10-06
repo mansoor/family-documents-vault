@@ -163,6 +163,8 @@ const reviewsTheRequest: Audience = (reader, line) =>
  * to each other for it, and for the person it was about. Nobody else — not
  * another adult, not a teen. (A viewer reads no log at all.)
  */
+const ownersAndAdults: Audience = (reader) => reader.role === 'owner' || reader.role === 'adult';
+
 const ownersAndThePerson: Audience = (reader, line) =>
   reader.role === 'owner' ||
   (line.object_type === 'member' && line.object_id != null && line.object_id === reader.memberId);
@@ -315,6 +317,10 @@ const RULES: ReadonlyMap<string, Audience | typeof BY_TYPE> = new Map<
   // sign-in is told of a widening, and so reads each of these lines (the
   // 5.26 review); a viewer reads no log.
   ['identity.audience_changed', everyone],
+  // 5.41: whether the household's Only me documents can be shared outside
+  // the family, and how many links that paused or turned back on: for the
+  // owners and the adults, who may share. Never which links.
+  ['household.only_me_sharing_changed', ownersAndAdults],
   ['invitation.created', BY_TYPE],
   ['invitation.accepted', BY_TYPE],
   ['invitation.revoked', BY_TYPE],

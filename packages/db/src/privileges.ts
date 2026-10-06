@@ -183,6 +183,11 @@ begin
     revoke execute on function public.device_release_stale(text) from public;
     grant execute on function public.device_release_stale(text) to fdv_app;
   end if;
+  -- Whether the household lets its Only me documents out (0061): asked by
+  -- every link's own functions, and by the API.
+  if to_regprocedure('public.app_only_me_shareable()') is not null then
+    grant execute on function public.app_only_me_shareable() to fdv_app;
+  end if;
 end $$;
 
 -- The job queue. pg-boss creates its tables later, as the owner; the

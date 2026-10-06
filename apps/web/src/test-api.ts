@@ -6,6 +6,7 @@ import {
   canSeeIdentity,
   IDENTITY_EDIT_REFUSAL,
   IDENTITY_TOO_LONG,
+  ONLY_ME_KEEP_REFUSED,
   identityAudienceRank,
   identityChanges,
   identityFilled,
@@ -17,6 +18,7 @@ import {
   type IdentityAudienceView,
   type IdentityFields,
   type IdentityPart,
+  type OwnLinkToEnd,
   type IdentityPartView,
   type Visibility,
   canSeeCollection,
@@ -464,6 +466,17 @@ export interface FakeState {
    * restore (0059): the vault's answer says so.
    */
   signInKept?: 'locked' | 'restored';
+  /**
+   * Whether the household's Only me documents can be shared outside the
+   * family (5.41); left out, on.
+   */
+  onlyMeShareable?: boolean;
+  /**
+   * The signed-in person's own links that would still send a document they
+   * make Only me (5.41): the vault asks which way first (409
+   * links_choice_needed).
+   */
+  ownLinks?: OwnLinkToEnd[];
   /** Who reads other people's shared identity details (A34); left out, the narrowest. */
   identityAudience?: IdentityAudience;
   /** A wider audience waiting its 72 hours. */
@@ -1764,21 +1777,103 @@ export function installFakeApi(state: FakeState) {
     }
     if (path.startsWith('/api/v1/audit')) return json({ items: state.activity, next: null });
     if (path.endsWith('/visibility') && method === 'POST') {
-      const to = (body as { visibility: string }).visibility;
+      const { visibility: to, own_links: ownLinks } = body as {
+        visibility: string;
+        own_links?: 'end' | 'keep';
+      };
       const doc = state.documents.find((d) => path.includes(String(d.id)));
       // Out of "only me" asks what opening it asks (5.4).
       const ask = askedToLoosen(doc, { visibility: to });
       if (state.stepUpNeeded && ask) return stepUp(ask);
+      // Into Only me with links of one's own (5.41): which way, first.
+      const own = to === 'private' && doc?.visibility !== 'private' ? (state.ownLinks ?? []) : [];
+      const shareable = state.onlyMeShareable !== false;
+      if (own.length > 0 && ownLinks === 'keep' && !shareable) {
+        return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
+      }
+      if (own.length > 0 && !ownLinks) {
+        return refuse(
+          409,
+          'links_choice_needed',
+          own.length === 1
+            ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
+            : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
+          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+        );
+      }
       if (doc) doc.visibility = to;
+      if (own.length > 0 && ownLinks === 'end') state.ownLinks = [];
       const firstTime = to === 'private' && !state.privateNoticeShown;
       if (firstTime) state.privateNoticeShown = true;
+      const n = own.length;
       return json({
-        notice: firstTime
+        notice:
+          n > 0
+            ? {
+                title:
+                  ownLinks === 'keep'
+                    ? `Only you, and the people your ${n} link${n === 1 ? ' is' : 's are'} for, can open this.`
+                    : `Only you can open this. Your ${n} link${n === 1 ? '' : 's'} to it ${n === 1 ? 'has' : 'have'} ended.`,
+                body: 'Nobody else in the family can open it.',
+              }
+            : firstTime
+              ? {
+                  title: 'Only you can open this',
+                  body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+                }
+              : null,
+        ...(to === 'private'
           ? {
-              title: 'Only you can open this',
-              body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
+              links: {
+                yours: n,
+                yours_now: n > 0 ? (ownLinks === 'keep' ? 'kept' : 'ended') : null,
+                others: 0,
+              },
             }
-          : null,
+          : {}),
+      });
+    }
+    // The household's rule for Only me documents and links (5.41).
+    if (path === '/api/v1/household/sharing') {
+      const role = storedRole();
+      if (role !== 'owner' && role !== 'adult') {
+        return refuse(403, 'forbidden', 'Only an adult can share a document outside the family.');
+      }
+      if (method === 'GET') {
+        return json({
+          only_me_shareable: state.onlyMeShareable !== false,
+          can_change: role === 'owner',
+        });
+      }
+      if (role !== 'owner') {
+        return refuse(
+          403,
+          'forbidden',
+          'Only an owner can change whether Only me documents can be shared outside the family.',
+        );
+      }
+      if (state.twoStep === false) {
+        return refuse(
+          403,
+          'totp_required_for_owner',
+          'Turn on two-step sign-in to change whether Only me documents can be shared outside the family.',
+        );
+      }
+      if (state.accountStepUp) {
+        return refuse(
+          403,
+          'step_up_required',
+          'Please confirm it is you to change whether Only me documents can be shared outside the family.',
+          { action: 'only_me_sharing' },
+        );
+      }
+      const next = (body as { only_me_shareable: boolean }).only_me_shareable;
+      const changed = next !== (state.onlyMeShareable !== false);
+      state.onlyMeShareable = next;
+      return json({
+        only_me_shareable: next,
+        can_change: true,
+        ...(changed ? (next ? { links_resumed: 0 } : { links_paused: 2 }) : {}),
       });
     }
     if (path === '/api/v1/shares' && method === 'GET') return json({ items: state.shares });

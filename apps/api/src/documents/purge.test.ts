@@ -667,9 +667,11 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     const sees = async (who: Who) =>
       (await activity(who)).some((l) => l.text.includes('Jane Solicitor'));
     expect(await knows('adult')).toBe(true);
-    // The will made Only me: the adult may no longer know of the link.
+    // The will made Only me, its owner keeping their link (5.41): the adult
+    // may no longer know of the link.
     const narrowed = await call('owner', 'POST', `/api/v1/documents/${will}/visibility`, {
       visibility: 'private',
+      own_links: 'keep',
     });
     expect(narrowed.statusCode, narrowed.body).toBe(200);
     expect(await knows('adult')).toBe(false);

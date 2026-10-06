@@ -305,7 +305,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     passkeys,
     stepUp: stepUp,
     passwords,
-    visibility: new VisibilityService(db, keys),
+    visibility: new VisibilityService(db, keys, enqueue),
     vaults,
     documents,
     purge: new PurgeService(db, vaults, documents, alert, enqueue),

@@ -41,7 +41,8 @@ export type StepUpAction =
   | 'change_identity'
   | 'identity_audience'
   | 'limit_access'
-  | 'renew_guest';
+  | 'renew_guest'
+  | 'only_me_sharing';
 
 const WHY: Record<StepUpAction, string> = {
   open_private_document: 'to open a document only you can see',
@@ -96,6 +97,9 @@ const WHY: Record<StepUpAction, string> = {
   // A guest's sign-in renewed, or given back with a new end (5.34, A28):
   // an owner power too.
   renew_guest: "to renew a guest's sign-in",
+  // Whether the household's Only me documents can be shared outside the
+  // family at all (5.41): an owner power (A54).
+  only_me_sharing: 'to change whether Only me documents can be shared outside the family',
 };
 
 /**

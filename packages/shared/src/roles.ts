@@ -117,6 +117,11 @@ export type Capability =
    */
   | 'identity.audience'
   /**
+   * Decide whether the household's Only me documents can be shared outside
+   * the family (5.41): on unless turned off. An owner power (A54).
+   */
+  | 'sharing.only_me_rule'
+  /**
    * Lock somebody's sign-in, and unlock it (5.28, A51, A52): never one's
    * own, and never another owner's (A50). An owner power (A54): asked with a
    * passkey or a code, never the password.
@@ -293,6 +298,13 @@ const MATRIX: Record<Capability, Rule> = {
     // never at once when it widens (A34).
     roles: ['owner'],
     refusal: 'Only an owner can change who sees identity details.',
+  },
+  'sharing.only_me_rule': {
+    // Whether anybody may send an Only me document outside the family: the
+    // owners' decision for the household (5.41), made with two-step sign-in
+    // (A54).
+    roles: ['owner'],
+    refusal: 'Only an owner can change whether Only me documents can be shared outside the family.',
   },
   'member.suspend': {
     // Only owners lock (A52), and one owner cannot lock out another (A50):
