@@ -1,5 +1,6 @@
-import { createPool } from '@fdv/db';
+import { createPool, withPrincipal, type Schema } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
+import { Kysely, PostgresDialect } from 'kysely';
 import {
   DOCUMENT_SORTS,
   statusRank,
@@ -11,8 +12,9 @@ import {
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { codeFor } from '../auth/totp.js';
-import type { Tokens } from '../auth/service.js';
+import type { Principal, Tokens } from '../auth/service.js';
 import { createHarness, type Harness } from '../test-harness.js';
+import { documentTable } from './table.js';
 
 /**
  * The Documents table (Phase 6, R2): GET /documents sorted by a column,
@@ -562,6 +564,164 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
     expect(titles(trash.items)).toEqual(['Aardvark certificate', 'Zulu letter']);
     expect(trash.items.every((d) => d.collections?.length === 0)).toBe(true);
     expect(trash.total).toBe(2);
+  });
+
+  /** What a cursor says, before its tag: the vault's own words, readable but not changeable. */
+  const cursorBody = (c: string) =>
+    Buffer.from(c.split('.')[0] as string, 'base64url').toString('utf8');
+
+  it('a kind is named in a sort only as the kinds would name it to the reader: never one used only in the Trash, to somebody who files nothing (R2-API-1)', async () => {
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: h.as(owner),
+      payload: { label: 'Divorce proceedings', category: 'legal' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const kind = json<{ key: string }>(made).key;
+    await make('papers', { title: 'Papers', type_key: kind, visibility: 'household' });
+    const gone = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/documents/${ids.papers}`,
+      headers: h.as(owner),
+    });
+    expect(gone.statusCode).toBe(204);
+    // Uma, who files nothing, is not given the kind: no document of it she
+    // sees is out of the Trash.
+    const hers = json<{ items: DocumentTypeView[] }>(
+      await h.app.inject({ url: '/api/v1/document-types?all=true', headers: h.as(uma) }),
+    ).items;
+    expect(hers.some((t) => t.key === kind)).toBe(false);
+    // Her Trash, sorted by kind a page at a time: Papers sorts as of no kind,
+    // last, and no cursor names the kind.
+    const pages: Page[] = [];
+    let cursor: string | null = null;
+    do {
+      const p: Page = await page(
+        uma,
+        `sort=kind&deleted=true&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      );
+      pages.push(p);
+      cursor = p.next_cursor;
+    } while (cursor);
+    const order = pages.flatMap((p) => titles(p.items));
+    // The two of a kind she is given (tied, so by id), then Papers.
+    expect(order.slice(0, 2).sort()).toEqual(['Aardvark certificate', 'Zulu letter']);
+    expect(order.slice(2)).toEqual(['Papers']);
+    for (const p of pages) {
+      if (p.next_cursor) expect(cursorBody(p.next_cursor)).not.toMatch(/divorce/i);
+    }
+    // The same the other way.
+    const down = await all(uma, 'sort=kind&direction=desc&deleted=true', 1);
+    expect(titles(down).at(-1)).toBe('Papers');
+    // The owner, who files documents, is given every kind: it sorts by its name.
+    const hisFirst = await page(owner, 'sort=kind&deleted=true&limit=1');
+    expect(titles(hisFirst.items)).toEqual(['Papers']);
+    expect(cursorBody(hisFirst.next_cursor as string)).toMatch(/divorce proceedings/);
+  });
+
+  it('a cursor is the vault’s own: changed, made up, or another’s, it is refused (R2-API-1)', async () => {
+    const first = await page(owner, 'sort=title&limit=2');
+    const cursor = first.next_cursor as string;
+    expect(cursor).toMatch(/^[\w-]+\.[\w-]{43}$/);
+    const [body, tag] = cursor.split('.') as [string, string];
+    // Its own, followed: fine.
+    expect((await ask(owner, `sort=title&limit=2&cursor=${cursor}`)).statusCode).toBe(200);
+    const said = JSON.parse(cursorBody(cursor)) as Record<string, unknown>;
+    const reworded = Buffer.from(JSON.stringify({ ...said, k: 'b' })).toString('base64url');
+    for (const forged of [
+      // What it says changed, its tag kept.
+      `${reworded}.${tag}`,
+      // Its tag changed.
+      `${body}.${tag.slice(0, -1)}${tag.endsWith('A') ? 'B' : 'A'}`,
+      // No tag at all, as an older cursor was.
+      body,
+      `${body}.${tag}.more`,
+    ]) {
+      const r = await ask(owner, `sort=title&limit=2&cursor=${encodeURIComponent(forged)}`);
+      expect(r.statusCode, forged).toBe(422);
+    }
+    // Somebody else's: a cursor is for whoever it was given to.
+    const r = await ask(ahmed, `sort=title&limit=2&cursor=${encodeURIComponent(cursor)}`);
+    expect(r.statusCode).toBe(422);
+  });
+
+  it('a cursor has room for the longest place a family can write (R2-API-4)', async () => {
+    // 500 characters of three bytes each: as long a key as a cursor carries.
+    const far = (end: string) => `${'倉'.repeat(499)}${end}`;
+    await make('far1', { title: 'Far box one', type_key: 'other', physical_location: far('a') });
+    await make('far2', { title: 'Far box two', type_key: 'other', physical_location: far('b') });
+    const first = await page(owner, 'sort=location&direction=desc&limit=1');
+    expect(titles(first.items)).toEqual(['Far box two']);
+    const cursor = first.next_cursor as string;
+    expect(cursor.length).toBeGreaterThan(2048);
+    const second = await page(
+      owner,
+      `sort=location&direction=desc&limit=1&cursor=${encodeURIComponent(cursor)}`,
+    );
+    expect(titles(second.items)).toEqual(['Far box one']);
+    for (const k of ['far1', 'far2']) {
+      const gone = await h.app.inject({
+        method: 'DELETE',
+        url: `/api/v1/documents/${ids[k]}`,
+        headers: h.as(owner),
+      });
+      expect(gone.statusCode).toBe(204);
+    }
+  });
+
+  it('a status is worked out from what makes it, never a note’s words nor what is sealed (R2-API-2)', async () => {
+    const statements: string[] = [];
+    const pool = createPool(h.appUrl, 1);
+    const watched = new Kysely<Schema>({
+      dialect: new PostgresDialect({ pool }),
+      log: (e) => {
+        if (e.level === 'query') statements.push(e.query.sql);
+      },
+    });
+    const account = (
+      await admin.query<{ account_id: string }>(
+        'select account_id from account_household where member_id = $1',
+        [owner.member_id],
+      )
+    ).rows[0]?.account_id as string;
+    const p: Principal = {
+      accountId: account,
+      sessionId: randomUUID(),
+      householdId: owner.household_id,
+      memberId: owner.member_id,
+      role: 'owner',
+      seesAdults: true,
+    };
+    try {
+      for (const q of [
+        { sort: 'status' as const },
+        { sort: 'title' as const, status: 'expired' },
+      ]) {
+        statements.length = 0;
+        const got = await withPrincipal(watched, p, (trx) =>
+          documentTable(
+            trx,
+            p,
+            { ...q, limit: 2 },
+            async (rows) => rows as unknown as DocumentView[],
+            new Uint8Array(32),
+          ),
+        );
+        expect(got.items.length).toBeGreaterThan(0);
+        // The pass over every row the filters give reads whether there are
+        // notes, never them, nor anything sealed.
+        const pass = statements.find((s) => /has_notes/.test(s)) as string;
+        expect(pass).toBeDefined();
+        expect(pass).not.toMatch(/d\.notes,|d\.notes_sealed,|d\.extra_sealed/);
+        // Only the page's own rows are read whole, by id.
+        const whole = statements.filter((s) => /d\.notes_sealed,/.test(s));
+        expect(whole).toHaveLength(1);
+        expect(whole[0]).toMatch(/d\.id = any\(/);
+      }
+    } finally {
+      await watched.destroy();
+    }
   });
 
   it('a cursor is for the sort and direction it came with, and nothing else', async () => {

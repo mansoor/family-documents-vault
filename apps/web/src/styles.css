@@ -3008,6 +3008,8 @@ a.menu-item {
 
 .tbl td.end {
   font-variant-numeric: tabular-nums;
+  /* Room for the widest date ("28 Sept 2026") whole (the review's W5). */
+  padding-left: 4px;
 }
 
 .tbl .nowrap {
@@ -3095,6 +3097,23 @@ a.menu-item {
   place-items: center;
   min-height: 32px;
   cursor: pointer;
+}
+
+/* The whole of the box's cell is the box's label (W4): a click anywhere in
+   it chooses, and never opens the document. */
+.tbl .col-pick {
+  padding: 0;
+}
+
+.tbl .col-pick .pick-cell {
+  position: absolute;
+  inset: 0;
+}
+
+/* A cell in focus (the grid's arrows) shows where it is. */
+.tbl td:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
 }
 
 .pick-cell input {
@@ -3185,12 +3204,16 @@ a.menu-item {
   gap: 6px;
 }
 
+/* Under the box that scrolls, as its last line: never scrolled aside (W2). */
 .tbl-more {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 14px;
+  margin-top: -12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: 0;
 }
 
 .tbl-more span {

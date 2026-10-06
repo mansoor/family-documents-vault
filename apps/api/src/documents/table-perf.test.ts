@@ -25,6 +25,7 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
   let owner: Tokens;
   let ahmed: Tokens;
   let val: Tokens;
+  let wes: Tokens;
 
   beforeAll(async () => {
     h = await createHarness({ rateLimitPerMinute: 100_000 });
@@ -35,6 +36,7 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
       role: 'adult',
     });
     val = await h.join(owner, { name: 'Val', email: 'val-tperf@example.test', role: 'viewer' });
+    wes = await h.join(owner, { name: 'Wes', email: 'wes-tperf@example.test', role: 'viewer' });
     const hh = owner.household_id;
     const admin = createPool(h.adminUrl, 1);
     try {
@@ -53,7 +55,7 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
       await admin.query(
         `insert into document (household_id, title, owner_member_id, type_key, visibility,
                                issued_on, issued_precision, expires_on, expires_precision,
-                               physical_location, tags, updated_at)
+                               physical_location, tags, notes, updated_at)
          select $1, 'Perf ' || g, (array[$2, $3, null]::uuid[])[1 + g % 3],
                 (array['tax_return', 'utility_bill', 'passport', 'insurance_policy', 'warranty'])[1 + g % 5],
                 'household',
@@ -62,6 +64,8 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
                 case when g % 4 = 0 then null else 'day'::date_precision end,
                 case when g % 6 = 0 then null else (array['Fire safe', 'Loft', 'Desk'])[1 + g % 3] end,
                 array[(array['tax', 'house', 'car'])[1 + g % 3]],
+                -- A note of about 4 KB on each: what a status pass must not read.
+                repeat('A note about this document, written at some length. ', 75),
                 now() - (g || ' minutes')::interval
            from generate_series(1, $4) g`,
         [hh, owner.member_id, ahmed.member_id, N],
@@ -107,6 +111,20 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
          values ($1, $2, 'tax_return')`,
         [val.member_id, hh],
       );
+      // Wes: the owner's and Ahmed's documents, of every kind — two thirds
+      // of the household, judged by the restriction's rules row by row.
+      await admin.query(
+        `insert into access_restriction (member_id, household_id, limits_people, limits_types)
+         values ($1, $2, true, false)`,
+        [wes.member_id, hh],
+      );
+      for (const person of [owner.member_id, ahmed.member_id]) {
+        await admin.query(
+          `insert into access_restriction_member (restricted_member_id, household_id, member_id)
+           values ($1, $2, $3)`,
+          [wes.member_id, hh, person],
+        );
+      }
       await admin.query(
         'analyze document; analyze document_version; analyze doc_collection; analyze doc_collection_item',
       );
@@ -155,7 +173,10 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
     for (const query of queries) {
       const o = await timed(owner, query);
       const v = await timed(val, query);
+      const w = await timed(wes, query);
       expect(o.page.items.length).toBeGreaterThan(0);
+      // Wes is given the owner's and Ahmed's.
+      for (const d of w.page.items) expect(d.owner_member_id).not.toBeNull();
       // Val is given Ahmed's tax returns: a fifth of his third.
       for (const d of v.page.items) {
         expect(d.owner_member_id).toBe(ahmed.member_id);
@@ -168,10 +189,12 @@ describe.skipIf(!testAdminUrl())(`the Documents table at ${N} documents`, () => 
       lines.push(
         `${query.padEnd(48)} owner ${o.ms.toFixed(1).padStart(6)} ms (total ${o.page.total ?? '-'}), ` +
           `next page ${further ? further.ms.toFixed(1).padStart(6) : '     -'} ms; ` +
-          `restricted viewer ${v.ms.toFixed(1).padStart(6)} ms (total ${v.page.total ?? '-'})`,
+          `restricted narrowly ${v.ms.toFixed(1).padStart(6)} ms (total ${v.page.total ?? '-'}); ` +
+          `broadly ${w.ms.toFixed(1).padStart(6)} ms (total ${w.page.total ?? '-'})`,
       );
       expect(o.ms).toBeLessThan(CEILING_MS);
       expect(v.ms).toBeLessThan(CEILING_MS);
+      expect(w.ms).toBeLessThan(CEILING_MS);
       if (further) expect(further.ms).toBeLessThan(CEILING_MS);
     }
     console.log(`documents ${N}, a page of 50:\n${lines.join('\n')}`);

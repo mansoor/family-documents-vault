@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { deriveKey } from '@fdv/crypto';
 import type { Db } from '@fdv/db';
 import {
   DOCUMENT_PAGE_MAX,
@@ -14,7 +16,14 @@ import { sql, type RawBuilder } from 'kysely';
 import type { Principal } from '../auth/service.js';
 import { seenCollection } from '../collections/seen.js';
 import { ApiError } from '../errors.js';
-import { rowStatus, seenDocument, typeLookup, type DocRow, type ListQuery } from './service.js';
+import {
+  kindGiven,
+  rowStatus,
+  seenDocument,
+  typeLookup,
+  type DocRow,
+  type ListQuery,
+} from './service.js';
 
 /**
  * The Documents table (Phase 6, R2): GET /documents sorted by a column.
@@ -24,23 +33,26 @@ import { rowStatus, seenDocument, typeLookup, type DocRow, type ListQuery } from
  * the database (row-level security: the tenant, the actor, a viewer's
  * restriction) and the list's own rule for Adults only and Only me
  * (`seenDocument`) narrow the rows; a collection is one the collections
- * themselves would show the reader (`seenCollection`); a person, a kind,
- * is one the database gives them. A sort or a filter only orders and
- * narrows that.
+ * themselves would show the reader (`seenCollection`); a kind is named as
+ * `types()` would name it to them (`kindGiven`); a person is one the
+ * database gives them. A sort or a filter only orders and narrows that.
  *
  * Each sort is one expression over the row (`keyOf`), blanks last in both
  * directions, and then the document's id, so that two rows never tie and
  * a page's cursor — the last row's key and id — says exactly where the
  * next one starts, whatever was added or changed meanwhile. The database
- * sorts it: a household's few thousand documents, by the indexes it has
- * on the household, in one statement for the page and one for the count.
+ * sorts it, reading only each row's id and key, and counts it in the same
+ * pass; then the page's own rows are read by id. A cursor is the vault's
+ * own: signed for the one who was given it (`writeCursor`), and refused
+ * (422) if anything in it is changed.
  *
  * The status is the one thing the database does not hold: it is worked
  * out from the document's kind, its dates and what it is missing, as of
  * today (`rowStatus`, the very function its view uses). A sort by status,
- * or a filter on it, reads every row the other filters give, works each
- * one's status out, and pages that — so a page is full and `total` counts
- * what the filter gives, as with every other filter.
+ * or a filter on it, reads what the status is made from of every row the
+ * other filters give — never a note's words nor what is sealed, only
+ * whether there is any — works each one's status out, and pages that, so
+ * a page is full and `total` counts what the filter gives.
  *
  * Where the original is kept is the household's (5.41): somebody who may
  * not see it may neither sort nor filter by it (422), and nothing else
@@ -51,6 +63,7 @@ export async function documentTable(
   p: Principal,
   q: ListQuery & { sort: DocumentSort },
   listed: (rows: DocRow[]) => Promise<DocumentView[]>,
+  cursorKey: Uint8Array,
 ): Promise<DocumentPage> {
   if ((q.sort === 'location' || q.location !== undefined) && !maySortByLocation(p.role)) {
     throw new ApiError(422, 'validation_failed', LOCATION_SORT_REFUSAL, {
@@ -64,18 +77,19 @@ export async function documentTable(
   }
   const dir: SortDirection = q.direction ?? 'asc';
   const limit = Math.min(Math.max(q.limit ?? 50, 1), DOCUMENT_PAGE_MAX);
-  const cursor = q.cursor ? readCursor(q.cursor, q.sort, dir) : null;
+  const cursor = q.cursor ? readCursor(cursorKey, p, q.cursor, q.sort, dir) : null;
   const where = whereOf(p, q);
 
-  let page: DocRow[];
+  let ids: string[];
   let more: boolean;
   let total: number;
   let next: Omit<Cursor, 's' | 'd'> | null = null;
 
   if (q.sort === 'status') {
-    // Every row the filters give, its status worked out, then sorted here.
-    const rows = (await sql<DocRow>`select ${COLUMNS} from document d where ${where}`.execute(trx))
-      .rows;
+    // What every row the filters give has of a status, worked out, sorted here.
+    const rows = (
+      await sql<StatusRow>`select ${STATUS_COLUMNS} from document d where ${where}`.execute(trx)
+    ).rows;
     const ranked = await withStatus(trx, rows);
     const shown = q.status ? ranked.filter((r) => r.status === q.status) : ranked;
     const sign = dir === 'desc' ? -1 : 1;
@@ -85,7 +99,7 @@ export async function documentTable(
       : shown;
     total = shown.length;
     more = after.length > limit;
-    page = after.slice(0, limit).map((r) => r.row);
+    ids = after.slice(0, limit).map((r) => r.row.id);
     const last = after[limit - 1];
     if (more && last) {
       next = {
@@ -96,20 +110,21 @@ export async function documentTable(
   } else {
     const key = keyOf(p, q.sort);
     const DIR = sql.raw(dir === 'desc' ? 'desc' : 'asc');
-    const inner = sql`select ${COLUMNS}, ${key.expr} as sort_k
-                        from document d ${key.join}
-                       where ${where}
-                      offset 0`;
     const order = sql`order by (b.sort_k is null), b.sort_k ${DIR}, b.id ${DIR}`;
     const keyset = cursor ? afterCursor(cursor, key.type, dir) : sql<boolean>`true`;
-    type Keyed = DocRow & { cursor_k: string | null };
+    type Keyed = { id: string; cursor_k: string | null };
+    let keyed: Keyed[];
     if (q.status) {
-      // A status filter: every row in the database's order, each marked
-      // whether it comes after the cursor, then those of that status.
+      // A status filter: what a status is made from, of every row in the
+      // database's order, each marked whether it comes after the cursor;
+      // then those of that status.
       const rows = (
-        await sql<Keyed & { is_after: boolean }>`
+        await sql<StatusRow & Keyed & { is_after: boolean }>`
           select b.*, b.sort_k::text as cursor_k, ${keyset} as is_after
-            from (${inner}) b
+            from (select ${STATUS_COLUMNS}, ${key.expr} as sort_k
+                    from document d ${key.join}
+                   where ${where}
+                  offset 0) b
            ${order}`.execute(trx)
       ).rows;
       const ranked = await withStatus(trx, rows);
@@ -117,31 +132,42 @@ export async function documentTable(
       total = shown.length;
       const after = shown.filter((r) => r.row.is_after).map((r) => r.row);
       more = after.length > limit;
-      page = after.slice(0, limit);
+      keyed = after.slice(0, limit);
     } else {
+      // The ids and keys alone, counted as they are read: one pass.
       const rows = (
-        await sql<Keyed>`
-          select b.*, b.sort_k::text as cursor_k
-            from (${inner}) b
+        await sql<Keyed & { total_n: number }>`
+          select b.id, b.sort_k::text as cursor_k, b.total_n
+            from (select d.id, ${key.expr} as sort_k, (count(*) over ())::int as total_n
+                    from document d ${key.join}
+                   where ${where}
+                  offset 0) b
            where ${keyset}
            ${order}
            limit ${limit + 1}`.execute(trx)
       ).rows;
-      const counted = await sql<{ n: number }>`
-        select count(*)::int as n from document d where ${where}`.execute(trx);
-      total = counted.rows[0]?.n ?? 0;
+      // Past the last page there is nothing to count from: counted again.
+      total =
+        rows[0]?.total_n ??
+        (
+          await sql<{ n: number }>`
+            select count(*)::int as n from document d where ${where}`.execute(trx)
+        ).rows[0]?.n ??
+        0;
       more = rows.length > limit;
-      page = rows.slice(0, limit);
+      keyed = rows.slice(0, limit);
     }
-    const last = page[page.length - 1] as Keyed | undefined;
+    ids = keyed.map((r) => r.id);
+    const last = keyed[keyed.length - 1];
     if (more && last) next = { k: last.cursor_k, id: last.id };
   }
 
-  const items = await listed(page.map(plainRow));
+  const page = await rowsOf(trx, p, ids);
+  const items = await listed(page);
   const collections = await collectionsOf(trx, p, page);
   return {
     items: items.map((d) => ({ ...d, collections: collections.get(d.id) ?? [] })),
-    next_cursor: next ? writeCursor({ s: q.sort, d: dir, ...next }) : null,
+    next_cursor: next ? writeCursor(cursorKey, p, { s: q.sort, d: dir, ...next }) : null,
     has_more: more,
     total,
   };
@@ -182,13 +208,15 @@ const COLUMNS = sql.raw(
     .join(', '),
 );
 
-/** A row as a list's view takes it: what the page's query added taken off. */
-function plainRow(r: DocRow): DocRow {
-  const row: Record<string, unknown> = { ...r };
-  delete row.sort_k;
-  delete row.cursor_k;
-  delete row.is_after;
-  return row as DocRow;
+/** A page's rows, in the order of `ids`: read by id once the sort has chosen them. */
+async function rowsOf(trx: Db, p: Principal, ids: string[]): Promise<DocRow[]> {
+  if (ids.length === 0) return [];
+  const rows = (
+    await sql<DocRow>`select ${COLUMNS} from document d
+                       where d.id = any(${ids}::uuid[]) and ${seenDocument(p)}`.execute(trx)
+  ).rows;
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.map((id) => byId.get(id)).filter((r): r is DocRow => r !== undefined);
 }
 
 /** The documents in collection `l` the caller may see, as `exists` asks it of `d`. */
@@ -250,13 +278,16 @@ function keyOf(p: Principal, sort: Exclude<DocumentSort, 'status'>): Key {
     case 'title':
       return { expr: sql`lower(nullif(btrim(d.title), ''))`, type: 'text', join: NO_JOIN };
     case 'kind':
-      // The kind's name, as the household's kinds give it to this reader:
-      // each read once for the statement, not once a row.
+      // The kind's name, only as types() gives it to this reader (the
+      // review's R2-API-1): a kind they are not given sorts as none, and so
+      // is never in a cursor. Each read once for the statement.
       return {
         expr: sql`k.label`,
         type: 'text',
         join: sql`left join (select t.key, min(lower(t.label)) as label
-                               from document_type t group by t.key) k on k.key = d.type_key`,
+                               from document_type t
+                              where ${kindGiven(p, sql<boolean>`t.household_id is null`)}
+                              group by t.key) k on k.key = d.type_key`,
       };
     case 'person':
       // Whose it is, by the name the household knows them by: a person the
@@ -310,6 +341,54 @@ function afterCursor(c: Cursor, type: Key['type'], dir: SortDirection): RawBuild
 
 // ------------------------------------------------------------- status
 
+/**
+ * What a status is worked out from (`rowStatus`): no note's words, sealed
+ * or not, and no sealed details — only whether there are any. A note is
+ * kept trimmed, and none when blank (the service's write), so being there
+ * is having words.
+ */
+type StatusRow = Pick<
+  DocRow,
+  | 'id'
+  | 'type_key'
+  | 'owner_member_id'
+  | 'issued_on'
+  | 'issued_precision'
+  | 'expires_on'
+  | 'expires_precision'
+  | 'identifier'
+  | 'issued_by'
+  | 'physical_location'
+  | 'tags'
+  | 'extra'
+  | 'sealed_details'
+> & { has_notes: boolean; has_sealed_notes: boolean };
+
+const STATUS_COLUMNS = sql.raw(
+  [
+    'id',
+    'type_key',
+    'owner_member_id',
+    'issued_on',
+    'issued_precision',
+    'expires_on',
+    'expires_precision',
+    'identifier',
+    'issued_by',
+    'physical_location',
+    'tags',
+    'extra',
+    'sealed_details',
+  ]
+    .map((c) => `d.${c}`)
+    .concat(['d.notes is not null as has_notes', 'd.notes_sealed is not null as has_sealed_notes'])
+    .join(', '),
+);
+
+/** Stands in for words a status needs to know are there, and never reads. */
+const THERE = 'there';
+const SEALED_THERE = Buffer.alloc(0);
+
 interface Ranked<R> {
   row: R;
   status: string;
@@ -317,14 +396,19 @@ interface Ranked<R> {
 }
 
 /** Each row with its status as its view will say it, worked out with the household's kinds. */
-async function withStatus<R extends DocRow>(trx: Db, rows: R[]): Promise<Array<Ranked<R>>> {
+async function withStatus<R extends StatusRow>(trx: Db, rows: R[]): Promise<Array<Ranked<R>>> {
+  // The kinds the rows have, looked up once each; then every row at once.
   const typeOf = typeLookup(trx);
-  return Promise.all(
-    rows.map(async (row) => {
-      const status = rowStatus(row.type_key ? await typeOf(row.type_key) : null, row).value;
-      return { row, status, rank: statusRank(status) };
-    }),
-  );
+  const keys = [...new Set(rows.map((r) => r.type_key).filter((k): k is string => k !== null))];
+  const types = new Map(await Promise.all(keys.map(async (k) => [k, await typeOf(k)] as const)));
+  return rows.map((row) => {
+    const status = rowStatus(row.type_key ? types.get(row.type_key) : null, {
+      ...row,
+      notes: row.has_notes ? THERE : null,
+      notes_sealed: row.has_sealed_notes ? SEALED_THERE : null,
+    }).value;
+    return { row, status, rank: statusRank(status) };
+  });
 }
 
 /** By status, most pressing first; then the sooner expiry, none last; then by id. */
@@ -395,18 +479,58 @@ interface Cursor {
   id: string;
 }
 
+/**
+ * The key a table's cursors are signed with (the review's R2-API-1): its
+ * own purpose of the master key. Nothing signed with it is kept anywhere —
+ * a cursor lives in a page and the next request — so rotating the master
+ * key moves nothing of it (it is not one of master-rotation's
+ * MASTER_SEALED): a cursor handed out before is refused after, and the
+ * list is asked again from its first page.
+ */
+export const CURSOR_KEY_PURPOSE = 'documents-table-cursor';
+
+export function deriveCursorKey(masterSecret: string): Uint8Array {
+  return new Uint8Array(deriveKey(masterSecret, CURSOR_KEY_PURPOSE));
+}
+
+/** What a cursor's tag covers: the household, the sign-in it was given to, and what it says. */
+const tagOf = (key: Uint8Array, p: Principal, body: string) =>
+  createHmac('sha256', key)
+    .update(`fdv.documents.cursor.1\n${p.householdId}\n${p.accountId}\n${body}`)
+    .digest('base64url');
+
+/**
+ * A cursor as the vault hands it out: what it says, then its tag, so that
+ * nothing in it can be changed, nor a cursor made, and one given to
+ * somebody else is nobody's cursor here. Its key is never one the reader
+ * may not see: the sort's key is theirs (`keyOf`).
+ */
+function writeCursor(key: Uint8Array, p: Principal, c: Cursor): string {
+  const body = Buffer.from(JSON.stringify(c)).toString('base64url');
+  return `${body}.${tagOf(key, p, body)}`;
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const WHOLE = /^\d+$/;
 
 const badCursor = () => new ApiError(422, 'validation_failed', 'That page cursor is not valid.');
 
-const writeCursor = (c: Cursor) => Buffer.from(JSON.stringify(c)).toString('base64url');
-
-function readCursor(s: string, sort: DocumentSort, dir: SortDirection): Cursor {
+function readCursor(
+  key: Uint8Array,
+  p: Principal,
+  s: string,
+  sort: DocumentSort,
+  dir: SortDirection,
+): Cursor {
+  const [body, tag, ...rest] = s.split('.');
+  if (!body || !tag || rest.length > 0) throw badCursor();
+  const want = Buffer.from(tagOf(key, p, body));
+  const got = Buffer.from(tag);
+  if (want.length !== got.length || !timingSafeEqual(want, got)) throw badCursor();
   let c: Partial<Cursor>;
   try {
-    c = JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as Partial<Cursor>;
+    c = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<Cursor>;
   } catch {
     throw badCursor();
   }

@@ -148,7 +148,7 @@ function at(
   return state;
 }
 
-const table = () => screen.findByRole('table', { name: /^Documents, sorted by/ });
+const table = () => screen.findByRole('grid', { name: /^Documents, sorted by/ });
 const headers = (t: HTMLElement) =>
   within(t)
     .getAllByRole('columnheader')
@@ -161,6 +161,8 @@ const titles = (t: HTMLElement) =>
     .getAllByRole('row')
     .slice(1)
     .map((r) => r.querySelector('.cell-title')?.textContent ?? null);
+/** How many the bar says are chosen; null with none chosen and no bar. */
+const selected = () => document.querySelector('.bulk-count')?.textContent ?? null;
 const documentCalls = (state: FakeState) =>
   state.calls.filter((c) => c.method === 'GET' && /\/api\/v1\/documents\?/.test(c.url));
 const lastQuery = (state: FakeState) =>
@@ -489,7 +491,7 @@ describe('the Documents table, from 768 px (R2)', () => {
       expect(titles(t)).toEqual(['Barclays statement, September 2026', "Sara's visa"]),
     );
     expect(within(t).getByRole('checkbox', { name: "Select “Sara's visa”" })).toBeChecked();
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(selected()).toBe('1 selected');
   });
 
   it('sets where many are kept, one place for all, each as it was seen', async () => {
@@ -558,6 +560,76 @@ describe('the Documents table, from 768 px (R2)', () => {
     expect(await screen.findByText('2 documents now Only me.')).toBeInTheDocument();
   });
 
+  it('says, before it asks, that Only me documents would be seen by more people (W7)', async () => {
+    at('/documents', {
+      documents: [
+        doc({ id: 'doc-a', title: 'Diary', owner_member_id: 'me', visibility: 'private' }),
+        doc({ id: 'doc-b', title: 'Gym card', owner_member_id: 'me' }),
+      ],
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(2));
+    for (const name of ['Diary', 'Gym card']) {
+      fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
+    }
+    const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
+    const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Adults only' }));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
+    const ask = screen.getByRole('alertdialog', { name: 'Make 2 documents Adults only?' });
+    expect(ask).toHaveAccessibleDescription(
+      'The teens and viewers will not see them. 1 of these is Only me now: Adults only lets every adult see it.',
+    );
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    // To Everyone, the same, in its words.
+    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
+    const again = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(again).getByRole('button', { name: 'Everyone in the family' }));
+    fireEvent.click(within(again).getByRole('button', { name: 'Continue' }));
+    expect(
+      screen.getByRole('alertdialog', { name: 'Let everyone in the family see 1 document?' }),
+    ).toHaveAccessibleDescription(
+      'Anybody with a sign-in here can open them. 1 of these is Only me now: everyone in the family will see it. 1 is Everyone already, and stays as it is.',
+    );
+  });
+
+  it('a run stopped short says what it did not do, and keeps those chosen (W9)', async () => {
+    at('/documents', {
+      stepUpNeeded: true,
+      documents: [
+        doc({ id: 'doc-a', title: 'Diary', owner_member_id: 'me', visibility: 'private' }),
+        doc({ id: 'doc-b', title: 'Letters', owner_member_id: 'me', visibility: 'private' }),
+      ],
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(2));
+    for (const name of ['Diary', 'Letters']) {
+      fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
+    }
+    const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+    fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
+    const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Everyone in the family' }));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', {
+        name: 'Change who can see them',
+      }),
+    );
+    // Out of Only me asks who is asking; not answered.
+    const prompt = await screen.findByRole('dialog', { name: 'Just checking it is you' });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Cancel' }));
+    expect(
+      await screen.findByText(
+        'Nothing was changed: you did not confirm it is you. 2 documents are still chosen.',
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(selected()).toBe('2 selected'));
+    expect(within(t).getByRole('checkbox', { name: 'Select “Diary”' })).toBeChecked();
+    expect(within(t).getByRole('checkbox', { name: 'Select “Letters”' })).toBeChecked();
+  });
+
   it('puts many into a collection at once', async () => {
     const state = at('/documents');
     const t = await table();
@@ -580,19 +652,21 @@ describe('the Documents table, from 768 px (R2)', () => {
     at('/documents');
     const t = await table();
     await waitFor(() => expect(titles(t)).toHaveLength(4));
-    // The keyboard's way in is the title, a real link.
+    // The keyboard's way to a document is its title, a real link.
     expect(within(t).getByRole('link', { name: "Mansoor's passport" })).toHaveAttribute(
       'href',
       '/documents/doc-1',
     );
-    // Each box, by what it chooses; none taken out of the tab order.
-    const boxes = within(t).getAllByRole('checkbox');
-    expect(boxes.map((b) => b.getAttribute('tabindex'))).toEqual(boxes.map(() => null));
     const all = within(t).getByRole('checkbox', { name: 'Select all 4 shown' });
-    all.focus();
+    act(() => all.focus());
     fireEvent.click(all);
     expect(within(t).getAllByRole('checkbox', { checked: true })).toHaveLength(5);
-    expect(screen.getByText('4 selected')).toBeInTheDocument();
+    expect(selected()).toBe('4 selected');
+    // How many are chosen is said as it changes (W1).
+    expect(screen.getByText('4 selected', { selector: '.visually-hidden' })).toHaveAttribute(
+      'role',
+      'status',
+    );
     // One taken out: the header's is neither, said as mixed.
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
     expect((all as HTMLInputElement).indeterminate).toBe(true);
@@ -609,7 +683,69 @@ describe('the Documents table, from 768 px (R2)', () => {
     await screen.findByRole('heading', { name: "Sara's visa", level: 1 });
   });
 
-  it('shows the whole of words cut short, on hover and on focus, and Escape puts them away', async () => {
+  it('is one stop for Tab: the arrows move between its cells, and what to do with the chosen comes straight after it (W1)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    /** What Tab can reach in the grid. */
+    const stops = () =>
+      [...t.querySelectorAll<HTMLElement>('[tabindex], a, button, input')].filter(
+        (el) => el.tabIndex >= 0,
+      );
+    // One, the first row's box.
+    const first = within(t).getByRole('checkbox', {
+      name: 'Select “Barclays statement, September 2026”',
+    });
+    expect(stops()).toEqual([first]);
+    act(() => first.focus());
+    fireEvent.click(first);
+    // Right: its title; down: the next row's title; up, and up again: the head.
+    fireEvent.keyDown(first, { key: 'ArrowRight' });
+    const barclays = within(t).getByRole('link', { name: 'Barclays statement, September 2026' });
+    expect(barclays).toHaveFocus();
+    fireEvent.keyDown(barclays, { key: 'ArrowDown' });
+    const deed = within(t).getByRole('link', { name: 'House deed' });
+    expect(deed).toHaveFocus();
+    // Still one stop for Tab: wherever the focus last was.
+    expect(stops()).toEqual([deed]);
+    fireEvent.keyDown(deed, { key: 'ArrowUp' });
+    fireEvent.keyDown(barclays, { key: 'ArrowUp' });
+    expect(within(t).getByRole('button', { name: /^Title/ })).toHaveFocus();
+    // A cell with no control of its own takes the focus itself.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(
+      within(t).getAllByText('Bank / investment statement')[0]?.closest('td'),
+    );
+    // Home, End; with Control, the first cell and the last.
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'End' });
+    expect(document.activeElement?.closest('td')).toBe(
+      within(t).getAllByRole('row')[1]?.lastElementChild,
+    );
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Home' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: 'End', ctrlKey: true });
+    expect(document.activeElement?.closest('td')).toBe(
+      within(t).getAllByRole('row').at(-1)?.lastElementChild,
+    );
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Home', ctrlKey: true });
+    expect(document.activeElement).toBe(
+      within(t).getByRole('checkbox', { name: 'Select all 4 shown' }),
+    );
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'PageDown' });
+    expect(document.activeElement).toBe(
+      within(t).getByRole('checkbox', { name: "Select “Sara's visa”" }),
+    );
+    // After the grid, in the page's order, the next stop is the bar's first action.
+    const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+    const everything = [
+      ...document.querySelectorAll<HTMLElement>('a, button, input, select, [tabindex]'),
+    ].filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled);
+    const from = everything.indexOf(document.activeElement as HTMLElement);
+    expect(everything[from + 1]).toBe(within(bar).getAllByRole('button')[0]);
+  });
+
+  it('shows the whole of words cut short, on hover and on focus, measured as they are then, and Escape puts them away (W11)', async () => {
     // jsdom lays nothing out: here, every cell's words are wider than it.
     const cut = (el: Element, wide: number) => ((el as HTMLElement).dataset?.clip ? wide : 0);
     vi.spyOn(Element.prototype, 'scrollWidth', 'get').mockImplementation(function (this: Element) {
@@ -618,45 +754,224 @@ describe('the Documents table, from 768 px (R2)', () => {
     vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
       return cut(this, 100);
     });
-    at('/documents');
+    // The kinds come after the rows.
+    let types: () => void = () => undefined;
+    at('/documents', {
+      hold: (method, path) =>
+        method === 'GET' && path === '/api/v1/document-types'
+          ? new Promise<void>((go) => {
+              types = go;
+            })
+          : undefined,
+    });
     const t = await table();
     await waitFor(() => expect(titles(t)).toHaveLength(4));
     const tip = () => document.querySelector('.clip-tip');
     const place = within(t).getByText('Desk drawer');
-    // Cut short, it can be reached with Tab.
-    await waitFor(() => expect(place).toHaveAttribute('tabindex', '0'));
+    // No cell is a stop for Tab of its own.
+    expect(place).not.toHaveAttribute('tabindex', '0');
     fireEvent.mouseOver(place);
     expect(tip()).toHaveTextContent('Desk drawer');
     // Said on the page already: not a second time to a screen reader.
     expect(tip()).toHaveAttribute('aria-hidden', 'true');
     fireEvent.mouseOut(place);
     expect(tip()).toBeNull();
-    act(() => place.focus());
+    // By the arrows, the cell is focused, and its words shown.
+    const box = within(t).getByRole('checkbox', { name: "Select “Sara's visa”" });
+    act(() => box.focus());
+    for (let i = 0; i < 8; i++) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowRight' });
+    }
+    expect(document.activeElement).toBe(place.closest('td'));
     expect(tip()).toHaveTextContent('Desk drawer');
-    fireEvent.keyDown(place, { key: 'Escape' });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
     expect(tip()).toBeNull();
+    // The kinds arrive: the Kind cell is measured as it is now.
+    act(() => types());
+    await waitFor(() => expect(within(t).getAllByText('Passport').length).toBeGreaterThan(0));
+    for (let i = 0; i < 6; i++) {
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowLeft' });
+    }
+    expect(document.activeElement?.textContent).toBe('Passport');
+    expect(tip()).toHaveTextContent('Passport');
     // A title's words are its link's, which takes the focus itself.
     const link = within(t).getByRole('link', { name: 'Barclays statement, September 2026' });
-    expect(link.querySelector('[data-clip]')).not.toHaveAttribute('tabindex');
     act(() => link.focus());
     expect(tip()).toHaveTextContent('Barclays statement, September 2026');
     act(() => link.blur());
     expect(tip()).toBeNull();
   });
 
+  it('a focused cell is scrolled clear of the pinned box and title (W3)', async () => {
+    at('/documents', {}, 'owner', MID);
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const wrap = t.closest('.tbl-wrap') as HTMLDivElement;
+    // A box 600 px wide, its left at 0, scrolled 300 px across; the box and
+    // title pinned over its first 212 px; and the Kind cell, at 80-176, under them.
+    let left = 300;
+    Object.defineProperty(wrap, 'scrollLeft', {
+      configurable: true,
+      get: () => left,
+      set: (v: number) => {
+        left = v;
+      },
+    });
+    Object.defineProperty(wrap, 'clientWidth', { configurable: true, get: () => 600 });
+    Object.defineProperty(wrap, 'clientHeight', { configurable: true, get: () => 400 });
+    const rect = (l: number, w: number, top = 60) =>
+      ({ left: l, right: l + w, top, bottom: top + 40, width: w, height: 40 }) as DOMRect;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this === wrap) return rect(0, 600, 0);
+      if (this.matches('thead')) return rect(0, 1000, 0);
+      if (this.matches('thead .col-pick')) return rect(0, 44, 0);
+      if (this.matches('thead .col-title')) return rect(44, 168, 0);
+      if (this.matches('td') && this.textContent === 'Passport') return rect(80, 96);
+      return rect(400, 50);
+    });
+    const kind = within(t).getAllByText('Passport')[0]?.closest('td') as HTMLElement;
+    act(() => kind.focus());
+    // Scrolled back by what the pinned columns covered: 212 - 80.
+    expect(left).toBe(300 - 132);
+  });
+
+  it('a click beside a row’s box is the box’s; and Back from a document finds what was chosen, and every page shown (W4)', async () => {
+    const many = Array.from({ length: 130 }, (_, i) =>
+      doc({
+        id: `doc-${String(i).padStart(3, '0')}`,
+        title: `Statement ${String(i).padStart(3, '0')}`,
+      }),
+    );
+    at('/documents', { documents: many, collections: [] });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(100));
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    await waitFor(() => expect(titles(t)).toHaveLength(130));
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “Statement 120”' }));
+    // A near miss on the next box: its cell, not the box.
+    const cell = within(t)
+      .getByRole('checkbox', { name: 'Select “Statement 121”' })
+      .closest('td') as HTMLElement;
+    fireEvent.click(cell);
+    expect(window.location.pathname).toBe('/documents');
+    // To a document, and Back.
+    fireEvent.click(within(t).getByRole('link', { name: 'Statement 125' }));
+    await screen.findByRole('heading', { name: 'Statement 125', level: 1 });
+    act(() => window.history.back());
+    const again = await table();
+    await waitFor(() => expect(titles(again)).toHaveLength(130));
+    expect(within(again).getByRole('checkbox', { name: 'Select “Statement 120”' })).toBeChecked();
+    expect(selected()).toBe('1 selected');
+  }, 60_000);
+
   it('a new sort or filter starts the choosing again', async () => {
     at('/documents');
     const t = await table();
     await waitFor(() => expect(titles(t)).toHaveLength(4));
     fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
-    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(selected()).toBe('1 selected');
     fireEvent.click(within(t).getByRole('button', { name: /^Person/ }));
     // The rows again, in their new order: none of them chosen.
     await waitFor(() => expect(window.location.search).toBe('?sort=person'));
     await waitFor(() => expect(titles(t)).toHaveLength(4));
     expect(within(t).getByRole('checkbox', { name: 'Select “House deed”' })).not.toBeChecked();
-    expect(screen.queryByText('1 selected')).not.toBeInTheDocument();
+    expect(selected()).toBeNull();
   });
+
+  it('Clear selection and Dismiss give the focus back to the header’s box (W13)', async () => {
+    at('/documents');
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const all = within(t).getByRole('checkbox', { name: 'Select all 4 shown' });
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
+    const clear = screen.getByRole('button', { name: 'Clear selection' });
+    act(() => clear.focus());
+    fireEvent.click(clear);
+    await waitFor(() => expect(all).toHaveFocus());
+    // After an action, its outcome; Dismiss, and back to the box.
+    fireEvent.click(within(t).getByRole('checkbox', { name: 'Select “House deed”' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Move to Trash' }),
+    );
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss' });
+    act(() => dismiss.focus());
+    fireEvent.click(dismiss);
+    await waitFor(() =>
+      expect(within(t).getByRole('checkbox', { name: 'Select all 3 shown' })).toHaveFocus(),
+    );
+  });
+
+  it('the Columns menu shuts when the focus leaves it (W14)', async () => {
+    at('/documents');
+    await table();
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    const kind = screen.getByRole('checkbox', { name: 'Kind' });
+    act(() => kind.focus());
+    expect(screen.getByRole('group', { name: 'Columns shown' })).toBeInTheDocument();
+    // Within it, it stays.
+    act(() => screen.getByRole('checkbox', { name: 'Person' }).focus());
+    expect(screen.getByRole('group', { name: 'Columns shown' })).toBeInTheDocument();
+    act(() => screen.getByRole('combobox', { name: 'Person' }).focus());
+    expect(screen.queryByRole('group', { name: 'Columns shown' })).not.toBeInTheDocument();
+  });
+
+  it('a "+1" collection names the rest: in a tip, and to a screen reader (W10)', async () => {
+    at('/documents', {
+      collections: [TRAVEL, { ...TRAVEL, id: 'collection-x', name: 'Tax', items: ['doc-3'] }],
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(4));
+    const visa = within(t).getByRole('link', { name: "Sara's visa" }).closest('tr') as HTMLElement;
+    const cell = within(visa).getByText('Tax').closest('td') as HTMLElement;
+    // Heard whole: "Tax, Travel", never "+1".
+    expect(within(cell).getByText(', Travel')).toHaveClass('visually-hidden');
+    expect(within(cell).getByText('+1')).toHaveAttribute('aria-hidden', 'true');
+    // Shown whole on hover, though nothing is cut.
+    fireEvent.mouseOver(within(cell).getByText('+1'));
+    expect(document.querySelector('.clip-tip')).toHaveTextContent('Tax, Travel');
+  });
+
+  it('after Show more, the focus is on the first of the new rows; the button is never off to one side (W2)', async () => {
+    const many = Array.from({ length: 130 }, (_, i) =>
+      doc({
+        id: `doc-${String(i).padStart(3, '0')}`,
+        title: `Statement ${String(i).padStart(3, '0')}`,
+      }),
+    );
+    let release: () => void = () => undefined;
+    let holding = false;
+    at('/documents', {
+      documents: many,
+      collections: [],
+      hold: (method, path) =>
+        holding && method === 'GET' && path === '/api/v1/documents'
+          ? new Promise<void>((go) => {
+              release = go;
+            })
+          : undefined,
+    });
+    const t = await table();
+    await waitFor(() => expect(titles(t)).toHaveLength(100));
+    const more = screen.getByRole('button', { name: 'Show more' });
+    expect(t.closest('.tbl-wrap')).not.toContainElement(more);
+    act(() => more.focus());
+    holding = true;
+    fireEvent.click(more);
+    // While it is on its way the button keeps the focus: not disabled, said so.
+    const loading = await screen.findByRole('button', { name: 'Loading more…' });
+    expect(loading).toHaveAttribute('aria-disabled', 'true');
+    expect(loading).not.toBeDisabled();
+    expect(loading).toHaveFocus();
+    holding = false;
+    act(() => release());
+    await waitFor(() => expect(titles(t)).toHaveLength(130));
+    await waitFor(() =>
+      expect(within(t).getByRole('link', { name: 'Statement 100' })).toHaveFocus(),
+    );
+  }, 60_000);
 
   it('shows more after the last page’s cursor, and says how many there are', async () => {
     const many = Array.from({ length: 130 }, (_, i) =>
@@ -677,7 +992,7 @@ describe('the Documents table, from 768 px (R2)', () => {
     await waitFor(() => expect(titles(t)).toHaveLength(130));
     expect(lastQuery(state).get('cursor')).toBe('100');
     expect(screen.queryByRole('button', { name: 'Show more' })).not.toBeInTheDocument();
-  });
+  }, 60_000);
 
   it('says plainly when there is nothing, and when the vault cannot be reached', async () => {
     at('/documents', { documents: [] });
@@ -721,7 +1036,7 @@ describe('Documents on a phone (under 768 px)', () => {
   it('is today’s rows, with the filters and the sort in a sheet, and Select as today', async () => {
     const state = at('/documents', {}, 'owner', PHONE);
     await screen.findByRole('heading', { name: 'Documents', level: 1 });
-    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByRole('grid')).not.toBeInTheDocument();
     // Each row, with its ⋯ as everywhere.
     expect(
       await screen.findByRole('button', { name: 'Actions for “House deed”' }),

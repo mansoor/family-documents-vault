@@ -616,20 +616,36 @@ export interface DocumentAttributeView {
   builtin: boolean;
 }
 
+/**
+ * One formatter for each locale and precision, made once: making one is the
+ * costly part of formatting a date (a third of a millisecond), and a list
+ * sorted by status words thousands of them (R2's review, R2-API-2). What
+ * `toLocaleDateString` gives with the same options, exactly.
+ */
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+function dateFormat(locale: string, precision: 'day' | 'month'): Intl.DateTimeFormat {
+  const key = `${locale}|${precision}`;
+  let f = dateFormats.get(key);
+  if (!f) {
+    f = new Intl.DateTimeFormat(
+      locale,
+      precision === 'day'
+        ? { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }
+        : { month: 'long', year: 'numeric', timeZone: 'UTC' },
+    );
+    dateFormats.set(key, f);
+  }
+  return f;
+}
+
 /** Renders a date value the way a person wrote it: "14 Mar 2031", "March 2031", "2031". */
 export function formatDate(d: DateValue, locale = 'en-GB'): string {
   const [y, m, day] = d.date.split('-').map(Number) as [number, number, number];
   const dt = new Date(Date.UTC(y, m - 1, day));
   switch (d.precision) {
     case 'day':
-      return dt.toLocaleDateString(locale, {
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-        timeZone: 'UTC',
-      });
     case 'month':
-      return dt.toLocaleDateString(locale, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+      return dateFormat(locale, d.precision).format(dt);
     case 'year':
       return String(y);
   }

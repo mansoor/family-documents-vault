@@ -182,7 +182,11 @@ const listQuery = z.object({
   // Kept there, whatever the case: only for whoever sees locations (5.41).
   location: z.string().trim().min(1).max(500).optional(),
   limit: z.coerce.number().int().min(1).max(DOCUMENT_PAGE_MAX).optional(),
-  cursor: z.string().max(2048).optional(),
+  // Room for the longest key a table's cursor can carry (the review's
+  // R2-API-4): a location of 500 characters, each as JSON writes the worst
+  // of them (a control character, \u0001: 6 bytes), is 3,000 bytes; with
+  // the rest at most 3,200, as base64 about 4,270, and its tag 44 more.
+  cursor: z.string().max(8192).optional(),
 });
 
 function parseRange(

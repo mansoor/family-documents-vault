@@ -304,7 +304,7 @@ describe('the sidebar, from 1024 px (R1)', () => {
     fireEvent.click(within(await sidebar()).getByRole('link', { name: 'Documents' }));
     await screen.findByRole('heading', { name: 'Documents', level: 1 });
     expect(window.location.pathname).toBe('/documents');
-    const table = await screen.findByRole('table', { name: /^Documents, sorted by Title/ });
+    const table = await screen.findByRole('grid', { name: /^Documents, sorted by Title/ });
     expect(
       await within(table).findByRole('link', { name: "Mansoor's passport" }),
     ).toBeInTheDocument();

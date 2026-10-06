@@ -45,14 +45,14 @@ export interface Column {
 /** Each column, in the table's order; the sort it asks for has its key. */
 export const COLUMNS: readonly Column[] = [
   { key: 'title', label: 'Title', width: null },
-  { key: 'kind', label: 'Kind', width: 100 },
+  { key: 'kind', label: 'Kind', width: 96 },
   { key: 'person', label: 'Person', width: 92 },
-  { key: 'issued', label: 'Issued', width: 92, end: true },
-  { key: 'expires', label: 'Expires', width: 92, end: true },
+  { key: 'issued', label: 'Issued', width: 100, end: true },
+  { key: 'expires', label: 'Expires', width: 100, end: true },
   { key: 'status', label: 'Status', width: 120 },
-  { key: 'visibility', label: 'Who can see it', width: 100 },
+  { key: 'visibility', label: 'Who can see it', width: 92 },
   { key: 'location', label: 'Location', width: 104 },
-  { key: 'collections', label: 'Collections', width: 100 },
+  { key: 'collections', label: 'Collections', width: 96 },
 ];
 
 /** The title's least width, in px: below it the box scrolls sideways. */

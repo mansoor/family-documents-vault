@@ -65,7 +65,7 @@ import {
   withSealed,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
-import { sql, type Expression, type Selectable, type SqlBool } from 'kysely';
+import { sql, type Expression, type RawBuilder, type Selectable, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -492,6 +492,32 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
   or (d.visibility = 'adults' and ${p.seesAdults})
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
+/**
+ * A document of kind `t` (a row called `t` with a `key`) the caller can
+ * see: out of the Trash only, or at all.
+ */
+export const kindSeen = (p: Principal, outOfTrash: boolean) => sql<boolean>`exists (
+  select 1 from document d
+   where d.type_key = t.key ${outOfTrash ? sql`and d.deleted_at is null` : sql``}
+     and ${seenDocument(p)})`;
+
+/**
+ * "This caller is given kind `t`", as SQL on a row called `t` (of
+ * effective_document_type, or document_type) that is a built-in when
+ * `builtin` says so: the rule `types()` keeps, and the Documents table's
+ * kind sort with it (R2), so that neither names a kind the other does not.
+ * A kind deleted while documents still use it is there only for whoever can
+ * see one of them (0035). Somebody who files nothing is given the
+ * built-ins, and of the household's own kinds those of the documents they
+ * can see out of the Trash (0.5.10).
+ */
+export function kindGiven(p: Principal, builtin: RawBuilder<boolean>): RawBuilder<boolean> {
+  const live = sql<boolean>`(t.deleted_at is null or ${kindSeen(p, false)})`;
+  return allows(p, 'document.add')
+    ? live
+    : sql<boolean>`(${live} and (${builtin} or ${kindSeen(p, true)}))`;
+}
+
 /** A version as a document's view counts them: newest first. */
 interface VersionBrief {
   id: string;
@@ -532,6 +558,11 @@ export class DocumentService {
     private readonly reminders: ReminderService | null = null,
     /** Signs the handle on the second pass of search; null disables it. */
     private readonly sealedKey: Uint8Array | null = null,
+    /**
+     * Signs the Documents table's page cursors (R2, `deriveCursorKey`): a
+     * key of its own, made at start, when none is given.
+     */
+    private readonly cursorKey: Uint8Array = new Uint8Array(randomBytes(32)),
     /** Where a document's pages are proposed for: off the event loop, with a deadline (5.37). */
     private readonly proposals: Proposals = proposalPool,
   ) {}
@@ -563,20 +594,14 @@ export class DocumentService {
    */
   async types(p: Principal, opts: { all?: boolean | undefined } = {}): Promise<DocumentTypeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
-      let q = trx.selectFrom('effective_document_type as t').selectAll('t');
-      // A document of it the caller can see, out of the Trash.
-      const seen = sql<boolean>`exists (
-        select 1 from document d
-         where d.type_key = t.key and d.deleted_at is null and ${seenDocument(p)})`;
-      // …or in it.
-      const seenAtAll = sql<boolean>`exists (
-        select 1 from document d where d.type_key = t.key and ${seenDocument(p)})`;
-      q = q.where((eb) => eb.or([eb('t.deleted_at', 'is', null), seenAtAll]));
-      if (!allows(p, 'document.add')) {
-        q = q.where((eb) => eb.or([eb('t.builtin', '=', true), seen]));
-      }
+      // Who is given which kind: kindGiven, the rule the Documents table's
+      // kind sort keeps too (R2).
+      let q = trx
+        .selectFrom('effective_document_type as t')
+        .selectAll('t')
+        .where(kindGiven(p, sql<boolean>`t.builtin`));
       if (!opts.all) {
-        q = q.where((eb) => eb.or([eb('t.hidden', '=', false), seen]));
+        q = q.where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]));
       }
       const rows = await q.orderBy('t.sort_order').orderBy('t.label').orderBy('t.key').execute();
       return rows.map(typeView);
@@ -1378,7 +1403,7 @@ export class DocumentService {
    */
   async table(p: Principal, q: ListQuery & { sort: DocumentSort }): Promise<DocumentPage> {
     return withPrincipal(this.db, p, (trx) =>
-      documentTable(trx, p, q, (rows) => this.listed(trx, p, rows)),
+      documentTable(trx, p, q, (rows) => this.listed(trx, p, rows), this.cursorKey),
     );
   }
 

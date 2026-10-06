@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   defaultLeads,
   deriveStatus,
@@ -38,6 +38,19 @@ describe('formatDate', () => {
     expect(formatDate({ date: '2031-03-14', precision: 'day' })).toBe('14 Mar 2031');
     expect(formatDate({ date: '2031-03-31', precision: 'month' })).toBe('March 2031');
     expect(formatDate({ date: '2031-12-31', precision: 'year' })).toBe('2031');
+  });
+
+  it('makes a formatter once for each locale and precision: a sort by status words thousands (R2-API-2)', () => {
+    const made = vi.spyOn(Intl, 'DateTimeFormat');
+    try {
+      for (let i = 0; i < 100; i++) {
+        expect(formatDate({ date: '2031-03-14', precision: 'day' }, 'en-IE')).toBe('14 Mar 2031');
+        formatDate({ date: '2031-03-31', precision: 'month' }, 'en-IE');
+      }
+      expect(made.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      made.mockRestore();
+    }
   });
 });
 
