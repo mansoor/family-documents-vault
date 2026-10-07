@@ -10,7 +10,7 @@ import {
   type Member,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -31,7 +31,7 @@ import { Button, ConfirmDialog, ErrorNote, Field, Select, TopBar } from '../ui.j
  */
 
 /** "120 KB", "2.4 MB": a size as people say it. */
-function sizeWords(bytes: number): string {
+export function sizeWords(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
@@ -56,6 +56,17 @@ export function NotScanned({ id }: { id?: string }) {
 }
 
 export function IncomingScreen() {
+  return <IncomingList standalone />;
+}
+
+/**
+ * The files sent to you: a page of its own, or — for whoever also uploads
+ * many at once (I1) — inside the Inbox's tabs, as `wrap` puts it there.
+ */
+export function IncomingList(props: {
+  standalone: boolean;
+  wrap?: (children: ReactNode, sent: number | null) => ReactNode;
+}) {
   const { authVersion } = useApp();
   const location = useLocation();
   const said = (location.state as { said?: string } | null)?.said ?? null;
@@ -69,9 +80,8 @@ export function IncomingScreen() {
     if (said) status.current?.focus();
   }, [said]);
 
-  return (
-    <main className="page page-top page-wide has-nav">
-      <TopBar title="Files sent to you" />
+  const list = (
+    <>
       <ErrorNote message={error} />
       <p role="status" ref={status} tabIndex={-1} className="status-line">
         {said}
@@ -98,8 +108,17 @@ export function IncomingScreen() {
           <li className="muted">Nothing is waiting for you.</li>
         )}
       </ul>
-    </main>
+    </>
   );
+  if (props.standalone || !props.wrap) {
+    return (
+      <main className="page page-top page-wide has-nav">
+        <TopBar title="Files sent to you" />
+        {list}
+      </main>
+    );
+  }
+  return <>{props.wrap(list, data ? data.length : null)}</>;
 }
 
 /** One page the vault drew for review, fetched with the token, and asked again while it is drawn. */
@@ -228,12 +247,12 @@ export function IncomingFileScreen() {
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title={file?.name ?? 'A file sent to you'} back="/inbox" />
+      <TopBar title={file?.name ?? 'A file sent to you'} back="/inbox/sent" />
       <ErrorNote message={error} />
       {data && !file && !error && (
         <p className="muted">
           This file is not waiting any more: somebody filed or refused it, or it was removed.{' '}
-          <Link to="/inbox">See what is waiting</Link>.
+          <Link to="/inbox/sent">See what is waiting</Link>.
         </p>
       )}
       {file && data && (
@@ -349,7 +368,7 @@ function IncomingFile(props: {
     try {
       await withToken((t) => api.rejectIncoming(t, file.id));
       setAsking(false);
-      props.onDone('/inbox', `“${file.name}” was refused, and removed.`);
+      props.onDone('/inbox/sent', `“${file.name}” was refused, and removed.`);
     } catch (err) {
       setAsking(false);
       setProblem(describeError(err));

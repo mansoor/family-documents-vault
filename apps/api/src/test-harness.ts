@@ -52,6 +52,7 @@ import {
 } from './uploads/requests.js';
 import { PurgeService } from './documents/purge.js';
 import { IncomingService, type IncomingOptions } from './uploads/incoming.js';
+import { BatchService } from './uploads/batches.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
@@ -298,6 +299,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     deriveCursorKey(TEST_MASTER),
     opts.proposals,
   );
+  const collections = new CollectionService(db, documents);
   const app = await buildApp(config, {
     serverVersion: await serverVersion(),
     instanceId: instanceIdReader(db),
@@ -312,7 +314,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     documents,
     purge: new PurgeService(db, vaults, documents, alert, enqueue),
     types: new TypeService(db, enqueue, stepUp),
-    collections: new CollectionService(db, documents),
+    collections,
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     sealedSearch: new SealedSearchService(db, keys, deriveSealedKey(TEST_MASTER)),
     shares: new ShareService(db, keys, vaults, alert, opts.publicUrl ?? null, {
@@ -337,6 +339,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       enqueue,
       ...(opts.incomingBeforeCommit ? { beforeCommit: opts.incomingBeforeCommit } : {}),
     }),
+    batches: new BatchService(db, keys, vaults, documents, collections, 5 * 1024 * 1024, enqueue),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(

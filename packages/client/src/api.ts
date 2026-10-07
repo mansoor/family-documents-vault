@@ -2,6 +2,12 @@ import type {
   AccessGrant,
   AccessPreview,
   ActivityLine,
+  BatchAccepted,
+  BatchAcceptInput,
+  BatchDetail,
+  BatchInput,
+  BatchItemView,
+  BatchView,
   Capabilities,
   CaptureResult,
   UploadStatus,
@@ -99,7 +105,14 @@ import type {
   VisibilityChange,
 } from '@fdv/shared';
 import type { Http, ResponseLike, UploadBody } from './http.js';
-import { captureUpload, photoUpload, type CaptureBody, type PhotoBody } from './multipart.js';
+import {
+  batchItemUpload,
+  captureUpload,
+  photoUpload,
+  type CaptureBody,
+  type CaptureFile,
+  type PhotoBody,
+} from './multipart.js';
 
 /**
  * Every endpoint, as one method each. Every authenticated call takes the
@@ -1187,6 +1200,57 @@ export function createApi(http: Http) {
     /** Refuses it: its bytes are removed. `409 already_decided` once decided. */
     rejectIncoming: (token: string, id: string) =>
       request<void>(`/api/v1/incoming/${enc(id)}/reject`, { method: 'POST', token }),
+
+    // ------------------------------- many documents at once (Phase 6, I1)
+    // When `features.batches`. Whoever may add documents (a viewer or a
+    // guest is refused, 403); a batch and its items are its uploader's
+    // alone until accepted (404 for anybody else's).
+    /** A batch of the caller's own: an optional name, and defaults that fill only blanks. */
+    createBatch: (token: string, body: BatchInput = {}) =>
+      request<BatchDetail>('/api/v1/batches', { method: 'POST', body, token }),
+    /** The caller's batches, newest first, each with how many are waiting. */
+    batches: (token: string) => request<{ items: BatchView[] }>('/api/v1/batches', { token }),
+    /** One batch, and its items not removed, oldest first, each with what it duplicates. */
+    batch: (token: string, id: string) =>
+      request<BatchDetail>(`/api/v1/batches/${enc(id)}`, { token }),
+    /** Its name and defaults: what is sent changes, the rest stays. */
+    updateBatch: (token: string, id: string, body: BatchInput) =>
+      request<BatchDetail>(`/api/v1/batches/${enc(id)}`, { method: 'PATCH', body, token }),
+    /** What is undecided in it removed, its bytes too; and the batch. Accepted items stay documents. */
+    removeBatch: (token: string, id: string) =>
+      request<void>(`/api/v1/batches/${enc(id)}`, { method: 'DELETE', token }),
+    /**
+     * One file into a batch, multipart as `file` (`422 batch_full` past
+     * BATCH_MAX_FILES, `413 too_large`, `415 unsupported_type`, `409
+     * batch_ended`). A browser that shows progress sends it itself, with
+     * XMLHttpRequest, to `batchItemsUrl`.
+     */
+    addBatchItem: (token: string, batchId: string, file: CaptureFile) =>
+      request<BatchItemView>(`/api/v1/batches/${enc(batchId)}/items`, {
+        method: 'POST',
+        upload: batchItemUpload(file),
+        token,
+      }),
+    batchItemsUrl: (batchId: string) => http.url(`/api/v1/batches/${enc(batchId)}/items`),
+    /** Removed, as a refused file is: its bytes and pages go. `409 already_decided` once decided. */
+    removeBatchItem: (token: string, batchId: string, itemId: string) =>
+      request<void>(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}`, {
+        method: 'DELETE',
+        token,
+      }),
+    /**
+     * Filed as a new document with every detail a capture takes, and a
+     * collection; a detail left out takes the batch's default.
+     */
+    acceptBatchItem: (token: string, batchId: string, itemId: string, body: BatchAcceptInput) =>
+      request<BatchAccepted>(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}/accept`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /** A page the worker drew: a JPEG; `preview_pending` while it is drawn, `no_preview` if none. */
+    batchItemPage: (token: string, batchId: string, itemId: string, n: number) =>
+      raw(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}/pages/${n}`, { token }),
   };
 }
 

@@ -103,9 +103,20 @@ export const JOBS = {
   incomingMove: 'incoming.move',
   /**
    * Daily (5.23): files not filed within 30 days removed, requests past
-   * their end with nothing waiting removed, and what a lost job missed.
+   * their end with nothing waiting removed, and what a lost job missed;
+   * and, since I1, batches past their end removed with what is undecided
+   * in them.
    */
   incomingSweep: 'incoming.sweep',
+  /**
+   * Many documents at once (Phase 6, I1): one item of a household's batches
+   * drawn for review, then sent again while more wait — one queued and one
+   * running a household (`stately`), so a batch of 200 never starves
+   * another household, nor this one's single adds (version.process) or
+   * files sent in (incoming.scan). Sent by the API as each item arrives;
+   * the name matches its BATCH_PREVIEWS_JOB.
+   */
+  batchPreviews: 'batch.previews',
 } as const;
 
 export type JobName = (typeof JOBS)[keyof typeof JOBS];

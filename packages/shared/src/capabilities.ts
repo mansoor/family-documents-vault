@@ -210,6 +210,17 @@ export interface CapabilityFeatures {
    * refuse those sorts.
    */
   document_table?: boolean;
+  /**
+   * Many documents at once (Phase 6, I1): POST, GET /batches, GET, PATCH,
+   * DELETE /batches/{id} — a batch with defaults that fill only what is
+   * blank — POST /batches/{id}/items (one file a request, up to
+   * BATCH_MAX_FILES), DELETE …/items/{itemId}, POST …/items/{itemId}/accept
+   * (every detail of a capture, and a collection) and GET
+   * …/items/{itemId}/pages/{n}. For whoever may add documents; a batch and
+   * its items are its uploader's alone until accepted. Absent from older
+   * vaults, which take one file at a time.
+   */
+  batches?: boolean;
 }
 
 export interface CapabilityLimits {

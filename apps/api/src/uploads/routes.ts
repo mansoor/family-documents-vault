@@ -1,11 +1,13 @@
 import type { MultipartFile } from '@fastify/multipart';
-import { NOT_SCANNED } from '@fdv/shared';
+import { NOT_SCANNED, type BatchAcceptInput, type BatchInput } from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
 import type { Principal } from '../auth/service.js';
+import { captureBody, cutOff } from '../documents/routes.js';
 import { ApiError } from '../errors.js';
 import { presentedDeviceCookies } from '../public/device-cookie.js';
+import { batchBody, type BatchService } from './batches.js';
 import { acceptBody, type IncomingService } from './incoming.js';
 import {
   createBody,
@@ -313,6 +315,160 @@ export function registerIncoming(app: FastifyInstance, incoming: IncomingService
     await incoming.reject(principal(req), parse(idParam, req.params).id, metaOf(req));
     return reply.status(204).send();
   });
+}
+
+/**
+ * Many documents at once (Phase 6, I1): a batch of the caller's own, and its
+ * items, one file a request. Whoever may add documents; a viewer or a guest
+ * is refused (403). Nobody else's batch is ever answered: 404.
+ */
+export function registerBatches(app: FastifyInstance, batches: BatchService) {
+  const auth = { preHandler: app.requireAuth };
+  const principal = (req: FastifyRequest) => req.principal as Principal;
+  const idParam = z.object({ id: z.string().uuid() });
+  const itemParams = z.object({ id: z.string().uuid(), itemId: z.string().uuid() });
+  const pageParams = itemParams.extend({ n: z.coerce.number().int().min(1).max(9999) });
+  const acceptItemBody = captureBody
+    .extend({ collection_id: z.string().uuid().nullable().optional() })
+    .strict();
+
+  app.post('/api/v1/batches', auth, async (req, reply) => {
+    const made = await batches.create(
+      principal(req),
+      parse(batchBody, req.body ?? {}) as BatchInput,
+      metaOf(req),
+    );
+    return reply.status(201).send(made);
+  });
+
+  app.get('/api/v1/batches', auth, async (req) => ({ items: await batches.list(principal(req)) }));
+
+  app.get<{ Params: { id: string } }>('/api/v1/batches/:id', auth, async (req) =>
+    batches.get(principal(req), parse(idParam, req.params).id),
+  );
+
+  app.patch<{ Params: { id: string } }>('/api/v1/batches/:id', auth, async (req) =>
+    batches.update(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(batchBody, req.body ?? {}) as BatchInput,
+      metaOf(req),
+    ),
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/v1/batches/:id', auth, async (req, reply) => {
+    await batches.remove(principal(req), parse(idParam, req.params).id, metaOf(req));
+    return reply.status(204).send();
+  });
+
+  /**
+   * One file, multipart, as `file`, and nothing else: the size limit is a
+   * single add's (413), and so are the kinds it takes (415). Refused before
+   * a byte is stored when the batch is not the caller's, has ended, or is
+   * full.
+   */
+  app.post<{ Params: { id: string } }>('/api/v1/batches/:id/items', auth, async (req, reply) => {
+    const { id } = parse(idParam, req.params);
+    // Room for one file more than is taken, as a capture's (documents/
+    // routes.ts): at its limit the parser destroys the stream it is
+    // reading, which, were it the file, would fail it as if storage had. A
+    // second file is refused once the first has arrived.
+    const parts = req
+      .parts({ limits: { fileSize: batches.fileLimit, files: 2, fields: 0 } })
+      [Symbol.asyncIterator]();
+    const drainRest = async () => {
+      for (;;) {
+        const next = await parts.next().catch(() => ({ done: true as const, value: undefined }));
+        if (next.done) return;
+        if (next.value.type === 'file') next.value.file.resume();
+      }
+    };
+    const order = () =>
+      new ApiError(422, 'validation_failed', 'Send one file, named file, and nothing else.');
+    let file: MultipartFile;
+    try {
+      const next = await parts.next();
+      if (next.done) throw new ApiError(422, 'validation_failed', 'Choose a file to send.');
+      if (next.value.type !== 'file' || next.value.fieldname !== 'file') {
+        if (next.value.type === 'file') next.value.file.resume();
+        throw order();
+      }
+      file = next.value;
+    } catch (err) {
+      void drainRest();
+      throw limitRefusal(err, order);
+    }
+    const theFile = file;
+    const item = await batches
+      .addItem(
+        principal(req),
+        id,
+        {
+          filename: theFile.filename,
+          mime: theFile.mimetype,
+          stream: theFile.file,
+          truncated: () => theFile.file.truncated,
+          finished: async () => {
+            const after = await parts.next().catch((err: unknown) => {
+              throw limitRefusal(err, order);
+            });
+            if (after.done) return;
+            if (after.value.type === 'file') after.value.file.resume();
+            await drainRest();
+            throw order();
+          },
+        },
+        metaOf(req),
+      )
+      .catch((err: unknown) => {
+        theFile.file.resume();
+        void drainRest();
+        const refusal = limitRefusal(err, order);
+        if (refusal instanceof ApiError && refusal.status === 413) cutOff(req, reply);
+        throw refusal;
+      });
+    return reply.status(201).send(item);
+  });
+
+  app.delete<{ Params: { id: string; itemId: string } }>(
+    '/api/v1/batches/:id/items/:itemId',
+    auth,
+    async (req, reply) => {
+      const { id, itemId } = parse(itemParams, req.params);
+      await batches.removeItem(principal(req), id, itemId, metaOf(req));
+      return reply.status(204).send();
+    },
+  );
+
+  app.post<{ Params: { id: string; itemId: string } }>(
+    '/api/v1/batches/:id/items/:itemId/accept',
+    auth,
+    async (req, reply) => {
+      const { id, itemId } = parse(itemParams, req.params);
+      const done = await batches.accept(
+        principal(req),
+        id,
+        itemId,
+        parse(acceptItemBody, req.body ?? {}) as BatchAcceptInput,
+        metaOf(req),
+      );
+      return reply.status(201).send(done);
+    },
+  );
+
+  /** A page the worker drew: a JPEG, never kept by the browser. */
+  app.get<{ Params: { id: string; itemId: string; n: string } }>(
+    '/api/v1/batches/:id/items/:itemId/pages/:n',
+    auth,
+    async (req, reply) => {
+      const { id, itemId, n } = parse(pageParams, req.params);
+      const bytes = await batches.page(principal(req), id, itemId, n);
+      reply.header('content-type', 'image/jpeg');
+      reply.header('cache-control', 'private, no-store');
+      reply.header('x-content-type-options', 'nosniff');
+      return reply.send(bytes);
+    },
+  );
 }
 
 /** The parser's own limits (a second file, a second field) are the order's refusal. */

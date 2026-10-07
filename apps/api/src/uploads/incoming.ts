@@ -205,7 +205,8 @@ export class IncomingService {
         const arrived: Date = f.received_at ?? sent;
         return {
           id: f.id,
-          request_id: f.request_id,
+          // Sent through a request: the join above asks for nothing else.
+          request_id: f.request_id as string,
           request_title: f.title,
           recipient_label: f.recipient_label,
           item_label: f.item_label,
@@ -262,14 +263,17 @@ export class IncomingService {
             .whereRef('r.id', '=', 'f.request_id')
             .as('recipient_label'),
       ])
-      .where('f.id', '=', id);
+      .where('f.id', '=', id)
+      // Sent through a request: a batch's item (I1) is its uploader's, and
+      // decided through /batches, never here.
+      .where('f.request_id', 'is not', null);
     if (lock) q = q.forUpdate();
     const f = await q.executeTakeFirst();
     if (!f || f.submitted_at === null || f.scan_state === 'infected') throw notHere();
     if (f.state === 'accepted' || f.state === 'rejected') throw decidedAlready();
     if (f.state !== 'received') throw notHere();
     // Waiting, it has its name (only a refused file has none, 0047).
-    return { ...f, original_name: f.original_name ?? 'file' };
+    return { ...f, request_id: f.request_id as string, original_name: f.original_name ?? 'file' };
   }
 
   /** The file's key, from the one it came in under (bound to it: `incoming:<id>`). */

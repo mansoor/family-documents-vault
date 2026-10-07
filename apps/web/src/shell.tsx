@@ -27,7 +27,8 @@ import { useSheetFocus } from './ui.js';
  * The app's shell (Phase 6, R1): one layout around every signed-in screen.
  *
  *  - 1024 px and wider: a sidebar of sections, always there, and a bar on
- *    top with search (`/`), Add (`n`) and the account menu;
+ *    top with search (`/`), Add (`n`) and the account menu; Add is a menu
+ *    since bulk intake (I1): one document, or many;
  *  - 768–1023 px, and 600 px tall or more: the same, the sidebar narrowed
  *    to its icons, each named and with its name beside it on hover or focus;
  *  - narrower, or shorter (a phone on its side): today's bottom bar, and a
@@ -89,7 +90,9 @@ type IconName =
   | 'menu'
   | 'close'
   | 'chevron'
-  | 'signOut';
+  | 'signOut'
+  | 'file'
+  | 'files';
 
 /** Each drawn in strokes, as the app's own bin is: emoji differ on every phone. */
 const DRAWN: Record<IconName, ReactNode> = {
@@ -164,6 +167,19 @@ const DRAWN: Record<IconName, ReactNode> = {
     <>
       <path d="M10 4.5H5.5v15H10" />
       <path d="m14 8 4 4-4 4M18 12H9" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M6.5 3.5h7.5l4.5 4.5v12.5h-12z" />
+      <path d="M14 3.5V8h4.5" />
+    </>
+  ),
+  files: (
+    <>
+      <path d="M8.5 6.5h7l4 4v10h-11z" />
+      <path d="M15.5 6.5v4h4" />
+      <path d="M5.5 17.5v-14h7" />
     </>
   ),
 };
@@ -259,7 +275,10 @@ export function sectionsFor(who: {
       owns: (p) => p === '/reminders' || p === '/household-questions',
     });
   }
-  if (caps?.features.upload_requests && can(role, 'upload_request.create')) {
+  // What waits before it is a document: the files sent to an owner or an
+  // adult (5.23), and since I1 what anybody who adds documents uploaded
+  // many at once — a teen's own uploads included.
+  if (inboxFor(role, caps)) {
     out.push({
       key: 'inbox',
       label: 'Inbox',
@@ -291,6 +310,14 @@ export function sectionsFor(who: {
     out.push({ key: 'trash', label: 'Trash', to: '/trash', icon: 'trash', owns: under('/trash') });
   }
   return out;
+}
+
+/** Whether somebody has an Inbox: files sent to them, or uploads of their own (I1). */
+export function inboxFor(role: Role, caps: Capabilities | null): boolean {
+  return (
+    (caps?.features.upload_requests === true && can(role, 'upload_request.create')) ||
+    (caps?.features.batches === true && can(role, 'document.add'))
+  );
 }
 
 export const SETTINGS: Section = {
@@ -327,6 +354,8 @@ export function AppShell() {
   const role: Role = session.info?.role ?? storedRole();
   const canAdd = can(role, 'document.add');
   const mayReview = caps?.features.upload_requests === true && can(role, 'upload_request.create');
+  // Many documents at once (I1): Add is a menu, and the Inbox counts what waits of yours.
+  const many = caps?.features.batches === true && canAdd;
   const givenOnly = caps?.features.collections === true && !collectionsOffered(caps, role);
 
   // Who is signed in, for the account menu: the family's list names them
@@ -339,10 +368,17 @@ export function AppShell() {
     [authVersion],
   );
   // What waits in the Inbox, asked again on every move: filing or refusing
-  // one is a move back to the Inbox. Not asked at all of anybody else.
+  // one is a move back to the Inbox. Not asked at all of anybody else. The
+  // files sent to them, and their own uploads not yet decided (I1).
   const { data: waiting } = useLoad(
-    async (t) => (mayReview ? (await api.incoming(t)).items.length : 0),
-    [authVersion, mayReview, pathname],
+    async (t) => {
+      const [sent, mine] = await Promise.all([
+        mayReview ? api.incoming(t).then((r) => r.items.length) : 0,
+        many ? api.batches(t).then((r) => r.items.reduce((n, b) => n + b.counts.waiting, 0)) : 0,
+      ]);
+      return sent + mine;
+    },
+    [authVersion, mayReview, many, pathname],
   );
   // A viewer's collections are only those given to them (5.33).
   const { data: given } = useLoad(
@@ -355,13 +391,13 @@ export function AppShell() {
     caps,
     mode,
     givenCollections: given === true,
-    waiting: mayReview ? (waiting ?? null) : null,
+    waiting: mayReview || many ? (waiting ?? null) : null,
   });
 
   const [drawer, setDrawer] = useState(false);
   const hamburger = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const add = useRef<HTMLAnchorElement>(null);
+  const add = useRef<HTMLElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const keysOn = useShortcutsOn();
 
@@ -411,10 +447,11 @@ export function AppShell() {
 
   // `/` goes to the search box and `n` to Add: focus only, never away from
   // the page, so a key pressed by mistake loses nothing half-typed (WCAG
-  // 2.1.4, the review). Until bulk intake makes Add a menu (I1), `n` puts
-  // focus on it. Never while typing, over a sheet, a dialog or a menu, nor
-  // a key held down; nothing on a phone, which has no bar on top to go to;
-  // and nothing at all once turned off in Settings (shortcuts.ts).
+  // 2.1.4, the review). Add is a menu button since bulk intake (I1): `n`
+  // puts focus on it, and never opens it. Never while typing, over a sheet,
+  // a dialog or a menu, nor a key held down; nothing on a phone, which has
+  // no bar on top to go to; and nothing at all once turned off in Settings
+  // (shortcuts.ts).
   // Listened for as the shell is drawn, not after: a key pressed the moment
   // it is on the screen is heard (as useSheetFocus does).
   const latest = useRef(mode);
@@ -502,7 +539,7 @@ export function AppShell() {
           <header className="app-bar">
             <SearchBox field={search} keysOn={keysOn} />
             <span className="app-bar-gap" />
-            {canAdd && <AddControl link={add} keysOn={keysOn} />}
+            {canAdd && <AddControl link={add} keysOn={keysOn} many={many} />}
             {account}
           </header>
         )}
@@ -664,27 +701,143 @@ function SearchBox({
 }
 
 /**
- * Add, in the bar on top. In R1 it goes straight to Add; with bulk intake
- * (I1) it becomes a menu button here — "One document" or "Many documents" —
- * and nothing else about the bar changes. `n` puts focus on it.
+ * Add, in the bar on top: since bulk intake (I1) a menu button — "One
+ * document" (today's add) or "Many documents" (files or a folder, checked
+ * in the Inbox). A vault from before batches goes straight to Add, as R1
+ * did. `n` puts focus on it. On a phone there is no bar on top: the bottom
+ * bar's + is today's add, and many documents are added from a computer.
  */
 function AddControl({
   link,
   keysOn,
+  many,
 }: {
-  link: RefObject<HTMLAnchorElement | null>;
+  link: RefObject<HTMLElement | null>;
   keysOn: boolean;
+  many: boolean;
 }) {
+  const [menu, setMenu] = useState<{ start: 'first' | 'last'; at: CSSProperties } | null>(null);
+  const id = useId();
+  if (!many) {
+    return (
+      <Link
+        ref={link as RefObject<HTMLAnchorElement | null>}
+        to="/add"
+        className="btn btn-primary app-add"
+        aria-keyshortcuts={keysOn ? 'n' : undefined}
+      >
+        <Icon name="plus" size={18} />
+        Add
+      </Link>
+    );
+  }
+  const open = (start: 'first' | 'last') => setMenu({ start, at: beside(link.current) });
   return (
-    <Link
-      ref={link}
-      to="/add"
-      className="btn btn-primary app-add"
-      aria-keyshortcuts={keysOn ? 'n' : undefined}
+    <div className="add-wrap">
+      <button
+        ref={link as RefObject<HTMLButtonElement | null>}
+        type="button"
+        className="btn btn-primary app-add"
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        aria-controls={menu ? id : undefined}
+        aria-keyshortcuts={keysOn ? 'n' : undefined}
+        onClick={() => (menu ? setMenu(null) : open('first'))}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          e.preventDefault();
+          open(e.key === 'ArrowUp' ? 'last' : 'first');
+        }}
+      >
+        <Icon name="plus" size={18} />
+        Add
+        <Icon name="chevron" size={16} />
+      </button>
+      {menu && (
+        <AddMenuBox
+          id={id}
+          start={menu.start}
+          at={menu.at}
+          returnFocus={link}
+          onClose={() => setMenu(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Up and down a menu's items, round from the end, and Home and End (the account's, the Add's). */
+function moveInMenu(e: ReactKeyboardEvent<HTMLDivElement>) {
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  const now = items.findIndex((item) => item === document.activeElement);
+  const end = items.length - 1;
+  const to = (
+    {
+      ArrowDown: now < end ? now + 1 : 0,
+      ArrowUp: now > 0 ? now - 1 : end,
+      Home: 0,
+      End: end,
+    } as Record<string, number>
+  )[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  items[to]?.focus();
+}
+
+function AddMenuBox(props: {
+  id: string;
+  start: 'first' | 'last';
+  at: CSSProperties;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const first = useRef<HTMLAnchorElement>(null);
+  const last = useRef<HTMLAnchorElement>(null);
+  useSheetFocus(box, {
+    start: props.start === 'last' ? last : first,
+    onEscape: props.onClose,
+    returnFocus: props.returnFocus,
+  });
+  return (
+    <div
+      className="menu-layer"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) props.onClose();
+      }}
     >
-      <Icon name="plus" size={18} />
-      Add
-    </Link>
+      <div ref={box} className="menu-box add-box" style={props.at}>
+        <div id={props.id} role="menu" aria-label="Add" onKeyDown={moveInMenu}>
+          <Link
+            ref={first}
+            to="/add"
+            role="menuitem"
+            className="menu-item menu-item-two"
+            onClick={props.onClose}
+          >
+            <Icon name="file" />
+            <span className="menu-words">
+              <span>One document</span>
+              <span className="muted">A photo, a scan or a file</span>
+            </span>
+          </Link>
+          <Link
+            ref={last}
+            to="/add/many"
+            role="menuitem"
+            className="menu-item menu-item-two"
+            onClick={props.onClose}
+          >
+            <Icon name="files" />
+            <span className="menu-words">
+              <span>Many documents</span>
+              <span className="muted">Files or a folder, checked in your Inbox</span>
+            </span>
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -769,22 +922,7 @@ function AccountMenuBox(props: {
     returnFocus: props.returnFocus,
   });
   const [busy, setBusy] = useState(false);
-  const move = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    const now = items.findIndex((item) => item === document.activeElement);
-    const end = items.length - 1;
-    const to = (
-      {
-        ArrowDown: now < end ? now + 1 : 0,
-        ArrowUp: now > 0 ? now - 1 : end,
-        Home: 0,
-        End: end,
-      } as Record<string, number>
-    )[e.key];
-    if (to === undefined) return;
-    e.preventDefault();
-    items[to]?.focus();
-  };
+  const move = moveInMenu;
   return (
     <div
       className="menu-layer"

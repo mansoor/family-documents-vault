@@ -21,6 +21,7 @@ import { liveDevice, openPassword, type VapidKeys } from './notify.js';
 import { decryptToBuffer } from './process-version.js';
 import { deliver, payloadFor, pushDepsOf, type PushDevice } from './push.js';
 import { detectTools, drawable, renderPreviews } from './tools.js';
+import { staleBatchItems, sweepBatches } from './batches.js';
 
 /**
  * What came in through a request, got ready to be looked at, and looked
@@ -61,6 +62,11 @@ export interface IncomingDeps {
   /** Telling the reviewers; left out, nobody is told (tests that are about something else). */
   tell?: IncomingTellDeps;
   now?: () => Date;
+  /**
+   * A household's batch.previews job sent again, by the sweep, when its
+   * items have waited undrawn (I1): left out, the sweep sends nothing.
+   */
+  sendBatchPreviews?: (householdId: string) => Promise<void>;
 }
 
 /** How reviewers are told: push to their devices, and the household's own mail server. */
@@ -108,7 +114,11 @@ export async function removeObjects(
   await adapter.delete(f.storage_key);
 }
 
-async function adapterOf(trx: Db, deps: IncomingDeps, vaultId: string): Promise<StorageAdapter> {
+export async function adapterOf(
+  trx: Db,
+  deps: IncomingDeps,
+  vaultId: string,
+): Promise<StorageAdapter> {
   const vault = await trx
     .selectFrom('vault')
     .selectAll()
@@ -137,6 +147,10 @@ export async function scanIncoming(deps: IncomingDeps, job: IncomingScanJob): Pr
       .select(['id', 'mime', 'storage_key', 'vault_id', 'file_key_wrapped', 'wrapped_by_scope'])
       .where('state', '=', 'received')
       .where('submitted_at', 'is not', null)
+      // Sent through a request: a batch's items (I1) are drawn one at a
+      // time a household by their own job (batches.ts), never all at once
+      // here.
+      .where('request_id', 'is not', null)
       .where((eb) => eb.or([eb('scan_state', '=', 'pending'), undrawn(eb)]));
     if (job.request_id) q = q.where('request_id', '=', job.request_id);
     return q.orderBy('id').execute();
@@ -187,6 +201,8 @@ export async function tellWaiting(
       .where('scan_state', 'in', ['unscanned', 'clean'])
       .where('preview_state', 'in', ['ready', 'unsupported', 'failed'])
       .where('told_at', 'is', null)
+      // A batch's item (I1) is its uploader's own: nobody is told of it.
+      .where('request_id', 'is not', null)
       // Not one for somebody alone whose sign-in waits — locked, or paused
       // after a restore (5.28): they could not be told, and it would be
       // marked told all the same. Taken once they can sign in again (a lock
@@ -212,7 +228,7 @@ export async function tellWaiting(
 }
 
 /** Not drawn yet, or a drawing that died: begun an hour ago and never finished. */
-const undrawn = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
+export const undrawn = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
   eb.or([
     eb('preview_state', '=', 'none'),
     eb.and([
@@ -225,7 +241,7 @@ const undrawn = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
  * One file's review pages, drawn and stored; or why there are none. Taken
  * first, so two jobs never draw the same file: the second finds it taken.
  */
-async function drawIncoming(
+export async function drawIncoming(
   deps: IncomingDeps,
   hh: string,
   f: {
@@ -347,6 +363,7 @@ export async function tellReviewers(
          and a.role in ('owner', 'adult')
          and not suspension_in_effect(a.suspended_at, a.suspended_until)
          and f.state = 'received' and f.submitted_at is not null
+         and f.request_id is not null
          and f.scan_state in ('unscanned', 'clean')
          and case f.review_by
                when 'me' then f.requester_member_id = a.member_id
@@ -658,6 +675,9 @@ export interface SweepReport {
   moved: number;
   scanned: number;
   told: number;
+  /** Batches past their end removed (I1), and the undecided items in them. */
+  batchesRemoved: number;
+  batchItemsRemoved: number;
 }
 
 /**
@@ -680,6 +700,8 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
     moved: 0,
     scanned: 0,
     told: 0,
+    batchesRemoved: 0,
+    batchItemsRemoved: 0,
   };
   const { rows } = await deps.admin.query<{ id: string }>('select id from household');
   for (const { id: hh } of rows) {
@@ -697,6 +719,7 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
         .select('id')
         .where('state', '=', 'received')
         .where('submitted_at', '<', new Date(now.getTime() - 10 * 60_000))
+        .where('request_id', 'is not', null)
         .where((eb) => eb.or([eb('scan_state', '=', 'pending'), undrawn(eb)]))
         .limit(1)
         .execute(),
@@ -705,6 +728,15 @@ export async function sweepIncoming(deps: IncomingDeps): Promise<SweepReport> {
     // A scan that got a file ready and stopped before telling anyone: told
     // now (W523-02).
     report.told += await tellWaiting(deps, hh);
+    // Many documents at once (I1): a batch past its end, with what is
+    // undecided in it; and items whose drawing job was lost, sent again —
+    // one at a time a household, as ever.
+    const swept = await sweepBatches(deps, hh, now);
+    report.batchesRemoved += swept.batches;
+    report.batchItemsRemoved += swept.items;
+    if (deps.sendBatchPreviews && (await staleBatchItems(deps, hh, now))) {
+      await deps.sendBatchPreviews(hh).catch(() => undefined);
+    }
   }
   return report;
 }
@@ -719,10 +751,13 @@ async function purgeOld(deps: IncomingDeps, hh: string, now: Date): Promise<numb
       .distinct()
       .where('state', '=', 'received')
       .where('received_at', '<', before)
+      // A batch's items go with their batch (batches.ts).
+      .where('request_id', 'is not', null)
       .execute(),
   );
   let purged = 0;
-  for (const { request_id } of requests) {
+  for (const { request_id: requestId } of requests) {
+    const request_id = requestId as string;
     purged += await withSystem(deps.db, hh, async (trx) => {
       // Held, each: one being filed this moment is waited for, and is then
       // no longer waiting.

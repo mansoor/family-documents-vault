@@ -78,7 +78,7 @@ const documentBody = z
  * asks, with the same messages POST /documents gives. The category and the
  * type's other defaults follow from the type, as they do there.
  */
-const captureBody = documentBody
+export const captureBody = documentBody
   .pick({
     type_key: true,
     title: true,

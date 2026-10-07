@@ -2,6 +2,13 @@ import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router';
 import { AppProvider, useApp } from './app-context.js';
 import { AddScreen, ConfirmScreen } from './screens/AddConfirm.js';
+import {
+  AddManyScreen,
+  BatchItemScreen,
+  BatchScreen,
+  InboxScreen,
+  SentScreen,
+} from './screens/Batches.js';
 import { DocumentScreen } from './screens/Document.js';
 import { DocumentsScreen } from './screens/Documents.js';
 import { ReaderScreen } from './screens/Reader.js';
@@ -14,7 +21,7 @@ import { GuestsScreen } from './guests.js';
 import { TrashScreen } from './screens/Trash.js';
 import { HomeScreen } from './screens/Home.js';
 import { HouseholdQuestionsScreen } from './screens/HouseholdQuestions.js';
-import { IncomingFileScreen, IncomingScreen } from './screens/Incoming.js';
+import { IncomingFileScreen } from './screens/Incoming.js';
 import { JoinScreen } from './screens/Join.js';
 import { KindScreen, KindsScreen } from './screens/KindsOfDocument.js';
 import { CollectionScreen, CollectionsScreen } from './screens/Collections.js';
@@ -85,7 +92,7 @@ const MOVED: ReadonlyArray<readonly [from: string, to: string]> = [
   ['/settings/sharing/ask', '/sharing/ask'],
   ['/settings/guests', '/people/outside'],
   ['/settings/after-restore', '/after-restore'],
-  ['/incoming', '/inbox'],
+  ['/incoming', '/inbox/sent'],
   ['/incoming/:id', '/inbox/:id'],
 ];
 
@@ -164,6 +171,7 @@ export function App() {
           >
             <Route path="/" element={<HomeScreen />} />
             <Route path="/add" element={<AddScreen />} />
+            <Route path="/add/many" element={<AddManyScreen />} />
             {/* Documents (R2): the table from 768 px, today's rows on a phone. */}
             <Route path="/documents" element={<DocumentsScreen />} />
             <Route path="/documents/:id" element={<DocumentScreen />} />
@@ -184,7 +192,12 @@ export function App() {
             <Route path="/collections/:id" element={<CollectionScreen />} />
             {/* What was sent through a request, looked at before it is filed
                 (5.23): the Inbox since R1. */}
-            <Route path="/inbox" element={<IncomingScreen />} />
+            <Route path="/inbox" element={<InboxScreen />} />
+            {/* Phase 6, I1: the files sent to you beside your uploads, a
+                batch, and one of its files' card. */}
+            <Route path="/inbox/sent" element={<SentScreen />} />
+            <Route path="/inbox/batches/:id" element={<BatchScreen />} />
+            <Route path="/inbox/batches/:id/items/:itemId" element={<BatchItemScreen />} />
             <Route path="/inbox/:id" element={<IncomingFileScreen />} />
             <Route path="/sharing" element={<SharingScreen />} />
             {/* Ask for documents (5.22): from Sharing, and from a person's

@@ -3332,8 +3332,10 @@ const ACCEPTED: Record<string, string> = {
  * A pass-through that inspects the first bytes as they flow and resolves
  * `detected` once it has seen enough (or the stream ended). It never stops
  * the flow: breaking out of an async iterator would destroy the upload.
+ * A batch's items are told apart the same way (I1): the kinds a single add
+ * takes, and no others.
  */
-function sniffStream(declaredMime: string, filename: string) {
+export function sniffStream(declaredMime: string, filename: string) {
   const SNIFF_BYTES = 4100;
   let head: Buffer = Buffer.alloc(0);
   let settled = false;

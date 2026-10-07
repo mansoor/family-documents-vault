@@ -51,7 +51,10 @@ import {
   seesLocation,
   statusRank,
   type DocumentSort,
+  type BatchDefaults,
+  type BatchItemView,
 } from '@fdv/shared';
+import { sha256Of } from './batch-upload.js';
 import { vi } from 'vitest';
 
 /**
@@ -545,6 +548,27 @@ export interface FakeState {
   accessWrites?: Array<{ id: string; method: string; body: unknown }>;
   /** What putting documents in a collection says of who else will see them (5.33). */
   collectionWarnings?: string[];
+  /**
+   * Many documents at once (I1): the signed-in person's batches, as GET
+   * /batches gives them, with their items (BatchItemView, `removed` once
+   * removed). Given, the vault has batches (`features.batches`). A file
+   * sent arrives as an item, its SHA-256 worked out; one named in
+   * `batchRefuse` is refused as the vault would refuse it.
+   */
+  batches?: FakeBatch[];
+  batchRefuse?: Record<string, { status: number; code: string; message: string }>;
+  /** The vault's most for one file (`limits.max_upload_bytes`). */
+  maxUploadBytes?: number;
+}
+
+/** A batch as the fake keeps it (I1): its items, removed ones marked so. */
+export interface FakeBatch {
+  id: string;
+  name: string | null;
+  created_at: string;
+  ends_at: string;
+  defaults: BatchDefaults;
+  items: Array<BatchItemView & { removed?: boolean }>;
 }
 
 /** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
@@ -876,8 +900,13 @@ export function installFakeApi(state: FakeState) {
           ...(state.guests ? { guests: true } : {}),
           // What the pages propose (5.37): said when a test gives some.
           ...(state.detailSuggestions ? { detail_suggestions: true } : {}),
+          // Many documents at once (I1): said when a test gives batches.
+          ...(state.batches ? { batches: true } : {}),
         },
-        limits: state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {},
+        limits: {
+          ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
+          ...(state.maxUploadBytes ? { max_upload_bytes: state.maxUploadBytes } : {}),
+        },
         deprecations: [],
         branding: { display_name: state.displayName },
       });
@@ -2057,6 +2086,147 @@ export function installFakeApi(state: FakeState) {
         },
         201,
       );
+    }
+    // Many documents at once (I1): the person's own batches. A viewer is
+    // refused, as adding is; somebody else's batch is not here.
+    const batchAt =
+      /^\/api\/v1\/batches(?:\/([^/]+)(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)?)?$/.exec(
+        path,
+      );
+    if (batchAt && state.batches) {
+      if (!can(storedRole() as Role, 'document.add')) {
+        return refuse(
+          403,
+          'forbidden',
+          'Viewers can open and download documents, but not add them.',
+        );
+      }
+      const [, id, items, itemId, accept, page] = batchAt;
+      const kept = (b: FakeBatch) => b.items.filter((i) => !i.removed);
+      const view = (b: FakeBatch) => {
+        const left = kept(b);
+        return {
+          id: b.id,
+          name: b.name,
+          created_at: b.created_at,
+          ends_at: b.ends_at,
+          defaults: b.defaults,
+          counts: {
+            items: left.length,
+            waiting: left.filter((i) => i.state === 'waiting').length,
+            accepted: left.filter((i) => i.state === 'accepted').length,
+            duplicates: left.filter((i) => i.state === 'waiting' && i.duplicate).length,
+          },
+        };
+      };
+      const detail = (b: FakeBatch) => ({
+        ...view(b),
+        items: kept(b).map(({ removed: _removed, ...i }) => i),
+      });
+      if (!id && method === 'GET') return json({ items: state.batches.map(view) });
+      if (!id && method === 'POST') {
+        const sent = (body ?? {}) as { name?: string | null; defaults?: Partial<BatchDefaults> };
+        const made: FakeBatch = {
+          id: `batch-${state.batches.length + 1}`,
+          name: sent.name?.trim() || null,
+          created_at: '2026-10-06T09:00:00Z',
+          ends_at: '2026-11-05T09:00:00Z',
+          defaults: {
+            owner_member_id: null,
+            type_key: null,
+            visibility: null,
+            physical_location: null,
+            collection_id: null,
+            tags: [],
+            is_essential: false,
+            ...sent.defaults,
+          },
+          items: [],
+        };
+        state.batches.unshift(made);
+        return json(detail(made), 201);
+      }
+      const b = state.batches.find((x) => x.id === id);
+      if (!b) return refuse(404, 'not_found', 'That batch is not here.');
+      if (!items) {
+        if (method === 'DELETE') {
+          state.batches.splice(state.batches.indexOf(b), 1);
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return json(detail(b));
+      }
+      if (!itemId && method === 'POST') {
+        const file = (init?.body as FormData | undefined)?.get('file') as File | null;
+        if (!file) return refuse(422, 'validation_failed', 'Choose a file to send.');
+        const refused = state.batchRefuse?.[file.name];
+        if (refused) return refuse(refused.status, refused.code, refused.message);
+        return sha256Of(file).then((sha) => {
+          const earlier = kept(b).find((i) => i.state === 'waiting' && i.sha256 === sha);
+          const item: BatchItemView = {
+            id: `item-${b.items.length + 1}`,
+            batch_id: b.id,
+            name: file.name,
+            content_type: file.type || 'application/pdf',
+            byte_size: file.size,
+            sha256: sha,
+            arrived_at: '2026-10-06T09:05:00Z',
+            state: 'waiting',
+            reading: 'waiting',
+            preview_state: 'pending',
+            preview_pages: null,
+            duplicate: earlier
+              ? {
+                  of: 'item',
+                  batch_id: b.id,
+                  batch_name: b.name,
+                  batch_created_at: b.created_at,
+                  item_id: earlier.id,
+                  same_batch: true,
+                }
+              : null,
+            document_id: null,
+          };
+          b.items.push(item);
+          return json(item, 201);
+        });
+      }
+      const item = b.items.find((i) => i.id === itemId && !i.removed);
+      if (!item) return refuse(404, 'not_found', 'That file is not waiting in this batch.');
+      if (page) {
+        return Promise.resolve(
+          new Response(`page ${page} of ${item.name}`, {
+            status: 200,
+            headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, no-store' },
+          }),
+        );
+      }
+      if (item.state !== 'waiting') {
+        return refuse(409, 'already_decided', 'This file has been accepted or removed already.');
+      }
+      if (method === 'DELETE') {
+        item.removed = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (accept && method === 'POST') {
+        const sent = body as Record<string, unknown>;
+        const made = {
+          ...PASSPORT,
+          id: `doc-batch-${state.documents.length + 1}`,
+          title: (sent.title as string | null) ?? null,
+          type_key: (sent.type_key as string | null) ?? null,
+          owner_member_id: (sent.owner_member_id as string | null) ?? null,
+          visibility: sent.visibility ?? 'household',
+          physical_location: (sent.physical_location as string | null) ?? null,
+          is_essential: sent.is_essential === true,
+          tags: (sent.tags as string[] | undefined) ?? [],
+          latest_version_id: 'v-batch',
+          etag: '"batch"',
+        };
+        state.documents.push(made);
+        item.state = 'accepted';
+        item.document_id = made.id;
+        return json({ document_id: made.id, version_id: 'v-batch' }, 201);
+      }
     }
     // What came in through a request, looked at before it is filed (5.23).
     // A teen or a viewer is told there is nothing here, as the vault tells them.

@@ -889,7 +889,9 @@ describe('every address Settings had still works (R1)', () => {
     ['/settings/sharing/ask?person=m-0', '/sharing/ask?person=m-0', 'Ask for documents'],
     ['/settings/guests', '/people/outside', 'People outside the family'],
     ['/settings/after-restore', '/after-restore', 'After a restore'],
-    ['/incoming', '/inbox', 'Files sent to you'],
+    // Since I1 the Inbox has the person's own uploads too: the files sent
+    // to them, which the old address and its email were for, are a tab.
+    ['/incoming', '/inbox/sent', 'Files sent to you'],
     ['/incoming/in-1', '/inbox/in-1', 'W-2 2025.pdf'],
   ])('%s is %s, in place of the old one', async (from, to, title) => {
     const before = window.history.length;
@@ -907,7 +909,7 @@ describe('every address Settings had still works (R1)', () => {
     window.history.replaceState({ usr: { said: 'It was refused.' }, key: 'k' }, '', '/incoming');
     render(<App />);
     expect(await screen.findByText('It was refused.')).toBeInTheDocument();
-    expect(window.location.pathname).toBe('/inbox');
+    expect(window.location.pathname).toBe('/inbox/sent');
   });
 });
 

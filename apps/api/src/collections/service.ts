@@ -433,129 +433,167 @@ export class CollectionService {
     meta: RequestMeta,
   ): Promise<CollectionDetail> {
     requireCapability(p, 'collection.manage');
-    const { collectionId, warnings } = await withPrincipal(this.db, p, async (trx) => {
-      const collection = await this.mine(trx, p, id);
-      const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
-      if (asked.length === 0)
-        throw invalid('Choose a document to put in the collection.', 'document_ids');
-      // Its links that keep up with it (5.19): each decides once, here, as a
-      // document goes in, whether it goes out too — and the log says so.
-      // What is decided is written down, and a link gives nothing else
-      // (the 5.19 review): nothing that changes later sends out anything
-      // more. Only what an owner or an adult puts in follows; a teen's
-      // stays in the family. Held (FOR KEY SHARE) before the documents
-      // are, as what writes a link's pages holds the link before the
-      // documents it names (the second review): in one order, never a
-      // deadlock between the two.
-      const following =
-        p.role === 'owner' || p.role === 'adult'
-          ? await this.linksOf(trx, collection.id, { following: true, hold: true })
-          : [];
-      // Held while they are checked, in one order: made somebody else's
-      // Only me, or taken to the Trash, meanwhile, one is not added.
-      const found = await trx
-        .selectFrom('document as d')
-        .select(['d.id', 'd.visibility'])
-        .where('d.id', 'in', asked)
-        .where('d.deleted_at', 'is', null)
-        .where(seenDocument(p))
-        .orderBy('d.id')
-        .forUpdate()
-        .execute();
-      if (found.length !== asked.length) throw noDocument();
-      // In the order asked, by the rows' own ids.
-      const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
-      const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
+    const { collectionId, warnings } = await withPrincipal(this.db, p, (trx) =>
+      this.addIn(trx, p, id, documentIds, meta),
+    );
+    // Read afresh, the change made and let go.
+    const now = await this.get(p, collectionId);
+    return warnings.length > 0 ? { ...now, warnings } : now;
+  }
 
-      const last = await trx
-        .selectFrom('doc_collection_item')
-        .select((eb) => eb.fn.max('position').as('position'))
-        .where('collection_id', '=', collection.id)
+  /**
+   * The same, inside a transaction of the caller's own (Phase 6, I1): a
+   * batch's item accepted into the collection its card names, in the
+   * transaction that files it — filed in it, or not filed at all. What it
+   * answers is who else will now see it ("Jane (viewer) will be able to see
+   * this").
+   */
+  async addWithin(
+    trx: Db,
+    p: Principal,
+    id: string,
+    documentIds: string[],
+    meta: RequestMeta,
+  ): Promise<string[]> {
+    requireCapability(p, 'collection.manage');
+    return (await this.addIn(trx, p, id, documentIds, meta)).warnings;
+  }
+
+  /**
+   * A collection the caller may put documents in, held until the
+   * transaction ends (I1: a batch's default, checked as it is chosen), or
+   * refused as adding to it would be.
+   */
+  async mayAddTo(trx: Db, p: Principal, id: string): Promise<void> {
+    requireCapability(p, 'collection.manage');
+    await this.mine(trx, p, id);
+  }
+
+  private async addIn(
+    trx: Db,
+    p: Principal,
+    id: string,
+    documentIds: string[],
+    meta: RequestMeta,
+  ): Promise<{ collectionId: string; warnings: string[] }> {
+    const collection = await this.mine(trx, p, id);
+    const asked = [...new Set(documentIds.map((d) => d.toLowerCase()))];
+    if (asked.length === 0)
+      throw invalid('Choose a document to put in the collection.', 'document_ids');
+    // Its links that keep up with it (5.19): each decides once, here, as a
+    // document goes in, whether it goes out too — and the log says so.
+    // What is decided is written down, and a link gives nothing else
+    // (the 5.19 review): nothing that changes later sends out anything
+    // more. Only what an owner or an adult puts in follows; a teen's
+    // stays in the family. Held (FOR KEY SHARE) before the documents
+    // are, as what writes a link's pages holds the link before the
+    // documents it names (the second review): in one order, never a
+    // deadlock between the two.
+    const following =
+      p.role === 'owner' || p.role === 'adult'
+        ? await this.linksOf(trx, collection.id, { following: true, hold: true })
+        : [];
+    // Held while they are checked, in one order: made somebody else's
+    // Only me, or taken to the Trash, meanwhile, one is not added.
+    const found = await trx
+      .selectFrom('document as d')
+      .select(['d.id', 'd.visibility'])
+      .where('d.id', 'in', asked)
+      .where('d.deleted_at', 'is', null)
+      .where(seenDocument(p))
+      .orderBy('d.id')
+      .forUpdate()
+      .execute();
+    if (found.length !== asked.length) throw noDocument();
+    // In the order asked, by the rows' own ids.
+    const byId = new Map(found.map((d) => [d.id.toLowerCase(), d]));
+    const ordered = asked.map((a) => byId.get(a) as (typeof found)[number]);
+
+    const last = await trx
+      .selectFrom('doc_collection_item')
+      .select((eb) => eb.fn.max('position').as('position'))
+      .where('collection_id', '=', collection.id)
+      .executeTakeFirst();
+    let position = Number(last?.position ?? 0);
+    const addedIds: string[] = [];
+    for (const { id: documentId, visibility } of ordered) {
+      const added = await trx
+        .insertInto('doc_collection_item')
+        .values({
+          collection_id: collection.id,
+          document_id: documentId,
+          household_id: p.householdId,
+          added_by: p.accountId,
+          position: position + 1,
+        })
+        .onConflict((oc) => oc.columns(['collection_id', 'document_id']).doNothing())
+        .returning('document_id')
         .executeTakeFirst();
-      let position = Number(last?.position ?? 0);
-      const addedIds: string[] = [];
-      for (const { id: documentId, visibility } of ordered) {
-        const added = await trx
-          .insertInto('doc_collection_item')
+      if (!added) continue;
+      position += 1;
+      addedIds.push(documentId);
+      await appendAudit(trx, {
+        householdId: p.householdId,
+        actorAccountId: p.accountId,
+        action: 'collection.item_added',
+        objectType: 'document',
+        objectId: documentId,
+        detail: { collection_id: collection.id },
+        ip: meta.ip,
+      });
+      // For the whole of the collection's audience now, and of the one
+      // the link was made for — never private (neither gives it).
+      if (!withinCollectionAudience(collection.audience, visibility)) continue;
+      for (const link of following) {
+        if (!link.follow_audience) continue;
+        if (!withinCollectionAudience(link.follow_audience, visibility)) continue;
+        // Once: a document the link was made with, or without (left out),
+        // is not decided again; one that followed is decided again only
+        // once it has been taken out (removeItem).
+        const followed = await trx
+          .insertInto('share_link_item')
           .values({
+            share_id: link.id,
+            household_id: p.householdId,
             collection_id: collection.id,
             document_id: documentId,
-            household_id: p.householdId,
-            added_by: p.accountId,
-            position: position + 1,
+            position,
+            kind: 'followed',
           })
-          .onConflict((oc) => oc.columns(['collection_id', 'document_id']).doNothing())
+          .onConflict((oc) => oc.columns(['share_id', 'document_id']).doNothing())
           .returning('document_id')
           .executeTakeFirst();
-        if (!added) continue;
-        position += 1;
-        addedIds.push(documentId);
+        if (!followed) continue;
         await appendAudit(trx, {
           householdId: p.householdId,
           actorAccountId: p.accountId,
-          action: 'collection.item_added',
+          action: 'share.followed',
           objectType: 'document',
           objectId: documentId,
-          detail: { collection_id: collection.id },
+          detail: { collection_id: collection.id, share_id: link.id },
           ip: meta.ip,
         });
-        // For the whole of the collection's audience now, and of the one
-        // the link was made for — never private (neither gives it).
-        if (!withinCollectionAudience(collection.audience, visibility)) continue;
-        for (const link of following) {
-          if (!link.follow_audience) continue;
-          if (!withinCollectionAudience(link.follow_audience, visibility)) continue;
-          // Once: a document the link was made with, or without (left out),
-          // is not decided again; one that followed is decided again only
-          // once it has been taken out (removeItem).
-          const followed = await trx
-            .insertInto('share_link_item')
-            .values({
-              share_id: link.id,
-              household_id: p.householdId,
-              collection_id: collection.id,
-              document_id: documentId,
-              position,
-              kind: 'followed',
-            })
-            .onConflict((oc) => oc.columns(['share_id', 'document_id']).doNothing())
-            .returning('document_id')
-            .executeTakeFirst();
-          if (!followed) continue;
-          await appendAudit(trx, {
-            householdId: p.householdId,
-            actorAccountId: p.accountId,
-            action: 'share.followed',
-            objectType: 'document',
-            objectId: documentId,
-            detail: { collection_id: collection.id, share_id: link.id },
-            ip: meta.ip,
-          });
-        }
       }
-      // Who else will now see them (5.33): a viewer the collection is given
-      // to, by their grant as it now is (0055) — "Jane (viewer) will be able
-      // to see this". Only for a collection for Everyone: no other is given.
-      const viewers =
-        addedIds.length > 0 && collection.audience === 'everyone'
-          ? (
-              await sql<{ display_name: string; documents: number; kind: 'family' | 'guest' }>`
+    }
+    // Who else will now see them (5.33): a viewer the collection is given
+    // to, by their grant as it now is (0055) — "Jane (viewer) will be able
+    // to see this". Only for a collection for Everyone: no other is given.
+    const viewers =
+      addedIds.length > 0 && collection.audience === 'everyone'
+        ? (
+            await sql<{ display_name: string; documents: number; kind: 'family' | 'guest' }>`
                 select g.display_name, g.documents, m.kind
                   from collection_viewers_given(${collection.id}::uuid, ${addedIds}::uuid[]) g
                   join member m on m.id = g.member_id
                  order by g.display_name, g.member_id`.execute(trx)
-            ).rows
-          : [];
-      return {
-        collectionId: collection.id,
-        warnings: viewers.map((v) =>
-          viewerWillSee(v.display_name, v.documents, addedIds.length, v.kind),
-        ),
-      };
-    });
-    // Read afresh, the change made and let go.
-    const now = await this.get(p, collectionId);
-    return warnings.length > 0 ? { ...now, warnings } : now;
+          ).rows
+        : [];
+    return {
+      collectionId: collection.id,
+      warnings: viewers.map((v) =>
+        viewerWillSee(v.display_name, v.documents, addedIds.length, v.kind),
+      ),
+    };
   }
 
   /**

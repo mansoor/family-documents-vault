@@ -52,6 +52,7 @@ import {
 } from './uploads/requests.js';
 import { PurgeService } from './documents/purge.js';
 import { IncomingService } from './uploads/incoming.js';
+import { BatchService } from './uploads/batches.js';
 import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { VaultService } from './vaults/service.js';
@@ -195,6 +196,7 @@ async function main(): Promise<void> {
     deriveSealedKey(masterSecret),
     deriveCursorKey(masterSecret),
   );
+  const collections = new CollectionService(db, documents);
   const app = await buildApp(config, {
     serverVersion: version,
     instanceId: instanceIdReader(db),
@@ -210,7 +212,7 @@ async function main(): Promise<void> {
     documents,
     purge: new PurgeService(db, vaults, documents, alert, enqueue),
     types: new TypeService(db, enqueue, stepUpService),
-    collections: new CollectionService(db, documents),
+    collections,
     offline: new OfflineService(db, documents, config.FDV_OFFLINE_MAX_DAYS),
     reminders,
     notifications: new NotificationService(
@@ -259,6 +261,15 @@ async function main(): Promise<void> {
       alert,
     }),
     incoming: new IncomingService(db, keys, vaults, documents, { enqueue }),
+    batches: new BatchService(
+      db,
+      keys,
+      vaults,
+      documents,
+      collections,
+      config.FDV_MAX_UPLOAD_BYTES,
+      enqueue,
+    ),
     audit: new AuditService(db),
     suggestions: new SuggestionService(db),
     stepUp: stepUpService,

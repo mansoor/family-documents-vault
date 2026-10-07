@@ -38,6 +38,7 @@ import {
   type IncomingScanJob,
 } from './jobs/incoming.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
+import { sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
@@ -420,6 +421,7 @@ async function main(): Promise<void> {
       agent: pushAgent,
       allowPrivate,
     },
+    sendBatchPreviews: (hh) => sendBatchPreviews(boss, hh),
   };
   await boss.createQueue(JOBS.incomingScan, { retryLimit: 2, retryDelay: 60 });
   await boss.work<IncomingScanJob>(JOBS.incomingScan, { batchSize: 1 }, async (jobs) => {
@@ -434,6 +436,9 @@ async function main(): Promise<void> {
     log('info', 'files sent in swept', { ...(await sweepIncoming(incomingDeps)) });
   });
   await boss.schedule(JOBS.incomingSweep, '50 4 * * *');
+  // Many documents at once (I1): a batch's items drawn one at a time a
+  // household, each household taking its turn (jobs/batches.ts).
+  await workBatchPreviews(boss, incomingDeps);
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);

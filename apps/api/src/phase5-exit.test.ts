@@ -116,7 +116,10 @@ type Kind =
   | 'dropToken'
   | 'page'
   /** Not a parameter: another account's push address, sent in a body. */
-  | 'deviceEndpoint';
+  | 'deviceEndpoint'
+  /** A batch of many documents, and a file in it (Phase 6, I1): their uploader's alone. */
+  | 'batch'
+  | 'batchItem';
 
 /** The ids one request is made with: the thing of each kind the attacker is after. */
 type Fill = Record<Kind, string>;
@@ -152,6 +155,8 @@ const PARAM_KINDS: Record<string, Kind> = {
   'uploads/:key': 'uploadKey',
   'pages/:version': 'version',
   'files/:id': 'dropFile',
+  'batches/:id': 'batch',
+  'items/:itemId': 'batchItem',
 };
 
 /** The kinds that name a thing of somebody's: another's id here is refused unless the rule says. */
@@ -176,6 +181,8 @@ const OBJECT_KINDS: ReadonlySet<Kind> = new Set<Kind>([
   'suggestionKey',
   'uploadKey',
   'dropFile',
+  'batch',
+  'batchItem',
 ]);
 
 interface Rule {
@@ -677,6 +684,18 @@ const RULES: Record<string, Rule> = {
   'GET /api/v1/incoming/:id/content': { who: 'adults' },
   'POST /api/v1/incoming/:id/accept': { who: 'adults', body: () => ({}) },
   'POST /api/v1/incoming/:id/reject': { who: 'adults', body: () => ({}) },
+
+  // Many documents at once (Phase 6, I1): whoever adds documents, and a
+  // batch and its files their uploader's alone — an owner's too (Q3).
+  'POST /api/v1/batches': { who: 'family', body: () => ({ name: 'Attacker’s batch' }) },
+  'GET /api/v1/batches': { who: 'family' },
+  'GET /api/v1/batches/:id': { who: 'family' },
+  'PATCH /api/v1/batches/:id': { who: 'family', body: () => ({ name: 'Renamed' }) },
+  'DELETE /api/v1/batches/:id': { who: 'family' },
+  'POST /api/v1/batches/:id/items': { who: 'family', file: 'pdf' },
+  'DELETE /api/v1/batches/:id/items/:itemId': { who: 'family' },
+  'POST /api/v1/batches/:id/items/:itemId/accept': { who: 'family', body: () => ({}) },
+  'GET /api/v1/batches/:id/items/:itemId/pages/:n': { who: 'family' },
 };
 
 /** Whether a role is among those a rule is for. */
@@ -1021,6 +1040,33 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
         ...peer(),
       }),
     );
+
+    // Ahmed's own uploads (I1): a batch, and a file in it, his alone.
+    const batch = await ok(
+      send(ahmed, 'POST', '/api/v1/batches', {
+        name: 'AHMED-BATCH-541',
+        defaults: { physical_location: 'AHMED-BATCH-SHELF' },
+      }),
+      201,
+    );
+    ids.batch = json<{ id: string }>(batch).id;
+    const batchForm = new FormData();
+    batchForm.append('file', PDF('AHMED-BATCH-FILE'), {
+      filename: 'ahmed-batch-file-541.pdf',
+      contentType: 'application/pdf',
+    });
+    ids.batchItem = json<{ id: string }>(
+      await ok(
+        h.app.inject({
+          method: 'POST',
+          url: `/api/v1/batches/${ids.batch}/items`,
+          headers: { ...h.as(ahmed), ...batchForm.getHeaders() },
+          payload: batchForm.getBuffer(),
+          ...peer(),
+        }),
+        201,
+      ),
+    ).id;
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2232,6 +2278,12 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       ids.reminder as string,
       ids.uploadKey as string,
       'FILE-SENT-FOR-REVIEW',
+      // Ahmed's batch, and the file in it: nobody's but his (I1, Q3).
+      ids.batch as string,
+      ids.batchItem as string,
+      'AHMED-BATCH-541',
+      'AHMED-BATCH-SHELF',
+      'ahmed-batch-file-541',
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),
@@ -2261,6 +2313,8 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       uploadKey: [ids.uploadKey as string],
       dropFile: [ids.dropFile as string],
       deviceEndpoint: [ids.deviceEndpoint as string],
+      batch: [ids.batch as string],
+      batchItem: [ids.batchItem as string],
     };
     const viewerLike = (name: Attacker, tokens: Tokens, stale = false): AttackerDef => ({
       name,
@@ -2552,6 +2606,8 @@ const PARAM_KIND_DEFAULTS: Record<Kind, true> = {
   dropToken: true,
   page: true,
   deviceEndpoint: true,
+  batch: true,
+  batchItem: true,
 };
 
 function kindOf(before: string, param: string): Kind | null {
