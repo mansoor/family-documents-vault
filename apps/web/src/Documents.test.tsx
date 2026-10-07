@@ -10,6 +10,7 @@ import {
   installFakeApi,
   ME,
   PASSPORT,
+  PRIVATE_NOTICE_BODY,
   STATEMENT,
   signedIn,
   TOKENS,
@@ -823,12 +824,102 @@ describe('the Documents table, from 768 px (R2)', () => {
       fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
       const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
       fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      // Only Library card's are kept: only it can still be opened by them.
       expect(
         await screen.findByText(
-          '3 documents now Only me. Your 2 links to them are kept: the people they are for can still open them. Another has ended: paused after a restore, it could not be turned back on.',
+          '3 documents now Only me. Your 2 links to them are kept: the people they are for can still open “Library card”. Another has ended: paused after a restore, it could not be turned back on.',
         ),
       ).toBeInTheDocument();
       expect(state.ownLinksOf).toEqual({ 'doc-a': [], 'doc-b': [SURVEYOR, ACCOUNTANT] });
+    });
+
+    /** Only those with links chosen: Gym card and Library card, made Only me. */
+    async function onlyThoseWithLinks(over: Partial<FakeState> = {}) {
+      const state = at('/documents', {
+        timezone: 'UTC',
+        documents: [
+          doc({ id: 'doc-a', title: 'Gym card', owner_member_id: 'me' }),
+          doc({ id: 'doc-b', title: 'Library card', owner_member_id: 'me' }),
+          doc({ id: 'doc-c', title: 'Old card', owner_member_id: 'me' }),
+        ],
+        ownLinksOf: { 'doc-a': [ATTORNEY], 'doc-b': [SURVEYOR, ACCOUNTANT] },
+        ...over,
+      });
+      const t = await table();
+      await waitFor(() => expect(titles(t)).toHaveLength(3));
+      for (const name of ['Gym card', 'Library card']) {
+        fireEvent.click(within(t).getByRole('checkbox', { name: `Select “${name}”` }));
+      }
+      const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+      fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
+      const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
+      fireEvent.click(
+        within(screen.getByRole('alertdialog', { name: 'Make 2 documents Only me?' })).getByRole(
+          'button',
+          { name: 'Change who can see them' },
+        ),
+      );
+      const asked = await screen.findByRole('alertdialog', {
+        name: 'Your links to these documents',
+      });
+      return { state, asked };
+    }
+
+    it('every one chosen with links: the sentence said the first time is said, from the answers to the question (F1)', async () => {
+      const { state, asked } = await onlyThoseWithLinks();
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: /^Only you can open this/ });
+      expect(notice).toHaveTextContent(PRIVATE_NOTICE_BODY);
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText('2 documents now Only me. Your 3 links to them have ended.'),
+      ).toBeInTheDocument();
+      expect(state.privateNoticesShown).toEqual(['doc-a', 'doc-b']);
+    });
+
+    it('the sentence said the first time is the one said, though another’s answer comes first (F1)', async () => {
+      // Gym card has had it: its answer says only what is true now.
+      const { asked } = await onlyThoseWithLinks({ privateNoticesShown: ['doc-a'] });
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: /^Only you can open this/ });
+      expect(notice).toHaveTextContent(PRIVATE_NOTICE_BODY);
+    });
+
+    it('a collection’s link holding two of them is one link; links others made are said by document, never added up (F2, F3)', async () => {
+      // The surveyor's link is the collection's, holding both.
+      const { asked } = await onlyThoseWithLinks({
+        ownLinksOf: { 'doc-a': [SURVEYOR], 'doc-b': [SURVEYOR, ACCOUNTANT] },
+        othersLinksOf: { 'doc-a': 1, 'doc-b': 1 },
+      });
+      expect(asked).toHaveTextContent(
+        '2 of these have 2 links of yours that send them outside the family.',
+      );
+      expect(asked).toHaveTextContent('Links others made to them stop.');
+      expect(asked).not.toHaveTextContent(/The 2 links others made/);
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: /^Only you can open this/ });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText('2 documents now Only me. Your 2 links to them have ended.'),
+      ).toBeInTheDocument();
+      cleanup();
+      // Links others made to one of them: how many, and to which.
+      const one = await onlyThoseWithLinks({ othersLinksOf: { 'doc-b': 2 } });
+      expect(one.asked).toHaveTextContent('The 2 links others made to “Library card” stop.');
+    });
+
+    it('a link taken back while it is asked is counted as the vault counted it (F2)', async () => {
+      const { state, asked } = await onlyThoseWithLinks();
+      // The accountant's link, taken back meanwhile: Library card has one now.
+      (state.ownLinksOf as Record<string, OwnLinkToEnd[]>)['doc-b'] = [SURVEYOR];
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: /^Only you can open this/ });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText('2 documents now Only me. Your 2 links to them have ended.'),
+      ).toBeInTheDocument();
     });
   });
 

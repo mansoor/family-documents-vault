@@ -189,8 +189,19 @@ export interface FakeState {
     notable: boolean;
     document_id: string | null;
   }>;
-  /** True once the "only you can open this" moment has been shown. */
+  /** True: every document has had its "only you can open this" moment already. */
   privateNoticeShown: boolean;
+  /**
+   * The documents that have had it, each once, as the vault records it for
+   * each document and person (private_notice); kept by the fake as it says it.
+   */
+  privateNoticesShown?: string[];
+  /**
+   * How many links somebody else made stop with each document made Only me,
+   * by its id, as the vault counts them for each document (5.41): its
+   * `others`. Left out, none.
+   */
+  othersLinksOf?: Record<string, number>;
   /**
    * 5.22: requests to send documents, as GET /upload-requests gives them
    * (UploadRequestView), newest first. Left out, none.
@@ -535,6 +546,10 @@ export interface FakeState {
   /** What putting documents in a collection says of who else will see them (5.33). */
   collectionWarnings?: string[];
 }
+
+/** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
+export const PRIVATE_NOTICE_BODY =
+  'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.';
 
 export const TOKENS = {
   access_token: 'a.b.c',
@@ -1820,7 +1835,11 @@ export function installFakeApi(state: FakeState) {
       const ask = askedToLoosen(doc, { visibility: to });
       if (state.stepUpNeeded && ask) return stepUp(ask);
       // Into Only me with links of one's own (5.41): which way, first.
-      const own = to === 'private' && doc?.visibility !== 'private' ? ownLinksTo(doc?.id) : [];
+      const into = to === 'private' && doc?.visibility !== 'private';
+      const own = into ? ownLinksTo(doc?.id) : [];
+      // And how many links others made stop with it, as the vault counts
+      // them for each document (R2's bulk: one collection's link, in two).
+      const others = into ? (state.othersLinksOf?.[String(doc?.id)] ?? 0) : 0;
       const shareable = state.onlyMeShareable !== false;
       if (own.length > 0 && ownLinks === 'keep' && !shareable) {
         return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
@@ -1832,7 +1851,7 @@ export function installFakeApi(state: FakeState) {
           own.length === 1
             ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
             : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
-          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others }) },
         );
       }
       if (doc) doc.visibility = to;
@@ -1840,35 +1859,55 @@ export function installFakeApi(state: FakeState) {
       if (own.length > 0 && ownLinks) {
         leaveOwnLinks(doc?.id, ownLinks === 'end' ? [] : own.filter((l) => !l.will_end));
       }
-      const firstTime = to === 'private' && !state.privateNoticeShown;
-      if (firstTime) state.privateNoticeShown = true;
+      // Told once for each document — for the fake's one signed-in person —
+      // as the vault records it (private_notice); `privateNoticeShown`, every
+      // document told already.
+      const told = (state.privateNoticesShown ??= []);
+      const already = state.privateNoticeShown || told.includes(String(doc?.id));
+      if (into && !already) told.push(String(doc?.id));
       const n = own.length;
       // Only a link that can send is kept (the fourth round, API-1): one a
       // restore paused, for anybody but an owner, ends whichever is chosen.
       const kept = ownLinks === 'keep' ? own.filter((l) => !l.will_end).length : 0;
       const ended = n - kept;
+      // As the vault words it (visibility.ts): with links of one's own, what
+      // is true now, every time, and the sentence that has to be said the
+      // first time (SEC-19); without, that sentence, the first time only.
+      const stopped =
+        others === 0
+          ? ''
+          : others === 1
+            ? ' The link someone else made to it has stopped.'
+            : ` The ${others} links others made to it have stopped.`;
+      const paused =
+        kept > 0 && ended > 0
+          ? ended === 1
+            ? ' Your link paused after a restore has ended: no owner could turn it back on while this is Only me.'
+            : ` Your ${ended} links paused after a restore have ended: no owner could turn them back on while this is Only me.`
+          : '';
       return json({
-        notice:
-          n > 0
+        notice: !into
+          ? null
+          : n > 0
             ? {
                 title:
                   kept > 0
                     ? `Only you, and the people your ${kept} link${kept === 1 ? ' is' : 's are'} for, can open this.`
                     : `Only you can open this. Your ${ended} link${ended === 1 ? '' : 's'} to it ${ended === 1 ? 'has' : 'have'} ended.`,
-                body: 'Nobody else in the family can open it.',
+                body:
+                  (already ? 'Nobody else in the family can open it.' : PRIVATE_NOTICE_BODY) +
+                  paused +
+                  stopped,
               }
-            : firstTime
-              ? {
-                  title: 'Only you can open this',
-                  body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
-                }
-              : null,
+            : already
+              ? null
+              : { title: 'Only you can open this', body: PRIVATE_NOTICE_BODY + stopped },
         ...(to === 'private'
           ? {
               links: {
                 yours: n,
                 yours_now: n > 0 ? (kept > 0 ? 'kept' : 'ended') : null,
-                others: 0,
+                others,
               },
             }
           : {}),

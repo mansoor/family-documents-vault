@@ -9,6 +9,7 @@ import {
   type OwnLinkToEnd,
   type SortDirection,
   type Visibility,
+  type VisibilityChange,
 } from '@fdv/shared';
 import {
   useEffect,
@@ -1344,7 +1345,8 @@ const ASIDE = Symbol('set aside');
 
 /**
  * The one question, for many made Only me at once (5.41): "2 of these have 3
- * links of yours that send them outside the family. …"
+ * links of yours that send them outside the family. …" — each link once, a
+ * collection's link though it holds more than one of them.
  */
 function linksQuestion(docs: number, links: number): string {
   const them = docs === 1 ? 'it' : 'them';
@@ -1356,34 +1358,71 @@ function linksQuestion(docs: number, links: number): string {
 }
 
 /**
- * What became of the person's own links to those made Only me, as each
- * document's notice says it of one: ended, or kept — but for one a restore
- * paused, which ends either way.
+ * What became of the person's own links to those made Only me, as the vault
+ * said it of each (its answer's `links`): ended, or kept — but for one a
+ * restore paused, which ends either way. Each link once, a collection's link
+ * though it held more than one of them; and, where a document's links changed
+ * while it was asked, as many as the vault said. Kept, it names who the
+ * people they are for can still open: those whose links were kept.
  */
 function linksWords(
-  documents: Array<{ id: string; links: OwnLinkToEnd[] }>,
-  done: DocumentView[],
-  ownLinks: 'end' | 'keep',
+  documents: Array<{ id: string; title: string; links: OwnLinkToEnd[] }>,
+  replies: ReadonlyMap<string, VisibilityChange>,
 ): string | null {
-  const settled = documents.filter((d) => done.some((x) => x.id === d.id));
-  const links = settled.flatMap((d) => d.links);
-  if (links.length === 0) return null;
-  const kept = ownLinks === 'keep' ? links.filter((l) => !l.will_end).length : 0;
-  const ended = links.length - kept;
-  const it = settled.length === 1 ? 'it' : 'them';
-  const count = (n: number) => (n === 1 ? '1 link' : `${n} links`);
-  if (kept === 0) {
-    return `Your ${count(ended)} to ${it} ${ended === 1 ? 'has' : 'have'} ended.`;
+  const ended = new Set<string>();
+  const kept = new Set<string>();
+  let endedElse = 0;
+  let keptElse = 0;
+  const keptTo: string[] = [];
+  let settled = 0;
+  for (const d of documents) {
+    const now = replies.get(d.id)?.links;
+    if (!now?.yours_now || now.yours === 0) continue;
+    settled += 1;
+    if (now.yours_now === 'kept') keptTo.push(d.title);
+    if (now.yours === d.links.length) {
+      for (const l of d.links) (now.yours_now === 'kept' && !l.will_end ? kept : ended).add(l.id);
+    } else if (now.yours_now === 'kept') keptElse += now.yours;
+    else endedElse += now.yours;
   }
-  return `Your ${count(kept)} to ${it} ${kept === 1 ? 'is' : 'are'} kept: the people ${
-    kept === 1 ? 'it is' : 'they are'
-  } for can still open ${it}.${
-    ended > 0
-      ? ` ${ended === 1 ? 'Another has' : `${ended} others have`} ended: paused after a restore, ${
-          ended === 1 ? 'it' : 'they'
+  const k = kept.size + keptElse;
+  const e = ended.size + endedElse;
+  if (k + e === 0) return null;
+  const it = settled === 1 ? 'it' : 'them';
+  const count = (n: number) => (n === 1 ? '1 link' : `${n} links`);
+  if (k === 0) return `Your ${count(e)} to ${it} ${e === 1 ? 'has' : 'have'} ended.`;
+  const open =
+    keptTo.length === settled
+      ? it
+      : keptTo.length === 1
+        ? `“${keptTo[0] ?? ''}”`
+        : `${keptTo.length} of them`;
+  return `Your ${count(k)} to ${it} ${k === 1 ? 'is' : 'are'} kept: the people ${
+    k === 1 ? 'it is' : 'they are'
+  } for can still open ${open}.${
+    e > 0
+      ? ` ${e === 1 ? 'Another has' : `${e} others have`} ended: paused after a restore, ${
+          e === 1 ? 'it' : 'they'
         } could not be turned back on.`
       : ''
   }`;
+}
+
+/**
+ * Said once a document is Only me, to the person who made it so, with links
+ * of their own, after the first time (visibility.ts): what is true now, with
+ * these words, instead of the sentence that has to be said the first time.
+ */
+const TOLD_BEFORE = 'Nobody else in the family can open it.';
+
+/**
+ * Of the vault's notices for many made Only me, the one to say (SEC-19): one
+ * that carries the sentence that has to be said the first time — which the
+ * vault says once for each document, so never lost — else the first there is.
+ */
+function noticeOf(notices: Array<Notice | null | undefined>): Notice | null {
+  const given = notices.filter((n): n is Notice => Boolean(n));
+  return given.find((n) => !n.body.startsWith(TOLD_BEFORE)) ?? given[0] ?? null;
 }
 
 /**
@@ -1413,7 +1452,7 @@ function BulkBar(props: {
   // Into Only me: those whose links the vault asked about, and the one question (5.41).
   const [linksAsked, setLinksAsked] = useState<{
     docs: DocumentView[];
-    documents: Array<{ id: string; title: string; links: OwnLinkToEnd[] }>;
+    documents: Array<{ id: string; title: string; links: OwnLinkToEnd[]; others: number }>;
     ask: LinksAsk;
   } | null>(null);
   // What the run came to before the question, said with what came after it.
@@ -1586,6 +1625,7 @@ function BulkBar(props: {
       id: d.id,
       title: titleOf(d),
       links: asks.get(d.id)?.links ?? [],
+      others: asks.get(d.id)?.others ?? 0,
     }));
     const all = [...asks.values()];
     const links = documents.flatMap((d) => d.links);
@@ -1598,8 +1638,10 @@ function BulkBar(props: {
         ask: {
           links,
           keep_allowed: all.every((a) => a.keep_allowed),
-          others: all.reduce((sum, a) => sum + a.others, 0),
-          message: linksQuestion(documents.length, links.length),
+          // Each document's own count, with no ids to tell one link from
+          // another: the dialog says them by document, never added up.
+          others: Math.max(0, ...all.map((a) => a.others)),
+          message: linksQuestion(documents.length, new Set(links.map((l) => l.id)).size),
           timezone: clock?.timezone ?? 'UTC',
         },
       });
@@ -1612,9 +1654,14 @@ function BulkBar(props: {
     const asked = linksAsked;
     const before = first.current;
     if (!to || !asked || !before) return;
-    const r = await each(asked.docs, (d) =>
-      guarded((t) => api.setVisibility(t, d.id, to, ownLinks)),
-    );
+    // What the vault said of each: its links now, and its notice — the
+    // sentence that has to be said the first time, if none was before (F1).
+    const replies = new Map<string, VisibilityChange>();
+    const r = await each(asked.docs, async (d) => {
+      const result = await guarded((t) => api.setVisibility(t, d.id, to, ownLinks));
+      if (result) replies.set(d.id, result);
+      return result;
+    });
     setLinksAsked(null);
     first.current = null;
     report(
@@ -1622,9 +1669,9 @@ function BulkBar(props: {
         done: [...before.done, ...r.done],
         failed: [...before.failed, ...r.failed],
         untouched: [...before.untouched, ...r.untouched],
-        told: before.told,
+        told: before.told ?? noticeOf([...replies.values()].map((x) => x.notice)),
       },
-      { links: linksWords(asked.documents, r.done, ownLinks) },
+      { links: linksWords(asked.documents, replies) },
     );
   };
 

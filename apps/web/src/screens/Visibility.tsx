@@ -198,8 +198,11 @@ export async function linksAsk(
  */
 export function LinksChoiceDialog(props: {
   ask: LinksAsk;
-  /** Many documents at once: whose links are which. `ask` holds them all. */
-  documents?: Array<{ id: string; title: string; links: OwnLinkToEnd[] }>;
+  /**
+   * Many documents at once: whose links are which, and how many links others
+   * made stop with each. `ask` holds every link.
+   */
+  documents?: Array<{ id: string; title: string; links: OwnLinkToEnd[]; others?: number }>;
   busy?: boolean;
   /** What the busy button says; "Saving…" unless said. */
   busyLabel?: string;
@@ -266,15 +269,32 @@ export function LinksChoiceDialog(props: {
           <p>This household doesn’t share Only me documents outside the family, so they end.</p>
         )}
       </fieldset>
-      {ask.others > 0 && (
-        <p>
-          {ask.others === 1
-            ? `The link someone else made to ${many ? 'them' : 'it'} stops.`
-            : `The ${ask.others} links others made to ${many ? 'them' : 'it'} stop.`}
-        </p>
-      )}
+      {many
+        ? manyOthersWords(many) && <p>{manyOthersWords(many)}</p>
+        : ask.others > 0 && (
+            <p>
+              {ask.others === 1
+                ? 'The link someone else made to it stops.'
+                : `The ${ask.others} links others made to it stop.`}
+            </p>
+          )}
     </ConfirmDialog>
   );
+}
+
+/**
+ * The links others made that stop, for many at once: counted by the vault
+ * for each document, with nothing to tell one link from another — a
+ * collection's link holding two is in both counts — so never added up.
+ */
+function manyOthersWords(documents: Array<{ title: string; others?: number }>): string | null {
+  const some = documents.filter((d) => (d.others ?? 0) > 0);
+  const [only] = some;
+  if (!only) return null;
+  if (some.length > 1) return 'Links others made to them stop.';
+  return only.others === 1
+    ? `The link someone else made to “${only.title}” stops.`
+    : `The ${only.others ?? 0} links others made to “${only.title}” stop.`;
 }
 
 /** `409 links_choice_needed`, read: the person's own links, and whether keeping them is offered. */
