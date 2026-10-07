@@ -4136,7 +4136,12 @@ function documentView(
         type: type ?? null,
         owner_member_id: doc.owner_member_id ?? null,
         expires,
-        missing: missingFields(type, { ...doc, expires }),
+        // Never, to whoever may not see where the original is kept, that a
+        // document needs it (5.41) — and so never in the table's sort or
+        // filter by status either, which are this (R2).
+        missing: missingFields(type, { ...doc, expires }).filter(
+          (m) => opts.location !== false || m.key !== 'physical_location',
+        ),
       },
       new Date().toISOString().slice(0, 10),
     ),

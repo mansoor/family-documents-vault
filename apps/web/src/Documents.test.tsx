@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { ONLY_ME_KEEP_REFUSED, type OwnLinkToEnd } from '@fdv/shared';
 import axe from 'axe-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
@@ -164,6 +165,23 @@ const titles = (t: HTMLElement) =>
     .map((r) => r.querySelector('.cell-title')?.textContent ?? null);
 /** How many the bar says are chosen; null with none chosen and no bar. */
 const selected = () => document.querySelector('.bulk-count')?.textContent ?? null;
+/**
+ * A sheet keeps Tab inside (`useSheetFocus`): from its last, Tab goes to its
+ * first, and Shift+Tab from its first to its last.
+ */
+async function expectTabKeptIn(box: HTMLElement) {
+  const inside = [
+    ...box.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ];
+  const [first, last] = [inside[0], inside.at(-1)] as [HTMLElement, HTMLElement];
+  act(() => last.focus());
+  fireEvent.keyDown(last, { key: 'Tab' });
+  await waitFor(() => expect(first).toHaveFocus());
+  fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+  await waitFor(() => expect(last).toHaveFocus());
+}
 /** What Tab can reach in the grid. */
 const gridStops = (t: HTMLElement) =>
   [...t.querySelectorAll<HTMLElement>('[tabindex], a, button, input')].filter(
@@ -579,6 +597,239 @@ describe('the Documents table, from 768 px (R2)', () => {
     ).toEqual(['/api/v1/documents/doc-a/visibility', '/api/v1/documents/doc-b/visibility']);
     fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
     expect(await screen.findByText('2 documents now Only me.')).toBeInTheDocument();
+  });
+
+  describe('many made Only me, with links of the person’s own (5.41)', () => {
+    const ATTORNEY: OwnLinkToEnd = {
+      id: 's-1',
+      kind: 'document',
+      recipient_label: 'the attorney',
+      collection_name: null,
+      expires_at: '2026-10-09T16:00:00Z',
+      protection: ['password'],
+    };
+    const SURVEYOR: OwnLinkToEnd = {
+      id: 's-2',
+      kind: 'collection',
+      recipient_label: 'the surveyor',
+      collection_name: 'Flat papers',
+      expires_at: '2026-10-12T09:00:00Z',
+      protection: [],
+    };
+    const ACCOUNTANT: OwnLinkToEnd = { ...ATTORNEY, id: 's-3', recipient_label: 'the accountant' };
+
+    /** Three of one's own, two of them with links; all chosen, and made Only me. */
+    async function makeThemOnlyMe(over: Partial<FakeState> = {}) {
+      const state = at('/documents', {
+        timezone: 'UTC',
+        documents: [
+          doc({ id: 'doc-a', title: 'Gym card', owner_member_id: 'me' }),
+          doc({ id: 'doc-b', title: 'Library card', owner_member_id: 'me' }),
+          doc({ id: 'doc-c', title: 'Old card', owner_member_id: 'me' }),
+        ],
+        ownLinksOf: { 'doc-a': [ATTORNEY], 'doc-b': [SURVEYOR, ACCOUNTANT] },
+        ...over,
+      });
+      const t = await table();
+      await waitFor(() => expect(titles(t)).toHaveLength(3));
+      fireEvent.click(within(t).getByRole('checkbox', { name: 'Select all 3 shown' }));
+      const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+      fireEvent.click(within(bar).getByRole('button', { name: 'Who can see it' }));
+      const sheet = screen.getByRole('dialog', { name: 'Who can see 3 documents' });
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Only me' }));
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Continue' }));
+      fireEvent.click(
+        within(screen.getByRole('alertdialog', { name: 'Make 3 documents Only me?' })).getByRole(
+          'button',
+          { name: 'Change who can see them' },
+        ),
+      );
+      const asked = await screen.findByRole('alertdialog', {
+        name: 'Your links to these documents',
+      });
+      return { state, t, asked };
+    }
+    const visibilityCalls = (state: FakeState) =>
+      state.calls
+        .filter((c) => c.method === 'POST' && c.url.endsWith('/visibility'))
+        .map((c) => [c.url.split('/')[4], c.body]);
+    const visibilityOf = (state: FakeState, id: string) =>
+      state.documents.find((d) => d.id === id)?.visibility;
+
+    it('asks once for all of them, each one’s links under its title; End sends those again, ended', async () => {
+      const { state, asked } = await makeThemOnlyMe();
+      // Asked once, after the rest: the one without links is Only me already.
+      expect(visibilityCalls(state)).toEqual([
+        ['doc-a', { visibility: 'private' }],
+        ['doc-b', { visibility: 'private' }],
+        ['doc-c', { visibility: 'private' }],
+      ]);
+      expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
+      expect(asked).toHaveTextContent(
+        '2 of these have 3 links of yours that send them outside the family. Choose whether they end or are kept, now that they are Only me.',
+      );
+      const gym = within(asked).getByRole('list', { name: 'Your links to “Gym card”' });
+      expect(
+        within(gym)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent),
+      ).toEqual([expect.stringMatching(/^For the attorney: ends .*; asks for a password\.$/)]);
+      const library = within(asked).getByRole('list', { name: 'Your links to “Library card”' });
+      expect(
+        within(library)
+          .getAllByRole('listitem')
+          .map((li) => li.textContent),
+      ).toEqual([
+        expect.stringMatching(/^For the surveyor \(the collection “Flat papers”\): ends /),
+        expect.stringMatching(/^For the accountant: ends /),
+      ]);
+      expect(within(asked).getByRole('radio', { name: 'End these links' })).toBeChecked();
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      // The vault's words for Only me, once; then what became of the links.
+      const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText('3 documents now Only me. Your 3 links to them have ended.'),
+      ).toBeInTheDocument();
+      expect(visibilityCalls(state).slice(3)).toEqual([
+        ['doc-a', { visibility: 'private', own_links: 'end' }],
+        ['doc-b', { visibility: 'private', own_links: 'end' }],
+      ]);
+      expect(['doc-a', 'doc-b', 'doc-c'].map((id) => visibilityOf(state, id))).toEqual([
+        'private',
+        'private',
+        'private',
+      ]);
+      expect(state.ownLinksOf).toEqual({ 'doc-a': [], 'doc-b': [] });
+    });
+
+    it('put away, those two stay as they were, and chosen; and it says so', async () => {
+      const { state, t, asked } = await makeThemOnlyMe();
+      fireEvent.click(within(asked).getByRole('button', { name: 'Cancel' }));
+      const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText(
+          '1 document now Only me. The other 2 were not changed: you did not say what becomes of your links to them, and they are still chosen.',
+        ),
+      ).toBeInTheDocument();
+      expect(visibilityCalls(state)).toHaveLength(3);
+      expect(['doc-a', 'doc-b', 'doc-c'].map((id) => visibilityOf(state, id))).toEqual([
+        'household',
+        'household',
+        'private',
+      ]);
+      await waitFor(() => expect(selected()).toBe('2 selected'));
+      expect(within(t).getByRole('checkbox', { name: 'Select “Gym card”' })).toBeChecked();
+      expect(within(t).getByRole('checkbox', { name: 'Select “Library card”' })).toBeChecked();
+    });
+
+    it('Keep is not offered while the household keeps Only me documents in; asked for meanwhile, it is refused', async () => {
+      // The household's rule off: they end, and that is all there is to choose.
+      const off = await makeThemOnlyMe({ onlyMeShareable: false });
+      expect(within(off.asked).queryByRole('radio', { name: /^Keep them/ })).toBeNull();
+      expect(off.asked).toHaveTextContent(
+        'This household doesn’t share Only me documents outside the family, so they end.',
+      );
+      cleanup();
+      // On as it asks, and turned off before Keep is sent: the vault refuses
+      // Keep for each, in its words, and changes neither.
+      const { state, t, asked } = await makeThemOnlyMe();
+      fireEvent.click(
+        within(asked).getByRole('radio', {
+          name: 'Keep them: the people they are for can still open it',
+        }),
+      );
+      state.onlyMeShareable = false;
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      const failed = await screen.findByRole('alert');
+      expect(within(failed).getByText('2 of the 3 could not be changed:')).toBeInTheDocument();
+      expect(within(failed).getByText(`“Gym card”: ${ONLY_ME_KEEP_REFUSED}`)).toBeInTheDocument();
+      expect(visibilityCalls(state).slice(3)).toEqual([
+        ['doc-a', { visibility: 'private', own_links: 'keep' }],
+        ['doc-b', { visibility: 'private', own_links: 'keep' }],
+      ]);
+      expect(['doc-a', 'doc-b'].map((id) => visibilityOf(state, id))).toEqual([
+        'household',
+        'household',
+      ]);
+      await waitFor(() => expect(selected()).toBe('2 selected'));
+      expect(within(t).getByRole('checkbox', { name: 'Select “Gym card”' })).toBeChecked();
+    });
+
+    it('each of its sheets and questions keeps the focus in, and Escape puts it away (5.41’s sheets)', async () => {
+      const { state, asked } = await makeThemOnlyMe();
+      // The question: Tab stays in it; Escape is Cancel.
+      await expectTabKeptIn(asked);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
+      await expectTabKeptIn(notice);
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText(/The other 2 were not changed: you did not say what becomes/),
+      ).toBeInTheDocument();
+      expect(visibilityCalls(state)).toHaveLength(3);
+      // Who can see them, and its "are you sure?": each in turn, and Escape.
+      const bar = screen.getByRole('region', { name: 'What to do with the chosen documents' });
+      const button = within(bar).getByRole('button', { name: 'Who can see it' });
+      press(button);
+      const sheet = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      await expectTabKeptIn(sheet);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(button).toHaveFocus());
+      press(button);
+      const choose = screen.getByRole('dialog', { name: 'Who can see 2 documents' });
+      fireEvent.click(within(choose).getByRole('button', { name: 'Only me' }));
+      fireEvent.click(within(choose).getByRole('button', { name: 'Continue' }));
+      const sure = screen.getByRole('alertdialog', { name: 'Make 2 documents Only me?' });
+      await expectTabKeptIn(sure);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(button).toHaveFocus());
+      // And where it is kept, and Move to Trash's question.
+      fireEvent.click(within(bar).getByRole('button', { name: 'Set where it’s kept' }));
+      const where = screen.getByRole('dialog', { name: /Where .* kept/ });
+      await expectTabKeptIn(where);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      fireEvent.click(within(bar).getByRole('button', { name: 'Move to Trash' }));
+      const trash = screen.getByRole('alertdialog', { name: 'Move 2 documents to the Trash?' });
+      await expectTabKeptIn(trash);
+      fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+      expect(state.calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+    });
+
+    it('a link a restore paused ends either way: Keep keeps the rest, and says so', async () => {
+      const { state, asked } = await makeThemOnlyMe({
+        ownLinksOf: {
+          'doc-a': [{ ...ATTORNEY, will_end: true }],
+          'doc-b': [SURVEYOR, ACCOUNTANT],
+        },
+      });
+      expect(
+        within(asked).getByRole('list', { name: 'Your links to “Gym card”' }),
+      ).toHaveTextContent(
+        'It ends either way: paused after a restore, it cannot be turned back on while this is Only me.',
+      );
+      fireEvent.click(
+        within(asked).getByRole('radio', {
+          name: 'Keep them: the people they are for can still open it',
+        }),
+      );
+      fireEvent.click(within(asked).getByRole('button', { name: 'Make them Only me' }));
+      const notice = await screen.findByRole('dialog', { name: 'Only you can open this' });
+      fireEvent.click(within(notice).getByRole('button', { name: 'I understand' }));
+      expect(
+        await screen.findByText(
+          '3 documents now Only me. Your 2 links to them are kept: the people they are for can still open them. Another has ended: paused after a restore, it could not be turned back on.',
+        ),
+      ).toBeInTheDocument();
+      expect(state.ownLinksOf).toEqual({ 'doc-a': [], 'doc-b': [SURVEYOR, ACCOUNTANT] });
+    });
   });
 
   it('says, before it asks, that Only me documents would be seen by more people (W7)', async () => {
@@ -1213,6 +1464,21 @@ describe('the Documents table, from 768 px (R2)', () => {
 });
 
 describe('Documents on a phone (under 768 px)', () => {
+  it('the filters sheet keeps the focus in, and Escape puts it away, back on its button (5.41’s sheets)', async () => {
+    at('/documents', {}, 'owner', PHONE);
+    await screen.findByRole('button', { name: 'Actions for “House deed”' });
+    const open = screen.getByRole('button', { name: 'Filters' });
+    fireEvent.click(open);
+    const sheet = screen.getByRole('dialog', { name: 'Filters' });
+    await waitFor(() => expect(sheet.contains(document.activeElement)).toBe(true));
+    await expectTabKeptIn(sheet);
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Filters' })).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(open).toHaveFocus());
+  });
+
   it('is today’s rows, with the filters and the sort in a sheet, and Select as today', async () => {
     const state = at('/documents', {}, 'owner', PHONE);
     await screen.findByRole('heading', { name: 'Documents', level: 1 });

@@ -3945,7 +3945,9 @@ only_me_not_shared`. The activity log says it, notable, to owners and
     with, and is refused (`422 validation_failed`) with any other. A sort
     or filter by location is refused (`422 validation_failed`) to a viewer,
     limited or not, and so to a guest. `limit` is still 200 at most. A
-    status is worked out as the document's own view says it, so a sort by
+    status is worked out as the document's own view says it to the caller
+    — to a viewer or a guest, never asking for where the original is kept
+    (5.41), in the order or a `status` filter either — so a sort by
     status (most pressing first: expired, expiring soon, needs details, in
     date, nothing to renew; then the sooner expiry) reads every document
     the other filters give. **Unchanged:** `sort=recent|expiring|alpha`,

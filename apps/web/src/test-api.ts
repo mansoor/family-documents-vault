@@ -490,6 +490,12 @@ export interface FakeState {
    * links_choice_needed).
    */
   ownLinks?: OwnLinkToEnd[];
+  /**
+   * Each document's own such links, by its id, as the vault keeps them (R2:
+   * many made Only me at once, some with links and some without). Where
+   * given, a document's own are asked about, and `ownLinks` is not.
+   */
+  ownLinksOf?: Record<string, OwnLinkToEnd[]>;
   /** Who reads other people's shared identity details (A34); left out, the narrowest. */
   identityAudience?: IdentityAudience;
   /** A wider audience waiting its 72 hours. */
@@ -765,6 +771,17 @@ export function installFakeApi(state: FakeState) {
       }.`,
       { action },
     );
+  /**
+   * The signed-in person's own links that would still send a document made
+   * Only me (5.41): that document's own, where a test gives each its own
+   * (`ownLinksOf`), as the vault keeps them; else the one list.
+   */
+  const ownLinksTo = (id: unknown): OwnLinkToEnd[] =>
+    state.ownLinksOf ? (state.ownLinksOf[String(id)] ?? []) : (state.ownLinks ?? []);
+  const leaveOwnLinks = (id: unknown, left: OwnLinkToEnd[]) => {
+    if (state.ownLinksOf) state.ownLinksOf[String(id)] = left;
+    else state.ownLinks = left;
+  };
   /** What opening a document asks for: "only me" first, then Essentials. */
   const askedToOpen = (doc: Record<string, unknown> | undefined) =>
     doc?.visibility === 'private'
@@ -1803,7 +1820,7 @@ export function installFakeApi(state: FakeState) {
       const ask = askedToLoosen(doc, { visibility: to });
       if (state.stepUpNeeded && ask) return stepUp(ask);
       // Into Only me with links of one's own (5.41): which way, first.
-      const own = to === 'private' && doc?.visibility !== 'private' ? (state.ownLinks ?? []) : [];
+      const own = to === 'private' && doc?.visibility !== 'private' ? ownLinksTo(doc?.id) : [];
       const shareable = state.onlyMeShareable !== false;
       if (own.length > 0 && ownLinks === 'keep' && !shareable) {
         return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
@@ -1821,7 +1838,7 @@ export function installFakeApi(state: FakeState) {
       if (doc) doc.visibility = to;
       // Ended: all on End; on Keep, those that could never send (API-1).
       if (own.length > 0 && ownLinks) {
-        state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+        leaveOwnLinks(doc?.id, ownLinks === 'end' ? [] : own.filter((l) => !l.will_end));
       }
       const firstTime = to === 'private' && !state.privateNoticeShown;
       if (firstTime) state.privateNoticeShown = true;
@@ -3273,9 +3290,7 @@ export function installFakeApi(state: FakeState) {
           own_links?: 'end' | 'keep';
         };
         const own =
-          edit.visibility === 'private' && doc.visibility !== 'private'
-            ? (state.ownLinks ?? [])
-            : [];
+          edit.visibility === 'private' && doc.visibility !== 'private' ? ownLinksTo(doc.id) : [];
         if (own.length > 0) {
           const shareable = state.onlyMeShareable !== false;
           if (ownLinks === 'keep' && !shareable) {
@@ -3291,7 +3306,7 @@ export function installFakeApi(state: FakeState) {
               { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
             );
           }
-          state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+          leaveOwnLinks(doc.id, ownLinks === 'end' ? [] : own.filter((l) => !l.will_end));
         }
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
         if (ifMatch && ifMatch !== doc.etag) {

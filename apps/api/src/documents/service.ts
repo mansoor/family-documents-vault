@@ -398,7 +398,7 @@ export function rowStatus(
     | 'notes_sealed'
     | 'sealed_details'
   >,
-  location = true,
+  location: boolean,
 ): Status {
   const day = (on: string | null, precision: string | null): DateValue | null =>
     on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;

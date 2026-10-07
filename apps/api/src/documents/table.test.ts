@@ -916,4 +916,79 @@ describe.skipIf(!testAdminUrl())('the Documents table (R2)', () => {
     expect((await ask(owner, 'sort=title&limit=201')).statusCode).toBe(422);
     expect((await ask(owner, 'sort=title&limit=200')).statusCode).toBe(200);
   });
+
+  it('a status never asks a viewer for where the original is kept: not in its words, its place in the order, nor a filter on it (5.41)', async () => {
+    // The household's kind that requires it; a document of it without one.
+    const made = await h.app.inject({
+      method: 'POST',
+      url: '/api/v1/document-types',
+      headers: h.as(owner),
+      payload: { label: 'Deeds box', category: 'property' },
+    });
+    expect(made.statusCode, made.body).toBe(201);
+    const kind = json<{ key: string }>(made).key;
+    const required = await h.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/document-types/${kind}`,
+      headers: h.as(owner),
+      payload: { core: { physical_location: { required: true } } },
+    });
+    expect(required.statusCode, required.body).toBe(200);
+    await make('boxed', {
+      title: 'Boxed deed',
+      type_key: kind,
+      owner_member_id: owner.member_id,
+      visibility: 'household',
+    });
+    /** What the vault says of it to each, the document itself asked for. */
+    const says = async (who: Tokens) => {
+      const r = await h.app.inject({ url: `/api/v1/documents/${ids.boxed}`, headers: h.as(who) });
+      expect(r.statusCode, r.body).toBe(200);
+      return json<DocumentView>(r).status;
+    };
+    const ownerSays = await says(owner);
+    expect(ownerSays.value).toBe('needs_info');
+    expect(ownerSays.label).toMatch(/where the original is/);
+    const umaSays = await says(uma);
+    expect(umaSays.value).not.toBe('needs_info');
+    expect(umaSays.label).not.toMatch(/where the original/);
+
+    const byExpiry = (a: DocumentView, b: DocumentView) => {
+      const [x, y] = [a.expires?.date ?? null, b.expires?.date ?? null];
+      if (x === y) return 0;
+      if (x === null) return 1;
+      if (y === null) return -1;
+      return x < y ? -1 : 1;
+    };
+    for (const [who, said] of [
+      [owner, ownerSays],
+      [uma, umaSays],
+    ] as const) {
+      const sorted = await all(who, 'sort=status', 50);
+      // Its cell says what the vault says.
+      expect(sorted.find((d) => d.id === ids.boxed)?.status).toEqual(said);
+      // Its place is the place of the status every row shows: most pressing
+      // first, then the sooner expiry, then the id.
+      const expected = [...sorted].sort(
+        (a, b) =>
+          statusRank(a.status.value) - statusRank(b.status.value) ||
+          byExpiry(a, b) ||
+          (a.id < b.id ? -1 : 1),
+      );
+      expect(sorted.map((d) => d.id)).toEqual(expected.map((d) => d.id));
+      // A filter on a status finds it under the status it shows, and no other.
+      for (const sort of ['title', 'status']) {
+        const asking = await all(who, `sort=${sort}&status=needs_info`, 50);
+        expect(asking.some((d) => d.id === ids.boxed)).toBe(said.value === 'needs_info');
+        const shown = await all(who, `sort=${sort}&status=${said.value}`, 50);
+        expect(shown.some((d) => d.id === ids.boxed)).toBe(true);
+      }
+    }
+    const gone = await h.app.inject({
+      method: 'DELETE',
+      url: `/api/v1/documents/${ids.boxed}`,
+      headers: h.as(owner),
+    });
+    expect(gone.statusCode).toBe(204);
+  }, 120_000);
 });

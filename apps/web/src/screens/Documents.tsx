@@ -5,6 +5,8 @@ import {
   type DocumentSort,
   type DocumentTypeView,
   type DocumentView,
+  type LinksChoiceNeeded,
+  type OwnLinkToEnd,
   type SortDirection,
   type Visibility,
 } from '@fdv/shared';
@@ -70,6 +72,7 @@ import {
 } from '../ui.js';
 import { DocRow } from './Home.js';
 import { useSelect } from './SearchPeople.js';
+import { LinksChoiceDialog, linksAsk, linksChoice, type LinksAsk } from './Visibility.js';
 
 /**
  * Documents (Phase 6, R2): every document the reader may see.
@@ -1322,7 +1325,66 @@ function OutcomeNote({
   );
 }
 
-type Acting = 'collect' | 'location' | 'visibility' | 'confirm-visibility' | 'trash' | null;
+type Acting =
+  'collect' | 'location' | 'visibility' | 'confirm-visibility' | 'links' | 'trash' | null;
+
+/** What the vault says once a change is made: "Only you can open this" (SEC-19). */
+type Notice = { title: string; body: string };
+
+/** A change of who can see many: what it did, could not, and never reached; its notice. */
+interface VisibilityRun {
+  done: DocumentView[];
+  failed: Outcome['failed'];
+  untouched: DocumentView[];
+  told: Notice | null;
+}
+
+/** Set aside by its call: asked about once, for all, when the rest are done. */
+const ASIDE = Symbol('set aside');
+
+/**
+ * The one question, for many made Only me at once (5.41): "2 of these have 3
+ * links of yours that send them outside the family. …"
+ */
+function linksQuestion(docs: number, links: number): string {
+  const them = docs === 1 ? 'it' : 'them';
+  return `${docs === 1 ? '1 of these has' : `${docs} of these have`} ${
+    links === 1 ? 'a link of yours that sends' : `${links} links of yours that send`
+  } ${them} outside the family. Choose whether ${
+    links === 1 ? 'it ends or is' : 'they end or are'
+  } kept, now that ${docs === 1 ? 'it is' : 'they are'} Only me.`;
+}
+
+/**
+ * What became of the person's own links to those made Only me, as each
+ * document's notice says it of one: ended, or kept — but for one a restore
+ * paused, which ends either way.
+ */
+function linksWords(
+  documents: Array<{ id: string; links: OwnLinkToEnd[] }>,
+  done: DocumentView[],
+  ownLinks: 'end' | 'keep',
+): string | null {
+  const settled = documents.filter((d) => done.some((x) => x.id === d.id));
+  const links = settled.flatMap((d) => d.links);
+  if (links.length === 0) return null;
+  const kept = ownLinks === 'keep' ? links.filter((l) => !l.will_end).length : 0;
+  const ended = links.length - kept;
+  const it = settled.length === 1 ? 'it' : 'them';
+  const count = (n: number) => (n === 1 ? '1 link' : `${n} links`);
+  if (kept === 0) {
+    return `Your ${count(ended)} to ${it} ${ended === 1 ? 'has' : 'have'} ended.`;
+  }
+  return `Your ${count(kept)} to ${it} ${kept === 1 ? 'is' : 'are'} kept: the people ${
+    kept === 1 ? 'it is' : 'they are'
+  } for can still open ${it}.${
+    ended > 0
+      ? ` ${ended === 1 ? 'Another has' : `${ended} others have`} ended: paused after a restore, ${
+          ended === 1 ? 'it' : 'they'
+        } could not be turned back on.`
+      : ''
+  }`;
+}
 
 /**
  * The bar under the table while documents are chosen: how many, and what may
@@ -1347,7 +1409,15 @@ function BulkBar(props: {
   const [acting, setActing] = useState<Acting>(null);
   const [progress, setProgress] = useState<{ done: number; of: number } | null>(null);
   const [to, setTo] = useState<Visibility | null>(null);
-  const [notice, setNotice] = useState<{ title: string; body: string } | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  // Into Only me: those whose links the vault asked about, and the one question (5.41).
+  const [linksAsked, setLinksAsked] = useState<{
+    docs: DocumentView[];
+    documents: Array<{ id: string; title: string; links: OwnLinkToEnd[] }>;
+    ask: LinksAsk;
+  } | null>(null);
+  // What the run came to before the question, said with what came after it.
+  const first = useRef<VisibilityRun | null>(null);
   const pending = useRef<Outcome | null>(null);
   const collectButton = useRef<HTMLButtonElement>(null);
   const locationButton = useRef<HTMLButtonElement>(null);
@@ -1360,24 +1430,25 @@ function BulkBar(props: {
    * through and what did not, by name and in the vault's words. `null` from
    * a call is a question about who is asking that was not answered, or a
    * sign-in that has ended: the rest are left as they are, and said to be.
+   * `ASIDE` is one the vault has a question about, asked once for all of
+   * them when the rest are done (their own links, into Only me).
    */
-  const each = async (
-    docs: DocumentView[],
-    act: (doc: DocumentView) => Promise<unknown>,
-  ): Promise<{ done: DocumentView[]; failed: Outcome['failed']; untouched: DocumentView[] }> => {
+  const each = async (docs: DocumentView[], act: (doc: DocumentView) => Promise<unknown>) => {
     const done: DocumentView[] = [];
     const failed: Outcome['failed'] = [];
+    const aside: DocumentView[] = [];
     for (const [i, doc] of docs.entries()) {
       setProgress({ done: i, of: docs.length });
       try {
         const r = await act(doc);
-        if (r === null) return { done, failed, untouched: docs.slice(i) };
-        done.push(doc);
+        if (r === null) return { done, failed, untouched: docs.slice(i), aside };
+        if (r === ASIDE) aside.push(doc);
+        else done.push(doc);
       } catch (err) {
         failed.push({ id: doc.id, title: titleOf(doc), why: describeError(err) });
       }
     }
-    return { done, failed, untouched: [] };
+    return { done, failed, untouched: [] as DocumentView[], aside };
   };
 
   /**
@@ -1444,25 +1515,36 @@ function BulkBar(props: {
   const changing = to ? chosen.filter((d) => d.visibility !== to) : [];
   // Only me documents that would be seen by more people (W7).
   const widened = to && to !== 'private' ? changing.filter((d) => d.visibility === 'private') : [];
-  const setVisibility = async () => {
+
+  /**
+   * What a change of who can see them came to: said — with what became of
+   * the person's own links, and those left as they were — and the vault's
+   * notice said once, first (SEC-19).
+   */
+  const report = (
+    r: VisibilityRun,
+    more: { links?: string | null; leftAside?: DocumentView[] } = {},
+  ) => {
     if (!to) return;
-    let told: { title: string; body: string } | null = null;
-    const r = await each(changing, async (d) => {
-      const result = await guarded((t) => api.setVisibility(t, d.id, to));
-      if (result?.notice) told ??= result.notice;
-      return result;
-    });
+    const aside = more.leftAside ?? [];
     pending.current = {
       said: said(
         r.done.length > 0 ? `${documentsCount(r.done.length)} now ${VISIBILITY_WORDS[to]}.` : null,
+        more.links ?? null,
         leftWords(r.done.length, r.untouched.length, 'changed', 'you did not confirm it is you'),
+        leftWords(
+          r.done.length,
+          aside.length,
+          'changed',
+          'you did not say what becomes of your links to them',
+        ),
       ),
       failedHead: failedHead(r.failed.length, changing.length, 'changed'),
       failed: r.failed,
-      untouched: r.untouched.map((d) => d.id),
+      untouched: [...r.untouched, ...aside].map((d) => d.id),
     };
-    if (told) {
-      // Said once, here, before anything else (SEC-19).
+    if (r.told) {
+      const told = r.told;
       flushSync(() => {
         setProgress(null);
         setActing(null);
@@ -1471,6 +1553,92 @@ function BulkBar(props: {
       return;
     }
     finish(pending.current);
+  };
+
+  const setVisibility = async () => {
+    if (!to) return;
+    let told: Notice | null = null;
+    // Into Only me, the vault asks first about any of the person's own links
+    // that still send one (5.41): those documents are set aside, and asked
+    // about once, for all of them, when the rest are done.
+    const asks = new Map<string, LinksChoiceNeeded>();
+    let asking: unknown = null;
+    const r = await each(changing, async (d) => {
+      try {
+        const result = await guarded((t) => api.setVisibility(t, d.id, to));
+        if (result?.notice) told ??= result.notice;
+        return result;
+      } catch (err) {
+        const asked = to === 'private' ? linksChoice(err) : null;
+        if (!asked) throw err;
+        asks.set(d.id, asked);
+        asking ??= err;
+        return ASIDE;
+      }
+    });
+    if (r.aside.length === 0) {
+      report({ ...r, told });
+      return;
+    }
+    // The household's clock, for when each link ends, as one document's question has it.
+    const clock = await linksAsk(asking, withToken);
+    const documents = r.aside.map((d) => ({
+      id: d.id,
+      title: titleOf(d),
+      links: asks.get(d.id)?.links ?? [],
+    }));
+    const all = [...asks.values()];
+    const links = documents.flatMap((d) => d.links);
+    first.current = { ...r, told };
+    flushSync(() => {
+      setProgress(null);
+      setLinksAsked({
+        docs: r.aside,
+        documents,
+        ask: {
+          links,
+          keep_allowed: all.every((a) => a.keep_allowed),
+          others: all.reduce((sum, a) => sum + a.others, 0),
+          message: linksQuestion(documents.length, links.length),
+          timezone: clock?.timezone ?? 'UTC',
+        },
+      });
+      setActing('links');
+    });
+  };
+
+  /** The person's answer about their links: those set aside, sent again with it. */
+  const answerLinks = async (ownLinks: 'end' | 'keep') => {
+    const asked = linksAsked;
+    const before = first.current;
+    if (!to || !asked || !before) return;
+    const r = await each(asked.docs, (d) =>
+      guarded((t) => api.setVisibility(t, d.id, to, ownLinks)),
+    );
+    setLinksAsked(null);
+    first.current = null;
+    report(
+      {
+        done: [...before.done, ...r.done],
+        failed: [...before.failed, ...r.failed],
+        untouched: [...before.untouched, ...r.untouched],
+        told: before.told,
+      },
+      { links: linksWords(asked.documents, r.done, ownLinks) },
+    );
+  };
+
+  /** Put away: those set aside stay as they were, and chosen; the rest is said. */
+  const leaveLinks = () => {
+    const asked = linksAsked;
+    const before = first.current;
+    setLinksAsked(null);
+    first.current = null;
+    if (!asked || !before) {
+      setActing(null);
+      return;
+    }
+    report(before, { leftAside: asked.docs });
   };
 
   const what = documentsCount(n);
@@ -1617,6 +1785,18 @@ function BulkBar(props: {
               ` ${n - changing.length} ${n - changing.length === 1 ? 'is' : 'are'} ${VISIBILITY_WORDS[to]} already, and stay${n - changing.length === 1 ? 's' : ''} as ${n - changing.length === 1 ? 'it is' : 'they are'}.`}
           </p>
         </ConfirmDialog>
+      )}
+      {acting === 'links' && linksAsked && (
+        // The one question for all of them, as one document's is asked (5.41).
+        <LinksChoiceDialog
+          ask={linksAsked.ask}
+          documents={linksAsked.documents}
+          busy={busy}
+          busyLabel={progress ? `Changing ${progress.done + 1} of ${progress.of}…` : 'Changing…'}
+          returnFocus={visibilityButton}
+          onChoose={(ownLinks) => void answerLinks(ownLinks)}
+          onCancel={leaveLinks}
+        />
       )}
       {acting === 'trash' && (
         <ConfirmDialog

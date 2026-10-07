@@ -5,6 +5,7 @@ import {
   DOCUMENT_PAGE_MAX,
   LOCATION_SORT_REFUSAL,
   maySortByLocation,
+  seesLocation,
   STATUS_ORDER,
   statusRank,
   type DocumentPage,
@@ -56,7 +57,7 @@ import {
  *
  * Where the original is kept is the household's (5.41): somebody who may
  * not see it may neither sort nor filter by it (422), and nothing else
- * here orders by it.
+ * here orders by it — a status worked out for them never needs it.
  */
 export async function documentTable(
   trx: Db,
@@ -90,7 +91,7 @@ export async function documentTable(
     const rows = (
       await sql<StatusRow>`select ${STATUS_COLUMNS} from document d where ${where}`.execute(trx)
     ).rows;
-    const ranked = await withStatus(trx, rows);
+    const ranked = await withStatus(trx, rows, seesLocation(p.role));
     const shown = q.status ? ranked.filter((r) => r.status === q.status) : ranked;
     const sign = dir === 'desc' ? -1 : 1;
     shown.sort((a, b) => compareStatus(a, b, sign));
@@ -127,7 +128,7 @@ export async function documentTable(
                   offset 0) b
            ${order}`.execute(trx)
       ).rows;
-      const ranked = await withStatus(trx, rows);
+      const ranked = await withStatus(trx, rows, seesLocation(p.role));
       const shown = ranked.filter((r) => r.status === q.status);
       total = shown.length;
       const after = shown.filter((r) => r.row.is_after).map((r) => r.row);
@@ -395,18 +396,31 @@ interface Ranked<R> {
   rank: number;
 }
 
-/** Each row with its status as its view will say it, worked out with the household's kinds. */
-async function withStatus<R extends StatusRow>(trx: Db, rows: R[]): Promise<Array<Ranked<R>>> {
+/**
+ * Each row with its status as its view will say it to this reader, worked
+ * out with the household's kinds: for one who may not see where originals
+ * are kept, never that a document needs it (`location`, 5.41) — so neither
+ * the words, nor the order, nor a filter on it, says it is not written down.
+ */
+async function withStatus<R extends StatusRow>(
+  trx: Db,
+  rows: R[],
+  location: boolean,
+): Promise<Array<Ranked<R>>> {
   // The kinds the rows have, looked up once each; then every row at once.
   const typeOf = typeLookup(trx);
   const keys = [...new Set(rows.map((r) => r.type_key).filter((k): k is string => k !== null))];
   const types = new Map(await Promise.all(keys.map(async (k) => [k, await typeOf(k)] as const)));
   return rows.map((row) => {
-    const status = rowStatus(row.type_key ? types.get(row.type_key) : null, {
-      ...row,
-      notes: row.has_notes ? THERE : null,
-      notes_sealed: row.has_sealed_notes ? SEALED_THERE : null,
-    }).value;
+    const status = rowStatus(
+      row.type_key ? types.get(row.type_key) : null,
+      {
+        ...row,
+        notes: row.has_notes ? THERE : null,
+        notes_sealed: row.has_sealed_notes ? SEALED_THERE : null,
+      },
+      location,
+    ).value;
     return { row, status, rank: statusRank(status) };
   });
 }

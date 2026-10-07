@@ -2255,6 +2255,39 @@ export const contractScenarios: Scenario[] = [
         const refused = await refusal(api.documents(viewer.access_token, asked));
         expect(refused).toMatchObject({ status: 422, code: 'validation_failed' });
       }
+
+      // Nor is a viewer told, by a status, that where it is kept is not
+      // written down (5.41): not in the table's words, its sort, or a filter.
+      const BOXED = 'r2-table-boxed';
+      const me = await api.me(token);
+      const kind = await api.createDocumentType(token, {
+        label: 'Contract deeds box',
+        category: 'property',
+        core: { physical_location: { required: true } },
+      });
+      const deed = await api.createDocument(token, {
+        title: 'Contract boxed deed',
+        type_key: kind.key,
+        owner_member_id: me.member_id,
+        tags: [BOXED],
+      });
+      const ownersView = (await api.document(token, deed.id)).status;
+      expect(ownersView.value).toBe('needs_info');
+      const viewersView = (await api.document(viewer.access_token, deed.id)).status;
+      expect(viewersView.value).not.toBe('needs_info');
+      for (const [who, view] of [
+        [token, ownersView],
+        [viewer.access_token, viewersView],
+      ] as const) {
+        const sorted = await api.documents(who, { sort: 'status', tag: BOXED });
+        expect(sorted.items.map((d) => d.status)).toEqual([view]);
+        for (const sort of ['title', 'status'] as const) {
+          const asking = await api.documents(who, { sort, tag: BOXED, status: 'needs_info' });
+          expect(asking.total).toBe(view.value === 'needs_info' ? 1 : 0);
+          const its = await api.documents(who, { sort, tag: BOXED, status: view.value });
+          expect(its.total).toBe(1);
+        }
+      }
     },
   },
   {
