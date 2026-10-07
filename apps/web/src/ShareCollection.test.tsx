@@ -19,7 +19,7 @@ import {
 /**
  * Sharing a collection outside the family, on the web (5.19): the sheet on
  * a collection's page, what the person it is for sees, the family's list of
- * links in Settings → Sharing, and the warning where documents are put in a
+ * links in Sharing, and the warning where documents are put in a
  * collection that is shared.
  */
 
@@ -287,7 +287,7 @@ describe('sharing a collection (5.19)', () => {
     expect(document.body.textContent).not.toContain('Divorce');
   });
 
-  it("Settings → Sharing lists a collection's link beside a document's, and takes one back after asking", async () => {
+  it("Sharing lists a collection's link beside a document's, and takes one back after asking", async () => {
     const state = at('/settings', {
       shares: [
         {
@@ -347,6 +347,9 @@ describe('sharing a collection (5.19)', () => {
     const takeBack = within(live).getByRole('button', {
       name: 'Take back the link to the collection “For the broker”, shared with Jane Smith',
     });
+    // Pressed as a browser does it, focus on the button first: not on the
+    // page's heading, where coming here put it (R1).
+    takeBack.focus();
     // Asked first; Cancel does nothing.
     fireEvent.click(takeBack);
     const asked = await screen.findByRole('alertdialog', { name: 'Take this link back?' });
@@ -370,10 +373,14 @@ describe('sharing a collection (5.19)', () => {
     expect(screen.queryByText('The collection “For the broker”')).toBeNull();
   });
 
-  it('Sharing is not in Settings for a teen', async () => {
+  it('Sharing is not offered to a teen, in Settings or in the menu', async () => {
     at('/settings', {}, 'teen');
     await screen.findByRole('link', { name: /How you hear about things/ });
     expect(screen.queryByRole('link', { name: /^Sharing/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+    await within(drawer).findByRole('link', { name: 'Trash' });
+    expect(within(drawer).queryByRole('link', { name: /^Sharing/ })).toBeNull();
   });
 
   it('putting a document in a collection shared outside says so first', async () => {

@@ -86,7 +86,7 @@ test('ask for documents, open the link in another browser, send two files, finis
   await signIn(page, request);
 
   // The family's side: Sharing → Ask for documents.
-  await page.goto('/settings/sharing');
+  await page.goto('/sharing');
   await page.getByRole('link', { name: 'Ask for documents' }).click();
   await expect(page.getByRole('heading', { name: 'What you are asking for' })).toBeVisible();
   await page.getByLabel(/^Title/).fill(title);

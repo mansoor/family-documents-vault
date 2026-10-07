@@ -1,218 +1,249 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import QRCode from 'qrcode';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import * as passkeys from '../passkeys.js';
 import { api, type ExportRow, type NewVault, type Provider } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
-import { BottomNav, Button, ErrorNote, Field, TopBar } from '../ui.js';
+import { Button, Check, ErrorNote, Field, TopBar } from '../ui.js';
 import { can } from '@fdv/shared';
 import { storedRole } from '../session.js';
+import { setShortcutsOn, useShortcutsOn } from '../shortcuts.js';
 import { ChangePassword } from './Password.js';
 
-/**
- * "1 link is paused until you turn it back on", "2 links and 1 request you
- * made are paused"; since 5.28 an owner's sign-ins first: "1 sign-in, 2
- * links and 1 request are paused until you turn them back on".
- */
-export function pausedWords(
-  waiting: { links: number; requests: number; signIns?: number },
-  owner: boolean,
-): string {
-  const signIns = waiting.signIns ?? 0;
-  const count = (n: number, one: string, many: string) =>
-    n > 0 ? `${n} ${n === 1 ? one : many}` : null;
-  const parts = [
-    count(signIns, 'sign-in', 'sign-ins'),
-    count(waiting.links, 'link', 'links'),
-    count(waiting.requests, 'request', 'requests'),
-  ].filter((p): p is string => p !== null);
-  const many = signIns + waiting.links + waiting.requests > 1;
-  const last = parts.pop();
-  const what = parts.length > 0 ? `${parts.join(', ')} and ${last ?? ''}` : (last ?? '');
-  return owner
-    ? `${what} ${many ? 'are' : 'is'} paused until you turn ${many ? 'them' : 'it'} back on`
-    : `${what} you made ${many ? 'are' : 'is'} paused`;
+/** A row that opens a part of Settings with a page of its own. */
+interface SettingsRow {
+  to: string;
+  title: string;
+  note: string;
 }
 
+/**
+ * Settings holds settings only (Phase 6, R1): your account, how you hear
+ * about things, the household's own settings for those who keep them, and
+ * your data for those who may export it. What else it held has a place of
+ * its own in the navigation — the Inbox, Sharing, Activity, the Trash,
+ * People outside the family — and After a restore is on Home while it waits.
+ * Signing out is the account menu's.
+ */
 export function SettingsScreen() {
-  const { caps, session, markAuthChanged, authVersion } = useApp();
-  const navigate = useNavigate();
+  const { caps, session, authVersion, withToken } = useApp();
+  const role = storedRole();
+  const owner = session.info?.role === 'owner';
   const { data: sessions, reload } = useLoad(
     async (t) => (await api.sessions(t)).items,
     [authVersion],
   );
-  const { withToken } = useApp();
-  // Shown only after a restore, while it paused something the reader may
-  // decide about (5.16): an owner, any link; anybody else, the links they
-  // made, which only an owner turns back on.
-  const mayShare = can(storedRole(), 'document.share');
-  const owner = can(storedRole(), 'restore.review');
-  // Requests to send documents a restore paused count too (5.22), and the
-  // sign-ins it paused, which only an owner is given (5.28).
-  const { data: waiting } = useLoad(
-    async (t) => {
-      if (!mayShare) return { links: 0, requests: 0, signIns: 0 };
-      const paused = await api.afterRestore(t);
-      return {
-        links: paused.links.length,
-        requests: (paused.upload_requests ?? []).length,
-        signIns: (paused.sign_ins ?? []).length,
-      };
-    },
-    [authVersion, mayShare],
-  );
-
   const revoke = async (id: string) => {
     await withToken((t) => api.revokeSession(t, id));
     await reload();
   };
-  const signOut = async () => {
-    await session.signOut();
-    markAuthChanged();
-    void navigate('/sign-in', { replace: true });
-  };
+
+  // Owners and adults, as before: each row where it was shown.
+  const household: SettingsRow[] = [
+    // Who sees the identity details on each profile (5.27, A34): an owner's.
+    ...(caps?.features.member_identity && can(role, 'identity.audience')
+      ? [{ to: '/settings/family', title: 'Family', note: 'Who can see identity details' }]
+      : []),
+    // The household's rule for Only me documents and links (5.41): read by
+    // owners and adults, an owner's to change.
+    ...(can(role, 'document.share')
+      ? [
+          {
+            to: '/settings/household',
+            title: 'Household',
+            note: 'Whether Only me documents can be shared outside the family',
+          },
+        ]
+      : []),
+    ...(caps?.features.custom_types && can(role, 'types.manage')
+      ? [
+          {
+            to: '/settings/kinds',
+            title: 'Kinds of document',
+            note: 'What the family keeps, and what the card asks for each',
+          },
+        ]
+      : []),
+    ...(owner
+      ? [
+          {
+            to: '/settings/storage',
+            title: 'Where your files are kept',
+            note: 'Local disk, or your own S3-compatible bucket',
+          },
+          {
+            to: '/settings/email',
+            title: 'Where email comes from',
+            note: 'The mail server reminders and invitations are sent through',
+          },
+        ]
+      : []),
+  ];
 
   return (
     <main className="page page-top has-nav">
-      <TopBar title="Settings" back="/" />
+      <TopBar title="Settings" />
       <p className="muted">
         {caps?.branding.display_name} · Server {caps?.server_version}
       </p>
-      <ul className="list">
-        {waiting && waiting.links + waiting.requests + waiting.signIns > 0 && (
-          <li>
-            <Link to="/settings/after-restore" className="rowbtn">
-              <span className="doc-title">After a restore</span>
-              <span className="muted">{pausedWords(waiting, owner)}</span>
-            </Link>
-          </li>
-        )}
-        {caps?.features.upload_requests && can(storedRole(), 'upload_request.create') && (
-          <li>
-            <Link to="/incoming" className="rowbtn">
-              <span className="doc-title">Files sent to you</span>
-              <span className="muted">
-                What came in through a request, to look at before it is filed
-              </span>
-            </Link>
-          </li>
-        )}
-        {/* Who sees the identity details on each profile (5.27, A34): an owner's. */}
-        {caps?.features.member_identity && can(storedRole(), 'identity.audience') && (
-          <li>
-            <Link to="/settings/family" className="rowbtn">
-              <span className="doc-title">Family</span>
-              <span className="muted">Who can see identity details</span>
-            </Link>
-          </li>
-        )}
-        {/* Guests (5.34): who outside the family has a sign-in, until when. */}
-        {caps?.features.guests && session.info?.role === 'owner' && (
-          <li>
-            <Link to="/settings/guests" className="rowbtn">
-              <span className="doc-title">People outside the family</span>
-              <span className="muted">
-                Guests with a sign-in: what they can see, and until when
-              </span>
-            </Link>
-          </li>
-        )}
-        {/* The household's rule for Only me documents and links (5.41):
-            read by owners and adults, an owner's to change. */}
-        {mayShare && (
-          <li>
-            <Link to="/settings/household" className="rowbtn">
-              <span className="doc-title">Household</span>
-              <span className="muted">
-                Whether Only me documents can be shared outside the family
-              </span>
-            </Link>
-          </li>
-        )}
-        {mayShare && (
-          <li>
-            <Link to="/settings/sharing" className="rowbtn">
-              <span className="doc-title">Sharing</span>
-              <span className="muted">
-                Links outside the family, asking someone to send documents, and taking them back
-              </span>
-            </Link>
-          </li>
-        )}
-        {can(storedRole(), 'audit.read') && (
-          <li>
-            <Link to="/settings/activity" className="rowbtn">
-              <span className="doc-title">What has been happening</span>
-              <span className="muted">Everything anybody has done in this vault</span>
-            </Link>
-          </li>
-        )}
-        {caps?.features.custom_types && can(storedRole(), 'types.manage') && (
-          <li>
-            <Link to="/settings/kinds" className="rowbtn">
-              <span className="doc-title">Kinds of document</span>
-              <span className="muted">What the family keeps, and what the card asks for each</span>
-            </Link>
-          </li>
-        )}
-        {can(storedRole(), 'document.edit') && (
-          <li>
-            <Link to="/settings/trash" className="rowbtn">
-              <span className="doc-title">Trash</span>
-              <span className="muted">
-                Documents moved to the Trash, and the way to bring them back
-              </span>
-            </Link>
-          </li>
-        )}
-        <li>
-          <Link to="/settings/notifications" className="rowbtn">
-            <span className="doc-title">How you hear about things</span>
-            <span className="muted">Notifications on your devices, and email</span>
-          </Link>
-        </li>
-        {session.info?.role === 'owner' && (
-          <li>
-            <Link to="/settings/storage" className="rowbtn">
-              <span className="doc-title">Where your files are kept</span>
-              <span className="muted">Local disk, or your own S3-compatible bucket</span>
-            </Link>
-          </li>
-        )}
-      </ul>
-      <ChangePassword />
-      <section aria-labelledby="devices-h">
-        <h2 id="devices-h" className="section-h">
-          Signed-in devices
+
+      <section aria-labelledby="settings-account-h" className="stack settings-group">
+        <h2 id="settings-account-h" className="settings-h">
+          Your account
         </h2>
-        <ul className="list">
-          {(sessions ?? []).map((d) => (
-            <li key={d.id}>
-              <span>
-                {d.label ?? shortAgent(d.user_agent)}
-                {d.current && <span className="muted"> · this one</span>}
-                {/* Signing it out also ends what it keeps (0.4.13). */}
-                {d.offline && <span className="muted"> · Keeps Essentials for offline use</span>}
-              </span>
-              {!d.current && (
-                <Button kind="quiet" onClick={() => void revoke(d.id)}>
-                  Sign out
-                </Button>
-              )}
-            </li>
-          ))}
-        </ul>
+        <ChangePassword />
+        <TwoStep />
+        <Passkeys />
+        <section aria-labelledby="devices-h">
+          <h3 id="devices-h" className="section-h">
+            Signed-in devices
+          </h3>
+          <ul className="list">
+            {(sessions ?? []).map((d) => (
+              <li key={d.id}>
+                <span>
+                  {d.label ?? shortAgent(d.user_agent)}
+                  {d.current && <span className="muted"> · this one</span>}
+                  {/* Signing it out also ends what it keeps (0.4.13). */}
+                  {d.offline && <span className="muted"> · Keeps Essentials for offline use</span>}
+                </span>
+                {!d.current && (
+                  <Button kind="quiet" onClick={() => void revoke(d.id)}>
+                    Sign out
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+        <KeyShortcuts />
       </section>
-      <Passkeys />
-      <TwoStep />
+
+      <section aria-labelledby="settings-notifications-h" className="settings-group">
+        <h2 id="settings-notifications-h" className="settings-h">
+          Notifications
+        </h2>
+        <SettingsRows
+          rows={[
+            {
+              to: '/settings/notifications',
+              title: 'How you hear about things',
+              note: 'Notifications on your devices, and email',
+            },
+          ]}
+        />
+      </section>
+
+      {household.length > 0 && (
+        <section aria-labelledby="settings-household-h" className="settings-group">
+          <h2 id="settings-household-h" className="settings-h">
+            Household
+          </h2>
+          <SettingsRows rows={household} />
+        </section>
+      )}
+
       {/* Only to whoever may export (5.35): a viewer, a guest or a teen
           asking would be refused. */}
-      {can(storedRole(), 'export.request') && <ExportSection />}
-      <Button kind="quiet" onClick={() => void signOut()}>
-        Sign out
-      </Button>
-      <BottomNav />
+      {can(role, 'export.request') && (
+        <section aria-labelledby="settings-data-h" className="settings-group">
+          <h2 id="settings-data-h" className="settings-h">
+            Your data
+          </h2>
+          <ExportSection />
+        </section>
+      )}
+
+      <ElsewhereNote />
     </main>
+  );
+}
+
+/**
+ * The single-key shortcuts, `/` and `n` (WCAG 2.1.4): on unless turned
+ * off, on this device alone (shortcuts.ts).
+ */
+function KeyShortcuts() {
+  const on = useShortcutsOn();
+  return (
+    <section aria-labelledby="keys-h">
+      <h3 id="keys-h" className="section-h">
+        On this device
+      </h3>
+      <Check
+        id="single-keys"
+        checked={on}
+        onChange={setShortcutsOn}
+        label="Single-key shortcuts (/ and n)"
+        note="With a keyboard, / goes to the search box and n to Add. Turn them off if you type by voice, or if they get in your way."
+      />
+    </section>
+  );
+}
+
+function SettingsRows({ rows }: { rows: SettingsRow[] }) {
+  return (
+    <ul className="list">
+      {rows.map((r) => (
+        <li key={r.to}>
+          <Link to={r.to} className="rowbtn">
+            <span className="doc-title">{r.title}</span>
+            <span className="muted">{r.note}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Where what Settings used to hold is now (R1), for whoever looks for it
+ * here: each only where it is theirs.
+ */
+function ElsewhereNote() {
+  const { caps, session } = useApp();
+  const role = storedRole();
+  const inbox = caps?.features.upload_requests === true && can(role, 'upload_request.create');
+  const sharing = can(role, 'document.share');
+  const outside = caps?.features.guests === true && session.info?.role === 'owner';
+  const activity = can(role, 'audit.read');
+  const trash = can(role, 'document.edit');
+  const lines = [
+    inbox && (
+      <li key="inbox">
+        <Link to="/inbox">Files sent to you</Link> are in the Inbox
+      </li>
+    ),
+    sharing && (
+      <li key="sharing">
+        <Link to="/sharing">Sharing</Link>: links, and asking for documents
+      </li>
+    ),
+    outside && (
+      <li key="outside">
+        <Link to="/people/outside">People outside the family</Link> are under People
+      </li>
+    ),
+    activity && trash && (
+      <li key="activity">
+        <Link to="/activity">Activity</Link> and <Link to="/trash">Trash</Link> have their own
+        places
+      </li>
+    ),
+    activity && !trash && (
+      <li key="activity">
+        <Link to="/activity">Activity</Link> has its own place
+      </li>
+    ),
+  ].filter(Boolean);
+  if (lines.length === 0) return null;
+  return (
+    <div className="elsewhere">
+      <p>
+        <strong>Settings holds settings only.</strong>
+      </p>
+      <ul>{lines}</ul>
+    </div>
   );
 }
 
@@ -255,9 +286,9 @@ function Passkeys() {
 
   return (
     <section aria-labelledby="passkeys-h" className="card stack">
-      <h2 id="passkeys-h" style={{ fontSize: 18 }}>
+      <h3 id="passkeys-h" style={{ fontSize: 18 }}>
         Passkeys
-      </h2>
+      </h3>
       <p className="muted">
         Sign in with your face, your fingerprint or your screen lock. There is nothing to remember
         and nothing a fake sign-in page could take.
@@ -354,9 +385,9 @@ function TwoStep() {
 
   return (
     <section id="two-step" aria-labelledby="twostep-h" className="card stack">
-      <h2 id="twostep-h" style={{ fontSize: 18 }}>
+      <h3 id="twostep-h" style={{ fontSize: 18 }}>
         Two-step sign-in
-      </h2>
+      </h3>
       {me?.totp_enabled ? (
         <p className="status status-ok">
           On. Signing in asks for a code from your authenticator app.
@@ -442,9 +473,9 @@ function ExportSection() {
 
   return (
     <section aria-labelledby="export-h" className="card stack">
-      <h2 id="export-h" style={{ fontSize: 18 }}>
+      <h3 id="export-h" style={{ fontSize: 18 }}>
         Export everything
-      </h2>
+      </h3>
       <p className="muted">
         A ZIP with every original file you can see, plus a readable index. It works with no app at
         all, and it doubles as your disaster plan.

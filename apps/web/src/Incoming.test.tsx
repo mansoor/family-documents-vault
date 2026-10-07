@@ -90,10 +90,10 @@ describe('incoming on the web (5.23)', () => {
     'the inbox lists what is waiting, each saying it was not scanned',
     { timeout: 15_000 },
     async () => {
-      at('/incoming');
+      at('/inbox');
       const list = await screen.findByRole('list', { name: 'Waiting for you' });
       const row = await within(list).findByRole('link', { name: /W-2 2025\.pdf/ });
-      expect(row).toHaveAttribute('href', '/incoming/in-1');
+      expect(row).toHaveAttribute('href', '/inbox/in-1');
       expect(within(row).getByText(NOT_SCANNED)).toBeInTheDocument();
       expect(
         within(row).getByText('From Jane, accountant, for “Your tax papers” — W-2'),
@@ -104,7 +104,7 @@ describe('incoming on the web (5.23)', () => {
   );
 
   it('nothing waiting says so', { timeout: 15_000 }, async () => {
-    at('/incoming', { incoming: [] });
+    at('/inbox', { incoming: [] });
     const main = await screenCalled('Files sent to you');
     expect(await within(main).findByText('Nothing is waiting for you.')).toBeInTheDocument();
   });
@@ -113,7 +113,7 @@ describe('incoming on the web (5.23)', () => {
     "a file: its pages, the warning, and a form started from the request's hints",
     { timeout: 15_000 },
     async () => {
-      const state = at('/incoming/in-1');
+      const state = at('/inbox/in-1');
       const main = await screenCalled('W-2 2025.pdf');
       expect(
         await within(main).findByRole('img', { name: 'Page 1 of 2 of W-2 2025.pdf' }),
@@ -139,7 +139,7 @@ describe('incoming on the web (5.23)', () => {
   );
 
   it('filing it sends what was chosen, and opens the document', { timeout: 15_000 }, async () => {
-    const state = at('/incoming/in-1');
+    const state = at('/inbox/in-1');
     const main = await screenCalled('W-2 2025.pdf');
     const form = await within(main).findByRole('form', { name: 'File it' });
     fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'W-2 for 2025' } });
@@ -161,7 +161,7 @@ describe('incoming on the web (5.23)', () => {
   });
 
   it('filing it as a new version of a document sends only that', { timeout: 15_000 }, async () => {
-    const state = at('/incoming/in-1');
+    const state = at('/inbox/in-1');
     const main = await screenCalled('W-2 2025.pdf');
     const form = await within(main).findByRole('form', { name: 'File it' });
     fireEvent.click(within(form).getByRole('button', { name: 'A new version of one' }));
@@ -188,7 +188,7 @@ describe('incoming on the web (5.23)', () => {
         owner_member_id: 'm-0',
         created_at: '2020-01-01T00:00:00Z',
       };
-      const state = at('/incoming/in-1', { documents: [PASSPORT, older], pageSize: 1 });
+      const state = at('/inbox/in-1', { documents: [PASSPORT, older], pageSize: 1 });
       const main = await screenCalled('W-2 2025.pdf');
       const form = await within(main).findByRole('form', { name: 'File it' });
       fireEvent.click(within(form).getByRole('button', { name: 'A new version of one' }));
@@ -229,7 +229,7 @@ describe('incoming on the web (5.23)', () => {
         owner_member_id: 'm-0',
         created_at: '2020-01-01T00:00:00Z',
       };
-      const state = at('/incoming/in-1', { documents: [PASSPORT, older], pageSize: 1 });
+      const state = at('/inbox/in-1', { documents: [PASSPORT, older], pageSize: 1 });
       const main = await screenCalled('W-2 2025.pdf');
       const form = await within(main).findByRole('form', { name: 'File it' });
       const asVersion = () =>
@@ -260,7 +260,7 @@ describe('incoming on the web (5.23)', () => {
   );
 
   it('refusing asks first, and Cancel gives focus back', { timeout: 15_000 }, async () => {
-    const state = at('/incoming/in-1');
+    const state = at('/inbox/in-1');
     const main = await screenCalled('W-2 2025.pdf');
     const refuse = await within(main).findByRole('button', { name: 'Refuse it' });
     refuse.focus();
@@ -288,7 +288,7 @@ describe('incoming on the web (5.23)', () => {
     fireEvent.click(refuse);
     const again = await screen.findByRole('alertdialog', { name: 'Refuse this file?' });
     fireEvent.click(within(again).getByRole('button', { name: 'Refuse it' }));
-    await waitFor(() => expect(window.location.pathname).toBe('/incoming'));
+    await waitFor(() => expect(window.location.pathname).toBe('/inbox'));
     expect(state.calls.some((c) => c.url === '/api/v1/incoming/in-1/reject')).toBe(true);
     const inbox = await screenCalled('Files sent to you');
     expect(
@@ -298,30 +298,36 @@ describe('incoming on the web (5.23)', () => {
   });
 
   it(
-    'Settings leads to it for whoever reviews, and for nobody else',
+    'the Inbox leads to it for whoever reviews, with what waits (since R1)',
     { timeout: 15_000 },
     async () => {
-      at('/settings');
-      const main = await screenCalled('Settings');
-      expect(await within(main).findByRole('link', { name: /Files sent to you/ })).toHaveAttribute(
+      at('/');
+      fireEvent.click(await screen.findByRole('button', { name: 'Menu' }));
+      const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+      expect(await within(drawer).findByRole('link', { name: 'Inbox, 1 waiting' })).toHaveAttribute(
         'href',
-        '/incoming',
+        '/inbox',
       );
     },
   );
 
   it('a teen is shown no way to it', { timeout: 15_000 }, async () => {
-    at('/settings', {}, 'teen');
+    const state = at('/settings', {}, 'teen');
     const main = await screenCalled('Settings');
     await within(main).findByRole('link', { name: /How you hear about things/ });
     expect(within(main).queryByRole('link', { name: /Files sent to you/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    const drawer = await screen.findByRole('dialog', { name: 'Menu' });
+    await within(drawer).findByRole('link', { name: 'Trash' });
+    expect(within(drawer).queryByRole('link', { name: /Inbox/ })).toBeNull();
+    expect(state.calls.some((c) => c.url.startsWith('/api/v1/incoming'))).toBe(false);
   });
 
   it(
     'a teen who asks for it by its address is given nothing, and nothing is asked of the vault',
     { timeout: 15_000 },
     async () => {
-      const state = at('/incoming', {}, 'teen');
+      const state = at('/inbox', {}, 'teen');
       const main = await screenCalled('Files sent to you');
       expect(await within(main).findByText('Nothing is waiting for you.')).toBeInTheDocument();
       expect(state.calls.some((c) => c.url.startsWith('/api/v1/incoming'))).toBe(false);

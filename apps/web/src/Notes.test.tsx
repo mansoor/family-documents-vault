@@ -249,11 +249,11 @@ describe('notes you can write, on the web (5.35)', () => {
     await expectAccessible();
 
     // Signing out takes it away.
-    fireEvent.click(screen.getByRole('link', { name: 'Home' }));
-    fireEvent.click(await screen.findByRole('link', { name: 'Settings' }));
-    const signOut = await screen.findAllByRole('button', { name: 'Sign out' });
+    // From the account menu, since R1.
+    fireEvent.click(screen.getByRole('button', { name: /^Your account/ }));
+    const signOut = await screen.findByRole('menuitem', { name: 'Sign out' });
     await act(async () => {
-      fireEvent.click(signOut[signOut.length - 1] as HTMLElement);
+      fireEvent.click(signOut);
     });
     await waitFor(() => expect(kept()).toEqual([]));
   });

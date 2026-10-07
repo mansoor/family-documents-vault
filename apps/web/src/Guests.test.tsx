@@ -125,7 +125,7 @@ describe('someone outside the family (5.34)', () => {
     ).toHaveAttribute('href', '/collections');
     expect(
       within(outside).getByRole('link', { name: /Ask them to send documents/ }),
-    ).toHaveAttribute('href', '/settings/sharing/ask');
+    ).toHaveAttribute('href', '/sharing/ask');
     await expectAccessible();
     // Family after all: the invitation as ever.
     fireEvent.click(within(asked).getByRole('button', { name: 'Yes, family' }));
@@ -197,7 +197,7 @@ describe('someone outside the family (5.34)', () => {
   });
 
   it('owners see the people outside the family apart, with their limits and end, and renew one with a code', async () => {
-    const state = at('/settings', {
+    const state = at('/people', {
       members: [ME, AISHA],
       guests: [JANE],
       accountStepUp: true,
@@ -232,8 +232,19 @@ describe('someone outside the family (5.34)', () => {
         },
       },
     });
-    fireEvent.click(await screen.findByRole('link', { name: /People outside the family/ }));
+    // A tab beside the family, on People (R1; in Settings until then).
+    const tabs = await screen.findByRole('navigation', { name: 'People' });
+    expect(within(tabs).getByRole('link', { name: 'Family' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    fireEvent.click(within(tabs).getByRole('link', { name: 'Outside the family' }));
     await screen.findByRole('heading', { name: 'People outside the family' });
+    expect(
+      within(screen.getByRole('navigation', { name: 'People' })).getByRole('link', {
+        name: 'Outside the family',
+      }),
+    ).toHaveAttribute('aria-current', 'page');
     expect(await screen.findByText('Jane Smith')).toBeInTheDocument();
     expect(screen.getByText('· attorney')).toBeInTheDocument();
     expect(screen.getByText("Restricted: sees 1 person's documents.")).toBeInTheDocument();
@@ -300,7 +311,7 @@ describe('someone outside the family (5.34)', () => {
       relationship: 'accountant',
       restriction: { summary: 'Restricted: sees 1 kind of document.' },
     };
-    const state = at('/settings/guests', {
+    const state = at('/people/outside', {
       members: [ME, AISHA],
       guests: [JANE, KIM],
       accounts: { 'g-1': cardOf('g-1', end, ['m-0']), 'g-2': cardOf('g-2', end, []) },
@@ -391,7 +402,7 @@ describe('someone outside the family (5.34)', () => {
       sign_in_removed: false,
     };
     const PAT = { ...NED, id: 'g-4', display_name: 'Pat Price' };
-    const state = at('/settings/guests', {
+    const state = at('/people/outside', {
       members: [ME, AISHA],
       guests: [JANE, REX, NED, PAT],
       accountStepUp: true,
@@ -550,7 +561,7 @@ describe('someone outside the family (5.34)', () => {
       sign_in_removed: true,
       access_expires_at: null,
     };
-    const state = at('/settings/guests', {
+    const state = at('/people/outside', {
       members: [ME, AISHA],
       guests: [PAT],
       stepUpNeeded: true,
@@ -593,7 +604,7 @@ describe('someone outside the family (5.34)', () => {
         sign_in_removed: true,
         access_expires_at: null,
       };
-      at('/settings/guests', { members: [ME, AISHA], guests: [SAM], signInKept: kept });
+      at('/people/outside', { members: [ME, AISHA], guests: [SAM], signInKept: kept });
       fireEvent.click(await screen.findByRole('button', { name: 'Give their sign-in back' }));
       const later = new Date(Date.now() + 30 * DAY).toISOString().slice(0, 10);
       fireEvent.change(screen.getByLabelText('Sam Hale’s access ends'), {
@@ -622,7 +633,7 @@ describe('someone outside the family (5.34)', () => {
       access_expires_at: null,
       version: 1,
     };
-    const state = at('/settings/guests', {
+    const state = at('/people/outside', {
       members: [ME, AISHA],
       guests: [JANE, NED],
       accounts: { 'g-1': cardOf('g-1', end, ['m-0']) },
@@ -693,7 +704,7 @@ describe('someone outside the family (5.34)', () => {
   });
 
   it("an ended guest's access says so, and nobody but an owner is offered the list", async () => {
-    at('/settings/guests', {
+    at('/people/outside', {
       members: [ME],
       guests: [{ ...JANE, access_expires_at: new Date(Date.now() - DAY).toISOString() }],
     });
@@ -706,14 +717,15 @@ describe('someone outside the family (5.34)', () => {
     expect(screen.getByRole('button', { name: 'Renew their access' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Take their sign-in away' })).toBeInTheDocument();
     cleanup();
-    at('/settings/guests', { members: [ME], guests: [JANE] });
+    at('/people/outside', { members: [ME], guests: [JANE] });
     expect(
       await screen.findByRole('button', { name: 'Sign them out everywhere' }),
     ).toBeInTheDocument();
     cleanup();
-    at('/settings', { members: [{ ...ME, role: 'adult' }], guests: [] }, 'adult');
-    await screen.findByRole('heading', { name: 'Settings' });
-    expect(screen.queryByRole('link', { name: /People outside the family/ })).toBeNull();
+    at('/people', { members: [{ ...ME, role: 'adult' }], guests: [] }, 'adult');
+    await screen.findByRole('heading', { name: 'People' });
+    expect(screen.queryByRole('navigation', { name: 'People' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /outside the family/i })).toBeNull();
   });
 
   it("a guest's Home says what they can see, and when their access ends", async () => {

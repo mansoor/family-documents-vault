@@ -1298,7 +1298,7 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     expect((await purge('owner', own)).statusCode).toBe(202);
     const toOwn = alertsTo(accounts.teen).slice(told);
     expect(toOwn).toHaveLength(1);
-    expect(toOwn[0]?.body).toMatch(/Bring it back to keep it: it is in Settings → Trash\./);
+    expect(toOwn[0]?.body).toMatch(/Bring it back to keep it: it is in the Trash\./);
     // A teen's filing that is the household's now: not theirs to bring back.
     const filed = await make('teen', 'Tia filed', { file: false });
     await withAdmin((c) =>
@@ -1310,13 +1310,18 @@ describe.skipIf(!testAdminUrl())('removing a document for good (5.24)', () => {
     const toTeen = alertsTo(accounts.teen).slice(told);
     expect(toTeen).toHaveLength(1);
     expect(toTeen[0]?.body).toMatch(
-      /To keep it, ask an owner or another adult to bring it back from Settings → Trash\./,
+      /To keep it, ask an owner or another adult to bring it back from the Trash\./,
     );
     expect(toTeen[0]?.body).not.toMatch(/Bring it back to keep it/);
     // And the other owners are told what is so: whoever added it is told
     // if they still sign in here.
     const toOwners = alertsTo(accounts.second).at(-1);
     expect(toOwners?.body).toMatch(/Whoever added it is told too, if they still sign in here\./);
+    // The Trash is its own place since the web's R1, not in Settings.
+    expect(toOwners?.body).toMatch(/Bringing it back from the Trash within \d+ hours keeps it\./);
+    for (const told of [...toOwn, ...toTeen, toOwners]) {
+      expect(told?.body).not.toMatch(/Settings/);
+    }
   });
 
   it('storage failing part-way leaves no document to bring back: what was not deleted is written down, and the worker asked to finish it (the review, M524-2)', async () => {

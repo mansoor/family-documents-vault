@@ -32,16 +32,7 @@ import { api, ApiRequestError } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { storedRole } from '../session.js';
 import { coreRule } from '../details.js';
-import {
-  BottomNav,
-  Button,
-  ConfirmDialog,
-  ErrorNote,
-  Field,
-  Select,
-  Switch,
-  TopBar,
-} from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
 
 /**
  * Settings → Kinds of document (5.12): what the family keeps, and what the
@@ -242,7 +233,6 @@ export function KindsScreen() {
       <main className="page page-top has-nav">
         <TopBar title="Kinds of document" back="/settings" />
         <p className="status status-warn">{refusalFor('types.manage')}</p>
-        <BottomNav />
       </main>
     );
   }
@@ -304,7 +294,6 @@ export function KindsScreen() {
           ))}
         </ul>
       </section>
-      <BottomNav />
     </main>
   );
 }

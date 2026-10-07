@@ -556,12 +556,16 @@ describe('collections on the web (5.15)', () => {
     reopen(state, '/search');
     expect(await screen.findByRole('button', { name: /^Mansoor's passport/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Select' })).not.toBeInTheDocument();
-    // A viewer's Home asks only for the collections given to them, and any
-    // they made before they were a viewer (5.33, U515-11) — here none; a
-    // document's collections are never asked for.
+    // A viewer's Home, and the shell each time it is drawn (R1), ask only
+    // for the collections given to them, and any they made before they were
+    // a viewer (5.33, U515-11); a document's collections are never asked for.
     expect(
-      state.calls.filter((c) => c.url.includes('/collections')).map((c) => [c.method, c.url]),
-    ).toEqual([['GET', '/api/v1/collections']]);
+      new Set(
+        state.calls
+          .filter((c) => c.url.includes('/collections'))
+          .map((c) => c.method + ' ' + c.url),
+      ),
+    ).toEqual(new Set(['GET /api/v1/collections']));
   });
 
   it('a vault from before collections offers none', async () => {

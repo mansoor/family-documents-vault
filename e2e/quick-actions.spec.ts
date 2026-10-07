@@ -111,9 +111,14 @@ test('the ⋯ on a row works from the keyboard alone', async ({ page, request })
   // And out of the Trash for good (5.24): the owner's own goes at once,
   // through the app's own dialog — which starts on Cancel — and, signed in
   // a moment ago, without asking again who it is.
-  await page.getByRole('link', { name: 'Settings', exact: true }).click();
-  await page.getByRole('link', { name: /^Trash/ }).click();
-  await expect(page.getByRole('heading', { name: 'Trash' })).toBeVisible();
+  // The Trash is in the menu since R1 (a phone's drawer), not in Settings.
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page
+    .getByRole('dialog', { name: 'Menu' })
+    .getByRole('link', { name: 'Trash', exact: true })
+    .click();
+  await expect(page.getByRole('heading', { name: 'Trash', level: 1 })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Menu' })).toHaveCount(0);
   const binned = page.getByRole('listitem').filter({ hasText: title });
   await binned.getByRole('button', { name: `Remove for good: ${title}` }).click();
   const forGood = page.getByRole('alertdialog', { name: 'Remove for good?' });

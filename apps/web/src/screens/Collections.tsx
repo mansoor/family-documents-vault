@@ -23,7 +23,7 @@ import {
   VIEWERS_NEED_A_GRANT,
 } from '../collections.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
+import { Button, ConfirmDialog, ErrorNote, Sheet, TopBar, TrashIcon } from '../ui.js';
 import { DocRow } from './Home.js';
 import { collectionShareOffered, ShareCollectionPanel } from './ShareCollection.js';
 
@@ -102,7 +102,7 @@ export function CollectionsScreen() {
   };
 
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar title="Collections" back="/" />
       <p className="lede">
         A collection gathers documents for a purpose: a trip, a mortgage, a move. {NEVER_WIDENS}
@@ -150,7 +150,6 @@ export function CollectionsScreen() {
           <li className="muted">{offered ? 'No collections yet.' : VIEWERS_NEED_A_GRANT}</li>
         )}
       </ul>
-      <BottomNav />
     </main>
   );
 }
@@ -229,10 +228,9 @@ export function CollectionScreen() {
   const goneNow = gone !== null && gone.id === id ? gone.message : null;
   if (!first.data || goneNow) {
     return (
-      <main className="page page-top has-nav">
+      <main className="page page-top page-wide has-nav">
         <TopBar title="Collection" back="/collections" />
         <ErrorNote message={goneNow ?? first.error} />
-        <BottomNav />
       </main>
     );
   }
@@ -332,7 +330,7 @@ export function CollectionScreen() {
 
   const sentence = audienceSentence(collection.audience);
   return (
-    <main className="page page-top has-nav">
+    <main className="page page-top page-wide has-nav">
       <TopBar
         title={collection.name}
         back="/collections"
@@ -481,7 +479,6 @@ export function CollectionScreen() {
           </p>
         </ConfirmDialog>
       )}
-      <BottomNav />
     </main>
   );
 }

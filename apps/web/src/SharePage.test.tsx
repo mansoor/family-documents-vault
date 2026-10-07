@@ -706,7 +706,7 @@ describe('the hand-over', () => {
   });
 });
 
-describe('Settings → After a restore', () => {
+describe('After a restore, from Home', () => {
   const paused = {
     id: 'sh-paused',
     document_id: 'doc-1',
@@ -729,7 +729,7 @@ describe('Settings → After a restore', () => {
     const state = fresh({ shares: [{ ...paused }] });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
 
     fireEvent.click(await screen.findByRole('link', { name: /After a restore/ }));
@@ -771,7 +771,7 @@ describe('Settings → After a restore', () => {
     });
     installFakeApi(state);
     signedIn('adult');
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
 
     fireEvent.click(
@@ -801,7 +801,7 @@ describe('Settings → After a restore', () => {
   it('an owner is not told somebody else decides', async () => {
     installFakeApi(fresh({ shares: [{ ...paused }] }));
     signedIn();
-    window.history.replaceState({}, '', '/settings/after-restore');
+    window.history.replaceState({}, '', '/after-restore');
     render(<App />);
     await screen.findByText('Mansoor’s passport');
     expect(screen.getByRole('button', { name: 'Turn back on' })).toBeInTheDocument();
@@ -809,13 +809,13 @@ describe('Settings → After a restore', () => {
     expect(screen.queryByText(/No owner can see/)).not.toBeInTheDocument();
   });
 
-  it('is not in Settings when nothing is paused', async () => {
+  it('is not on Home when nothing is paused', async () => {
     const state = fresh({ shares: [{ ...paused, state: 'active', paused_at: null }] });
     installFakeApi(state);
     signedIn();
-    window.history.replaceState({}, '', '/settings');
+    window.history.replaceState({}, '', '/');
     render(<App />);
-    await screen.findByRole('link', { name: /How you hear about things/ });
+    await screen.findByRole('heading', { name: 'Recently added' });
     await waitFor(() =>
       expect(state.calls.some((c) => c.url === '/api/v1/after-restore')).toBe(true),
     );

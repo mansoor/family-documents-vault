@@ -6,6 +6,28 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.1] - 2026-10-07 — Phase 6, R1: the app's shell
+
+The first step of the new web layout. 0.6.0 continues on `release/0.6.0`, and Phase 6's builds are numbered `0.7.0-dev.N` until 0.7.0. The `latest` images stay on the newest release on `main`.
+
+### Changed
+
+- **The web app has one layout around every screen, at three widths.**
+  - **At 1024 px and wider**, a sidebar holds Home, Documents, People, Collections, Needs attention, Inbox (with how many wait for you), Sharing, Activity and Trash, with Settings at the foot. Each shows only where your role has that screen.
+  - A bar on top has search, Add, and your account menu (your name, Settings, Sign out).
+  - **From 768 to 1023 px**, the sidebar shows its icons alone, each named.
+  - **Under 768 px**, the bottom bar stays, with Reminders now called Needs attention. A menu at the top left opens the other sections, Settings and Sign out.
+- **Settings holds settings only:** Your account, Notifications, Household and Your data. Where email comes from is a page of its own.
+- **Features have their own places:** Inbox (files sent to you), Sharing, Activity, Trash, and People outside the family (a tab on People, for owners). After a restore is reached from a banner on Home while anything is paused.
+  - Every old address (`/settings/sharing`, `/settings/trash`, `/settings/activity`, `/settings/guests`, `/settings/after-restore`, `/incoming`, and the rest) goes to its new place, so links in older emails still work.
+- **Keys:** `/` goes to the search box and `n` to Add. Neither works while you are typing, and you can turn both off on a device under Settings → Your account.
+- **Lists use more of a wide screen;** forms keep a width that is easy to read.
+- **Signing out** lands on Sign in.
+
+### Accessibility
+
+- A skip link to the page, landmarks for the navigation, the bar and the page, and focus on each new page's heading.
+
 ## [0.6.0-rc.1] - 2026-10-06 — iteration 5.41, the Phase 5 release candidate
 
 The release candidate for 0.6.0, which gathers every 0.5.x release since 0.4.5. It is for the owner's demonstration. Once that passes, 0.6.0 goes to `main` and the `latest` images move to it.

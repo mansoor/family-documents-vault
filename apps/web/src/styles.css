@@ -1025,50 +1025,61 @@ fieldset.limits-set {
   padding: 0 4px;
 }
 
+/* The phone's bar at the bottom (in the shell since R1): five at most, and
+   each word wraps onto a second line rather than off the edge, down to 320 px
+   ("Needs attention"). */
 .bottomnav {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
+  z-index: 20;
   background: var(--surface);
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: space-around;
   align-items: flex-end;
-  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  gap: 2px;
+  padding: 6px 4px calc(8px + env(safe-area-inset-bottom));
   max-width: 480px;
   margin: 0 auto;
 }
 
 .nav-item {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
   color: var(--ink-muted);
-  min-width: var(--tap);
   min-height: var(--tap);
   justify-content: center;
+  padding: 2px 0;
+  border-radius: var(--radius-s);
 }
 
-.nav-on {
+.nav-item[aria-current='page'] {
   color: var(--accent);
 }
 
-.nav-icon {
-  font-size: 20px;
-  line-height: 1;
+.nav-item:focus-visible,
+.fab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .fab {
+  flex: none;
   width: 56px;
   height: 56px;
   border-radius: 28px;
   background: var(--accent);
   color: #fff;
-  font-size: 30px;
   display: grid;
   place-items: center;
   margin-top: -28px;
@@ -2226,4 +2237,630 @@ fieldset.identity-section {
 }
 .note-conflict > p:first-child {
   margin-top: 0;
+}
+
+/* ---- Phase 6, R1: the app's shell ----
+   One layout around every signed-in screen (shell.tsx): a sidebar and a bar
+   on top from 768 px (the sidebar its icons alone below 1024 px), and on a
+   phone a bar with the menu on top and today's bar at the bottom. The page
+   scrolls as a whole; what sticks to its top sits under the bar there
+   (--shell-top), and the reader is the window less the shell (--shell-chrome). */
+.shell {
+  --shell-top: 0px;
+  --shell-chrome: 0px;
+  min-height: 100dvh;
+}
+
+.shell-wide,
+.shell-mid {
+  --shell-top: 64px;
+  --shell-chrome: 64px;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.shell-mid {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.shell-phone {
+  /* The bar on top, which stays, and the room the bar at the bottom takes:
+     each said once, here, so the reader is the window less both exactly. */
+  --phone-bar: 60px;
+  --phone-bottom: calc(88px + env(safe-area-inset-bottom));
+  --shell-top: var(--phone-bar);
+  --shell-chrome: calc(var(--phone-bar) + var(--phone-bottom));
+}
+
+/* A focused control, or the place an address names (#two-step), is never
+   scrolled to where a bar covers it (WCAG 2.4.11): the bar on top above,
+   and on a phone the bar at the bottom below. */
+html:has(.shell-wide),
+html:has(.shell-mid) {
+  scroll-padding-top: 72px;
+}
+
+html:has(.shell-phone) {
+  scroll-padding-top: 68px;
+  scroll-padding-bottom: calc(96px + env(safe-area-inset-bottom));
+}
+
+/* Tab, once, from anywhere: straight to the page. */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -120px;
+  z-index: 100;
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 700;
+  padding: 10px 16px;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius-s);
+}
+
+.skip-link:focus {
+  top: 12px;
+}
+
+/* The sidebar: the household, the sections, and Settings at the foot. */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 18px 12px 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px 18px;
+}
+
+.brand-mark {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-s);
+  background: var(--accent);
+  display: grid;
+  place-items: center;
+}
+
+.brand-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.brand-sub {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.side-foot {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.side-gap {
+  flex: 1;
+  min-height: 16px;
+}
+
+.side-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border-radius: var(--radius-s);
+  color: var(--ink-soft);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.side-link:hover {
+  background: var(--bg);
+}
+
+.side-link[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.side-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.side-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.side-count {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 22px;
+  text-align: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 768–1023 px: the icons alone; each one's name beside it on hover or focus. */
+.shell-mid .sidebar {
+  padding: 16px 10px;
+  align-items: center;
+  overflow: visible;
+  /* Its names over the page beside it, whatever on the page is positioned
+     (a preview, Search's bar at 5); under the bar on top (30), menus (40)
+     and sheets (50). */
+  z-index: 25;
+}
+
+.shell-mid .brand {
+  padding: 2px 0 16px;
+}
+
+.shell-mid .brand-words {
+  display: none;
+}
+
+.shell-mid .side-link {
+  width: 48px;
+  justify-content: center;
+  padding: 0;
+}
+
+.shell-mid .side-count {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  min-width: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.shell-mid .side-link::after {
+  /* Drawn, and not read: the link's own words name it (the review). */
+  content: attr(data-label) / '';
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  background: var(--ink);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.shell-mid .side-link:hover::after,
+.shell-mid .side-link:focus-visible::after {
+  opacity: 1;
+}
+
+/* The bar on top: search, Add, and the account menu. */
+.shell-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--shell-top);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell-mid .app-bar {
+  padding: 0 20px;
+}
+
+.app-bar-gap {
+  flex: 1;
+}
+
+.app-search {
+  flex: 0 1 560px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--tap);
+  padding: 0 10px 0 14px;
+  background: var(--surface);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-m);
+  color: var(--ink-muted);
+}
+
+.app-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.app-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 16px;
+  color: var(--ink);
+}
+
+.app-search input:focus {
+  outline: none;
+}
+
+kbd {
+  font:
+    600 12px/1 ui-monospace,
+    'SF Mono',
+    Consolas,
+    monospace;
+  color: var(--ink-muted);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 3px 6px;
+  background: var(--surface);
+}
+
+.btn.app-add {
+  min-height: var(--tap);
+  gap: 6px;
+  padding: 0 16px;
+  border-radius: var(--radius-m);
+}
+
+.account {
+  display: inline-flex;
+}
+
+.btn.account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 6px;
+  border-color: transparent;
+  background: transparent;
+  max-width: 240px;
+}
+
+.account-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-btn {
+  flex: none;
+  width: var(--tap);
+  height: var(--tap);
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.icon-btn.account-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.icon-btn-plain {
+  border-color: transparent;
+  background: transparent;
+}
+
+.icon-btn:focus-visible,
+.btn.account-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.account-blank {
+  width: 30px;
+  height: 30px;
+  background: var(--border);
+}
+
+.account-head {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 12px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+a.menu-item {
+  color: inherit;
+}
+
+@media (min-width: 640px) {
+  .menu-box.account-box {
+    width: 260px;
+  }
+}
+
+/* The page beside the sidebar, from the left: a readable width for forms
+   and reading, and wider for the screens that are lists (`page-wide`). */
+.shell-content {
+  min-width: 0;
+}
+
+.shell .page {
+  min-height: 0;
+}
+
+.shell .has-nav {
+  padding-bottom: 32px;
+}
+
+.shell .select-bar {
+  top: var(--shell-top);
+}
+
+.shell .page.reader {
+  height: calc(100dvh - var(--shell-chrome));
+}
+
+.shell-wide .page,
+.shell-mid .page {
+  max-width: 720px;
+  margin: 0;
+  padding: 24px 24px 48px;
+}
+
+/* A list: its rows across the width, up to where a row is still read as one. */
+.shell-wide .page.page-wide,
+.shell-mid .page.page-wide {
+  max-width: 1120px;
+}
+
+/* What a list's page says about it stays a readable line. */
+.shell-wide .page-wide > p,
+.shell-mid .page-wide > p {
+  max-width: 72ch;
+}
+
+.shell-wide .page.reader,
+.shell-mid .page.reader {
+  max-width: 960px;
+  padding-bottom: 16px;
+}
+
+/* A phone: the bar with the menu, the household and the account. */
+.phone-bar {
+  /* Stays at the top as the page scrolls, as the prototype's: the menu and
+     the account always in reach. */
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--phone-bar);
+  padding: 0 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.phone-bar .icon-btn:first-child {
+  border-color: transparent;
+  background: transparent;
+}
+
+.phone-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-title .muted {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.phone-title strong {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phone-title:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.shell-phone .shell-content {
+  padding-bottom: var(--phone-bottom);
+}
+
+/* The drawer: over the page, from the left. */
+.drawer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--scrim);
+}
+
+.drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 300px;
+  max-width: 86%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 14px 12px calc(14px + env(safe-area-inset-bottom));
+  background: var(--surface);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+
+.drawer .brand {
+  padding-right: 0;
+}
+
+.drawer .side-foot {
+  margin-top: 8px;
+}
+
+/* Home's name is the phone bar's already: said once, still Home's heading. */
+.shell-phone .home-head {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.drawer-me {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 8px 4px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.drawer-me-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+
+/* People: the family, and beside it those outside it (owners). */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 12px;
+  margin-bottom: -1px;
+  border-bottom: 3px solid transparent;
+  color: var(--ink-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tab[aria-current='page'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Settings: four groups, and where what it used to hold is now. */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-h {
+  font-size: 22px;
+}
+
+.elsewhere {
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-m);
+  padding: 12px 16px;
+  font-size: 15px;
+}
+
+.elsewhere p {
+  margin: 0;
+}
+
+.elsewhere ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.elsewhere a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

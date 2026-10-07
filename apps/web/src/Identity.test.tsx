@@ -1495,7 +1495,7 @@ describe('who can see identity details (5.27, A34)', () => {
       }),
     );
     signedIn();
-    at('/settings/after-restore');
+    at('/after-restore');
     render(<App />);
     const said = await screen.findByTestId('restore-identity');
     // The rule, true after any restore; then the vault as it is now — widened

@@ -5,7 +5,7 @@ import { api } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { answersBody, answersFrom, HouseholdAnswerFields } from '../household-answers.js';
 import { storedRole } from '../session.js';
-import { BottomNav, Button, ErrorNote, TopBar } from '../ui.js';
+import { Button, ErrorNote, TopBar } from '../ui.js';
 
 /**
  * The household's few questions on their own (the 5.35 review, W535-10):
@@ -39,7 +39,6 @@ export function HouseholdQuestionsScreen() {
           {data && <Questions profile={data} />}
         </>
       )}
-      <BottomNav />
     </main>
   );
 }

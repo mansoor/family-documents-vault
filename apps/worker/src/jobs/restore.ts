@@ -83,7 +83,7 @@ export interface RestoreReport {
   ownerChangesWithdrawn: number;
   /**
    * Share links paused (5.16): each waits for an owner to turn it back on,
-   * in Settings → After a restore, since any revoked after the backup was
+   * in After a restore (on Home), since any revoked after the backup was
    * made would otherwise work again.
    */
   linksPaused: number;
@@ -129,7 +129,7 @@ export interface RestoreReport {
    * Sign-ins waiting for an owner to turn them back on (5.28, A55): every
    * one but the owners', since a backup cannot know of a lock made after it,
    * nor of a sign-in taken away since. Each is turned back on, one tap
-   * each, in Settings → After a restore.
+   * each, in After a restore (on Home).
    */
   signInsPaused: number;
   /**
