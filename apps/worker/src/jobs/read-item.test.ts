@@ -285,8 +285,9 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
         read_started_at: Date | null;
         read_attempts: number;
         read_not_before: Date | null;
+        read_waits: number;
       }>(
-        'select read_state, read_failure, text_sealed, proposals_sealed, read_started_at, read_attempts, read_not_before from incoming_file where id = $1',
+        'select read_state, read_failure, text_sealed, proposals_sealed, read_started_at, read_attempts, read_not_before, read_waits from incoming_file where id = $1',
         [id],
       )
     ).rows[0];
@@ -497,12 +498,81 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
         proposer: standIn(() => ({ state: 'unavailable' })).proposer,
       }),
     ).resolves.toMatchObject({ read: later.id });
+    // Not the item's fault: not counted against it (the I2 check).
     expect(await rowOf(later.id)).toMatchObject({
       read_state: 'waiting',
       read_started_at: null,
-      read_attempts: 1,
+      read_attempts: 0,
+      read_waits: 1,
     });
     expect((await rowOf(later.id))?.read_not_before?.getTime()).toBeGreaterThan(Date.now());
+  }, 60_000);
+
+  it('the vault out of reach is not the item’s fault: it waits longer each time, and only a day on is not reachable (the I2 check)', async () => {
+    await clear();
+    const i = await item(await batch(), pdf(['x']));
+    // Its key not to be had: wrapped, as far as the vault can tell, under a
+    // scope key that does not open it.
+    await admin.query(
+      `update incoming_file set wrapped_by_scope = (select id from scope_key where household_id = $2
+         and kind = 'household' limit 1) where id = $1`,
+      [i.id, hh],
+    );
+    const now = () =>
+      admin.query('update incoming_file set read_not_before = now() where id = $1', [i.id]);
+    const waits: number[] = [];
+    for (let n = 1; n <= 6; n++) {
+      const before = Date.now();
+      await readNext({ extract: says(PASSPORT) });
+      const row = await rowOf(i.id);
+      expect(row).toMatchObject({ read_state: 'waiting', read_attempts: 0, read_waits: n });
+      waits.push(Math.round(((row?.read_not_before?.getTime() ?? 0) - before) / 1000));
+      await now();
+    }
+    // 30 s, 2 min, 10 min, an hour, then hourly.
+    expect(waits.map((w) => Math.round(w / 10) * 10)).toEqual([30, 120, 600, 3600, 3600, 3600]);
+    // A day after the first: given up — not reachable, not "not readable".
+    await admin.query(
+      "update incoming_file set read_waited_since = now() - interval '25 hours' where id = $1",
+      [i.id],
+    );
+    await readNext({ extract: says(PASSPORT) });
+    expect(await rowOf(i.id)).toMatchObject({
+      read_state: 'failed',
+      read_failure: 'not_reachable',
+    });
+  }, 60_000);
+
+  it('taken too often — workers stopping under it — it is not read; at the column’s bound it is still taken, and failed (the I2 check)', async () => {
+    await clear();
+    const b = await batch();
+    const restarted = await item(b, pdf(['x']));
+    // Three workers stopped under it, each taking it once.
+    await admin.query('update incoming_file set read_attempts = $2 where id = $1', [
+      restarted.id,
+      READ_ATTEMPTS,
+    ]);
+    let read = 0;
+    const counted: typeof extractText = async () => {
+      read += 1;
+      return { text: PASSPORT, source: 'pdf', textPages: 1, ocrPages: 0 };
+    };
+    await readNext({ extract: counted });
+    expect(read).toBe(0);
+    expect(await rowOf(restarted.id)).toMatchObject({
+      read_state: 'failed',
+      read_failure: 'unreadable',
+    });
+    // At the column's bound: taken all the same (never past it), and failed.
+    const ceiling = await item(b, pdf(['y']));
+    await admin.query('update incoming_file set read_attempts = 100 where id = $1', [ceiling.id]);
+    await readNext({ extract: counted });
+    expect(read).toBe(0);
+    expect(await rowOf(ceiling.id)).toMatchObject({
+      read_state: 'failed',
+      read_failure: 'unreadable',
+      read_attempts: 100,
+    });
   }, 60_000);
 
   it('one item that cannot be read never holds up its household: it waits behind the others, and after a few tries is not read (P-I2-1)', async () => {

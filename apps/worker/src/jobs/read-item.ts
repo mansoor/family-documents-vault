@@ -11,6 +11,7 @@ import {
   type ProposalContext,
   type ProposalKind,
 } from '@fdv/shared';
+import { StorageError, type StorageAdapter } from '@fdv/storage';
 import { sql, type ExpressionBuilder } from 'kysely';
 import { extractText } from './extract-text.js';
 import { adapterOf, type IncomingDeps } from './incoming.js';
@@ -44,11 +45,15 @@ import { WORD_MIME } from './word-text.js';
  *
  * Pages that cannot be read make the item `failed`, with why — blank, a
  * password, not readable, too slow, a kind not read — never a crash, and a
- * read never throws (the I2 review, P-I2-1). A read that could not be
- * finished — its bytes or key not to be had, the proposal thread not to be
- * had or gone — is counted, waits behind the others for a while, and after
- * READ_ATTEMPTS tries (two, where the thread died holding it) is not read:
- * one bad item never holds up its household. The whole read has a deadline,
+ * read never throws (the I2 review, P-I2-1). Each taking is counted: taken
+ * more than READ_ATTEMPTS times — workers that stopped under it, its bytes
+ * not there, the proposal thread dying holding it (twice) — it is not read
+ * (`unreadable`): one bad item never holds up its household. What is not
+ * the item's fault — the vault's storage out of reach, a key, the thread
+ * not to be had, the disk, the database — is not counted against it (the
+ * I2 check): it waits behind the others, longer each time (30 s, 2 min,
+ * 10 min, an hour, then hourly), and only a day after the first such wait
+ * is it given up (`not_reachable`). The whole read has a deadline,
  * READ_DEADLINE_MS, its tools killed when it passes (P-I2-2): under the
  * queue's expiry (BATCH_JOB_EXPIRE_SECONDS), itself under READ_STALE_MS, so
  * a read is never taken again while it is still going. A worker that stops
@@ -69,8 +74,18 @@ export const READ_STALE_MS = 20 * 60_000;
 export const READ_ATTEMPTS = 3;
 /** And where the proposal thread died holding it: asked again once. */
 export const THREAD_DIED_ATTEMPTS = 2;
-/** After a read that could not finish, how long before it is taken again: doubling. */
+/** The most a taking is counted: the column's own bound (0063). */
+const ATTEMPTS_MAX = 100;
+/** After a read that could not finish through its own fault, how long before it is taken again. */
 export const readAgainAfter = (attempts: number) => 30_000 * 2 ** Math.max(0, attempts - 1);
+/**
+ * After the vault itself could not finish a read (its storage, a key, the
+ * thread), how long before it is tried again: 30 s, 2 min, 10 min, an hour,
+ * then hourly.
+ */
+export const waitAgainAfter = (waits: number) => [30_000, 120_000, 600_000][waits - 1] ?? 3_600_000;
+/** Waited on the vault this long since the first time, and it is given up: `not_reachable`. */
+export const READ_GIVE_UP_MS = 24 * 3_600_000;
 /**
  * The most of an item's words kept and proposed from: what proposeDetails
  * reads (its details are on its first pages), and the API's own bound.
@@ -165,15 +180,22 @@ export async function readNextBatchItem(
   }
 }
 
-/** Why a read could not be finished, to be tried again later; `most` tries in all. */
+/**
+ * Why a read could not be finished, to be tried again later: the item's own
+ * doing (`most` takings in all), or the vault's (not counted against it).
+ */
 class NotNow extends Error {
   constructor(
     readonly why: string,
-    readonly most: number,
+    readonly whose: 'item' | 'vault',
+    readonly most = READ_ATTEMPTS,
   ) {
     super(why);
   }
 }
+
+/** A storage failure that is the vault's, not the item's: anything but its object gone. */
+const vaultsFault = (err: unknown) => err instanceof StorageError && err.code !== 'not_found';
 
 /**
  * One item read: taken (stamped and counted), its words taken and proposed
@@ -200,19 +222,26 @@ export async function readItem(
   const taken = await withSystem(deps.db, hh, (trx) =>
     trx
       .updateTable('incoming_file')
-      .set((eb) => ({
+      .set({
         read_state: 'reading',
         read_started_at: stamp,
         read_failure: null,
         read_not_before: null,
-        read_attempts: eb('read_attempts', '+', 1),
-      }))
+        // Counted, never past the column's bound (the I2 check).
+        read_attempts: sql<number>`least(read_attempts + 1, ${ATTEMPTS_MAX})`,
+      })
       .where('id', '=', f.id)
       .where('state', '=', 'received')
       .where(unread)
-      .returning('read_attempts')
+      .returning(['read_attempts', 'read_waits', 'read_waited_since'])
       .executeTakeFirst(),
-  ).catch(() => undefined);
+  ).catch((err: unknown) => {
+    deps.log('warn', 'could not take a batch’s item to read', {
+      item: f.id,
+      err: (err as Error).message.slice(0, 200),
+    });
+    return undefined;
+  });
   if (!taken) return;
   const attempts = taken.read_attempts;
   const ours = (trx: Db) =>
@@ -228,34 +257,69 @@ export async function readItem(
         .set({ read_state: 'failed', read_failure: why, text_sealed: null, proposals_sealed: null })
         .execute(),
     );
-  /** Not finished: tried again later, behind the others — or, tried enough, not read. */
+  /**
+   * Not finished. The item's own doing: tried again later, behind the
+   * others — or, tried enough, not read. The vault's: not counted against
+   * it, tried again later and later — and a day on, given up.
+   */
   const notNow = async (e: NotNow) => {
     deps.log('warn', 'could not finish reading a batch’s item', {
       item: f.id,
       attempts,
+      whose: e.whose,
       why: e.why.slice(0, 200),
     });
-    if (attempts >= e.most) {
-      await failed('unreadable');
+    if (e.whose === 'item') {
+      if (attempts >= e.most) {
+        await failed('unreadable');
+        return;
+      }
+      await withSystem(deps.db, hh, (trx) =>
+        ours(trx)
+          .set({
+            read_state: 'waiting',
+            read_started_at: null,
+            read_not_before: new Date(Date.now() + readAgainAfter(attempts)),
+          })
+          .execute(),
+      );
       return;
     }
+    const since = taken.read_waited_since ?? new Date();
+    if (Date.now() - since.getTime() >= READ_GIVE_UP_MS) {
+      await failed('not_reachable');
+      return;
+    }
+    const waits = Math.min(taken.read_waits + 1, 1000);
     await withSystem(deps.db, hh, (trx) =>
       ours(trx)
         .set({
           read_state: 'waiting',
           read_started_at: null,
-          read_not_before: new Date(Date.now() + readAgainAfter(attempts)),
+          // This taking is not the item's: not counted.
+          read_attempts: Math.max(0, attempts - 1),
+          read_waits: waits,
+          read_waited_since: since,
+          read_not_before: new Date(Date.now() + waitAgainAfter(waits)),
         })
         .execute(),
     );
   };
 
+  // Taken too often already — workers that stopped under it, again and
+  // again: not read (the I2 check).
+  if (attempts > READ_ATTEMPTS) {
+    await failed('unreadable').catch(() => undefined);
+    return;
+  }
+
   const deadline = AbortSignal.timeout(opts.deadlineMs ?? READ_DEADLINE_MS);
   let dir: string | null = null;
   try {
     let had: { fileKey: Buffer; ctx: ProposalContext; plain: Buffer };
+    let got: { fileKey: Buffer; ctx: ProposalContext; adapter: StorageAdapter };
     try {
-      const got = await withSystem(deps.db, hh, async (trx) => {
+      got = await withSystem(deps.db, hh, async (trx) => {
         const scopeKey = await deps.keys.unwrapById(trx, f.wrapped_by_scope);
         return {
           fileKey: unwrapKey(f.file_key_wrapped, scopeKey, `incoming:${f.id}`),
@@ -263,10 +327,16 @@ export async function readItem(
           ctx: await proposalContext(trx, hh, f.requester_member_id),
         };
       });
+    } catch (err) {
+      // Its key, the vault's storage or the database not to be had just now.
+      throw new NotNow((err as Error).message, 'vault');
+    }
+    try {
       had = { ...got, plain: await decryptToBuffer(got.adapter, f.storage_key, got.fileKey) };
     } catch (err) {
-      // Its bytes or its key not to be had just now.
-      throw new NotNow((err as Error).message, READ_ATTEMPTS);
+      // The vault's storage out of reach; or its object gone, or not what
+      // was kept — the item's own.
+      throw new NotNow((err as Error).message, vaultsFault(err) ? 'vault' : 'item');
     }
     dir = await mkdtemp(path.join(tmpdir(), 'fdv-read-'));
     const mime = f.mime ?? '';
@@ -315,10 +385,10 @@ export async function readItem(
     }
     const answer = await opts.proposer.propose(text, had.ctx);
     if (answer.state === 'unavailable') {
-      throw new NotNow('the proposal thread could not be had', READ_ATTEMPTS);
+      throw new NotNow('the proposal thread could not be had', 'vault');
     }
     if (answer.state === 'died') {
-      throw new NotNow('the proposal thread stopped holding it', THREAD_DIED_ATTEMPTS);
+      throw new NotNow('the proposal thread stopped holding it', 'item', THREAD_DIED_ATTEMPTS);
     }
     if (answer.state === 'too_slow') {
       await failed('too_slow');
@@ -348,8 +418,8 @@ export async function readItem(
       proposed: Object.keys(answer.proposal),
     });
   } catch (err) {
-    // Anything else — the database a moment away, the disk full — not now.
-    const e = err instanceof NotNow ? err : new NotNow((err as Error).message, READ_ATTEMPTS);
+    // Anything else — the database a moment away, the disk full — the vault's.
+    const e = err instanceof NotNow ? err : new NotNow((err as Error).message, 'vault');
     await notNow(e).catch(() => undefined);
   } finally {
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);

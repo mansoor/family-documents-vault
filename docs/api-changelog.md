@@ -4015,7 +4015,8 @@ true`; one still on its way is `409 upload_in_progress`; one removed
     **Added**, to each item of `GET /api/v1/batches/{id}` (and the item `POST
 …/items` answers), for its uploader alone: `reading` goes `waiting` →
     `reading` → `read`, or `failed` with `read_failure` (`blank` |
-    `password` | `unreadable` | `too_slow` | `not_read`; null otherwise);
+    `password` | `unreadable` | `too_slow` | `not_read` | `not_reachable`, the
+    vault itself unable to get to it for a day; null otherwise);
     `level` (`ready` | `check` | `unrecognised` | `problem`; null while it is
     not read, unless it is a duplicate, and once it is accepted); `tags`
     (`[{ code, kind: 'problem' | 'check' | 'info', words, detail?, field? }]`:

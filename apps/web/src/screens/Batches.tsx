@@ -1084,6 +1084,9 @@ const toRead = (i: BatchItemView) =>
  */
 export const batchPolling = { every: 4000, most: 60_000, times: 30, after: 60_000 };
 
+/** Answers in a row with nothing of a batch's on the worker before it is said to wait its turn. */
+const WAITING_ITS_TURN = 4;
+
 /**
  * A batch (/inbox/batches/:id): its files, each with its first page when
  * drawn, its name, size and pages, and what it is now — waiting to be read,
@@ -1164,6 +1167,17 @@ export function BatchScreen() {
     failures.current = error ? failures.current + 1 : 0;
   }, [loading, error]);
   const stillToRead = data ? data.batch.items.some(toRead) : false;
+  // Answers in a row with something still to read and nothing of it on the
+  // worker: between a job's drawing and its reading there is none for a
+  // moment, so it is said to wait its turn only after a few (the I2 check).
+  const [idle, setIdle] = useState(0);
+  useEffect(() => {
+    if (!data) return;
+    const items = data.batch.items;
+    const onIt = items.some((i) => i.state === 'waiting' && i.reading === 'reading');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setIdle((n) => (items.some(toRead) && !onIt ? n + 1 : 0));
+  }, [data]);
   useEffect(() => {
     if (gone || !drawing || loading) return;
     // Asked out: once a minute, while anything is still to be read.
@@ -1287,7 +1301,7 @@ export function BatchScreen() {
   const progress =
     unread === 0
       ? null
-      : b.items.some((i) => i.state === 'waiting' && i.reading === 'reading')
+      : idle < WAITING_ITS_TURN
         ? `Reading ${b.items.length - unread + 1} of ${b.items.length}…`
         : `Waiting its turn to be read: ${plural(unread, 'file')} to read`;
   const row = (item: BatchItemView) => {

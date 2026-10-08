@@ -3,6 +3,7 @@ import type { PgBoss } from 'pg-boss';
 import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } from './incoming.js';
 import {
   BATCH_JOB_EXPIRE_SECONDS,
+  READ_STALE_MS,
   drawnOrNot,
   readNextBatchItem,
   unread,
@@ -122,10 +123,14 @@ export async function workBatchPreviews(
           // Then one item read, drawn already: this one, or one before it.
           if (opts.read) await readNextBatchItem(deps, hh, opts.read);
         } finally {
-          const left = await batchWorkLeft(deps, hh, Boolean(opts.read)).catch(() => ({
-            now: true,
-            at: null,
-          }));
+          // Not known: asked again in a little while, never at once (the I2 check).
+          const left = await batchWorkLeft(deps, hh, Boolean(opts.read)).catch((err: unknown) => {
+            deps.log('warn', 'could not tell what a household’s batches have left', {
+              household: hh,
+              err: (err as Error).message.slice(0, 200),
+            });
+            return { now: false, at: new Date(Date.now() + LEFT_UNKNOWN_MS) };
+          });
           if (left.now) await sendBatchPreviews(boss, hh);
           else if (left.at) await sendBatchPreviews(boss, hh, left.at);
         }
@@ -134,9 +139,14 @@ export async function workBatchPreviews(
   );
 }
 
+/** What a household's batches have left could not be told: asked again this much later. */
+export const LEFT_UNKNOWN_MS = 30_000;
+
 /**
- * One household's job, behind whatever else is queued — or not before
- * `after` — and dropped if one already waits.
+ * One household's job, behind whatever else is queued, and dropped if one
+ * already waits. One for later (`after`) waits under a key of its own (the
+ * I2 check): queued with a time ahead, it would otherwise drop the job a new
+ * upload sends, and the upload would wait for it.
  */
 export async function sendBatchPreviews(
   boss: PgBoss,
@@ -146,9 +156,15 @@ export async function sendBatchPreviews(
   await boss.send(
     BATCH_PREVIEWS,
     { household_id: householdId },
-    { singletonKey: batchPreviewsKey(householdId), ...(after ? { startAfter: after } : {}) },
+    after
+      ? { singletonKey: batchPreviewsLaterKey(householdId), startAfter: after }
+      : { singletonKey: batchPreviewsKey(householdId) },
   );
 }
+
+/** The key a household's job for later waits under. */
+export const batchPreviewsLaterKey = (householdId: string) =>
+  `${batchPreviewsKey(householdId)}:later`;
 
 /**
  * What one household's batches have left to do (the I2 review): an item to
@@ -181,7 +197,21 @@ export async function batchWorkLeft(
       .where('read_state', '=', 'waiting')
       .where('read_not_before', '>', new Date())
       .executeTakeFirst();
-    return { now: false, at: later?.at ?? null };
+    // And one left reading — a database blip as it was written — when it
+    // is taken as stale (the I2 check), not at the nightly sweep.
+    const stuck = await trx
+      .selectFrom('incoming_file')
+      .select((eb) => eb.fn.min('read_started_at').as('at'))
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where('read_state', '=', 'reading')
+      .executeTakeFirst();
+    const times = [
+      later?.at ? new Date(later.at) : null,
+      stuck?.at ? new Date(new Date(stuck.at).getTime() + READ_STALE_MS + 1000) : null,
+    ].filter((t): t is Date => t !== null);
+    const at = times.length ? new Date(Math.min(...times.map((t) => t.getTime()))) : null;
+    return { now: false, at };
   });
 }
 

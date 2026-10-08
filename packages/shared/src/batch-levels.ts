@@ -66,9 +66,18 @@ export const LEVEL_WORDS: Readonly<Record<BatchLevel, string>> = {
  *  - `password`: a PDF that needs a password, which the vault never asks for;
  *  - `unreadable`: the file could not be read as what it is;
  *  - `too_slow`: proposing from them took longer than its deadline;
- *  - `not_read`: a kind of file the vault does not read (a spreadsheet).
+ *  - `not_read`: a kind of file the vault does not read (a spreadsheet);
+ *  - `not_reachable`: the vault could not get to it — its storage, a key,
+ *    the proposal thread — for a day; not the file's fault.
  */
-export type BatchReadFailure = 'blank' | 'password' | 'unreadable' | 'too_slow' | 'not_read';
+export type BatchReadFailure =
+  | 'blank'
+  | 'password'
+  | 'unreadable'
+  | 'too_slow'
+  | 'not_read'
+  /** The vault could not get to it — its storage, a key, the thread — for a day (the I2 check). */
+  | 'not_reachable';
 
 export const READ_FAILURES: readonly BatchReadFailure[] = [
   'blank',
@@ -76,6 +85,7 @@ export const READ_FAILURES: readonly BatchReadFailure[] = [
   'unreadable',
   'too_slow',
   'not_read',
+  'not_reachable',
 ];
 
 /** Each reason in words, under "Couldn't read the pages". */
@@ -86,6 +96,7 @@ export const READ_FAILURE_WORDS: Readonly<Record<BatchReadFailure, string>> = {
   unreadable: 'The file could not be read as what it says it is.',
   too_slow: 'Reading its pages took too long, so nothing is suggested.',
   not_read: 'The vault does not read this kind of file: fill in its details yourself.',
+  not_reachable: 'The vault couldn’t read it in time. Remove it, or carry on uploading it again.',
 };
 
 /** What a tag says, for code to tell apart; its words are for people. */

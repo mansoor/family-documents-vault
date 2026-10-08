@@ -14,10 +14,13 @@
 -- and then `read_failure` says why. A read is taken by stamping
 -- `read_started_at`; one taken long ago, by a worker that stopped, is taken
 -- again, and only the worker that took it last writes what it read. Each
--- taking is counted (`read_attempts`): one that could not be finished — its
--- bytes not to be had, the proposal thread gone — waits behind the others
--- until `read_not_before`, and after a few tries is not read at all (the I2
--- review: one bad item never holds up its household).
+-- taking is counted (`read_attempts`), and one taken too often — the
+-- thread died holding it, a worker stopped under it — is not read at all
+-- (the I2 review: one bad item never holds up its household). One the vault
+-- could not get to — its storage, its key, the proposal thread out of reach
+-- — is not the item's fault: it waits, longer each time (`read_waits`,
+-- `read_not_before`), behind the others, and only a day after the first
+-- such wait (`read_waited_since`) is given up as not reachable.
 
 alter table incoming_file
   -- Its words, sealed (`item-text:<id>`): kept while it waits.
@@ -26,7 +29,8 @@ alter table incoming_file
   -- it is, too slow to propose from, or a kind the vault does not read.
   add column read_failure text
     constraint incoming_file_read_failure
-      check (read_failure in ('blank', 'password', 'unreadable', 'too_slow', 'not_read')),
+      check (read_failure in ('blank', 'password', 'unreadable', 'too_slow', 'not_read',
+                              'not_reachable')),
   -- When the worker took it to read.
   add column read_started_at timestamptz,
   -- How many times it has been taken to read, and, after one that could not
@@ -34,6 +38,11 @@ alter table incoming_file
   add column read_attempts smallint not null default 0
     constraint incoming_file_read_attempts check (read_attempts between 0 and 100),
   add column read_not_before timestamptz,
+  -- Waits for the vault itself (its storage, a key, the proposal thread):
+  -- how many, and since when. Not counted against the item.
+  add column read_waits smallint not null default 0
+    constraint incoming_file_read_waits check (read_waits between 0 and 1000),
+  add column read_waited_since timestamptz,
   add constraint incoming_file_text_batch check (text_sealed is null or batch_id is not null),
   -- A reason only for a read that failed, and a read that failed has one.
   add constraint incoming_file_read_failed
@@ -61,6 +70,8 @@ create policy incoming_file_actor_insert on incoming_file as restrictive for ins
                                     and read_started_at is null
                                     and read_attempts = 0
                                     and read_not_before is null
+                                    and read_waits = 0
+                                    and read_waited_since is null
                                     and told_at is null
                                     and wrapped_by_scope = (select k.id from scope_key k
                                                              where k.kind = 'member'

@@ -11,8 +11,10 @@ import type { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQueue } from '../queue.js';
 import {
+  batchPreviewsKey,
   batchWorkLeft,
   drawNextBatchItem,
+  LEFT_UNKNOWN_MS,
   sendBatchPreviews,
   sweepBatches,
   workBatchPreviews,
@@ -20,7 +22,7 @@ import {
 } from './batches.js';
 import { scanIncoming, sweepIncoming, tellWaiting, type IncomingDeps } from './incoming.js';
 import type { ItemProposer } from './proposal-thread.js';
-import { BATCH_JOB_EXPIRE_SECONDS } from './read-item.js';
+import { BATCH_JOB_EXPIRE_SECONDS, READ_STALE_MS } from './read-item.js';
 
 /**
  * Many documents at once (Phase 6, I1), in the worker: a batch's items
@@ -375,7 +377,137 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
     const left = await batchWorkLeft(deps, homes.b.hh);
     expect(left.now).toBe(false);
     expect(left.at?.getTime()).toBe(at.getTime());
+    // Left reading — a blip as it was written: when it is taken as stale (the I2 check).
+    const started = new Date(Date.now() - 60_000);
+    await admin.query(
+      "update incoming_file set read_state = 'reading', read_started_at = $2, read_not_before = null where id = $1",
+      [i.id, started],
+    );
+    const stuck = await batchWorkLeft(deps, homes.b.hh);
+    expect(stuck.now).toBe(false);
+    expect(stuck.at?.getTime()).toBe(started.getTime() + READ_STALE_MS + 1000);
   });
+
+  /** A queue that writes down what is sent, and hands back the job's handler. */
+  const fakeBoss = () => {
+    const sent: Array<{ key: unknown; startAfter: unknown }> = [];
+    let handler: ((jobs: Array<{ data: { household_id: string } }>) => Promise<void>) | null = null;
+    const boss = {
+      createQueue: async () => undefined,
+      updateQueue: async () => undefined,
+      work: async (_n: string, _o: unknown, h: typeof handler) => {
+        handler = h;
+      },
+      send: async (_n: string, _d: unknown, o: { singletonKey?: string; startAfter?: Date }) => {
+        sent.push({ key: o.singletonKey, startAfter: o.startAfter });
+        return 'job';
+      },
+    };
+    return {
+      boss: boss as unknown as PgBoss,
+      sent,
+      run: (hh: string) => handler?.([{ data: { household_id: hh } }]),
+    };
+  };
+
+  it('no hot loop: an item at the bound of its count is failed, not sent round again; what is left not known asks again later, never at once (the I2 check)', async () => {
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    const b = await batch('a');
+    const i = await item('a', b);
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 1, read_attempts = 100 where id = $1",
+      [i.id],
+    );
+    const q = fakeBoss();
+    await workBatchPreviews(q.boss, deps, {
+      read: {
+        maxPages: 1,
+        tools: { pdftoppm: false, magick: false, tesseract: false },
+        extract: async () => ({ text: 'PASSPORT', source: 'pdf', textPages: 1, ocrPages: 0 }),
+        proposer: { propose: async () => ({ state: 'done', proposal: {} }) },
+      },
+    });
+    for (let n = 0; n < 3; n++) await q.run(homes.a.hh);
+    expect(q.sent).toEqual([]);
+    const { rows } = await admin.query<{ read_state: string; read_failure: string }>(
+      'select read_state, read_failure from incoming_file where id = $1',
+      [i.id],
+    );
+    expect(rows[0]).toEqual({ read_state: 'failed', read_failure: 'unreadable' });
+
+    // The database out of reach: what is left cannot be told — asked again in a while.
+    const gone = createDb(createPool('postgres://fdv:fdv@127.0.0.1:1/nowhere', 1));
+    const broken = fakeBoss();
+    try {
+      await workBatchPreviews(broken.boss, { ...deps, db: gone, log: () => undefined });
+      await Promise.resolve(broken.run(homes.a.hh)).catch(() => undefined);
+    } finally {
+      await gone.destroy().catch(() => undefined);
+    }
+    expect(broken.sent).toHaveLength(1);
+    const after = broken.sent[0]?.startAfter as Date;
+    expect(after.getTime() - Date.now()).toBeGreaterThan(LEFT_UNKNOWN_MS - 5_000);
+  });
+
+  it('a job for later never holds back a new upload: it waits under a key of its own (the I2 check)', async () => {
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    const b = await batch('b');
+    // One drawn, waiting a minute to be read again: all there is to do, later.
+    const waiting = await item('b', b);
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 1, read_not_before = now() + interval '1 minute' where id = $1",
+      [waiting.id],
+    );
+    const drawn: string[] = [];
+    const draw: DrawItem = async (d, hh, f) => {
+      drawn.push(f.id);
+      await withSystem(d.db, hh, (trx) =>
+        trx
+          .updateTable('incoming_file')
+          .set({ preview_state: 'unsupported', preview_pages: 0 })
+          .where('id', '=', f.id)
+          .execute(),
+      );
+    };
+    const boss: PgBoss = createQueue({ connectionString: tdb.adminUrl, migrate: true });
+    boss.on('error', () => undefined);
+    await boss.start();
+    try {
+      await workBatchPreviews(boss, deps, {
+        draw,
+        pollingIntervalSeconds: 0.5,
+        read: {
+          maxPages: 1,
+          tools: { pdftoppm: false, magick: false, tesseract: false },
+          extract: async () => ({ text: 'PASSPORT', source: 'pdf', textPages: 1, ocrPages: 0 }),
+          proposer: { propose: async () => ({ state: 'done', proposal: {} }) },
+        },
+      });
+      // A run with nothing to do now: the household's next is sent for a minute on.
+      await sendBatchPreviews(boss, homes.b.hh);
+      for (let n = 0; n < 50; n++) {
+        const later = await admin.query(
+          "select 1 from pgboss.job where name = 'batch.previews' and singleton_key = $1 and state = 'created'",
+          [`${batchPreviewsKey(homes.b.hh)}:later`],
+        );
+        if (later.rows.length) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // A new upload, as the API sends it: drawn at once, not a minute on.
+      const fresh = await item('b', b);
+      await sendBatchPreviews(boss, homes.b.hh);
+      for (let n = 0; n < 60 && !drawn.includes(fresh.id); n++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(drawn).toContain(fresh.id);
+    } finally {
+      await boss.stop({ graceful: false });
+    }
+  }, 60_000);
 
   it('the job draws only a batch’s items, and the scan of files sent in never draws them', async () => {
     const b = await batch('a');

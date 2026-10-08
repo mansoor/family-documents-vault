@@ -241,8 +241,8 @@ describe('the batch page, read (I2)', () => {
     expect(row('later.pdf')).toHaveTextContent('Waiting to be read');
     // The summary, and how far the reading has got.
     expect(screen.getByText('1 Ready, 1 Check, 1 Not recognised, 2 Problems')).toBeVisible();
-    // None of this batch's on the worker: it waits its turn (the I2 review).
-    expect(screen.getByText('Waiting its turn to be read: 1 file to read')).toBeVisible();
+    // Nothing of it on the worker at this first answer: not yet said to wait its turn.
+    expect(screen.getByText('Reading 6 of 6…')).toBeVisible();
     await expectAccessible();
   });
 
@@ -265,7 +265,9 @@ describe('the batch page, read (I2)', () => {
       // One more read: the line moves, nothing is said.
       b.items[1] = item('item-2', 'two.pdf', { proposal: {} }, types);
       await waitFor(() =>
-        expect(screen.getByText('Waiting its turn to be read: 1 file to read')).toBeVisible(),
+        expect(
+          screen.getByText(/^(Reading 3 of 3…|Waiting its turn to be read: 1 file to read)$/),
+        ).toBeVisible(),
       );
       expect(heard()).toBe('');
       // The last read: said once, and the asking stops.
@@ -314,6 +316,58 @@ describe('the batch page, the review (I2)', () => {
       const done = asked();
       await new Promise((r) => setTimeout(r, 500));
       expect(asked()).toBe(done);
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+
+  it('between a job’s drawing and its reading nothing is on the worker for a moment: the line does not flicker to waiting its turn (the I2 check)', async () => {
+    const was = { ...batchPolling };
+    Object.assign(batchPolling, { every: 15, most: 15 });
+    let n = 0;
+    let state: FakeState | null = null;
+    try {
+      state = at(
+        '/inbox/batches/batch-1',
+        (types) => [
+          item('item-1', 'one.pdf', { proposal: PASSPORT('me') }, types),
+          item('item-2', 'two.pdf', { reading: 'reading' }, types),
+          item('item-3', 'three.pdf', { reading: 'waiting' }, types),
+        ],
+        {
+          // Each answer: one of its items on the worker, then none, then one…
+          refuseWith: (method, path) => {
+            if (method === 'GET' && path === '/api/v1/batches/batch-1' && state) {
+              const second = (state.batches?.[0] as FakeBatch).items[1] as BatchItemView;
+              second.reading = n++ % 2 === 0 ? 'waiting' : 'reading';
+            }
+            return undefined;
+          },
+        },
+      );
+      await screen.findByText(/^Reading \d of 3…$/);
+      let flickered = false;
+      const seen = new MutationObserver(() => {
+        if (document.body.textContent?.includes('Waiting its turn')) flickered = true;
+      });
+      seen.observe(document.body, { subtree: true, childList: true, characterData: true });
+      await waitFor(() => expect(n).toBeGreaterThan(12), { timeout: 3000 });
+      seen.disconnect();
+      expect(flickered).toBe(false);
+      // Then nothing of it on the worker, answer after answer: it waits its turn.
+      n = 0;
+      Object.assign(state, {
+        refuseWith: () => {
+          const second = (state?.batches?.[0] as FakeBatch).items[1] as BatchItemView;
+          second.reading = 'waiting';
+          return undefined;
+        },
+      });
+      expect(
+        await screen.findByText('Waiting its turn to be read: 2 files to read', undefined, {
+          timeout: 3000,
+        }),
+      ).toBeVisible();
     } finally {
       Object.assign(batchPolling, was);
     }
