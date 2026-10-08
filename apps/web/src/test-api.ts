@@ -561,6 +561,10 @@ export interface FakeState {
   maxUploadBytes?: number;
   /** How many files sent by XMLHttpRequest were stopped part way (I1 review: a sign-out stops one). */
   xhrStopped?: number;
+  /** How long an access token lasts, in seconds; 30 or less, every call refreshes it. */
+  accessSeconds?: number;
+  /** Whose session a refresh answers with: another tab signed in as somebody else (W535-07). */
+  refreshMember?: string;
 }
 
 /** A batch as the fake keeps it (I1): its items, removed ones marked so. */
@@ -963,7 +967,13 @@ export function installFakeApi(state: FakeState) {
       state.refreshToken = `hh.secret.${state.refreshCalls}`;
       // The real server decides the role from the session, not the client,
       // so refreshing must not hand back a role the test did not sign in as.
-      return json({ ...TOKENS, refresh_token: state.refreshToken, role: storedRole() });
+      return json({
+        ...TOKENS,
+        refresh_token: state.refreshToken,
+        role: storedRole(),
+        ...(state.accessSeconds !== undefined ? { expires_in: state.accessSeconds } : {}),
+        ...(state.refreshMember ? { member_id: state.refreshMember } : {}),
+      });
     }
     if (path === '/api/v1/me')
       return json({

@@ -523,22 +523,31 @@ export function AppShell() {
   const ended = (upload.phase === 'done' || upload.phase === 'stopped') && !upload.seen;
   const far = progressOf(upload);
   const files = (n: number) => `${n} ${n === 1 ? 'file' : 'files'}`;
+  // Stopped short — the vault busy, the connection gone, Stop pressed, a
+  // batch that takes no more — is not finished: how far it got, of all of
+  // them, and Send the rest while some can still go (the I1 check).
+  const short = upload.phase === 'stopped' && (far.waiting > 0 || upload.problem !== null);
+  const rest = far.waiting > 0 ? '. Send the rest' : '';
   const strip =
     onItsPage || !upload.batch
       ? null
       : going
         ? `Uploading ${Math.min(far.arrived + 1, far.total)} of ${far.total}`
-        : ended
-          ? `Upload finished: ${files(far.arrived)} arrived`
-          : null;
+        : ended && short
+          ? `Upload stopped: ${far.arrived} of ${files(upload.chosen.length)} arrived${rest}`
+          : ended
+            ? `Upload finished: ${files(far.arrived)} arrived`
+            : null;
   const stripSaid =
     onItsPage || !upload.batch
       ? ''
       : going
         ? 'Your upload carries on. Follow it from Uploading, at the top of the page.'
-        : ended
-          ? `Your upload has finished: ${files(far.arrived)} arrived in “${upload.batch.label}”.`
-          : '';
+        : ended && short
+          ? `Your upload stopped: ${far.arrived} of ${files(upload.chosen.length)} arrived in “${upload.batch.label}”${rest}.`
+          : ended
+            ? `Your upload has finished: ${files(far.arrived)} arrived in “${upload.batch.label}”.`
+            : '';
 
   // One tree at every width, the page always in the same place in it: a
   // window turned or resized across 768 px keeps what is on the page (a

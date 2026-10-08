@@ -1155,3 +1155,90 @@ describe('many documents at once, the review (I1)', () => {
     ]);
   });
 });
+
+describe('many documents at once, the check (I1)', () => {
+  it('another tab signed in as somebody else: the upload stops, nothing more goes under their sign-in, and nothing of it is shown', async () => {
+    let release: (() => void) | null = null;
+    const state = at('/add/many', {
+      // Every call asks for a fresh token: the session another tab left is found at once.
+      accessSeconds: 30,
+      hold: (method, path) =>
+        method === 'POST' && /items$/.test(path) && !release
+          ? new Promise<void>((r) => (release = r))
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('mine-one.pdf'), pdf('mine-two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 2 files' }));
+    await screen.findByRole('button', { name: 'Stop after this file' });
+    await waitFor(() => expect(release).not.toBeNull());
+    // Another tab signs in as somebody else; this one takes their sign-in over.
+    state.refreshMember = 'somebody-else';
+    act(() => (release as () => void)());
+    await waitFor(() => expect(screen.getByLabelText('Choose files')).toBeInTheDocument());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts(state, /\/items$/)).toHaveLength(1);
+    expect(screen.queryByText('mine-one.pdf')).toBeNull();
+    expect(screen.queryByText('mine-two.pdf')).toBeNull();
+    expect(screen.queryByRole('link', { name: /^Upload/ })).toBeNull();
+  });
+
+  it('Add another batch on a carry-on page starts a new batch, not the one carried on', async () => {
+    const state = at('/add/many?batch=batch-1', { batches: [OLD_PAPERS()] });
+    await screen.findByRole('heading', { name: 'Carry on: Old papers' });
+    choose([pdf('one.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Send 1 file' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    fireEvent.click(screen.getByRole('button', { name: 'Add another batch' }));
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Add many documents'),
+    );
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('two.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 1 file' }));
+    await screen.findByRole('link', { name: 'Open the batch' });
+    expect(posts(state, /\/api\/v1\/batches$/)).toHaveLength(1);
+    expect(posts(state, /\/items$/).map((c) => c.url)).toEqual([
+      '/api/v1/batches/batch-1/items',
+      '/api/v1/batches/batch-2/items',
+    ]);
+  });
+
+  it('stopped short away from its page: the shell says how far it got, and Send the rest, never finished', async () => {
+    let release: (() => void) | null = null;
+    let n = 0;
+    const state = at('/add/many', {
+      hold: (method, path) =>
+        method === 'POST' && /items$/.test(path) && !release
+          ? new Promise<void>((r) => (release = r))
+          : undefined,
+      refuseWith: (method, path) =>
+        method === 'POST' && /\/items$/.test(path) && ++n === 2
+          ? { status: 503, code: 'unavailable', message: 'The vault is busy.' }
+          : undefined,
+    });
+    await screen.findByRole('heading', { name: 'Add many documents' });
+    await screen.findByRole('option', { name: 'Aisha' });
+    choose([pdf('a.pdf'), pdf('b.pdf'), pdf('c.pdf')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Start: upload 3 files' }));
+    await screen.findByRole('button', { name: 'Stop after this file' });
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: 'Sections' })).getByRole('link', {
+        name: /^Home/,
+      }),
+    );
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
+    await waitFor(() => expect(release).not.toBeNull());
+    act(() => (release as () => void)());
+    const strip = await screen.findByRole('link', {
+      name: /^Upload stopped: 1 of 3 files arrived\. Send the rest/,
+    });
+    expect(strip).toHaveAttribute('href', '/add/many');
+    expect(screen.queryByText(/Upload finished/)).toBeNull();
+    expect(
+      screen.getByText(/^Your upload stopped: 1 of 3 files arrived in “.+”\. Send the rest\.$/),
+    ).toBeInTheDocument();
+    expect(posts(state, /\/items$/)).toHaveLength(2);
+  });
+});

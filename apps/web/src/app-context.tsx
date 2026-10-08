@@ -75,7 +75,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const withToken = useCallback(
     async <T,>(fn: (token: string) => Promise<T>): Promise<T | null> => {
+      const was = session.info;
       const got = await session.token();
+      const now = session.info;
+      // This tab took over another tab's sign-in, as somebody else (W535-07):
+      // nothing asked as the last person goes ahead as the next, and the app
+      // starts again for whoever it is now — an upload of many documents
+      // stopped and forgotten with it (the I1 check).
+      if (
+        got.kind === 'ok' &&
+        was &&
+        now &&
+        (was.member_id !== now.member_id || was.household_id !== now.household_id)
+      ) {
+        markAuthChanged();
+        return null;
+      }
       if (got.kind === 'offline') {
         // No answer is not "signed out": the session is kept, and the
         // screen that asked says the vault cannot be reached, rather than

@@ -164,6 +164,7 @@ function AddMany({ visit }: { visit: string }) {
   const narrow = useSyncExternalStore(watchTablet, narrowNow);
   const [params] = useSearchParams();
   const [upload, uploads] = useUploads();
+  const navigate = useNavigate();
   useLayoutEffect(() => uploads.opened(visit), [uploads, visit]);
   const resuming = params.get('batch');
   const limit = caps?.limits.max_upload_bytes ?? Number.POSITIVE_INFINITY;
@@ -486,7 +487,8 @@ function AddMany({ visit }: { visit: string }) {
                         Send the rest
                       </Button>
                     )}
-                    <Button kind="quiet" onClick={() => uploads.reset()}>
+                    {/* A new visit, without ?batch=: a new batch, never the one carried on (the I1 check). */}
+                    <Button kind="quiet" onClick={() => void navigate('/add/many')}>
                       Add another batch
                     </Button>
                   </div>

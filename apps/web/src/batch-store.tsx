@@ -310,6 +310,8 @@ export class BatchUploads {
       await this.run(withToken, target, there);
     } finally {
       this.busy = false;
+      // Stopped for a change of person as this run ended: forgotten now.
+      if (this.aborted) this.forget();
     }
   }
 
@@ -334,6 +336,8 @@ export class BatchUploads {
       await this.run(withToken, target, there);
     } finally {
       this.busy = false;
+      // Stopped for a change of person as this run ended: forgotten now.
+      if (this.aborted) this.forget();
     }
   }
 
