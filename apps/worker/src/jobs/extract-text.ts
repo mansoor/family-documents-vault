@@ -43,6 +43,11 @@ export interface ExtractOptions {
   tools?: Tools;
   /** Reads one drawn page or photo: Tesseract, in English, unless a test stands in for it. */
   ocr?: (image: string) => Promise<string>;
+  /**
+   * Ends the reading when aborted (Phase 6, I2: an item's read has a
+   * deadline): every tool still running is killed, and it throws.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExtractedText {
@@ -100,7 +105,9 @@ export async function extractText(
   opts: ExtractOptions,
 ): Promise<ExtractedText | null> {
   const tools = opts.tools ?? (await detectTools());
-  const ocr = opts.ocr ?? ((image: string) => ocrImage(image));
+  const signal = opts.signal;
+  const ocr = opts.ocr ?? ((image: string) => ocrImage(image, 'eng', signal));
+  signal?.throwIfAborted();
   if (mime === WORD_MIME) {
     return { text: kept(await wordText(file)), source: 'word', textPages: 0, ocrPages: 0 };
   }
@@ -119,21 +126,25 @@ async function readPdf(
   ocr: (image: string) => Promise<string>,
 ): Promise<ExtractedText | null> {
   const canOcr = tools.tesseract && tools.pdftoppm;
-  const total = tools.pdftoppm ? await pdfPageCount(file) : null;
+  const signal = opts.signal;
+  const total = tools.pdftoppm ? await pdfPageCount(file, signal) : null;
   // The text the PDF carries; none when it cannot be read that way (an
   // older image without pdftotext, a file pdftotext refuses), and then
   // every page is OCR'd, as before 5.37.
   let own: string[] = [];
   if (tools.pdftotext) {
-    own = await pdfPageTexts(file, Math.min(total ?? opts.maxPages, opts.maxPages)).catch(() => []);
+    own = await pdfPageTexts(file, Math.min(total ?? opts.maxPages, opts.maxPages), signal).catch(
+      () => [],
+    );
   }
   const pages = total !== null ? Math.min(total, opts.maxPages) : own.length;
   // How much of each page is a picture: none of a text page's, all of a scan's.
-  const coverage = tools.pdfimages && pages > 0 ? await pdfImageCoverage(file, pages) : null;
+  const coverage =
+    tools.pdfimages && pages > 0 ? await pdfImageCoverage(file, pages, signal) : null;
   if (pages === 0) {
     // Nothing could count its pages: draw what there is, and OCR it.
     if (!canOcr) return null;
-    const drawn = await renderPdfPages(file, opts.workDir, opts.maxPages);
+    const drawn = await renderPdfPages(file, opts.workDir, opts.maxPages, 150, signal);
     const texts: string[] = [];
     for (const page of drawn) texts.push(await ocr(page));
     return { text: kept(texts.join('\n\n')), source: 'ocr', textPages: 0, ocrPages: drawn.length };
@@ -152,10 +163,13 @@ async function readPdf(
       continue;
     }
     // A scan, drawn and read; with any text of its own kept beside it.
-    const read = (await ocr(await renderPdfPage(file, opts.workDir, n))).trim();
+    signal?.throwIfAborted();
+    const read = (await ocr(await renderPdfPage(file, opts.workDir, n, 150, signal))).trim();
     texts.push(count > 0 ? `${words.trim()}\n${read}` : read);
     ocrPages += 1;
   }
+  // Told to stop part-way (a tool killed, its error swallowed above): not read.
+  signal?.throwIfAborted();
   if (textPages === 0 && ocrPages === 0 && !tools.pdftotext) return null;
   return {
     text: kept(texts.filter((t) => t !== '').join('\n\n')),

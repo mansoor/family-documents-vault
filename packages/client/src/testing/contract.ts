@@ -6,7 +6,9 @@ import {
   reminderOf,
   reminderSentence,
   shareEndWords,
+  type BatchReadFailure,
   type CreatedUploadRequest,
+  type DetailProposal,
   type DocumentTypeInput,
   type Role,
   type Tokens,
@@ -81,6 +83,17 @@ export interface ContractContext {
    * has none, and its scenarios never ask.
    */
   endGuestAccess?: (memberId: string) => Promise<void>;
+  /**
+   * A batch's items read, as the vault's worker reads them (Phase 6, I2):
+   * the real API's run seals each one's words and what they propose under
+   * the item's own key, as the worker does; the fake's keeps them on the
+   * item. Optional: a context from before I2 has none, and its scenarios
+   * never ask.
+   */
+  readBatchItems?: (
+    batchId: string,
+    reads: Record<string, { proposal: DetailProposal } | { failure: BatchReadFailure }>,
+  ) => Promise<void>;
 }
 
 export interface Scenario {
@@ -2512,6 +2525,115 @@ export const contractScenarios: Scenario[] = [
         preview_pages: null,
       });
       await api.removeBatch(token, mine.id);
+    },
+  },
+  {
+    name: 'many documents at once, read and suggested: an item read is Ready, a confident disagreement with the batch is Check with both, pages not read and a duplicate are Problems, and an accept takes only what is sent (I2)',
+    run: async (api, ctx) => {
+      if (!ctx.readBatchItems) return;
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.batch_proposals).toBe(true);
+      const me = await api.me(token);
+      const ruth = await ctx.addSignIn(token, {
+        name: 'Ruth',
+        email: 'batch-ruth@example.test',
+        password: 'Ruth’s own long password',
+        role: 'adult',
+      });
+      const myName = (await api.members(token)).items.find((m) => m.is_me)?.display_name;
+      const b = await api.createBatch(token, {
+        name: 'Read for me',
+        defaults: { owner_member_id: me.member_id },
+      });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract read ${n}\n%%EOF\n`),
+      });
+      const ready = await api.addBatchItem(token, b.id, file('ready'));
+      const clash = await api.addBatchItem(token, b.id, file('clash'));
+      const locked = await api.addBatchItem(token, b.id, file('locked'));
+      const first = await api.addBatchItem(token, b.id, file('twice'));
+      const twice = await api.addBatchItem(token, b.id, file('twice'));
+      const waiting = await api.addBatchItem(token, b.id, file('waiting'));
+      expect(waiting).toMatchObject({ reading: 'waiting', level: null, tags: [], clashes: [] });
+      const day = (date: string) => ({ date, precision: 'day' as const });
+      const passport = (owner: string): DetailProposal => ({
+        type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' },
+        owner_member_id: { value: owner, confidence: 0.9, cue: 'name_labelled' },
+        expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
+        identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
+        issued_by: { value: 'United Kingdom', confidence: 0.9, cue: 'machine_lines' },
+      });
+      await ctx.readBatchItems(b.id, {
+        [ready.id]: { proposal: passport(me.member_id) },
+        [clash.id]: { proposal: passport(ruth) },
+        [locked.id]: { failure: 'password' },
+        [first.id]: { proposal: passport(me.member_id) },
+        [twice.id]: { proposal: passport(me.member_id) },
+      });
+      const got = await api.batch(token, b.id);
+      const by = (id: string) => got.items.find((i) => i.id === id);
+      expect(by(ready.id)).toMatchObject({
+        reading: 'read',
+        read_failure: null,
+        level: 'ready',
+        tags: [],
+        clashes: [],
+        proposals: {
+          type_key: { value: 'passport', from: 'pages', confidence: 0.97, cue: 'kind_words' },
+          owner_member_id: { value: me.member_id, from: 'both', confidence: 0.9 },
+          expires: { value: day('2031-03-14'), from: 'pages', confidence: 0.94 },
+          identifier: { value: '533401872', from: 'pages', confidence: 0.95 },
+          visibility: { value: 'household', from: 'kind' },
+        },
+      });
+      expect(by(clash.id)).toMatchObject({
+        level: 'check',
+        clashes: [
+          {
+            field: 'owner_member_id',
+            pages: { value: ruth, confidence: 0.9, cue: 'name_labelled' },
+            batch: me.member_id,
+          },
+        ],
+        tags: [
+          {
+            code: 'clash_person',
+            kind: 'check',
+            words: `The pages say Ruth, the batch says ${myName}`,
+          },
+        ],
+        // The batch's stands until somebody chooses.
+        proposals: { owner_member_id: { value: me.member_id, from: 'batch' } },
+      });
+      expect(by(locked.id)).toMatchObject({
+        reading: 'failed',
+        read_failure: 'password',
+        level: 'problem',
+        tags: [{ code: 'unread', kind: 'problem', words: 'Couldn’t read the pages' }],
+      });
+      expect(by(first.id)?.level).toBe('ready');
+      expect(by(twice.id)).toMatchObject({
+        level: 'problem',
+        tags: [{ code: 'duplicate_in_batch', kind: 'problem', words: 'Also in this batch' }],
+      });
+      // Accepted with nothing said: the batch's defaults, and no proposal nobody chose.
+      const done = await api.acceptBatchItem(token, b.id, ready.id, {});
+      expect(await api.document(token, done.document_id)).toMatchObject({
+        owner_member_id: me.member_id,
+        type_key: null,
+        identifier: null,
+        expires: null,
+        issued_by: null,
+      });
+      expect((await api.batch(token, b.id)).items.find((i) => i.id === ready.id)).toMatchObject({
+        state: 'accepted',
+        level: null,
+        proposals: null,
+      });
+      await api.removeBatch(token, b.id);
     },
   },
   {

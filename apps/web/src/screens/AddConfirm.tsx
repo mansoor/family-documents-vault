@@ -7,6 +7,7 @@ import {
   issuedByLabel,
   issuerFromFilename,
   issuerKey,
+  ITEM_SURE,
   missingFields,
   NOTES_MAX,
   parseDateInput,
@@ -14,6 +15,7 @@ import {
   reminderOf,
   reminderSentence,
   visibilityChoices,
+  type BatchClash,
   type CaptureMetadata,
   type CollectionView,
   type CoreField,
@@ -21,6 +23,7 @@ import {
   type DocumentTypeView,
   type DocumentView,
   type IssuerSuggestions,
+  type ItemSuggestion,
   type KnownIssuer,
   type RequiredValues,
   type Role,
@@ -601,6 +604,31 @@ function useIssuerOffers(opts: {
   return offers.slice(0, ISSUER_OFFERS);
 }
 
+/** The details a batch's item card marks with where they came from (I2). */
+export type CardMarkField =
+  'type_key' | 'owner_member_id' | 'issued_by' | 'issued' | 'expires' | 'identifier';
+
+/**
+ * Where a detail on the card came from, beside its label and heard with it
+ * (I2): "suggested · 92%" — "· unsure" under the bar a Ready item needs —
+ * or "from the batch". The prototype's marks.
+ */
+function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }) {
+  const { mark } = props;
+  if (mark.from === 'batch' || mark.confidence === null || mark.cue === null) {
+    return <span className="mark-batch">from the batch</span>;
+  }
+  // Unsure as the level says it: only what the pages alone say (the I2 review).
+  const sure =
+    mark.from === 'pages' ? (ITEM_SURE as Record<string, number>)[props.field] : undefined;
+  return (
+    <>
+      <SuggestedMark confidence={mark.confidence} cue={mark.cue} />
+      {sure !== undefined && mark.confidence < sure && <span className="mark-unsure">unsure</span>}
+    </>
+  );
+}
+
 export function ConfirmForm(props: {
   title: string;
   back: string;
@@ -640,6 +668,17 @@ export function ConfirmForm(props: {
    * otherwise — a batch's, never wider than the batch chose (I1).
    */
   startVisibility?: (type: DocumentTypeView | undefined, owner: string) => Visibility;
+  /**
+   * Where each detail the card starts from came from (a batch's item, I2):
+   * read from the pages, with how sure, or the batch's. A detail changed on
+   * the card loses its mark.
+   */
+  marks?: Partial<Record<CardMarkField, ItemSuggestion<unknown>>>;
+  /**
+   * Where the pages confidently disagree with the batch (I2): both said, the
+   * batch's on the card, and the pages' one press away.
+   */
+  clashes?: readonly BatchClash[];
   /** Throws to keep the card open with the vault's words. */
   onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
   /** Save without details: offered for a new document only. */
@@ -679,6 +718,16 @@ export function ConfirmForm(props: {
   const [detailValues, setDetailValues] = useState<Record<string, DetailInput>>(initial.details);
   // Once Save has waited for them, the fields it waited for say so.
   const [waited, setWaited] = useState(false);
+  // Said when whose it is makes Only me wider (the I2 review, W-I2-7).
+  const [widened, setWidened] = useState('');
+  // The marks of the details changed on the card (I2): changed, a detail is the person's own.
+  const [unmarked, setUnmarked] = useState<ReadonlySet<CardMarkField>>(() => new Set());
+  const unmark = (field: CardMarkField) =>
+    setUnmarked((was) => (was.has(field) ? was : new Set([...was, field])));
+  const markOf = (field: CardMarkField) => {
+    const mark = props.marks?.[field];
+    return mark && !unmarked.has(field) ? <CardMark field={field} mark={mark} /> : undefined;
+  };
   // The field Save could not read, marked until it is changed.
   const [unread, setUnread] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -862,10 +911,12 @@ export function ConfirmForm(props: {
   };
   const chooseIssuer = (v: string) => {
     setIssuer(v);
+    unmark('issued_by');
     retitle({ issuer: v });
   };
   const chooseType = (v: string) => {
     setTypeKey(v);
+    unmark('type_key');
     // Another type asks for other things: nothing is marked until
     // Save has waited for them.
     setWaited(false);
@@ -881,13 +932,22 @@ export function ConfirmForm(props: {
   const chooseOwner = (v: string) => {
     setOwner(v);
     setOwnerChosen(true);
+    unmark('owner_member_id');
     retitle({ who: members.find((m) => m.id === v) ?? null });
+    let next = visibility;
     if (props.fileName && !visibilityChosen && (type || props.startVisibility)) {
       // Nobody has chosen yet: the kind's default, for this person.
-      setVisibility(startVisibility(type, v));
+      next = startVisibility(type, v);
     } else if (visibility === 'private' && v !== me?.id) {
       // Only me is for your own documents.
-      setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
+      next = adultsOnlyAllowed ? 'adults' : 'household';
+    }
+    setVisibility(next);
+    // Made wider by whose it is: said, never done silently (the I2 review).
+    if (visibility === 'private' && next !== 'private') {
+      setWidened(
+        `Who can see this is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
+      );
     }
   };
 
@@ -1043,6 +1103,56 @@ export function ConfirmForm(props: {
     await run(() => props.onSubmit(details));
   };
 
+  /**
+   * A confident disagreement between the pages and the batch (I2): both
+   * said, under the field, and the other one press away. The batch's is on
+   * the card until somebody chooses.
+   */
+  const clashBox = (field: 'type_key' | 'owner_member_id') => {
+    const c = props.clashes?.find((x) => x.field === field);
+    if (!c) return null;
+    const now = field === 'type_key' ? typeKey : owner;
+    const nameOf = (v: string) =>
+      field === 'type_key'
+        ? (types.find((t) => t.key === v)?.label ?? 'another kind')
+        : (members.find((m) => m.id === v)?.display_name ?? 'somebody else');
+    const pages = nameOf(c.pages.value);
+    const batch = nameOf(c.batch);
+    const usePages = now !== c.pages.value;
+    const id = field === 'type_key' ? 'f-type' : 'f-who';
+    // Somebody else's, on a card that is Only me: the button says it widens it.
+    const widens =
+      field === 'owner_member_id' &&
+      visibility === 'private' &&
+      (usePages ? c.pages.value : c.batch) !== me?.id;
+    const wider = adultsOnlyAllowed ? 'Adults only' : 'Everyone';
+    const use = usePages ? pages : batch;
+    const said = widens
+      ? `Use ${use}: Only me is for your own, so ${wider}`
+      : usePages
+        ? `Use ${pages}, as the pages say`
+        : `Use ${batch}, as the batch says`;
+    return (
+      <div className="clash-box" role="group" aria-label="The pages and the batch disagree">
+        <p>
+          The batch says <strong>{batch}</strong>; the pages say <strong>{pages}</strong>{' '}
+          <SuggestedMark confidence={c.pages.confidence} cue={c.pages.cue} />
+        </p>
+        <Button
+          kind="quiet"
+          onClick={() => {
+            const v = usePages ? c.pages.value : c.batch;
+            if (field === 'type_key') chooseType(v);
+            else chooseOwner(v);
+            document.getElementById(id)?.focus();
+          }}
+        >
+          {said}
+        </Button>
+      </div>
+    );
+  };
+
   // The promise, under the date it is about and heard with it (5.16b):
   // Expires's in its own words, as always; a date field its kind reminds
   // from, with the 'once' line, and on an Only me document, what the vault
@@ -1092,6 +1202,7 @@ export function ConfirmForm(props: {
           label="What it is"
           value={typeKey}
           onChange={chooseType}
+          mark={markOf('type_key')}
           options={[
             { value: '', label: 'Not sure yet' },
             // A kind hidden or archived is not offered for a new document;
@@ -1106,6 +1217,7 @@ export function ConfirmForm(props: {
           chooseType(proposal.type_key.value);
           document.getElementById('f-type')?.focus();
         })}
+        {clashBox('type_key')}
         <Field
           id="f-title"
           label="Name"
@@ -1122,6 +1234,7 @@ export function ConfirmForm(props: {
           label="Whose it is"
           value={owner}
           onChange={chooseOwner}
+          mark={markOf('owner_member_id')}
           options={[
             { value: '', label: 'Not sure yet' },
             ...people.map((m) => ({ value: m.id, label: m.display_name })),
@@ -1139,6 +1252,7 @@ export function ConfirmForm(props: {
             document.getElementById('f-who')?.focus();
           },
         )}
+        {clashBox('owner_member_id')}
         {issuerShown && (
           <Field
             id="f-issuer"
@@ -1147,6 +1261,7 @@ export function ConfirmForm(props: {
             onChange={chooseIssuer}
             required={false}
             requiredMark={asks('issued_by')}
+            mark={markOf('issued_by')}
             invalid={invalid('f-issuer')}
           />
         )}
@@ -1186,10 +1301,12 @@ export function ConfirmForm(props: {
             onChange={(v) => {
               setIssued(v);
               changed('f-issued');
+              unmark('issued');
               retitle({ issued: v });
             }}
             required={false}
             requiredMark={asks('issued')}
+            mark={markOf('issued')}
             invalid={invalid('f-issued')}
             placeholder="14 Mar 2021"
             hint="A date, a month (March 2021) or a year"
@@ -1214,9 +1331,11 @@ export function ConfirmForm(props: {
             onChange={(v) => {
               setExpires(v);
               changed('f-expires');
+              unmark('expires');
             }}
             required={false}
             requiredMark={asks('expires')}
+            mark={markOf('expires')}
             invalid={invalid('f-expires')}
             placeholder="14 Mar 2031"
             hint="A date, a month (March 2031) or a year"
@@ -1237,9 +1356,13 @@ export function ConfirmForm(props: {
             id="f-number"
             label={identifierLabel}
             value={identifier}
-            onChange={setIdentifier}
+            onChange={(v) => {
+              setIdentifier(v);
+              unmark('identifier');
+            }}
             required={false}
             requiredMark={asks('identifier')}
+            mark={markOf('identifier')}
             invalid={invalid('f-number')}
           />
         )}
@@ -1321,6 +1444,9 @@ export function ConfirmForm(props: {
             />
           </>
         )}
+        <p role="status" className="visually-hidden">
+          {widened}
+        </p>
         <div className="field" role="group" aria-label="Who can see this">
           <span className="field-label">Who can see this</span>
           <div className="pills">

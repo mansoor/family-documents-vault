@@ -1,3 +1,10 @@
+import type {
+  BatchClash,
+  BatchLevel,
+  BatchReadFailure,
+  BatchTag,
+  ItemProposals,
+} from './batch-levels.js';
 import type { CaptureMetadata } from './capture.js';
 import { effectiveVisibility } from './capture.js';
 import type { DocumentTypeView, Visibility } from './documents.js';
@@ -103,8 +110,27 @@ export interface BatchItemView {
   sha256: string;
   arrived_at: string;
   state: BatchItemState;
-  /** Read for its details (I2 fills this); `waiting` in I1. */
+  /**
+   * Read for its details (I2): `waiting` until the worker takes it,
+   * `reading`, then `read` — or `failed`, and `read_failure` says why.
+   */
   reading: BatchReadState;
+  /** Why its pages were not read, while `reading` is `failed` (I2); absent from an I1 vault. */
+  read_failure?: BatchReadFailure | null;
+  /**
+   * What the vault made of it (I2), for its uploader alone, worked out as it
+   * is asked from what its pages proposed, the batch's defaults and the
+   * kinds as they are now (`levelItem`): Ready, Check, Not recognised or a
+   * Problem; null while it is not read yet (unless it is a duplicate), and
+   * once it is accepted. Absent from an I1 vault.
+   */
+  level?: BatchLevel | null;
+  /** Why it is at its level: a duplicate, unsure, missing, disagreed about, narrowed. */
+  tags?: BatchTag[];
+  /** What its card starts from: each detail proposed or defaulted, with how sure. Null once accepted. */
+  proposals?: ItemProposals | null;
+  /** Where the pages confidently disagree with a default (0.8 or more): both values. */
+  clashes?: BatchClash[];
   /**
    * Its pages, drawn by the worker one at a time a household: served at
    * …/pages/{n} while it waits. `none` once it is accepted: its pages went

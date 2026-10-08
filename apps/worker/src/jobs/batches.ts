@@ -1,6 +1,14 @@
 import { withSystem } from '@fdv/db';
 import type { PgBoss } from 'pg-boss';
 import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } from './incoming.js';
+import {
+  BATCH_JOB_EXPIRE_SECONDS,
+  READ_STALE_MS,
+  drawnOrNot,
+  readNextBatchItem,
+  unread,
+  type ReadOptions,
+} from './read-item.js';
 
 /**
  * Many documents at once (Phase 6, I1): what the worker does for a batch's
@@ -15,11 +23,17 @@ import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } fr
  *    a batch of 200 is drawn one at a time, taking its turn with every
  *    other household's; a single add (version.process) and a file sent
  *    through a request (incoming.scan) are on queues of their own and wait
- *    for none of it. No OCR: an item is read once it is filed (and, from
- *    I2, for its proposals).
+ *    for none of it.
+ *  - and, since I2, in the same job and the same turn, one item read: the
+ *    oldest whose pages are drawn and whose words are not read yet, its
+ *    words taken and proposed for (read-item.ts). A job draws one item and
+ *    reads one, so the first items of a batch are ready to review while the
+ *    rest wait, and the household's turn is still one item at a time.
  *  - the daily sweep (incoming.sweep): a batch past its end, removed with
  *    what is undecided in it, its bytes and pages first; and a household
- *    whose items have waited ten minutes undrawn — a job lost — sent again.
+ *    whose items have waited ten minutes undrawn or unread — a job lost —
+ *    sent again. The worker's start does the same for every household, and
+ *    first puts back to waiting any read a worker that stopped left taken.
  *
  * Nobody is told of an item: it is its uploader's own, and they are
  * looking at it.
@@ -73,13 +87,26 @@ export async function drawNextBatchItem(
  * The job, on a queue of its own: `stately`, so one waits and one runs a
  * household, and each run sends the next. main.ts registers it so, and
  * the ordering test the same way.
+ *
+ * Whatever happens in a run (the I2 review, P-I2-1), it ends by sending the
+ * household's next while there is work left: at once, or — where all that
+ * is left is an item waiting to be read again — once its wait is over. A
+ * run may take BATCH_JOB_EXPIRE_SECONDS before the queue takes it as lost:
+ * above a read's deadline, under the time a read is taken as stale.
  */
 export async function workBatchPreviews(
   boss: PgBoss,
   deps: IncomingDeps,
-  opts: { draw?: DrawItem; pollingIntervalSeconds?: number } = {},
+  opts: { draw?: DrawItem; pollingIntervalSeconds?: number; read?: ReadOptions } = {},
 ): Promise<void> {
-  await boss.createQueue(BATCH_PREVIEWS, { policy: 'stately', retryLimit: 2, retryDelay: 30 });
+  const settings = {
+    retryLimit: 2,
+    retryDelay: 30,
+    expireInSeconds: BATCH_JOB_EXPIRE_SECONDS,
+  };
+  await boss.createQueue(BATCH_PREVIEWS, { policy: 'stately', ...settings });
+  // A queue made before I2 takes the expiry too.
+  await boss.updateQueue(BATCH_PREVIEWS, settings);
   await boss.work<BatchPreviewsJob>(
     BATCH_PREVIEWS,
     {
@@ -90,20 +117,102 @@ export async function workBatchPreviews(
     },
     async (jobs) => {
       for (const job of jobs) {
-        const r = await drawNextBatchItem(deps, job.data, opts.draw);
-        if (r.more) await sendBatchPreviews(boss, job.data.household_id);
+        const hh = job.data.household_id;
+        try {
+          await drawNextBatchItem(deps, job.data, opts.draw);
+          // Then one item read, drawn already: this one, or one before it.
+          if (opts.read) await readNextBatchItem(deps, hh, opts.read);
+        } finally {
+          // Not known: asked again in a little while, never at once (the I2 check).
+          const left = await batchWorkLeft(deps, hh, Boolean(opts.read)).catch((err: unknown) => {
+            deps.log('warn', 'could not tell what a household’s batches have left', {
+              household: hh,
+              err: (err as Error).message.slice(0, 200),
+            });
+            return { now: false, at: new Date(Date.now() + LEFT_UNKNOWN_MS) };
+          });
+          if (left.now) await sendBatchPreviews(boss, hh);
+          else if (left.at) await sendBatchPreviews(boss, hh, left.at);
+        }
       }
     },
   );
 }
 
-/** One household's job, behind whatever else is queued; dropped if one already waits. */
-export async function sendBatchPreviews(boss: PgBoss, householdId: string): Promise<void> {
+/** What a household's batches have left could not be told: asked again this much later. */
+export const LEFT_UNKNOWN_MS = 30_000;
+
+/**
+ * One household's job, behind whatever else is queued, and dropped if one
+ * already waits. One for later (`after`) waits under a key of its own (the
+ * I2 check): queued with a time ahead, it would otherwise drop the job a new
+ * upload sends, and the upload would wait for it.
+ */
+export async function sendBatchPreviews(
+  boss: PgBoss,
+  householdId: string,
+  after?: Date,
+): Promise<void> {
   await boss.send(
     BATCH_PREVIEWS,
     { household_id: householdId },
-    { singletonKey: batchPreviewsKey(householdId) },
+    after
+      ? { singletonKey: batchPreviewsLaterKey(householdId), startAfter: after }
+      : { singletonKey: batchPreviewsKey(householdId) },
   );
+}
+
+/** The key a household's job for later waits under. */
+export const batchPreviewsLaterKey = (householdId: string) =>
+  `${batchPreviewsKey(householdId)}:later`;
+
+/**
+ * What one household's batches have left to do (the I2 review): an item to
+ * draw, or — where this worker reads — one drawn to read, now; or else the
+ * soonest an item waiting to be read again may be taken.
+ */
+export async function batchWorkLeft(
+  deps: Pick<IncomingDeps, 'db'>,
+  hh: string,
+  reads = true,
+): Promise<{ now: boolean; at: Date | null }> {
+  return withSystem(deps.db, hh, async (trx) => {
+    const now = await trx
+      .selectFrom('incoming_file')
+      .select('id')
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where((eb) =>
+        reads ? eb.or([undrawn(eb), eb.and([unread(eb), drawnOrNot(eb)])]) : undrawn(eb),
+      )
+      .limit(1)
+      .executeTakeFirst();
+    if (now) return { now: true, at: null };
+    if (!reads) return { now: false, at: null };
+    const later = await trx
+      .selectFrom('incoming_file')
+      .select((eb) => eb.fn.min('read_not_before').as('at'))
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where('read_state', '=', 'waiting')
+      .where('read_not_before', '>', new Date())
+      .executeTakeFirst();
+    // And one left reading — a database blip as it was written — when it
+    // is taken as stale (the I2 check), not at the nightly sweep.
+    const stuck = await trx
+      .selectFrom('incoming_file')
+      .select((eb) => eb.fn.min('read_started_at').as('at'))
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where('read_state', '=', 'reading')
+      .executeTakeFirst();
+    const times = [
+      later?.at ? new Date(later.at) : null,
+      stuck?.at ? new Date(new Date(stuck.at).getTime() + READ_STALE_MS + 1000) : null,
+    ].filter((t): t is Date => t !== null);
+    const at = times.length ? new Date(Math.min(...times.map((t) => t.getTime()))) : null;
+    return { now: false, at };
+  });
 }
 
 /**
@@ -166,7 +275,10 @@ export async function sweepBatches(
   return { batches, items };
 }
 
-/** Whether a household has an item that arrived ten minutes ago and is still not drawn. */
+/**
+ * Whether a household has an item that arrived ten minutes ago and is still
+ * not drawn, or drawn and still not read.
+ */
 export async function staleBatchItems(deps: IncomingDeps, hh: string, now: Date): Promise<boolean> {
   const stale = await withSystem(deps.db, hh, (trx) =>
     trx
@@ -175,9 +287,39 @@ export async function staleBatchItems(deps: IncomingDeps, hh: string, now: Date)
       .where('batch_id', 'is not', null)
       .where('state', '=', 'received')
       .where('received_at', '<', new Date(now.getTime() - 10 * 60_000))
-      .where(undrawn)
+      .where((eb) => eb.or([undrawn(eb), eb.and([unread(eb), drawnOrNot(eb)])]))
       .limit(1)
       .execute(),
   );
   return stale.length > 0;
+}
+
+/**
+ * On the worker's start: a read a worker that stopped left taken is put back
+ * to waiting, and every household with an item to draw or read is sent its
+ * job, so nothing waits for the nightly sweep. Answers the households sent.
+ */
+export async function resumeBatchItems(
+  deps: Pick<IncomingDeps, 'admin' | 'db'>,
+  send: (householdId: string) => Promise<void>,
+): Promise<number> {
+  const { rows } = await deps.admin.query<{ household_id: string }>(
+    `select distinct household_id from incoming_file
+      where batch_id is not null and state = 'received'
+        and (read_state in ('waiting', 'reading') or preview_state in ('none', 'drawing'))
+      order by household_id`,
+  );
+  for (const { household_id: hh } of rows) {
+    await withSystem(deps.db, hh, (trx) =>
+      trx
+        .updateTable('incoming_file')
+        .set({ read_state: 'waiting', read_started_at: null })
+        .where('batch_id', 'is not', null)
+        .where('state', '=', 'received')
+        .where('read_state', '=', 'reading')
+        .execute(),
+    );
+    await send(hh);
+  }
+  return rows.length;
 }

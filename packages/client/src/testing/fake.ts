@@ -1,6 +1,7 @@
 import {
   BATCH_MAX_FILES,
   batchVisibility,
+  levelItem,
   can,
   canEditIdentity,
   canSee,
@@ -69,6 +70,9 @@ import {
   type BatchDefaults,
   type BatchDuplicate,
   type BatchItemView,
+  type BatchReadFailure,
+  type BatchReadState,
+  type DetailProposal,
   type Capabilities,
   type CaptureMetadata,
   type CollectionAudience,
@@ -414,6 +418,14 @@ export interface FakeBatchItem {
   document_id: string | null;
   /** The uploader's Idempotency-Key for it, when sent (the I1 review). */
   key?: string;
+  /**
+   * Read for its details (I2), as the vault's worker would read it: a test
+   * (or the contract's `readBatchItems`) sets these; `waiting` until then.
+   */
+  reading?: BatchReadState;
+  read_failure?: BatchReadFailure | null;
+  /** What its pages proposed, once read. */
+  proposal?: DetailProposal | null;
 }
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
@@ -1486,6 +1498,8 @@ export function createFakeVault(): {
           // GET /documents sorted by a column, filtered and paged (R2).
           document_table: true,
           batches: true,
+          // Each item read and levelled (I2): the fake's are read as a test says.
+          batch_proposals: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3185,22 +3199,48 @@ export function createFakeVault(): {
             }
           : null;
       };
-      const itemView = (b: FakeBatch, it: FakeBatchItem): BatchItemView => ({
-        id: it.id,
-        batch_id: b.id,
-        name: it.name,
-        content_type: it.content_type,
-        byte_size: it.byte_size,
-        sha256: it.sha256,
-        arrived_at: it.arrived_at,
-        state: it.state === 'accepted' ? 'accepted' : 'waiting',
-        reading: 'waiting',
-        // Accepted, its pages went with its bytes (the I1 review).
-        preview_state: it.state === 'accepted' ? 'none' : 'unsupported',
-        preview_pages: null,
-        duplicate: duplicateOf(b, it),
-        document_id: it.state === 'accepted' ? it.document_id : null,
-      });
+      const itemView = (b: FakeBatch, it: FakeBatchItem): BatchItemView => {
+        const itemState = it.state === 'accepted' ? 'accepted' : 'waiting';
+        const reading = it.reading ?? 'waiting';
+        const failure = reading === 'failed' ? (it.read_failure ?? 'unreadable') : null;
+        const duplicate = duplicateOf(b, it);
+        // Levelled as the vault levels it (I2): the pages, the defaults and the kinds now.
+        const levelled = levelItem({
+          state: itemState,
+          reading,
+          failure,
+          proposal: reading === 'read' ? (it.proposal ?? null) : null,
+          duplicate,
+          defaults: b.defaults,
+          types: state.types,
+          people: state.members
+            .filter((m) => (m.kind ?? 'family') === 'family')
+            .map((m) => ({ id: m.id, name: m.display_name })),
+          role: who.role,
+          me: who.memberId,
+        });
+        return {
+          id: it.id,
+          batch_id: b.id,
+          name: it.name,
+          content_type: it.content_type,
+          byte_size: it.byte_size,
+          sha256: it.sha256,
+          arrived_at: it.arrived_at,
+          state: itemState,
+          reading,
+          read_failure: failure,
+          // Accepted, its pages went with its bytes (the I1 review).
+          preview_state: it.state === 'accepted' ? 'none' : 'unsupported',
+          preview_pages: null,
+          duplicate,
+          document_id: it.state === 'accepted' ? it.document_id : null,
+          level: levelled.level,
+          tags: levelled.tags,
+          proposals: levelled.proposals,
+          clashes: levelled.clashes,
+        };
+      };
       const batchView = (b: FakeBatch, withItems: boolean) => {
         const kept = b.items.filter((x) => x.state !== 'removed').map((x) => itemView(b, x));
         return {

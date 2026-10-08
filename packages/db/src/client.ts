@@ -635,6 +635,21 @@ export interface Schema {
     read_state: 'waiting' | 'reading' | 'read' | 'failed' | null;
     /** What I2 proposes from its pages, sealed under the item's own key; gone once it is decided. */
     proposals_sealed: Buffer | null;
+    /** Its words, read by the worker (I2, 0063), sealed under the item's own key; gone once decided. */
+    text_sealed: Buffer | null;
+    /** Why its pages were not read, while `read_state` is `failed` (0063). */
+    read_failure:
+      'blank' | 'password' | 'unreadable' | 'too_slow' | 'not_read' | 'not_reachable' | null;
+    /** When the worker took it to read (0063): a read taken long ago is taken again. */
+    read_started_at: Date | null;
+    /** How many times it was taken to read (0063): a few that could not finish, and it is not read. */
+    read_attempts: Generated<number>;
+    /** After a read that could not finish, when it may be taken again (0063). */
+    read_not_before: Date | null;
+    /** Reads the vault itself could not finish (storage, a key, the thread): how many (0063). */
+    read_waits: Generated<number>;
+    /** And since when: a day of them, and it is given up as not reachable (0063). */
+    read_waited_since: Date | null;
     /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
     idempotency_key: string | null;
     review_by: 'me' | 'adults';

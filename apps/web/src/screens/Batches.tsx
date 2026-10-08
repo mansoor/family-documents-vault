@@ -5,10 +5,14 @@ import {
   batchVisibility,
   can,
   duplicateWords,
+  formatDate,
+  LEVEL_WORDS,
+  levelSummary,
   seesLocation,
   type BatchDefaults,
   type BatchDetail,
   type BatchItemView,
+  type BatchLevel,
   type BatchView,
   type CollectionView,
   type DocumentTypeView,
@@ -26,7 +30,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, type Member } from '../api.js';
+import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
@@ -36,6 +40,7 @@ import { storedRole } from '../session.js';
 import { useShellMode } from '../shell.js';
 import { Button, ConfirmDialog, ErrorNote, Field, Select, Switch, TopBar } from '../ui.js';
 import { captureDetails, ConfirmForm } from './AddConfirm.js';
+import { SuggestedMark } from '../suggestions.js';
 import { IncomingList, sizeWords } from './Incoming.js';
 
 /**
@@ -46,9 +51,12 @@ import { IncomingList, sizeWords } from './Incoming.js';
  * A batch is its uploader's alone until each file in it is accepted (the
  * owner's decision Q3): nobody else in the family sees it, an owner
  * included. What the batch chooses for all of them fills only what is blank
- * on each card (Q4). Reading the pages and proposing the details is the
- * next iteration's (I2): until then each file waits "to be read", and its
- * card starts from the batch's choices alone.
+ * on each card (Q4).
+ *
+ * The vault reads each file and suggests (I2): its level — Ready, Check,
+ * Not recognised, a Problem — with tags that say why, the kind it looks
+ * like and how sure; and its card starts from what the pages say, merged
+ * with the batch's choices, each suggested detail marked.
  */
 
 /** "6 Oct": the day, as a batch with no name is called by it. */
@@ -69,6 +77,15 @@ const dupWords = (item: BatchItemView) =>
   item.duplicate ? duplicateWords(item.duplicate, batchLabel) : null;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** How many of a batch's waiting items are at each level (I2). */
+const levelCounts = (items: readonly BatchItemView[]) => {
+  const out: Partial<Record<BatchLevel, number>> = {};
+  for (const i of items) {
+    if (i.state === 'waiting' && i.level) out[i.level] = (out[i.level] ?? 0) + 1;
+  }
+  return out;
+};
 
 /** Whether somebody may make batches: the vault has them, and they add documents. */
 function useMayBatch(): { mayBatch: boolean; role: Role } {
@@ -925,7 +942,67 @@ function FirstPage(props: {
   );
 }
 
-/** What an item is now, in words: waiting to be read, a duplicate, or accepted. */
+/** Each level's mark: an icon beside its words, never its colour alone (I2). */
+function LevelIcon({ level }: { level: BatchLevel }) {
+  const path =
+    level === 'ready'
+      ? 'M3.5 8.5l3 3 6-7'
+      : level === 'unrecognised'
+        ? 'M6 6a2 2 0 1 1 3 1.7c-.6.4-1 .8-1 1.6M8 12v.5'
+        : 'M8 3.5v5.5M8 11.5v.5';
+  return (
+    <svg className="level-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      {level === 'check' || level === 'problem' ? (
+        <path d="M8 1.5l7 13H1z" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      ) : (
+        <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      )}
+      <path d={path} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** An item's level, in words with its icon: what a screen reader hears too. */
+function LevelBadge({ level }: { level: BatchLevel }) {
+  return (
+    <span className={`level level-${level}`}>
+      <LevelIcon level={level} />
+      {LEVEL_WORDS[level]}
+    </span>
+  );
+}
+
+/**
+ * Its tags (I2): why it is at its level. A duplicate is said as I1 says it,
+ * an unnamed batch called by its day, a document it duplicates one press
+ * away.
+ */
+function ItemTags({ item, full = false }: { item: BatchItemView; full?: boolean }) {
+  const tags = item.tags ?? [];
+  if (tags.length === 0) return null;
+  return (
+    <ul className="item-tags" aria-label="Why">
+      {tags.map((t) => (
+        <li key={`${t.code}:${t.field ?? ''}`} className={`item-tag item-tag-${t.kind}`}>
+          {t.code === 'duplicate_document' && item.duplicate?.of === 'document' ? (
+            <Link to={`/documents/${item.duplicate.document_id}`}>{dupWords(item)}</Link>
+          ) : t.code.startsWith('duplicate_') ? (
+            dupWords(item)
+          ) : (
+            t.words
+          )}
+          {full && t.detail && <span className="item-tag-detail">{t.detail}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * What an item is now, in words: waiting to be read, being read, its level
+ * and why — or accepted. A vault from before I2 says nothing of levels: an
+ * item then is "waiting to be read", with its duplicate, as I1 said it.
+ */
 function ItemState({ item }: { item: BatchItemView }) {
   if (item.state === 'accepted') {
     return (
@@ -939,28 +1016,76 @@ function ItemState({ item }: { item: BatchItemView }) {
       </span>
     );
   }
-  const dup = dupWords(item);
+  if (item.level === undefined) {
+    const dup = dupWords(item);
+    return (
+      <span className="item-state">
+        <span className="status status-neutral">Waiting to be read</span>
+        {dup && (
+          <span className="status status-warn">
+            {item.duplicate?.of === 'document' ? (
+              <Link to={`/documents/${item.duplicate.document_id}`}>{dup}</Link>
+            ) : (
+              dup
+            )}
+          </span>
+        )}
+      </span>
+    );
+  }
   return (
     <span className="item-state">
-      <span className="status status-neutral">Waiting to be read</span>
-      {dup && (
-        <span className="status status-warn">
-          {item.duplicate?.of === 'document' ? (
-            <Link to={`/documents/${item.duplicate.document_id}`}>{dup}</Link>
-          ) : (
-            dup
-          )}
+      {item.level ? (
+        <LevelBadge level={item.level} />
+      ) : (
+        <span className="status status-neutral">
+          {item.reading === 'reading' ? 'Reading…' : 'Waiting to be read'}
         </span>
+      )}
+      <ItemTags item={item} />
+    </span>
+  );
+}
+
+/** The kind it looks like, and how sure — or the batch's — or nothing yet. */
+function ItemKind({ item, types }: { item: BatchItemView; types: DocumentTypeView[] }) {
+  const kind = item.proposals?.type_key;
+  if (item.state !== 'waiting' || !kind) return <span className="muted">—</span>;
+  const label = types.find((t) => t.key === kind.value)?.label ?? kind.value;
+  return (
+    <span className="item-kind">
+      <span className="clip">{label}</span>
+      {kind.from === 'batch' || kind.confidence === null || kind.cue === null ? (
+        <span className="mark-batch">from the batch</span>
+      ) : (
+        <SuggestedMark confidence={kind.confidence} cue={kind.cue} />
       )}
     </span>
   );
 }
 
 /**
- * While the worker draws: asked again every 4 seconds, twice as long after
- * each failure up to a minute, and not for ever. Changed only by the tests.
+ * Whether an item is still to be read: waiting for the worker, or on it now
+ * — by a vault that reads them (its items have a `level`); an older one
+ * never reads, and is not waited for.
  */
-export const batchPolling = { every: 4000, most: 60_000, times: 30 };
+const toRead = (i: BatchItemView) =>
+  i.state === 'waiting' &&
+  i.level !== undefined &&
+  (i.reading === 'waiting' || i.reading === 'reading');
+
+/**
+ * While the worker draws and reads: asked again every 4 seconds, twice as
+ * long after each failure up to a minute — 30 times with nothing new read,
+ * the count starting again whenever an item is read (I2). Then, while any
+ * item is still to be read (behind another batch, or a long OCR), once a
+ * minute (`after`), until none is or the batch is gone (the I2 review).
+ * Changed only by the tests.
+ */
+export const batchPolling = { every: 4000, most: 60_000, times: 30, after: 60_000 };
+
+/** Answers in a row with nothing of a batch's on the worker before it is said to wait its turn. */
+const WAITING_ITS_TURN = 4;
 
 /**
  * A batch (/inbox/batches/:id): its files, each with its first page when
@@ -984,10 +1109,15 @@ export function BatchScreen() {
   const [message, setMessage] = useState<string | null>(said);
   const status = useRef<HTMLParagraphElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  // Removed — here, elsewhere, or by its end — while on the screen (the I2 review).
+  const [gone, setGone] = useState(false);
   const { data, error, loading, reload } = useLoad(
     async (t) => {
       const [batch, members, types, collections] = await Promise.all([
-        api.batch(t, id as string),
+        api.batch(t, id as string).catch((err: unknown) => {
+          if (err instanceof ApiRequestError && err.status === 404) setGone(true);
+          throw err;
+        }),
         api.members(t),
         api.documentTypes(t),
         caps?.features.collections && can(role, 'collection.manage')
@@ -1020,26 +1150,66 @@ export function BatchScreen() {
     if (data) forgetPages(data.batch.items.filter((i) => i.state !== 'waiting').map((i) => i.id));
   }, [data]);
 
-  // While the worker draws their pages, asked again now and then: after a
-  // failure, twice as long each time, up to a minute; and not for ever.
+  // While the worker draws their pages and reads them, asked again now and
+  // then: after a failure, twice as long each time, up to a minute; and not
+  // for ever — but each item read starts the count again (I2).
   const drawing = data?.batch.items.some(
-    (i) => i.state === 'waiting' && i.preview_state === 'pending',
+    (i) => (i.state === 'waiting' && i.preview_state === 'pending') || toRead(i),
   );
   const tries = useRef(0);
   const failures = useRef(0);
+  const readSoFar = data?.batch.items.filter((i) => i.state === 'waiting' && !toRead(i)).length;
+  useEffect(() => {
+    tries.current = 0;
+  }, [readSoFar]);
   useEffect(() => {
     if (loading) return;
     failures.current = error ? failures.current + 1 : 0;
   }, [loading, error]);
+  const stillToRead = data ? data.batch.items.some(toRead) : false;
+  // Answers in a row with something still to read and nothing of it on the
+  // worker: between a job's drawing and its reading there is none for a
+  // moment, so it is said to wait its turn only after a few (the I2 check).
+  const [idle, setIdle] = useState(0);
   useEffect(() => {
-    if (!drawing || loading || tries.current >= batchPolling.times) return;
-    const wait = Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most);
+    if (!data) return;
+    const items = data.batch.items;
+    const onIt = items.some((i) => i.state === 'waiting' && i.reading === 'reading');
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setIdle((n) => (items.some(toRead) && !onIt ? n + 1 : 0));
+  }, [data]);
+  useEffect(() => {
+    if (gone || !drawing || loading) return;
+    // Asked out: once a minute, while anything is still to be read.
+    const slow = tries.current >= batchPolling.times;
+    if (slow && !stillToRead) return;
+    const wait = slow
+      ? batchPolling.after
+      : Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most);
     const timer = setTimeout(() => {
       tries.current += 1;
       void reload();
     }, wait);
     return () => clearTimeout(timer);
-  }, [drawing, loading, data, error, reload]);
+  }, [gone, drawing, stillToRead, loading, data, error, reload]);
+
+  // Reading, said politely once it starts and once it ends — never at each
+  // item (I2): the line on the page moves; this is what is heard.
+  const reading = data ? data.batch.items.some(toRead) : false;
+  const wasReading = useRef<boolean | null>(null);
+  const [heard, setHeard] = useState('');
+  useEffect(() => {
+    if (!data) return;
+    const before = wasReading.current;
+    wasReading.current = reading;
+    if (before === null || before === reading) return;
+    const left = data.batch.items.filter(toRead).length;
+    setHeard(
+      reading
+        ? `Reading the files: ${plural(left, 'file')} to read.`
+        : `All read. ${levelSummary(levelCounts(data.batch.items)) || 'Nothing is waiting.'}`,
+    );
+  }, [reading, data]);
 
   // After a removal: the next file's Accept, or the one before it, or the status.
   useEffect(() => {
@@ -1093,6 +1263,20 @@ export function BatchScreen() {
     }
   };
 
+  if (gone) {
+    return (
+      <main className="page page-top has-nav">
+        <TopBar title="A batch" back="/inbox" />
+        <div className="notice-box" role="status">
+          <strong>This batch was removed.</strong>
+          <span className="muted">
+            What was not accepted in it went with it; what was accepted is in the vault.{' '}
+            <Link to="/inbox">Back to the Inbox</Link>
+          </span>
+        </div>
+      </main>
+    );
+  }
   if (!data) {
     return (
       <main className="page page-top has-nav">
@@ -1110,6 +1294,16 @@ export function BatchScreen() {
   const b = data.batch;
   const waiting = b.items.filter((i) => i.state === 'waiting');
   const label = batchLabel(b);
+  // "12 Ready, 5 Check, 2 Not recognised, 1 Problem", and "Reading 3 of 20…" (I2).
+  const summary = levelSummary(levelCounts(b.items));
+  const unread = b.items.filter(toRead).length;
+  // None of this batch's on the worker yet: it waits its turn, behind another's (the I2 review).
+  const progress =
+    unread === 0
+      ? null
+      : idle < WAITING_ITS_TURN
+        ? `Reading ${b.items.length - unread + 1} of ${b.items.length}…`
+        : `Waiting its turn to be read: ${plural(unread, 'file')} to read`;
   const row = (item: BatchItemView) => {
     const actions =
       item.state === 'waiting' ? (
@@ -1153,6 +1347,13 @@ export function BatchScreen() {
             {plural(b.counts.items, 'file')} · made {shortDay(b.created_at)} · removed on{' '}
             {longDay(b.ends_at)} unless accepted
           </p>
+          {summary && <p className="batch-summary">{summary}</p>}
+          {progress && (
+            <p className="batch-progress">
+              <span className="spinner" aria-hidden="true" />
+              {progress}
+            </p>
+          )}
           <DefaultsWords
             defaults={b.defaults}
             types={data.types}
@@ -1179,6 +1380,9 @@ export function BatchScreen() {
       </div>
       <p role="status" ref={status} tabIndex={-1} className="status-line">
         {message}
+      </p>
+      <p className="visually-hidden" aria-live="polite">
+        {heard}
       </p>
       <ErrorNote message={problem ?? error} />
       {b.items.length === 0 ? (
@@ -1207,6 +1411,9 @@ export function BatchScreen() {
                   <span className="stack batch-item-words">
                     <span className="doc-title clip">{item.name}</span>
                     <span className="muted">{r.about}</span>
+                    {item.state === 'waiting' && item.proposals?.type_key && (
+                      <ItemKind item={item} types={data.types} />
+                    )}
                     <ItemState item={item} />
                     {r.actions}
                   </span>
@@ -1221,8 +1428,8 @@ export function BatchScreen() {
               <colgroup>
                 <col style={{ width: 64 }} />
                 <col />
-                <col style={{ width: 120 }} />
-                <col style={{ width: 260 }} />
+                <col className="batch-col-kind" />
+                <col className="batch-col-level" />
                 <col style={{ width: 190 }} />
               </colgroup>
               <thead>
@@ -1231,8 +1438,8 @@ export function BatchScreen() {
                     <span className="visually-hidden">First page</span>
                   </th>
                   <th scope="col">File</th>
-                  <th scope="col">Size</th>
-                  <th scope="col">State</th>
+                  <th scope="col">Kind</th>
+                  <th scope="col">Level</th>
                   <th scope="col">
                     <span className="visually-hidden">Actions</span>
                   </th>
@@ -1250,8 +1457,11 @@ export function BatchScreen() {
                         <span className="cell-title clip" title={item.name}>
                           {item.name}
                         </span>
+                        <span className="muted">{r.about}</span>
                       </td>
-                      <td className="muted">{r.about}</td>
+                      <td>
+                        <ItemKind item={item} types={data.types} />
+                      </td>
                       <td>
                         <ItemState item={item} />
                       </td>
@@ -1385,12 +1595,17 @@ export function BatchItemScreen() {
   }
   const d = batch.defaults;
   const me = members.find((m) => m.is_me);
-  const type = types.find((t) => t.key === d.type_key);
+  // What the card starts from (I2): what the pages say, merged with what the
+  // batch chose (a vault that reads them gives it); else the batch's alone.
+  const p = item.proposals ?? null;
+  const type = types.find((t) => t.key === (p ? p.type_key?.value : d.type_key));
   // A batch made Only me is the uploader's own: whose these are is them.
   const owner =
     role === 'teen'
       ? (me?.id ?? '')
-      : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
+      : p
+        ? (p.owner_member_id?.value ?? (d.visibility === 'private' ? (me?.id ?? '') : ''))
+        : (d.owner_member_id ?? (d.visibility === 'private' ? (me?.id ?? '') : ''));
   const person = members.find((m) => m.id === owner);
   const startVisibility = (t: DocumentTypeView | undefined, o: string) => {
     // Somebody else's, chosen on the card, from a batch made Only me: Only
@@ -1400,35 +1615,77 @@ export function BatchItemScreen() {
     }
     return batchVisibility({ chosen: d.visibility, type: t ?? null, role, owner: o, me: me?.id });
   };
+  const issuer = p?.issued_by?.value ?? '';
+  const issued = p?.issued ? formatDate(p.issued.value) : '';
   const dup = dupWords(item);
   return (
     <ConfirmForm
       title="Is this right?"
       back={`/inbox/batches/${batch.id}`}
-      lede="Check it, and accept it as a document. What you chose for the whole batch is filled in already; nothing else is."
+      lede={
+        p && item.reading === 'read'
+          ? 'Check it, and accept it as a document. What the pages say is filled in, marked with how sure the vault is, and so is what you chose for the whole batch.'
+          : 'Check it, and accept it as a document. What you chose for the whole batch is filled in already; nothing else is.'
+      }
       fileName={item.name}
       aside={
         <div className="stack batch-card-aside">
           <FirstPage batchId={batch.id} item={item} large eager />
-          {dup && <p className="status status-warn">{dup}</p>}
+          {item.level !== undefined ? (
+            <div className="batch-card-level">
+              {item.level ? (
+                <LevelBadge level={item.level} />
+              ) : (
+                <span className="status status-neutral">
+                  {item.reading === 'reading'
+                    ? 'Being read: accept it with the batch’s choices, or come back once it is read.'
+                    : 'Waiting to be read: accept it with the batch’s choices, or come back once it is read.'}
+                </span>
+              )}
+              <ItemTags item={item} full />
+            </div>
+          ) : (
+            dup && <p className="status status-warn">{dup}</p>
+          )}
         </div>
       }
       types={types}
       members={members}
       initial={{
         typeKey: type?.key ?? '',
-        title: type ? autoTitle(type, person) : '',
+        title: type
+          ? autoTitle(type, person, {
+              issued_by: issuer,
+              issued: p?.issued?.value ?? null,
+            })
+          : '',
         owner,
-        issuer: '',
-        issued: '',
-        expires: '',
-        identifier: '',
+        issuer,
+        issued,
+        expires: p?.expires ? formatDate(p.expires.value) : '',
+        identifier: p?.identifier?.value ?? '',
         location: d.physical_location ?? '',
-        visibility: startVisibility(type, owner),
+        // Never wider than the batch chose; narrower where its kind usually is.
+        visibility: p?.visibility.value ?? startVisibility(type, owner),
         notes: '',
         details: {},
       }}
       startVisibility={startVisibility}
+      {...(p
+        ? {
+            marks: {
+              ...(p.type_key ? { type_key: p.type_key } : {}),
+              ...(p.owner_member_id && role !== 'teen'
+                ? { owner_member_id: p.owner_member_id }
+                : {}),
+              ...(p.issued_by ? { issued_by: p.issued_by } : {}),
+              ...(p.issued ? { issued: p.issued } : {}),
+              ...(p.expires ? { expires: p.expires } : {}),
+              ...(p.identifier ? { identifier: p.identifier } : {}),
+            },
+            clashes: item.clashes ?? [],
+          }
+        : {})}
       extras={{
         collections: addable(data.collections, role),
         collectionId: d.collection_id ?? '',

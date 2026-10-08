@@ -160,6 +160,8 @@ export interface HarnessOptions {
   incomingBeforeCommit?: IncomingOptions['beforeCommit'];
   /** A batch's removal, held once fenced and before its rows go (the I1 review): for the races. */
   batchBetweenRemoval?: BatchOptions['betweenRemoval'];
+  /** Told of each batch item whose sealed proposal is opened (the I2 review). */
+  batchOpened?: BatchOptions['opened'];
   /** FDV_TRUST_PROXY (5.30): whose X-Forwarded-For is believed; `network` otherwise. */
   trustProxy?: 'network' | 'private' | 'all' | 'none';
   /** Where pages are proposed for (5.37): the process's proposal thread, unless a test stands in. */
@@ -341,16 +343,10 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
       enqueue,
       ...(opts.incomingBeforeCommit ? { beforeCommit: opts.incomingBeforeCommit } : {}),
     }),
-    batches: new BatchService(
-      db,
-      keys,
-      vaults,
-      documents,
-      collections,
-      5 * 1024 * 1024,
-      enqueue,
-      opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {},
-    ),
+    batches: new BatchService(db, keys, vaults, documents, collections, 5 * 1024 * 1024, enqueue, {
+      ...(opts.batchBetweenRemoval ? { betweenRemoval: opts.batchBetweenRemoval } : {}),
+      ...(opts.batchOpened ? { opened: opts.batchOpened } : {}),
+    }),
     audit: new AuditService(db),
     reminders,
     notifications: new NotificationService(

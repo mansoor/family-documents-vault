@@ -654,6 +654,19 @@ export function formatDate(d: DateValue, locale = 'en-GB'): string {
 /** The order of a numeric date in the reader's locale: 14/03/2031 or 03/14/2031. */
 export type DateOrder = 'dmy' | 'mdy';
 
+/** Countries that write a date month first (03/04/2031 is March 4), for reading the pages' dates. */
+const MONTH_FIRST = new Set(['US', 'PH', 'FM', 'MH', 'PW', 'GU', 'AS', 'MP', 'PR', 'VI', 'UM']);
+
+/**
+ * How a household writes a date in numbers, by its country (5.37): month
+ * first in the United States and the few that follow it, day first
+ * elsewhere; unsaid without a country, and then such a date is not read.
+ */
+export function householdDateOrder(country: string | null | undefined): DateOrder | undefined {
+  if (!country) return undefined;
+  return MONTH_FIRST.has(country) ? 'mdy' : 'dmy';
+}
+
 const MONTHS = [
   'january',
   'february',

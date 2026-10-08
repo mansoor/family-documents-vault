@@ -6,6 +6,33 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.4] - 2026-10-08 — Phase 6, I2: the vault reads each upload and suggests
+
+### Added
+
+- **The vault reads each file in your uploads** once its first page is drawn. It reads one file at a time for each household, so a big batch never holds up anyone else.
+  - **What it suggests:** the kind, whose it is, the dates, the number and who issued it, each with how sure it is.
+  - **Privacy:** what it reads and suggests is sealed, kept only until you decide, and seen only by you. It never draws on documents you cannot see.
+- **Each file gets a level and tags** on the batch's page.
+  - **Ready:** the kind and person are clear, and nothing the kind needs is missing.
+  - **Check:** something is unsure or missing, or the pages disagree with the batch: "The pages say Sara, the batch says Ahmed".
+  - **Not recognised.**
+  - **Problems:** a duplicate, or pages that couldn't be read (blank, password-protected, too slow, or out of the vault's reach for a day).
+  - **Kinds that usually stay narrower:** when the pages look like a medical record or similar, who can see it is kept narrower, and the tag says so.
+  - **Teens:** a teen's upload is always their own. When the pages name someone else, the file is not Ready.
+- **The "Is this right?" card starts from what the pages say.**
+  - Each suggested detail is marked with how sure the vault is ("suggested · 92%"), and the mark goes when you change it.
+  - When the pages and the batch disagree, the card shows both values, and the pages' value is one click away.
+- **The batch's page says how reading is going**: "Reading 3 of 20…", or "Waiting its turn to be read" behind other uploads.
+
+### Changed
+
+- **API:** batch items gain `read_failure`, `level`, `tags`, `proposals` and `clashes`, behind the feature flag `features.batch_proposals`. Accepting is unchanged: it takes what you send, plus the batch's defaults.
+
+### Database
+
+- **Migration 0063** keeps each upload's read text and suggestions, sealed, until the file is decided. It also tracks reading attempts.
+
 ## [0.7.0-dev.3] - 2026-10-08 — Phase 6, I1: many documents at once
 
 ### Added

@@ -116,7 +116,7 @@ export async function removeObjects(
 
 export async function adapterOf(
   trx: Db,
-  deps: IncomingDeps,
+  deps: Pick<IncomingDeps, 'credentialsKey' | 'localRoot'>,
   vaultId: string,
 ): Promise<StorageAdapter> {
   const vault = await trx

@@ -5,6 +5,8 @@ import { contractScenarios, type ContractContext } from '@fdv/client/testing';
 import {
   EncryptStream,
   EnvKeyProvider,
+  itemProposalsBinding,
+  itemTextBinding,
   memberPhotoBinding,
   ScopeKeys,
   sealBytes,
@@ -184,6 +186,49 @@ describe.skipIf(!testAdminUrl())('the client contract, against the real API', ()
             .updateTable('incoming_file')
             .set({ scan_state: 'unscanned', preview_state: 'ready', preview_pages: 1 })
             .where('id', '=', f.id)
+            .execute();
+        }
+      });
+    },
+    // What the worker writes once it has read a batch's items (I2,
+    // jobs/read-item.ts): each one's words and what they propose, sealed
+    // under the item's own key — or why it could not read them. The worker
+    // is not here, and its own tests read real pages.
+    readBatchItems: async (_batchId, reads) => {
+      const householdId = ctx.tokens?.household_id as string;
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      await withSystem(h.db, householdId, async (trx) => {
+        for (const [id, read] of Object.entries(reads)) {
+          if ('failure' in read) {
+            await trx
+              .updateTable('incoming_file')
+              .set({ read_state: 'failed', read_failure: read.failure })
+              .where('id', '=', id)
+              .execute();
+            continue;
+          }
+          const f = await trx
+            .selectFrom('incoming_file')
+            .select(['file_key_wrapped', 'wrapped_by_scope'])
+            .where('id', '=', id)
+            .executeTakeFirstOrThrow();
+          const fileKey = unwrapKey(
+            f.file_key_wrapped,
+            await keys.unwrapById(trx, f.wrapped_by_scope),
+            `incoming:${id}`,
+          );
+          await trx
+            .updateTable('incoming_file')
+            .set({
+              read_state: 'read',
+              text_sealed: sealBytes(fileKey, Buffer.from('its words'), itemTextBinding(id)),
+              proposals_sealed: sealBytes(
+                fileKey,
+                Buffer.from(JSON.stringify({ v: 1, proposal: read.proposal })),
+                itemProposalsBinding(id),
+              ),
+            })
+            .where('id', '=', id)
             .execute();
         }
       });

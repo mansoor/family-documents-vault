@@ -95,6 +95,7 @@ describe('buildCapabilities', () => {
       // R2: GET /documents sorted by a column, filtered and paged.
       document_table: true,
       batches: true,
+      batch_proposals: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

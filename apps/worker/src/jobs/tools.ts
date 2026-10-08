@@ -78,13 +78,28 @@ export const MAGICK_LIMITS = [
 ];
 
 /** Page count of a PDF, from pdfinfo. */
-export async function pdfPageCount(file: string): Promise<number | null> {
+export async function pdfPageCount(file: string, signal?: AbortSignal): Promise<number | null> {
   try {
-    const { stdout } = await run('pdfinfo', [file], { timeout: 30_000 });
+    const { stdout } = await run('pdfinfo', [file], { timeout: 30_000, signal });
     const m = /^Pages:\s+(\d+)/m.exec(stdout);
     return m ? Number(m[1]) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether a PDF needs a password to be opened (Phase 6, I2): pdfinfo refuses
+ * it with "Incorrect password". The vault never asks for one. A PDF locked
+ * only against printing or copying opens, and is read as any other.
+ */
+export async function pdfLocked(file: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    await run('pdfinfo', [file], { timeout: 30_000, signal });
+    return false;
+  } catch (err) {
+    const { message, stderr } = err as { message?: string; stderr?: string | Buffer };
+    return /password/i.test(`${message ?? ''} ${stderr?.toString() ?? ''}`);
   }
 }
 
@@ -94,12 +109,15 @@ export async function renderPdfPages(
   outDir: string,
   maxPages: number,
   dpi = 150,
+  /** Ends the drawing, its process killed, when it is aborted (a read's deadline, I2). */
+  signal?: AbortSignal,
 ): Promise<string[]> {
   await run(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', '1', '-l', String(maxPages), file, path.join(outDir, 'page')],
     {
       timeout: 120_000,
+      signal,
     },
   );
   const files = (await readdir(outDir)).filter((f) => /^page-\d+\.png$/.test(f)).sort();
@@ -114,7 +132,11 @@ export async function renderPdfPages(
  * that is a scan comes back empty, or nearly. Nothing is drawn, so it takes
  * a moment however many pages there are.
  */
-export async function pdfPageTexts(file: string, lastPage: number): Promise<string[]> {
+export async function pdfPageTexts(
+  file: string,
+  lastPage: number,
+  signal?: AbortSignal,
+): Promise<string[]> {
   const { stdout } = await run(
     'pdftotext',
     [
@@ -131,7 +153,7 @@ export async function pdfPageTexts(file: string, lastPage: number): Promise<stri
       file,
       '-',
     ],
-    { timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
+    { timeout: 120_000, maxBuffer: 64 * 1024 * 1024, signal },
   );
   // A form feed ends each page, the last one included.
   const pages = stdout.split('');
@@ -150,12 +172,17 @@ export async function pdfPageTexts(file: string, lastPage: number): Promise<stri
 export async function pdfImageCoverage(
   file: string,
   lastPage: number,
+  signal?: AbortSignal,
 ): Promise<Map<number, number> | null> {
   try {
     const range = ['-f', '1', '-l', String(lastPage)];
     const [listed, info] = await Promise.all([
-      run('pdfimages', ['-list', ...range, file], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }),
-      run('pdfinfo', [...range, file], { timeout: 30_000 }),
+      run('pdfimages', ['-list', ...range, file], {
+        timeout: 60_000,
+        maxBuffer: 8 * 1024 * 1024,
+        signal,
+      }),
+      run('pdfinfo', [...range, file], { timeout: 30_000, signal }),
     ]);
     const pageArea = new Map<number, number>();
     for (const m of info.stdout.matchAll(
@@ -194,12 +221,13 @@ export async function renderPdfPage(
   outDir: string,
   page: number,
   dpi = 150,
+  signal?: AbortSignal,
 ): Promise<string> {
   const base = path.join(outDir, `page-${page}`);
   await run(
     'pdftoppm',
     ['-png', '-r', String(dpi), '-f', String(page), '-l', String(page), '-singlefile', file, base],
-    { timeout: 120_000 },
+    { timeout: 120_000, signal },
   );
   return `${base}.png`;
 }
@@ -1042,10 +1070,11 @@ export async function watermarkPage(
 }
 
 /** OCR of one page image. Returns the text, possibly empty. */
-export async function ocrImage(file: string, lang = 'eng'): Promise<string> {
+export async function ocrImage(file: string, lang = 'eng', signal?: AbortSignal): Promise<string> {
   const { stdout } = await run('tesseract', [file, '-', '-l', lang, '--psm', '3'], {
     timeout: 180_000,
     maxBuffer: 16 * 1024 * 1024,
+    signal,
   });
   return stdout.replace(/\f/g, '\n').trim();
 }

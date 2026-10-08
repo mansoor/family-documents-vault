@@ -4011,6 +4011,36 @@ true`; one still on its way is `409 upload_in_progress`; one removed
     accepted item's `preview_state` is `none`: its pages went with its
     bytes. **Unchanged:** `GET /api/v1/incoming` lists files sent through a
     request alone, and a batch's item is never decided there.
+  - The vault reads each item and suggests (I2, `features.batch_proposals`).
+    **Added**, to each item of `GET /api/v1/batches/{id}` (and the item `POST
+…/items` answers), for its uploader alone: `reading` goes `waiting` →
+    `reading` → `read`, or `failed` with `read_failure` (`blank` |
+    `password` | `unreadable` | `too_slow` | `not_read` | `not_reachable`, the
+    vault itself unable to get to it for a day; null otherwise);
+    `level` (`ready` | `check` | `unrecognised` | `problem`; null while it is
+    not read, unless it is a duplicate, and once it is accepted); `tags`
+    (`[{ code, kind: 'problem' | 'check' | 'info', words, detail?, field? }]`:
+    `duplicate_document`, `duplicate_in_batch`, `duplicate_item`, `unread`,
+    `not_read`, `clash_kind`, `clash_person`, `kind_unsure`,
+    `person_unsure`, `expiry_unsure`, `missing`, `person_missing`,
+    `not_theirs` (a teen's pages naming someone else), `narrowed`); `proposals` (what the card starts from: `type_key`,
+    `owner_member_id`, `issued`, `expires`, `identifier`, `issued_by`, each
+    `{ value, from: 'pages' | 'batch' | 'both', confidence, cue }`, and
+    `visibility: { value, from: 'batch' | 'kind' | 'narrowed' }`; null once
+    accepted); and `clashes` (`[{ field, pages: { value, confidence, cue },
+batch }]`, where the pages disagree with a default at `CLASH_CONFIDENCE`,
+    0.8, or more). Worked out as they are asked, from what the worker sealed,
+    the batch's defaults now and the kinds now: a default or a kind changed
+    re-levels every item. **Unchanged:** an accept takes what it is sent and
+    the batch's defaults, never a proposal; nobody else — an owner included
+    — is given a batch or its items. Absent from an older vault's items.
+    `@fdv/shared`: `levelItem`, `levelSummary`, `storedProposal`,
+    `BatchLevel`, `LEVEL_WORDS`, `BatchReadFailure`, `READ_FAILURES`,
+    `READ_FAILURE_WORDS`, `BatchTag`, `BatchTagCode`, `ItemSuggestion`,
+    `ItemVisibility`, `ItemProposals`, `BatchClash`, `ITEM_SURE`,
+    `CLASH_CONFIDENCE`, `householdDateOrder`. The client fake levels its
+    items the same way, read as a test says (`FakeBatchItem.reading`,
+    `read_failure`, `proposal`).
 
 ## Deprecations in effect
 
