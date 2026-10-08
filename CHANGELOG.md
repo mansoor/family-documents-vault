@@ -6,6 +6,42 @@ All notable changes to Family Document Vault. The format follows
 
 ## [Unreleased]
 
+## [0.7.0-dev.2] - 2026-10-07 — Phase 6, R2: documents as a table
+
+### Added
+
+- **Documents is a table** on screens 768 px and wider.
+  - **Columns:** title, kind, person, issued, expires, status, who can see it, where the original is kept, and collections.
+  - **Sorting:** click a column to sort by it.
+  - **Columns menu:** hides columns, and this device remembers your choice.
+  - **Long values:** text that is cut short shows in full on hover or focus.
+  - **Narrower screens:** from 768 to 1023 px the table scrolls sideways, with the checkbox and title kept in view.
+  - **Phones:** under 768 px, Documents is the list it was, with filters and sorting in a sheet.
+- **Filters:** person (or nobody's), kind, status, who can see it, collection (or none) and tag. Filters are kept in the address, so a link opens the same view and Back works.
+- **Select many, then act on all of them at once.** You can:
+  - add them to a collection;
+  - set where the originals are kept;
+  - change who can see them;
+  - move them to the Trash.
+
+  Each action is offered only when it applies to every selected document. A run that fails for some says which documents and why, and keeps them selected. Changing who can see them, and the Trash, ask first.
+
+- **Making many documents Only me at once** asks one question about all your links to them: end them, or keep them.
+- **Keyboard:** the table is one stop for Tab. Arrow keys, Page Up and Page Down, Home and End move around inside it.
+- **Back from a document** returns to the table as you left it: your sort, what you had loaded, and what you had selected.
+
+### Changed
+
+- **API:** `GET /api/v1/documents` gains:
+  - column sorts with a direction;
+  - the filters above;
+  - signed page markers;
+  - a page size of up to 200, and a total.
+
+  Each document carries the collections you may see. Older sorts and older clients are unchanged.
+
+- **Viewers and guests** get no location column, sort, filter or action, and a document's status never asks them where the original is kept.
+
 ## [0.7.0-dev.1] - 2026-10-07 — Phase 6, R1: the app's shell
 
 The first step of the new web layout. 0.6.0 continues on `release/0.6.0`, and Phase 6's builds are numbered `0.7.0-dev.N` until 0.7.0. The `latest` images stay on the newest release on `main`.

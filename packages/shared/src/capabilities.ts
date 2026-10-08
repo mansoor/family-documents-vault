@@ -199,6 +199,17 @@ export interface CapabilityFeatures {
    * have GET /documents/{id}/issuer-suggestions only (it stays).
    */
   detail_suggestions?: boolean;
+  /**
+   * GET /documents sorts by a column (Phase 6, R2, `DOCUMENT_SORTS`): `sort`
+   * by title, kind, person, issued, expires, status, visibility,
+   * collections or location, with `direction`, and filters for nobody's
+   * (`member_id=none`), a collection (`collection_id`, or `none`) and where
+   * the original is kept (`location`); a page carries `total`, and each
+   * document its `collections`. A sort or filter by location is for whoever
+   * sees locations (422 for anybody else). Absent from older vaults, which
+   * refuse those sorts.
+   */
+  document_table?: boolean;
 }
 
 export interface CapabilityLimits {

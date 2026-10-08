@@ -192,37 +192,61 @@ export async function linksAsk(
 /**
  * What becomes of one's own links to a document made Only me (5.41): each
  * named, End to start with, Keep while the household lets them out. Asked
- * by "Who can see this" and by the edit card alike.
+ * by "Who can see this" and by the edit card alike; and, for many made
+ * Only me at once (the Documents table, R2), once for all of them, each
+ * document's links under its title (`documents`).
  */
 export function LinksChoiceDialog(props: {
   ask: LinksAsk;
+  /**
+   * Many documents at once: whose links are which, and how many links others
+   * made stop with each. `ask` holds every link.
+   */
+  documents?: Array<{ id: string; title: string; links: OwnLinkToEnd[]; others?: number }>;
   busy?: boolean;
+  /** What the busy button says; "Saving…" unless said. */
+  busyLabel?: string;
   /** Where focus goes when it is answered or put away, the browser having remembered none. */
   returnFocus?: RefObject<HTMLElement | null>;
   onChoose: (ownLinks: 'end' | 'keep') => void;
   onCancel: () => void;
 }) {
-  const { ask } = props;
+  const { ask, documents: many } = props;
   const [keep, setKeep] = useState(false);
   // Keep is offered while there is a link it would keep: one a restore
   // paused ends either way (the fourth round, API-1).
   const keepable = ask.keep_allowed && ask.links.some((l) => !l.will_end);
   return (
     <ConfirmDialog
-      title="Your links to this document"
-      confirmLabel="Make it Only me"
-      busyLabel="Saving…"
+      title={many ? 'Your links to these documents' : 'Your links to this document'}
+      confirmLabel={many ? 'Make them Only me' : 'Make it Only me'}
+      busyLabel={props.busyLabel ?? 'Saving…'}
       busy={props.busy === true}
       {...(props.returnFocus ? { returnFocus: props.returnFocus } : {})}
       onConfirm={() => props.onChoose(keep && keepable ? 'keep' : 'end')}
       onCancel={props.onCancel}
     >
       <p>{ask.message}</p>
-      <ul className="stack" aria-label="Your links to it">
-        {ask.links.map((l) => (
-          <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
-        ))}
-      </ul>
+      {many ? (
+        <ul className="stack" aria-label="Your links to them">
+          {many.map((d) => (
+            <li key={d.id} className="stack" style={{ gap: 4 }}>
+              <strong>{d.title}</strong>
+              <ul aria-label={`Your links to “${d.title}”`}>
+                {d.links.map((l) => (
+                  <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul className="stack" aria-label="Your links to it">
+          {ask.links.map((l) => (
+            <li key={l.id}>{ownLinkWords(l, ask.timezone)}</li>
+          ))}
+        </ul>
+      )}
       <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
         <legend>What happens to them</legend>
         <label className="row" style={{ gap: 8 }}>
@@ -245,19 +269,36 @@ export function LinksChoiceDialog(props: {
           <p>This household doesn’t share Only me documents outside the family, so they end.</p>
         )}
       </fieldset>
-      {ask.others > 0 && (
-        <p>
-          {ask.others === 1
-            ? 'The link someone else made to it stops.'
-            : `The ${ask.others} links others made to it stop.`}
-        </p>
-      )}
+      {many
+        ? manyOthersWords(many) && <p>{manyOthersWords(many)}</p>
+        : ask.others > 0 && (
+            <p>
+              {ask.others === 1
+                ? 'The link someone else made to it stops.'
+                : `The ${ask.others} links others made to it stop.`}
+            </p>
+          )}
     </ConfirmDialog>
   );
 }
 
+/**
+ * The links others made that stop, for many at once: counted by the vault
+ * for each document, with nothing to tell one link from another — a
+ * collection's link holding two is in both counts — so never added up.
+ */
+function manyOthersWords(documents: Array<{ title: string; others?: number }>): string | null {
+  const some = documents.filter((d) => (d.others ?? 0) > 0);
+  const [only] = some;
+  if (!only) return null;
+  if (some.length > 1) return 'Links others made to them stop.';
+  return only.others === 1
+    ? `The link someone else made to “${only.title}” stops.`
+    : `The ${only.others ?? 0} links others made to “${only.title}” stop.`;
+}
+
 /** `409 links_choice_needed`, read: the person's own links, and whether keeping them is offered. */
-function linksChoice(err: unknown): LinksChoiceNeeded | null {
+export function linksChoice(err: unknown): LinksChoiceNeeded | null {
   if (!(err instanceof ApiRequestError) || err.code !== 'links_choice_needed') return null;
   try {
     const parsed = JSON.parse(err.detail ?? '') as Partial<LinksChoiceNeeded>;

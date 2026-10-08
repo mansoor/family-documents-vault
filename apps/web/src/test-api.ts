@@ -46,6 +46,11 @@ import {
   type ReminderProblem,
   type ResetNotice,
   type Role,
+  isDocumentSort,
+  LOCATION_SORT_REFUSAL,
+  seesLocation,
+  statusRank,
+  type DocumentSort,
 } from '@fdv/shared';
 import { vi } from 'vitest';
 
@@ -184,8 +189,19 @@ export interface FakeState {
     notable: boolean;
     document_id: string | null;
   }>;
-  /** True once the "only you can open this" moment has been shown. */
+  /** True: every document has had its "only you can open this" moment already. */
   privateNoticeShown: boolean;
+  /**
+   * The documents that have had it, each once, as the vault records it for
+   * each document and person (private_notice); kept by the fake as it says it.
+   */
+  privateNoticesShown?: string[];
+  /**
+   * How many links somebody else made stop with each document made Only me,
+   * by its id, as the vault counts them for each document (5.41): its
+   * `others`. Left out, none.
+   */
+  othersLinksOf?: Record<string, number>;
   /**
    * 5.22: requests to send documents, as GET /upload-requests gives them
    * (UploadRequestView), newest first. Left out, none.
@@ -274,6 +290,14 @@ export interface FakeState {
   dropLostAfterBytes?: boolean;
   /** Answer GET /documents in pages of this many, with a cursor (5.1). */
   pageSize?: number;
+  /**
+   * Refuse a request as the vault would, by method and path (R2: one of many
+   * documents an action is taken on, refused): the refusal, or undefined.
+   */
+  refuseWith?: (
+    method: string,
+    path: string,
+  ) => { status: number; code: string; message: string } | undefined;
   types: Array<Record<string, unknown>>;
   /** GET /document-attributes: the library a type's fields come from (0.5.6). */
   attributes?: Array<Record<string, unknown>>;
@@ -477,6 +501,12 @@ export interface FakeState {
    * links_choice_needed).
    */
   ownLinks?: OwnLinkToEnd[];
+  /**
+   * Each document's own such links, by its id, as the vault keeps them (R2:
+   * many made Only me at once, some with links and some without). Where
+   * given, a document's own are asked about, and `ownLinks` is not.
+   */
+  ownLinksOf?: Record<string, OwnLinkToEnd[]>;
   /** Who reads other people's shared identity details (A34); left out, the narrowest. */
   identityAudience?: IdentityAudience;
   /** A wider audience waiting its 72 hours. */
@@ -516,6 +546,10 @@ export interface FakeState {
   /** What putting documents in a collection says of who else will see them (5.33). */
   collectionWarnings?: string[];
 }
+
+/** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
+export const PRIVATE_NOTICE_BODY =
+  'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.';
 
 export const TOKENS = {
   access_token: 'a.b.c',
@@ -752,6 +786,17 @@ export function installFakeApi(state: FakeState) {
       }.`,
       { action },
     );
+  /**
+   * The signed-in person's own links that would still send a document made
+   * Only me (5.41): that document's own, where a test gives each its own
+   * (`ownLinksOf`), as the vault keeps them; else the one list.
+   */
+  const ownLinksTo = (id: unknown): OwnLinkToEnd[] =>
+    state.ownLinksOf ? (state.ownLinksOf[String(id)] ?? []) : (state.ownLinks ?? []);
+  const leaveOwnLinks = (id: unknown, left: OwnLinkToEnd[]) => {
+    if (state.ownLinksOf) state.ownLinksOf[String(id)] = left;
+    else state.ownLinks = left;
+  };
   /** What opening a document asks for: "only me" first, then Essentials. */
   const askedToOpen = (doc: Record<string, unknown> | undefined) =>
     doc?.visibility === 'private'
@@ -797,6 +842,8 @@ export function installFakeApi(state: FakeState) {
     if (state.offline && path !== '/api/v1/capabilities') {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
+    const refused = state.refuseWith?.(method, path);
+    if (refused) return refuse(refused.status, refused.code, refused.message);
     if (path === '/api/v1/capabilities') {
       return json({
         product: 'family-document-vault',
@@ -809,6 +856,8 @@ export function installFakeApi(state: FakeState) {
         features: {
           passkeys: true,
           custom_types: true,
+          // R2: GET /documents sorted by a column, filtered and paged.
+          document_table: true,
           ...(state.collections ? { collections: true } : {}),
           ...(state.collections && state.collectionShares !== false
             ? { collection_shares: true }
@@ -1786,7 +1835,11 @@ export function installFakeApi(state: FakeState) {
       const ask = askedToLoosen(doc, { visibility: to });
       if (state.stepUpNeeded && ask) return stepUp(ask);
       // Into Only me with links of one's own (5.41): which way, first.
-      const own = to === 'private' && doc?.visibility !== 'private' ? (state.ownLinks ?? []) : [];
+      const into = to === 'private' && doc?.visibility !== 'private';
+      const own = into ? ownLinksTo(doc?.id) : [];
+      // And how many links others made stop with it, as the vault counts
+      // them for each document (R2's bulk: one collection's link, in two).
+      const others = into ? (state.othersLinksOf?.[String(doc?.id)] ?? 0) : 0;
       const shareable = state.onlyMeShareable !== false;
       if (own.length > 0 && ownLinks === 'keep' && !shareable) {
         return refuse(409, 'only_me_not_shared', ONLY_ME_KEEP_REFUSED);
@@ -1798,43 +1851,63 @@ export function installFakeApi(state: FakeState) {
           own.length === 1
             ? 'You have a link that sends this outside the family. Choose whether it ends or is kept, now that it is Only me.'
             : `You have ${own.length} links that send this outside the family. Choose whether they end or are kept, now that it is Only me.`,
-          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
+          { detail: JSON.stringify({ links: own, keep_allowed: shareable, others }) },
         );
       }
       if (doc) doc.visibility = to;
       // Ended: all on End; on Keep, those that could never send (API-1).
       if (own.length > 0 && ownLinks) {
-        state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+        leaveOwnLinks(doc?.id, ownLinks === 'end' ? [] : own.filter((l) => !l.will_end));
       }
-      const firstTime = to === 'private' && !state.privateNoticeShown;
-      if (firstTime) state.privateNoticeShown = true;
+      // Told once for each document — for the fake's one signed-in person —
+      // as the vault records it (private_notice); `privateNoticeShown`, every
+      // document told already.
+      const told = (state.privateNoticesShown ??= []);
+      const already = state.privateNoticeShown || told.includes(String(doc?.id));
+      if (into && !already) told.push(String(doc?.id));
       const n = own.length;
       // Only a link that can send is kept (the fourth round, API-1): one a
       // restore paused, for anybody but an owner, ends whichever is chosen.
       const kept = ownLinks === 'keep' ? own.filter((l) => !l.will_end).length : 0;
       const ended = n - kept;
+      // As the vault words it (visibility.ts): with links of one's own, what
+      // is true now, every time, and the sentence that has to be said the
+      // first time (SEC-19); without, that sentence, the first time only.
+      const stopped =
+        others === 0
+          ? ''
+          : others === 1
+            ? ' The link someone else made to it has stopped.'
+            : ` The ${others} links others made to it have stopped.`;
+      const paused =
+        kept > 0 && ended > 0
+          ? ended === 1
+            ? ' Your link paused after a restore has ended: no owner could turn it back on while this is Only me.'
+            : ` Your ${ended} links paused after a restore have ended: no owner could turn them back on while this is Only me.`
+          : '';
       return json({
-        notice:
-          n > 0
+        notice: !into
+          ? null
+          : n > 0
             ? {
                 title:
                   kept > 0
                     ? `Only you, and the people your ${kept} link${kept === 1 ? ' is' : 's are'} for, can open this.`
                     : `Only you can open this. Your ${ended} link${ended === 1 ? '' : 's'} to it ${ended === 1 ? 'has' : 'have'} ended.`,
-                body: 'Nobody else in the family can open it.',
+                body:
+                  (already ? 'Nobody else in the family can open it.' : PRIVATE_NOTICE_BODY) +
+                  paused +
+                  stopped,
               }
-            : firstTime
-              ? {
-                  title: 'Only you can open this',
-                  body: 'Nobody can open it after you, unless you leave a key. Leaving a key with someone you trust is not built yet; when it is, this document will be on the list.',
-                }
-              : null,
+            : already
+              ? null
+              : { title: 'Only you can open this', body: PRIVATE_NOTICE_BODY + stopped },
         ...(to === 'private'
           ? {
               links: {
                 yours: n,
                 yours_now: n > 0 ? (kept > 0 ? 'kept' : 'ended') : null,
-                others: 0,
+                others,
               },
             }
           : {}),
@@ -3033,6 +3106,26 @@ export function installFakeApi(state: FakeState) {
         by_category: [{ category: 'identity', count: state.documents.length }],
       });
     }
+    if (path === '/api/v1/tags' && method === 'GET') {
+      // The tags on what is out of the Trash, most used first, as the vault counts them.
+      const counts = new Map<string, number>();
+      for (const d of state.documents.filter((x) => !x.deleted_at)) {
+        for (const t of (d.tags as string[] | undefined) ?? []) {
+          counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
+      }
+      return json({
+        items: [...counts]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .map(([tag, count]) => ({ tag, count })),
+      });
+    }
+    if (path === '/api/v1/documents' && method === 'GET' && isDocumentSort(query.get('sort'))) {
+      const answered = documentTable(state, query, storedRole() as Role);
+      return 'refused' in answered
+        ? refuse(422, 'validation_failed', answered.refused)
+        : json(answered.page);
+    }
     if (path === '/api/v1/documents' && method === 'GET') {
       // The Trash is its own list (5.1), as the vault's `deleted=true` is.
       const inTrash = query.get('deleted') === 'true';
@@ -3236,9 +3329,7 @@ export function installFakeApi(state: FakeState) {
           own_links?: 'end' | 'keep';
         };
         const own =
-          edit.visibility === 'private' && doc.visibility !== 'private'
-            ? (state.ownLinks ?? [])
-            : [];
+          edit.visibility === 'private' && doc.visibility !== 'private' ? ownLinksTo(doc.id) : [];
         if (own.length > 0) {
           const shareable = state.onlyMeShareable !== false;
           if (ownLinks === 'keep' && !shareable) {
@@ -3254,7 +3345,7 @@ export function installFakeApi(state: FakeState) {
               { detail: JSON.stringify({ links: own, keep_allowed: shareable, others: 0 }) },
             );
           }
-          state.ownLinks = ownLinks === 'end' ? [] : own.filter((l) => !l.will_end);
+          leaveOwnLinks(doc.id, ownLinks === 'end' ? [] : own.filter((l) => !l.will_end));
         }
         const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
         if (ifMatch && ifMatch !== doc.etag) {
@@ -3948,6 +4039,118 @@ function answerCollections(
     return done();
   }
   return Promise.reject(new Error(`unmocked ${method} ${path}`));
+}
+
+/**
+ * GET /documents sorted by a column (R2), as the vault answers it: the
+ * filters, the sort with blanks last and then the id, a page of `limit`
+ * after an offset cursor, `total`, each document's collections; where the
+ * original is kept never for a viewer — refused as a sort or a filter, and
+ * answered null.
+ */
+function documentTable(
+  state: FakeState,
+  query: URLSearchParams,
+  role: Role,
+): { refused: string } | { page: Record<string, unknown> } {
+  const sort = query.get('sort') as DocumentSort;
+  const location = query.get('location');
+  if ((sort === 'location' || location !== null) && !seesLocation(role)) {
+    return { refused: LOCATION_SORT_REFUSAL };
+  }
+  const sign = query.get('direction') === 'desc' ? -1 : 1;
+  const low = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase() : null);
+  const inTrash = query.get('deleted') === 'true';
+  // The collections the reader sees, as GET /collections gives them: a
+  // viewer, those an owner gave them (5.33).
+  const shown = (state.collections ?? [])
+    .filter(
+      (c) =>
+        canSeeCollection({ role, memberId: 'me' }, c) ||
+        (role === 'viewer' &&
+          c.audience === 'everyone' &&
+          (state.myRestriction?.collections ?? []).some((g) => g.id === c.id)),
+    )
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const collectionsOf = (d: Record<string, unknown>) =>
+    d.deleted_at
+      ? []
+      : shown
+          .filter((c) => c.items.includes(String(d.id)))
+          .map((c) => ({ id: c.id, name: c.name }));
+  const want = (k: string) => query.get(k);
+  const rows = state.documents
+    .filter((d) => Boolean(d.deleted_at) === inTrash)
+    .filter((d) => {
+      const person = want('member_id');
+      if (person === 'none') return !d.owner_member_id;
+      return !person || d.owner_member_id === person;
+    })
+    .filter((d) => !want('type_key') || d.type_key === want('type_key'))
+    .filter((d) => !want('status') || (d.status as { value: string }).value === want('status'))
+    .filter((d) => !want('visibility') || d.visibility === want('visibility'))
+    .filter(
+      (d) => !want('tag') || ((d.tags as string[] | undefined) ?? []).includes(want('tag') ?? ''),
+    )
+    .filter((d) => location === null || low(d.physical_location) === low(location))
+    .filter((d) => {
+      const c = want('collection_id');
+      if (!c) return true;
+      const ids = collectionsOf(d).map((x) => x.id);
+      return c === 'none' ? ids.length === 0 : ids.includes(c);
+    })
+    .map((d) => {
+      const date = (v: unknown) => (v as { date?: string } | null)?.date ?? null;
+      const typeLabel = state.types.find((t) => t.key === d.type_key)?.label;
+      const person = state.members.find((m) => m.id === d.owner_member_id)?.display_name;
+      const status = (d.status as { value: string }).value;
+      const key: Array<string | number | null> =
+        sort === 'title'
+          ? [low(d.title)]
+          : sort === 'kind'
+            ? [low(typeLabel)]
+            : sort === 'person'
+              ? [low(person)]
+              : sort === 'issued'
+                ? [date(d.issued)]
+                : sort === 'expires'
+                  ? [date(d.expires)]
+                  : sort === 'status'
+                    ? [statusRank(status), date(d.expires)]
+                    : sort === 'visibility'
+                      ? [{ household: 0, adults: 1, private: 2 }[String(d.visibility)] ?? 3]
+                      : sort === 'collections'
+                        ? [low(collectionsOf(d)[0]?.name)]
+                        : [low(d.physical_location)];
+      return { d, key };
+    });
+  rows.sort((a, b) => {
+    for (let i = 0; i < a.key.length; i++) {
+      const [x, y] = [a.key[i] ?? null, b.key[i] ?? null];
+      if (x === y) continue;
+      if (x === null) return 1;
+      if (y === null) return -1;
+      return (x < y ? -1 : 1) * sign;
+    }
+    return String(a.d.id) < String(b.d.id) ? -sign : sign;
+  });
+  const limit = Number(query.get('limit') ?? 50);
+  const start = Number(query.get('cursor') ?? 0);
+  const page = rows.slice(start, start + limit);
+  const more = start + limit < rows.length;
+  return {
+    page: {
+      items: page.map(({ d }) => ({
+        ...listed(d),
+        // Where it is kept is the household's (5.41).
+        physical_location: seesLocation(role) ? (d.physical_location ?? null) : null,
+        collections: collectionsOf(d),
+      })),
+      next_cursor: more ? String(start + limit) : null,
+      has_more: more,
+      total: rows.length,
+    },
+  };
 }
 
 /**

@@ -57,10 +57,8 @@ const ISSUER_CHIPS = 8;
  * Search: one field, live results, filter chips for person and category,
  * and for who issued it (0.4.10: "Barclays", "British Gas"). With no query
  * it browses — by category (from the home tiles), by person or by issuer —
- * because non-technical users browse before they search.
- *
- * At /documents it is called Documents: the shell's Documents opens this
- * browse view until R2 builds the Documents table there (Phase 6, R1).
+ * because non-technical users browse before they search. (Every document,
+ * sorted and filtered, is Documents: screens/Documents.tsx, Phase 6 R2.)
  */
 export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
   const { withToken, authVersion, caps } = useApp();
@@ -361,7 +359,7 @@ export function SearchScreen({ title = 'Search' }: { title?: string } = {}) {
  * where collections are offered; what is chosen stays chosen from one search to
  * the next, until it is put in a collection or Select is cancelled.
  */
-function useSelect(offered: boolean) {
+export function useSelect(offered: boolean) {
   const [on, setOn] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
   const [adding, setAdding] = useState(false);

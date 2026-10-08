@@ -24,6 +24,7 @@ import { NotificationService } from './notifications/service.js';
 import { ReminderService } from './reminders/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
+import { deriveCursorKey } from './documents/table.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
@@ -192,6 +193,7 @@ async function main(): Promise<void> {
     enqueue,
     reminders,
     deriveSealedKey(masterSecret),
+    deriveCursorKey(masterSecret),
   );
   const app = await buildApp(config, {
     serverVersion: version,

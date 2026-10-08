@@ -50,19 +50,22 @@ import {
   type DateValue,
   type DetailProblem,
   type DocumentAttributeView,
+  type DocumentPage,
+  type DocumentSort,
   type DocumentTypeView,
   type DocumentView,
   type OfflineItem,
   type RequiredRules,
   type RequiredValues,
   type SealedPresence,
+  type SortDirection,
   type Status,
   type TypeField,
   type VersionView,
   withSealed,
 } from '@fdv/shared';
 import { objectKey, readAll, type StorageAdapter } from '@fdv/storage';
-import { sql, type Expression, type Selectable, type SqlBool } from 'kysely';
+import { sql, type Expression, type RawBuilder, type Selectable, type SqlBool } from 'kysely';
 import type { Principal, RequestMeta } from '../auth/service.js';
 import { ApiError } from '../errors.js';
 import type { VaultService } from '../vaults/service.js';
@@ -72,6 +75,7 @@ import { signSealedToken } from './sealed-token.js';
 import { openSealedText } from './sealed-text.js';
 import { askerOf } from './visibility.js';
 import { removableAtOnce, signsInHere } from './purge-rule.js';
+import { documentTable } from './table.js';
 import { allows, requireCapability } from '../authz.js';
 import {
   canSee,
@@ -113,6 +117,7 @@ export interface DocumentInput {
 }
 
 export interface ListQuery {
+  /** A person's id; or, with a column sort (R2), `none` for nobody's. */
   member_id?: string | undefined;
   category?: string | undefined;
   /** Who issued it: the filter chips (0.4.10), matched regardless of case. */
@@ -126,7 +131,12 @@ export interface ListQuery {
   /** Only those an owner has asked to remove for good, or none of them (5.24). */
   purge_requested?: boolean | undefined;
   updated_since?: string | undefined;
-  sort?: 'recent' | 'expiring' | 'alpha' | undefined;
+  /** An older sort, or a column (R2, table.ts). */
+  sort?: 'recent' | 'expiring' | 'alpha' | DocumentSort | undefined;
+  /** R2, with a column sort: the direction, and the filters only the table has. */
+  direction?: SortDirection | undefined;
+  collection_id?: string | undefined;
+  location?: string | undefined;
   limit?: number | undefined;
   cursor?: string | undefined;
 }
@@ -364,6 +374,48 @@ export function statusOf(
 }
 
 /**
+ * A row's status, as its view says it (`view`): from what is plain, and
+ * what was written down of what is sealed — and, for a reader who may not
+ * see where originals are kept, never that it needs one (`location`, 5.41).
+ * The Documents table (R2) sorts and filters by exactly this, so the order
+ * never disagrees with the words.
+ */
+export function rowStatus(
+  type: Parameters<typeof statusOf>[0],
+  row: Pick<
+    DocRow,
+    | 'owner_member_id'
+    | 'issued_on'
+    | 'issued_precision'
+    | 'expires_on'
+    | 'expires_precision'
+    | 'identifier'
+    | 'issued_by'
+    | 'physical_location'
+    | 'tags'
+    | 'notes'
+    | 'extra'
+    | 'notes_sealed'
+    | 'sealed_details'
+  >,
+  location: boolean,
+): Status {
+  const day = (on: string | null, precision: string | null): DateValue | null =>
+    on ? { date: isoDate(on) as string, precision: precision as DateValue['precision'] } : null;
+  return statusOf(
+    type,
+    {
+      ...row,
+      issued: day(row.issued_on, row.issued_precision),
+      expires: day(row.expires_on, row.expires_precision),
+      extra: (row.extra ?? {}) as Record<string, unknown>,
+    },
+    sealedOf(row),
+    location,
+  );
+}
+
+/**
  * An Only me document `d` with words the index does not have: its pages'
  * text, its notes, its details (0.5.8) — sealed, or not reached yet by the
  * private.seal job (0033 keeps those out of the index as well). What the
@@ -440,6 +492,32 @@ export const seenDocument = (p: Principal) => sql<boolean>`(d.visibility = 'hous
   or (d.visibility = 'adults' and ${p.seesAdults})
   or (d.visibility = 'private' and d.owner_member_id = ${p.memberId}::uuid))`;
 
+/**
+ * A document of kind `t` (a row called `t` with a `key`) the caller can
+ * see: out of the Trash only, or at all.
+ */
+export const kindSeen = (p: Principal, outOfTrash: boolean) => sql<boolean>`exists (
+  select 1 from document d
+   where d.type_key = t.key ${outOfTrash ? sql`and d.deleted_at is null` : sql``}
+     and ${seenDocument(p)})`;
+
+/**
+ * "This caller is given kind `t`", as SQL on a row called `t` (of
+ * effective_document_type, or document_type) that is a built-in when
+ * `builtin` says so: the rule `types()` keeps, and the Documents table's
+ * kind sort with it (R2), so that neither names a kind the other does not.
+ * A kind deleted while documents still use it is there only for whoever can
+ * see one of them (0035). Somebody who files nothing is given the
+ * built-ins, and of the household's own kinds those of the documents they
+ * can see out of the Trash (0.5.10).
+ */
+export function kindGiven(p: Principal, builtin: RawBuilder<boolean>): RawBuilder<boolean> {
+  const live = sql<boolean>`(t.deleted_at is null or ${kindSeen(p, false)})`;
+  return allows(p, 'document.add')
+    ? live
+    : sql<boolean>`(${live} and (${builtin} or ${kindSeen(p, true)}))`;
+}
+
 /** A version as a document's view counts them: newest first. */
 interface VersionBrief {
   id: string;
@@ -480,6 +558,11 @@ export class DocumentService {
     private readonly reminders: ReminderService | null = null,
     /** Signs the handle on the second pass of search; null disables it. */
     private readonly sealedKey: Uint8Array | null = null,
+    /**
+     * Signs the Documents table's page cursors (R2, `deriveCursorKey`): a
+     * key of its own, made at start, when none is given.
+     */
+    private readonly cursorKey: Uint8Array = new Uint8Array(randomBytes(32)),
     /** Where a document's pages are proposed for: off the event loop, with a deadline (5.37). */
     private readonly proposals: Proposals = proposalPool,
   ) {}
@@ -511,20 +594,14 @@ export class DocumentService {
    */
   async types(p: Principal, opts: { all?: boolean | undefined } = {}): Promise<DocumentTypeView[]> {
     return withPrincipal(this.db, p, async (trx) => {
-      let q = trx.selectFrom('effective_document_type as t').selectAll('t');
-      // A document of it the caller can see, out of the Trash.
-      const seen = sql<boolean>`exists (
-        select 1 from document d
-         where d.type_key = t.key and d.deleted_at is null and ${seenDocument(p)})`;
-      // …or in it.
-      const seenAtAll = sql<boolean>`exists (
-        select 1 from document d where d.type_key = t.key and ${seenDocument(p)})`;
-      q = q.where((eb) => eb.or([eb('t.deleted_at', 'is', null), seenAtAll]));
-      if (!allows(p, 'document.add')) {
-        q = q.where((eb) => eb.or([eb('t.builtin', '=', true), seen]));
-      }
+      // Who is given which kind: kindGiven, the rule the Documents table's
+      // kind sort keeps too (R2).
+      let q = trx
+        .selectFrom('effective_document_type as t')
+        .selectAll('t')
+        .where(kindGiven(p, sql<boolean>`t.builtin`));
       if (!opts.all) {
-        q = q.where((eb) => eb.or([eb('t.hidden', '=', false), seen]));
+        q = q.where((eb) => eb.or([eb('t.hidden', '=', false), kindSeen(p, true)]));
       }
       const rows = await q.orderBy('t.sort_order').orderBy('t.label').orderBy('t.key').execute();
       return rows.map(typeView);
@@ -791,12 +868,8 @@ export class DocumentService {
       extra: onlyMe ? (opened?.extra ?? {}) : plainExtra,
       // Worked out the same way whoever asks, and however it is asked:
       // from what is plain, and what was written down of what is sealed.
-      status: statusOf(
-        type,
-        { ...row, issued, expires, extra: plainExtra },
-        sealedOf(row),
-        seesLocation(p.role),
-      ),
+      // (rowStatus: as the Documents table sorts and filters by it, R2.)
+      status: rowStatus(type, row, seesLocation(p.role)),
       versions: versions.length,
       latest_version_id: versions[0]?.id ?? null,
       created_at: row.created_at.toISOString(),
@@ -1236,6 +1309,22 @@ export class DocumentService {
     p: Principal,
     q: ListQuery,
   ): Promise<{ items: DocumentView[]; next_cursor: string | null; has_more: boolean }> {
+    // The table's additions (R2) go with a column sort: here, with an older
+    // sort or none, they are refused rather than quietly left out.
+    const tableOnly = [
+      q.direction !== undefined && 'direction',
+      q.collection_id !== undefined && 'collection_id',
+      q.location !== undefined && 'location',
+      q.member_id === 'none' && 'member_id=none',
+    ].filter((x): x is string => x !== false);
+    if (tableOnly.length > 0) {
+      throw new ApiError(
+        422,
+        'validation_failed',
+        'That goes with a sort by a column: title, kind, person, issued, expires, status, visibility, collections or location.',
+        { detail: tableOnly.join(', ') },
+      );
+    }
     const limit = Math.min(Math.max(q.limit ?? 50, 1), 200);
     return withPrincipal(this.db, p, async (trx) => {
       let query = trx
@@ -1304,6 +1393,18 @@ export class DocumentService {
           : null;
       return { items: filtered, next_cursor: next, has_more: rows.length > limit };
     });
+  }
+
+  /**
+   * GET /documents sorted by a column (Phase 6, R2): the Documents table.
+   * What the caller may see, as every list of documents gives it, filtered,
+   * sorted and a page at a time (table.ts); with how many there are in all,
+   * and the collections each is in.
+   */
+  async table(p: Principal, q: ListQuery & { sort: DocumentSort }): Promise<DocumentPage> {
+    return withPrincipal(this.db, p, (trx) =>
+      documentTable(trx, p, q, (rows) => this.listed(trx, p, rows), this.cursorKey),
+    );
   }
 
   async tags(p: Principal, q: string | undefined): Promise<Array<{ tag: string; count: number }>> {

@@ -2864,3 +2864,458 @@ a.menu-item {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+
+/* ---- Phase 6, R2: Documents as a table ----
+   From 768 px the page is the window less the shell: its heading and
+   filters, then the table in a box of its own that scrolls both ways (its
+   head stays at the top; the box and the title stay at the left), then what
+   to do with what is chosen, always in sight. */
+.shell-wide .page.page-table,
+.shell-mid .page.page-table {
+  max-width: none;
+  height: max(460px, calc(100dvh - var(--shell-chrome)));
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 20px 24px 16px;
+}
+
+.table-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.table-head h1 {
+  flex: 1;
+  font-size: 28px;
+}
+
+.table-count {
+  margin: 0 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.filter select {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  min-height: var(--tap);
+  max-width: 220px;
+  /* As wide as what is chosen, where the browser can (the prototype’s). */
+  field-sizing: content;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-input);
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.filter select.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.filter select:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.columns-wrap {
+  position: relative;
+}
+
+.columns-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  box-shadow: 0 8px 24px var(--scrim);
+}
+
+.tbl-wrap {
+  /* What is placed in it (the words only a screen reader hears) scrolls
+     with it, and never past the window's edge. */
+  position: relative;
+  flex: 1;
+  min-height: 160px;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius-l) var(--radius-l) 0 0;
+}
+
+.tbl {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 14px;
+}
+
+.tbl th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 44px;
+  padding: 0 8px;
+  text-align: left;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+
+.tbl td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.tbl th:last-child,
+.tbl td:last-child {
+  padding-right: 14px;
+}
+
+.tbl .end {
+  text-align: right;
+}
+
+.tbl td.end {
+  font-variant-numeric: tabular-nums;
+  /* Room for the widest date ("28 Sept 2026") whole (the review's W5). */
+  padding-left: 4px;
+}
+
+.tbl .nowrap {
+  white-space: nowrap;
+}
+
+.tbl tbody tr {
+  cursor: pointer;
+}
+
+.tbl tbody tr:hover td {
+  background: var(--bg);
+}
+
+.tbl tbody tr.picked td {
+  background: var(--accent-soft);
+}
+
+.tbl tbody tr.empty-row {
+  cursor: default;
+}
+
+.tbl .empty-row td {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 16px;
+}
+
+/* The box and the title stay at the left as the rest scrolls under them. */
+.tbl .col-pick,
+.tbl .col-title {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tbl th.col-pick,
+.tbl th.col-title {
+  z-index: 3;
+}
+
+.tbl .col-title {
+  box-shadow: 1px 0 0 var(--border);
+}
+
+.th-sort {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  max-width: 100%;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.th-sort:hover {
+  color: var(--ink);
+}
+
+.th-sort:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.tbl .end .th-sort {
+  flex-direction: row-reverse;
+}
+
+.sort-mark {
+  display: inline-block;
+  width: 10px;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.tbl th[aria-sort] {
+  color: var(--ink);
+}
+
+/* The box: the cell is its label, a thumb's width and more. */
+.pick-cell {
+  display: grid;
+  place-items: center;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+/* The whole of the box's cell is the box's label (W4): a click anywhere in
+   it chooses, and never opens the document. */
+.tbl .col-pick {
+  padding: 0;
+}
+
+.tbl .col-pick .pick-cell {
+  position: absolute;
+  inset: 0;
+}
+
+/* A cell in focus (the grid's arrows) shows where it is. */
+.tbl td:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.pick-cell input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.cell-title {
+  display: block;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.cell-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cell-title:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Words cut short at two lines; all of them on hover and on focus. */
+.clip {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.clip[tabindex='0']:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.clip .status {
+  display: inline;
+}
+
+.clip .status::before {
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: 0;
+}
+
+.clip-tip {
+  position: fixed;
+  z-index: 45;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: var(--radius-s);
+  background: var(--ink);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.4;
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+
+.tbl .chip {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0 4px 2px 0;
+  padding: 1px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.vis {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Under the box that scrolls, as its last line: never scrolled aside (W2). */
+.tbl-more {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-top: -12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.tbl-more span {
+  font-variant-numeric: tabular-nums;
+}
+
+.tablefoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  min-height: 48px;
+  padding: 8px 16px;
+  margin-top: -12px;
+  border: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-l) var(--radius-l);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+
+.tablefoot-sort {
+  margin-left: auto;
+}
+
+/* While documents are chosen: what may be done with all of them. */
+.bulkbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 60px;
+  padding: 8px 14px;
+  margin-top: -12px;
+  border-radius: 0 0 var(--radius-l) var(--radius-l);
+  background: var(--ink);
+  color: #fff;
+}
+
+.bulk-count {
+  font-weight: 700;
+  margin-right: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.btn-bulk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  background: transparent;
+  color: #fff;
+  border-color: var(--ink-muted);
+}
+
+.btn-bulk:hover:not(:disabled) {
+  border-color: #fff;
+}
+
+.btn-bulk:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.bulk-gap {
+  flex: 1;
+}
+
+.bulk-notes {
+  flex-basis: 100%;
+  font-size: 14px;
+}
+
+.bulk-notes p {
+  margin: 0;
+}
+
+.bulk-outcome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+}
+
+.bulk-outcome:focus {
+  outline: 2px solid var(--accent-glow);
+  outline-offset: 2px;
+}
+
+.bulk-failed p,
+.bulk-failed ul {
+  margin: 0;
+}
+
+.bulk-failed ul {
+  padding-left: 20px;
+  font-weight: 400;
+}

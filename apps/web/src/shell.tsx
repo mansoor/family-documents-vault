@@ -207,9 +207,8 @@ const under = (base: string) => (path: string) => path === base || path.startsWi
  * screen behind it is theirs: the same checks the screens and today's
  * Settings rows make. Settings is apart, at the bottom (`SETTINGS`).
  *
- * Documents opens today's browse view at /documents until R2 builds the
- * Documents table there; on a wide screen, where there is no Search in the
- * bar, search's results are Documents' too.
+ * Documents opens the Documents table (R2); on a wide screen, where there
+ * is no Search in the bar, search's results are Documents' too.
  */
 export function sectionsFor(who: {
   role: Role;

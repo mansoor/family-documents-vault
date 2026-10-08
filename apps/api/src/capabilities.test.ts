@@ -92,6 +92,8 @@ describe('buildCapabilities', () => {
       guests: true,
       // 5.37: what a document's pages propose, each with a confidence (A44).
       detail_suggestions: true,
+      // R2: GET /documents sorted by a column, filtered and paged.
+      document_table: true,
     });
     // The old share routes answer only links made before 0.5.14, and go
     // four minor releases on (5.16, A25). A reset's and an invitation's

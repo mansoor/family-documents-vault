@@ -56,6 +56,7 @@ import { AuditService } from './audit/service.js';
 import { OfflineService } from './offline/service.js';
 import { SealedSearchService } from './documents/sealed-search.js';
 import { deriveSealedKey } from './documents/sealed-token.js';
+import { deriveCursorKey } from './documents/table.js';
 import { PasskeyService, passkeyConfig } from './auth/passkeys.js';
 import { StepUpService } from './auth/step-up.js';
 import { PasswordService } from './auth/passwords.js';
@@ -294,6 +295,7 @@ export async function createHarness(opts: HarnessOptions = {}): Promise<Harness>
     enqueue,
     reminders,
     deriveSealedKey(TEST_MASTER),
+    deriveCursorKey(TEST_MASTER),
     opts.proposals,
   );
   const app = await buildApp(config, {
