@@ -147,6 +147,20 @@ describe('an item’s level', () => {
         confidence: null,
         cue: null,
       });
+      // A kind chosen for the batch: nothing to check said before the pages are read
+      // (W-I2-3) — but what is worth knowing is.
+      const kinded = level({
+        reading,
+        defaults: { ...NO_DEFAULTS, type_key: 'medical_record', visibility: 'household' },
+      });
+      expect(kinded.level).toBeNull();
+      expect(kinded.tags).toEqual([
+        {
+          code: 'narrowed',
+          kind: 'info',
+          words: 'Kept to adults: as a medical record usually is',
+        },
+      ]);
     }
   });
 
@@ -245,6 +259,16 @@ describe('an item’s level', () => {
     const gone = level({ people: PEOPLE.filter((p) => p.id !== 'm-sara') });
     expect(gone.proposals?.owner_member_id).toBeUndefined();
     expect(words(gone)).toEqual(['Missing: whose it is']);
+    // A kind deleted since, with the batch's kind standing: what was read for
+    // the deleted kind — its number and dates — is not the batch's kind's (W-I2-4).
+    const other = level({
+      types: KINDS.filter((k) => k.key !== 'passport'),
+      defaults: { ...NO_DEFAULTS, type_key: 'drivers_licence' },
+    });
+    expect(other.proposals?.type_key).toMatchObject({ value: 'drivers_licence', from: 'batch' });
+    expect(other.proposals?.expires).toBeUndefined();
+    expect(other.proposals?.identifier).toBeUndefined();
+    expect(other.proposals?.issued_by).toBeUndefined();
   });
 
   it('Problem: pages that could not be read, with why; a kind not read is not a problem', () => {
@@ -367,10 +391,41 @@ describe('defaults and the pages (Q4)', () => {
     expect(l.proposals?.identifier).toBeUndefined();
   });
 
-  it('a teen’s are their own: whose it is is them, whatever the pages say', () => {
+  it('a teen’s are their own: whose it is is them — and the pages confidently naming somebody else is a Check, with nobody else to choose (W-I2-1)', () => {
     const l = level({ role: 'teen', me: 'm-zain' });
     expect(l.proposals?.owner_member_id).toMatchObject({ value: 'm-zain', from: 'batch' });
     expect(l.clashes).toEqual([]);
+    expect(l.level).toBe('check');
+    expect(l.tags).toEqual([
+      {
+        code: 'not_theirs',
+        kind: 'check',
+        words: 'The pages say Sara: your documents are your own',
+      },
+    ]);
+    // Less sure than the clash bar, or the teen themself: Ready.
+    const weak = level({
+      role: 'teen',
+      me: 'm-zain',
+      proposal: {
+        ...PASSPORT,
+        owner_member_id: {
+          value: 'm-sara',
+          confidence: CLASH_CONFIDENCE - 0.01,
+          cue: 'name_labelled',
+        },
+      },
+    });
+    expect(weak.level).toBe('ready');
+    const own = level({
+      role: 'teen',
+      me: 'm-zain',
+      proposal: {
+        ...PASSPORT,
+        owner_member_id: { value: 'm-zain', confidence: 0.9, cue: 'name_labelled' },
+      },
+    });
+    expect(own.level).toBe('ready');
   });
 });
 

@@ -44,9 +44,14 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
   let admin: ReturnType<typeof createPool>;
   let app: ReturnType<typeof createPool>;
   const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+  /** Each item whose sealed proposal the API opened. */
+  const opened: string[] = [];
 
   beforeAll(async () => {
-    h = await createHarness({ rateLimitPerMinute: 100_000 });
+    h = await createHarness({
+      rateLimitPerMinute: 100_000,
+      batchOpened: (id) => void opened.push(id),
+    });
     owner = await h.setup();
     hh = owner.household_id;
     adult = await h.join(owner, { name: 'Sana', email: 'sana@example.test', role: 'adult' });
@@ -73,13 +78,17 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
     expect(res.statusCode, res.body).toBe(201);
     return res.json<BatchDetail>();
   };
-  const sent = async (who: Tokens, batchId: string, bytes = PDF('scan')) => {
+  const sent = async (who: Tokens, batchId: string, bytes = PDF('scan'), key?: string) => {
     const form = new FormData();
     form.append('file', bytes, { filename: 'scan.pdf', contentType: 'application/pdf' });
     const res = await h.app.inject({
       method: 'POST',
       url: `/api/v1/batches/${batchId}/items`,
-      headers: { ...h.as(who), ...form.getHeaders() },
+      headers: {
+        ...h.as(who),
+        ...form.getHeaders(),
+        ...(key ? { 'idempotency-key': key } : {}),
+      },
       payload: form.getBuffer(),
     });
     expect(res.statusCode, res.body).toBe(201);
@@ -330,7 +339,7 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
     });
   });
 
-  it('a teen’s items are their own: whose it is is them, whatever the pages say', async () => {
+  it('a teen’s items are their own: whose it is is them — and the pages confidently naming somebody else is a Check (W-I2-1)', async () => {
     const b = await made(teen);
     const i = await sent(teen, b.id);
     await plant(i.id, { proposal: passport(adult.member_id) });
@@ -342,6 +351,18 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
       cue: null,
     });
     expect(got.clashes).toEqual([]);
+    expect(got.level).toBe('check');
+    expect(got.tags).toEqual([
+      {
+        code: 'not_theirs',
+        kind: 'check',
+        words: 'The pages say Sana: your documents are your own',
+      },
+    ]);
+    // The pages naming the teen: Ready.
+    const own = await sent(teen, b.id);
+    await plant(own.id, { proposal: passport(teen.member_id) });
+    expect((await itemOf(teen, b.id, own.id)).level).toBe('ready');
   });
 
   it('an accept takes what it is sent and the batch’s defaults — never a proposal nobody chose — and lets go of what was read', async () => {
@@ -453,6 +474,27 @@ describe.skipIf(!testAdminUrl())('what the pages propose, for a batch’s upload
       await client.query('rollback').catch(() => undefined);
       client.release();
     }
+  });
+
+  it('an item answered alone opens its own proposal alone: a replay, and one just arrived (P-I2-3)', async () => {
+    const b = await made(adult);
+    const key = randomUUID();
+    const bytes = PDF('replayed');
+    const first = await sent(adult, b.id, bytes, key);
+    const others = [await sent(adult, b.id), await sent(adult, b.id)];
+    for (const i of [first, ...others]) await plant(i.id, { proposal: passport(adult.member_id) });
+    opened.length = 0;
+    // Sent again with its key: the item it made, its own proposal opened, nobody else's.
+    const again = await sent(adult, b.id, bytes, key);
+    expect(again).toMatchObject({ id: first.id, level: 'ready' });
+    expect(opened).toEqual([first.id]);
+    // One just arrived: not read, so nothing opened.
+    opened.length = 0;
+    await sent(adult, b.id);
+    expect(opened).toEqual([]);
+    // The batch's page opens each read one.
+    await batch(adult, b.id);
+    expect(opened.sort()).toEqual([first.id, ...others.map((o) => o.id)].sort());
   });
 
   it('a batch of 200 read items is levelled as it is asked, quickly', async () => {

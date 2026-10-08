@@ -11,6 +11,7 @@ import type { PgBoss } from 'pg-boss';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createQueue } from '../queue.js';
 import {
+  batchWorkLeft,
   drawNextBatchItem,
   sendBatchPreviews,
   sweepBatches,
@@ -19,6 +20,7 @@ import {
 } from './batches.js';
 import { scanIncoming, sweepIncoming, tellWaiting, type IncomingDeps } from './incoming.js';
 import type { ItemProposer } from './proposal-thread.js';
+import { BATCH_JOB_EXPIRE_SECONDS } from './read-item.js';
 
 /**
  * Many documents at once (Phase 6, I1), in the worker: a batch's items
@@ -313,6 +315,67 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
       await boss.stop({ graceful: false });
     }
   }, 60_000);
+
+  it('a run that fails still sends the household’s next while work is left; the queue’s expiry is set (P-I2-1, P-I2-2)', async () => {
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    const b = await batch('a');
+    const one = await item('a', b, { arrived: new Date(Date.now() - 1000).toISOString() });
+    const two = await item('a', b);
+    let first = true;
+    const drawn: string[] = [];
+    // The first run's drawing fails outright; pg-boss would only try it
+    // again after 30 seconds.
+    const draw: DrawItem = async (d, hh, f) => {
+      if (first) {
+        first = false;
+        throw new Error('the disk went away for a moment');
+      }
+      drawn.push(f.id);
+      await withSystem(d.db, hh, (trx) =>
+        trx
+          .updateTable('incoming_file')
+          .set({ preview_state: 'unsupported', preview_pages: 0 })
+          .where('id', '=', f.id)
+          .execute(),
+      );
+    };
+    const boss: PgBoss = createQueue({ connectionString: tdb.adminUrl, migrate: true });
+    boss.on('error', () => undefined);
+    await boss.start();
+    try {
+      await sendBatchPreviews(boss, homes.a.hh);
+      await workBatchPreviews(boss, deps, { draw, pollingIntervalSeconds: 0.5 });
+      expect((await boss.getQueue('batch.previews'))?.expireInSeconds).toBe(
+        BATCH_JOB_EXPIRE_SECONDS,
+      );
+      for (let i = 0; i < 100 && drawn.length < 2; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(drawn).toEqual([one.id, two.id]);
+    } finally {
+      await boss.stop({ graceful: false });
+    }
+  }, 60_000);
+
+  it('what is left: now, or — only items waiting to be read again — the soonest they may be (P-I2-1)', async () => {
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    expect(await batchWorkLeft(deps, homes.b.hh)).toEqual({ now: false, at: null });
+    const b = await batch('b');
+    const i = await item('b', b);
+    expect(await batchWorkLeft(deps, homes.b.hh)).toEqual({ now: true, at: null });
+    const at = new Date(Date.now() + 60_000);
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 1, read_not_before = $2 where id = $1",
+      [i.id, at],
+    );
+    const left = await batchWorkLeft(deps, homes.b.hh);
+    expect(left.now).toBe(false);
+    expect(left.at?.getTime()).toBe(at.getTime());
+  });
 
   it('the job draws only a batch’s items, and the scan of files sent in never draws them', async () => {
     const b = await batch('a');

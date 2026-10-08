@@ -120,6 +120,7 @@ function item(
     duplicate?: BatchItemView['duplicate'];
   },
   types: DocumentTypeView[],
+  defaults: BatchDefaults = DEFAULTS,
 ): BatchItemView {
   const reading = read.reading ?? (read.failure ? 'failed' : 'read');
   const duplicate = read.duplicate ?? null;
@@ -129,7 +130,7 @@ function item(
     failure: read.failure ?? null,
     proposal: read.proposal ?? null,
     duplicate,
-    defaults: DEFAULTS,
+    defaults,
     types,
     people: [
       { id: 'me', name: 'Mansoor Seikh' },
@@ -161,16 +162,24 @@ function item(
 }
 
 /** The app at `path`, wide, an owner, with this batch. */
-function at(path: string, items: (types: DocumentTypeView[]) => BatchItemView[]): FakeState {
+function at(
+  path: string,
+  items: (types: DocumentTypeView[]) => BatchItemView[],
+  over: { defaults?: BatchDefaults; refuseWith?: FakeState['refuseWith'] } = {},
+): FakeState {
   atWidth(WIDE);
-  const state = fresh({ members: [{ ...ME, role: 'owner' }, AISHA], batches: [] });
+  const state = fresh({
+    members: [{ ...ME, role: 'owner' }, AISHA],
+    batches: [],
+    ...(over.refuseWith ? { refuseWith: over.refuseWith } : {}),
+  });
   state.types = [...state.types, MEDICAL];
   const batch: FakeBatch = {
     id: 'batch-1',
     name: 'Scanned post',
     created_at: '2026-10-06T09:00:00Z',
     ends_at: '2026-11-05T09:00:00Z',
-    defaults: DEFAULTS,
+    defaults: over.defaults ?? DEFAULTS,
     items: items(state.types as unknown as DocumentTypeView[]),
   };
   state.batches = [batch];
@@ -232,7 +241,8 @@ describe('the batch page, read (I2)', () => {
     expect(row('later.pdf')).toHaveTextContent('Waiting to be read');
     // The summary, and how far the reading has got.
     expect(screen.getByText('1 Ready, 1 Check, 1 Not recognised, 2 Problems')).toBeVisible();
-    expect(screen.getByText('Reading 6 of 6…')).toBeVisible();
+    // None of this batch's on the worker: it waits its turn (the I2 review).
+    expect(screen.getByText('Waiting its turn to be read: 1 file to read')).toBeVisible();
     await expectAccessible();
   });
 
@@ -254,7 +264,9 @@ describe('the batch page, read (I2)', () => {
       const b = state.batches?.[0] as FakeBatch;
       // One more read: the line moves, nothing is said.
       b.items[1] = item('item-2', 'two.pdf', { proposal: {} }, types);
-      await waitFor(() => expect(screen.getByText('Reading 3 of 3…')).toBeVisible());
+      await waitFor(() =>
+        expect(screen.getByText('Waiting its turn to be read: 1 file to read')).toBeVisible(),
+      );
       expect(heard()).toBe('');
       // The last read: said once, and the asking stops.
       b.items[2] = item('item-3', 'three.pdf', { failure: 'password' }, types);
@@ -265,6 +277,76 @@ describe('the batch page, read (I2)', () => {
       const then = asked();
       await new Promise((r) => setTimeout(r, 200));
       expect(asked()).toBe(then);
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+});
+
+describe('the batch page, the review (I2)', () => {
+  it('asked out, it goes on asking once a minute while anything is still to be read, and stops once nothing is (W-I2-2)', async () => {
+    const was = { ...batchPolling };
+    Object.assign(batchPolling, { every: 10, most: 10, times: 2, after: 120 });
+    try {
+      const state = at('/inbox/batches/batch-1', (types) => [
+        item('item-1', 'one.pdf', { proposal: PASSPORT('me') }, types),
+        item('item-2', 'two.pdf', { reading: 'waiting' }, types),
+      ]);
+      await screen.findByText('Waiting its turn to be read: 1 file to read');
+      const asked = () =>
+        state.calls.filter((c) => c.method === 'GET' && c.url.endsWith('/batches/batch-1')).length;
+      // Well past its tries, still asking — slowly.
+      await new Promise((r) => setTimeout(r, 700));
+      const then = asked();
+      expect(then).toBeGreaterThan(batchPolling.times + 1);
+      await waitFor(() => expect(asked()).toBeGreaterThan(then), { timeout: 2000 });
+      // Read at last: said on the page, and no more asking.
+      const types = state.types as unknown as DocumentTypeView[];
+      (state.batches?.[0] as FakeBatch).items[1] = item(
+        'item-2',
+        'two.pdf',
+        { proposal: {} },
+        types,
+      );
+      await waitFor(() => expect(screen.queryByText(/Waiting its turn/)).toBeNull(), {
+        timeout: 2000,
+      });
+      const done = asked();
+      await new Promise((r) => setTimeout(r, 500));
+      expect(asked()).toBe(done);
+    } finally {
+      Object.assign(batchPolling, was);
+    }
+  });
+
+  it('removed while on the screen: it says so, with the way back, and asks no more (W-I2-8)', async () => {
+    const was = { ...batchPolling };
+    Object.assign(batchPolling, { every: 30, most: 30 });
+    let gone = false;
+    try {
+      const state = at(
+        '/inbox/batches/batch-1',
+        (types) => [item('item-1', 'one.pdf', { reading: 'reading' }, types)],
+        {
+          refuseWith: (method, path) =>
+            gone && method === 'GET' && path === '/api/v1/batches/batch-1'
+              ? { status: 404, code: 'not_found', message: 'That batch is not here.' }
+              : undefined,
+        },
+      );
+      await screen.findByText('Reading 1 of 1…');
+      gone = true;
+      expect(await screen.findByText('This batch was removed.')).toBeVisible();
+      expect(screen.getByRole('link', { name: 'Back to the Inbox' })).toHaveAttribute(
+        'href',
+        '/inbox',
+      );
+      const asked = () =>
+        state.calls.filter((c) => c.method === 'GET' && c.url.endsWith('/batches/batch-1')).length;
+      const then = asked();
+      await new Promise((r) => setTimeout(r, 300));
+      expect(asked()).toBe(then);
+      await expectAccessible();
     } finally {
       Object.assign(batchPolling, was);
     }
@@ -365,6 +447,64 @@ describe('the card, filled from the pages (I2)', () => {
       'true',
     );
     expect(screen.getByText('Kept to adults: it looks like a medical record')).toBeVisible();
+  });
+
+  it('the batch’s value the pages agree with, less sure than Ready asks, is not marked unsure (W-I2-5)', async () => {
+    at('/inbox/batches/batch-1/items/item-9', (types) => [
+      item('item-9', 'mine.pdf', { proposal: PASSPORT('me', 0.8) }, types),
+    ]);
+    await screen.findByLabelText(/Whose it is/);
+    await waitFor(() =>
+      expect(screen.getByText('Whose it is').closest('label')).toHaveTextContent('suggested · 80%'),
+    );
+    expect(screen.getByText('Whose it is').closest('label')).not.toHaveTextContent('unsure');
+  });
+
+  it('not read yet: the card says to accept it with the batch’s choices, or come back — no promise of more (W-I2-6)', async () => {
+    at('/inbox/batches/batch-1/items/item-6', EVERY_LEVEL);
+    await screen.findByLabelText(/What it is/);
+    expect(
+      screen.getByText(
+        'Waiting to be read: accept it with the batch’s choices, or come back once it is read.',
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/comes once it is/)).toBeNull();
+  });
+
+  it('on a batch made Only me, the pages’ person is one press away, and the press says — and is heard saying — it widens who can see it (W-I2-7)', async () => {
+    const onlyMe: BatchDefaults = { ...DEFAULTS, visibility: 'private', owner_member_id: 'me' };
+    at(
+      '/inbox/batches/batch-1/items/item-2',
+      (types) => [item('item-2', 'aisha.pdf', { proposal: PASSPORT('m-0', 0.92) }, types, onlyMe)],
+      { defaults: onlyMe },
+    );
+    await screen.findByLabelText(/Whose it is/);
+    await screen.findByRole('option', { name: 'Aisha' });
+    const vis = () => screen.getByRole('group', { name: 'Who can see this' });
+    expect(within(vis()).getByRole('button', { name: 'Only me' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Use Aisha: Only me is for your own, so Adults only' }),
+    );
+    await waitFor(() =>
+      expect(within(vis()).getByRole('button', { name: 'Adults only' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('status')
+          .some(
+            (s) =>
+              s.textContent ===
+              'Who can see this is now Adults only: Only me is for your own documents.',
+          ),
+      ).toBe(true),
+    );
   });
 
   it('pages that could not be read: the card says why, and starts from the batch alone', async () => {

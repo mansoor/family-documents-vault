@@ -618,7 +618,9 @@ function CardMark(props: { field: CardMarkField; mark: ItemSuggestion<unknown> }
   if (mark.from === 'batch' || mark.confidence === null || mark.cue === null) {
     return <span className="mark-batch">from the batch</span>;
   }
-  const sure = (ITEM_SURE as Record<string, number>)[props.field];
+  // Unsure as the level says it: only what the pages alone say (the I2 review).
+  const sure =
+    mark.from === 'pages' ? (ITEM_SURE as Record<string, number>)[props.field] : undefined;
   return (
     <>
       <SuggestedMark confidence={mark.confidence} cue={mark.cue} />
@@ -716,6 +718,8 @@ export function ConfirmForm(props: {
   const [detailValues, setDetailValues] = useState<Record<string, DetailInput>>(initial.details);
   // Once Save has waited for them, the fields it waited for say so.
   const [waited, setWaited] = useState(false);
+  // Said when whose it is makes Only me wider (the I2 review, W-I2-7).
+  const [widened, setWidened] = useState('');
   // The marks of the details changed on the card (I2): changed, a detail is the person's own.
   const [unmarked, setUnmarked] = useState<ReadonlySet<CardMarkField>>(() => new Set());
   const unmark = (field: CardMarkField) =>
@@ -930,12 +934,20 @@ export function ConfirmForm(props: {
     setOwnerChosen(true);
     unmark('owner_member_id');
     retitle({ who: members.find((m) => m.id === v) ?? null });
+    let next = visibility;
     if (props.fileName && !visibilityChosen && (type || props.startVisibility)) {
       // Nobody has chosen yet: the kind's default, for this person.
-      setVisibility(startVisibility(type, v));
+      next = startVisibility(type, v);
     } else if (visibility === 'private' && v !== me?.id) {
       // Only me is for your own documents.
-      setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
+      next = adultsOnlyAllowed ? 'adults' : 'household';
+    }
+    setVisibility(next);
+    // Made wider by whose it is: said, never done silently (the I2 review).
+    if (visibility === 'private' && next !== 'private') {
+      setWidened(
+        `Who can see this is now ${next === 'adults' ? 'Adults only' : 'Everyone'}: Only me is for your own documents.`,
+      );
     }
   };
 
@@ -1108,6 +1120,18 @@ export function ConfirmForm(props: {
     const batch = nameOf(c.batch);
     const usePages = now !== c.pages.value;
     const id = field === 'type_key' ? 'f-type' : 'f-who';
+    // Somebody else's, on a card that is Only me: the button says it widens it.
+    const widens =
+      field === 'owner_member_id' &&
+      visibility === 'private' &&
+      (usePages ? c.pages.value : c.batch) !== me?.id;
+    const wider = adultsOnlyAllowed ? 'Adults only' : 'Everyone';
+    const use = usePages ? pages : batch;
+    const said = widens
+      ? `Use ${use}: Only me is for your own, so ${wider}`
+      : usePages
+        ? `Use ${pages}, as the pages say`
+        : `Use ${batch}, as the batch says`;
     return (
       <div className="clash-box" role="group" aria-label="The pages and the batch disagree">
         <p>
@@ -1123,7 +1147,7 @@ export function ConfirmForm(props: {
             document.getElementById(id)?.focus();
           }}
         >
-          {usePages ? `Use ${pages}, as the pages say` : `Use ${batch}, as the batch says`}
+          {said}
         </Button>
       </div>
     );
@@ -1420,6 +1444,9 @@ export function ConfirmForm(props: {
             />
           </>
         )}
+        <p role="status" className="visually-hidden">
+          {widened}
+        </p>
         <div className="field" role="group" aria-label="Who can see this">
           <span className="field-label">Who can see this</span>
           <div className="pills">

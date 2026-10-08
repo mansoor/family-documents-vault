@@ -43,13 +43,34 @@ import { WORD_MIME } from './word-text.js';
  * document's own pages are read again, as any upload's are.
  *
  * Pages that cannot be read make the item `failed`, with why — blank, a
- * password, not readable, too slow, a kind not read — never a crash; a
- * worker that stops mid-read leaves the item to be taken again. One item a
- * call: the household's queue (batches.ts) keeps the turn.
+ * password, not readable, too slow, a kind not read — never a crash, and a
+ * read never throws (the I2 review, P-I2-1). A read that could not be
+ * finished — its bytes or key not to be had, the proposal thread not to be
+ * had or gone — is counted, waits behind the others for a while, and after
+ * READ_ATTEMPTS tries (two, where the thread died holding it) is not read:
+ * one bad item never holds up its household. The whole read has a deadline,
+ * READ_DEADLINE_MS, its tools killed when it passes (P-I2-2): under the
+ * queue's expiry (BATCH_JOB_EXPIRE_SECONDS), itself under READ_STALE_MS, so
+ * a read is never taken again while it is still going. A worker that stops
+ * mid-read leaves the item to be taken again. One item a call: the
+ * household's queue (batches.ts) keeps the turn.
  */
 
+/** The longest one item's read may take, its tools killed then: it is `too_slow`. */
+export const READ_DEADLINE_MS = 8 * 60_000;
+/**
+ * How long the batch job may run before the queue takes it as lost: a page
+ * drawing and a read, with room. Above READ_DEADLINE_MS, under READ_STALE_MS.
+ */
+export const BATCH_JOB_EXPIRE_SECONDS = 14 * 60;
 /** A read taken this long ago, by a worker that has gone, is taken again. */
-export const READ_STALE_MS = 15 * 60_000;
+export const READ_STALE_MS = 20 * 60_000;
+/** Taken this many times and never finished: it is not read (`unreadable`). */
+export const READ_ATTEMPTS = 3;
+/** And where the proposal thread died holding it: asked again once. */
+export const THREAD_DIED_ATTEMPTS = 2;
+/** After a read that could not finish, how long before it is taken again: doubling. */
+export const readAgainAfter = (attempts: number) => 30_000 * 2 ** Math.max(0, attempts - 1);
 /**
  * The most of an item's words kept and proposed from: what proposeDetails
  * reads (its details are on its first pages), and the API's own bound.
@@ -71,12 +92,20 @@ export interface ReadOptions {
   /** How the words are taken: extractText, unless a test stands in. */
   extract?: typeof extractText;
   tools?: Tools;
+  /** The read's deadline: READ_DEADLINE_MS, unless a test shortens it. */
+  deadlineMs?: number;
 }
 
-/** Waiting to be read, or taken by a worker that has gone. */
+/**
+ * Waiting to be read — and, after a read that could not finish, its wait
+ * over — or taken by a worker that has gone.
+ */
 export const unread = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
   eb.or([
-    eb('read_state', '=', 'waiting'),
+    eb.and([
+      eb('read_state', '=', 'waiting'),
+      eb.or([eb('read_not_before', 'is', null), eb('read_not_before', '<=', new Date())]),
+    ]),
     eb.and([
       eb('read_state', '=', 'reading'),
       eb('read_started_at', '<', new Date(Date.now() - READ_STALE_MS)),
@@ -89,7 +118,11 @@ export const drawnOrNot = (eb: ExpressionBuilder<Schema, 'incoming_file'>) =>
 
 const letters = (s: string) => (s.match(/[\p{L}\p{N}]/gu) ?? []).length;
 
-/** One household's next item to read: the oldest drawn and not read. Answers it, and whether more wait. */
+/**
+ * One household's next item to read: the oldest drawn and not read, an item
+ * tried before behind those never tried. Answers it, and whether more wait
+ * now. Never throws.
+ */
 export async function readNextBatchItem(
   deps: ReadItemDeps,
   hh: string,
@@ -112,23 +145,42 @@ export async function readNextBatchItem(
         .where('state', '=', 'received')
         .where(unread)
         .where(drawnOrNot)
+        .orderBy('read_attempts')
         .orderBy('received_at')
         .orderBy('id')
         .limit(2)
         .execute(),
     );
-  const [next] = await ready();
-  if (!next) return { read: null, more: false };
-  await readItem(deps, hh, next, opts);
-  return { read: next.id, more: (await ready()).length > 0 };
+  try {
+    const [next] = await ready();
+    if (!next) return { read: null, more: false };
+    await readItem(deps, hh, next, opts);
+    return { read: next.id, more: (await ready()).length > 0 };
+  } catch (err) {
+    deps.log('warn', 'could not look for a batch’s item to read', {
+      household: hh,
+      err: (err as Error).message.slice(0, 200),
+    });
+    return { read: null, more: false };
+  }
+}
+
+/** Why a read could not be finished, to be tried again later; `most` tries in all. */
+class NotNow extends Error {
+  constructor(
+    readonly why: string,
+    readonly most: number,
+  ) {
+    super(why);
+  }
 }
 
 /**
- * One item read: taken (stamped), its words taken and proposed for, and both
- * sealed — or why not. Only the read that took it last writes what it read,
- * and only while the item waits: one decided meanwhile keeps nothing.
- * Throws, with the item left to be read again, when the file or the thread
- * cannot be had just now.
+ * One item read: taken (stamped and counted), its words taken and proposed
+ * for, and both sealed — or why not. Only the read that took it last writes
+ * what it read, and only while the item waits: one decided meanwhile keeps
+ * nothing. Never throws: a read that could not finish waits its turn again,
+ * behind the others, and after a few is not read.
  */
 export async function readItem(
   deps: ReadItemDeps,
@@ -148,13 +200,21 @@ export async function readItem(
   const taken = await withSystem(deps.db, hh, (trx) =>
     trx
       .updateTable('incoming_file')
-      .set({ read_state: 'reading', read_started_at: stamp, read_failure: null })
+      .set((eb) => ({
+        read_state: 'reading',
+        read_started_at: stamp,
+        read_failure: null,
+        read_not_before: null,
+        read_attempts: eb('read_attempts', '+', 1),
+      }))
       .where('id', '=', f.id)
       .where('state', '=', 'received')
       .where(unread)
+      .returning('read_attempts')
       .executeTakeFirst(),
-  );
-  if (Number(taken.numUpdatedRows) !== 1) return;
+  ).catch(() => undefined);
+  if (!taken) return;
+  const attempts = taken.read_attempts;
   const ours = (trx: Db) =>
     trx
       .updateTable('incoming_file')
@@ -168,12 +228,30 @@ export async function readItem(
         .set({ read_state: 'failed', read_failure: why, text_sealed: null, proposals_sealed: null })
         .execute(),
     );
-  const again = () =>
-    withSystem(deps.db, hh, (trx) =>
-      ours(trx).set({ read_state: 'waiting', read_started_at: null }).execute(),
-    ).catch(() => undefined);
+  /** Not finished: tried again later, behind the others — or, tried enough, not read. */
+  const notNow = async (e: NotNow) => {
+    deps.log('warn', 'could not finish reading a batch’s item', {
+      item: f.id,
+      attempts,
+      why: e.why.slice(0, 200),
+    });
+    if (attempts >= e.most) {
+      await failed('unreadable');
+      return;
+    }
+    await withSystem(deps.db, hh, (trx) =>
+      ours(trx)
+        .set({
+          read_state: 'waiting',
+          read_started_at: null,
+          read_not_before: new Date(Date.now() + readAgainAfter(attempts)),
+        })
+        .execute(),
+    );
+  };
 
-  const dir = await mkdtemp(path.join(tmpdir(), 'fdv-read-'));
+  const deadline = AbortSignal.timeout(opts.deadlineMs ?? READ_DEADLINE_MS);
+  let dir: string | null = null;
   try {
     let had: { fileKey: Buffer; ctx: ProposalContext; plain: Buffer };
     try {
@@ -187,17 +265,17 @@ export async function readItem(
       });
       had = { ...got, plain: await decryptToBuffer(got.adapter, f.storage_key, got.fileKey) };
     } catch (err) {
-      // Its bytes or its key not to be had just now: read again later.
-      await again();
-      throw err;
+      // Its bytes or its key not to be had just now.
+      throw new NotNow((err as Error).message, READ_ATTEMPTS);
     }
+    dir = await mkdtemp(path.join(tmpdir(), 'fdv-read-'));
     const mime = f.mime ?? '';
     const ext = mime === 'application/pdf' ? 'pdf' : mime === WORD_MIME ? 'docx' : 'img';
     const source = path.join(dir, `source.${ext}`);
     await writeFile(source, had.plain);
     const tools = opts.tools ?? (await detectTools());
 
-    if (mime === 'application/pdf' && (await pdfLocked(source))) {
+    if (mime === 'application/pdf' && (await pdfLocked(source, deadline))) {
       await failed('password');
       return;
     }
@@ -207,20 +285,28 @@ export async function readItem(
         maxPages: opts.maxPages,
         workDir: dir,
         tools,
+        signal: deadline,
       });
+      deadline.throwIfAborted();
       if (!got) {
         await failed('not_read');
         return;
       }
       text = got.text.slice(0, PROPOSAL_TEXT_MAX);
     } catch (err) {
-      // A tool that failed on it, or a file that is not what it says. Logged
-      // without a word of what it holds.
+      // Its deadline passed, its tools killed; or a tool that failed on it,
+      // or a file that is not what it says. Logged without a word of it.
       deps.log('warn', 'could not read the pages of a batch’s item', {
         item: f.id,
         err: (err as Error).message.slice(0, 200),
       });
-      await failed(/password/i.test((err as Error).message) ? 'password' : 'unreadable');
+      await failed(
+        deadline.aborted
+          ? 'too_slow'
+          : /password/i.test((err as Error).message)
+            ? 'password'
+            : 'unreadable',
+      );
       return;
     }
     if (letters(text) < BLANK_LETTERS) {
@@ -229,8 +315,10 @@ export async function readItem(
     }
     const answer = await opts.proposer.propose(text, had.ctx);
     if (answer.state === 'unavailable') {
-      await again();
-      throw new Error('the proposal thread could not be had: the item is read again later');
+      throw new NotNow('the proposal thread could not be had', READ_ATTEMPTS);
+    }
+    if (answer.state === 'died') {
+      throw new NotNow('the proposal thread stopped holding it', THREAD_DIED_ATTEMPTS);
     }
     if (answer.state === 'too_slow') {
       await failed('too_slow');
@@ -259,8 +347,12 @@ export async function readItem(
       // What was proposed, by field, never its value.
       proposed: Object.keys(answer.proposal),
     });
+  } catch (err) {
+    // Anything else — the database a moment away, the disk full — not now.
+    const e = err instanceof NotNow ? err : new NotNow((err as Error).message, READ_ATTEMPTS);
+    await notNow(e).catch(() => undefined);
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 

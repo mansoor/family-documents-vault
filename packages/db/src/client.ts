@@ -641,6 +641,10 @@ export interface Schema {
     read_failure: 'blank' | 'password' | 'unreadable' | 'too_slow' | 'not_read' | null;
     /** When the worker took it to read (0063): a read taken long ago is taken again. */
     read_started_at: Date | null;
+    /** How many times it was taken to read (0063): a few that could not finish, and it is not read. */
+    read_attempts: Generated<number>;
+    /** After a read that could not finish, when it may be taken again (0063). */
+    read_not_before: Date | null;
     /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
     idempotency_key: string | null;
     review_by: 'me' | 'adults';

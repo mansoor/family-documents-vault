@@ -30,7 +30,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
-import { api, type Member } from '../api.js';
+import { api, ApiRequestError, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
 import { askPage, forgetPages, heldPage } from '../batch-pages.js';
 import { labelOfDay, progressOf, useUploads } from '../batch-store.js';
@@ -1076,11 +1076,13 @@ const toRead = (i: BatchItemView) =>
 
 /**
  * While the worker draws and reads: asked again every 4 seconds, twice as
- * long after each failure up to a minute, and not for ever — 30 times with
- * nothing new read, the count starting again whenever an item is read
- * (I2). Changed only by the tests.
+ * long after each failure up to a minute — 30 times with nothing new read,
+ * the count starting again whenever an item is read (I2). Then, while any
+ * item is still to be read (behind another batch, or a long OCR), once a
+ * minute (`after`), until none is or the batch is gone (the I2 review).
+ * Changed only by the tests.
  */
-export const batchPolling = { every: 4000, most: 60_000, times: 30 };
+export const batchPolling = { every: 4000, most: 60_000, times: 30, after: 60_000 };
 
 /**
  * A batch (/inbox/batches/:id): its files, each with its first page when
@@ -1104,10 +1106,15 @@ export function BatchScreen() {
   const [message, setMessage] = useState<string | null>(said);
   const status = useRef<HTMLParagraphElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  // Removed — here, elsewhere, or by its end — while on the screen (the I2 review).
+  const [gone, setGone] = useState(false);
   const { data, error, loading, reload } = useLoad(
     async (t) => {
       const [batch, members, types, collections] = await Promise.all([
-        api.batch(t, id as string),
+        api.batch(t, id as string).catch((err: unknown) => {
+          if (err instanceof ApiRequestError && err.status === 404) setGone(true);
+          throw err;
+        }),
         api.members(t),
         api.documentTypes(t),
         caps?.features.collections && can(role, 'collection.manage')
@@ -1156,15 +1163,21 @@ export function BatchScreen() {
     if (loading) return;
     failures.current = error ? failures.current + 1 : 0;
   }, [loading, error]);
+  const stillToRead = data ? data.batch.items.some(toRead) : false;
   useEffect(() => {
-    if (!drawing || loading || tries.current >= batchPolling.times) return;
-    const wait = Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most);
+    if (gone || !drawing || loading) return;
+    // Asked out: once a minute, while anything is still to be read.
+    const slow = tries.current >= batchPolling.times;
+    if (slow && !stillToRead) return;
+    const wait = slow
+      ? batchPolling.after
+      : Math.min(batchPolling.every * 2 ** failures.current, batchPolling.most);
     const timer = setTimeout(() => {
       tries.current += 1;
       void reload();
     }, wait);
     return () => clearTimeout(timer);
-  }, [drawing, loading, data, error, reload]);
+  }, [gone, drawing, stillToRead, loading, data, error, reload]);
 
   // Reading, said politely once it starts and once it ends — never at each
   // item (I2): the line on the page moves; this is what is heard.
@@ -1236,6 +1249,20 @@ export function BatchScreen() {
     }
   };
 
+  if (gone) {
+    return (
+      <main className="page page-top has-nav">
+        <TopBar title="A batch" back="/inbox" />
+        <div className="notice-box" role="status">
+          <strong>This batch was removed.</strong>
+          <span className="muted">
+            What was not accepted in it went with it; what was accepted is in the vault.{' '}
+            <Link to="/inbox">Back to the Inbox</Link>
+          </span>
+        </div>
+      </main>
+    );
+  }
   if (!data) {
     return (
       <main className="page page-top has-nav">
@@ -1256,8 +1283,13 @@ export function BatchScreen() {
   // "12 Ready, 5 Check, 2 Not recognised, 1 Problem", and "Reading 3 of 20…" (I2).
   const summary = levelSummary(levelCounts(b.items));
   const unread = b.items.filter(toRead).length;
+  // None of this batch's on the worker yet: it waits its turn, behind another's (the I2 review).
   const progress =
-    unread > 0 ? `Reading ${b.items.length - unread + 1} of ${b.items.length}…` : null;
+    unread === 0
+      ? null
+      : b.items.some((i) => i.state === 'waiting' && i.reading === 'reading')
+        ? `Reading ${b.items.length - unread + 1} of ${b.items.length}…`
+        : `Waiting its turn to be read: ${plural(unread, 'file')} to read`;
   const row = (item: BatchItemView) => {
     const actions =
       item.state === 'waiting' ? (
@@ -1592,8 +1624,8 @@ export function BatchItemScreen() {
               ) : (
                 <span className="status status-neutral">
                   {item.reading === 'reading'
-                    ? 'Being read: what the pages say comes when it is done.'
-                    : 'Waiting to be read: what the pages say comes once it is.'}
+                    ? 'Being read: accept it with the batch’s choices, or come back once it is read.'
+                    : 'Waiting to be read: accept it with the batch’s choices, or come back once it is read.'}
                 </span>
               )}
               <ItemTags item={item} full />

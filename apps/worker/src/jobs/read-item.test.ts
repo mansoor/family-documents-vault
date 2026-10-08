@@ -33,18 +33,22 @@ import { LocalAdapter } from '@fdv/storage';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resumeBatchItems, sweepBatches } from './batches.js';
-import type { extractText } from './extract-text.js';
+import { extractText as realExtract, type extractText } from './extract-text.js';
 import type { IncomingDeps } from './incoming.js';
 import { processVersion } from './process-version.js';
 import { ProposalThread, type ItemProposer, type ThreadAnswer } from './proposal-thread.js';
 import {
+  BATCH_JOB_EXPIRE_SECONDS,
   BLANK_LETTERS,
   proposalContext,
+  READ_ATTEMPTS,
+  READ_DEADLINE_MS,
   READ_STALE_MS,
   readNextBatchItem,
+  THREAD_DIED_ATTEMPTS,
   type ReadOptions,
 } from './read-item.js';
-import { detectTools } from './tools.js';
+import { detectTools, pdfPageTexts } from './tools.js';
 
 const run = promisify(execFile);
 
@@ -279,8 +283,10 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
         text_sealed: Buffer | null;
         proposals_sealed: Buffer | null;
         read_started_at: Date | null;
+        read_attempts: number;
+        read_not_before: Date | null;
       }>(
-        'select read_state, read_failure, text_sealed, proposals_sealed, read_started_at from incoming_file where id = $1',
+        'select read_state, read_failure, text_sealed, proposals_sealed, read_started_at, read_attempts, read_not_before from incoming_file where id = $1',
         [id],
       )
     ).rows[0];
@@ -482,7 +488,7 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
         proposals_sealed: null,
       });
     }
-    // No thread to be had: left to be read again, and the job told so.
+    // No thread to be had: never thrown, left to be read again a little later.
     await clear();
     const later = await item(await batch(), pdf(['x']));
     await expect(
@@ -490,16 +496,113 @@ describe.skipIf(!testAdminUrl())('an item read, in the worker (I2)', () => {
         extract: says(PASSPORT),
         proposer: standIn(() => ({ state: 'unavailable' })).proposer,
       }),
-    ).rejects.toThrow(/read again later/);
-    expect(await rowOf(later.id)).toMatchObject({ read_state: 'waiting', read_started_at: null });
-    // Its bytes not to be had just now: the same.
-    await admin.query('update incoming_file set storage_key = $2 where id = $1', [
-      later.id,
-      `${hh}/batches/gone.enc`,
-    ]);
-    await expect(readNext({ extract: says(PASSPORT) })).rejects.toThrow();
-    expect(await rowOf(later.id)).toMatchObject({ read_state: 'waiting' });
+    ).resolves.toMatchObject({ read: later.id });
+    expect(await rowOf(later.id)).toMatchObject({
+      read_state: 'waiting',
+      read_started_at: null,
+      read_attempts: 1,
+    });
+    expect((await rowOf(later.id))?.read_not_before?.getTime()).toBeGreaterThan(Date.now());
   }, 60_000);
+
+  it('one item that cannot be read never holds up its household: it waits behind the others, and after a few tries is not read (P-I2-1)', async () => {
+    await clear();
+    const b = await batch();
+    // The oldest: its bytes are not there.
+    const gone = await item(b, pdf(['gone']), { arrived: new Date(Date.now() - 60_000) });
+    await admin.query('update incoming_file set storage_key = $2 where id = $1', [
+      gone.id,
+      `${hh}/batches/not-there.enc`,
+    ]);
+    const fine = await item(b, pdf(['fine']));
+    // Never thrown: it waits a while, and the next is read meanwhile.
+    expect(await readNext({ extract: says(PASSPORT) })).toEqual({ read: gone.id, more: true });
+    expect(await rowOf(gone.id)).toMatchObject({ read_state: 'waiting', read_attempts: 1 });
+    expect(await readNext({ extract: says(PASSPORT) })).toEqual({ read: fine.id, more: false });
+    expect(await rowOf(fine.id)).toMatchObject({ read_state: 'read' });
+    // Its wait over, it is tried again — behind one never tried, sent since.
+    const wait = () =>
+      admin.query(
+        "update incoming_file set read_not_before = now() - interval '1 second' where id = $1",
+        [gone.id],
+      );
+    await wait();
+    const newer = await item(b, pdf(['newer']));
+    expect((await readNext({ extract: says(PASSPORT) })).read).toBe(newer.id);
+    expect((await readNext({ extract: says(PASSPORT) })).read).toBe(gone.id);
+    expect(await rowOf(gone.id)).toMatchObject({ read_state: 'waiting', read_attempts: 2 });
+    // The third try: not read, and the household's reading goes on.
+    await wait();
+    expect((await readNext({ extract: says(PASSPORT) })).read).toBe(gone.id);
+    expect(await rowOf(gone.id)).toMatchObject({
+      read_state: 'failed',
+      read_failure: 'unreadable',
+      read_attempts: READ_ATTEMPTS,
+    });
+    expect(await readNext({ extract: says(PASSPORT) })).toEqual({ read: null, more: false });
+  }, 60_000);
+
+  it('a proposal thread that dies holding an item: asked again once, then not read (P-I2-1)', async () => {
+    await clear();
+    const i = await item(await batch(), pdf(['x']));
+    const { proposer, asked } = standIn(() => ({ state: 'died' }));
+    await readNext({ extract: says(PASSPORT), proposer });
+    expect(await rowOf(i.id)).toMatchObject({ read_state: 'waiting', read_attempts: 1 });
+    await admin.query('update incoming_file set read_not_before = now() where id = $1', [i.id]);
+    await readNext({ extract: says(PASSPORT), proposer });
+    expect(asked).toHaveLength(THREAD_DIED_ATTEMPTS);
+    expect(await rowOf(i.id)).toMatchObject({ read_state: 'failed', read_failure: 'unreadable' });
+  }, 60_000);
+
+  it('a read has a deadline: past it, its tools are killed and it is too slow — never read twice at once (P-I2-2)', async () => {
+    await clear();
+    const i = await item(await batch(), pdf(['x']));
+    let pid: number | undefined;
+    // A tool that would run for a minute, as a crafted file's might.
+    const slow: typeof extractText = (_file, _mime, o) =>
+      new Promise((_resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          ['-e', 'setTimeout(() => undefined, 60_000)'],
+          { signal: o.signal },
+          (err) => reject(err ?? new Error('finished')),
+        );
+        pid = child.pid;
+      });
+    const started = Date.now();
+    await readNext({ extract: slow, deadlineMs: 400 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await rowOf(i.id)).toMatchObject({ read_state: 'failed', read_failure: 'too_slow' });
+    // The tool is gone, not left running.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(() => process.kill(pid as number, 0)).toThrow();
+    // A read ends before the queue takes its job as lost, and that before it is stale.
+    expect(READ_DEADLINE_MS).toBeLessThan(BATCH_JOB_EXPIRE_SECONDS * 1000);
+    expect(BATCH_JOB_EXPIRE_SECONDS * 1000).toBeLessThan(READ_STALE_MS);
+  }, 60_000);
+
+  it.skipIf(!tools.pdftotext)(
+    'the deadline reaches the tools themselves: an aborted read runs none',
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'fdv-abort-'));
+      try {
+        const file = path.join(dir, 'a.pdf');
+        await (await import('node:fs/promises')).writeFile(file, pdf(['PASSPORT 533401872']));
+        await expect(
+          realExtract(file, 'application/pdf', {
+            maxPages: 2,
+            workDir: dir,
+            tools,
+            signal: AbortSignal.abort(),
+          }),
+        ).rejects.toThrow(/abort/i);
+        await expect(pdfPageTexts(file, 1, AbortSignal.abort())).rejects.toThrow(/abort/i);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 
   it.skipIf(!tools.pdftotext)(
     'a blank page, read for real, is blank',

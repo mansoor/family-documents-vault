@@ -24,7 +24,9 @@ import webpush from 'web-push';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sendAlert } from './jobs/alerts.js';
 import { pruneShareCodes } from './jobs/mail.js';
+import { drawNextBatchItem } from './jobs/batches.js';
 import { buildExport } from './jobs/export.js';
+import { readNextBatchItem } from './jobs/read-item.js';
 import { makeMemberPhoto } from './jobs/member-photo.js';
 import { createNotifier } from './jobs/notify.js';
 import { backfillPreviews, renderVersionPreviews } from './jobs/previews.js';
@@ -659,6 +661,68 @@ describe.skipIf(!testAdminUrl())('the worker asks as the vault itself', () => {
             [rows[0]?.id],
           );
           expect(left.rows[0]?.code_email).toBeNull();
+        },
+      ],
+      [
+        'batch.previews: an item drawn and read (I1, I2)',
+        async () => {
+          // A batch of the owner's, and an item in it under their member key.
+          const { rows: made } = await admin.query<{ id: string }>(
+            `insert into intake_batch (household_id, created_by, member_id, ends_at)
+             values ($1, $2, $3, now() + interval '30 days') returning id`,
+            [hh, ids.account, ids.member],
+          );
+          const { rows: vaults } = await admin.query<{ id: string }>(
+            'select id from vault where household_id = $1',
+            [hh],
+          );
+          const itemId = randomUUID();
+          const key = `${hh}/batches/${made[0]?.id}/actor.enc`;
+          const fileKey = newKey();
+          const enc = new EncryptStream(fileKey);
+          await Promise.all([
+            new LocalAdapter(vaultDir).put(key, enc),
+            pipeline(Readable.from([onePagePdf()]), enc),
+          ]);
+          const scope = await withSystem(app, hh, (trx) =>
+            keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: ids.member }),
+          );
+          await admin.query(
+            `insert into incoming_file (id, household_id, batch_id, review_by, requester_member_id,
+                                        state, original_name, mime, byte_size, sha256, cipher_bytes,
+                                        cipher_sha256, storage_key, vault_id, file_key_wrapped,
+                                        wrapped_by_scope, scope, scan_state, read_state,
+                                        received_at, submitted_at)
+             values ($1, $2, $3, 'me', $4, 'received', 'actor.pdf', 'application/pdf', 10, $5, 38,
+                     $6, $7, $8, $9, $10, 'member', 'unscanned', 'waiting', now(), now())`,
+            [
+              itemId,
+              hh,
+              made[0]?.id,
+              ids.member,
+              randomBytes(32),
+              randomBytes(32),
+              key,
+              vaults[0]?.id,
+              wrapKey(fileKey, scope.key, `incoming:${itemId}`),
+              scope.id,
+            ],
+          );
+          const deps = { admin, db: app, keys, credentialsKey, localRoot: vaultDir, log };
+          expect((await drawNextBatchItem(deps, { household_id: hh })).drawn).toBe(itemId);
+          const read = await readNextBatchItem(deps, hh, {
+            maxPages: 1,
+            tools: { pdftoppm: false, magick: false, tesseract: false },
+            extract: async () => ({ text: 'PASSPORT', source: 'pdf', textPages: 1, ocrPages: 0 }),
+            proposer: { propose: async () => ({ state: 'done', proposal: {} }) },
+          });
+          expect(read.read).toBe(itemId);
+          const { rows } = await admin.query<{ read_state: string; preview_state: string }>(
+            'select read_state, preview_state from incoming_file where id = $1',
+            [itemId],
+          );
+          expect(rows[0]?.read_state).toBe('read');
+          expect(rows[0]?.preview_state).not.toBe('none');
         },
       ],
       [

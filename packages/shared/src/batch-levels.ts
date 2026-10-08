@@ -102,7 +102,9 @@ export type BatchTagCode =
   | 'expiry_unsure'
   | 'missing'
   | 'person_missing'
-  | 'narrowed';
+  | 'narrowed'
+  /** A teen's: the pages confidently name somebody else of the family (the I2 review). */
+  | 'not_theirs';
 
 /** One reason for an item's level: a Problem's, a Check's, or something worth knowing. */
 export interface BatchTag {
@@ -319,7 +321,8 @@ export function levelItem(input: LevelInput): ItemLevel {
 
   // Its dates and its number were read for the kind the pages proposed: for
   // another kind (the batch's), they are not offered — nor its issuer.
-  const forKind = !kindP || kindP.value === kindS?.value;
+  // A kind proposed and since deleted counts too: its dates are not the batch's kind's.
+  const forKind = !pages.type_key || pages.type_key.value === kindS?.value;
   if (forKind) {
     for (const field of ['issued', 'expires', 'identifier', 'issued_by'] as const) {
       const p = pages[field];
@@ -343,15 +346,36 @@ export function levelItem(input: LevelInput): ItemLevel {
         ? { value: vis, from: 'narrowed' }
         : { value: vis, from: 'batch' };
 
+  // What makes it Check is said once it is read, or its read failed; before
+  // that only what is a Problem, or worth knowing, is (the I2 review).
+  const check = (t: BatchTag) => {
+    if (read || input.reading === 'failed') tags.push(t);
+  };
+  // A teen's documents are their own: the pages confidently naming somebody
+  // else of the family is worth a look, with nobody else to choose.
+  const named = pages.owner_member_id;
+  if (
+    role === 'teen' &&
+    named &&
+    named.value !== me &&
+    named.confidence >= CLASH_CONFIDENCE &&
+    people.some((p) => p.id === named.value)
+  ) {
+    check({
+      code: 'not_theirs',
+      kind: 'check',
+      words: `The pages say ${nameOf(named.value)}: your documents are your own`,
+    });
+  }
   for (const c of clashes) {
     if (c.field === 'owner_member_id') {
-      tags.push({
+      check({
         code: 'clash_person',
         kind: 'check',
         words: `The pages say ${nameOf(c.pages.value)}, the batch says ${nameOf(c.batch)}`,
       });
     } else {
-      tags.push({
+      check({
         code: 'clash_kind',
         kind: 'check',
         words: `The pages say ${aKind(kindOf(c.pages.value)?.label ?? 'kind')}, the batch says ${aKind(kindOf(c.batch)?.label ?? 'kind')}`,
@@ -360,12 +384,12 @@ export function levelItem(input: LevelInput): ItemLevel {
   }
   if (kind) {
     if (kindS?.from === 'pages' && (kindS.confidence ?? 0) < ITEM_SURE.type_key) {
-      tags.push({ code: 'kind_unsure', kind: 'check', words: 'Kind unsure' });
+      check({ code: 'kind_unsure', kind: 'check', words: 'Kind unsure' });
     }
     if (!personS) {
-      tags.push({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
+      check({ code: 'person_missing', kind: 'check', words: 'Missing: whose it is' });
     } else if (personS.from === 'pages' && (personS.confidence ?? 0) < ITEM_SURE.owner_member_id) {
-      tags.push({ code: 'person_unsure', kind: 'check', words: 'Person unsure' });
+      check({ code: 'person_unsure', kind: 'check', words: 'Person unsure' });
     }
     const missing = missingFields(kind, {
       issued: proposals.issued?.value ?? null,
@@ -380,7 +404,7 @@ export function levelItem(input: LevelInput): ItemLevel {
     });
     for (const m of missing) {
       const word = m.label ? lowerFirst(m.label) : (FIELD_WORDS[m.key] ?? lowerFirst(m.key));
-      tags.push({
+      check({
         code: 'missing',
         kind: 'check',
         field: m.key,
@@ -393,7 +417,7 @@ export function levelItem(input: LevelInput): ItemLevel {
       (expires.confidence ?? 0) < ITEM_SURE.expires &&
       !missing.some((m) => m.key === 'expires')
     ) {
-      tags.push({ code: 'expiry_unsure', kind: 'check', words: 'Expiry unsure' });
+      check({ code: 'expiry_unsure', kind: 'check', words: 'Expiry unsure' });
     }
     if (visibility.from === 'narrowed') {
       const to = visibility.value === 'private' ? 'Only me' : 'adults';

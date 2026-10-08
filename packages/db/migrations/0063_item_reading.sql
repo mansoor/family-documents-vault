@@ -13,7 +13,11 @@
 -- `read_state` (0062) says where it is: waiting, reading, read, or failed —
 -- and then `read_failure` says why. A read is taken by stamping
 -- `read_started_at`; one taken long ago, by a worker that stopped, is taken
--- again, and only the worker that took it last writes what it read.
+-- again, and only the worker that took it last writes what it read. Each
+-- taking is counted (`read_attempts`): one that could not be finished — its
+-- bytes not to be had, the proposal thread gone — waits behind the others
+-- until `read_not_before`, and after a few tries is not read at all (the I2
+-- review: one bad item never holds up its household).
 
 alter table incoming_file
   -- Its words, sealed (`item-text:<id>`): kept while it waits.
@@ -25,6 +29,11 @@ alter table incoming_file
       check (read_failure in ('blank', 'password', 'unreadable', 'too_slow', 'not_read')),
   -- When the worker took it to read.
   add column read_started_at timestamptz,
+  -- How many times it has been taken to read, and, after one that could not
+  -- be finished, when it may be taken again.
+  add column read_attempts smallint not null default 0
+    constraint incoming_file_read_attempts check (read_attempts between 0 and 100),
+  add column read_not_before timestamptz,
   add constraint incoming_file_text_batch check (text_sealed is null or batch_id is not null),
   -- A reason only for a read that failed, and a read that failed has one.
   add constraint incoming_file_read_failed
@@ -50,6 +59,8 @@ create policy incoming_file_actor_insert on incoming_file as restrictive for ins
                                     and text_sealed is null
                                     and read_failure is null
                                     and read_started_at is null
+                                    and read_attempts = 0
+                                    and read_not_before is null
                                     and told_at is null
                                     and wrapped_by_scope = (select k.id from scope_key k
                                                              where k.kind = 'member'
@@ -127,5 +138,6 @@ end $$;
 
 -- The worker's next item to read, a household at a time: waiting, or taken
 -- by a worker long gone.
-create index incoming_file_batch_read_idx on incoming_file (household_id, received_at, id)
+create index incoming_file_batch_read_idx
+  on incoming_file (household_id, read_attempts, received_at, id)
   where batch_id is not null and state = 'received' and read_state in ('waiting', 'reading');

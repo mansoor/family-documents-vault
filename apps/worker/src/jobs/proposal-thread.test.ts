@@ -81,11 +81,11 @@ describe('the worker’s proposal thread (I2)', () => {
     }
   }, 30_000);
 
-  it('rules that fail are `failed`; a thread that stops, or cannot be made, is `unavailable` — never a rejection', async () => {
+  it('rules that fail are `failed`; a thread that stops holding the words is `died`; one that cannot be made is `unavailable` — never a rejection', async () => {
     const thread = new ProposalThread({ entry: STAND_IN });
     try {
       expect(await thread.propose('THROW', CTX)).toEqual({ state: 'failed' });
-      expect(await thread.propose('EXIT', CTX)).toEqual({ state: 'unavailable' });
+      expect(await thread.propose('EXIT', CTX)).toEqual({ state: 'died' });
       expect(await thread.propose('a page', CTX)).toEqual({ state: 'done', proposal: CANNED });
     } finally {
       await thread.close();

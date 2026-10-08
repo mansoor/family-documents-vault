@@ -243,6 +243,8 @@ const BATCH_COLUMNS = [
 export interface BatchOptions {
   /** A batch's removal, held once it is fenced and before its rows go (the I1 review): for the races. */
   betweenRemoval?: (batchId: string) => Promise<void>;
+  /** Told of each item whose sealed proposal is opened (the I2 review): for the tests. */
+  opened?: (itemId: string) => void;
 }
 
 export class BatchService {
@@ -555,7 +557,9 @@ export class BatchService {
           .where('idempotency_key', '=', key)
           .executeTakeFirst();
         if (prior?.state === 'received' || prior?.state === 'accepted') {
-          const [item] = (await this.itemsOf(trx, p, [b.id])).filter((i) => i.id === prior.id);
+          const [item] = (await this.itemsOf(trx, p, [b.id], prior.id)).filter(
+            (i) => i.id === prior.id,
+          );
           if (!item) throw notHere();
           return { replay: item } as const;
         }
@@ -695,7 +699,9 @@ export class BatchService {
           .executeTakeFirst();
         // Its batch removed as it arrived: nothing to put it in.
         if (!done) throw notHere();
-        const [item] = (await this.itemsOf(trx, p, [batchId])).filter((i) => i.id === ctx.fileId);
+        const [item] = (await this.itemsOf(trx, p, [batchId], ctx.fileId)).filter(
+          (i) => i.id === ctx.fileId,
+        );
         if (!item) throw notHere();
         return item;
       });
@@ -1087,7 +1093,16 @@ export class BatchService {
    * Found in one pass (the I1 review): the first of each hash of theirs is
    * asked of the database, the first in each batch read from its own rows.
    */
-  private async itemsOf(trx: Db, p: Principal, batchIds: string[]): Promise<BatchItemView[]> {
+  private async itemsOf(
+    trx: Db,
+    p: Principal,
+    batchIds: string[],
+    /**
+     * Only this item is answered (the I2 review, P-I2-3): only its proposal is
+     * opened; the rest are still read for what they duplicate.
+     */
+    only?: string,
+  ): Promise<BatchItemView[]> {
     const rows = (await trx
       .selectFrom('incoming_file as f')
       .innerJoin('intake_batch as ib', 'ib.id', 'f.batch_id')
@@ -1181,7 +1196,7 @@ export class BatchService {
     const levelling = await this.levelling(trx, batchIds);
     const proposed = new Map<string, DetailProposal | null>();
     for (const r of rows) {
-      if (r.state === 'received' && r.read_state === 'read') {
+      if (r.state === 'received' && r.read_state === 'read' && (!only || r.id === only)) {
         proposed.set(r.id, await levelling.open(r));
       }
     }
@@ -1306,6 +1321,7 @@ export class BatchService {
       },
       open: async (r: ItemRow): Promise<DetailProposal | null> => {
         if (!r.proposals_sealed) return null;
+        this.opts.opened?.(r.id);
         try {
           const fileKey = unwrapKey(
             r.file_key_wrapped,

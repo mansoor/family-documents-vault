@@ -62,6 +62,11 @@ export type ThreadAnswer =
   | { state: 'too_slow' }
   /** The rules failed on these words: nothing is proposed, and asking again would not help. */
   | { state: 'failed' }
+  /**
+   * The thread stopped while it held these words — out of memory, say
+   * (the review, P-I2-1): asked again once, then not read.
+   */
+  | { state: 'died' }
   /** No thread could be had, or it stopped: ask again later. */
   | { state: 'unavailable' };
 
@@ -217,7 +222,7 @@ export class ProposalThread implements ItemProposer {
     this.running = null;
     if (running) {
       clearTimeout(running.timer);
-      running.done({ state: 'unavailable' });
+      running.done({ state: 'died' });
     }
   }
 

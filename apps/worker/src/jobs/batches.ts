@@ -1,7 +1,13 @@
 import { withSystem } from '@fdv/db';
 import type { PgBoss } from 'pg-boss';
 import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } from './incoming.js';
-import { drawnOrNot, readNextBatchItem, unread, type ReadOptions } from './read-item.js';
+import {
+  BATCH_JOB_EXPIRE_SECONDS,
+  drawnOrNot,
+  readNextBatchItem,
+  unread,
+  type ReadOptions,
+} from './read-item.js';
 
 /**
  * Many documents at once (Phase 6, I1): what the worker does for a batch's
@@ -80,13 +86,26 @@ export async function drawNextBatchItem(
  * The job, on a queue of its own: `stately`, so one waits and one runs a
  * household, and each run sends the next. main.ts registers it so, and
  * the ordering test the same way.
+ *
+ * Whatever happens in a run (the I2 review, P-I2-1), it ends by sending the
+ * household's next while there is work left: at once, or — where all that
+ * is left is an item waiting to be read again — once its wait is over. A
+ * run may take BATCH_JOB_EXPIRE_SECONDS before the queue takes it as lost:
+ * above a read's deadline, under the time a read is taken as stale.
  */
 export async function workBatchPreviews(
   boss: PgBoss,
   deps: IncomingDeps,
   opts: { draw?: DrawItem; pollingIntervalSeconds?: number; read?: ReadOptions } = {},
 ): Promise<void> {
-  await boss.createQueue(BATCH_PREVIEWS, { policy: 'stately', retryLimit: 2, retryDelay: 30 });
+  const settings = {
+    retryLimit: 2,
+    retryDelay: 30,
+    expireInSeconds: BATCH_JOB_EXPIRE_SECONDS,
+  };
+  await boss.createQueue(BATCH_PREVIEWS, { policy: 'stately', ...settings });
+  // A queue made before I2 takes the expiry too.
+  await boss.updateQueue(BATCH_PREVIEWS, settings);
   await boss.work<BatchPreviewsJob>(
     BATCH_PREVIEWS,
     {
@@ -98,24 +117,72 @@ export async function workBatchPreviews(
     async (jobs) => {
       for (const job of jobs) {
         const hh = job.data.household_id;
-        const r = await drawNextBatchItem(deps, job.data, opts.draw);
-        // Then one item read, drawn already: this one, or one before it.
-        const read = opts.read
-          ? await readNextBatchItem(deps, hh, opts.read)
-          : { read: null, more: false };
-        if (r.more || read.more) await sendBatchPreviews(boss, hh);
+        try {
+          await drawNextBatchItem(deps, job.data, opts.draw);
+          // Then one item read, drawn already: this one, or one before it.
+          if (opts.read) await readNextBatchItem(deps, hh, opts.read);
+        } finally {
+          const left = await batchWorkLeft(deps, hh, Boolean(opts.read)).catch(() => ({
+            now: true,
+            at: null,
+          }));
+          if (left.now) await sendBatchPreviews(boss, hh);
+          else if (left.at) await sendBatchPreviews(boss, hh, left.at);
+        }
       }
     },
   );
 }
 
-/** One household's job, behind whatever else is queued; dropped if one already waits. */
-export async function sendBatchPreviews(boss: PgBoss, householdId: string): Promise<void> {
+/**
+ * One household's job, behind whatever else is queued — or not before
+ * `after` — and dropped if one already waits.
+ */
+export async function sendBatchPreviews(
+  boss: PgBoss,
+  householdId: string,
+  after?: Date,
+): Promise<void> {
   await boss.send(
     BATCH_PREVIEWS,
     { household_id: householdId },
-    { singletonKey: batchPreviewsKey(householdId) },
+    { singletonKey: batchPreviewsKey(householdId), ...(after ? { startAfter: after } : {}) },
   );
+}
+
+/**
+ * What one household's batches have left to do (the I2 review): an item to
+ * draw, or — where this worker reads — one drawn to read, now; or else the
+ * soonest an item waiting to be read again may be taken.
+ */
+export async function batchWorkLeft(
+  deps: Pick<IncomingDeps, 'db'>,
+  hh: string,
+  reads = true,
+): Promise<{ now: boolean; at: Date | null }> {
+  return withSystem(deps.db, hh, async (trx) => {
+    const now = await trx
+      .selectFrom('incoming_file')
+      .select('id')
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where((eb) =>
+        reads ? eb.or([undrawn(eb), eb.and([unread(eb), drawnOrNot(eb)])]) : undrawn(eb),
+      )
+      .limit(1)
+      .executeTakeFirst();
+    if (now) return { now: true, at: null };
+    if (!reads) return { now: false, at: null };
+    const later = await trx
+      .selectFrom('incoming_file')
+      .select((eb) => eb.fn.min('read_not_before').as('at'))
+      .where('batch_id', 'is not', null)
+      .where('state', '=', 'received')
+      .where('read_state', '=', 'waiting')
+      .where('read_not_before', '>', new Date())
+      .executeTakeFirst();
+    return { now: false, at: later?.at ?? null };
+  });
 }
 
 /**
