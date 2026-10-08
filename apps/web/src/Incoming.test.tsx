@@ -288,7 +288,8 @@ describe('incoming on the web (5.23)', () => {
     fireEvent.click(refuse);
     const again = await screen.findByRole('alertdialog', { name: 'Refuse this file?' });
     fireEvent.click(within(again).getByRole('button', { name: 'Refuse it' }));
-    await waitFor(() => expect(window.location.pathname).toBe('/inbox'));
+    // Back to the files sent to you (a tab of the Inbox since I1).
+    await waitFor(() => expect(window.location.pathname).toBe('/inbox/sent'));
     expect(state.calls.some((c) => c.url === '/api/v1/incoming/in-1/reject')).toBe(true);
     const inbox = await screenCalled('Files sent to you');
     expect(

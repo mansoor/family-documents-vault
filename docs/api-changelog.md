@@ -3958,6 +3958,59 @@ only_me_not_shared`. The activity log says it, notable, to owners and
     `DOCUMENT_SORTS`, `DocumentSort`, `SortDirection`, `isDocumentSort`,
     `STATUS_ORDER`, `statusRank`, `DOCUMENT_PAGE_MAX`, `maySortByLocation`,
     `DocumentListParams`, `DocumentPage`. The client fake answers the same.
+  - Many documents at once (I1, `features.batches`). **Added**, for whoever
+    may add documents (an owner, an adult, a teen; a viewer or a guest is
+    `403 forbidden`): `POST /api/v1/batches` (`{ name?, defaults? }`) makes
+    a batch of the caller's own, with defaults that fill only what an
+    accept does not say — `owner_member_id`, `type_key`, `visibility`
+    (null: as each kind says, and never wider than the batch chose),
+    `physical_location`, `collection_id` (one the caller may add to),
+    `tags`, `is_essential` — and an end (`ends_at`) 30 days after it was
+    made, when what is undecided in it is removed with it. `GET
+/api/v1/batches` lists the caller's own, newest first, each with
+    `counts` (`items`, `waiting`, `accepted`, `duplicates`); `GET`, `PATCH`
+    (name and defaults) and `DELETE /api/v1/batches/{id}` (what is
+    undecided removed, its bytes too; accepted items stay documents).
+    `POST /api/v1/batches/{id}/items`: one file a request, multipart as
+    `file`, the size limit and the kinds a single add takes (`413
+too_large`, `415 unsupported_type`), at most `BATCH_MAX_FILES` (200)
+    in a batch (`422 batch_full`), before its end (`409 batch_ended`);
+    each item says its `name`, `byte_size` and `sha256` (a resumed upload
+    sends only what is not there), `state` (`waiting` | `accepted`),
+    `reading` (`waiting` until I2 reads it), its pages (`preview_state`,
+    `preview_pages`, drawn by the worker one item at a time a household,
+    at `GET …/items/{itemId}/pages/{n}`), and `duplicate` — of a document
+    the caller can see (`{ of: 'document', document_id, title }`), never
+    one they cannot, or of another of their own items waiting (`{ of:
+'item', batch_id, batch_name, batch_created_at, item_id, same_batch }`).
+    `DELETE …/items/{itemId}` removes one, as a refused file sent in is.
+    `POST …/items/{itemId}/accept` files it as a new document with every
+    detail a capture takes and `collection_id`, in one transaction; a
+    detail not sent takes the batch's default; answers `{ document_id,
+version_id, warnings? }`; `409 already_decided` once decided. Somebody
+    else's batch, an owner's included, is `404`: a batch and its items are
+    their uploader's alone, and nothing — the activity log, a count, the
+    files sent in, a search — says they exist until an item is accepted,
+    when it is a document's lines as any new document's are. `@fdv/shared`:
+    `BATCH_MAX_FILES`, `BATCH_NAME_MAX`, `BatchDefaults`, `BatchInput`,
+    `BatchView`, `BatchDetail`, `BatchItemView`, `BatchDuplicate`,
+    `BatchAcceptInput`, `BatchAccepted`, `batchVisibility`,
+    `duplicateWords`. `@fdv/client`: `createBatch`, `batches`, `batch`,
+    `updateBatch`, `removeBatch`, `addBatchItem`, `batchItemsUrl`,
+    `removeBatchItem`, `acceptBatchItem`, `batchItemPage`. The client fake
+    answers the same. A batch made Only me (`visibility: 'private'`) is its
+    uploader's own: `owner_member_id` is the uploader where none is sent,
+    somebody else is `422` (as a capture's), and an accept naming somebody
+    else without a `visibility` is refused, never widened. `DELETE
+/api/v1/batches/{id}` ends the batch first, so a file sent while it is
+    removed is `409 batch_ended`. `POST …/items` takes an optional
+    `Idempotency-Key` (a UUID): a file sent again with the key of one that
+    arrived is answered `201` with that item and `idempotent-replayed:
+true`; one still on its way is `409 upload_in_progress`; one removed
+    since, `409 already_decided` (`addBatchItem`'s fourth argument). An
+    accepted item's `preview_state` is `none`: its pages went with its
+    bytes. **Unchanged:** `GET /api/v1/incoming` lists files sent through a
+    request alone, and a batch's item is never decided there.
 
 ## Deprecations in effect
 

@@ -24,3 +24,4 @@ export * from './wire.js';
 export * from './tokens.js';
 export * from './proposals.js';
 export * from './document-table.js';
+export * from './batches.js';

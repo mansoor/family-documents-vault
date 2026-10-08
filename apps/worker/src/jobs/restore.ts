@@ -973,6 +973,8 @@ const GUARDS = [
     'member_identity',
     'upload_request',
     'incoming_file',
+    // A batch is its uploader's alone (0062).
+    'intake_batch',
     'export',
   ].map((table) => ({
     name: `${table}_private_gained`,
@@ -1056,6 +1058,13 @@ const GUARDS = [
   // Only an owner changes whether Only me documents are shared outside the
   // family (0061, 5.41).
   { name: 'household_only_me_rule', table: 'household', fn: 'household_only_me_rule' },
+  // A batch's uploader changes its name and defaults, and nothing else of
+  // it (0062, Phase 6 I1).
+  {
+    name: 'intake_batch_account_writes',
+    table: 'intake_batch',
+    fn: 'intake_batch_account_writes',
+  },
 ];
 
 /**
@@ -1135,6 +1144,9 @@ const ACTOR_GUARDED = [
   'upload_session',
   'upload_code',
   'incoming_file',
+  // Many documents at once (0062): a batch, its uploader's alone; its items
+  // are incoming files.
+  'intake_batch',
   // What a document removed for good leaves behind: who could see it, and
   // the files still to be deleted (0045).
   'document_tombstone',
@@ -1215,6 +1227,8 @@ const MAKER_ONLY = [
     where: "review_by = 'me'",
     what: 'a file sent for one person to review',
   },
+  // A batch, and its items (above, review-by-me): its uploader's alone (0062, Q3).
+  { table: 'intake_batch', where: 'true', what: "somebody's batch of uploads" },
   // A person's Only me identity details: theirs alone, whoever else asks (0050, A33).
   {
     table: 'member_identity',

@@ -2365,6 +2365,156 @@ export const contractScenarios: Scenario[] = [
     },
   },
   {
+    name: 'many documents at once: a batch with defaults, two files the same, one accepted with every detail and the defaults filling what was not said, the other removed; a viewer refused (I1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.batches).toBe(true);
+      const me = await api.me(token);
+      const made = await api.createBatch(token, {
+        name: 'Contract batch',
+        defaults: { tags: ['Contract-Batch'], is_essential: true, physical_location: 'Box 3' },
+      });
+      expect(made).toMatchObject({
+        name: 'Contract batch',
+        items: [],
+        counts: { items: 0, waiting: 0, accepted: 0, duplicates: 0 },
+        defaults: {
+          owner_member_id: null,
+          type_key: null,
+          visibility: null,
+          physical_location: 'Box 3',
+          collection_id: null,
+          tags: ['contract-batch'],
+          is_essential: true,
+        },
+      });
+      const bytes = new TextEncoder().encode('%PDF-1.4\n% the contract batch scan\n%%EOF\n');
+      const file = (filename: string) => ({
+        kind: 'bytes' as const,
+        filename,
+        contentType: 'application/pdf',
+        bytes,
+      });
+      const first = await api.addBatchItem(token, made.id, file('scan-001.pdf'));
+      const again = await api.addBatchItem(token, made.id, file('scan-001 (1).pdf'));
+      expect(first).toMatchObject({
+        batch_id: made.id,
+        name: 'scan-001.pdf',
+        content_type: 'application/pdf',
+        byte_size: bytes.length,
+        state: 'waiting',
+        reading: 'waiting',
+        duplicate: null,
+        document_id: null,
+      });
+      expect(first.sha256).toMatch(/^[0-9a-f]{64}$/);
+      // The same bytes again: a duplicate, still the uploader's to accept or remove.
+      expect(again.sha256).toBe(first.sha256);
+      expect(again.duplicate).toMatchObject({ of: 'item', item_id: first.id, same_batch: true });
+      const listed = (await api.batches(token)).items.find((b) => b.id === made.id);
+      expect(listed?.counts).toEqual({ items: 2, waiting: 2, accepted: 0, duplicates: 1 });
+
+      // Accepted with every detail the card takes; what is not said takes the defaults.
+      const done = await api.acceptBatchItem(token, made.id, first.id, {
+        type_key: 'birth_certificate',
+        title: 'Contract batch birth certificate',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        issued: { date: '2021-03-14', precision: 'day' },
+        identifier: 'BC-123456',
+        issued_by: 'General Register Office',
+        notes: 'Renew a year early',
+        extra: { registration_no: 'R-1234', place_of_birth: 'Leeds' },
+      });
+      const doc = await api.document(token, done.document_id);
+      expect(doc).toMatchObject({
+        type_key: 'birth_certificate',
+        title: 'Contract batch birth certificate',
+        owner_member_id: me.member_id,
+        visibility: 'household',
+        issued: { date: '2021-03-14', precision: 'day' },
+        identifier: 'BC-123456',
+        issued_by: 'General Register Office',
+        notes: 'Renew a year early',
+        extra: { registration_no: 'R-1234', place_of_birth: 'Leeds' },
+        tags: ['contract-batch'],
+        is_essential: true,
+        physical_location: 'Box 3',
+      });
+      // The copy now duplicates a document; removed, it is gone, and decided once.
+      const now = await api.batch(token, made.id);
+      expect(now.items.find((i) => i.id === again.id)?.duplicate).toMatchObject({
+        of: 'document',
+        document_id: done.document_id,
+        title: 'Contract batch birth certificate',
+      });
+      await api.removeBatchItem(token, made.id, again.id);
+      const left = await api.batch(token, made.id);
+      expect(left.items.map((i) => [i.id, i.state, i.document_id])).toEqual([
+        [first.id, 'accepted', done.document_id],
+      ]);
+      expect(left.counts).toEqual({ items: 1, waiting: 0, accepted: 1, duplicates: 0 });
+      expect(await refusal(api.removeBatchItem(token, made.id, again.id))).toMatchObject({
+        status: 409,
+        code: 'already_decided',
+      });
+
+      // A viewer adds nothing, so makes no batch, and is shown none.
+      const vee = { email: 'batch-viewer@example.test', password: 'the viewer’s own password' };
+      await ctx.addSignIn(token, { name: 'Vee', role: 'viewer', ...vee });
+      const viewer = await signInAs(api, vee.email, vee.password);
+      for (const asked of [
+        () => api.createBatch(viewer.access_token, {}),
+        () => api.batches(viewer.access_token),
+        () => api.batch(viewer.access_token, made.id),
+      ]) {
+        expect(await refusal(asked())).toMatchObject({ status: 403, code: 'forbidden' });
+      }
+
+      // The batch removed: gone, and what was accepted stays a document.
+      await api.removeBatch(token, made.id);
+      expect(await refusal(api.batch(token, made.id))).toMatchObject({ status: 404 });
+      expect((await api.document(token, done.document_id)).id).toBe(done.document_id);
+    },
+  },
+  {
+    name: 'many documents at once, the review: a batch made Only me is its uploader’s own; a file sent again with its Idempotency-Key is the item it made; accepted, an item has no pages (I1)',
+    run: async (api, ctx) => {
+      const { access_token: token } = await signIn(api, ctx);
+      const me = await api.me(token);
+      const mine = await api.createBatch(token, {
+        name: 'Only mine',
+        defaults: { visibility: 'private' },
+      });
+      // Only me is for one’s own documents: whose they are is the uploader.
+      expect(mine.defaults).toMatchObject({ visibility: 'private', owner_member_id: me.member_id });
+      const file = {
+        kind: 'bytes' as const,
+        filename: 'letter.pdf',
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode('%PDF-1.4\n% the contract review letter\n%%EOF\n'),
+      };
+      const key = '6f1f7c1e-3a8b-4c2d-9e0f-1a2b3c4d5e6f';
+      const first = await api.addBatchItem(token, mine.id, file, key);
+      // Its answer lost, sent again with its key: the item it made, not a second.
+      const again = await api.addBatchItem(token, mine.id, file, key);
+      expect(again.id).toBe(first.id);
+      expect((await api.batch(token, mine.id)).items.map((i) => i.id)).toEqual([first.id]);
+      // Accepted with nothing said: Only me, theirs, never wider.
+      const done = await api.acceptBatchItem(token, mine.id, first.id, {});
+      expect(await api.document(token, done.document_id)).toMatchObject({
+        visibility: 'private',
+        owner_member_id: me.member_id,
+      });
+      expect((await api.batch(token, mine.id)).items[0]).toMatchObject({
+        state: 'accepted',
+        preview_state: 'none',
+        preview_pages: null,
+      });
+      await api.removeBatch(token, mine.id);
+    },
+  },
+  {
     name: 'signing out ends the session',
     run: async (api, ctx) => {
       const token = (ctx.tokens as Tokens).access_token;

@@ -125,6 +125,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       detail_suggestions: true,
       // R2: GET /documents sorted by a column, filtered and paged: the Documents table.
       document_table: true,
+      // I1: many documents at once, each its uploader's alone until accepted.
+      batches: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

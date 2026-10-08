@@ -63,6 +63,7 @@ async function make(
       shares: anyStub,
       uploads: anyStub,
       incoming: anyStub,
+      batches: anyStub,
       audit: anyStub,
       passwords: anyStub,
       offline: anyStub,

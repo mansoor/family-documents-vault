@@ -627,7 +627,16 @@ export interface Schema {
   incoming_file: {
     id: Generated<string>;
     household_id: string;
-    request_id: string;
+    /** The request it was sent through; null for a batch's item (0062), which names its batch. */
+    request_id: string | null;
+    /** The batch it is an item of (0062, Phase 6 I1): its uploader's alone until accepted. */
+    batch_id: string | null;
+    /** A batch's item, read for its details (I2): `waiting` until then; null for a file sent in. */
+    read_state: 'waiting' | 'reading' | 'read' | 'failed' | null;
+    /** What I2 proposes from its pages, sealed under the item's own key; gone once it is decided. */
+    proposals_sealed: Buffer | null;
+    /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
+    idempotency_key: string | null;
     review_by: 'me' | 'adults';
     requester_member_id: string;
     item_id: string | null;
@@ -671,6 +680,28 @@ export interface Schema {
     owners_only: Generated<boolean>;
     /** When its reviewers were told it is waiting (0047): told once. */
     told_at: Timestamp | null;
+  };
+
+  /**
+   * Many documents at once (0062, Phase 6 I1): a batch, its uploader's
+   * alone, with defaults that fill only what is blank, and an end 30 days
+   * after it was made. Its items are incoming files (`batch_id`).
+   */
+  intake_batch: {
+    id: Generated<string>;
+    household_id: string;
+    created_by: string;
+    member_id: string;
+    name: string | null;
+    default_owner_member_id: string | null;
+    default_type_key: string | null;
+    default_visibility: Visibility | null;
+    default_physical_location: string | null;
+    default_collection_id: string | null;
+    default_tags: ColumnType<string[], string[] | undefined, string[]>;
+    default_essential: Generated<boolean>;
+    created_at: GeneratedTimestamp;
+    ends_at: Timestamp;
   };
 
   owner_change_request: {

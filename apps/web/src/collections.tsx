@@ -15,7 +15,7 @@ import { Link } from 'react-router';
 import { api, ApiRequestError } from './api.js';
 import { describeError, useApp, useLoad } from './app-context.js';
 import { storedRole } from './session.js';
-import { Button, ErrorNote, Field, Pills, TextArea } from './ui.js';
+import { Button, ErrorNote, Field, Pills, Select, TextArea } from './ui.js';
 
 /**
  * Collections of documents on the web (5.15): what the Collections screen, a collection's
@@ -102,6 +102,44 @@ export function mayChangeCollection(
   collection: Pick<CollectionView, 'mine' | 'audience'>,
 ): boolean {
   return collection.mine && inCollectionAudience(role, collection.audience);
+}
+
+/**
+ * A collection for what is filed to go in (I1): those the reader may put
+ * documents in, and, for one shared outside the family, what that means —
+ * heard with the choice, as Add to a collection says it before anything
+ * goes in (5.19).
+ */
+export function CollectionSelect(props: {
+  id: string;
+  collections: ReadonlyArray<Pick<CollectionView, 'id' | 'name' | 'shared_outside'>>;
+  value: string;
+  onChange: (v: string) => void;
+  role: Role | null;
+}) {
+  const chosen = props.collections.find((c) => c.id === props.value);
+  const shared = chosen?.shared_outside ?? null;
+  const said = `${props.id}-shared`;
+  return (
+    <>
+      <Select
+        id={props.id}
+        label="Collection"
+        value={props.value}
+        onChange={props.onChange}
+        options={[
+          { value: '', label: 'None' },
+          ...props.collections.map((c) => ({ value: c.id, label: c.name })),
+        ]}
+        describedBy={shared ? said : undefined}
+      />
+      {shared && (
+        <p id={said} className="status status-warn">
+          {sharedOutsideWords(shared, props.role)}
+        </p>
+      )}
+    </>
+  );
 }
 
 /**

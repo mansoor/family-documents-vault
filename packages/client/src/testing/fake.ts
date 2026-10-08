@@ -1,4 +1,6 @@
 import {
+  BATCH_MAX_FILES,
+  batchVisibility,
   can,
   canEditIdentity,
   canSee,
@@ -64,6 +66,9 @@ import {
   UNSEEN_DOCUMENTS,
   type AccessGrant,
   type AccessPreview,
+  type BatchDefaults,
+  type BatchDuplicate,
+  type BatchItemView,
   type Capabilities,
   type CaptureMetadata,
   type CollectionAudience,
@@ -322,6 +327,12 @@ export interface FakeVaultState {
    * sender would send it, ready (its scan and pages done) unless it says.
    */
   incoming: FakeIncoming[];
+  /**
+   * Many documents at once (Phase 6, I1): each batch with its uploader, by
+   * member id, and its items — removed ones kept, as the vault keeps a
+   * removed item's row until its batch goes.
+   */
+  batches: FakeBatch[];
   /** Every request, in order, for assertions. */
   calls: Array<{ method: string; path: string }>;
   /** When true, every request fails as if the network were down. */
@@ -379,6 +390,31 @@ type FakeDocument = {
   notes_updated_at?: string | null;
   notes_updated_by?: string | null;
 } & Omit<CaptureMetadata, 'title'>;
+
+/** A batch, as the fake keeps one (Phase 6, I1): its uploader's alone. */
+export interface FakeBatch {
+  id: string;
+  member_id: string;
+  name: string | null;
+  created_at: string;
+  ends_at: string;
+  defaults: BatchDefaults;
+  items: FakeBatchItem[];
+}
+
+/** One file in a batch: its hash a stand-in of the right shape, the same for the same bytes. */
+export interface FakeBatchItem {
+  id: string;
+  name: string;
+  content_type: string;
+  byte_size: number;
+  sha256: string;
+  arrived_at: string;
+  state: 'waiting' | 'accepted' | 'removed';
+  document_id: string | null;
+  /** The uploader's Idempotency-Key for it, when sent (the I1 review). */
+  key?: string;
+}
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
 export interface FakeCollection {
@@ -545,6 +581,22 @@ interface Part {
   filename?: string;
   type?: string;
   size?: number;
+  /** A file's bytes, as near as the fake can tell them (I1's stand-in hash). */
+  bytes?: Uint8Array;
+}
+
+/**
+ * A stand-in for a file's SHA-256 (I1): 64 hex digits, the same for the
+ * same bytes and, in a test, different for different ones. Not SHA-256.
+ */
+function standInHash(bytes: Uint8Array): string {
+  let out = '';
+  for (let seed = 0; seed < 8; seed++) {
+    let h = (0x811c9dc5 ^ seed) >>> 0;
+    for (const b of bytes) h = Math.imul(h ^ b, 0x01000193) >>> 0;
+    out += h.toString(16).padStart(8, '0');
+  }
+  return out;
 }
 
 /**
@@ -563,13 +615,15 @@ function partsOf(body: unknown): Part[] | null {
       const start = (m.index ?? 0) + m[0].length;
       const end = text.indexOf('\r\n--', start);
       if (m[2]) {
+        const bytes = new TextEncoder().encode(text.slice(start, end));
         out.push({
           name: m[1] as string,
           value: null,
           filename: m[3] as string,
           type:
             /Content-Type: ([^\r\n]+)/i.exec(m[4] ?? '')?.[1]?.trim() ?? 'application/octet-stream',
-          size: new TextEncoder().encode(text.slice(start, end)).length,
+          size: bytes.length,
+          bytes,
         });
         continue;
       }
@@ -672,9 +726,12 @@ export function createFakeVault(): {
     collections: [],
     uploadRequests: [],
     incoming: [],
+    batches: [],
     calls: [],
     offline: false,
   };
+  /** What each document accepted from a batch was made of, by its stand-in hash (I1). */
+  const filedFrom = new Map<string, string>();
   let n = 0;
   const next = (prefix: string) => `${prefix}-${++n}`;
   /** A document's versions: what each upload to it, or the capture that made it, stored. */
@@ -1428,6 +1485,7 @@ export function createFakeVault(): {
           detail_suggestions: true,
           // GET /documents sorted by a column, filtered and paged (R2).
           document_table: true,
+          batches: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3069,6 +3127,359 @@ export function createFakeVault(): {
         return ok({ document_id: documentId, version_id: made.version_id }, 201);
       }
     }
+    // Many documents at once (Phase 6, I1): a batch and its items are their
+    // uploader's alone (404 for anybody else's); a viewer or a guest is
+    // refused, as adding is.
+    const batchAt =
+      /^\/api\/v1\/batches(?:\/([^/]+)(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)?)?$/.exec(
+        path,
+      );
+    if (batchAt) {
+      const s = session();
+      if (!('id' in s)) return s;
+      const who = whoOf(s);
+      if (!can(who.role, 'document.add')) {
+        return fail(403, 'forbidden', refusalFor('document.add'));
+      }
+      const [, rawId, items, rawItem, accept, page] = batchAt;
+      const id = rawId ? decodeURIComponent(rawId) : undefined;
+      const itemId = rawItem ? decodeURIComponent(rawItem) : undefined;
+      const mine = state.batches.filter((b) => b.member_id === who.memberId);
+      const reader = { role: who.role, memberId: who.memberId };
+      /** Each item's duplicate: a document the caller can see, or an earlier item of theirs. */
+      const duplicateOf = (b: FakeBatch, it: FakeBatchItem): BatchDuplicate | null => {
+        if (it.state !== 'waiting') return null;
+        for (const [docId, hash] of filedFrom) {
+          const d = state.documents.find((x) => x.id === docId && !x.deleted_at);
+          if (
+            hash === it.sha256 &&
+            d &&
+            canSee(reader, {
+              visibility: d.visibility ?? 'household',
+              owner_member_id: d.owner_member_id ?? null,
+            })
+          ) {
+            return { of: 'document', document_id: d.id, title: d.title };
+          }
+        }
+        const earlier = mine
+          .flatMap((o) => o.items.map((x) => ({ batch: o, x })))
+          .filter(
+            ({ x }) =>
+              x.state === 'waiting' &&
+              x.sha256 === it.sha256 &&
+              x.id !== it.id &&
+              x.arrived_at <= it.arrived_at &&
+              (x.arrived_at < it.arrived_at || x.id < it.id),
+          )
+          .sort((a, c) => (a.batch.id === b.id ? -1 : c.batch.id === b.id ? 1 : 0));
+        const first = earlier[0];
+        return first
+          ? {
+              of: 'item',
+              batch_id: first.batch.id,
+              batch_name: first.batch.name,
+              batch_created_at: first.batch.created_at,
+              item_id: first.x.id,
+              same_batch: first.batch.id === b.id,
+            }
+          : null;
+      };
+      const itemView = (b: FakeBatch, it: FakeBatchItem): BatchItemView => ({
+        id: it.id,
+        batch_id: b.id,
+        name: it.name,
+        content_type: it.content_type,
+        byte_size: it.byte_size,
+        sha256: it.sha256,
+        arrived_at: it.arrived_at,
+        state: it.state === 'accepted' ? 'accepted' : 'waiting',
+        reading: 'waiting',
+        // Accepted, its pages went with its bytes (the I1 review).
+        preview_state: it.state === 'accepted' ? 'none' : 'unsupported',
+        preview_pages: null,
+        duplicate: duplicateOf(b, it),
+        document_id: it.state === 'accepted' ? it.document_id : null,
+      });
+      const batchView = (b: FakeBatch, withItems: boolean) => {
+        const kept = b.items.filter((x) => x.state !== 'removed').map((x) => itemView(b, x));
+        return {
+          id: b.id,
+          name: b.name,
+          created_at: b.created_at,
+          ends_at: b.ends_at,
+          defaults: {
+            ...b.defaults,
+            physical_location: seesLocation(who.role) ? b.defaults.physical_location : null,
+          },
+          counts: {
+            items: kept.length,
+            waiting: kept.filter((x) => x.state === 'waiting').length,
+            accepted: kept.filter((x) => x.state === 'accepted').length,
+            duplicates: kept.filter((x) => x.state === 'waiting' && x.duplicate).length,
+          },
+          ...(withItems ? { items: kept } : {}),
+        };
+      };
+      /** The defaults sent, checked as the real vault checks them; a refusal, or what to keep. */
+      const defaultsOf = (
+        sent: Partial<BatchDefaults>,
+        current: BatchDefaults,
+      ): BatchDefaults | ResponseLike => {
+        const d = { ...current, ...sent };
+        if (sent.owner_member_id) {
+          if (who.role === 'teen' && sent.owner_member_id !== who.memberId) {
+            return fail(403, 'forbidden', 'You can only add documents that belong to you.');
+          }
+          if (!state.members.some((m) => m.id === sent.owner_member_id)) {
+            return fail(
+              422,
+              'validation_failed',
+              'That person is not in the family.',
+              'owner_member_id',
+            );
+          }
+        }
+        if (sent.type_key && !state.types.some((t) => t.key === sent.type_key)) {
+          return fail(
+            422,
+            'validation_failed',
+            'That kind of document is not on the list.',
+            'type_key',
+          );
+        }
+        if (sent.visibility === 'adults' && !can(who.role, 'document.see_adults')) {
+          return fail(403, 'forbidden', 'Only an adult can make a document adults-only.');
+        }
+        // A batch made Only me is the uploader's own (the I1 review).
+        if (d.visibility === 'private') {
+          if (d.owner_member_id !== null && d.owner_member_id !== who.memberId) {
+            return fail(422, 'validation_failed', PRIVATE_TO_THEM, 'visibility');
+          }
+          d.owner_member_id = who.memberId;
+        }
+        if (sent.collection_id) {
+          const c = state.collections.find((x) => x.id === sent.collection_id && !x.deleted);
+          if (!c) return fail(404, 'not_found', 'That collection does not exist.');
+          if (c.owner_member_id !== who.memberId) {
+            return fail(
+              403,
+              'forbidden',
+              'Only the person who made this collection can change it.',
+            );
+          }
+        }
+        return {
+          ...d,
+          physical_location: d.physical_location?.trim() || null,
+          tags: tagsOf(d.tags),
+        };
+      };
+      if (!id && !items && init.method === 'POST') {
+        const blank: BatchDefaults = {
+          owner_member_id: null,
+          type_key: null,
+          visibility: null,
+          physical_location: null,
+          collection_id: null,
+          tags: [],
+          is_essential: false,
+        };
+        const defaults = defaultsOf(body.defaults ?? {}, blank);
+        if (isResponse(defaults)) return defaults;
+        const now = new Date();
+        const name = typeof body.name === 'string' ? body.name.trim().replace(/\s+/g, ' ') : '';
+        if (name.length > 120)
+          return fail(422, 'validation_failed', 'A batch’s name is too long.', 'name');
+        const b: FakeBatch = {
+          id: next('batch'),
+          member_id: who.memberId,
+          name: name || null,
+          created_at: now.toISOString(),
+          ends_at: new Date(now.getTime() + 30 * 864e5).toISOString(),
+          defaults,
+          items: [],
+        };
+        state.batches.push(b);
+        return ok(batchView(b, true), 201);
+      }
+      if (!id && init.method === 'GET') {
+        return ok({ items: [...mine].reverse().map((b) => batchView(b, false)) });
+      }
+      const b = mine.find((x) => x.id === id);
+      if (!b) return fail(404, 'not_found', 'That batch is not here.');
+      if (!items) {
+        if (init.method === 'GET') return ok(batchView(b, true));
+        if (init.method === 'PATCH') {
+          const defaults = defaultsOf(body.defaults ?? {}, b.defaults);
+          if (isResponse(defaults)) return defaults;
+          b.defaults = defaults;
+          if (body.name !== undefined) {
+            b.name = typeof body.name === 'string' ? body.name.trim() || null : null;
+          }
+          return ok(batchView(b, true));
+        }
+        if (init.method === 'DELETE') {
+          state.batches = state.batches.filter((x) => x.id !== b.id);
+          return empty();
+        }
+      }
+      if (items && !itemId && init.method === 'POST') {
+        // Sent again with the key of one that arrived: that item, a replay.
+        const key = init.headers['idempotency-key'];
+        if (key !== undefined && !UUID.test(key)) {
+          return fail(422, 'validation_failed', 'Idempotency-Key must be a UUID.');
+        }
+        const before = key ? b.items.find((x) => x.key === key) : undefined;
+        if (before?.state === 'removed') {
+          return fail(409, 'already_decided', 'This file has been accepted or removed already.');
+        }
+        if (before) return ok(itemView(b, before), 201);
+        const taken = b.items.filter((x) => x.state !== 'removed').length;
+        if (taken >= BATCH_MAX_FILES) {
+          return fail(422, 'batch_full', `A batch holds ${BATCH_MAX_FILES} files at most.`);
+        }
+        const parts = partsOf(init.body) ?? [];
+        const files = parts.filter((p) => p.value === null);
+        const file = files[0];
+        if (!file || files.length > 1 || parts.length !== files.length) {
+          return fail(422, 'validation_failed', 'Send one file, named file, and nothing else.');
+        }
+        const type = (file.type ?? '').split(';')[0] ?? '';
+        if (!/^(application\/pdf|image\/(jpeg|png|heic|heif|tiff|webp))$/.test(type)) {
+          return fail(415, 'unsupported_type', 'That kind of file cannot be stored here.');
+        }
+        const it: FakeBatchItem = {
+          id: next('item'),
+          name: file.filename ?? 'file',
+          content_type: type,
+          byte_size: file.size ?? 0,
+          sha256: standInHash(file.bytes ?? new Uint8Array()),
+          arrived_at: new Date().toISOString(),
+          state: 'waiting',
+          document_id: null,
+          ...(key ? { key } : {}),
+        };
+        b.items.push(it);
+        return ok(itemView(b, it), 201);
+      }
+      const it = b.items.find((x) => x.id === itemId && x.state !== 'removed');
+      const decided = () =>
+        fail(409, 'already_decided', 'This file has been accepted or removed already.');
+      if (!it) {
+        return b.items.some((x) => x.id === itemId)
+          ? decided()
+          : fail(404, 'not_found', 'That file is not waiting in this batch.');
+      }
+      if (page && init.method === 'GET') {
+        if (it.state !== 'waiting') return decided();
+        return fail(404, 'no_preview', "There's no preview of this page.");
+      }
+      if (!accept && init.method === 'DELETE') {
+        if (it.state !== 'waiting') return decided();
+        it.state = 'removed';
+        return empty();
+      }
+      if (accept && init.method === 'POST') {
+        if (it.state !== 'waiting') return decided();
+        const sent = body as CaptureMetadata & { collection_id?: string | null };
+        const { collection_id: sentCollection, ...rest } = sent;
+        // What is not sent takes the batch's default (Q4).
+        const metadata: CaptureMetadata = { ...rest };
+        const d = b.defaults;
+        if (metadata.owner_member_id === undefined && d.owner_member_id !== null)
+          metadata.owner_member_id = d.owner_member_id;
+        if (metadata.owner_member_id === undefined && d.visibility === 'private')
+          metadata.owner_member_id = who.memberId;
+        if (metadata.type_key === undefined && d.type_key !== null) metadata.type_key = d.type_key;
+        if (metadata.physical_location === undefined && d.physical_location !== null)
+          metadata.physical_location = d.physical_location;
+        if (metadata.tags === undefined && d.tags.length > 0) metadata.tags = d.tags;
+        if (metadata.is_essential === undefined && d.is_essential) metadata.is_essential = true;
+        if (who.role === 'teen' && metadata.owner_member_id == null)
+          metadata.owner_member_id = who.memberId;
+        const kind = state.types.find((t) => t.key === metadata.type_key);
+        if (metadata.type_key && !kind) {
+          return fail(
+            422,
+            'validation_failed',
+            'That kind of document is not on the list.',
+            'type_key',
+          );
+        }
+        if (metadata.visibility === undefined) {
+          metadata.visibility = batchVisibility({
+            chosen: d.visibility,
+            type: kind ?? null,
+            role: who.role,
+            owner: metadata.owner_member_id ?? null,
+            me: who.memberId,
+          });
+        }
+        const problem = checkCaptureMetadata(metadata, {
+          me: { member_id: who.memberId, role: who.role },
+          members: state.members,
+          types: state.types,
+        });
+        if (problem) {
+          return fail(
+            problem.status,
+            problem.field === 'extra'
+              ? 'invalid_extra'
+              : problem.status === 403
+                ? 'forbidden'
+                : 'validation_failed',
+            problem.message,
+            problem.key ?? problem.field,
+          );
+        }
+        const collectionId = sentCollection !== undefined ? sentCollection : d.collection_id;
+        const collection = collectionId
+          ? state.collections.find((c) => c.id === collectionId && !c.deleted)
+          : null;
+        if (collectionId && !collection)
+          return fail(404, 'not_found', 'That collection does not exist.');
+        if (collection && collection.owner_member_id !== who.memberId) {
+          return fail(403, 'forbidden', 'Only the person who made this collection can change it.');
+        }
+        const extra = detailsFor(metadata.type_key, metadata.extra);
+        if (isResponse(extra)) return extra;
+        const doc: FakeDocument = {
+          id: next('document'),
+          title: metadata.title ?? null,
+          type_key: metadata.type_key ?? null,
+          owner_member_id: metadata.owner_member_id ?? null,
+          identifier: tidy(metadata.identifier),
+          issued_by: tidy(metadata.issued_by),
+          issued: metadata.issued ?? null,
+          expires: metadata.expires ?? null,
+          physical_location: note(metadata.physical_location),
+          is_essential: metadata.is_essential ?? false,
+          tags: tagsOf(metadata.tags),
+          notes: note(metadata.notes),
+          extra,
+          visibility: metadata.visibility,
+        };
+        stampNotes(doc, null, who.memberId);
+        state.documents.push(doc);
+        const made: FakeUpload = {
+          kind: 'capture',
+          document_id: doc.id,
+          version_id: next('version'),
+          version_no: 1,
+          filename: it.name,
+          mime: it.content_type,
+          byte_size: it.byte_size,
+          uploaded_at: new Date().toISOString(),
+        };
+        state.captures.set(next('batch-upload'), made);
+        collection?.items.push({ document_id: doc.id, added_at: new Date().toISOString() });
+        filedFrom.set(doc.id, it.sha256);
+        it.state = 'accepted';
+        it.document_id = doc.id;
+        return ok({ document_id: doc.id, version_id: made.version_id }, 201);
+      }
+    }
     // Asking somebody to send documents (0.5.21): the family's side. A teen
     // or a viewer is told there is nothing here, as the vault tells them.
     const uploadAt = /^\/api\/v1\/upload-requests(?:\/([^/]+)(\/resume)?)?$/.exec(path);
@@ -4107,6 +4518,7 @@ function documentView(
     issued: doc.issued ?? null,
     expires,
     physical_location: opts.location === true ? (doc.physical_location ?? null) : null,
+    is_essential: doc.is_essential ?? false,
     tags: doc.tags ?? [],
     visibility: doc.visibility ?? 'household',
     notes: sealed ? null : (doc.notes ?? null),

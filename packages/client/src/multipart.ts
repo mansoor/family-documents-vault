@@ -100,6 +100,24 @@ export function photoUpload(body: PhotoBody): UploadBody {
 }
 
 /**
+ * The body POST /batches/{id}/items takes (Phase 6, I1): the file as
+ * `file`, and nothing else.
+ */
+export function batchItemUpload(file: CaptureFile): UploadBody {
+  if (file.kind === 'bytes') {
+    const m = multipartBody([
+      { name: 'file', filename: file.filename, contentType: file.contentType, bytes: file.bytes },
+    ]);
+    return { kind: 'bytes', bytes: m.bytes, contentType: m.contentType };
+  }
+  const FormDataCtor = (globalThis as { FormData?: new () => FormDataLike }).FormData;
+  if (!FormDataCtor) throw new Error('No FormData on this platform: send the file as bytes.');
+  const form = new FormDataCtor();
+  form.append('file', file.blob, file.filename);
+  return { kind: 'form', form };
+}
+
+/**
  * The body POST /capture takes: the details first, as a `metadata` field,
  * then the file (0.4.9). A vault older than 0.4.9 would ignore the details,
  * so send them only when it has `features.capture_metadata`.

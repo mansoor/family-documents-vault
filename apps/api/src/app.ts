@@ -49,9 +49,10 @@ import { registerSuggestions } from './suggestions/routes.js';
 import type { SuggestionService } from './suggestions/service.js';
 import type { ReminderService } from './reminders/service.js';
 import type { ExportService } from './exports/service.js';
-import { registerIncoming, registerUploads } from './uploads/routes.js';
+import { registerBatches, registerIncoming, registerUploads } from './uploads/routes.js';
 import { DROP_COOKIE_PATH, type UploadRequestService } from './uploads/requests.js';
 import type { IncomingService } from './uploads/incoming.js';
+import type { BatchService } from './uploads/batches.js';
 import { registerVaults } from './vaults/routes.js';
 import type { VaultService } from './vaults/service.js';
 import type { ApiConfig } from './config.js';
@@ -107,6 +108,8 @@ export interface AppDeps {
   uploads: UploadRequestService;
   /** What they sent, looked at before it is filed (5.23). */
   incoming: IncomingService;
+  /** Many documents at once (Phase 6, I1): batches, and their items. */
+  batches: BatchService;
   audit: AuditService;
   passwords: PasswordService;
   /** Essentials a phone may keep (0.4.13). */
@@ -401,6 +404,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps): Promise<Fastif
   );
   registerUploads(app, deps.uploads);
   registerIncoming(app, deps.incoming);
+  registerBatches(app, deps.batches);
 
   return app;
 }

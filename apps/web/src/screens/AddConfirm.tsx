@@ -15,6 +15,7 @@ import {
   reminderSentence,
   visibilityChoices,
   type CaptureMetadata,
+  type CollectionView,
   type CoreField,
   type DateOrder,
   type DocumentTypeView,
@@ -25,7 +26,7 @@ import {
   type Role,
   type Visibility,
 } from '@fdv/shared';
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { api, ApiRequestError, type DocumentInput, type Member } from '../api.js';
 import { describeError, useApp, useLoad } from '../app-context.js';
@@ -48,7 +49,8 @@ import {
   useDetailSuggestions,
   useSuggestionsOffered,
 } from '../suggestions.js';
-import { Button, ErrorNote, Field, Select, TextArea, TopBar } from '../ui.js';
+import { CollectionSelect } from '../collections.js';
+import { Button, ErrorNote, Field, Select, Switch, TextArea, TopBar } from '../ui.js';
 import { LinksChoiceDialog, linksAsk, type LinksAsk } from './Visibility.js';
 import { createUploadKeys, whileInProgress } from '../upload-keys.js';
 
@@ -73,7 +75,7 @@ function dateOrder(): DateOrder {
 }
 
 /** The card's details as a capture sends them: only what the card asks. */
-function captureDetails(d: DocumentInput): CaptureMetadata {
+export function captureDetails(d: DocumentInput): CaptureMetadata {
   const out: CaptureMetadata = {};
   if (d.type_key !== undefined) out.type_key = d.type_key;
   if (d.title !== undefined) out.title = d.title;
@@ -605,6 +607,8 @@ export function ConfirmForm(props: {
   lede: string;
   /** The file this card is about, when it has not been sent yet. */
   fileName?: string;
+  /** Shown with the file: a batch's item's first page, and what it duplicates (I1). */
+  aside?: ReactNode;
   /** The document this card is about, when it is already in the vault. */
   documentId?: string;
   /** Its newest version: the pages proposed from must be that version's (5.37). */
@@ -617,8 +621,27 @@ export function ConfirmForm(props: {
   submitLabel: string;
   /** The Save button, for a question over the card to give focus back to. */
   submitButton?: RefObject<HTMLButtonElement | null>;
+  /**
+   * A batch's item (Phase 6, I1): the card also asks for a collection, tags
+   * and Essential, which the single add leaves to the document's page —
+   * each starting from the batch's default.
+   */
+  extras?: {
+    /** The collections the person may put documents in. */
+    collections: ReadonlyArray<Pick<CollectionView, 'id' | 'name' | 'shared_outside'>>;
+    collectionId: string;
+    /** As typed: a comma between tags. */
+    tags: string;
+    essential: boolean;
+  };
+  /**
+   * Who can see a new document before anybody chooses, for a kind and a
+   * person: the kind's default (startingVisibility), unless the card says
+   * otherwise — a batch's, never wider than the batch chose (I1).
+   */
+  startVisibility?: (type: DocumentTypeView | undefined, owner: string) => Visibility;
   /** Throws to keep the card open with the vault's words. */
-  onSubmit: (details: DocumentInput) => Promise<void>;
+  onSubmit: (details: DocumentInput, extra?: { collection_id: string | null }) => Promise<void>;
   /** Save without details: offered for a new document only. */
   onSkip?: () => Promise<void>;
   onChooseAgain?: () => void;
@@ -647,6 +670,10 @@ export function ConfirmForm(props: {
   // the person, as startingVisibility says.
   const [visibilityChosen, setVisibilityChosen] = useState(false);
   const [notes, setNotes] = useState(initial.notes ?? '');
+  // A batch's item (I1): its collection, its tags and Essential.
+  const [collectionId, setCollectionId] = useState(props.extras?.collectionId ?? '');
+  const [tags, setTags] = useState(props.extras?.tags ?? '');
+  const [essential, setEssential] = useState(props.extras?.essential ?? false);
   // The type's own details, by field key. A key stays when the type
   // changes, so a field the next type shares keeps what was typed.
   const [detailValues, setDetailValues] = useState<Record<string, DetailInput>>(initial.details);
@@ -676,6 +703,9 @@ export function ConfirmForm(props: {
   const type = types.find((t) => t.key === typeKey);
   const me = members.find((m) => m.is_me);
   const myRole = me?.role ?? 'owner';
+  const startVisibility =
+    props.startVisibility ??
+    ((t: DocumentTypeView | undefined, o: string) => startingVisibility(t, myRole, o, me?.id));
   const teen = myRole === 'teen';
   // A teen cannot see Adults only documents, their own included.
   const adultsOnlyAllowed = !teen;
@@ -844,7 +874,7 @@ export function ConfirmForm(props: {
     // A new document takes the type's default; an existing one keeps
     // who can see it until somebody chooses otherwise.
     if (t && props.fileName) {
-      setVisibility(startingVisibility(t, myRole, owner, me?.id));
+      setVisibility(startVisibility(t, owner));
       setVisibilityChosen(false);
     }
   };
@@ -852,9 +882,9 @@ export function ConfirmForm(props: {
     setOwner(v);
     setOwnerChosen(true);
     retitle({ who: members.find((m) => m.id === v) ?? null });
-    if (type && props.fileName && !visibilityChosen) {
+    if (props.fileName && !visibilityChosen && (type || props.startVisibility)) {
       // Nobody has chosen yet: the kind's default, for this person.
-      setVisibility(startingVisibility(type, myRole, v, me?.id));
+      setVisibility(startVisibility(type, v));
     } else if (visibility === 'private' && v !== me?.id) {
       // Only me is for your own documents.
       setVisibility(adultsOnlyAllowed ? 'adults' : 'household');
@@ -1001,6 +1031,15 @@ export function ConfirmForm(props: {
     if (notesShown && notes !== (base.notes ?? '')) details.notes = notes.trim() || null;
     if (Object.keys(extra).length > 0) details.extra = extra;
     if (type) details.category = type.category;
+    if (props.extras) {
+      details.tags = tags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      details.is_essential = essential;
+      await run(() => props.onSubmit(details, { collection_id: collectionId || null }));
+      return;
+    }
     await run(() => props.onSubmit(details));
   };
 
@@ -1027,7 +1066,7 @@ export function ConfirmForm(props: {
       <TopBar title={props.title} back={props.back} />
       <p className="lede">{props.lede}</p>
       {props.fileName ? (
-        <p className="muted">
+        <p className="muted card-file">
           {props.fileName}
           {props.onChooseAgain ? (
             <>
@@ -1039,6 +1078,7 @@ export function ConfirmForm(props: {
           ) : null}
         </p>
       ) : null}
+      {props.aside}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -1252,6 +1292,34 @@ export function ConfirmForm(props: {
                 : undefined
             }
           />
+        )}
+        {props.extras && (
+          <>
+            {props.extras.collections.length > 0 && (
+              <CollectionSelect
+                id="f-collection"
+                collections={props.extras.collections}
+                value={collectionId}
+                onChange={setCollectionId}
+                role={myRole}
+              />
+            )}
+            <Field
+              id="f-tags"
+              label="Tags"
+              value={tags}
+              onChange={setTags}
+              required={false}
+              placeholder="house, car"
+              hint="A comma between tags."
+            />
+            <Switch
+              id="f-essential"
+              label="Essential"
+              checked={essential}
+              onChange={setEssential}
+            />
+          </>
         )}
         <div className="field" role="group" aria-label="Who can see this">
           <span className="field-label">Who can see this</span>

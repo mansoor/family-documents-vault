@@ -3319,3 +3319,361 @@ a.menu-item {
   padding-left: 20px;
   font-weight: 400;
 }
+
+/* ---- Phase 6, I1: many documents at once ----
+   Add as a menu; the Add many page — what is chosen beside what is chosen
+   for all of them; the Inbox's two lists; a batch's page, a table like the
+   Documents table's from 768 px and rows on a phone. */
+.add-wrap {
+  position: relative;
+}
+
+.menu-item-two {
+  min-height: 56px;
+  padding: 8px 12px;
+  align-items: flex-start;
+}
+
+.menu-words {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 600;
+}
+
+.menu-words .muted {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+@media (min-width: 640px) {
+  .menu-box.add-box {
+    width: 300px;
+  }
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.crumbs a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.private-note {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notice-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  overflow-wrap: anywhere;
+}
+
+.notice-box .muted {
+  font-weight: 400;
+}
+
+/* Many documents on their way, away from their page (the I1 review): how
+   far, and a way back to it, above every page until it ends. */
+.upload-strip {
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.upload-strip a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.shell-wide .page.addmany-page,
+.shell-mid .page.addmany-page {
+  max-width: 1120px;
+}
+
+.addmany {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (min-width: 1100px) {
+  .addmany {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+}
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 16px;
+  text-align: center;
+  background: var(--surface);
+  border: 2px dashed var(--border-input);
+  border-radius: var(--radius-l);
+}
+
+.drop-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.drop p {
+  margin: 0;
+}
+
+.drop .row {
+  justify-content: center;
+}
+
+fieldset.plain {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.defaults-card .section-h {
+  margin: 0 0 4px;
+}
+
+.upload-bar {
+  width: 100%;
+  height: 10px;
+  accent-color: var(--accent);
+}
+
+.filelist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 460px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.filerow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'name size'
+    'state state';
+  align-items: center;
+  gap: 2px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.filerow:has(> .btn-link) {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    'name size take'
+    'state state state';
+}
+
+.filerow-name {
+  grid-area: name;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filerow-size {
+  grid-area: size;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.filerow-state {
+  grid-area: state;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.filerow-state progress {
+  flex: 1;
+  max-width: 220px;
+  accent-color: var(--accent);
+}
+
+.filerow > .btn-link {
+  grid-area: take;
+  min-width: var(--tap);
+  justify-content: center;
+}
+
+.chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tab-count {
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-list .rowbtn {
+  overflow-wrap: anywhere;
+}
+
+.shell-wide .page.batch-page,
+.shell-mid .page.batch-page {
+  max-width: none;
+}
+
+.batch-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+
+.batch-title {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.batch-title h1 {
+  overflow-wrap: anywhere;
+}
+
+.batch-title p {
+  margin: 0;
+}
+
+.batch-actions {
+  align-items: flex-start;
+}
+
+.batch-wrap {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-l);
+}
+
+.batch-tbl tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.firstpage {
+  display: block;
+  width: 44px;
+  height: 58px;
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.firstpage-large {
+  width: 140px;
+  height: auto;
+  min-height: 120px;
+}
+
+.firstpage-none {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-muted);
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.item-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.item-state a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.item-actions {
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+
+.batch-items {
+  gap: 0;
+}
+
+.list li.batch-item {
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.batch-item-words {
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+}
+
+.batch-card-aside {
+  align-items: flex-start;
+}
+
+.batch-card-aside p {
+  margin: 0;
+}
+
+/* The file a card is about: a scanner's long name breaks anywhere on a phone. */
+.card-file {
+  overflow-wrap: anywhere;
+}

@@ -420,6 +420,32 @@ async function seed(url: string): Promise<string> {
             where r.household_id = $1 and r.revoked_at is null`,
           [hh, kept.rows[0]?.id, scope.rows[0]?.id, hh],
         );
+        // And, where the schema has them (0062), a batch of the requester's
+        // own, with a file waiting in it whose bytes go after the backup is
+        // made: a batch's items are incoming files, and come back as they do.
+        const batches = await c.query<{ has: boolean }>(
+          "select to_regclass('public.intake_batch') is not null as has",
+        );
+        if (batches.rows[0]?.has) {
+          await c.query(
+            `insert into intake_batch (household_id, created_by, member_id, ends_at)
+             select $1, r.created_by, r.requester_member_id, now() + interval '20 days'
+               from upload_request r where r.household_id = $1 and r.revoked_at is null`,
+            [hh],
+          );
+          await c.query(
+            `insert into incoming_file
+               (household_id, batch_id, review_by, requester_member_id, state, original_name,
+                mime, byte_size, sha256, cipher_bytes, cipher_sha256, storage_key, vault_id,
+                file_key_wrapped, wrapped_by_scope, scope, scan_state, read_state, received_at,
+                submitted_at)
+             select $1, b.id, 'me', b.member_id, 'received', 'scan.pdf', 'application/pdf', 1,
+                    '\\x00', 1, '\\x00', $4::text || '/batches/' || b.id::text || '/batch-gone.enc',
+                    $2, '\\x00', $3, 'member', 'unscanned', 'waiting', now(), now()
+               from intake_batch b where b.household_id = $1`,
+            [hh, kept.rows[0]?.id, scope.rows[0]?.id, hh],
+          );
+        }
       }
     }
     // People's identity details, where the schema has them (0050): the
@@ -1219,7 +1245,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       vault.adminUrl,
       `update upload_request set review_by = 'adults', moved_to_owners_at = now()
         where revoked_at is null;
-       update incoming_file set owners_only = true`,
+       update incoming_file set owners_only = true where request_id is not null`,
     );
     try {
       expect(await checkRestored(target())).toMatchObject({ documents: 3 });
@@ -1289,6 +1315,55 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       );
     }
     expect(await checkRestored(target())).toMatchObject({ documents: 3 });
+  });
+
+  it('notices a batch’s rules gone: its uploader’s alone, and only its name and defaults theirs to change (0062, I1)', async () => {
+    const { rows } = await sql(
+      vault.adminUrl,
+      `select pg_get_expr(polqual, polrelid) as rule from pg_policy where polname = 'intake_batch_actor'`,
+    );
+    const rule = rows[0]?.rule as string;
+    expect(rule).toMatch(/app_member\(\)/);
+    await sql(vault.adminUrl, 'drop policy intake_batch_actor on public.intake_batch');
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule for each kind of caller on intake_batch/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `create policy intake_batch_actor on public.intake_batch as restrictive using (${rule})`,
+      );
+    }
+    // Every member of the family given every batch: one member's own is open to another.
+    await sql(
+      vault.adminUrl,
+      `alter policy intake_batch_actor on public.intake_batch
+         using (case app_actor() when 'account' then true when 'system' then true else false end)`,
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(
+        /no rule keeps a member's own to them on .*intake_batch/,
+      );
+    } finally {
+      await sql(
+        vault.adminUrl,
+        `alter policy intake_batch_actor on public.intake_batch using (${rule})`,
+      );
+    }
+    await sql(
+      vault.adminUrl,
+      'alter table public.intake_batch disable trigger intake_batch_account_writes',
+    );
+    try {
+      await expect(checkRestored(target())).rejects.toThrow(/guard the vault relies on is missing/);
+    } finally {
+      await sql(
+        vault.adminUrl,
+        'alter table public.intake_batch enable trigger intake_batch_account_writes',
+      );
+    }
+    expect(await checkRestored(target())).toMatchObject({ households: 1 });
   });
 
   it('notices an audit log that can be changed', async () => {
@@ -1565,6 +1640,7 @@ describe.skipIf(!testAdminUrl())('checking a restored vault', () => {
       'member_identity',
       'upload_request',
       'incoming_file',
+      'intake_batch',
       'export',
     ]) {
       const trigger = `${table}_private_gained`;
@@ -3064,6 +3140,8 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
                from incoming_file order by storage_key`,
           );
           expect(all).toEqual([
+            // A batch's item (0062), kept as every file waiting is.
+            { name: 'batch-gone.enc', removed: false },
             { name: 'filed.enc', removed: false },
             { name: 'gone.enc', removed: false },
             { name: 'kept.enc', removed: false },
@@ -3078,8 +3156,9 @@ describe.skipIf(!testAdminUrl() || (PG_BIN === null && !MUST_RESTORE))('restorin
         credentialsKey: Buffer.alloc(32),
         localRoot: dir,
       });
-      // The waiting file with nothing left to look at is dropped, and counted.
-      expect(report.incomingDropped).toBe(1);
+      // The waiting files with nothing left to look at — one sent in, one in a
+      // batch (0062) — are dropped, and counted.
+      expect(report.incomingDropped).toBe(2);
       const { rows } = await sql(
         t.adminUrl,
         `select regexp_replace(storage_key, '^.*/', '') as name, state,
