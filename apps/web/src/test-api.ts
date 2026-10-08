@@ -557,6 +557,19 @@ export interface FakeState {
    */
   batches?: FakeBatch[];
   batchRefuse?: Record<string, { status: number; code: string; message: string }>;
+  /** False: a vault from before the review queue (I3), with no Accept all Ready. */
+  batchReview?: boolean;
+  /** Every item accept that arrived, with what it sent (I3: the card's body, untouched or not). */
+  batchAccepts?: Array<{ item: string; body: Record<string, unknown> }>;
+  /** An item whose accept is refused, as the vault would refuse it (I3: the error stays on the card). */
+  acceptRefuse?: Record<string, { status: number; code: string; message: string }>;
+  /** Every Accept all Ready that arrived (I3), and each Undo. */
+  acceptReadyCalls?: Array<{ batch: string; item_ids?: string[] }>;
+  undoCalls?: Array<{ batch: string; item_ids: string[] }>;
+  /** An item Accept all Ready names as failed, with why (I3). */
+  acceptReadyRefuse?: Record<string, { code: string; message: string }>;
+  /** An item Undo keeps, with why (I3). */
+  undoRefuse?: Record<string, { reason: string; message: string }>;
   /** The vault's most for one file (`limits.max_upload_bytes`). */
   maxUploadBytes?: number;
   /** How many files sent by XMLHttpRequest were stopped part way (I1 review: a sign-out stops one). */
@@ -574,7 +587,7 @@ export interface FakeBatch {
   created_at: string;
   ends_at: string;
   defaults: BatchDefaults;
-  items: Array<BatchItemView & { removed?: boolean; key?: string }>;
+  items: Array<BatchItemView & { removed?: boolean; key?: string; undo_until?: string }>;
 }
 
 /** What has to be said the first time a document is Only me (SEC-19), as the vault says it. */
@@ -926,6 +939,8 @@ export function installFakeApi(state: FakeState) {
           ...(state.detailSuggestions ? { detail_suggestions: true } : {}),
           // Many documents at once (I1): said when a test gives batches.
           ...(state.batches ? { batches: true } : {}),
+          // The review queue (I3): said unless a test is an older vault.
+          ...(state.batches && state.batchReview !== false ? { batch_review: true } : {}),
         },
         limits: {
           ...(state.shareMaxDays ? { share_max_days: state.shareMaxDays } : {}),
@@ -2120,7 +2135,7 @@ export function installFakeApi(state: FakeState) {
     // Many documents at once (I1): the person's own batches. A viewer is
     // refused, as adding is; somebody else's batch is not here.
     const batchAt =
-      /^\/api\/v1\/batches(?:\/([^/]+)(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)?)?$/.exec(
+      /^\/api\/v1\/batches(?:\/([^/]+)(?:(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)|\/(accept-ready)(\/undo)?)?)?$/.exec(
         path,
       );
     if (batchAt && state.batches) {
@@ -2131,7 +2146,7 @@ export function installFakeApi(state: FakeState) {
           'Viewers can open and download documents, but not add them.',
         );
       }
-      const [, id, items, itemId, accept, page] = batchAt;
+      const [, id, items, itemId, accept, page, acceptReady, undo] = batchAt;
       const kept = (b: FakeBatch) => b.items.filter((i) => !i.removed);
       const view = (b: FakeBatch) => {
         const left = kept(b);
@@ -2145,15 +2160,27 @@ export function installFakeApi(state: FakeState) {
             items: left.length,
             waiting: left.filter((i) => i.state === 'waiting').length,
             accepted: left.filter((i) => i.state === 'accepted').length,
+            removed: b.items.filter((i) => i.removed).length,
             duplicates: left.filter((i) => i.state === 'waiting' && i.duplicate).length,
           },
         };
       };
       const detail = (b: FakeBatch) => ({
         ...view(b),
-        items: kept(b).map(({ removed: _removed, key: _key, ...i }) => i),
+        items: kept(b).map(({ removed: _removed, key: _key, undo_until: _u, ...i }) => i),
       });
-      if (!id && method === 'GET') return json({ items: state.batches.map(view) });
+      if (!id && method === 'GET') {
+        // Each batch's levels, asked for (I3).
+        const levels = query.get('with') === 'levels';
+        return json({
+          items: state.batches.map((b) => {
+            if (!levels) return view(b);
+            const count = { ready: 0, check: 0, unrecognised: 0, problem: 0, unread: 0 };
+            for (const i of kept(b)) if (i.state === 'waiting') count[i.level ?? 'unread'] += 1;
+            return { ...view(b), levels: count };
+          }),
+        });
+      }
       if (!id && method === 'POST') {
         const sent = (body ?? {}) as { name?: string | null; defaults?: Partial<BatchDefaults> };
         const made: FakeBatch = {
@@ -2178,6 +2205,101 @@ export function installFakeApi(state: FakeState) {
       }
       const b = state.batches.find((x) => x.id === id);
       if (!b) return refuse(404, 'not_found', 'That batch is not here.');
+      /** One item filed, as its accept sends it: the document it became. */
+      const file = (item: FakeBatch['items'][number], sent: Record<string, unknown>) => {
+        const made = {
+          ...PASSPORT,
+          id: `doc-batch-${state.documents.length + 1}`,
+          title: (sent.title as string | null) ?? null,
+          type_key: (sent.type_key as string | null) ?? null,
+          owner_member_id: (sent.owner_member_id as string | null) ?? null,
+          visibility: sent.visibility ?? 'household',
+          physical_location: (sent.physical_location as string | null) ?? null,
+          is_essential: sent.is_essential === true,
+          tags: (sent.tags as string[] | undefined) ?? [],
+          latest_version_id: 'v-batch',
+          etag: '"batch"',
+        };
+        state.documents.push(made);
+        item.state = 'accepted';
+        item.document_id = made.id;
+        // Its pages went with its bytes (the I1 review).
+        item.preview_state = 'none';
+        item.preview_pages = null;
+        return made;
+      };
+      // Accept all Ready (I3): what is Ready now, each as its card would
+      // send it untouched; and taken back.
+      if (acceptReady && !undo && method === 'POST') {
+        const sent = (body ?? {}) as { item_ids?: string[] };
+        state.acceptReadyCalls = [...(state.acceptReadyCalls ?? []), { batch: b.id, ...sent }];
+        const asked =
+          sent.item_ids ??
+          kept(b)
+            .filter((i) => i.state === 'waiting' && i.level === 'ready')
+            .map((i) => i.id);
+        const out = {
+          accepted: [] as Array<{ item_id: string; document_id: string; version_id: string }>,
+          skipped: [] as Array<{ item_id: string; reason: string; level?: string | null }>,
+          failed: [] as Array<{ item_id: string; code: string; message: string }>,
+          undo_until: null as string | null,
+          more: false,
+        };
+        for (const itemId of asked) {
+          const item = kept(b).find((i) => i.id === itemId);
+          if (!item) out.skipped.push({ item_id: itemId, reason: 'not_found' });
+          else if (item.state !== 'waiting')
+            out.skipped.push({ item_id: itemId, reason: 'decided' });
+          else if (item.level !== 'ready') {
+            out.skipped.push({ item_id: itemId, reason: 'not_ready', level: item.level ?? null });
+          } else if (state.acceptReadyRefuse?.[itemId]) {
+            out.failed.push({ item_id: itemId, ...state.acceptReadyRefuse[itemId] });
+          } else {
+            const made = file(item, {
+              title: item.proposals?.type_key?.value ?? null,
+              type_key: item.proposals?.type_key?.value ?? null,
+              owner_member_id: item.proposals?.owner_member_id?.value ?? null,
+              visibility: item.proposals?.visibility.value,
+            });
+            item.undo_until = '2026-10-06T09:15:00Z';
+            out.accepted.push({ item_id: itemId, document_id: made.id, version_id: 'v-batch' });
+          }
+        }
+        if (out.accepted.length > 0) out.undo_until = '2026-10-06T09:15:00Z';
+        return json(out);
+      }
+      if (acceptReady && undo && method === 'POST') {
+        const sent = (body ?? {}) as { item_ids: string[] };
+        state.undoCalls = [...(state.undoCalls ?? []), { batch: b.id, ...sent }];
+        const out = {
+          restored: [] as string[],
+          kept: [] as Array<{ item_id: string; reason: string; message: string }>,
+        };
+        for (const itemId of sent.item_ids) {
+          const item = kept(b).find((i) => i.id === itemId);
+          const late = state.undoRefuse?.[itemId];
+          if (!item || item.state !== 'accepted' || !item.undo_until) {
+            out.kept.push({
+              item_id: itemId,
+              reason: 'not_undoable',
+              message: 'It was not filed by Accept all Ready.',
+            });
+          } else if (late) {
+            out.kept.push({ item_id: itemId, ...late });
+          } else {
+            state.documents = state.documents.filter((d) => d.id !== item.document_id);
+            item.state = 'waiting';
+            item.document_id = null;
+            item.reading = 'waiting';
+            item.level = null;
+            item.tags = [];
+            item.preview_state = 'pending';
+            delete item.undo_until;
+            out.restored.push(itemId);
+          }
+        }
+        return json(out);
+      }
       if (!items) {
         if (method === 'DELETE') {
           state.batches.splice(state.batches.indexOf(b), 1);
@@ -2250,25 +2372,10 @@ export function installFakeApi(state: FakeState) {
       }
       if (accept && method === 'POST') {
         const sent = body as Record<string, unknown>;
-        const made = {
-          ...PASSPORT,
-          id: `doc-batch-${state.documents.length + 1}`,
-          title: (sent.title as string | null) ?? null,
-          type_key: (sent.type_key as string | null) ?? null,
-          owner_member_id: (sent.owner_member_id as string | null) ?? null,
-          visibility: sent.visibility ?? 'household',
-          physical_location: (sent.physical_location as string | null) ?? null,
-          is_essential: sent.is_essential === true,
-          tags: (sent.tags as string[] | undefined) ?? [],
-          latest_version_id: 'v-batch',
-          etag: '"batch"',
-        };
-        state.documents.push(made);
-        item.state = 'accepted';
-        item.document_id = made.id;
-        // Its pages went with its bytes (the I1 review).
-        item.preview_state = 'none';
-        item.preview_pages = null;
+        state.batchAccepts = [...(state.batchAccepts ?? []), { item: item.id, body: sent }];
+        const refused = state.acceptRefuse?.[item.id];
+        if (refused) return refuse(refused.status, refused.code, refused.message);
+        const made = file(item, sent);
         // Put in a collection: who else will now see it, as the collection says (5.33).
         const into =
           sent.collection_id !== undefined ? sent.collection_id : b.defaults.collection_id;

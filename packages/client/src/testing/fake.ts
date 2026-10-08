@@ -118,6 +118,14 @@ import {
   type Tokens,
   type VersionView,
   type Visibility,
+  ACCEPT_READY_MAX,
+  ACCEPT_UNDO_MINUTES,
+  untouchedAccept,
+  type BatchAcceptInput,
+  type BatchAcceptReadyResult,
+  type BatchLevelCounts,
+  type BatchUndoResult,
+  type UndoKept,
 } from '@fdv/shared';
 import type { FetchLike, ResponseLike } from '../http.js';
 
@@ -426,6 +434,8 @@ export interface FakeBatchItem {
   read_failure?: BatchReadFailure | null;
   /** What its pages proposed, once read. */
   proposal?: DetailProposal | null;
+  /** Filed by Accept all Ready (I3): until when Undo takes it back. */
+  undo_until?: string;
 }
 
 /** A collection of documents, as the fake keeps one (0.5.12). */
@@ -1500,6 +1510,7 @@ export function createFakeVault(): {
           batches: true,
           // Each item read and levelled (I2): the fake's are read as a test says.
           batch_proposals: true,
+          batch_review: true,
         },
         limits: {
           max_upload_bytes: 104_857_600,
@@ -3145,7 +3156,7 @@ export function createFakeVault(): {
     // uploader's alone (404 for anybody else's); a viewer or a guest is
     // refused, as adding is.
     const batchAt =
-      /^\/api\/v1\/batches(?:\/([^/]+)(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)?)?$/.exec(
+      /^\/api\/v1\/batches(?:\/([^/]+)(?:(\/items(?:\/([^/]+)(?:\/(accept)|\/pages\/(\d+))?)?)|\/(accept-ready)(\/undo)?)?)?$/.exec(
         path,
       );
     if (batchAt) {
@@ -3155,7 +3166,8 @@ export function createFakeVault(): {
       if (!can(who.role, 'document.add')) {
         return fail(403, 'forbidden', refusalFor('document.add'));
       }
-      const [, rawId, items, rawItem, accept, page] = batchAt;
+      const [, rawId, items, rawItem, accept, page, acceptReady, undo] = batchAt;
+      const asked = /[?&]with=([^&]*)/.exec(url);
       const id = rawId ? decodeURIComponent(rawId) : undefined;
       const itemId = rawItem ? decodeURIComponent(rawItem) : undefined;
       const mine = state.batches.filter((b) => b.member_id === who.memberId);
@@ -3241,8 +3253,17 @@ export function createFakeVault(): {
           clashes: levelled.clashes,
         };
       };
-      const batchView = (b: FakeBatch, withItems: boolean) => {
+      const batchView = (b: FakeBatch, withItems: boolean, withLevels = false) => {
         const kept = b.items.filter((x) => x.state !== 'removed').map((x) => itemView(b, x));
+        // Each level counted, asked for (I3): the waiting items as they are levelled now.
+        const levels: BatchLevelCounts = {
+          ready: 0,
+          check: 0,
+          unrecognised: 0,
+          problem: 0,
+          unread: 0,
+        };
+        for (const x of kept) if (x.state === 'waiting') levels[x.level ?? 'unread'] += 1;
         return {
           id: b.id,
           name: b.name,
@@ -3256,8 +3277,10 @@ export function createFakeVault(): {
             items: kept.length,
             waiting: kept.filter((x) => x.state === 'waiting').length,
             accepted: kept.filter((x) => x.state === 'accepted').length,
+            removed: b.items.filter((x) => x.state === 'removed').length,
             duplicates: kept.filter((x) => x.state === 'waiting' && x.duplicate).length,
           },
+          ...(withLevels ? { levels } : {}),
           ...(withItems ? { items: kept } : {}),
         };
       };
@@ -3344,10 +3367,125 @@ export function createFakeVault(): {
         return ok(batchView(b, true), 201);
       }
       if (!id && init.method === 'GET') {
-        return ok({ items: [...mine].reverse().map((b) => batchView(b, false)) });
+        const levels = asked ? decodeURIComponent(asked[1] ?? '') : null;
+        if (levels !== null && levels !== 'levels') {
+          return fail(422, 'validation_failed', 'with: only levels.', 'with');
+        }
+        return ok({
+          items: [...mine].reverse().map((b) => batchView(b, false, levels === 'levels')),
+        });
       }
       const b = mine.find((x) => x.id === id);
       if (!b) return fail(404, 'not_found', 'That batch is not here.');
+      // Accept all Ready (I3): the items Ready now, each as its untouched card
+      // would file it; and taken back while it may be.
+      if (acceptReady && !undo && init.method === 'POST') {
+        const named = Array.isArray(body.item_ids) ? (body.item_ids as string[]) : null;
+        if (named && named.length > ACCEPT_READY_MAX) {
+          return fail(422, 'validation_failed', 'Too many at once.', 'item_ids');
+        }
+        const readyNow = b.items.filter(
+          (x) => x.state === 'waiting' && itemView(b, x).level === 'ready',
+        );
+        const ids = named ?? readyNow.slice(0, ACCEPT_READY_MAX).map((x) => x.id);
+        const out: BatchAcceptReadyResult = {
+          accepted: [],
+          skipped: [],
+          failed: [],
+          undo_until: null,
+          more: !named && readyNow.length > ACCEPT_READY_MAX,
+        };
+        const until = new Date(Date.now() + ACCEPT_UNDO_MINUTES * 60_000).toISOString();
+        const family = state.members
+          .filter((m) => (m.kind ?? 'family') === 'family')
+          .map((m) => ({ id: m.id, display_name: m.display_name }));
+        for (const itemId of [...new Set(ids)]) {
+          const x = b.items.find((y) => y.id === itemId);
+          if (!x) {
+            out.skipped.push({ item_id: itemId, reason: 'not_found' });
+            continue;
+          }
+          if (x.state !== 'waiting') {
+            out.skipped.push({ item_id: itemId, reason: 'decided' });
+            continue;
+          }
+          const view = itemView(b, x);
+          if (view.level !== 'ready' || !view.proposals) {
+            out.skipped.push({ item_id: itemId, reason: 'not_ready', level: view.level ?? null });
+            continue;
+          }
+          const card = untouchedAccept({
+            proposals: view.proposals,
+            defaults: b.defaults,
+            types: state.types,
+            people: family,
+            role: who.role,
+            me: who.memberId,
+          });
+          const res = fileOne(b, x, card, who);
+          const answer = (await res.json()) as {
+            document_id?: string;
+            version_id?: string;
+            error?: { code: string; message: string };
+          };
+          if (res.status !== 201 || !answer.document_id) {
+            out.failed.push({
+              item_id: itemId,
+              code: answer.error?.code ?? 'not_accepted',
+              message: answer.error?.message ?? 'It could not be accepted just then.',
+            });
+            continue;
+          }
+          x.undo_until = until;
+          out.accepted.push({
+            item_id: itemId,
+            document_id: answer.document_id,
+            version_id: answer.version_id as string,
+          });
+        }
+        out.undo_until = out.accepted.length > 0 ? until : null;
+        return ok(out);
+      }
+      if (acceptReady && undo && init.method === 'POST') {
+        const ids = Array.isArray(body.item_ids) ? [...new Set(body.item_ids as string[])] : [];
+        if (ids.length === 0) return fail(422, 'validation_failed', 'Name the files.', 'item_ids');
+        const out: BatchUndoResult = { restored: [], kept: [] };
+        for (const itemId of ids) {
+          const x = b.items.find((y) => y.id === itemId);
+          const keep = (reason: UndoKept, message: string) =>
+            out.kept.push({ item_id: itemId, reason, message });
+          if (!x) {
+            keep('not_found', 'That file is not in this batch.');
+            continue;
+          }
+          if (x.state !== 'accepted' || !x.undo_until) {
+            keep('not_undoable', 'It was not filed by Accept all Ready.');
+            continue;
+          }
+          if (new Date(x.undo_until).getTime() <= Date.now()) {
+            keep('too_late', 'It is too late to take it back.');
+            continue;
+          }
+          const docAt = state.documents.findIndex((d) => d.id === x.document_id);
+          const filed = state.documents[docAt];
+          if (!filed || filed.deleted_at) {
+            keep('changed', 'Somebody has changed it since.');
+            continue;
+          }
+          // Gone for good, and its item waiting to be read again.
+          state.documents.splice(docAt, 1);
+          filedFrom.delete(filed.id);
+          for (const c of state.collections) {
+            c.items = c.items.filter((i) => i.document_id !== filed.id);
+          }
+          x.state = 'waiting';
+          x.document_id = null;
+          x.reading = 'waiting';
+          delete x.undo_until;
+          out.restored.push(itemId);
+        }
+        return ok(out);
+      }
       if (!items) {
         if (init.method === 'GET') return ok(batchView(b, true));
         if (init.method === 'PATCH') {
@@ -3422,7 +3560,18 @@ export function createFakeVault(): {
       }
       if (accept && init.method === 'POST') {
         if (it.state !== 'waiting') return decided();
-        const sent = body as CaptureMetadata & { collection_id?: string | null };
+        return fileOne(b, it, body, who);
+      }
+    }
+    // Many documents at once, filed (I1): one item, as its accept sends it.
+    // Accept all Ready files each of its items so too (I3).
+    function fileOne(
+      b: FakeBatch,
+      it: FakeBatchItem,
+      sent: BatchAcceptInput,
+      who: { role: Role; memberId: string },
+    ): ResponseLike {
+      {
         const { collection_id: sentCollection, ...rest } = sent;
         // What is not sent takes the batch's default (Q4).
         const metadata: CaptureMetadata = { ...rest };

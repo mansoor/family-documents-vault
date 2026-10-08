@@ -4,9 +4,12 @@ import type {
   ActivityLine,
   BatchAccepted,
   BatchAcceptInput,
+  BatchAcceptReadyInput,
+  BatchAcceptReadyResult,
   BatchDetail,
   BatchInput,
   BatchItemView,
+  BatchUndoResult,
   BatchView,
   Capabilities,
   CaptureResult,
@@ -1208,8 +1211,15 @@ export function createApi(http: Http) {
     /** A batch of the caller's own: an optional name, and defaults that fill only blanks. */
     createBatch: (token: string, body: BatchInput = {}) =>
       request<BatchDetail>('/api/v1/batches', { method: 'POST', body, token }),
-    /** The caller's batches, newest first, each with how many are waiting. */
-    batches: (token: string) => request<{ items: BatchView[] }>('/api/v1/batches', { token }),
+    /**
+     * The caller's batches, newest first, each with how many are waiting; with
+     * `levels` (`features.batch_review`), each batch's waiting items counted by
+     * level, which opens what each item's pages proposed.
+     */
+    batches: (token: string, opts: { levels?: boolean } = {}) =>
+      request<{ items: BatchView[] }>(`/api/v1/batches${opts.levels ? '?with=levels' : ''}`, {
+        token,
+      }),
     /** One batch, and its items not removed, oldest first, each with what it duplicates. */
     batch: (token: string, id: string) =>
       request<BatchDetail>(`/api/v1/batches/${enc(id)}`, { token }),
@@ -1250,6 +1260,30 @@ export function createApi(http: Http) {
       request<BatchAccepted>(`/api/v1/batches/${enc(batchId)}/items/${enc(itemId)}/accept`, {
         method: 'POST',
         body,
+        token,
+      }),
+    /**
+     * Accept all Ready (I3, `features.batch_review`): every item Ready now —
+     * those named that still are, or all of them up to ACCEPT_READY_MAX —
+     * each filed as its untouched card would file it, item by item: what was
+     * accepted, skipped (not Ready now, decided, not here) and failed, with
+     * why; `more` when more are Ready than one request takes.
+     */
+    acceptReady: (token: string, batchId: string, body: BatchAcceptReadyInput = {}) =>
+      request<BatchAcceptReadyResult>(`/api/v1/batches/${enc(batchId)}/accept-ready`, {
+        method: 'POST',
+        body,
+        token,
+      }),
+    /**
+     * Undo of Accept all Ready, for ACCEPT_UNDO_MINUTES: each document removed
+     * for good and its item waiting again; kept, with why, when it is too
+     * late or somebody has changed it since.
+     */
+    undoAcceptReady: (token: string, batchId: string, itemIds: string[]) =>
+      request<BatchUndoResult>(`/api/v1/batches/${enc(batchId)}/accept-ready/undo`, {
+        method: 'POST',
+        body: { item_ids: itemIds },
         token,
       }),
     /** A page the worker drew: a JPEG; `preview_pending` while it is drawn, `no_preview` if none. */

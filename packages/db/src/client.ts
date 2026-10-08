@@ -650,6 +650,8 @@ export interface Schema {
     read_waits: Generated<number>;
     /** And since when: a day of them, and it is given up as not reachable (0063). */
     read_waited_since: Date | null;
+    /** Accepted by Accept all Ready (I3, 0064): until when its uploader may take it back into the queue. */
+    undo_until: Date | null;
     /** A batch's item: the uploader's Idempotency-Key for it, so a re-send is answered, not made twice. */
     idempotency_key: string | null;
     review_by: 'me' | 'adults';

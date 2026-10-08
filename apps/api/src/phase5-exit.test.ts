@@ -704,6 +704,16 @@ const RULES: Record<string, Rule> = {
   'DELETE /api/v1/batches/:id/items/:itemId': { who: 'family' },
   'POST /api/v1/batches/:id/items/:itemId/accept': { who: 'family', body: () => ({}) },
   'GET /api/v1/batches/:id/items/:itemId/pages/:n': { who: 'family' },
+  // The review queue (I3): Accept all Ready, named or not, and its Undo —
+  // the uploader's alone, as everything of a batch is.
+  'POST /api/v1/batches/:id/accept-ready': {
+    who: 'family',
+    bodies: (f) => [{}, { item_ids: [f.batchItem] }],
+  },
+  'POST /api/v1/batches/:id/accept-ready/undo': {
+    who: 'family',
+    body: (f) => ({ item_ids: [f.batchItem] }),
+  },
 };
 
 /** Whether a role is among those a rule is for. */

@@ -2390,7 +2390,7 @@ export const contractScenarios: Scenario[] = [
       expect(made).toMatchObject({
         name: 'Contract batch',
         items: [],
-        counts: { items: 0, waiting: 0, accepted: 0, duplicates: 0 },
+        counts: { items: 0, waiting: 0, accepted: 0, removed: 0, duplicates: 0 },
         defaults: {
           owner_member_id: null,
           type_key: null,
@@ -2425,7 +2425,13 @@ export const contractScenarios: Scenario[] = [
       expect(again.sha256).toBe(first.sha256);
       expect(again.duplicate).toMatchObject({ of: 'item', item_id: first.id, same_batch: true });
       const listed = (await api.batches(token)).items.find((b) => b.id === made.id);
-      expect(listed?.counts).toEqual({ items: 2, waiting: 2, accepted: 0, duplicates: 1 });
+      expect(listed?.counts).toEqual({
+        items: 2,
+        waiting: 2,
+        accepted: 0,
+        removed: 0,
+        duplicates: 1,
+      });
 
       // Accepted with every detail the card takes; what is not said takes the defaults.
       const done = await api.acceptBatchItem(token, made.id, first.id, {
@@ -2466,7 +2472,7 @@ export const contractScenarios: Scenario[] = [
       expect(left.items.map((i) => [i.id, i.state, i.document_id])).toEqual([
         [first.id, 'accepted', done.document_id],
       ]);
-      expect(left.counts).toEqual({ items: 1, waiting: 0, accepted: 1, duplicates: 0 });
+      expect(left.counts).toEqual({ items: 1, waiting: 0, accepted: 1, removed: 1, duplicates: 0 });
       expect(await refusal(api.removeBatchItem(token, made.id, again.id))).toMatchObject({
         status: 409,
         code: 'already_decided',
@@ -2633,6 +2639,76 @@ export const contractScenarios: Scenario[] = [
         level: null,
         proposals: null,
       });
+      await api.removeBatch(token, b.id);
+    },
+  },
+  {
+    name: 'the review queue: Accept all Ready files what is Ready now, each as its untouched card would; Undo takes it back into the queue; levels are counted when asked (I3)',
+    run: async (api, ctx) => {
+      if (!ctx.readBatchItems) return;
+      const { access_token: token } = await signIn(api, ctx);
+      expect((await api.capabilities()).features.batch_review).toBe(true);
+      const me = await api.me(token);
+      const b = await api.createBatch(token, { name: 'All at once', defaults: { tags: ['bulk'] } });
+      const file = (n: string) => ({
+        kind: 'bytes' as const,
+        filename: `${n}.pdf`,
+        contentType: 'application/pdf',
+        bytes: new TextEncoder().encode(`%PDF-1.4\n% the contract queue ${n}\n%%EOF\n`),
+      });
+      const ready = await api.addBatchItem(token, b.id, file('ready'));
+      const unsure = await api.addBatchItem(token, b.id, file('unsure'));
+      const day = (date: string) => ({ date, precision: 'day' as const });
+      const passport = (c: number): DetailProposal => ({
+        type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' },
+        owner_member_id: { value: me.member_id, confidence: c, cue: 'name_labelled' },
+        expires: { value: day('2031-03-14'), confidence: 0.94, cue: 'machine_lines' },
+        identifier: { value: '533401872', confidence: 0.95, cue: 'machine_lines' },
+      });
+      await ctx.readBatchItems(b.id, {
+        [ready.id]: { proposal: passport(0.9) },
+        [unsure.id]: { proposal: passport(0.6) },
+      });
+      const listed = (await api.batches(token, { levels: true })).items.find((x) => x.id === b.id);
+      expect(listed?.levels).toEqual({
+        ready: 1,
+        check: 1,
+        unrecognised: 0,
+        problem: 0,
+        unread: 0,
+      });
+      expect((await api.batches(token)).items.find((x) => x.id === b.id)?.levels).toBeUndefined();
+
+      // The client names both; only what is Ready now is filed.
+      const out = await api.acceptReady(token, b.id, { item_ids: [ready.id, unsure.id] });
+      expect(out.accepted.map((a) => a.item_id)).toEqual([ready.id]);
+      expect(out.skipped).toEqual([{ item_id: unsure.id, reason: 'not_ready', level: 'check' }]);
+      expect(out.failed).toEqual([]);
+      expect(out.more).toBe(false);
+      expect(typeof out.undo_until).toBe('string');
+      const filed = await api.document(token, out.accepted[0]?.document_id as string);
+      expect(filed).toMatchObject({
+        type_key: 'passport',
+        owner_member_id: me.member_id,
+        identifier: '533401872',
+        expires: day('2031-03-14'),
+        tags: ['bulk'],
+      });
+
+      // Undo: the document is gone, and the item waits again, to be read.
+      const back = await api.undoAcceptReady(token, b.id, [ready.id, unsure.id]);
+      expect(back.restored).toEqual([ready.id]);
+      expect(back.kept.map((k) => [k.item_id, k.reason])).toEqual([[unsure.id, 'not_undoable']]);
+      const gone = await refusal(api.document(token, filed.id));
+      expect(gone.status).toBe(404);
+      expect((await api.batch(token, b.id)).items.find((i) => i.id === ready.id)).toMatchObject({
+        state: 'waiting',
+        reading: 'waiting',
+        document_id: null,
+      });
+      // Nothing Ready now: nothing filed.
+      const none = await api.acceptReady(token, b.id);
+      expect(none).toMatchObject({ accepted: [], undo_until: null, more: false });
       await api.removeBatch(token, b.id);
     },
   },

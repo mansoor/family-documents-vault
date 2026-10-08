@@ -86,9 +86,22 @@ function pump(): void {
   }
 }
 
+/**
+ * Where an item's page is held (I3): its first by the item's id, as the
+ * batch's page asks for it, and each other page the review's viewer turns
+ * to by the item's id and its number.
+ */
+export const pageKey = (itemId: string, n: number): string => (n === 1 ? itemId : `${itemId}#${n}`);
+
 /** These items' pages let go: each was accepted or removed, and its pages went with its bytes. */
 export function forgetPages(itemIds: Iterable<string>): void {
-  for (const id of itemIds) {
+  const ids = [...itemIds];
+  // Every page of each, not only its first (I3).
+  const pages = (id: string) =>
+    [...held.keys(), ...asked.keys(), ...queue.map((w) => w.itemId)].filter((k) =>
+      k.startsWith(`${id}#`),
+    );
+  for (const id of [...ids, ...ids.flatMap(pages)]) {
     const url = held.get(id);
     if (url) URL.revokeObjectURL(url);
     held.delete(id);

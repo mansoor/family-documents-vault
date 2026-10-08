@@ -942,6 +942,13 @@ const GUARDS = [
     table: 'incoming_file',
     fn: 'incoming_file_leaves_bytes',
   },
+  // An item taken back into the queue takes its document with it, held at
+  // commit (0064, I3).
+  {
+    name: 'incoming_file_undone_document_gone',
+    table: 'incoming_file',
+    fn: 'incoming_file_undone_document_gone',
+  },
   // Only an owner locks, never their own sign-in nor another owner's, and
   // nobody locked is made an owner by anybody signed in (0051).
   {

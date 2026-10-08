@@ -1,5 +1,12 @@
 import type { MultipartFile } from '@fastify/multipart';
-import { NOT_SCANNED, type BatchAcceptInput, type BatchInput } from '@fdv/shared';
+import {
+  ACCEPT_READY_MAX,
+  BATCH_MAX_FILES,
+  NOT_SCANNED,
+  type BatchAcceptInput,
+  type BatchAcceptReadyInput,
+  type BatchInput,
+} from '@fdv/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { metaOf, parse } from '../auth/routes.js';
@@ -341,7 +348,12 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
     return reply.status(201).send(made);
   });
 
-  app.get('/api/v1/batches', auth, async (req) => ({ items: await batches.list(principal(req)) }));
+  // With `with=levels` (I3), each batch's waiting items counted by level.
+  const listQuery = z.object({ with: z.enum(['levels']).optional() }).strict();
+  app.get('/api/v1/batches', auth, async (req) => {
+    const q = parse(listQuery, req.query ?? {});
+    return { items: await batches.list(principal(req), { levels: q.with === 'levels' }) };
+  });
 
   app.get<{ Params: { id: string } }>('/api/v1/batches/:id', auth, async (req) =>
     batches.get(principal(req), parse(idParam, req.params).id),
@@ -471,6 +483,35 @@ export function registerBatches(app: FastifyInstance, batches: BatchService) {
       );
       return reply.status(201).send(done);
     },
+  );
+
+  /**
+   * The review queue (I3): every item Ready now, filed as its untouched card
+   * would file it — the items named, those still Ready, or else all of
+   * them up to ACCEPT_READY_MAX — item by item; and taken back.
+   */
+  const readyBody = z
+    .object({ item_ids: z.array(z.string().uuid()).max(ACCEPT_READY_MAX).optional() })
+    .strict();
+  app.post<{ Params: { id: string } }>('/api/v1/batches/:id/accept-ready', auth, async (req) =>
+    batches.acceptReady(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(readyBody, req.body ?? {}) as BatchAcceptReadyInput,
+      metaOf(req),
+    ),
+  );
+
+  const undoBody = z
+    .object({ item_ids: z.array(z.string().uuid()).min(1).max(BATCH_MAX_FILES) })
+    .strict();
+  app.post<{ Params: { id: string } }>('/api/v1/batches/:id/accept-ready/undo', auth, async (req) =>
+    batches.undo(
+      principal(req),
+      parse(idParam, req.params).id,
+      parse(undoBody, req.body ?? {}),
+      metaOf(req),
+    ),
   );
 
   /** A page the worker drew: a JPEG, never kept by the browser. */

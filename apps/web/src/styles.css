@@ -3870,3 +3870,299 @@ fieldset.plain {
 .card-file {
   overflow-wrap: anywhere;
 }
+
+/* The review queue (Phase 6, I3): the levels to show, each with how many,
+   and Accept all Ready beside them; a toast with Undo; and a file in two
+   panes, the card on the left and its pages on the right — on a phone the
+   card first, the pages after. */
+.levelfilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.lf {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  padding: 6px 14px;
+  border: 1px solid var(--border-input);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.lf[aria-pressed='true'] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.lf-n {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.lf:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.queue-accept {
+  margin-left: auto;
+}
+
+.queue-none {
+  margin: 0;
+}
+
+.batch-tbl .batch-col-person {
+  width: 140px;
+}
+
+@media (max-width: 1099px) {
+  .batch-tbl .batch-col-person {
+    width: 110px;
+  }
+}
+
+.batch-li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.batch-li > .rowbtn {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.batch-li-actions {
+  gap: 8px;
+}
+
+/* The toast: what was just done, and Undo while there is something to
+   undo. Never on a timer (WCAG 2.2.1); the page leaves room under it, so
+   nothing in focus is hidden behind it (WCAG 2.4.11). */
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px 12px;
+  width: min(460px, calc(100vw - 32px));
+  max-height: 40vh;
+  overflow: auto;
+  padding: 12px 12px 12px 16px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-m);
+  background: var(--ink);
+  color: var(--surface);
+  box-shadow: 0 6px 24px var(--scrim);
+}
+
+.toast:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.shell-phone .toast {
+  left: 16px;
+  right: 16px;
+  width: auto;
+  bottom: calc(var(--phone-bottom) + 12px);
+}
+
+.toast-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-words p {
+  margin: 0;
+}
+
+.toast-words .toast-more {
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.toast .btn {
+  flex: none;
+}
+
+.toast .toast-undo {
+  border-color: var(--surface);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.toast .toast-x {
+  min-width: var(--tap);
+  color: var(--surface);
+  font-size: 22px;
+  text-decoration: none;
+}
+
+.page.has-toast {
+  padding-bottom: 180px;
+}
+
+html:has(.has-toast) {
+  scroll-padding-bottom: 180px;
+}
+
+html:has(.shell-phone):has(.has-toast) {
+  scroll-padding-bottom: calc(96px + 180px + env(safe-area-inset-bottom));
+}
+
+/* A file in two panes. */
+.shell-wide .page.review-page,
+.shell-mid .page.review-page {
+  max-width: none;
+}
+
+.review {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+@media (min-width: 960px) {
+  .review {
+    grid-template-columns: minmax(340px, 5fr) minmax(0, 6fr);
+  }
+
+  /* The pages stay in sight beside a long card: beside it, so they never
+     cover a field in focus. */
+  .review-pages {
+    position: sticky;
+    top: calc(var(--shell-top, 0px) + 12px);
+  }
+}
+
+.review-form,
+.review-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.item-head h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.item-head p {
+  margin: 0;
+}
+
+.item-file {
+  overflow-wrap: anywhere;
+}
+
+.clip-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.problem-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-m);
+  background: var(--danger-soft);
+  overflow-wrap: anywhere;
+}
+
+.problem-box-calm {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.review-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-actions .spacer {
+  flex: 1 1 auto;
+}
+
+.btn .key-hint {
+  margin-left: 8px;
+  color: inherit;
+  border-color: currentColor;
+  background: transparent;
+}
+
+.viewer-bar {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.viewer-at {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.viewer {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 240px;
+  max-height: calc(100dvh - var(--shell-chrome, 0px) - 160px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--bg);
+}
+
+.viewer:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.viewer img {
+  display: block;
+  max-width: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.viewer-fit img {
+  width: 100%;
+  height: auto;
+}
+
+.viewer-none {
+  align-items: center;
+}
+
+.viewer-hint {
+  margin: 0;
+  font-size: 14px;
+}
+
+@media (max-width: 959px) {
+  .viewer {
+    max-height: none;
+  }
+}

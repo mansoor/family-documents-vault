@@ -216,7 +216,7 @@ describe('the batch page, read (I2)', () => {
       within(table)
         .getAllByRole('columnheader')
         .map((h) => h.textContent),
-    ).toEqual(['First page', 'File', 'Kind', 'Level', 'Actions']);
+    ).toEqual(['First page', 'File', 'Kind', 'Whose', 'Level', 'Actions']);
     const row = (name: string) =>
       within(table)
         .getAllByRole('row')
@@ -431,7 +431,7 @@ describe('the card, filled from the pages (I2)', () => {
       expect(screen.getByText('Expires').closest('label')).not.toHaveTextContent('suggested'),
     );
     expect(screen.getByText('What it is').closest('label')).toHaveTextContent('suggested · 97%');
-    fireEvent.click(screen.getByRole('button', { name: 'Accept as a document' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Accept and next/ }));
     await waitFor(() =>
       expect(
         state.calls.filter((c) => c.method === 'POST' && /\/items\/item-1\/accept$/.test(c.url)),

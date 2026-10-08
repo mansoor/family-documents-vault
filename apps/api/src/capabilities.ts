@@ -129,6 +129,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       batches: true,
       // I2: each item read and proposed for, levelled and tagged, for its uploader.
       batch_proposals: true,
+      // I3: Accept all Ready, and its Undo; a batch's levels counted.
+      batch_review: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,
