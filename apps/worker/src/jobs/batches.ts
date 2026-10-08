@@ -1,6 +1,7 @@
 import { withSystem } from '@fdv/db';
 import type { PgBoss } from 'pg-boss';
 import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } from './incoming.js';
+import { drawnOrNot, readNextBatchItem, unread, type ReadOptions } from './read-item.js';
 
 /**
  * Many documents at once (Phase 6, I1): what the worker does for a batch's
@@ -15,11 +16,17 @@ import { adapterOf, drawIncoming, removeObjects, undrawn, type IncomingDeps } fr
  *    a batch of 200 is drawn one at a time, taking its turn with every
  *    other household's; a single add (version.process) and a file sent
  *    through a request (incoming.scan) are on queues of their own and wait
- *    for none of it. No OCR: an item is read once it is filed (and, from
- *    I2, for its proposals).
+ *    for none of it.
+ *  - and, since I2, in the same job and the same turn, one item read: the
+ *    oldest whose pages are drawn and whose words are not read yet, its
+ *    words taken and proposed for (read-item.ts). A job draws one item and
+ *    reads one, so the first items of a batch are ready to review while the
+ *    rest wait, and the household's turn is still one item at a time.
  *  - the daily sweep (incoming.sweep): a batch past its end, removed with
  *    what is undecided in it, its bytes and pages first; and a household
- *    whose items have waited ten minutes undrawn — a job lost — sent again.
+ *    whose items have waited ten minutes undrawn or unread — a job lost —
+ *    sent again. The worker's start does the same for every household, and
+ *    first puts back to waiting any read a worker that stopped left taken.
  *
  * Nobody is told of an item: it is its uploader's own, and they are
  * looking at it.
@@ -77,7 +84,7 @@ export async function drawNextBatchItem(
 export async function workBatchPreviews(
   boss: PgBoss,
   deps: IncomingDeps,
-  opts: { draw?: DrawItem; pollingIntervalSeconds?: number } = {},
+  opts: { draw?: DrawItem; pollingIntervalSeconds?: number; read?: ReadOptions } = {},
 ): Promise<void> {
   await boss.createQueue(BATCH_PREVIEWS, { policy: 'stately', retryLimit: 2, retryDelay: 30 });
   await boss.work<BatchPreviewsJob>(
@@ -90,8 +97,13 @@ export async function workBatchPreviews(
     },
     async (jobs) => {
       for (const job of jobs) {
+        const hh = job.data.household_id;
         const r = await drawNextBatchItem(deps, job.data, opts.draw);
-        if (r.more) await sendBatchPreviews(boss, job.data.household_id);
+        // Then one item read, drawn already: this one, or one before it.
+        const read = opts.read
+          ? await readNextBatchItem(deps, hh, opts.read)
+          : { read: null, more: false };
+        if (r.more || read.more) await sendBatchPreviews(boss, hh);
       }
     },
   );
@@ -166,7 +178,10 @@ export async function sweepBatches(
   return { batches, items };
 }
 
-/** Whether a household has an item that arrived ten minutes ago and is still not drawn. */
+/**
+ * Whether a household has an item that arrived ten minutes ago and is still
+ * not drawn, or drawn and still not read.
+ */
 export async function staleBatchItems(deps: IncomingDeps, hh: string, now: Date): Promise<boolean> {
   const stale = await withSystem(deps.db, hh, (trx) =>
     trx
@@ -175,9 +190,39 @@ export async function staleBatchItems(deps: IncomingDeps, hh: string, now: Date)
       .where('batch_id', 'is not', null)
       .where('state', '=', 'received')
       .where('received_at', '<', new Date(now.getTime() - 10 * 60_000))
-      .where(undrawn)
+      .where((eb) => eb.or([undrawn(eb), eb.and([unread(eb), drawnOrNot(eb)])]))
       .limit(1)
       .execute(),
   );
   return stale.length > 0;
+}
+
+/**
+ * On the worker's start: a read a worker that stopped left taken is put back
+ * to waiting, and every household with an item to draw or read is sent its
+ * job, so nothing waits for the nightly sweep. Answers the households sent.
+ */
+export async function resumeBatchItems(
+  deps: Pick<IncomingDeps, 'admin' | 'db'>,
+  send: (householdId: string) => Promise<void>,
+): Promise<number> {
+  const { rows } = await deps.admin.query<{ household_id: string }>(
+    `select distinct household_id from incoming_file
+      where batch_id is not null and state = 'received'
+        and (read_state in ('waiting', 'reading') or preview_state in ('none', 'drawing'))
+      order by household_id`,
+  );
+  for (const { household_id: hh } of rows) {
+    await withSystem(deps.db, hh, (trx) =>
+      trx
+        .updateTable('incoming_file')
+        .set({ read_state: 'waiting', read_started_at: null })
+        .where('batch_id', 'is not', null)
+        .where('state', '=', 'received')
+        .where('read_state', '=', 'reading')
+        .execute(),
+    );
+    await send(hh);
+  }
+  return rows.length;
 }

@@ -88,6 +88,21 @@ export async function pdfPageCount(file: string): Promise<number | null> {
   }
 }
 
+/**
+ * Whether a PDF needs a password to be opened (Phase 6, I2): pdfinfo refuses
+ * it with "Incorrect password". The vault never asks for one. A PDF locked
+ * only against printing or copying opens, and is read as any other.
+ */
+export async function pdfLocked(file: string): Promise<boolean> {
+  try {
+    await run('pdfinfo', [file], { timeout: 30_000 });
+    return false;
+  } catch (err) {
+    const { message, stderr } = err as { message?: string; stderr?: string | Buffer };
+    return /password/i.test(`${message ?? ''} ${stderr?.toString() ?? ''}`);
+  }
+}
+
 /** Renders the first `maxPages` pages of a PDF to PNGs in `outDir`; returns them in order. */
 export async function renderPdfPages(
   file: string,

@@ -5,7 +5,9 @@ import { pipeline } from 'node:stream/promises';
 import {
   DecryptStream,
   EncryptStream,
+  itemProposalsBinding,
   newKey,
+  openBytes,
   unwrapKey,
   wrapKey,
   type ScopeKeys,
@@ -19,11 +21,13 @@ import {
   dropFileName,
   INCOMING_KEEP_DAYS,
   incomingFileName,
+  levelItem,
   lockInEffect,
   PREVIEW_MAX_PAGES,
   PRIVATE_TO_THEM,
   refusalFor,
   seesLocation,
+  storedProposal,
   type BatchAccepted,
   type BatchAcceptInput,
   type BatchCounts,
@@ -32,10 +36,13 @@ import {
   type BatchDuplicate,
   type BatchInput,
   type BatchItemView,
+  type BatchReadFailure,
   type BatchReadState,
   type BatchView,
   type CaptureMetadata,
+  type DetailProposal,
   type IncomingPreviewState,
+  type LevelKind,
   type Visibility,
 } from '@fdv/shared';
 import { deleteAll, readAll, type StorageAdapter } from '@fdv/storage';
@@ -46,6 +53,7 @@ import type { CollectionService } from '../collections/service.js';
 import {
   seenDocument,
   sniffStream,
+  typeView,
   type DocumentService,
   type Enqueue,
 } from '../documents/service.js';
@@ -80,6 +88,15 @@ import { incomingPreviewKey } from './incoming.js';
  * they cannot, which would say another person's Only me document exists —
  * or of another of their own items waiting, sent before it. Worked out as
  * it is asked, so a document made Only me since is no longer named.
+ *
+ * Read and proposed for (I2): the worker reads each item once its pages are
+ * drawn, and seals what its words propose under the item's own key. Each
+ * item's level, tags, clashes and what its card starts from are worked out
+ * here, as it is asked, for the uploader alone (`levelItem`): from what the
+ * pages proposed, the batch's defaults as they are now and the kinds as
+ * they are now — so a default or a kind changed re-levels every item, and
+ * nothing is read again. An accept takes what it is sent, and the batch's
+ * defaults for what is not: never a proposal nobody chose.
  *
  * The order every decision takes its locks in, as a file sent in does
  * (incoming.ts): the uploader's own membership (shared), the batch, the
@@ -199,6 +216,10 @@ interface ItemRow {
   received_at: Date | null;
   state: string;
   read_state: string | null;
+  read_failure: string | null;
+  proposals_sealed: Buffer | null;
+  file_key_wrapped: Buffer;
+  wrapped_by_scope: string;
   preview_state: string;
   preview_pages: number | null;
   document_id: string | null;
@@ -465,6 +486,7 @@ export class BatchService {
         sender_note: null,
         sha256: null,
         proposals_sealed: null,
+        text_sealed: null,
       })
       .where('batch_id', '=', batchId)
       .where('state', '=', 'received')
@@ -712,6 +734,7 @@ export class BatchService {
           sender_note: null,
           sha256: null,
           proposals_sealed: null,
+          text_sealed: null,
         })
         .where('id', '=', f.id)
         .where('state', '=', 'received')
@@ -794,6 +817,7 @@ export class BatchService {
             document_id: version.document_id,
             version_id: version.id,
             proposals_sealed: null,
+            text_sealed: null,
           })
           .where('id', '=', f.id)
           .where('state', '=', 'received')
@@ -1080,6 +1104,13 @@ export class BatchService {
         'f.received_at',
         'f.state',
         'f.read_state',
+        'f.read_failure',
+        // What the pages proposed, opened below for the uploader: only while it waits.
+        sql<Buffer | null>`case when f.state = 'received' then f.proposals_sealed end`.as(
+          'proposals_sealed',
+        ),
+        'f.file_key_wrapped',
+        'f.wrapped_by_scope',
         'f.preview_state',
         'f.preview_pages',
         'f.document_id',
@@ -1147,6 +1178,13 @@ export class BatchService {
         received_at: r.received_at as Date,
       });
     }
+    const levelling = await this.levelling(trx, batchIds);
+    const proposed = new Map<string, DetailProposal | null>();
+    for (const r of rows) {
+      if (r.state === 'received' && r.read_state === 'read') {
+        proposed.set(r.id, await levelling.open(r));
+      }
+    }
     return rows.map((r) => {
       const sha = r.sha256 ? r.sha256.toString('hex') : '';
       let duplicate: BatchDuplicate | null = null;
@@ -1179,6 +1217,22 @@ export class BatchService {
       }
       // A decided item's pages went with its bytes: none to ask for (the I1 review).
       const decided = r.state !== 'received';
+      const state = r.state === 'accepted' ? 'accepted' : 'waiting';
+      const reading = (r.read_state ?? 'waiting') as BatchReadState;
+      const failure =
+        reading === 'failed' ? ((r.read_failure ?? 'unreadable') as BatchReadFailure) : null;
+      const levelled = levelItem({
+        state,
+        reading,
+        failure,
+        proposal: proposed.get(r.id) ?? null,
+        duplicate,
+        defaults: levelling.defaults(r.batch_id as string),
+        types: levelling.types,
+        people: levelling.people,
+        role: p.role,
+        me: p.memberId,
+      });
       return {
         id: r.id,
         batch_id: r.batch_id as string,
@@ -1187,14 +1241,84 @@ export class BatchService {
         byte_size: Number(r.byte_size ?? 0),
         sha256: sha,
         arrived_at: (r.received_at as Date).toISOString(),
-        state: r.state === 'accepted' ? 'accepted' : 'waiting',
-        reading: (r.read_state ?? 'waiting') as BatchReadState,
+        state,
+        reading,
+        read_failure: failure,
         preview_state: decided ? 'none' : previewState(r.preview_state),
         preview_pages: !decided && r.preview_state === 'ready' ? r.preview_pages : null,
         duplicate,
         document_id: r.state === 'accepted' && r.document_seen ? r.document_id : null,
+        level: levelled.level,
+        tags: levelled.tags,
+        proposals: levelled.proposals,
+        clashes: levelled.clashes,
       };
     });
+  }
+
+  /**
+   * What levelling these batches' items needs, asked once (I2): each
+   * batch's defaults as they are now, the household's kinds as they are now
+   * (not deleted), the family — never a guest — and an opener for what the
+   * worker sealed under each item's own key, each scope key unwrapped once.
+   * A blob that does not open is nothing proposed, never an error.
+   */
+  private async levelling(trx: Db, batchIds: string[]) {
+    const batches = await trx
+      .selectFrom('intake_batch as b')
+      .select(BATCH_COLUMNS)
+      .where('b.id', 'in', batchIds)
+      .execute();
+    const kinds = await trx
+      .selectFrom('effective_document_type')
+      .selectAll()
+      .where('deleted_at', 'is', null)
+      .execute();
+    const family = await trx
+      .selectFrom('member')
+      .select(['id', 'display_name'])
+      .where('kind', '=', 'family')
+      .execute();
+    const byBatch = new Map(batches.map((b) => [b.id, b]));
+    const scopes = new Map<string, Promise<Buffer>>();
+    const scopeKey = (id: string) => {
+      let k = scopes.get(id);
+      if (!k) {
+        k = this.keys.unwrapById(trx, id);
+        scopes.set(id, k);
+      }
+      return k;
+    };
+    return {
+      types: kinds.map(typeView) as LevelKind[],
+      people: family.map((m) => ({ id: m.id, name: m.display_name })),
+      defaults: (batchId: string): BatchDefaults => {
+        const b = byBatch.get(batchId);
+        return {
+          owner_member_id: b?.default_owner_member_id ?? null,
+          type_key: b?.default_type_key ?? null,
+          visibility: b?.default_visibility ?? null,
+          physical_location: b?.default_physical_location ?? null,
+          collection_id: b?.default_collection_id ?? null,
+          tags: b?.default_tags ?? [],
+          is_essential: b?.default_essential ?? false,
+        };
+      },
+      open: async (r: ItemRow): Promise<DetailProposal | null> => {
+        if (!r.proposals_sealed) return null;
+        try {
+          const fileKey = unwrapKey(
+            r.file_key_wrapped,
+            await scopeKey(r.wrapped_by_scope),
+            `incoming:${r.id}`,
+          );
+          const plain = openBytes(fileKey, r.proposals_sealed, itemProposalsBinding(r.id));
+          return storedProposal(JSON.parse(plain.toString('utf8')));
+        } catch {
+          return null;
+        }
+      },
+    };
   }
 
   private view(p: Principal, b: BatchRow, counts: BatchCounts): BatchView {

@@ -88,6 +88,16 @@ export const operatorMailBinding = (householdId: string) => `mail.to_address:${h
 export const ALERT_LINK_KEY_PURPOSE = 'alert-link-job';
 export const alertLinkBinding = (householdId: string) => `alert.send:url:${householdId}`;
 
+/**
+ * A batch's item, read by the worker before it is a document (Phase 6, I2):
+ * its words, and what they propose, each sealed under the item's own file
+ * key — itself wrapped under its uploader's member key, as the file is — and
+ * bound to the item and to what it is, so neither opens on another row, nor
+ * one as the other. A passport number is a proposal: neither is ever plain.
+ */
+export const itemTextBinding = (itemId: string) => `item-text:${itemId}`;
+export const itemProposalsBinding = (itemId: string) => `item-proposals:${itemId}`;
+
 /** What sealing adds to the bytes sealed: the nonce before them, the tag after. */
 export const SEAL_OVERHEAD = IV_BYTES + TAG_BYTES;
 

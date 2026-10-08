@@ -62,6 +62,21 @@ describe('the fake vault keeps the contract', () => {
       const m = vault.state.members.find((x) => x.id === memberId);
       if (m) m.access_expires_at = new Date(Date.now() - 60_000).toISOString();
     },
+    // A batch's items read, as the worker would read them (I2): kept on each.
+    readBatchItems: async (batchId, reads) => {
+      const b = vault.state.batches.find((x) => x.id === batchId);
+      for (const [id, read] of Object.entries(reads)) {
+        const it = b?.items.find((x) => x.id === id);
+        if (!it) throw new Error(`the fake has no item ${id}`);
+        if ('failure' in read) {
+          it.reading = 'failed';
+          it.read_failure = read.failure;
+        } else {
+          it.reading = 'read';
+          it.proposal = read.proposal;
+        }
+      }
+    },
   };
   for (const s of contractScenarios) it(s.name, () => s.run(api, ctx));
 });

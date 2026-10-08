@@ -1,6 +1,7 @@
 import {
   checkCaptureMetadata,
   effectiveVisibility,
+  householdDateOrder,
   issuerCandidates,
   mayChangeVisibilityAtAll,
   notesPlainText,
@@ -1598,11 +1599,7 @@ export class DocumentService {
             issued_by: doc.issued_by,
           },
           // 03/04/2031 as the household writes dates: the US month first.
-          dateOrder: profile?.country
-            ? MONTH_FIRST.has(profile.country)
-              ? 'mdy'
-              : 'dmy'
-            : undefined,
+          dateOrder: householdDateOrder(profile?.country),
         };
         return { state: 'ready', text: read.text, versionId: read.versionId, ctx };
       },
@@ -3299,9 +3296,6 @@ const PREVIEW_REQUEUE_MS = 2 * 60 * 1000;
 
 /** What is read of a document's words for a suggestion: its first pages say who and what it is. */
 const PAGES_TEXT_MAX = 60_000;
-
-/** Countries that write a date month first (03/04/2031 is March 4), for reading the pages' dates. */
-const MONTH_FIRST = new Set(['US', 'PH', 'FM', 'MH', 'PW', 'GU', 'AS', 'MP', 'PR', 'VI', 'UM']);
 
 const encodeCursor = (c: { k: string; id: string }) =>
   Buffer.from(JSON.stringify(c)).toString('base64url');

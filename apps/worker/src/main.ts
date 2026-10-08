@@ -38,7 +38,8 @@ import {
   type IncomingScanJob,
 } from './jobs/incoming.js';
 import { connections, verifyAllAuditChains } from './jobs/verify-audit.js';
-import { sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
+import { resumeBatchItems, sendBatchPreviews, workBatchPreviews } from './jobs/batches.js';
+import { ProposalThread } from './jobs/proposal-thread.js';
 import type { JobWithMetadata } from 'pg-boss';
 import { createQueue, JOBS } from './queue.js';
 import { masterKeyOpensVault, resolveMasterSecret } from './master-key-check.js';
@@ -437,8 +438,16 @@ async function main(): Promise<void> {
   });
   await boss.schedule(JOBS.incomingSweep, '50 4 * * *');
   // Many documents at once (I1): a batch's items drawn one at a time a
-  // household, each household taking its turn (jobs/batches.ts).
-  await workBatchPreviews(boss, incomingDeps);
+  // household, each household taking its turn (jobs/batches.ts); and, since
+  // I2, each read and proposed for, on a thread of its own (read-item.ts).
+  const proposals = new ProposalThread();
+  await workBatchPreviews(boss, incomingDeps, {
+    read: { maxPages: config.FDV_OCR_MAX_PAGES, proposer: proposals },
+  });
+  // A read a worker that stopped left taken, read again; and nothing left
+  // waiting for the nightly sweep.
+  const resumed = await resumeBatchItems(incomingDeps, (hh) => sendBatchPreviews(boss, hh));
+  if (resumed > 0) log('info', 'batch items to draw or read, sent again', { households: resumed });
   await boss.createQueue(JOBS.remindersWeekly);
   await boss.work(JOBS.remindersWeekly, async () => {
     const r = await weekly(reminderDeps);
@@ -452,6 +461,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     log('info', 'shutting down', { signal });
     await boss.stop({ graceful: true, timeout: 10_000 });
+    await proposals.close();
     await dbs.close();
     process.exit(0);
   };

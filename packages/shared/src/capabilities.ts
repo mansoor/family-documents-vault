@@ -221,6 +221,15 @@ export interface CapabilityFeatures {
    * vaults, which take one file at a time.
    */
   batches?: boolean;
+  /**
+   * The vault reads each item and suggests (Phase 6, I2): a batch's items
+   * are read one at a time a household, and GET /batches/{id} (and an item
+   * as POST …/items answers it) gives each its `read_failure`, `level`,
+   * `tags`, `proposals` (each detail the card starts from, read from the
+   * pages with a confidence, or the batch's default) and `clashes` — for
+   * its uploader alone. Absent from older vaults, whose items have none.
+   */
+  batch_proposals?: boolean;
 }
 
 export interface CapabilityLimits {

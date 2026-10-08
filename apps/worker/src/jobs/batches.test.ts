@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { EnvKeyProvider, newKey, ScopeKeys, wrapKey } from '@fdv/crypto';
+import { EncryptStream, EnvKeyProvider, newKey, ScopeKeys, wrapKey } from '@fdv/crypto';
 import { createDb, createPool, withSystem, type Db } from '@fdv/db';
 import { createTestDatabase, testAdminUrl, type TestDatabase } from '@fdv/db/testing';
 import { LocalAdapter } from '@fdv/storage';
@@ -18,6 +18,7 @@ import {
   type DrawItem,
 } from './batches.js';
 import { scanIncoming, sweepIncoming, tellWaiting, type IncomingDeps } from './incoming.js';
+import type { ItemProposer } from './proposal-thread.js';
 
 /**
  * Many documents at once (Phase 6, I1), in the worker: a batch's items
@@ -135,7 +136,14 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
     const key = `${hh}/batches/${batchId}/${randomBytes(8).toString('hex')}.enc`;
     const adapter = new LocalAdapter(root);
     const { Readable } = await import('node:stream');
-    await adapter.put(key, Readable.from([Buffer.from('ciphertext')]));
+    const { pipeline } = await import('node:stream/promises');
+    // Its bytes encrypted under its own key, as the API stores them: words to read (I2).
+    const fileKey = newKey();
+    const enc = new EncryptStream(fileKey);
+    await Promise.all([
+      adapter.put(key, enc),
+      pipeline(Readable.from([Buffer.from(`the words of ${id}`)]), enc),
+    ]);
     await adapter.put(`${key}.p1.enc`, Readable.from([Buffer.from('a page')]));
     const scope = await withSystem(db, hh, (trx) =>
       keys.unwrap(trx, { householdId: hh, kind: 'member', memberId: member }),
@@ -162,7 +170,7 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
         randomBytes(32),
         key,
         vault,
-        wrapKey(newKey(), scope.key, `incoming:${id}`),
+        wrapKey(fileKey, scope.key, `incoming:${id}`),
         scope.id,
         opts.arrived ?? new Date().toISOString(),
       ],
@@ -221,6 +229,86 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
       }
       // B's one waited for one of A's, not for all of them.
       expect(order).toEqual([a1.id, b1.id, a2.id, a3.id]);
+    } finally {
+      await boss.stop({ graceful: false });
+    }
+  }, 60_000);
+
+  it('with reading added (I2), a job draws one item and reads one, and each household still takes its turn', async () => {
+    // Clear what earlier tests left waiting.
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    const order: string[] = [];
+    const draw: DrawItem = async (d, hh, f) => {
+      order.push(`draw ${f.id}`);
+      await withSystem(d.db, hh, (trx) =>
+        trx
+          .updateTable('incoming_file')
+          .set({ preview_state: 'unsupported', preview_pages: 0 })
+          .where('id', '=', f.id)
+          .execute(),
+      );
+    };
+    // Reading stood in for at the extraction and the thread: written down by the words read.
+    const ids = new Map<string, string>();
+    const proposer: ItemProposer = {
+      propose: async (text) => {
+        order.push(`read ${ids.get(text) ?? text}`);
+        return { state: 'done', proposal: {} };
+      },
+    };
+    const big = await batch('a');
+    const small = await batch('b');
+    const t = Date.now();
+    const a1 = await item('a', big, { arrived: new Date(t - 3000).toISOString() });
+    const a2 = await item('a', big, { arrived: new Date(t - 2000).toISOString() });
+    const a3 = await item('a', big, { arrived: new Date(t - 1000).toISOString() });
+    const b1 = await item('b', small, { arrived: new Date(t).toISOString() });
+    for (const i of [a1, a2, a3, b1]) ids.set(`the words of ${i.id}`, i.id);
+    const boss: PgBoss = createQueue({ connectionString: tdb.adminUrl, migrate: true });
+    boss.on('error', () => undefined);
+    await boss.start();
+    try {
+      await boss.createQueue('batch.previews', { policy: 'stately' });
+      await sendBatchPreviews(boss, homes.a.hh);
+      await sendBatchPreviews(boss, homes.b.hh);
+      await workBatchPreviews(boss, deps, {
+        draw,
+        pollingIntervalSeconds: 0.5,
+        read: {
+          maxPages: 5,
+          proposer,
+          tools: { pdftoppm: false, magick: false, tesseract: false },
+          extract: async (file) => {
+            const { readFile } = await import('node:fs/promises');
+            return { text: await readFile(file, 'utf8'), source: 'pdf', textPages: 1, ocrPages: 0 };
+          },
+        },
+      });
+      const states = async () =>
+        (
+          await admin.query<{ read_state: string }>(
+            'select read_state from incoming_file where id = any($1::uuid[]) order by received_at',
+            [[a1.id, a2.id, a3.id, b1.id]],
+          )
+        ).rows.map((r) => r.read_state);
+      for (let i = 0; i < 300 && (await states()).some((r) => r !== 'read'); i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // Each job: one item drawn, then that one read, before anything else;
+      // A's in the order they came; and B's waited for a job of A's, never
+      // for all of them. (Which of A's next job and B's the queue takes
+      // first after a1 is the queue's own order, by when each was sent.)
+      expect(order).toHaveLength(8);
+      for (let i = 0; i < 8; i += 2) {
+        expect(order[i + 1]?.replace('read ', 'draw ')).toBe(order[i]);
+      }
+      const drawn = order.filter((o) => o.startsWith('draw ')).map((o) => o.slice(5));
+      expect(drawn.filter((id) => id !== b1.id)).toEqual([a1.id, a2.id, a3.id]);
+      expect(drawn.indexOf(b1.id)).toBeGreaterThan(0);
+      expect(drawn.indexOf(b1.id)).toBeLessThan(drawn.indexOf(a3.id));
+      expect(await states()).toEqual(['read', 'read', 'read', 'read']);
     } finally {
       await boss.stop({ graceful: false });
     }
@@ -318,5 +406,25 @@ describe.skipIf(!testAdminUrl())('a batch’s items, in the worker', () => {
     const sent: string[] = [];
     await sweepIncoming({ ...deps, sendBatchPreviews: async (hh) => void sent.push(hh) });
     expect(sent).toEqual([homes.a.hh]);
+  });
+
+  it('items drawn and left unread by a lost job are sent again by the sweep too (I2)', async () => {
+    await admin.query(
+      "update incoming_file set state = 'rejected', decided_at = now(), original_name = null, sha256 = null, text_sealed = null, proposals_sealed = null where state = 'received'",
+    );
+    const b = await batch('b');
+    const left = await item('b', b, { arrived: new Date(Date.now() - 3_600_000).toISOString() });
+    await admin.query(
+      "update incoming_file set preview_state = 'ready', preview_pages = 1 where id = $1",
+      [left.id],
+    );
+    const sent: string[] = [];
+    await sweepIncoming({ ...deps, sendBatchPreviews: async (hh) => void sent.push(hh) });
+    expect(sent).toEqual([homes.b.hh]);
+    // Read since: nothing to send.
+    await admin.query("update incoming_file set read_state = 'read' where id = $1", [left.id]);
+    sent.length = 0;
+    await sweepIncoming({ ...deps, sendBatchPreviews: async (hh) => void sent.push(hh) });
+    expect(sent).toEqual([]);
   });
 });

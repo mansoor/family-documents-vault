@@ -1,11 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { createPool } from '@fdv/db';
+import {
+  EnvKeyProvider,
+  itemProposalsBinding,
+  itemTextBinding,
+  ScopeKeys,
+  sealBytes,
+  unwrapKey,
+} from '@fdv/crypto';
+import { createPool, withSystem } from '@fdv/db';
 import { testAdminUrl } from '@fdv/db/testing';
 import type { DocumentView, Tokens } from '@fdv/shared';
 import type { LightMyRequestResponse } from 'fastify';
 import FormData from 'form-data';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { alertsSent, createHarness, mailSent, type Harness } from './test-harness.js';
+import { alertsSent, createHarness, mailSent, TEST_MASTER, type Harness } from './test-harness.js';
 
 /**
  * The Phase 5 exit (5.41): every door, attacked together.
@@ -1067,6 +1075,49 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
         201,
       ),
     ).id;
+    // …and read by the worker (I2): its words, and what they propose — a
+    // number and an issuer that are nobody's but his — sealed under the
+    // item's own key, as the worker seals them.
+    await withSystem(h.db, olivia.household_id, async (trx) => {
+      const f = await trx
+        .selectFrom('incoming_file')
+        .select(['file_key_wrapped', 'wrapped_by_scope'])
+        .where('id', '=', ids.batchItem as string)
+        .executeTakeFirstOrThrow();
+      const keys = new ScopeKeys(new EnvKeyProvider(TEST_MASTER));
+      const fileKey = unwrapKey(
+        f.file_key_wrapped,
+        await keys.unwrapById(trx, f.wrapped_by_scope),
+        `incoming:${ids.batchItem as string}`,
+      );
+      const proposal = {
+        type_key: { value: 'passport', confidence: 0.97, cue: 'kind_words' },
+        identifier: { value: 'AHMED-PROPOSED-NUMBER-541', confidence: 0.95, cue: 'number_label' },
+        issued_by: { value: 'AHMED-PROPOSED-ISSUER-541', confidence: 0.9, cue: 'letterhead' },
+      };
+      await trx
+        .updateTable('incoming_file')
+        .set({
+          read_state: 'read',
+          text_sealed: sealBytes(
+            fileKey,
+            Buffer.from('AHMED-ITEM-WORDS-541'),
+            itemTextBinding(ids.batchItem as string),
+          ),
+          proposals_sealed: sealBytes(
+            fileKey,
+            Buffer.from(JSON.stringify({ v: 1, proposal })),
+            itemProposalsBinding(ids.batchItem as string),
+          ),
+        })
+        .where('id', '=', ids.batchItem as string)
+        .execute();
+    });
+    // He is given them (the test of the test): nobody else is, below.
+    const read = json<{ items: Array<{ proposals: unknown }> }>(
+      await ok(send(ahmed, 'GET', `/api/v1/batches/${ids.batch}`)),
+    );
+    expect(JSON.stringify(read.items[0]?.proposals)).toContain('AHMED-PROPOSED-NUMBER-541');
 
     // Ahmed's own: a reminder, an export, a phone.
     const reminder = await ok(
@@ -2284,6 +2335,10 @@ describe.skipIf(!testAdminUrl())('the Phase 5 exit', () => {
       'AHMED-BATCH-541',
       'AHMED-BATCH-SHELF',
       'ahmed-batch-file-541',
+      // What his item's pages proposed, and its words (I2).
+      'AHMED-PROPOSED-NUMBER-541',
+      'AHMED-PROPOSED-ISSUER-541',
+      'AHMED-ITEM-WORDS-541',
     ];
     const outsideGrant = [
       ...secretsOf('will', 'deed', 'carInsurance'),

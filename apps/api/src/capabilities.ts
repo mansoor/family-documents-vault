@@ -127,6 +127,8 @@ export function buildCapabilities(config: CapabilityConfig): Capabilities {
       document_table: true,
       // I1: many documents at once, each its uploader's alone until accepted.
       batches: true,
+      // I2: each item read and proposed for, levelled and tagged, for its uploader.
+      batch_proposals: true,
     },
     limits: {
       max_upload_bytes: config.maxUploadBytes,

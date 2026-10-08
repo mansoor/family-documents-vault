@@ -71,6 +71,11 @@ export function Field(props: {
    * it (5.16b): "We'll remind you 7 days before its due date."
    */
   note?: ReactNode;
+  /**
+   * Where the value came from, beside the label and heard with it (I2):
+   * "suggested · 92%", "from the batch". Gone once the value is changed.
+   */
+  mark?: ReactNode;
   onChange: (v: string) => void;
 }) {
   const noteId = props.note ? `${props.id}-note` : undefined;
@@ -79,6 +84,7 @@ export function Field(props: {
       <label htmlFor={props.id}>
         {props.label}
         {props.requiredMark && <RequiredMark />}
+        {props.mark && <> {props.mark}</>}
       </label>
       <input
         id={props.id}
@@ -233,12 +239,15 @@ export function Select(props: {
   invalid?: boolean;
   /** The id of what is said about the choice, heard with it (5.16b). */
   describedBy?: string | undefined;
+  /** Where the choice came from, beside the label and heard with it (I2), as a Field's. */
+  mark?: ReactNode;
 }) {
   return (
     <div className="field">
       <label htmlFor={props.id}>
         {props.label}
         {props.requiredMark && <RequiredMark />}
+        {props.mark && <> {props.mark}</>}
       </label>
       <select
         id={props.id}
